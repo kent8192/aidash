@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cluster="aidash-core-ci-$(date +%s)-$$"
-state="$PWD/.ignore/core-runtime/$cluster"
+state="$PWD/private/core-runtime/$cluster"
 tools_dir="$state/tools"
 evidence="$state/evidence"
 mkdir -p "$tools_dir" "$evidence"

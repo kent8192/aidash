@@ -44,7 +44,7 @@ import fixed_task_runner as runner  # noqa: E402
 ROOT = evaluation.ROOT
 POSTGRES_IMAGE = "aidash-postgres:17-pg-jsonschema-0.3.4"
 NATS_IMAGE = "nats:2.12-alpine"
-DEFAULT_OUTPUT = ROOT / ".ignore/evaluation"
+DEFAULT_OUTPUT = ROOT / "private/evaluation"
 # A deployed source fingerprint: a git commit (abbreviated or full) or a SHA-256, lowercase hexadecimal.
 SERVER_REVISION = re.compile(r"[0-9a-f]{7,64}")
 # Emergency cleanups for a second deterministic SIGTERM, if the first one's unwind through

@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 scripts/build-test-postgres.sh
-export CARGO_TARGET_DIR="$PWD/.ignore/transaction-target"
+export CARGO_TARGET_DIR="$PWD/private/transaction-target"
 export AIDASH_TEST_BINARY="$CARGO_TARGET_DIR/debug/aidash"
 export RUSTC_WRAPPER=
 export AIDASH_SECRET_TEST_PEER=transaction-test-only-peer-credential

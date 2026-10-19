@@ -79,7 +79,7 @@ class Cluster:
     def __init__(self, args):
         self.args = args
         self.namespace = "aidash-tx-" + uuid.uuid4().hex[:10]
-        self.directory = ROOT / ".ignore" / "transaction-acceptance" / self.namespace
+        self.directory = ROOT / "private" / "transaction-acceptance" / self.namespace
         self.directory.mkdir(parents=True)
         self.env = {**os.environ, "KUBECONFIG": str(pathlib.Path(args.kubeconfig).resolve())}
         self.token = uuid.uuid4().hex

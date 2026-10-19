@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--dashboard", action="store_true")
     args = parser.parse_args()
     namespace = "aidash-ops-" + uuid.uuid4().hex[:10]
-    report_dir = ROOT / ".ignore" / "platform" / namespace
+    report_dir = ROOT / "private" / "platform" / namespace
     report_dir.mkdir(parents=True)
     env = {**os.environ, "KUBECONFIG": str(pathlib.Path(args.kubeconfig).resolve())}
     forwards = []

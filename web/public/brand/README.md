@@ -14,7 +14,7 @@ ICO and ICNS assets in `desktop/src-tauri/icons` use the same app icon source:
 
 ```sh
 npx --package @tauri-apps/cli@2.12.1 tauri icon \
-  web/src/assets/brand/aidash-app-icon.svg --output .ignore/brand-icons
+  web/src/assets/brand/aidash-app-icon.svg --output private/brand-icons
 ```
 
 Copy the platform files already present in `desktop/src-tauri/icons` from that

@@ -109,6 +109,8 @@ docs/Gemfile.lock
 !.env.example
 !.env.sample
 .ignore/
+/private/
+/notes/
 .claude/
 .serena/
 .wtp.yml

@@ -51,7 +51,7 @@ its own cluster on exit:
 scripts/test-capability-cluster.sh
 ```
 
-Logs are under `.ignore/core-runtime/<cluster>/evidence/`. Only that directory is
+Logs are under `private/core-runtime/<cluster>/evidence/`. Only that directory is
 suitable for sharing. Its sibling `private/` contains the runner credential and
 kubeconfig and must not be published. This runtime gate runs manually outside
 CI and is not a prerequisite of `CI Success`.
