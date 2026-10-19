@@ -526,9 +526,10 @@ pub(crate) fn event_inbox(
 	})
 }
 
-/// HTTP and MCP tools never carry a Deployment secret (#296).
-pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::tools::HttpTools {
-	aidash_integrations::tools::HttpTools { client }
+/// HTTP and MCP tools never carry a Deployment secret (#296). They connect
+/// under the Keyless endpoint rule and its permitted origins (#376).
+pub(crate) fn tool_transport(store: &Store) -> aidash_integrations::tools::HttpTools {
+	aidash_integrations::tools::HttpTools::new(store.keyless.clone(), store.tool_clients.clone())
 }
 
 /// Discovery and worker retries share the native repository and rotating keys.

@@ -69,13 +69,13 @@ pub fn public_client(timeout: Duration, connect_timeout: Duration) -> Result<req
 /// as a configuration failure, never retried as a provider outage.
 pub(crate) fn send_error(error: reqwest::Error) -> Error {
 	if refused(&error) {
-		tracing::warn!("Keyless endpoint refused: its host resolves to a non-public address");
+		tracing::warn!("endpoint refused: its host resolves to a non-public address");
 		return Error::Forbidden;
 	}
 	crate::http_error(error)
 }
 
-fn refused(error: &(dyn std::error::Error + 'static)) -> bool {
+pub(crate) fn refused(error: &(dyn std::error::Error + 'static)) -> bool {
 	let mut source = Some(error);
 	while let Some(current) = source {
 		if current.is::<NonPublicAddress>() {

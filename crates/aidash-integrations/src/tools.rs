@@ -1,7 +1,9 @@
 //! HTTP and MCP transports for validated application tools.
 use aidash_application::execution::bounded_utf8_end;
-use aidash_application::{Error, Result, ports::tools::ToolTransport, tools::required};
-use aidash_domain::tool::ToolConfig;
+use aidash_application::{
+	Error, Result, ports::tools::ToolTransport, provider_access::KeylessAccess, tools::required,
+};
+use aidash_domain::{keyless::Destination, tool::ToolConfig};
 use async_trait::async_trait;
 use rmcp::{
 	ServiceExt,
@@ -15,6 +17,8 @@ mod mcp;
 
 /// Total budget for a native `http_get`, covering DNS resolution and the request.
 const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const TOOL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn resolve_within<I>(
 	deadline: tokio::time::Instant,
@@ -30,8 +34,53 @@ where
 		.map_err(|error| Error::Port(Box::new(error)))
 }
 
+/// The clients of Tenant tool endpoints. Neither follows redirects or uses a
+/// system proxy: a proxy resolves names itself, which would bypass the
+/// address check of `public`.
+#[derive(Clone)]
+pub struct ToolClients {
+	/// An origin the Deployment permits, which may reach private addresses.
+	permitted: reqwest::Client,
+	/// Every other endpoint: each new connection resolves public addresses only.
+	public: reqwest::Client,
+}
+impl ToolClients {
+	pub fn new() -> Result<Self> {
+		Ok(Self {
+			permitted: reqwest::Client::builder()
+				.timeout(TOOL_TIMEOUT)
+				.connect_timeout(TOOL_CONNECT_TIMEOUT)
+				.redirect(reqwest::redirect::Policy::none())
+				.no_proxy()
+				.build()
+				.map_err(crate::http_error)?,
+			public: crate::keyless::public_client(TOOL_TIMEOUT, TOOL_CONNECT_TIMEOUT)?,
+		})
+	}
+}
+
+/// A Tenant chooses a tool's endpoint, so the Keyless endpoint rule decides
+/// where each call may connect (ADR 0036).
+#[derive(Clone)]
 pub struct HttpTools {
-	pub client: reqwest::Client,
+	origins: KeylessAccess,
+	clients: ToolClients,
+}
+impl HttpTools {
+	pub fn new(origins: KeylessAccess, clients: ToolClients) -> Self {
+		Self { origins, clients }
+	}
+	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
+	fn client(&self, endpoint: &str) -> Result<&reqwest::Client> {
+		match self.origins.destination(endpoint)? {
+			Destination::Permitted => Ok(&self.clients.permitted),
+			Destination::PublicOnly => Ok(&self.clients.public),
+			Destination::Forbidden => {
+				tracing::warn!("tool endpoint refused: its host is a non-public address");
+				Err(Error::Forbidden)
+			}
+		}
+	}
 }
 #[async_trait]
 impl ToolTransport for HttpTools {
@@ -73,13 +122,13 @@ impl ToolTransport for HttpTools {
 			}
 			ToolConfig::Http { endpoint, .. } => {
 				let response = self
-					.client
+					.client(endpoint)?
 					.post(endpoint)
 					.header("idempotency-key", key)
 					.json(&input)
 					.send()
 					.await
-					.map_err(crate::http_error)?;
+					.map_err(crate::keyless::send_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -97,13 +146,10 @@ impl ToolTransport for HttpTools {
 				let transport_config =
 					StreamableHttpClientTransportConfig::with_uri(endpoint.clone());
 				let transport = StreamableHttpClientTransport::with_client(
-					mcp::BoundedClient(self.client.clone()),
+					mcp::BoundedClient(self.client(endpoint)?.clone()),
 					transport_config,
 				);
-				let service = ()
-					.serve(transport)
-					.await
-					.map_err(|e| Error::External(format!("MCP initialization failed: {e}")))?;
+				let service = ().serve(transport).await.map_err(|e| mcp::initialization_error(&e))?;
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -114,7 +160,7 @@ impl ToolTransport for HttpTools {
 				let result = service
 					.call_tool(CallToolRequestParams::new(tool_name.clone()).with_arguments(args))
 					.await
-					.map_err(|e| Error::External(format!("MCP call failed: {e}")));
+					.map_err(|e| mcp::call_error(&e));
 				let _ = service.cancel().await;
 				let result = result?;
 				if result.is_error == Some(true) {
