@@ -255,7 +255,7 @@
   "generationCompactionPerAgent": "Agentごとの圧縮呼び出し上限",
   "generationCompactionBudget": "圧縮呼び出しの総予算",
   "generationCompactionCalls": "圧縮呼び出し消費数 / 上限",
-  "deciderHelp": "Jevの正確なリリース（例: typesafe/jev-1.14）を登録し、各Nodeのテナントカタログでこのバージョンを承認します。JevはテナントのOpenRouter接続を使い、ゼロデータ保持でOpenRouter経由で呼び出されます。Deciderを使えないRunは剪定されず一時停止します。",
+  "deciderHelp": "Jevの正確なリリース（例: typesafe/jev-1.14）を登録し、各Nodeのテナントカタログでこのバージョンを承認します。JevはテナントのOpenRouter接続を使い、ゼロデータ保持でOpenRouter経由で呼び出されます。Clefの選択肢をオンにすると、Jevを使えないときだけCloudflareのClefがCloudflare、DeepInfra、PrimeIntellectのいずれかで答えます。Deciderを使えないRunは剪定されず一時停止します。",
   "deciderMode": "モード",
   "deciderModeEnforce": "Enforce: 決定を適用する",
   "deciderModeShadow": "Shadow: 決定を記録するだけ",
@@ -669,5 +669,7 @@
   "catalogHistory": "承認履歴",
   "catalogNoHistory": "承認の記録はまだありません。",
   "catalogTenantDefinitions": "定義は各テナントに属します。登録と承認は、それぞれのテナントのレジストリで行います。",
-  "catalogRegistryUnavailable": "現在の権限ではレジストリを表示できません。"
+  "catalogRegistryUnavailable": "現在の権限ではレジストリを表示できません。",
+  "deciderClefRoute": "Jevを使えないときはCloudflareのClef（Cloudflare、DeepInfra、PrimeIntellect上）に尋ねる",
+  "catalogDeciderRecipients": "Runの状態の送信先"
 }

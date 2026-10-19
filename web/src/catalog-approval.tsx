@@ -9,6 +9,7 @@ import type { RegistryVersion } from "./generated/models";
 import type { State } from "./types";
 import { ApiError } from "./transport";
 import { keylessOrigin } from "./keyless";
+import { deciderRecipients, type DeciderRecipient } from "./decider";
 import { Badge, useEntryLabel, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
 import {
@@ -76,6 +77,27 @@ export function KeylessOrigin({ origin }: { origin: string }) {
   );
 }
 
+/** Every host a Decider version's Routes send Run state to (ADR 0066). */
+export function DeciderRecipients({
+  recipients,
+}: {
+  recipients: DeciderRecipient[];
+}) {
+  const { t } = useI18n();
+  return (
+    <span className="decider-recipients text-[11px] text-warning [overflow-wrap:anywhere]">
+      {t("catalogDeciderRecipients")} ·{" "}
+      {recipients.map((recipient, index) => (
+        <span key={`${index}-${recipient.model}`}>
+          {index > 0 && "; "}
+          <span className="font-mono">{recipient.model}</span> (
+          {recipient.hosts.join(", ")})
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** One version's Catalog Approval: its state and history, and for a subject
  *  holding `catalog.approve`, the decision itself. An approval refused for an
  *  unapproved dependency turns into one request for the whole closure. */
@@ -99,6 +121,7 @@ export function CatalogApprovalSection({
   const entry = version.entry;
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
+  const recipients = deciderRecipients(entry);
   const installed = !!entry.installation;
   const decides =
     tenant !== null &&
@@ -186,6 +209,7 @@ export function CatalogApprovalSection({
         ) : (
           <KeylessOrigin origin={origin} />
         ))}
+      {recipients && <DeciderRecipients recipients={recipients} />}
       {version.subject && (
         <Facts
           items={[
@@ -237,6 +261,7 @@ export function CatalogApprovalSection({
           <ul className="grid gap-1.5 text-xs">
             {[...closure.dependencies, version].map((item) => {
               const keyless = keylessOrigin(item.entry);
+              const routes = deciderRecipients(item.entry);
               return (
                 <li
                   key={`${item.entry.id}@${item.entry.version}`}
@@ -247,6 +272,7 @@ export function CatalogApprovalSection({
                   </span>
                   <Badge value={item.entry.kind} />
                   {keyless && <KeylessOrigin origin={keyless} />}
+                  {routes && <DeciderRecipients recipients={routes} />}
                 </li>
               );
             })}
