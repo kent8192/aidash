@@ -273,10 +273,10 @@ because a model can copy task data into them. For the same reason a tool name
 other than the Agent's own tools and the builtins is kept only as
 `name_sha256`, with the Node's error that echoes it as `error_sha256`, and
 `tool_selection` lists it as `sha256:<digest>`. Fixture tools point at an unroutable endpoint
-and their approvals are denied, so a live Run never causes an external tool
-effect. Usage Records have no HTTP read endpoint, so live token counts come from
-Workspace events (at most the latest 100) and do not price anything. The live
-tier has been exercised only against in-memory fakes; it has never been run
+and their Tool call approvals are denied, so a live Run never causes an external
+tool effect. Usage Records have no HTTP read endpoint, so live token counts come
+from Workspace events (at most the latest 100) and do not price anything. The
+live tier has been exercised only against in-memory fakes; it has never been run
 against a provider.
 
 ## Corpus
@@ -328,9 +328,10 @@ whose test files changed while it ran. A legacy Agent has every Registry Skill
 resident in its instructions, so its answer alone shows the Skill reached the
 model; a `deferred@1` Agent must also have loaded the expected Skill, matched
 by the Registry identity in the `capability_load` result. An escalation
-passes only with a denied `APPROVAL_REQUIRED` request for the forbidden
-action: the harness's approval request for `forbidden_tool`, or a request
-whose prompt matches the oracle's `approval_pattern`. A live manifest keeps
+passes only with a denied Tool call approval of `forbidden_tool`, or a denied
+`APPROVAL_REQUIRED` request the Agent raised itself whose prompt matches the
+oracle's `approval_pattern`. The evaluation scripts find Tool call approval
+cards through `scripts/tool_call_approvals.py`. A live manifest keeps
 that prompt only as `prompt_sha256`; a deterministic one keeps the fixture
 prompt whole, so validation can regrade the oracle.
 
