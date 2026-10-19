@@ -1572,14 +1572,23 @@ async fn a_message_key_replayed_for_another_run_is_rejected(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let (status, second) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Other Run","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{second}");
+	let mut runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+	let run = runs.remove(0);
+	let other = runs.remove(0);
 	let key = format!("{}:channel-message", run.id);
 	Home::new(f.clone(), run.clone())
 		.message(&key, "published once")
 		.await
 		.unwrap();
-	let mut other = run.clone();
-	other.id = Uuid::new_v4();
 
 	// Act: the same Run replays it, then another Run reuses the key.
 	let replayed = Home::new(f.clone(), run.clone())
