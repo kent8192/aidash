@@ -2581,7 +2581,30 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		store: f.store.clone(),
 		identity,
 	};
-	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	// Each event is written in its own Tenant's scope, as the Marketplace does:
+	// row-level security hides Tenant b's events from Tenant a outright, while
+	// Tenant a's audits and removed installations stay visible to the database
+	// and are denied only by the reader's authority check.
+	let scope_a = aidash_application::tenancy::TenancyScope::tenant("a").unwrap();
+	let scope_b = aidash_application::tenancy::TenancyScope::tenant("b").unwrap();
+	// Tenant b exists, so that its events can reference its root record.
+	token(&f, "b", "user").await;
+	// Event sequence allocation serializes writers, so each Tenant's batch
+	// commits before the next one starts.
+	let mut tx_b = f.store.pool.begin(&scope_b).await.unwrap();
+	for _ in 0..512 {
+		f.store
+			.event(
+				&mut tx_b,
+				None,
+				"marketplace.installed",
+				json!({"tenant":"b","installation":"foreign"}),
+			)
+			.await
+			.unwrap();
+	}
+	tx_b.commit().await.unwrap();
+	let mut tx = f.store.pool.begin(&scope_a).await.unwrap();
 	for _ in 0..512 {
 		f.store
 			.event(
@@ -2589,15 +2612,6 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 				None,
 				"marketplace.audit",
 				json!({"tenant":"a","installation":installed.1["installation"]["id"]}),
-			)
-			.await
-			.unwrap();
-		f.store
-			.event(
-				&mut tx,
-				None,
-				"marketplace.installed",
-				json!({"tenant":"b","installation":"foreign"}),
 			)
 			.await
 			.unwrap();
@@ -2624,7 +2638,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
 	assert_eq!(state.0, 200, "{state:?}");
 	assert_eq!(state.1["events"], json!([]));
-	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let mut tx = f.store.pool.begin(&scope_a).await.unwrap();
 	let visible = f
 		.store
 		.event(
