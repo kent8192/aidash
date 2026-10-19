@@ -42,7 +42,7 @@ async function installSession(
 for (const [locale, provider, label] of [
   ["ja-JP", "google", "Google でサインイン"],
   ["en-US", "google", "Sign in with Google"],
-  ["en-US", "keycloak", "Sign in with Keycloak"],
+  ["en-US", "oidc", "Sign in"],
 ]) {
   test(`${provider} login in ${locale} preserves the destination`, async ({
     page,

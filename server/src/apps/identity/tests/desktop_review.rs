@@ -22,10 +22,7 @@ use reinhardt::query::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::{
-	Arc,
-	atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -45,9 +42,6 @@ struct Fixture {
 	schema: String,
 	identity: Uuid,
 	browser: Uuid,
-	outage: Arc<AtomicBool>,
-	/// Delays the next provider status response, letting concurrent work commit first.
-	slow_status: Arc<AtomicBool>,
 	server: upstream_fixtures::FixedServerGuard,
 	app: common::TestApplication,
 }
@@ -191,18 +185,15 @@ async fn logout(app: &common::TestApplication, token: String) -> u16 {
 }
 
 #[rstest::rstest]
-#[case::exchange_fresh("exchange", false)]
-#[case::exchange_provider_revalidation("exchange", true)]
-#[case::exchange_remains_single_use("exchange_reuse", false)]
-#[case::refresh_fresh("refresh", false)]
-#[case::refresh_provider_revalidation("refresh", true)]
+#[case::exchange_fresh("exchange")]
+#[case::exchange_remains_single_use("exchange_reuse")]
+#[case::refresh_fresh("refresh")]
 #[tokio::test]
 async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 	#[future(awt)]
 	#[from(review_fixture)]
 	fixture: Fixture,
 	#[case] endpoint: &str,
-	#[case] stale_identity: bool,
 ) {
 	let mut fixture = fixture;
 	let mut inputs = Vec::new();
@@ -217,23 +208,6 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 		assert_eq!(status, 200, "{tokens}");
 		let input = json!({"refresh_token": tokens["refresh_token"], "next_token": format!("aidash_refresh_{}", "n".repeat(64))});
 		inputs = vec![input; 30];
-	}
-	if stale_identity {
-		// Older than the five-minute freshness window, within the 15-minute limit:
-		// every request revalidates with the provider before its transaction.
-		let update = Query::update()
-			.table(Alias::new("dashboard_identities"))
-			.value_expr(
-				Alias::new("last_valid_at"),
-				Expr::cust("clock_timestamp()-interval '6 minutes'"),
-			)
-			.to_string(PostgresQueryBuilder);
-		sqlx::query(&update)
-			.execute(fixture.f.store.pool.driver())
-			.await
-			.unwrap();
-		// One slow revalidation finishes after concurrent requests have committed.
-		fixture.slow_status.store(true, Ordering::SeqCst);
 	}
 	// Retain schema initialization but make any nested pool acquisition fail.
 	let pool = fixture
@@ -439,7 +413,7 @@ async fn status_refresh_observes_each_session_idle_lifetime(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn saved_desktop_session_retains_outage_grace_after_browser_idle_expiry(
+async fn saved_desktop_session_survives_browser_idle_expiry(
 	#[future(awt)]
 	#[from(review_fixture)]
 	fixture: Fixture,
@@ -477,19 +451,6 @@ async fn saved_desktop_session_retains_outage_grace_after_browser_idle_expiry(
 	stop.send(true).unwrap();
 	// Act: refresh after applying this case-specific session and identity lifetime.
 	aidash_server::dashboard_auth::refresh_active(fixture.f.clone(), stopping)
-		.await
-		.unwrap();
-	fixture.outage.store(true, Ordering::SeqCst);
-	// Advance past freshness while remaining within the existing outage grace.
-	let update = Query::update()
-		.table(Alias::new("dashboard_identities"))
-		.value_expr(
-			Alias::new("last_valid_at"),
-			Expr::col(Alias::new("last_valid_at")).sub(Expr::cust("interval '2 minutes'")),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update)
-		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	let (status, body) = request_json(&app, "POST", "/auth/desktop/refresh", json!({"refresh_token": tokens["refresh_token"], "next_token": format!("aidash_refresh_{}", "n".repeat(64))})).await;
@@ -643,23 +604,9 @@ fn review_identity() -> Uuid {
 fn review_browser() -> Uuid {
 	Uuid::new_v4()
 }
-/// Provider fault switches the router reads and the scenarios flip.
-#[derive(Clone)]
-struct ReviewSignals {
-	outage: Arc<AtomicBool>,
-	slow_status: Arc<AtomicBool>,
-}
-#[rstest::fixture]
-fn review_signals() -> ReviewSignals {
-	ReviewSignals {
-		outage: Arc::new(AtomicBool::new(false)),
-		slow_status: Arc::new(AtomicBool::new(false)),
-	}
-}
 #[rstest::fixture]
 fn review_router(
 	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
-	#[from(review_signals)] signals: ReviewSignals,
 ) -> upstream_fixtures::RouterFuture {
 	async move {
 		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
@@ -679,8 +626,6 @@ fn review_router(
 			serde_json::to_value(CoreJsonWebKeySet::new(vec![signing.as_verification_key()]))
 				.unwrap();
 
-		let unavailable = signals.outage.clone();
-		let slow = signals.slow_status.clone();
 		let provider = reinhardt::test::stub::StubRouter::new()
 			.route(
 				"/issuer/.well-known/openid-configuration",
@@ -696,36 +641,6 @@ fn review_router(
 				reply(move |_request: reinhardt::Request| {
 					let keys = keys.clone();
 					async move { reinhardt::Response::ok().with_json(&keys).unwrap() }
-				}),
-			)
-			.route(
-				"/issuer/protocol/openid-connect/token",
-				http::Method::POST,
-				reply(|_request: reinhardt::Request| async {
-					reinhardt::Response::ok()
-						.with_json(&json!({"access_token": "status-fixture"}))
-						.unwrap()
-				}),
-			)
-			.route(
-				"/issuer/admin/users/desktop-review-user",
-				http::Method::GET,
-				reply(move |_request: reinhardt::Request| {
-					let unavailable = unavailable.clone();
-					let slow = slow.clone();
-					async move {
-						if slow.swap(false, Ordering::SeqCst) {
-							tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-						}
-						let status = if unavailable.load(Ordering::SeqCst) {
-							StatusCode::SERVICE_UNAVAILABLE
-						} else {
-							StatusCode::OK
-						};
-						reinhardt::Response::new(status)
-							.with_json(&json!({"id": SUBJECT, "enabled": true}))
-							.unwrap()
-					}
 				}),
 			)
 			.into_server_router();
@@ -751,9 +666,6 @@ fn review_runtime(
 			client_id: "review-client".into(),
 			client_secret: "fixture".into(),
 			public_origin: ORIGIN.into(),
-			keycloak_admin_url: format!("{issuer}/admin"),
-			status_client_id: "status".into(),
-			status_client_secret: "fixture".into(),
 			session_absolute_seconds: 43200,
 			session_idle_seconds: 1800,
 		});
@@ -815,10 +727,9 @@ fn review_runtime(
 #[rstest::fixture]
 async fn review_fixture(
 	#[from(review_ids)] _state: ReviewIds,
-	#[from(review_signals)] signals: ReviewSignals,
 	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
 	#[from(review_router)]
-	#[with(_listener.clone(),signals.clone())]
+	#[with(_listener.clone())]
 	_router: upstream_fixtures::RouterFuture,
 	#[from(review_runtime)]
 	#[with(_listener.clone(),_state.identity,_state.browser)]
@@ -841,8 +752,6 @@ async fn review_fixture(
 		schema,
 		identity,
 		browser,
-		outage: signals.outage,
-		slow_status: signals.slow_status,
 		server,
 		app: application.application,
 	}

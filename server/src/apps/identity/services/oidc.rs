@@ -466,7 +466,7 @@ impl DashboardSessions {
 			} else if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
 				"google"
 			} else {
-				"keycloak"
+				"oidc"
 			},
 			login_url: f.config.dashboard_session().map(|_| "/auth/login"),
 		})

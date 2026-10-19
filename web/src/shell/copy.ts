@@ -85,6 +85,7 @@ export const shellCopy = {
 export const authCopy = {
   "ja-JP": {
     signIn: "Google でサインイン",
+    signInOidc: "サインイン",
     setup:
       "管理者が Aidash の OIDC 接続を設定してください。API の Bearer 認証は引き続き利用できます。",
     choose: "このタブで使う権限を選択してください",
@@ -104,6 +105,7 @@ export const authCopy = {
   },
   "en-US": {
     signIn: "Sign in with Google",
+    signInOidc: "Sign in",
     setup:
       "Ask an administrator to configure OIDC for Aidash. Bearer API access remains available.",
     choose: "Choose the authority for this tab",

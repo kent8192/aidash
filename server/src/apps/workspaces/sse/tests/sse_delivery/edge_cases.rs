@@ -584,9 +584,6 @@ fn browser_sse_runtime(sse_runtime: common::RuntimeFuture) -> common::RuntimeFut
 			client_id: "aidash".into(),
 			client_secret: "fixture".into(),
 			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: String::new(),
-			status_client_id: String::new(),
-			status_client_secret: String::new(),
 			session_absolute_seconds: 43200,
 			session_idle_seconds: 1800,
 		});

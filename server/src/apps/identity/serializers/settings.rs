@@ -32,12 +32,6 @@ pub struct OidcConfig {
 	pub client_secret: String,
 	#[setting(required)]
 	pub public_origin: String,
-	#[setting(default = "String::new()")]
-	pub keycloak_admin_url: String,
-	#[setting(default = "String::new()")]
-	pub status_client_id: String,
-	#[setting(default = "String::new()")]
-	pub status_client_secret: String,
 	#[setting(default = "43200")]
 	#[validate(range(min = 60, max = 604800))]
 	pub session_absolute_seconds: i64,
@@ -75,11 +69,7 @@ impl OidcConfig {
 		for (name, value) in [
 			("issuer", &self.issuer),
 			("public_origin", &self.public_origin),
-			("keycloak_admin_url", &self.keycloak_admin_url),
 		] {
-			if name == "keycloak_admin_url" && self.is_google() {
-				continue;
-			}
 			let url = Url::parse(value)
 				.map_err(|_| Error::Invalid(format!("invalid dashboard.oidc.{name}")))?;
 			let secure = url.scheme() == "https";
@@ -95,14 +85,6 @@ impl OidcConfig {
 				return Err(Error::Invalid(format!("invalid dashboard.oidc.{name}")));
 			}
 		}
-		if !self.is_google()
-			&& (self.status_client_id.trim().is_empty()
-				|| self.status_client_secret.trim().is_empty())
-		{
-			return Err(Error::Invalid(
-				"OIDC status credentials are required for Keycloak".into(),
-			));
-		}
 		let origin = Url::parse(&self.public_origin)
 			.map_err(|_| Error::Invalid("invalid dashboard.oidc.public_origin".into()))?;
 		if origin.path() != "/" {
@@ -117,7 +99,6 @@ impl OidcConfig {
 		}
 		Ok(Self {
 			public_origin: origin.origin().ascii_serialization(),
-			keycloak_admin_url: self.keycloak_admin_url.trim_end_matches('/').into(),
 			..self.clone()
 		})
 	}

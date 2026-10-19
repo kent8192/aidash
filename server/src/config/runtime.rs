@@ -37,13 +37,11 @@ impl Config {
 			.as_ref()
 			.map(|sign_in| AccountPolicy {
 				issuers: sign_in.issuers(),
-				google: false,
 				personal_tenants: self.tenancy.personal_tenants,
 			})
 			.or_else(|| {
 				self.oidc.as_ref().map(|oidc| AccountPolicy {
 					issuers: std::sync::Arc::new(Issuer(oidc.issuer.clone())),
-					google: oidc.is_google(),
 					personal_tenants: self.tenancy.personal_tenants,
 				})
 			})

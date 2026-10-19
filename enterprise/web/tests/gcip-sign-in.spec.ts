@@ -256,7 +256,7 @@ test("self-hosted OIDC never requests the GCIP SDK", async ({ page }) => {
   const modules: string[] = [];
   page.on("request", (request) => modules.push(request.url()));
   await page.route("**/auth/config", (route) =>
-    route.fulfill({ json: { enabled: true, provider: "keycloak" } }),
+    route.fulfill({ json: { enabled: true, provider: "oidc" } }),
   );
   await page.goto("/sign-in");
   await expect(page.getByRole("status")).toContainText("OIDC");

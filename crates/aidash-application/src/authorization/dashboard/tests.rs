@@ -25,7 +25,8 @@ struct Scope {
 	state: Arc<Mutex<State>>,
 	configured: bool,
 	active: bool,
-	google: bool,
+	/// The issuer reports no Account Status, as generic OIDC does.
+	statusless: bool,
 	personal_tenants: bool,
 	/// Issuers whose identities are restricted to one Tenant each.
 	restrictions: Option<std::collections::BTreeMap<String, String>>,
@@ -57,7 +58,7 @@ fn scope() -> Scope {
 		})),
 		configured: true,
 		active: true,
-		google: false,
+		statusless: false,
 		personal_tenants: false,
 		restrictions: None,
 		result: ProviderResult::Enabled,
@@ -119,7 +120,6 @@ impl Accounts for Scope {
 				Some(restrictions) => Arc::new(Restricted(restrictions.clone())),
 				None => Arc::new(Issuer("issuer".into())),
 			},
-			google: self.google,
 			personal_tenants: self.personal_tenants,
 		})
 	}
@@ -203,9 +203,10 @@ impl StatusRecovery for Recovery {
 	}
 }
 fn authority(scope: Arc<Scope>) -> DashboardAuthority {
+	let status = (!scope.statusless).then(|| scope.clone() as Arc<dyn AccountStatus>);
 	DashboardAuthority {
-		accounts: scope.clone(),
-		status: scope,
+		accounts: scope,
+		status,
 	}
 }
 
@@ -293,8 +294,8 @@ async fn recovery_rechecks_original_subjects_and_notifies_only_committed_resumes
 
 #[rstest]
 #[tokio::test]
-async fn google_refresh_keeps_existing_provider_independent_behavior(mut scope: Scope) {
-	scope.google = true;
+async fn a_statusless_issuer_refresh_reads_no_account_status(mut scope: Scope) {
+	scope.statusless = true;
 	let account = scope.state.lock().unwrap().account.clone();
 	let scope = Arc::new(scope);
 	authority(scope.clone()).refresh(account).await;
@@ -687,14 +688,12 @@ fn mapping_requires_the_exact_bound_tenant(
 ) {
 	let policy = AccountPolicy {
 		issuers: Arc::new(Restricted([("pool-a".into(), "acme".into())].into())),
-		google: false,
 		personal_tenants: true,
 	};
 	assert_eq!(policy.require_mapping(pool, tenant).is_ok(), allowed);
 	assert!(policy.require_mapping("old-issuer", tenant).is_err());
 	let unrestricted = AccountPolicy {
 		issuers: Arc::new(Issuer("issuer".into())),
-		google: false,
 		personal_tenants: true,
 	};
 	assert!(unrestricted.require_mapping("issuer", tenant).is_ok());

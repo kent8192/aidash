@@ -2156,9 +2156,6 @@ pub(crate) fn oidc_settings(
 		issuer: config.issuer.clone(),
 		client_id: config.client_id.clone(),
 		client_secret: config.client_secret.clone(),
-		keycloak_admin_url: config.keycloak_admin_url.clone(),
-		status_client_id: config.status_client_id.clone(),
-		status_client_secret: config.status_client_secret.clone(),
 	}
 }
 
@@ -2173,13 +2170,7 @@ pub(crate) fn dashboard_authority(
 			.config
 			.sign_in
 			.as_ref()
-			.map(|sign_in| sign_in.status())
-			.unwrap_or_else(|| {
-				Arc::new(aidash_integrations::oidc::AccountLookup {
-					client: federation.client.clone(),
-					settings: federation.config.oidc.as_ref().map(oidc_settings),
-				})
-			}),
+			.map(|sign_in| sign_in.status()),
 	}
 }
 

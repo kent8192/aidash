@@ -13,7 +13,9 @@ pub const STATUS_LIMIT_SECONDS: i64 = 900;
 
 pub struct DashboardAuthority {
 	pub accounts: Arc<dyn Accounts>,
-	pub status: Arc<dyn AccountStatus>,
+	/// Where the issuer reports Account Status. Generic OIDC, including direct
+	/// Google, has none: a valid token is the whole admission.
+	pub status: Option<Arc<dyn AccountStatus>>,
 }
 impl DashboardAuthority {
 	pub fn configured(&self) -> bool {
@@ -56,14 +58,9 @@ impl DashboardAuthority {
 			return Err(error);
 		}
 		let started = self.accounts.now();
-		let status = if policy.google {
-			None
-		} else {
-			Some(
-				self.status
-					.lookup(&sign_in.issuer, &sign_in.subject)
-					.await?,
-			)
+		let status = match &self.status {
+			Some(status) => Some(status.lookup(&sign_in.issuer, &sign_in.subject).await?),
+			None => None,
 		};
 		if status.is_some_and(|status| {
 			status.disabled || session_revoked(sign_in.auth_time, status.valid_since)
@@ -111,9 +108,9 @@ impl DashboardAuthority {
 			}
 			return Err(Error::Forbidden);
 		}
-		if policy.google {
+		let Some(status) = &self.status else {
 			return Ok(());
-		}
+		};
 		let now = self.accounts.now();
 		if account
 			.last_valid_at
@@ -122,7 +119,7 @@ impl DashboardAuthority {
 			return Ok(());
 		}
 		// The deadline begins before provider IO, including a slow response body.
-		match self.status.lookup(&account.issuer, &account.subject).await {
+		match status.lookup(&account.issuer, &account.subject).await {
 			Ok(status) if !status.disabled => {
 				self.accounts
 					.record_valid(account.id, now, status.valid_since)
@@ -181,11 +178,11 @@ impl DashboardAuthority {
 			));
 		}
 		let started = self.accounts.now();
-		if self
-			.status
-			.lookup(&account.issuer, &account.subject)
-			.await?
-			.disabled
+		if let Some(status) = &self.status
+			&& status
+				.lookup(&account.issuer, &account.subject)
+				.await?
+				.disabled
 		{
 			return Err(Error::Forbidden);
 		}
@@ -193,9 +190,6 @@ impl DashboardAuthority {
 	}
 	pub async fn refresh(&self, account: Account) {
 		let policy = self.accounts.policy();
-		if policy.as_ref().is_some_and(|policy| policy.google) {
-			return;
-		}
 		if policy
 			.as_ref()
 			.is_some_and(|policy| policy.require_identity(&account.issuer).is_err())
@@ -203,6 +197,9 @@ impl DashboardAuthority {
 			if let Err(error) = self.disable(account.id, None).await {
 				tracing::warn!(identity_id=%account.id, %error, "old-issuer identity could not be disabled");
 			}
+			return;
+		}
+		if self.status.is_none() {
 			return;
 		}
 		match self.account_valid(&account).await {

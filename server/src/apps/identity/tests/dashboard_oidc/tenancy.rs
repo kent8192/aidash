@@ -23,9 +23,6 @@ impl Deployment {
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
 			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: String::new(),
-			status_client_id: String::new(),
-			status_client_secret: String::new(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
