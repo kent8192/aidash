@@ -161,7 +161,7 @@ The [authorization API](docs/authorization.md) issues revocable subject tokens f
 
 ### Aidash Cloud GCIP sign-in
 
-Cloud deployments can select GCIP as the sole dashboard issuer. GCIP sign-in is part of the Enterprise build; a Community build with `[dashboard.gcip]` refuses to start. `[dashboard.gcip]` and `[dashboard.oidc]` are mutually exclusive. Self-hosted OIDC stays optional and unchanged. Add this section to the selected server settings file:
+Cloud and Dedicated deployments can select GCIP as the sole dashboard issuer. GCIP sign-in is part of the Enterprise build, which reads `[dashboard.gcip]`; the Community build does not know the section. `[dashboard.gcip]` and `[dashboard.oidc]` are mutually exclusive. Self-hosted OIDC stays optional and unchanged. Add this section to the selected server settings file:
 
 ```toml
 [dashboard.gcip]
@@ -171,21 +171,23 @@ public_origin = "https://develop.aidash.run"
 auth_helper = "public_origin"  # default "firebase"
 session_absolute_seconds = 43200
 session_idle_seconds = 1800
-password_sign_up = ["acme-pool-id"]
+shared_pool = "shared-pool-id"
+password_sign_up = ["shared-pool-id", "acme-pool-id"]
 
 [dashboard.gcip.tenant_bindings]
 acme-pool-id = "acme"
 
 [dashboard.gcip.providers]
-acme-pool-id = ["google.com", "password"]
+shared-pool-id = ["google.com", "password"]
+acme-pool-id = ["oidc.acme"]
 
 [dashboard.gcip.sign_in_domains]
 "acme.example" = "acme-pool-id"
 ```
 
-The GCIP Tenant ID maps one-to-one to an Aidash Tenant name. Terraform supplies these IDs, provider choices, signup settings and Sign-in Domains to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
+`shared_pool` names at most one Shared Pool: a GCIP Tenant with no Tenant Binding, whose identities follow the Tenancy Rules. Tenant Bindings are optional and map a GCIP Tenant one-to-one to an Aidash Tenant name, for a Tenant that brings its own single sign-on. Startup refuses a Shared Pool that is also bound, and a Binding that names a Tenant without a root record or a Personal Tenant. A GCIP Tenant that is neither shared nor bound admits nobody, and its identities are disabled. An identity whose GCIP Tenant changes between shared and bound is disabled until a Deployment Administrator restores it. Sign-in through the pool of a deleted bound Tenant is refused with `410 tenant_deleted`. Terraform supplies these IDs, provider choices, signup settings and Sign-in Domains to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
 
-The lazy `/sign-in` page asks for an email first. A form `POST /auth/login` routes a Sign-in Domain (a verified email domain, lowercase ASCII with punycode for IDN) to its GCIP Tenant. `GET /auth/login?org=acme` selects the Tenant by name instead, and the page offers that as an alternative. Either creates a browser-bound ten-minute transaction. Unknown domains, malformed addresses and unknown Tenant names receive one identical response. Sign-in Domains only route; they never grant authority. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. When the browser blocks the popup, federation falls back to a redirect that returns to the same transaction. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage; every attempt also removes any `firebase:` storage keys and Firebase's IndexedDB store. A Tenant whose MFA Requirement is `enabled` or `mandatory` ([tenant MFA](infra/gcp/README.md#tenant-mfa)) makes the same page ask for the 6-digit code of the user's authenticator app after the first factor, for popup, password and redirect sign-in alike. A user with no factor on a `mandatory` Tenant is led through TOTP enrollment (setup key and `otpauth://` link) before the exchange, and the account menu offers the same enrollment as "Set up two-step verification" by signing in again, because Aidash keeps no GCIP user between attempts; a user who already holds a factor answers its challenge first and then adds the new authenticator. GCIP enforces the Requirement; the exchange verifies the token exactly as before and never reads second-factor claims as authority. Registration approval, Mappings and Deployment Administrator grants remain Aidash authority.
+The lazy `/sign-in` page asks for an email first. A form `POST /auth/login` routes a Sign-in Domain (a verified email domain, lowercase ASCII with punycode for IDN) to its bound GCIP Tenant, and every other address to the Shared Pool. Either creates a browser-bound ten-minute transaction. Without a Shared Pool, unknown domains and malformed addresses receive one identical response. Sign-in Domains only route; they never grant authority. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. When the browser blocks the popup, federation falls back to a redirect that returns to the same transaction. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage; every attempt also removes any `firebase:` storage keys and Firebase's IndexedDB store. A Tenant whose MFA Requirement is `enabled` or `mandatory` ([tenant MFA](infra/gcp/README.md#tenant-mfa)) makes the same page ask for the 6-digit code of the user's authenticator app after the first factor, for popup, password and redirect sign-in alike. A user with no factor on a `mandatory` Tenant is led through TOTP enrollment (setup key and `otpauth://` link) before the exchange, and the account menu offers the same enrollment as "Set up two-step verification" by signing in again through the session's own GCIP Tenant (`GET /auth/login` with a valid session), because Aidash keeps no GCIP user between attempts; a user who already holds a factor answers its challenge first and then adds the new authenticator. GCIP enforces the Requirement; the exchange verifies the token exactly as before and never reads second-factor claims as authority. Registration approval, Mappings and Deployment Administrator grants remain Aidash authority.
 
 `auth_helper` selects the origin that serves Firebase's sign-in helper. The default, `firebase`, uses `<project_id>.firebaseapp.com` and needs no proxy, but provider consent screens show that domain and redirect sign-in fails in browsers that block third-party storage. `public_origin` uses the `public_origin` host as `authDomain`. Choose it only after the public origin transparently proxies `/__/auth/*` and `/__/firebase/init.json` to `https://<project_id>.firebaseapp.com` without forwarding Aidash cookies, for example with nginx:
 

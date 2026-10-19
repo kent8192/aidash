@@ -46,6 +46,11 @@ pub trait SignInProvider: Send + Sync {
 		headers: HeaderMap,
 		state: String,
 	) -> Result<Response>;
+	/// Bring durable sign-in records in line with this configuration before
+	/// the Deployment serves requests.
+	async fn reconcile(&self, _f: &Federation) -> Result<()> {
+		Ok(())
+	}
 	/// Finish the pending login with the ID token the sign-in page obtained.
 	async fn exchange(
 		&self,
@@ -178,9 +183,52 @@ pub async fn session_issuer(f: &Federation, headers: &HeaderMap) -> Option<Strin
 	Some(identity.issuer)
 }
 
+/// The External Identity a verified sign-in names, if it exists yet.
+pub async fn existing_identity(f: &Federation, sign_in: &SignIn) -> Result<Option<uuid::Uuid>> {
+	use crate::apps::identity::models::DashboardIdentity;
+	let found = f
+		.store
+		.pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			Ok(DashboardIdentity::objects()
+				.filter(DashboardIdentity::field_issuer().eq(sign_in.issuer.clone()))
+				.filter(DashboardIdentity::field_subject().eq(sign_in.subject.clone()))
+				.all_with_db(tx)
+				.await?)
+		})
+		.await?;
+	Ok(found.first().map(|identity| identity.id))
+}
+
+/// Disable an External Identity until a Deployment Administrator restores it,
+/// revoking its sessions and pausing its work.
+pub async fn disable(f: &Federation, identity: uuid::Uuid) -> Result<()> {
+	Ok(crate::bootstrap::dashboard_authority(f)
+		.disable(identity, None)
+		.await?)
+}
+
 /// Admit a verified sign-in through the shared authority, which also
-/// disables an existing identity whose issuer is no longer admitted.
+/// disables an existing identity whose issuer is no longer admitted. An
+/// identity restricted to a deleted Tenant gets that Tenant's answer.
 pub async fn admit(f: &Federation, sign_in: &SignIn) -> Result<Account> {
+	if let Some(tenant) = f
+		.store
+		.pool
+		.dashboard_policy()
+		.and_then(|policy| policy.issuers.restriction(&sign_in.issuer))
+	{
+		let deleted = f
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &tenant).await
+			})
+			.await?;
+		if deleted {
+			return Err(Error::TenantDeleted);
+		}
+	}
 	Ok(crate::bootstrap::dashboard_authority(f)
 		.admit_login(
 			&mut crate::bootstrap::dashboard_login(f.store.pool.clone(), &f.config.node_id),
@@ -245,4 +293,49 @@ pub async fn start_session(
 	oidc::set_cookie(&mut response, LOGIN_COOKIE, "", session_config, true, 0)?;
 	no_store(&mut response);
 	Ok(response)
+}
+
+/// Refuse to start when a restriction names a Tenant that cannot hold it: a
+/// Tenant without a root record, or a Personal Tenant. A deleted or purged
+/// Tenant keeps its root record, so it passes here and refuses sign-in.
+pub(crate) async fn check_restrictions(f: &Federation) -> Result<()> {
+	use crate::apps::identity::models::Tenant;
+	let Some(policy) = f.store.pool.dashboard_policy() else {
+		return Ok(());
+	};
+	let restricted: std::collections::BTreeSet<String> = policy
+		.issuers
+		.admitted()
+		.iter()
+		.filter_map(|issuer| policy.issuers.restriction(issuer))
+		.collect();
+	if restricted.is_empty() {
+		return Ok(());
+	}
+	let tenants = f
+		.store
+		.pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			Ok(Tenant::objects()
+				.filter(Tenant::field_name().is_in(restricted.iter().cloned().collect::<Vec<_>>()))
+				.all_with_db(tx)
+				.await?)
+		})
+		.await?;
+	for name in &restricted {
+		match tenants.iter().find(|tenant| &tenant.name == name) {
+			None => {
+				return Err(Error::Invalid(format!(
+					"a sign-in restricts identities to Tenant {name}, which has no root record"
+				)));
+			}
+			Some(tenant) if tenant.personal => {
+				return Err(Error::Invalid(format!(
+					"a sign-in restricts identities to Tenant {name}, which is a Personal Tenant"
+				)));
+			}
+			Some(_) => {}
+		}
+	}
+	Ok(())
 }

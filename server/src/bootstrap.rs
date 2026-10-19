@@ -119,7 +119,11 @@ pub async fn initialize(
 	};
 	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
+	crate::apps::identity::services::sign_in::check_restrictions(&federation).await?;
 	dashboard_authority(&federation).reconcile_policy().await?;
+	if let Some(sign_in) = &federation.config.sign_in {
+		sign_in.reconcile(&federation).await?;
+	}
 	context.set_singleton(settings.clone());
 	context.set_singleton(federation.clone());
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<

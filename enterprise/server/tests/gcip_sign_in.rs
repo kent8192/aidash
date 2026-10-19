@@ -74,7 +74,7 @@ fn admin_router(admin_status: Arc<Status>) -> Arc<reinhardt::ServerRouter> {
 					.expect("tenant accounts:lookup path")
 					.to_owned();
 				assert_eq!(request.headers["authorization"], "Bearer service-token");
-				assert!(matches!(pool.as_str(), "pool-a" | "pool-b"));
+				assert!(matches!(pool.as_str(), "pool-a" | "pool-b" | "pool-s"));
 				if status.outage.load(Ordering::SeqCst) {
 					return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
 						.with_json(&json!({}))
@@ -3110,5 +3110,382 @@ async fn removing_the_gcip_sign_in_refuses_its_identities_durable_credentials(
 	)
 	.await;
 	assert!(disabled.is_some());
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Make `pool-s` the Shared Pool beside the fixture's bound pools.
+fn share(f: &mut Federation) {
+	reconfigure(f, |gcip| gcip.shared_pool = Some("pool-s".into()));
+}
+
+async fn identity_disabled(f: &Federation, uid: &str) -> bool {
+	scalar::<Option<chrono::DateTime<Utc>>>(
+		f,
+		&format!("SELECT disabled_at FROM dashboard_identities WHERE subject = '{uid}'"),
+	)
+	.await
+	.is_some()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_shared_pool_signs_in_every_unrouted_address_under_the_tenancy_rules(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	f.config.tenancy.personal_tenants = true;
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	// An address in no Sign-in Domain, and a malformed one, go to the Shared Pool.
+	for body in [
+		"email=alice%40unmapped.example&return_to=%2Fsettings",
+		"email=not-an-email&return_to=%2Fsettings",
+	] {
+		let response = discover(&app, body, Some("http://127.0.0.1:8080")).await;
+		assert_eq!(response.status(), 303, "{body}");
+		let state = response.headers()["location"]
+			.to_str()
+			.unwrap()
+			.strip_prefix("/sign-in?state=")
+			.unwrap()
+			.to_owned();
+		let cookie = response.headers()["set-cookie"]
+			.to_str()
+			.unwrap()
+			.split(';')
+			.next()
+			.unwrap()
+			.to_owned();
+		let client: Value = browser()
+			.get(app.url(format!("/auth/gcip/transaction?state={state}")))
+			.header("cookie", &cookie)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(client["tenant_id"], "pool-s", "{body}");
+	}
+	// The Tenancy Rules give a Shared Pool identity its Personal Tenant, and
+	// never a bound one.
+	let mappings = |cookie: String| {
+		let app = &app;
+		async move {
+			browser()
+				.get(app.url("/auth/session"))
+				.header("cookie", cookie)
+				.send()
+				.await
+				.unwrap()
+				.json::<Value>()
+				.await
+				.unwrap()["mappings"]
+				.clone()
+		}
+	};
+	let (shared, _) = sign_in_as(&app, "pool-s", "shared", "Shared").await;
+	let personal = mappings(shared).await;
+	assert_eq!(personal.as_array().unwrap().len(), 1, "{personal}");
+	assert_eq!(personal[0]["personal"], true, "{personal}");
+	let (bound, _) = sign_in_as(&app, "pool-a", "bound", "Bound").await;
+	assert_eq!(mappings(bound).await, json!([]));
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_identity_whose_pool_changes_between_shared_and_bound_waits_for_a_restore(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	sign_in_as(&app, "pool-s", "moving", "Moving").await;
+	sign_in_as(&app, "pool-s", "starting", "Starting").await;
+	common::tenant_root(&f, "third").await;
+	// Act: the Shared Pool gets a Tenant Binding.
+	reconfigure(&mut f, |gcip| {
+		gcip.shared_pool = None;
+		gcip.tenant_bindings.insert("pool-s".into(), "third".into());
+		gcip.sign_in_domains
+			.insert("third.example".into(), "pool-s".into());
+	});
+	let bound = common::application(f.clone()).await;
+	// Assert: startup disables an identity that has not signed in since...
+	f.config
+		.sign_in
+		.as_ref()
+		.unwrap()
+		.reconcile(&f)
+		.await
+		.unwrap();
+	assert!(identity_disabled(&f, "starting").await);
+	// ...and a sign-in refuses and disables one it has not seen.
+	sqlx::query("UPDATE dashboard_identities SET disabled_at = NULL WHERE subject = 'moving'")
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query("UPDATE gcip_admissions SET tenant = NULL WHERE identity_id = (SELECT id FROM dashboard_identities WHERE subject = 'moving')")
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (state, cookie) = transaction(&bound, "pool-s").await;
+	let now = Utc::now().timestamp();
+	assert_eq!(
+		exchange(
+			&bound,
+			&state,
+			&cookie,
+			&signed_token("pool-s", "moving", "Moving", now, "password"),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	assert!(identity_disabled(&f, "moving").await);
+	let (state, cookie) = transaction(&bound, "pool-s").await;
+	assert_eq!(
+		exchange(
+			&bound,
+			&state,
+			&cookie,
+			&signed_token("pool-s", "moving", "Moving", now, "password"),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403,
+		"a second sign-in before the restore stays refused"
+	);
+	// Only a Deployment Administrator restore admits it again, as bound.
+	let id: uuid::Uuid = scalar(
+		&f,
+		"SELECT id FROM dashboard_identities WHERE subject = 'moving'",
+	)
+	.await;
+	let restored = browser()
+		.post(bound.url(format!("/api/dashboard/identities/{id}/restore")))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(restored.status(), 204);
+	sign_in_as(&bound, "pool-s", "moving", "Moving").await;
+	let recorded: Option<String> = scalar(
+		&f,
+		&format!("SELECT tenant FROM gcip_admissions WHERE identity_id = '{id}'"),
+	)
+	.await;
+	assert_eq!(recorded.as_deref(), Some("third"));
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_gcip_tenant_neither_shared_nor_bound_admits_nobody(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	let (state, cookie) = transaction(&app, "pool-s").await;
+	sign_in_as(&app, "pool-s", "shared", "Shared").await;
+	// Act: the Deployment stops naming a Shared Pool.
+	reconfigure(&mut f, |gcip| gcip.shared_pool = None);
+	let unshared = common::application(f.clone()).await;
+	// Assert
+	assert_eq!(
+		discover(
+			&unshared,
+			"email=alice%40unmapped.example",
+			Some("http://127.0.0.1:8080")
+		)
+		.await
+		.headers()["location"],
+		"/sign-in?error=not_found&return_to=%2F"
+	);
+	assert_eq!(
+		exchange(
+			&unshared,
+			&state,
+			&cookie,
+			&signed_token(
+				"pool-s",
+				"shared",
+				"Shared",
+				Utc::now().timestamp(),
+				"password"
+			),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	assert!(identity_disabled(&f, "shared").await);
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Run startup with these GCIP settings, as a Cloud Environment's managed file
+/// supplies them.
+async fn start(
+	f: &Federation,
+	url: &str,
+	gcip: &GcipConfig,
+) -> aidash_server::Result<aidash_server::federation::Federation> {
+	let mut settings = common::settings_for(url);
+	settings.node.node_id = f.config.node_id.clone();
+	settings.node.endpoint = f.config.endpoint.clone();
+	settings.node.api_token = f.config.api_token.clone();
+	let managed = tempfile::NamedTempFile::new().unwrap();
+	std::fs::write(
+		managed.path(),
+		serde_json::to_vec(&json!({"dashboard": {"gcip": gcip}})).unwrap(),
+	)
+	.unwrap();
+	// SAFETY: no other test of this binary reads the variable.
+	unsafe { std::env::set_var("AIDASH_GCIP_SETTINGS", managed.path()) };
+	let context = reinhardt::test::fixtures::injection_context::default();
+	let started =
+		aidash_server::bootstrap::initialize(&context, &settings, f.store.pool.connection()).await;
+	unsafe { std::env::remove_var("AIDASH_GCIP_SETTINGS") };
+	if let Ok(started) = &started {
+		started.store.control_pool.close().await;
+	}
+	started
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn startup_refuses_a_binding_to_a_missing_or_personal_tenant_and_keeps_a_deleted_one(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let bind = |tenant: &str| {
+		let mut gcip = gcip_settings();
+		gcip.tenant_bindings.insert("pool-b".into(), tenant.into());
+		gcip
+	};
+	let refusal = start(&f, &url, &bind("missing")).await.err().unwrap();
+	assert_eq!(
+		refusal.to_string(),
+		"a sign-in restricts identities to Tenant missing, which has no root record"
+	);
+	common::tenant_root(&f, "solo").await;
+	sqlx::query("UPDATE tenants SET personal = true WHERE name = 'solo'")
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let refusal = start(&f, &url, &bind("solo")).await.err().unwrap();
+	assert_eq!(
+		refusal.to_string(),
+		"a sign-in restricts identities to Tenant solo, which is a Personal Tenant"
+	);
+	// A deleted bound Tenant keeps its root record: startup proceeds, and
+	// sign-in through its GCIP Tenant gets the deleted Tenant's answer.
+	sqlx::query(
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after) VALUES (gen_random_uuid(), 'other', clock_timestamp(), 'deployment_administrator', clock_timestamp() + interval '30 days')",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	start(&f, &url, &gcip_settings()).await.unwrap();
+	let app = common::application(f.clone()).await;
+	let (state, cookie) = transaction(&app, "pool-b").await;
+	let refused = exchange(
+		&app,
+		&state,
+		&cookie,
+		&token("pool-b", "Person", Utc::now().timestamp()),
+		"http://127.0.0.1:8080",
+	)
+	.await;
+	assert_eq!(refused.status(), 410);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_bound_tenants_administrators_decide_a_shared_pool_identitys_invitation(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	administered_tenants(&f).await;
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
+	let invitation: Value = admin
+		.send(&app, reqwest::Method::POST, "/api/tenants/acme/invitations")
+		.json(&json!({}))
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let (cookie, csrf) = sign_in_as(&app, "pool-s", "guest", "Guest").await;
+	let redeemed = browser()
+		.post(app.url("/auth/invitations/redeem"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", &csrf)
+		.json(&json!({"tenant": "acme", "secret": invitation["secret"]}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(redeemed.status(), 200);
+	let request: Value = redeemed.json().await.unwrap();
+	// Assert: the bound Tenant's administrators see and decide it.
+	let listed: Value = admin
+		.get(&app, "/api/tenants/acme/registrations")
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+	assert_eq!(listed[0]["id"], request["id"]);
+	let approved = admin
+		.send(
+			&app,
+			reqwest::Method::POST,
+			&format!(
+				"/api/tenants/acme/registrations/{}/approve",
+				request["id"].as_str().unwrap()
+			),
+		)
+		.json(&json!({"subject": "guest", "groups": ["members"]}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
 	common::cleanup(f, &url, &schema).await;
 }

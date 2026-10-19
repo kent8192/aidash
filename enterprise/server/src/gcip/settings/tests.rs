@@ -168,3 +168,57 @@ fn overlong_addresses_never_route() {
 		None
 	);
 }
+
+#[rstest]
+fn a_shared_pool_needs_no_binding_and_has_no_restriction(mut gcip_config: GcipConfig) {
+	gcip_config.tenant_bindings.clear();
+	gcip_config.shared_pool = Some("pool-s".into());
+	gcip_config.providers.insert(
+		"pool-s".into(),
+		vec!["google.com".into(), "password".into()],
+	);
+	gcip_config.mfa_mandatory.insert("pool-s".into());
+	let normalized = gcip_config.normalized().unwrap();
+	assert_eq!(normalized.status("pool-s"), Some(PoolStatus::Shared));
+	assert_eq!(normalized.status("pool-a"), None);
+}
+
+#[rstest]
+fn the_shared_pool_and_the_bound_pools_are_disjoint(mut gcip_config: GcipConfig) {
+	gcip_config.shared_pool = Some("pool-a".into());
+	assert_eq!(
+		gcip_config.normalized().unwrap_err().to_string(),
+		"the GCIP Shared Pool cannot also have a Tenant Binding"
+	);
+}
+
+#[rstest]
+#[case::providers("providers")]
+#[case::password("password_sign_up")]
+#[case::mfa("mfa_mandatory")]
+#[case::domain("sign_in_domains")]
+fn pool_settings_name_only_shared_or_bound_pools(
+	mut gcip_config: GcipConfig,
+	#[case] setting: &str,
+) {
+	gcip_config.shared_pool = Some("pool-s".into());
+	let pool = "pool-unknown".to_owned();
+	match setting {
+		"providers" => {
+			gcip_config.providers.insert(pool, vec!["password".into()]);
+		}
+		"password_sign_up" => {
+			gcip_config.password_sign_up.insert(pool);
+		}
+		"mfa_mandatory" => {
+			gcip_config.mfa_mandatory.insert(pool);
+		}
+		_ => {
+			// A Sign-in Domain routes only to a bound pool, never the Shared Pool.
+			gcip_config
+				.sign_in_domains
+				.insert("acme.example".into(), "pool-s".into());
+		}
+	}
+	assert!(gcip_config.normalized().is_err(), "{setting}");
+}
