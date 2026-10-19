@@ -198,8 +198,9 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
       localStorage.setItem("aidash-locale", "en-US");
     });
     await subjectPage.goto("/authorization");
+    // A member without administration actions may only leave its Tenant.
     await expect(
-      subjectPage.getByText("This page is available to administrators."),
+      subjectPage.getByRole("heading", { name: "Leave this Tenant" }),
     ).toBeVisible();
     await expect(
       subjectPage.locator(

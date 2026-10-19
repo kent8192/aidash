@@ -754,7 +754,7 @@ def main():
             browser_report = logs / "browser-report.json"
             for proxy in browser_provider_proxies:
                 proxy.start()
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name})
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"

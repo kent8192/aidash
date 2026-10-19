@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  acceptanceSubject,
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
@@ -11,7 +12,8 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   request,
 }) => {
   test.setTimeout(90000);
-  const headers = { authorization: "Bearer acceptance-access-token" };
+  const subject = acceptanceSubject();
+  const headers = { authorization: `Bearer ${subject.token}` };
   const api = async (path: string, data?: unknown) => {
     const response =
       data === undefined
@@ -45,7 +47,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   let releaseRefresh = () => {};
   let releaseConfigure = () => {};
   try {
-    await installBearerDashboard(page, "acceptance-access-token");
+    await installBearerDashboard(page, subject.token, subject);
     await page.addInitScript(() => {
       localStorage.setItem("aidash-locale", "en-US");
     });

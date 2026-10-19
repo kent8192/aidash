@@ -7,6 +7,7 @@ import {
 import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
+import { routeTenantActions } from "./registry-fixture";
 
 test("generation dashboard manages policy, approval, completion and retained history in both languages", async ({
   page,
@@ -17,7 +18,7 @@ test("generation dashboard manages policy, approval, completion and retained his
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
   let semanticRoot = "";
-  const cleanupHeaders = { authorization: "Bearer acceptance-access-token" };
+  const cleanupHeaders = { authorization: "" };
   let semanticIndex:
     | { collection: string; spec: { vector: { endpoint: string } } }
     | undefined;
@@ -99,6 +100,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
+    cleanupHeaders.authorization = `Bearer ${credential.token}`;
     await api(
       "/api/registry",
       {
@@ -202,10 +204,13 @@ test("generation dashboard manages policy, approval, completion and retained his
     };
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const authFixture = await installBearerDashboard(
-      page,
-      "acceptance-access-token",
-    );
+    await installBearerDashboard(page, credential.token, {
+      tenant,
+      name: "alice",
+    });
+    // Tenant actions come from the Tenant administration overview, which only
+    // an OIDC browser session's Mapping receives.
+    await routeTenantActions(page, ["registry.create"], { tenant });
     await page.goto("/");
     await expect(page.locator("#main")).toBeVisible();
     const navigate = async (label: string) => {
@@ -224,7 +229,6 @@ test("generation dashboard manages policy, approval, completion and retained his
         );
       }
     };
-    authFixture.setToken(credential.token);
     await navigate("レジストリ");
     await page
       .getByRole("button", { name: "エンティティを登録", exact: true })
@@ -376,23 +380,27 @@ test("generation dashboard manages policy, approval, completion and retained his
       (item: { title: string }) => item.title === id,
     );
     semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
-    semanticIndex = await api(`${semanticRoot}/index`, {
-      expected_revision: 0,
-      spec: {
-        embedding: embeddingConfig,
-        vector: {
-          provider: "postgres",
-          endpoint: "local",
-          credential_env: null,
+    semanticIndex = await api(
+      `${semanticRoot}/index`,
+      {
+        expected_revision: 0,
+        spec: {
+          embedding: embeddingConfig,
+          vector: {
+            provider: "postgres",
+            endpoint: "local",
+            credential_env: null,
+          },
+          enabled: true,
+          auto_context: true,
+          max_sources: 64,
+          max_results: 10,
+          max_result_tokens: 4096,
+          max_input_bytes: 8192,
         },
-        enabled: true,
-        auto_context: true,
-        max_sources: 64,
-        max_results: 10,
-        max_result_tokens: 4096,
-        max_input_bytes: 8192,
       },
-    });
+      credential.token,
+    );
     const memory = await api(
       `${semanticRoot}/entries`,
       {

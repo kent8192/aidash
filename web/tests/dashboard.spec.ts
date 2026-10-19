@@ -1,5 +1,6 @@
 import { test, expect, type Route } from "@playwright/test";
 import {
+  acceptanceSubject,
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
@@ -131,6 +132,8 @@ test("observes the two-node execution and all management screens", async ({
 test("creates a workspace and task and receives live assignment changes", async ({
   page,
 }) => {
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, subject);
   const name = `Browser workspace ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
   await page.goto("/collaboration");
@@ -201,7 +204,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     const response = await route.fetch({
       headers: {
         ...route.request().headers(),
-        authorization: "Bearer acceptance-access-token",
+        authorization: `Bearer ${subject.token}`,
       },
     });
     const discovery = await response.json();
@@ -254,7 +257,9 @@ test("preserves a draft after a failed message request and clears it after succe
 test("creates task dependencies and a parent through the dashboard", async ({
   page,
 }) => {
-  const headers = { authorization: "Bearer acceptance-access-token" };
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, subject);
+  const headers = { authorization: `Bearer ${subject.token}` };
   const name = `Relationships ${Date.now()}`;
   const workspace = await (
     await page.request.post("/api/workspaces", {

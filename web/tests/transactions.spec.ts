@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  acceptanceSubject,
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
@@ -67,10 +68,15 @@ test("transaction dashboard survives reload during a partition, aborts safely an
   let pending: string | undefined;
   try {
     const session = await api("/api/session");
-    const workspace = await api("/api/workspaces", {
-      title: "Atomic dashboard",
-      goal: "Commit or abort together",
+    // Only a Tenant subject creates a workspace (#371). Subjects cannot yet
+    // submit a transaction across Nodes, so the Deployment Administrator
+    // runs the rest.
+    const created = await request.post("/api/workspaces", {
+      headers: { authorization: `Bearer ${acceptanceSubject().token}` },
+      data: { title: "Atomic dashboard", goal: "Commit or abort together" },
     });
+    expect(created.status(), await created.text()).toBe(200);
+    const workspace = await created.json();
     await api("/api/peers", {
       node_id: peerId,
       endpoint: `http://${peerAddress}`,
