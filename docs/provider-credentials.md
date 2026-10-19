@@ -59,6 +59,14 @@ extend to another port or scheme on the same host.
   the metadata server and similar ranges) is refused before any request, and
   a Workspace semantic index that names one is refused when it is configured.
   Workbench test endpoints follow the same rule and share the list.
+- Tenant HTTP and MCP tool endpoints, and the remote MCP servers of the Agent
+  Plugins an Agent takes in, follow the same rule and share the list. A
+  registration, import or installation that names a non-public address literal
+  is refused with `TOOL_ENDPOINT_FORBIDDEN`, or with
+  `AGENT_PLUGIN_SERVER_FORBIDDEN: <plugin>/<server>` for a plugin server. A host
+  name needs HTTPS unless its origin is permitted. Every tool call chooses its
+  client again from the endpoint, so a definition stored before the rule, or
+  before an origin was removed from the list, is refused when it is called.
 - A host name must resolve only to public addresses. The check runs when each
   connection is made, against every resolved address, so a later DNS answer
   cannot redirect it. Keyless calls follow no redirects and use no proxy.
