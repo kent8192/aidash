@@ -20,6 +20,14 @@ it, so `aidash migrate` stages a copy of every root's apps when a build has
 more than one. `enterprise/server/tests/migrations.rs` runs
 `makemigrations --check` over the same union.
 
+`makemigrations` writes into the directory it reads, so a new Enterprise
+migration is generated in a staged project and copied back: copy every app
+directory of both roots into `<project>/migrations`, copy
+`enterprise/server/src/bin/manage.rs` to `<project>/src/bin/`, give it settings
+with `[deployment] offering = "cloud"`, run the Enterprise `manage
+makemigrations <app> --state-source files` from `<project>`, and move the new
+file into `enterprise/server/migrations/<app>/`.
+
 ## Supported databases
 
 The initial migration accepts an empty PostgreSQL database. A database already
