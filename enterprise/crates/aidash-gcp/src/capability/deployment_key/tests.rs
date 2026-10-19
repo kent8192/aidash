@@ -8,7 +8,6 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::pkcs8::EncodePublicKey;
-use tokio::sync::Mutex;
 
 const VERSION: &str = "projects/app/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/1";
 
@@ -31,12 +30,12 @@ fn public_pem() -> String {
 }
 
 struct Api {
-	mode: Mutex<&'static str>,
+	mode: &'static str,
 }
 
 async fn handle(State(api): State<Arc<Api>>, request: Request) -> Response {
 	assert_eq!(request.headers()["Authorization"], "Bearer metadata-oauth");
-	let mode = *api.mode.lock().await;
+	let mode = api.mode;
 	let path = request.uri().path().to_owned();
 	if mode == "outage" {
 		return (StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response();
@@ -72,7 +71,6 @@ async fn handle(State(api): State<Arc<Api>>, request: Request) -> Response {
 
 struct Server {
 	base: String,
-	api: Arc<Api>,
 	task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Server {
@@ -83,14 +81,12 @@ impl Drop for Server {
 async fn server(mode: &'static str) -> Server {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let base = format!("http://{}/v1", listener.local_addr().unwrap());
-	let api = Arc::new(Api {
-		mode: Mutex::new(mode),
-	});
-	let router = Router::new().fallback(handle).with_state(api.clone());
+	let api = Arc::new(Api { mode });
+	let router = Router::new().fallback(handle).with_state(api);
 	let task = tokio::spawn(async move {
 		axum::serve(listener, router).await.unwrap();
 	});
-	Server { base, api, task }
+	Server { base, task }
 }
 
 async fn fetch(server: &Server) -> Result<KmsDeploymentKey, SignError> {
