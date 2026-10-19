@@ -51,13 +51,19 @@ Run pauses with `decider_unavailable` until a resume. A state no Route accepts
 pauses at once.
 
 `DeciderConfig::digest()` commits to the canonical JSON object containing
-`models` (the Route models in order), `mode` and `parameters_digest`. The latter
-hashes the complete serialized configuration with every Route `model` and `mode`
+`models` (the Route models in order), `thresholds` (their keep thresholds),
+`mode` and `parameters_digest`. The latter hashes the complete serialized
+configuration with every Route `model` and `keep_threshold` and the `mode`
 replaced by JSON `null`, so evidence that
 sent no request still proves the mode its Decider ran in. Historical `Evidence` retains that hash as
-`configuration_parameters_digest` with `route_models`, allowing replay to
-reconstruct and check the configuration pin; `route` names the Route asked, and
-`model` and `provider_contract` are that Route's. Credentials are never copied into
+`configuration_parameters_digest` with `route_models` and `route_thresholds`,
+allowing replay to reconstruct and check the configuration pin; `route` names
+the Route asked, and `model` and `provider_contract` are that Route's. Replay
+refuses `restrictions` whose threshold is looser than that Route's, so evidence
+cannot claim a more destructive result than the pinned Route permits. A Route
+that refuses the state, because it does not fit the Route's budget, or a plan
+records `provider_failure` evidence with no attempt before the next Route is
+asked. Credentials are never copied into
 evidence. No current definition, policy or provider call is
 needed to verify the commitment.
 

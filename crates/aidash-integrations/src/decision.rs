@@ -220,6 +220,7 @@ impl DecisionProvider for RouteDecisionProvider {
 			max_output_tokens: 0,
 			cache_breakpoints: false,
 			call: Some(attempt),
+			hosts: route.hosts.clone(),
 		});
 		let source = Source::Tenant {
 			provider: self.config.provider_credential.clone(),

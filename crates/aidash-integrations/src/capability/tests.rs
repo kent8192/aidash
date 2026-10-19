@@ -284,6 +284,7 @@ async fn issuer_copies_the_cache_breakpoint_request_into_the_signed_claims(
 			max_output_tokens: 64,
 			cache_breakpoints: requested,
 			call: None,
+			hosts: vec![],
 		}),
 		..Default::default()
 	};

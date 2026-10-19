@@ -183,6 +183,7 @@ impl Fixture {
 			model: "author/model".into(),
 			max_output_tokens: 10,
 			cache_breakpoints: false,
+			hosts: vec![],
 		}
 	}
 	async fn request(&self, claims: &Claims, method: &str, uri: &str, body: Value) -> Response {
@@ -1251,6 +1252,7 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 		model: "author/model".into(),
 		max_output_tokens: 10,
 		cache_breakpoints: false,
+		hosts: vec![],
 	};
 	broker.key(&c).await.unwrap();
 	source.unavailable.store(true, Ordering::SeqCst);
@@ -1300,6 +1302,7 @@ async fn the_decisions_api_relays_only_to_the_hosts_a_route_names() {
 	let f = Fixture::new().await;
 	let mut claims = decision_claims(&f);
 	claims.model = "cloudflare/clef".into();
+	claims.hosts = vec!["cloudflare".into(), "deepinfra".into()];
 	let routed = |provider: Value| {
 		let mut body = decision();
 		body["model"] = "cloudflare/clef".into();
@@ -1329,6 +1332,11 @@ async fn the_decisions_api_relays_only_to_the_hosts_a_route_names() {
 		json!({"zdr":true,"only":["cloudflare","cloudflare"],"allow_fallbacks":true}),
 		json!({"zdr":true,"only":["cloudflare"],"allow_fallbacks":true,"sort":"price"}),
 		json!({"zdr":true,"only":["cloudflare"]}),
+		// Only the signed hosts, in the Route's order, may serve the decision.
+		json!({"zdr":true,"only":["cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["deepinfra","cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["cloudflare","deepinfra","novita"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["novita","parasail"],"allow_fallbacks":true}),
 	] {
 		let response = f
 			.request(
@@ -1345,6 +1353,21 @@ async fn the_decisions_api_relays_only_to_the_hosts_a_route_names() {
 	hosted["provider"] = json!({"zdr":true,"only":["typesafe"],"allow_fallbacks":true});
 	let response = f
 		.request(&decision_claims(&f), "POST", "/api/v1/systemone", hosted)
+		.await;
+	assert_eq!(response.status(), 403);
+	// A token signed for a Route's hosts cannot reach System One either.
+	let response = f
+		.request(&claims, "POST", "/api/v1/systemone", decision())
+		.await;
+	assert_eq!(response.status(), 403);
+	// Without signed hosts, no Decisions API body is relayed.
+	let response = f
+		.request(
+			&decision_claims(&f),
+			"POST",
+			"/api/alpha/decisions",
+			routed(json!({"zdr":true,"only":["cloudflare","deepinfra"],"allow_fallbacks":true})),
+		)
 		.await;
 	assert_eq!(response.status(), 403);
 	// Neither a refused body nor another alpha path reaches the provider.

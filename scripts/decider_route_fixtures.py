@@ -123,17 +123,27 @@ CASES = {
 }
 
 
+# `Restrictions::default().preserve_recent`, the least a Binding may set.
+PRESERVE_RECENT = 6
+
+
+def protected(index, length):
+    """`pruning::protected` on the Legacy Projection Version: the first event and
+    the latest `PRESERVE_RECENT` events are never classified."""
+    return index == 0 or index >= length - PRESERVE_RECENT
+
+
 def state_and_questions(case):
-    """The state and questions the builder sends for `case`, newest two tools protected."""
+    """The state and questions the builder sends for `case` under the default
+    restrictions."""
     history, questions = [], {}
-    tools = [i for i, event in enumerate(case["events"]) if "tool" in event]
-    protected = set(tools[-2:])
+    length = len(case["events"])
     for index, event in enumerate(case["events"]):
         if "conversation" in event:
             history.append({"index": index, "conversation": event["conversation"]})
             continue
         history.append({"index": index, **event})
-        if index in protected:
+        if protected(index, length):
             continue
         description = (
             f"History event {index}: authorized tool {event['tool']} with input "

@@ -1263,6 +1263,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		max_output_tokens: 1024,
 		cache_breakpoints: false,
 		call: None,
+		hosts: vec![],
 	});
 	assert_eq!(
 		enabled

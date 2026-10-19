@@ -292,6 +292,7 @@ impl Cloud {
 			max_output_tokens: 10,
 			cache_breakpoints: false,
 			call: None,
+			hosts: vec![],
 		});
 		context
 	}

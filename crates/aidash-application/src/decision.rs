@@ -168,26 +168,14 @@ impl DecisionGate<'_> {
 		let route_restrictions = input.decider.restrictions.with_route(route);
 		let mut restrictions = route_restrictions.clone();
 		let mut state_expiry = None;
-		let built = match build_compaction_state(
+		let built = build_compaction_state(
 			context,
 			input.boundary,
 			input.disclosure,
 			&input.decider.restrictions,
 			&route.state_budget,
 			native,
-		) {
-			Ok(built) => built,
-			// The state is larger than this Route accepts; a later one may take it.
-			Err(Error::Context(aidash_domain::context::recovery::Failure::DeciderUnavailable)) => {
-				return Err(RouteFailure::Unavailable {
-					transient: false,
-					error: Error::Context(
-						aidash_domain::context::recovery::Failure::DeciderUnavailable,
-					),
-				});
-			}
-			Err(error) => return Err(RouteFailure::Final(error)),
-		};
+		)?;
 		let state_digest = digest(&built.state);
 		let id = dispatch::decision_id(input, &state_digest, budget.window, index);
 		let recovered = self.journal.recover(id, input.boundary).await?;
@@ -199,6 +187,7 @@ impl DecisionGate<'_> {
 			decider: input.decider.pin.clone(),
 			route: index,
 			route_models: config.models(),
+			route_thresholds: config.thresholds(),
 			provider_contract: route.provider_contract.clone(),
 			model: route.model.clone(),
 			configuration_parameters_digest: config.parameters_digest()?,
@@ -282,18 +271,26 @@ impl DecisionGate<'_> {
 			self.journal.commit(&evidence, None, None).await?;
 			return Err(RouteFailure::Final(Error::Forbidden));
 		}
-		let requests = match self
-			.provider
-			.plan(index as usize, &built.state, &evidence.questions)
-		{
-			Ok(requests) if validate_plan(&requests, &evidence.questions).is_ok() => requests,
-			_ => {
-				// Nothing was sent: the questions do not fit this Route's provider.
+		let requests = match built.fits.then(|| {
+			self.provider
+				.plan(index as usize, &built.state, &evidence.questions)
+		}) {
+			Some(Ok(requests)) if validate_plan(&requests, &evidence.questions).is_ok() => requests,
+			unplanned => {
+				// Nothing was sent: the state is larger than this Route accepts, or
+				// the questions do not fit its provider. A later Route may take it.
 				evidence.reason = Reason::ProviderFailure;
 				self.journal.commit(&evidence, None, None).await?;
 				return Err(RouteFailure::Unavailable {
 					transient: false,
-					error: Error::Invalid("decision cannot plan complete provider requests".into()),
+					error: match unplanned {
+						None => Error::Context(
+							aidash_domain::context::recovery::Failure::DeciderUnavailable,
+						),
+						Some(_) => {
+							Error::Invalid("decision cannot plan complete provider requests".into())
+						}
+					},
 				});
 			}
 		};

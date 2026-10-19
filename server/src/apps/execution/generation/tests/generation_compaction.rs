@@ -21,6 +21,29 @@ use std::sync::{
 	atomic::{AtomicUsize, Ordering},
 };
 
+/// Make a scheduled retry due now, leaving its counter as the production path
+/// persisted it.
+async fn advance_retry(f: &Federation, run: uuid::Uuid) {
+	sqlx::query(
+		&reinhardt::query::Query::update()
+			.table(reinhardt::query::Alias::new("runs"))
+			.value_expr(
+				reinhardt::query::Alias::new("pending"),
+				reinhardt::query::Expr::cust(
+					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+				),
+			)
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![reinhardt::query::Expr::value(run).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+}
+
 /// Approves the `jev` compaction Decider for Tenant `acme`. Jev calls use the Tenant's
 /// OpenRouter Provider Credential (ADR 0041), which the fake issuer routes to
 /// `endpoint`; workers must use the reconfigured `f`.
@@ -353,21 +376,13 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 		.await
 		.unwrap();
 		assert_eq!(calls.load(Ordering::SeqCst), expected);
-		// A failed provider call pauses the Run; it never falls back or retries.
-		let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-		assert_eq!(
-			paused.recovery.context_reason,
-			Some(Failure::DeciderUnavailable)
-		);
-		// A person's resume starts a new decision, whose attempt is charged again.
-		f.store
-			.control(
-				&TEST_FIXTURE,
-				run.id,
-				aidash_server::domain::RunControlAction::Resume,
-			)
-			.await
-			.unwrap();
+		// The only Route failed, so the step schedules an outage retry instead
+		// of pausing (ADR 0066).
+		let retrying = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert_eq!(retrying.recovery.decider_retry, expected as u32);
+		assert_eq!(retrying.recovery.context_reason, None);
+		// The retry, once due, is a new decision whose attempt is charged again.
+		advance_retry(&f, run.id).await;
 	}
 	Harness {
 		federation: f.clone(),

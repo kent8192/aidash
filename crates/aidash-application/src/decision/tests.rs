@@ -720,8 +720,85 @@ async fn an_unavailable_route_hands_the_decision_to_the_next_route() {
 		// The Route's own threshold applies, under the Binding's.
 		assert_eq!(answered.restrictions.keep_threshold.value(), 0.3);
 		assert_eq!(answered.replay().unwrap(), answered.branches);
+		// The pin commits to each Route's threshold, so evidence cannot claim a
+		// looser one than the Route it asked, nor rewrite the Route's.
+		let mut looser = answered.clone();
+		looser.restrictions.keep_threshold = Probability::half();
+		assert!(matches!(
+			looser.replay(),
+			Err(aidash_domain::Error::Invalid(message)) if message.contains("Route asked")
+		));
+		looser.route_thresholds[1] = Probability::half();
+		assert!(looser.replay().is_err());
 		failed.validate_rejection().unwrap();
 	}
+}
+#[tokio::test]
+async fn a_route_that_refuses_the_state_records_evidence_before_the_next_route() {
+	// The rubric alone is larger than this budget's state.
+	let budget = StateBudget {
+		default_request_bytes: 200,
+		default_state_bytes: 100,
+		long_context_request_bytes: None,
+		long_context_state_bytes: None,
+		input_stages: vec![Some(20)],
+	};
+	let narrow = DeciderRoute {
+		state_budget: budget.clone(),
+		..DeciderRoute::jev("typesafe/jev-1.13")
+	};
+	let fixture = Fixture::routed(Mode::Enforce, vec![narrow.clone(), clef()]);
+	let (result, context, _) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
+	assert_eq!(context.history.len(), 7);
+	assert!(
+		fixture
+			.dispatched_routes
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|route| *route == 1)
+	);
+	let saved = fixture.saved.lock().unwrap();
+	let [refused, answered] = saved.evidence.as_slice() else {
+		panic!("one evidence per Route");
+	};
+	assert_eq!(
+		(refused.route, refused.reason),
+		(0, Reason::ProviderFailure)
+	);
+	assert!(refused.attempts.is_empty());
+	refused.validate_rejection().unwrap();
+	assert_eq!((answered.route, answered.outcome), (1, Outcome::Applied));
+	drop(saved);
+	// When no Route accepts the state, the Run pauses at once, and each
+	// Route's refusal is on record.
+	let fixture = Fixture::routed(
+		Mode::Enforce,
+		vec![
+			narrow,
+			DeciderRoute {
+				state_budget: budget,
+				..clef()
+			},
+		],
+	);
+	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(
+		result,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::DeciderUnavailable
+		))
+	));
+	assert_eq!(context.history, original.history);
+	assert!(fixture.dispatched_routes.lock().unwrap().is_empty());
+	let routes: Vec<_> = (fixture.saved.lock().unwrap().evidence.iter())
+		.map(|e| (e.route, e.reason))
+		.collect();
+	assert_eq!(
+		routes,
+		[(0, Reason::ProviderFailure), (1, Reason::ProviderFailure)]
+	);
 }
 #[tokio::test]
 async fn a_refusal_pauses_without_asking_another_route() {
@@ -1627,19 +1704,15 @@ fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 		budget.request_limit(bytes),
 		budget.long_context_request_bytes
 	);
+	assert!(built.fits);
 	// Conversation text is never abridged, so a state beyond the long-context
-	// budget pauses the Run.
+	// budget comes back unfit: the Route refuses it and records why.
 	let too_large = Disclosure {
 		goal: Some("g".repeat(1_100_000)),
 		tool_inputs: inputs(600),
 		..Default::default()
 	};
-	assert!(matches!(
-		build(&too_large),
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::DeciderUnavailable
-		))
-	));
+	assert!(!build(&too_large).unwrap().fits);
 }
 
 #[tokio::test]

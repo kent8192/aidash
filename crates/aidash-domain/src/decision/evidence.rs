@@ -170,9 +170,13 @@ pub struct Evidence {
 	pub decider: DeciderPin,
 	/// The Decider Route this decision asked, by its place in the version.
 	pub route: u32,
-	/// The model of every Route in order; with the mode and the parameters
-	/// digest they complete the pinned configuration commitment.
+	/// The model of every Route in order; with the Route thresholds, the mode
+	/// and the parameters digest they complete the pinned configuration
+	/// commitment.
 	pub route_models: Vec<String>,
+	/// The keep threshold of every Route in order. Replay holds `restrictions`
+	/// to the threshold of the Route asked.
+	pub route_thresholds: Vec<Probability>,
 	/// The contract and model of the Route asked.
 	pub provider_contract: String,
 	pub model: String,
@@ -454,14 +458,21 @@ impl Evidence {
 		let route = usize::try_from(self.route).unwrap_or(usize::MAX);
 		if self.route_models.get(route) != Some(&self.model)
 			|| self.route_models.len() > MAX_ROUTES
+			|| self.route_thresholds.len() != self.route_models.len()
 			|| configuration_digest(
 				&self.route_models,
+				&self.route_thresholds,
 				self.mode,
 				&self.configuration_parameters_digest,
 			) != self.decider.configuration_digest
 		{
 			return Err(Error::Invalid(
 				"historical model or mode differs from the pinned Decider configuration".into(),
+			));
+		}
+		if self.restrictions.keep_threshold.value() > self.route_thresholds[route].value() {
+			return Err(Error::Invalid(
+				"historical restrictions are looser than the Route asked".into(),
 			));
 		}
 		self.binding_restrictions.validate_floor()?;

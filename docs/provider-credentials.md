@@ -34,8 +34,11 @@ inference pin: Runs on a Plan Connection or a Keyless endpoint have no such
 pin. On Cloud its Capability Token names the Run as subject with the Decision
 Attempt as `call`, carries only the `decision` operation and no output bound,
 and the broker admits a body of exactly `model`, `state`, `questions` and
-`provider: {"zdr": true}` on System One, or that `provider` with a non-empty
-`only` list of host slugs and `allow_fallbacks: true` on the Decisions API. Before reserving remote compaction allowances, the
+`provider: {"zdr": true}` on System One, or that `provider` with
+`allow_fallbacks: true` and an `only` list on the Decisions API. The token of a
+Decisions API attempt signs the Decider Route's hosts as `hosts`, and the broker
+relays only an `only` list equal to them, in order; a System One token signs
+no hosts. Before reserving remote compaction allowances, the
 caller checks that the binding is usable without minting a token or reading
 Key Material.
 

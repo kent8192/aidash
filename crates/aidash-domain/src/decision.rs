@@ -278,19 +278,30 @@ impl DeciderConfig {
 			.map(|route| route.model.clone())
 			.collect()
 	}
+	/// Every Route's threshold in order, which replay checks a decision's
+	/// restrictions against.
+	pub fn thresholds(&self) -> Vec<Probability> {
+		self.routes
+			.iter()
+			.map(|route| route.keep_threshold)
+			.collect()
+	}
 	pub fn digest(&self) -> Result<String> {
 		Ok(configuration_digest(
 			&self.models(),
+			&self.thresholds(),
 			self.mode,
 			&self.parameters_digest()?,
 		))
 	}
-	/// A replay witness for all fields but the Route models and the mode, which
-	/// evidence records on its own, without disclosing transport references.
+	/// A replay witness for all fields but the Route models and thresholds and
+	/// the mode, which evidence records on its own, without disclosing transport
+	/// references.
 	pub fn parameters_digest(&self) -> Result<String> {
 		let mut parameters = serde_json::to_value(self)?;
 		for route in parameters["routes"].as_array_mut().into_iter().flatten() {
 			route["model"] = serde_json::Value::Null;
+			route["keep_threshold"] = serde_json::Value::Null;
 		}
 		parameters["mode"] = serde_json::Value::Null;
 		Ok(digest(&parameters))
@@ -317,16 +328,21 @@ impl DeciderConfig {
 	}
 }
 
-/// Commits to the Route models and the mode evidence records, so a decision
-/// that sent no request still proves the mode its Decider ran in.
+/// Commits to the Route models and thresholds and the mode evidence records,
+/// so a decision that sent no request still proves the mode its Decider ran
+/// in, and replay proves the threshold of the Route it asked.
 pub(crate) fn configuration_digest(
 	models: &[String],
+	thresholds: &[Probability],
 	mode: Mode,
 	parameters_digest: &str,
 ) -> String {
-	digest(
-		&serde_json::json!({"models": models, "mode": mode, "parameters_digest": parameters_digest}),
-	)
+	digest(&serde_json::json!({
+		"models": models,
+		"thresholds": thresholds,
+		"mode": mode,
+		"parameters_digest": parameters_digest,
+	}))
 }
 
 /// Jev is reached only through OpenRouter (ADR 0041).

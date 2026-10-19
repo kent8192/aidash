@@ -360,7 +360,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		policy::chat_input(&value, claims.cache_breakpoints)?;
 	}
 	if op == Operation::Decision {
-		policy::decision_input(&value, path == DECISIONS_PATH)?;
+		policy::decision_input(&value, path == DECISIONS_PATH, &claims.hosts)?;
 	}
 	Ok(())
 }

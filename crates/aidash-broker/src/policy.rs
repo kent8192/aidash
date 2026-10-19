@@ -190,36 +190,21 @@ fn chat_messages(
 /// A decision body may carry only the decision itself and its routing. `trace`,
 /// `user` and `session_id` reach OpenRouter's observability destinations, and
 /// any other `provider` preference could widen routing. A System One body routes
-/// only by zero data retention; a Decisions API body also names its hosts, and
+/// only by zero data retention, with a token that names no hosts; a Decisions
+/// API body names exactly the hosts its token signs from the Decider Route, and
 /// OpenRouter may move only between those (ADR 0066).
-pub(crate) fn decision_input(value: &Value, decisions: bool) -> Result<(), Failure> {
+pub(crate) fn decision_input(
+	value: &Value,
+	decisions: bool,
+	hosts: &[String],
+) -> Result<(), Failure> {
 	let fields = value.as_object().ok_or(Failure::ClaimViolation)?;
 	let provider = fields.get("provider");
 	let routed = if decisions {
-		provider.and_then(Value::as_object).is_some_and(|provider| {
-			let hosts = provider.get("only").and_then(Value::as_array);
-			provider.len() == 3
-				&& provider.get("zdr") == Some(&Value::Bool(true))
-				&& provider.get("allow_fallbacks") == Some(&Value::Bool(true))
-				&& hosts.is_some_and(|hosts| {
-					!hosts.is_empty()
-						&& hosts.len() <= 8
-						&& hosts.iter().all(|host| {
-							host.as_str().is_some_and(|host| {
-								!host.is_empty()
-									&& host.len() <= 64 && host.bytes().all(|b| {
-									b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
-								})
-							})
-						}) && hosts
-						.iter()
-						.filter_map(Value::as_str)
-						.collect::<std::collections::BTreeSet<_>>()
-						.len() == hosts.len()
-				})
-		})
+		!hosts.is_empty()
+			&& provider == Some(&json!({"zdr": true, "only": hosts, "allow_fallbacks": true}))
 	} else {
-		provider == Some(&json!({"zdr": true}))
+		hosts.is_empty() && provider == Some(&json!({"zdr": true}))
 	};
 	if fields
 		.keys()
