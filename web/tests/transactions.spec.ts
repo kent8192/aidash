@@ -250,7 +250,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       result: "committed",
     });
     await page.screenshot({
-      path: "../.ignore/dashboard-transactions-desktop.png",
+      path: "../private/dashboard-transactions-desktop.png",
       fullPage: true,
     });
     await page.getByRole("button", { name: "Close", exact: true }).click();
@@ -280,7 +280,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       page.getByRole("heading", { name: "分散トランザクション", exact: true }),
     ).toBeVisible();
     await page.screenshot({
-      path: "../.ignore/dashboard-transactions-mobile.png",
+      path: "../private/dashboard-transactions-mobile.png",
       fullPage: true,
     });
     expect(

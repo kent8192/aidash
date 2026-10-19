@@ -47,7 +47,6 @@ impl Issuers for Issuer {
 #[derive(Clone)]
 pub struct AccountPolicy {
 	pub issuers: Arc<dyn Issuers>,
-	pub google: bool,
 	/// The Tenancy Rule that creates a Personal Tenant at sign-in.
 	pub personal_tenants: bool,
 }

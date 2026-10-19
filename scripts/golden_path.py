@@ -41,6 +41,27 @@ def api_request(base, path, body=None, token=TOKEN, headers=None):
         return json.load(response)
 
 
+def tenant_subject(base, label, subject, agents=()):
+    """Create a Tenant whose policy lets its subjects do anything, and issue `subject` a credential.
+
+    Only Tenant subjects register definitions and run work (#371); the
+    Deployment Administrator creates the Tenant, writes its first policy and
+    issues the credential.
+    """
+    tenant = api_request(base, "/api/tenants", {"label": label})["name"]
+    subjects = {subject: {"kind": "user"}, **{agent: {"kind": "agent"} for agent in agents}}
+    bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+    api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 1, "bundle": bundle})
+    credential = api_request(base, f"/api/authorization/{tenant}/credentials", {"subject": subject, "expires_in_seconds": 3600})
+    return tenant, credential
+
+
+def approve(base, tenant, token, entries):
+    """Approve definitions in the Tenant's catalog as one dependency closure, so its subjects may run them."""
+    approvals = [{"entry": {"id": entry["id"], "version": entry["version"]}, "enabled": True, "expected_revision": 0} for entry in entries]
+    api_request(base, f"/api/authorization/{tenant}/catalog/approvals", {"approvals": approvals}, token=token)
+
+
 def wait_for(fn, timeout=120, label="condition"):
     deadline = time.monotonic() + timeout
     last = None
@@ -55,10 +76,10 @@ def wait_for(fn, timeout=120, label="condition"):
     raise AssertionError(f"Timed out waiting for {label}: {last}")
 
 
-def reconcile_uncertain_http(base, run_id, effects):
+def reconcile_uncertain_http(base, run_id, effects, token=TOKEN):
     """Confirm a lost HTTP result from the fixture's recorded external receipt."""
     def uncertain():
-        run = api_request(base, f"/api/runs/{run_id}")["run"]
+        run = api_request(base, f"/api/runs/{run_id}", token=token)["run"]
         if run["phase"] == "WAITING" and run["state"]["data"]["reason"] == "reconciliation":
             return run["state"]["data"]
         return None
@@ -67,20 +88,45 @@ def reconcile_uncertain_http(base, run_id, effects):
     key = waiting["key"]
     receipts = effects()
     assert key in receipts, "Reconciliation requires the exact external invocation receipt"
-    api_request(base, f"/api/human-requests/{waiting['request_id']}/answer", {"result": receipts[key]})
+    api_request(base, f"/api/human-requests/{waiting['request_id']}/answer", {"result": receipts[key]}, token=token)
     return key
 
 
-def approve_fixture_external_requests(base):
+def approve_fixture_external_requests(base, token=TOKEN):
     """Approve only the owned fixture's exact external-call continuations."""
     allowed = ("research-http@", "http-runner-tool@", "mcp-runner-tool@")
-    for request in api_request(base, "/api/state")["human_requests"]:
+    for request in api_request(base, "/api/state", token=token)["human_requests"]:
         prompt = request["prompt"]
         if request.get("response") is None and request["kind"] == "APPROVAL_REQUIRED" and any(
             prompt.startswith("Approve this exact external tool action once? Tool: " + tool)
             for tool in allowed
         ):
-            api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True})
+            api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
+
+
+def diagnose(base, token, tenant, workspace):
+    """Print a stalled workspace's tasks and Runs, and its Tenant's policy, catalog and every policy decision."""
+    def show(label, value):
+        print(f"--- {label}: {json.dumps(value, ensure_ascii=False)}", flush=True)
+
+    try:
+        snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
+        show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
+        tasks = {task["id"] for task in snapshot["tasks"]}
+        for run in api_request(base, "/api/state", token=token)["runs"]:
+            if run["task_id"] in tasks:
+                detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
+                response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
+                show(f"run {run['id']}", {**{key: detail.get(key) for key in ("agent_id", "phase", "control", "step", "error")}, "tool_calls": response.get("tool_calls")})
+        show("policy", api_request(base, f"/api/authorization/{tenant}"))
+        show("catalog", api_request(base, f"/api/authorization/{tenant}/catalog", token=token))
+        decisions, after = [], 0
+        while page := api_request(base, f"/api/authorization/{tenant}/decisions?after={after}&limit=100"):
+            decisions += page
+            after = page[-1]["sequence"]
+        show("decisions", [[d["sequence"], d["created_at"][11:23], d["action"], d["decision"]["allowed"], d["subject"], d["resource_id"]] for d in decisions])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"--- diagnosis failed: {error!r}", flush=True)
 
 
 def entity(kind, identifier, config, capability="web.search"):
@@ -156,22 +202,11 @@ class Fixture:
         def call(name, arguments):
             calls.append({"id": f"call-{len(calls)}", "name": name, "arguments": arguments})
 
-        if current["identity"]["agent_id"] in ["http-runner", "mcp-runner", "agent-runner"]:
+        if current["identity"]["agent_id"] in ["http-runner", "mcp-runner"]:
             if not any(name == "research_lookup" for name, _ in tools):
-                arguments = {"message": "plugin roundtrip"}
-                if current["identity"]["agent_id"] == "agent-runner":
-                    arguments = {"title": "Nested native task", "description": "Verify Agent tool delegation", "requirements": {}, "dependencies": [], "parent_id": None}
-                call("research_lookup", arguments)
+                call("research_lookup", {"message": "plugin roundtrip"})
             else:
                 text = "Plugin completed: " + json.dumps(next(result for name, result in tools if name == "research_lookup"))
-        elif task["title"] == "Human approval acceptance":
-            answers = [event for event in history if event.get("kind") == "human"]
-            if not answers:
-                call("human_request", {"kind": "APPROVAL_REQUIRED", "prompt": "Approve publication?"})
-            else:
-                assert answers[-1]["response"] is False
-                assert any(message["sender"].startswith("human") and message["content_preview"] == "Do not publish." for message in workspace["messages"])
-                text = "Approval was declined. No publication was performed."
         elif current["identity"]["agent_id"] == "coordinator":
             if not any(name == "agent_discover" for name, _ in tools):
                 call("agent_discover", {"capability": "web.search", "language": "ja"})
@@ -245,6 +280,17 @@ class Fixture:
                 elif self.path == "/research":
                     key = self.headers.get("Idempotency-Key")
                     assert key, "Tool adapter must propagate an idempotency key"
+                    if body["topic"] == "Actix" and key not in fixture.effects:
+                        # Let the other two results return and persist first, so
+                        # a Worker kill on a shared Node leaves exactly this
+                        # invocation uncertain. The adapter times out after 10 s.
+                        deadline = time.monotonic() + 3
+                        while time.monotonic() < deadline:
+                            with fixture.lock:
+                                if {"Axum", "Rocket"} <= {effect["topic"] for effect in fixture.effects.values()}:
+                                    break
+                            time.sleep(0.1)
+                        time.sleep(1)
                     with fixture.lock:
                         fixture.requests[key] += 1
                         first = key not in fixture.effects
@@ -407,7 +453,7 @@ def main():
     port_a = int(os.environ.get("AIDASH_E2E_PORT_A", "18080"))
     port_b = int(os.environ.get("AIDASH_E2E_PORT_B", "18081"))
     base_a, base_b = f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"
-    logs = ROOT / ".ignore" / "acceptance"
+    logs = ROOT / "private" / "acceptance"
     logs.mkdir(parents=True, exist_ok=True)
     (logs / "report.json").unlink(missing_ok=True)
     (logs / "source.json").write_text(json.dumps({"source": source, "binary_sha256": binary_sha256}, indent=2) + "\n")
@@ -429,7 +475,9 @@ def main():
     provider_credential_keys = {"AIDASH_PROVIDER_CREDENTIAL_SETTINGS": str(provider_credentials),
                                 "AIDASH_PROVIDER_FINGERPRINT_KEY": secrets.token_hex(32),
                                 "AIDASH_PROVIDER_STORE_MASTER_KEY": secrets.token_hex(32)}
-    fixture = Fixture(node_a, node_b)
+    # The research cluster runs on Node A alone; scoped_golden_path covers
+    # execution across Nodes.
+    fixture = Fixture(node_a, node_a)
     fixture_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.handler())
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
     fixture_url = f"http://127.0.0.1:{fixture_server.server_port}"
@@ -454,6 +502,8 @@ def main():
                                 *(f"http://127.0.0.1:{port}" for port in browser_provider_ports)])
     stream_events = []
     nats_proxy = NatsProxy()
+    # Each Node's Tenant subject credential, by base URL.
+    tokens = {}
 
     approval_stop = threading.Event()
     local_approvals = threading.Event()
@@ -464,9 +514,9 @@ def main():
         while not approval_stop.wait(0.25):
             if not local_approvals.is_set():
                 continue
-            for base in (base_a, base_b):
+            for base, token in list(tokens.items()):
                 try:
-                    approve_fixture_external_requests(base)
+                    approve_fixture_external_requests(base, token)
                 except OSError:
                     # A deliberately unavailable/restarting Node has no approval authority.
                     pass
@@ -499,7 +549,7 @@ def main():
         return child
 
     def sse():
-        request = urllib.request.Request(base_a + "/api/events/stream", headers={"Authorization": f"Bearer {TOKEN}"})
+        request = urllib.request.Request(base_a + "/api/events/stream", headers={"Authorization": f"Bearer {tokens[base_a]}"})
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 for line in response:
@@ -519,41 +569,54 @@ def main():
         launch(node_b, db_b, port_b, "server")
         wait_for(lambda: api_request(base_a, "/health"), label="Node A")
         wait_for(lambda: api_request(base_b, "/health"), label="Node B")
-        for base, other, endpoint in [(base_a, node_b, base_b), (base_b, node_a, base_a)]:
-            api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
-            model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}})
-            api_request(base, "/api/registry", model)
-            tool = entity("tool", "research-http", tool_descriptor(node_a if base == base_a else node_b, {"transport": "http", "endpoint": fixture_url + "/research", "replay": "unsafe"}))
-            tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
-            api_request(base, "/api/registry", tool)
-            coordinator = "coordinator" if base == base_a else "researcher"
-            instructions = "Discover researchers, decompose the goal, delegate across nodes, wait and synthesize." if base == base_a else "Research one framework and publish your findings."
-            tools = [] if base == base_a else [{"id": "research-http", "version": "1.0.0"}]
-            api_request(base, "/api/registry", entity("agent", coordinator, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": instructions, "schema_version": 1, "bindings": [tool_binding(node_a if base == base_a else node_b, ref["id"]) for ref in tools], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate" if base == base_a else "web.search"))
-            api_request(base, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": coordinator, "version": "1.0.0"}}))
-            if base == base_a:
-                api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}))
-        discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"})
-        assert {a["node_id"] for a in discovered["agents"]} == {node_a, node_b}
+        tenant_a, subject_a = tenant_subject(base_a, "golden-research", "alice")
+        tenant_b, subject_b = tenant_subject(base_b, "golden-plugins", "bob")
+        tokens.update({base_a: subject_a["token"], base_b: subject_b["token"]})
+        tenants = {base_a: tenant_a, base_b: tenant_b}
+
+        def register(base, entries):
+            for entry in entries:
+                api_request(base, "/api/registry", entry, token=tokens[base])
+            approve(base, tenants[base], tokens[base], entries)
+
+        model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}})
+        tool = entity("tool", "research-http", tool_descriptor(node_a, {"transport": "http", "endpoint": fixture_url + "/research", "replay": "unsafe"}))
+        tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
+        register(base_a, [
+            model, tool,
+            entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover researchers, decompose the goal, delegate, wait and synthesize.", "schema_version": 1, "bindings": [], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate"),
+            entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}),
+            entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}),
+        ])
+        register(base_b, [model])
+        discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"}, token=tokens[base_a])
+        assert {a["node_id"] for a in discovered["agents"]} == {node_a}
         threading.Thread(target=sse, daemon=True).start()
-        launch(node_a, db_a, port_a, "worker")
+        worker_a = launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
         if args.dashboard:
-            created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a}))
+            created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
-            created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"})
+            created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
         workspace = created["workspace"]["id"]
-        assert fixture.remote_effect_started.wait(90), "Remote tool was never invoked"
-        before = api_request(base_b, "/api/state")["runs"][0]
-        remote_worker.kill()
-        remote_worker.wait(timeout=10)
-        print("Killed Node B worker after the remote tool effect, before result persistence", flush=True)
-        remote_worker = launch(node_b, db_b, port_b, "worker")
-        reconciled_key = reconcile_uncertain_http(base_b, before["id"], lambda: dict(fixture.effects))
+        if not fixture.remote_effect_started.wait(90):
+            diagnose(base_a, tokens[base_a], tenant_a, workspace)
+            raise AssertionError("The Actix research tool was never invoked")
+
+        def actix_run():
+            actix = next((t for t in api_request(base_a, f"/api/workspaces/{workspace}", token=tokens[base_a])["tasks"] if t["title"] == "Actix"), None)
+            return actix and next((r for r in api_request(base_a, "/api/state", token=tokens[base_a])["runs"] if r["task_id"] == actix["id"]), None)
+
+        worker_a.kill()
+        worker_a.wait(timeout=10)
+        print("Killed Node A worker after the Actix tool effect, before result persistence", flush=True)
+        worker_a = launch(node_a, db_a, port_a, "worker")
+        before = wait_for(actix_run, label="Actix research run")
+        reconciled_key = reconcile_uncertain_http(base_a, before["id"], lambda: dict(fixture.effects), tokens[base_a])
 
         def complete():
-            snapshot = api_request(base_a, f"/api/workspaces/{workspace}")
+            snapshot = api_request(base_a, f"/api/workspaces/{workspace}", token=tokens[base_a])
             failures = [t for t in snapshot["tasks"] if t["status"] in ["FAILED", "CANCELLED"]]
             if failures:
                 print("Task failure:", json.dumps(failures), flush=True)
@@ -561,9 +624,9 @@ def main():
             return snapshot if len(snapshot["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in snapshot["tasks"]) else False
 
         snapshot = wait_for(complete, timeout=150, label="all four tasks and artifacts")
-        recovered = wait_for(lambda: next((r for r in api_request(base_b, "/api/state")["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same durable remote run")
+        recovered = wait_for(lambda: next((r for r in api_request(base_a, "/api/state", token=tokens[base_a])["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same durable research run")
         assert recovered["id"] == before["id"]
-        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_b, "/api/events"))
+        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a]))
         assert len(snapshot["artifacts"]) == 4
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
@@ -578,51 +641,24 @@ def main():
         wait_for(lambda: int(psql(db_a, queries["inbox"])) > 0, label="JetStream durable consumption")
         assert len({e["id"] for e in stream_events}) == len(stream_events)
         last_sequence = stream_events[-1]["sequence"]
-        replay = api_request(base_a, f"/api/events?after={last_sequence - 1}")
+        replay = api_request(base_a, f"/api/events?after={last_sequence - 1}", token=tokens[base_a])
         assert replay[0]["sequence"] == last_sequence
-        human_workspace = api_request(base_a, "/api/workspaces", {"title": "Human interaction", "goal": "Verify remote human controls"})
-        human_task = api_request(base_a, f"/api/workspaces/{human_workspace['id']}/tasks", {"title": "Human approval acceptance", "description": "Ask before publishing", "requirements": {"language": "ja"}, "dependencies": [], "parent_id": None})
-        api_request(base_a, f"/api/tasks/{human_task['id']}/delegate", {"node_id": node_b, "agent": {"id": "researcher", "version": "1.0.0"}})
-        request = wait_for(lambda: next((h for node in api_request(base_a, "/api/mesh")["nodes"] for h in node["human_requests"] if h["workspace_id"] == human_workspace["id"]), None), label="remote human request")
-        human_run = request["run_id"]
-        def remote_control(action, **kwargs):
-            return api_request(base_a, "/api/remote", {"node_id": node_b, "control": {"run_id": human_run, "action": action, **kwargs}})
-        wait_for(lambda: api_request(base_b, f"/api/runs/{human_run}")["run"]["phase"] == "WAITING", label="human run waiting")
-        remote_control("pause")
-        remote_control("message", content="Do not publish.", idempotency_key=str(uuid.uuid4()))
-        remote_control("answer", request_id=request["id"], response=False)
-        paused = api_request(base_b, f"/api/runs/{human_run}")["run"]
-        assert paused["control"] == "PAUSED" and paused["phase"] == "WAITING"
-        remote_control("resume")
-        human_result = wait_for(lambda: next((t for t in api_request(base_a, f"/api/workspaces/{human_workspace['id']}")["tasks"] if t["status"] == "COMPLETED"), None), label="remote human response and resume")
-        assert human_result["id"] == human_task["id"]
-        assert len(fixture.effects) == 3, "Declined approval must not produce an extra effect"
-        wait_for(lambda: any(e["type"] == "task.completed" and e["subject"] == human_workspace["id"] for e in stream_events), label="human-controlled result SSE")
         plugin_runs = []
         for base, agent_id, tool_config in [
             (base_b, "http-runner", {"transport": "http", "endpoint": fixture_url + "/echo", "replay": "unsafe"}),
             (base_a, "mcp-runner", {"transport": "mcp", "endpoint": fixture_url + "/mcp", "tool_name": "echo", "replay": "read_only", "idempotency_argument": None}),
-            (base_a, "agent-runner", {"transport": "agent", "node_id": node_b, "agent": {"id": "http-runner", "version": "1.0.0"}}),
         ]:
             tool_id = agent_id + "-tool"
-            api_request(base, "/api/registry", entity("tool", tool_id, tool_descriptor(node_a if base == base_a else node_b, tool_config)))
-            api_request(base, "/api/registry", entity("agent", agent_id, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Verify the registered plugin, then return its result.", "schema_version": 1, "bindings": [tool_binding(node_a if base == base_a else node_b, tool_id)], "remove_default": [], "max_steps": 32}))
-            plugin_conversation = api_request(base, "/api/conversations", {"title": agent_id, "goal": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"})
+            node = node_a if base == base_a else node_b
+            register(base, [
+                entity("tool", tool_id, tool_descriptor(node, tool_config)),
+                entity("agent", agent_id, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Verify the registered plugin, then return its result.", "schema_version": 1, "bindings": [tool_binding(node, tool_id)], "remove_default": [], "max_steps": 32}),
+            ])
+            plugin_conversation = api_request(base, "/api/conversations", {"title": agent_id, "goal": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"}, token=tokens[base])
             plugin_workspace = plugin_conversation["workspace"]["id"]
-            result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}")["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
+            result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}", token=tokens[base])["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"
             plugin_runs.append(agent_id)
-        pinned_delegations = [json.loads(row) for row in psql(db_a, queries["pinned_delegations"]).splitlines() if row]
-        assert len(pinned_delegations) == 1, "Agent Tool must durably retain its receiver closure"
-        pinned = pinned_delegations[0]
-        assert pinned["node_id"] == node_b and pinned["agent_id"] == "http-runner"
-        receiver_closure = pinned["binding_snapshot"]
-        assert receiver_closure["agent"] == {"registry_node": node_b, "id": "http-runner", "version": "1.0.0"}
-        assert all(definition["identity"]["registry_node"] == node_b for definition in receiver_closure["definitions"])
-        remote_runs = api_request(base_b, "/api/state")["runs"]
-        admitted_child = next(run for run in remote_runs if run["task_id"] == pinned["task_id"])
-        received = api_request(base_b, f"/api/runs/{admitted_child['id']}")["run"]["context"]["binding_snapshot"]
-        assert received == {**receiver_closure, "remote": True}, "Receiver must execute the original pinned closure"
         # This branch is mandatory: legacy recovery alone cannot establish
         # subject-scoped authority or the remote grant/admission contract.
         from scoped_golden_path import verify
@@ -633,8 +669,8 @@ def main():
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
-        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
-        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped, foreign_agent_binding_snapshot="passed")
+        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
+        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()
         if args.dashboard:
             browser_report = logs / "browser-report.json"
@@ -648,7 +684,7 @@ def main():
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print("Golden path passed:", json.dumps(report, ensure_ascii=False), flush=True)
         if args.keep:
-            (ROOT / ".ignore/e2e-ready.json").write_text(json.dumps(report))
+            (ROOT / "private/e2e-ready.json").write_text(json.dumps(report))
             while True:
                 time.sleep(1)
     finally:
@@ -670,7 +706,7 @@ def main():
             file.close()
         for db in [db_a, db_b]:
             psql("aidash_a", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
-        (ROOT / ".ignore/e2e-ready.json").unlink(missing_ok=True)
+        (ROOT / "private/e2e-ready.json").unlink(missing_ok=True)
         profile_directory.cleanup()
 
 

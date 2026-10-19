@@ -48,7 +48,7 @@ Cargo fetching crates for the first build. It
    up to `--parallel` (default 4) at a time, reads each Run's Usage Records from
    the disposable database with the read-only `manage diagnostics evaluation`
    query, and executes the memory scenarios;
-6. writes `.ignore/evaluation/deterministic-<hex>.json` (mode 0600, created
+6. writes `private/evaluation/deterministic-<hex>.json` (mode 0600, created
    exclusively) and prints a summary.
 
 The command exits non-zero when the manifest is invalid, when any Run differs
@@ -59,7 +59,7 @@ a harness regression into a quiet `feature-not-available`; pass
 `--allow-unavailable-arms` only for a baseline Node that predates the feature
 (the #102 baseline). The manifest is written in every case, including after an
 error or Ctrl-C, with the failure in its `error` field. Server logs stay in
-`.ignore/evaluation/logs-<hex>/`.
+`private/evaluation/logs-<hex>/`.
 
 Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
 `--binary PATH` uses a built `manage` (by default the command builds this
@@ -170,7 +170,7 @@ Before it registers anything or starts a Run, the live tier refuses unless:
 - every selected task's oracle names the fields its kind reads, with valid
   types and regular expressions; the corpus is checked when it loads, so no
   Run is dispatched for a task that cannot be graded;
-- the `--output` path (default `.ignore/evaluation/live-<prefix>.json`) can be
+- the `--output` path (default `private/evaluation/live-<prefix>.json`) can be
   created exclusively. It is reserved before the first Registry write, so a
   path held by another invocation is refused before any paid work;
 - no selected task uses a `python-tests` oracle. **The live tier never runs

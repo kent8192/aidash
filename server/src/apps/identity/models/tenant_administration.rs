@@ -190,32 +190,34 @@ impl TenantAdministrator {
 
 	/// Whether this administrator may decide `registration` from `identity`: it
 	/// is addressed to this Tenant, through a Tenant Binding or an Invitation,
-	/// and comes from an admitted issuer: under a restriction to this Tenant,
-	/// from its restricted issuer. Requests addressed to no Tenant are decided
-	/// only by Deployment Administrators.
+	/// and comes from an admitted issuer whose identities may be mapped here,
+	/// so an unrestricted identity's Invitation into a bound Tenant counts.
+	/// Requests addressed to no Tenant are decided only by Deployment
+	/// Administrators.
 	pub(crate) fn sees(
 		&self,
 		registration: &DashboardRegistrationRequest,
 		identity: &DashboardIdentity,
 	) -> bool {
 		registration.tenant.as_deref() == Some(self.tenant())
-			&& match &self.restricted {
-				Some(restricted) => identity.issuer == *restricted,
-				None => self.policy.issuers.admits(&identity.issuer),
-			}
+			&& self
+				.policy
+				.require_mapping(&identity.issuer, self.tenant())
+				.is_ok()
 	}
 
-	/// Narrows `identities` to admitted issuers' and, under a restriction to
-	/// this Tenant, to its restricted issuer, in SQL. Without a restriction,
-	/// callers pass only identities already mapped into this Tenant.
+	/// Narrows `identities` in SQL to the admitted issuers whose identities may
+	/// be mapped into this Tenant. Callers pass only identities already mapped
+	/// into this Tenant or addressed to it.
 	fn visible(&self, identities: QuerySet<DashboardIdentity>) -> QuerySet<DashboardIdentity> {
-		match &self.restricted {
-			Some(restricted) => {
-				identities.filter(DashboardIdentity::field_issuer().eq(restricted.clone()))
-			}
-			None => identities
-				.filter(DashboardIdentity::field_issuer().is_in(self.policy.issuers.admitted())),
-		}
+		let issuers: Vec<String> = self
+			.policy
+			.issuers
+			.admitted()
+			.into_iter()
+			.filter(|issuer| self.policy.require_mapping(issuer, self.tenant()).is_ok())
+			.collect();
+		identities.filter(DashboardIdentity::field_issuer().is_in(issuers))
 	}
 
 	/// Display Attributes are disclosed only for people who chose this Tenant:

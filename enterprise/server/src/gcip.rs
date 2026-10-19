@@ -1,11 +1,11 @@
-//! GCIP sign-in of Cloud and Dedicated: GCIP Tenants, Tenant Bindings,
-//! Sign-in Domains and MFA Requirements (ADR 0032). Community sees only the
-//! issuers it admits and the Tenant each one is restricted to.
+//! GCIP sign-in of Cloud and Dedicated: GCIP Tenants, the Shared Pool, Tenant
+//! Bindings, Sign-in Domains and MFA Requirements (ADR 0032). Community sees
+//! only the issuers it admits and the Tenant each one is restricted to.
 pub mod admission;
 pub mod settings;
 mod views;
 
-pub use settings::{AuthHelper, GcipConfig, ManagedGcipSource};
+pub use settings::{AuthHelper, GcipConfig, ManagedGcipSource, PoolStatus};
 
 use aidash_application::ports::authorization::dashboard::{AccountStatus, Issuers};
 use aidash_gcp::gcip::{Services, issuer, tenant};
@@ -19,22 +19,27 @@ use reinhardt::Response;
 use serde::Serialize;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// GCIP Tenants with a Tenant Binding, whose External Identities may be
+/// The Shared Pool, whose External Identities follow the Tenancy Rules, and
+/// the GCIP Tenants with a Tenant Binding, whose External Identities may be
 /// mapped only into their bound Tenant. Any other GCIP Tenant admits nobody.
 pub struct Pools {
 	project: String,
+	shared: Option<String>,
 	bindings: BTreeMap<String, String>,
 }
 
 impl Issuers for Pools {
 	fn admitted(&self) -> Vec<String> {
-		self.bindings
-			.keys()
+		self.shared
+			.iter()
+			.chain(self.bindings.keys())
 			.map(|pool| issuer(&self.project, pool))
 			.collect()
 	}
 	fn admits(&self, issuer: &str) -> bool {
-		self.restriction(issuer).is_some()
+		tenant(&self.project, issuer).is_some_and(|pool| {
+			self.shared.as_deref() == Some(pool) || self.bindings.contains_key(pool)
+		})
 	}
 	fn restriction(&self, issuer: &str) -> Option<String> {
 		self.bindings.get(tenant(&self.project, issuer)?).cloned()
@@ -156,6 +161,7 @@ impl SignInProvider for Gcip {
 	fn issuers(&self) -> Arc<dyn Issuers> {
 		Arc::new(Pools {
 			project: self.config.project_id.clone(),
+			shared: self.config.shared_pool.clone(),
 			bindings: self.config.tenant_bindings.clone(),
 		})
 	}
@@ -164,7 +170,9 @@ impl SignInProvider for Gcip {
 		self.services.status.clone()
 	}
 
-	/// `GET /auth/login?org=<Tenant name>` selects the GCIP Tenant explicitly.
+	/// `GET /auth/login` shows the sign-in page. With a valid browser session it
+	/// signs the same External Identity in again through its own GCIP Tenant,
+	/// which is how second-factor enrollment starts.
 	async fn login(
 		&self,
 		f: &Federation,
@@ -172,23 +180,19 @@ impl SignInProvider for Gcip {
 		query: LoginQuery,
 	) -> Result<Response> {
 		let destination = sign_in::return_path(query.return_to.as_deref())?;
-		let Some(org) = query.org.as_deref() else {
-			return sign_in::sign_in_page(&[("return_to", destination)]);
-		};
-		match self
-			.config
-			.tenant_bindings
-			.iter()
-			.find_map(|(pool, tenant)| (tenant == org).then_some(pool))
-		{
-			Some(pool) => self.begin(f, &headers, destination, pool).await,
-			None => Self::not_found(destination),
+		let pool = sign_in::session_issuer(f, &headers)
+			.await
+			.and_then(|issuer| tenant(&self.config.project_id, &issuer).map(str::to_owned));
+		match pool {
+			Some(pool) => self.begin(f, &headers, destination, &pool).await,
+			None => sign_in::sign_in_page(&[("return_to", destination)]),
 		}
 	}
 
-	/// `POST /auth/login` routes a verified Sign-in Domain to its GCIP Tenant.
-	/// Unmapped domains and malformed addresses get the same response as an
-	/// unknown Tenant name, and nothing about the address is retained.
+	/// `POST /auth/login` routes a verified Sign-in Domain to its bound GCIP
+	/// Tenant and every other address to the Shared Pool. Without a Shared
+	/// Pool, unmapped domains and malformed addresses get one response, and
+	/// nothing about the address is retained.
 	async fn discover(
 		&self,
 		f: &Federation,
@@ -197,7 +201,9 @@ impl SignInProvider for Gcip {
 	) -> Result<Response> {
 		sign_in::require_origin(&headers, &self.config.public_origin)?;
 		let destination = sign_in::return_path(input.return_to.as_deref())?;
-		match settings::routed_gcip_tenant(&self.config.sign_in_domains, &input.email) {
+		match settings::routed_gcip_tenant(&self.config.sign_in_domains, &input.email)
+			.or(self.config.shared_pool.as_deref())
+		{
 			Some(pool) => self.begin(f, &headers, destination, pool).await,
 			None => Self::not_found(destination),
 		}
@@ -210,7 +216,7 @@ impl SignInProvider for Gcip {
 		state: String,
 	) -> Result<Response> {
 		let (_, tenant) = self.pending(f, &headers, &state).await?;
-		if !self.config.tenant_bindings.contains_key(&tenant) {
+		if self.config.status(&tenant).is_none() {
 			return Err(Error::Forbidden);
 		}
 		let client = ClientConfig {
@@ -225,6 +231,13 @@ impl SignInProvider for Gcip {
 		let mut response = Response::ok().with_json(&client)?;
 		sign_in::no_store(&mut response);
 		Ok(response)
+	}
+
+	/// Disable every identity whose GCIP Tenant changed between shared and
+	/// bound since it was admitted.
+	async fn reconcile(&self, f: &Federation) -> Result<()> {
+		admission::reconcile(f, None, |pool| self.config.status(pool)).await?;
+		Ok(())
 	}
 
 	async fn exchange(
@@ -244,17 +257,29 @@ impl SignInProvider for Gcip {
 			.verifier
 			.verify(&id_token, &tenant, pending.started_at)
 			.await?;
-		// Verify the token before the shared authority checks the Binding and
-		// durably disables an existing identity whose Binding has been removed.
-		// The sign-in method is checked only for a bound GCIP Tenant; the
-		// authority refuses any other.
-		let bound = self.config.tenant_bindings.get(&tenant);
-		if bound.is_some() && !self.providers(&tenant).contains(&method) {
-			return Err(Error::Forbidden);
+		// Verify the token before the shared authority checks the GCIP Tenant
+		// and durably disables an existing identity it no longer admits. The
+		// sign-in method is checked only for a GCIP Tenant that admits anyone;
+		// the authority refuses any other.
+		let status = self.config.status(&tenant);
+		if let Some(status) = &status {
+			if !self.providers(&tenant).contains(&method) {
+				return Err(Error::Forbidden);
+			}
+			// An identity first admitted under another status is disabled
+			// before the authority could apply this one's Tenancy Rules.
+			if let Some(existing) = sign_in::existing_identity(f, &signed_in).await?
+				&& admission::reconcile(f, Some(existing), |pool| self.config.status(pool)).await?
+			{
+				return Err(Error::Forbidden);
+			}
+			let identity = sign_in::admit(f, &signed_in).await?;
+			admission::record(f, identity.id, &tenant, status.tenant()).await?;
+			return sign_in::start_session(f, &headers, &state, &identity, signed_in.auth_time)
+				.await;
 		}
-		let identity = sign_in::admit(f, &signed_in).await?;
-		admission::record(f, identity.id, &tenant, bound.map(String::as_str)).await?;
-		sign_in::start_session(f, &headers, &state, &identity, signed_in.auth_time).await
+		sign_in::admit(f, &signed_in).await?;
+		Err(Error::Forbidden)
 	}
 }
 

@@ -34,6 +34,12 @@ pub struct GcipConfig {
 	pub project_id: String,
 	pub web_api_key: String,
 	pub public_origin: String,
+	/// The GCIP Tenant with no Tenant Binding whose identities follow the
+	/// Tenancy Rules. A Deployment names at most one.
+	#[serde(default)]
+	pub shared_pool: Option<String>,
+	/// GCIP Tenant → the only Tenant its identities may be mapped into.
+	#[serde(default)]
 	pub tenant_bindings: std::collections::BTreeMap<String, String>,
 	#[serde(default)]
 	pub providers: std::collections::BTreeMap<String, Vec<String>>,
@@ -59,12 +65,42 @@ impl fmt::Debug for GcipConfig {
 		f.debug_struct("GcipConfig")
 			.field("project_id", &self.project_id)
 			.field("public_origin", &self.public_origin)
+			.field("shared_pool", &self.shared_pool)
 			.field("tenant_bindings", &self.tenant_bindings)
 			.field("auth_helper", &self.auth_helper)
 			.finish_non_exhaustive()
 	}
 }
+/// Whether a GCIP Tenant admits anyone, and on which terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolStatus {
+	/// The Shared Pool: the Tenancy Rules apply.
+	Shared,
+	/// Bound to the only Tenant its identities may be mapped into.
+	Bound(String),
+}
+
+impl PoolStatus {
+	/// The Tenant a Tenant Binding names, as `gcip_admissions` records it.
+	pub fn tenant(&self) -> Option<&str> {
+		match self {
+			Self::Shared => None,
+			Self::Bound(tenant) => Some(tenant),
+		}
+	}
+}
+
 impl GcipConfig {
+	/// What `pool` is under these settings; `None` admits nobody.
+	pub fn status(&self, pool: &str) -> Option<PoolStatus> {
+		if self.shared_pool.as_deref() == Some(pool) {
+			return Some(PoolStatus::Shared);
+		}
+		self.tenant_bindings
+			.get(pool)
+			.map(|tenant| PoolStatus::Bound(tenant.clone()))
+	}
+
 	pub fn issuer(&self) -> String {
 		format!("https://securetoken.google.com/{}", self.project_id)
 	}
@@ -110,12 +146,24 @@ impl GcipConfig {
 				"invalid dashboard.gcip.public_origin".into(),
 			));
 		}
+		let gcip_tenant_id = |pool: &str| {
+			!pool.is_empty()
+				&& pool.len() <= 128
+				&& pool.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+		};
+		if let Some(shared) = &self.shared_pool {
+			if !gcip_tenant_id(shared) {
+				return Err(Error::Invalid("invalid GCIP Tenant ID".into()));
+			}
+			if self.tenant_bindings.contains_key(shared) {
+				return Err(Error::Invalid(
+					"the GCIP Shared Pool cannot also have a Tenant Binding".into(),
+				));
+			}
+		}
 		let mut tenants = std::collections::BTreeSet::new();
 		for (pool, tenant) in &self.tenant_bindings {
-			if pool.is_empty()
-				|| pool.len() > 128
-				|| !pool.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-			{
+			if !gcip_tenant_id(pool) {
 				return Err(Error::Invalid("invalid GCIP Tenant ID".into()));
 			}
 			aidash_domain::policy::identifier(tenant)?;
@@ -128,10 +176,11 @@ impl GcipConfig {
 			.keys()
 			.chain(self.password_sign_up.iter())
 			.chain(self.mfa_mandatory.iter())
-			.any(|pool| !self.tenant_bindings.contains_key(pool))
+			.any(|pool| self.status(pool).is_none())
 		{
 			return Err(Error::Invalid(
-				"GCIP provider configuration requires a Tenant Binding".into(),
+				"GCIP provider configuration names a GCIP Tenant that is neither shared nor bound"
+					.into(),
 			));
 		}
 		if self.providers.values().flatten().any(|id| {

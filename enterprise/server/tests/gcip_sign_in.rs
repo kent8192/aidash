@@ -74,7 +74,7 @@ fn admin_router(admin_status: Arc<Status>) -> Arc<reinhardt::ServerRouter> {
 					.expect("tenant accounts:lookup path")
 					.to_owned();
 				assert_eq!(request.headers["authorization"], "Bearer service-token");
-				assert!(matches!(pool.as_str(), "pool-a" | "pool-b"));
+				assert!(matches!(pool.as_str(), "pool-a" | "pool-b" | "pool-s"));
 				if status.outage.load(Ordering::SeqCst) {
 					return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
 						.with_json(&json!({}))
@@ -198,13 +198,28 @@ fn second_factor_token(pool: &str, uid: &str, name: &str, auth_time: i64) -> Str
 	header.kid = Some("fixture".into());
 	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":"password","sign_in_second_factor":"totp","second_factor_identifier":"enrollment-id"},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"deployment_administrator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../crates/aidash-gcp/src/gcip/signing-test-only.pem")).unwrap()).unwrap()
 }
-async fn transaction(app: &common::TestApplication, org: &str) -> (String, String) {
-	let response = browser()
-		.get(app.url(format!("/auth/login?org={org}&return_to=%2Fsettings")))
-		.send()
-		.await
-		.unwrap();
+/// Begin a sign-in through `pool` with an address in a Sign-in Domain routed
+/// to it, or in no Sign-in Domain for the Shared Pool.
+async fn transaction(app: &common::TestApplication, pool: &str) -> (String, String) {
+	let domain = gcip_settings()
+		.sign_in_domains
+		.into_iter()
+		.find_map(|(domain, routed)| (routed == pool).then_some(domain))
+		.unwrap_or_else(|| "unmapped.example".into());
+	let response = discover(
+		app,
+		&format!("email=person%40{domain}&return_to=%2Fsettings"),
+		Some("http://127.0.0.1:8080"),
+	)
+	.await;
 	assert_eq!(response.status(), 303);
+	assert!(
+		response.headers()["location"]
+			.to_str()
+			.unwrap()
+			.starts_with("/sign-in?state="),
+		"{pool}"
+	);
 	assert_eq!(response.headers()["cache-control"], "no-store");
 	let state = response.headers()["location"]
 		.to_str()
@@ -238,22 +253,16 @@ async fn exchange(
 		.await
 		.unwrap()
 }
-async fn sign_in(
-	app: &common::TestApplication,
-	org: &str,
-	pool: &str,
-	name: &str,
-) -> (String, String) {
-	sign_in_as(app, org, pool, "person", name).await
+async fn sign_in(app: &common::TestApplication, pool: &str, name: &str) -> (String, String) {
+	sign_in_as(app, pool, "person", name).await
 }
 async fn sign_in_as(
 	app: &common::TestApplication,
-	org: &str,
 	pool: &str,
 	uid: &str,
 	name: &str,
 ) -> (String, String) {
-	let (state, cookie) = transaction(app, org).await;
+	let (state, cookie) = transaction(app, pool).await;
 	let response = exchange(
 		app,
 		&state,
@@ -287,13 +296,13 @@ async fn sign_in_as(
 }
 async fn discover(
 	app: &common::TestApplication,
-	body: &'static str,
+	body: &str,
 	origin: Option<&str>,
 ) -> reqwest::Response {
 	let mut request = browser()
 		.post(app.url("/auth/login"))
 		.header("content-type", "application/x-www-form-urlencoded")
-		.body(body);
+		.body(body.to_owned());
 	if let Some(origin) = origin {
 		request = request.header("origin", origin);
 	}
@@ -387,16 +396,6 @@ async fn sign_in_domain_routes_to_its_pool_and_unknown_inputs_are_indistinguisha
 	] {
 		unknown.push((body, discover(&app, body, Some(ORIGIN)).await));
 	}
-	for org in ["missing", "ACME", "pool-a"] {
-		unknown.push((
-			org,
-			browser()
-				.get(app.url(format!("/auth/login?org={org}&return_to=%2Fsettings")))
-				.send()
-				.await
-				.unwrap(),
-		));
-	}
 	let mut bodies = Vec::new();
 	for (input, response) in unknown {
 		assert_eq!(response.status(), 303, "{input}");
@@ -460,22 +459,16 @@ async fn discovery_has_its_own_rate_budget(
 	for limited in [
 		discover(&app, "email=a%40unmapped.example", origin).await,
 		discover(&app, "email=a%40acme.example", origin).await,
-		browser()
-			.get(app.url("/auth/login?org=acme"))
-			.send()
-			.await
-			.unwrap(),
-		// Encoding the key must not move a lookup into the general budget.
-		browser()
-			.get(app.url("/auth/login?%6Frg=acme"))
-			.send()
-			.await
-			.unwrap(),
 	] {
 		assert_eq!(limited.status(), 429);
 	}
-	// Exhausted discovery leaves ordinary sign-in endpoints available.
-	for path in ["/auth/config", "/auth/login?return_to=%2Fsettings"] {
+	// Exhausted discovery leaves ordinary sign-in endpoints available. A
+	// Tenant name no longer selects a sign-in, so `org` is no lookup.
+	for path in [
+		"/auth/config",
+		"/auth/login?return_to=%2Fsettings",
+		"/auth/login?org=acme",
+	] {
 		let response = browser().get(app.url(path)).send().await.unwrap();
 		assert_ne!(response.status(), 429, "{path}");
 	}
@@ -496,7 +489,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 	} = gcip;
 	let (mut f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	sign_in(&app, "acme", "pool-a", "Person").await;
+	sign_in(&app, "pool-a", "Person").await;
 	reconfigure(&mut f, |gcip| {
 		gcip.providers.insert(
 			"pool-a".into(),
@@ -506,7 +499,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 	let changed = common::application(f.clone()).await;
 	status.outage.store(true, Ordering::SeqCst);
 	for provider in ["password", "google.com", "custom"] {
-		let (state, cookie) = transaction(&changed, "acme").await;
+		let (state, cookie) = transaction(&changed, "pool-a").await;
 		let configuration: Value = browser()
 			.get(changed.url(format!("/auth/gcip/transaction?state={state}")))
 			.header("cookie", &cookie)
@@ -536,7 +529,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 	}
 	status.outage.store(false, Ordering::SeqCst);
 	for provider in ["oidc.company", "saml.company"] {
-		let (state, cookie) = transaction(&changed, "acme").await;
+		let (state, cookie) = transaction(&changed, "pool-a").await;
 		assert_eq!(
 			exchange(
 				&changed,
@@ -556,7 +549,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 		gcip.providers.insert("pool-a".into(), vec![]);
 	});
 	let disabled = common::application(f.clone()).await;
-	let (state, cookie) = transaction(&disabled, "acme").await;
+	let (state, cookie) = transaction(&disabled, "pool-a").await;
 	assert_eq!(
 		exchange(
 			&disabled,
@@ -593,14 +586,14 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 		.await
 		.unwrap();
 	assert_eq!(config["provider"], "gcip");
-	let organization = browser().get(app.url("/auth/login")).send().await.unwrap();
+	let page = browser().get(app.url("/auth/login")).send().await.unwrap();
 	assert!(
-		organization.headers()["location"]
+		page.headers()["location"]
 			.to_str()
 			.unwrap()
 			.starts_with("/sign-in?")
 	);
-	let (state, cookie) = transaction(&app, "acme").await;
+	let (state, cookie) = transaction(&app, "pool-a").await;
 	let valid = token("pool-a", "Person", Utc::now().timestamp());
 	for (browser_cookie, jwt, origin, expected) in [
 		(
@@ -669,7 +662,7 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 			.status(),
 		401
 	);
-	let (state, cookie) = transaction(&app, "acme").await;
+	let (state, cookie) = transaction(&app, "pool-a").await;
 	let expire = Query::update()
 		.table(Alias::new("dashboard_login_transactions"))
 		.value_expr(
@@ -704,7 +697,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "First").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "First").await;
 	let registrations = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
@@ -727,7 +720,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 		.await
 		.unwrap();
 	assert_eq!(rejected.status(), 403);
-	let _ = sign_in(&app, "other", "pool-b", "Other").await;
+	let _ = sign_in(&app, "pool-b", "Other").await;
 	let identities: Value = browser()
 		.get(app.url("/api/dashboard/identities"))
 		.bearer_auth(&f.config.api_token)
@@ -745,7 +738,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 			.iter()
 			.all(|i| i["subject"] == "person")
 	);
-	let _ = sign_in(&app, "acme", "pool-a", "Changed").await;
+	let _ = sign_in(&app, "pool-a", "Changed").await;
 	let identity_id = registration["identity_id"].as_str().unwrap();
 	let identity_path = format!("/api/dashboard/identities/{identity_id}");
 	let get_identity = || {
@@ -846,7 +839,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 	);
 	status.since.store(0, Ordering::SeqCst);
 	status.disabled.store(true, Ordering::SeqCst);
-	let (state, bound) = transaction(&app, "acme").await;
+	let (state, bound) = transaction(&app, "pool-a").await;
 	assert_eq!(
 		exchange(
 			&app,
@@ -883,7 +876,7 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let cookie = format!("{cookie}; aidash-csrf={csrf}");
 	let verifier = "a".repeat(64);
 	let state = "b".repeat(64);
@@ -997,7 +990,7 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 		assert_eq!(response.status(), 200);
 		response.json().await.unwrap()
 	};
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let first = submit(&app, &cookie, &csrf).await;
 	assert_eq!(first["tenant"], "acme");
 	// The pool moves to another Tenant while the request is pending.
@@ -1006,7 +999,7 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 		gcip.tenant_bindings.insert("pool-a".into(), "third".into());
 	});
 	let moved = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&moved, "third", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&moved, "pool-a", "Person").await;
 	let second = submit(&moved, &cookie, &csrf).await;
 	assert_ne!(second["id"], first["id"]);
 	assert_eq!(second["tenant"], "third");
@@ -1043,7 +1036,7 @@ async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 	} = gcip;
 	let (mut f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, _) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, _) = sign_in(&app, "pool-a", "Person").await;
 	// Settings validation removes a pool's Sign-in Domains with its Binding.
 	reconfigure(&mut f, |gcip| {
 		gcip.tenant_bindings.remove("pool-a");
@@ -1091,7 +1084,7 @@ async fn an_identity_remembers_the_pool_status_it_was_first_admitted_under(
 			.unwrap()
 	};
 	let app = common::application(f.clone()).await;
-	sign_in(&app, "acme", "pool-a", "Person").await;
+	sign_in(&app, "pool-a", "Person").await;
 	assert_eq!(
 		admissions(&f).await,
 		[("pool-a".to_owned(), Some("acme".to_owned()))]
@@ -1101,7 +1094,7 @@ async fn an_identity_remembers_the_pool_status_it_was_first_admitted_under(
 		gcip.tenant_bindings.insert("pool-a".into(), "third".into());
 	});
 	let moved = common::application(f.clone()).await;
-	sign_in(&moved, "third", "pool-a", "Person").await;
+	sign_in(&moved, "pool-a", "Person").await;
 	assert_eq!(
 		admissions(&f).await,
 		[("pool-a".to_owned(), Some("acme".to_owned()))],
@@ -1139,7 +1132,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	.await
 	.unwrap();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", cookie)
@@ -1186,7 +1179,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let (state, cookie) = transaction(&app, "acme").await;
+	let (state, cookie) = transaction(&app, "pool-a").await;
 	// Terraform removes a pool's Binding and its Sign-in Domains together.
 	reconfigure(&mut f, |gcip| {
 		gcip.tenant_bindings.remove("pool-a");
@@ -1238,13 +1231,22 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		settings.node.node_id = f.config.node_id.clone();
 		settings.node.endpoint = f.config.endpoint.clone();
 		settings.node.api_token = f.config.api_token.clone();
-		settings.dashboard.gcip = Some(serde_json::to_value(gcip_settings()).unwrap());
+		// Only the Enterprise build's own settings source carries the GCIP
+		// settings, as the managed file of a Cloud Environment does.
+		let managed = tempfile::NamedTempFile::new().unwrap();
+		std::fs::write(
+			managed.path(),
+			serde_json::to_vec(&json!({"dashboard": {"gcip": gcip_settings()}})).unwrap(),
+		)
+		.unwrap();
+		// SAFETY: no other test of this binary reads the variable.
+		unsafe { std::env::set_var("AIDASH_GCIP_SETTINGS", managed.path()) };
 		let context = reinhardt::test::fixtures::injection_context::default();
 		let installed =
 			aidash_server::bootstrap::initialize(&context, &settings, f.store.pool.connection())
-				.await
-				.unwrap();
-		installed.store.control_pool.close().await;
+				.await;
+		unsafe { std::env::remove_var("AIDASH_GCIP_SETTINGS") };
+		installed.unwrap().store.control_pool.close().await;
 	} else {
 		let (stop, stopping) = tokio::sync::watch::channel(false);
 		let runtime = f.clone();
@@ -1299,10 +1301,12 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	}
 	reconfigure(&mut f, |gcip| {
 		gcip.tenant_bindings.insert("pool-a".into(), "acme".into());
+		gcip.sign_in_domains
+			.insert("acme.example".into(), "pool-a".into());
 	});
 	status.outage.store(false, Ordering::SeqCst);
 	let restored_binding = common::application(f.clone()).await;
-	let (state, cookie) = transaction(&restored_binding, "acme").await;
+	let (state, cookie) = transaction(&restored_binding, "pool-a").await;
 	assert_eq!(
 		exchange(
 			&restored_binding,
@@ -1343,7 +1347,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 		.unwrap();
 	}
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
@@ -1473,7 +1477,7 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Original").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Original").await;
 	let previous: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", cookie)
@@ -1497,7 +1501,7 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Freshly authenticated").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Freshly authenticated").await;
 	// The UI reads status before showing the replacement submission action.
 	let previous_status: Value = browser()
 		.get(app.url("/auth/registration"))
@@ -1577,7 +1581,7 @@ async fn expired_registration_clears_unmapped_display_attributes(
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
@@ -1686,7 +1690,7 @@ async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	// The applicant signs in and leaves without submitting a Registration Request.
-	sign_in(&app, "acme", "pool-a", "Abandoned").await;
+	sign_in(&app, "pool-a", "Abandoned").await;
 	let path = only_identity_path(&app, &f).await;
 	age(
 		&f,
@@ -1711,7 +1715,7 @@ async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives
 		view["display_erased_at"].is_null(),
 		"retention clearing is not a Display Erasure"
 	);
-	sign_in(&app, "acme", "pool-a", "Returned").await;
+	sign_in(&app, "pool-a", "Returned").await;
 	assert_eq!(
 		deployment_administrator_get(&app, &f, &path).await["display_name"],
 		"Returned"
@@ -1731,7 +1735,7 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Stale").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Stale").await;
 	let submitted = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
@@ -1846,7 +1850,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 	.await
 	.unwrap();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
@@ -1902,7 +1906,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		"a repeated erasure keeps the first trace"
 	);
 	// Later sign-ins no longer record the attributes, yet the Mapping still decides.
-	let (cookie, _) = sign_in(&app, "acme", "pool-a", "Renamed").await;
+	let (cookie, _) = sign_in(&app, "pool-a", "Renamed").await;
 	assert_eq!(
 		browser()
 			.get(app.url("/api/session"))
@@ -1963,14 +1967,14 @@ async fn rejected_sign_in_of_a_disabled_identity_records_no_display_attributes(
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	sign_in(&app, "acme", "pool-a", "Person").await;
+	sign_in(&app, "pool-a", "Person").await;
 	let path = only_identity_path(&app, &f).await;
 	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
 	sweep(&f).await;
 	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	// The provider still verifies the person, but the local identity stays disabled.
-	let (state, cookie) = transaction(&app, "acme").await;
+	let (state, cookie) = transaction(&app, "pool-a").await;
 	let rejected = exchange(
 		&app,
 		&state,
@@ -2000,7 +2004,7 @@ async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	sign_in(&app, "acme", "pool-a", "Person").await;
+	sign_in(&app, "pool-a", "Person").await;
 	let path = only_identity_path(&app, &f).await;
 	// The deployment restarts without its optional sign-in configuration. Neither
 	// the still-live session nor the sign-in from moments ago retains anything,
@@ -2030,7 +2034,7 @@ async fn bearer_deployment_administrator_rejects_a_request_after_dashboard_sign_
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
@@ -2080,7 +2084,7 @@ async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retenti
 	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
-	sign_in(&app, "acme", "pool-a", "Person").await;
+	sign_in(&app, "pool-a", "Person").await;
 	let path = only_identity_path(&app, &f).await;
 	// The identity is disabled before a sweep clears its stale attributes.
 	age(
@@ -2092,7 +2096,7 @@ async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retenti
 	.await;
 	age(&f, "dashboard_sessions", "revoked_at", "0 seconds").await;
 	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
-	let (state, cookie) = transaction(&app, "acme").await;
+	let (state, cookie) = transaction(&app, "pool-a").await;
 	let rejected = exchange(
 		&app,
 		&state,
@@ -2168,7 +2172,7 @@ async fn mapped_browser(
 	(org, pool, uid): (&str, &str, &str),
 	subject: &str,
 ) -> (Browser, Value) {
-	let (cookie, csrf) = sign_in_as(app, org, pool, uid, uid).await;
+	let (cookie, csrf) = sign_in_as(app, pool, uid, uid).await;
 	let registration = register(app, &cookie, &csrf).await;
 	let approved = browser()
 		.post(app.url(format!(
@@ -2287,9 +2291,9 @@ async fn tenant_administrator_cannot_read_or_approve_across_tenants(
 	let app = common::application(f.clone()).await;
 	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
 	let (other_admin, _) = mapped_browser(&app, &f, ("other", "pool-b", "boss"), "boss").await;
-	let (cookie, csrf) = sign_in_as(&app, "other", "pool-b", "outsider", "Outsider").await;
+	let (cookie, csrf) = sign_in_as(&app, "pool-b", "outsider", "Outsider").await;
 	let outsider = register(&app, &cookie, &csrf).await;
-	let (cookie, csrf) = sign_in_as(&app, "acme", "pool-a", "newcomer", "Newcomer").await;
+	let (cookie, csrf) = sign_in_as(&app, "pool-a", "newcomer", "Newcomer").await;
 	let newcomer = register(&app, &cookie, &csrf).await;
 
 	let overview: Value = admin
@@ -2412,7 +2416,7 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 	let app = common::application(f.clone()).await;
 	let (admin, admin_mapping) =
 		mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
-	let (cookie, csrf) = sign_in_as(&app, "acme", "pool-a", "newcomer", "Newcomer").await;
+	let (cookie, csrf) = sign_in_as(&app, "pool-a", "newcomer", "Newcomer").await;
 	let newcomer = register(&app, &cookie, &csrf).await;
 	let approve = format!(
 		"/api/tenants/acme/registrations/{}/approve",
@@ -2663,7 +2667,7 @@ async fn tenant_administrator_approval_evaluates_requested_groups(
 	replace_policy(&f, "acme", 1, policy).await;
 	let app = common::application(f.clone()).await;
 	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
-	let (cookie, csrf) = sign_in_as(&app, "acme", "pool-a", "newcomer", "Newcomer").await;
+	let (cookie, csrf) = sign_in_as(&app, "pool-a", "newcomer", "Newcomer").await;
 	let newcomer = register(&app, &cookie, &csrf).await;
 	let approve = format!(
 		"/api/tenants/acme/registrations/{}/approve",
@@ -2908,8 +2912,8 @@ async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	// The transaction tells the sign-in page which pools must enroll a factor.
-	for (org, mandatory) in [("acme", false), ("other", true)] {
-		let (state, cookie) = transaction(&app, org).await;
+	for (pool, mandatory) in [("pool-a", false), ("pool-b", true)] {
+		let (state, cookie) = transaction(&app, pool).await;
 		let configuration: Value = browser()
 			.get(app.url(format!("/auth/gcip/transaction?state={state}")))
 			.header("cookie", &cookie)
@@ -2919,7 +2923,7 @@ async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are
 			.json()
 			.await
 			.unwrap();
-		assert_eq!(configuration["mfa_mandatory"], mandatory, "{org}");
+		assert_eq!(configuration["mfa_mandatory"], mandatory, "{pool}");
 	}
 	// Presence or absence of the second-factor claims maps to the same authority.
 	let now = Utc::now().timestamp();
@@ -2928,7 +2932,7 @@ async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are
 		signed_token("pool-a", "person", "Person", now, "password"),
 		second_factor_token("pool-a", "person", "Person", now),
 	] {
-		let (state, cookie) = transaction(&app, "acme").await;
+		let (state, cookie) = transaction(&app, "pool-a").await;
 		let response = exchange(&app, &state, &cookie, &token, "http://127.0.0.1:8080").await;
 		assert_eq!(response.status(), 200);
 		let session = response
@@ -2959,5 +2963,526 @@ async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are
 	);
 	assert_eq!(sessions[0]["mappings"], sessions[1]["mappings"]);
 	assert_ne!(sessions[0]["id"], sessions[1]["id"]);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn signing_in_again_from_a_session_reenters_through_its_own_gcip_tenant(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	let (session, _) = sign_in(&app, "pool-b", "Person").await;
+	// Act: second-factor enrollment starts this way, with no Tenant name.
+	let response = browser()
+		.get(app.url("/auth/login?return_to=%2Fsettings"))
+		.header("cookie", &session)
+		.send()
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(response.status(), 303);
+	let state = response.headers()["location"]
+		.to_str()
+		.unwrap()
+		.strip_prefix("/sign-in?state=")
+		.unwrap()
+		.to_owned();
+	let cookie = response.headers()["set-cookie"]
+		.to_str()
+		.unwrap()
+		.split(';')
+		.next()
+		.unwrap()
+		.to_owned();
+	let client: Value = browser()
+		.get(app.url(format!("/auth/gcip/transaction?state={state}")))
+		.header("cookie", &cookie)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(client["tenant_id"], "pool-b");
+	let now = Utc::now().timestamp();
+	let other = token("pool-a", "Person", now);
+	assert_eq!(
+		exchange(&app, &state, &cookie, &other, "http://127.0.0.1:8080")
+			.await
+			.status(),
+		401
+	);
+	let same = token("pool-b", "Person", now);
+	assert_eq!(
+		exchange(&app, &state, &cookie, &same, "http://127.0.0.1:8080")
+			.await
+			.status(),
+		200
+	);
+	// Without a session the same request only shows the sign-in page.
+	let anonymous = browser()
+		.get(app.url("/auth/login?return_to=%2Fsettings"))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(
+		anonymous.headers()["location"],
+		"/sign-in?return_to=%2Fsettings"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn removing_the_gcip_sign_in_refuses_its_identities_durable_credentials(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let policy = serde_json::from_value(json!({
+		"tenant": "acme",
+		"subjects": {"alice": {"kind": "user"}},
+		"policies": [{"id": "alice", "effect": "allow",
+			"subjects": {"ids": ["alice"]}, "actions": ["*"],
+			"resources": {"kinds": ["*"], "ids": []}}]
+	}))
+	.unwrap();
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "deployment_administrator")
+	.await
+	.unwrap();
+	let app = common::application(f.clone()).await;
+	let (member, _) = mapped_browser(&app, &f, ("acme", "pool-a", "member"), "alice").await;
+	// A member's own credential, which outlives every browser session.
+	let issued = browser()
+		.post(app.url("/api/authorization/acme/credentials"))
+		.header("cookie", &member.cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", &member.csrf)
+		.header("x-aidash-context", &member.context)
+		.json(&json!({"subject": "alice", "expires_in_seconds": 3600}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(issued.status(), 200);
+	let token = issued.json::<Value>().await.unwrap()["token"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	// A Tenant boundary, which locks the credential's Mapping and its holder.
+	let session = |app: &common::TestApplication| {
+		browser()
+			.get(app.url("/api/registry/versions"))
+			.bearer_auth(&token)
+			.send()
+	};
+	assert_eq!(session(&app).await.unwrap().status(), 200);
+	// Act: the Deployment drops [dashboard.gcip] and keeps its database.
+	let mut unconfigured = f.clone();
+	unconfigured.config.sign_in = None;
+	unconfigured.store = unconfigured
+		.store
+		.clone()
+		.with_dashboard_policy(unconfigured.config.dashboard_policy());
+	let restarted = common::application(unconfigured.clone()).await;
+	// Assert
+	assert_eq!(session(&restarted).await.unwrap().status(), 403);
+	let disabled: Option<chrono::DateTime<Utc>> = scalar(
+		&f,
+		"SELECT disabled_at FROM dashboard_identities WHERE subject = 'member'",
+	)
+	.await;
+	assert!(disabled.is_some());
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Make `pool-s` the Shared Pool beside the fixture's bound pools.
+fn share(f: &mut Federation) {
+	reconfigure(f, |gcip| gcip.shared_pool = Some("pool-s".into()));
+}
+
+async fn identity_disabled(f: &Federation, uid: &str) -> bool {
+	scalar::<Option<chrono::DateTime<Utc>>>(
+		f,
+		&format!("SELECT disabled_at FROM dashboard_identities WHERE subject = '{uid}'"),
+	)
+	.await
+	.is_some()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_shared_pool_signs_in_every_unrouted_address_under_the_tenancy_rules(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	f.config.tenancy.personal_tenants = true;
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	// An address in no Sign-in Domain, and a malformed one, go to the Shared Pool.
+	for body in [
+		"email=alice%40unmapped.example&return_to=%2Fsettings",
+		"email=not-an-email&return_to=%2Fsettings",
+	] {
+		let response = discover(&app, body, Some("http://127.0.0.1:8080")).await;
+		assert_eq!(response.status(), 303, "{body}");
+		let state = response.headers()["location"]
+			.to_str()
+			.unwrap()
+			.strip_prefix("/sign-in?state=")
+			.unwrap()
+			.to_owned();
+		let cookie = response.headers()["set-cookie"]
+			.to_str()
+			.unwrap()
+			.split(';')
+			.next()
+			.unwrap()
+			.to_owned();
+		let client: Value = browser()
+			.get(app.url(format!("/auth/gcip/transaction?state={state}")))
+			.header("cookie", &cookie)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(client["tenant_id"], "pool-s", "{body}");
+	}
+	// The Tenancy Rules give a Shared Pool identity its Personal Tenant, and
+	// never a bound one.
+	let mappings = |cookie: String| {
+		let app = &app;
+		async move {
+			browser()
+				.get(app.url("/auth/session"))
+				.header("cookie", cookie)
+				.send()
+				.await
+				.unwrap()
+				.json::<Value>()
+				.await
+				.unwrap()["mappings"]
+				.clone()
+		}
+	};
+	let (shared, _) = sign_in_as(&app, "pool-s", "shared", "Shared").await;
+	let personal = mappings(shared).await;
+	assert_eq!(personal.as_array().unwrap().len(), 1, "{personal}");
+	assert_eq!(personal[0]["personal"], true, "{personal}");
+	let (bound, _) = sign_in_as(&app, "pool-a", "bound", "Bound").await;
+	assert_eq!(mappings(bound).await, json!([]));
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_identity_whose_pool_changes_between_shared_and_bound_waits_for_a_restore(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	sign_in_as(&app, "pool-s", "moving", "Moving").await;
+	sign_in_as(&app, "pool-s", "starting", "Starting").await;
+	common::tenant_root(&f, "third").await;
+	// Act: the Shared Pool gets a Tenant Binding.
+	reconfigure(&mut f, |gcip| {
+		gcip.shared_pool = None;
+		gcip.tenant_bindings.insert("pool-s".into(), "third".into());
+		gcip.sign_in_domains
+			.insert("third.example".into(), "pool-s".into());
+	});
+	let bound = common::application(f.clone()).await;
+	// Assert: startup disables an identity that has not signed in since...
+	f.config
+		.sign_in
+		.as_ref()
+		.unwrap()
+		.reconcile(&f)
+		.await
+		.unwrap();
+	assert!(identity_disabled(&f, "starting").await);
+	// ...and a sign-in refuses and disables one it has not seen.
+	sqlx::query("UPDATE dashboard_identities SET disabled_at = NULL WHERE subject = 'moving'")
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query("UPDATE gcip_admissions SET tenant = NULL WHERE identity_id = (SELECT id FROM dashboard_identities WHERE subject = 'moving')")
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (state, cookie) = transaction(&bound, "pool-s").await;
+	let now = Utc::now().timestamp();
+	assert_eq!(
+		exchange(
+			&bound,
+			&state,
+			&cookie,
+			&signed_token("pool-s", "moving", "Moving", now, "password"),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	assert!(identity_disabled(&f, "moving").await);
+	let (state, cookie) = transaction(&bound, "pool-s").await;
+	assert_eq!(
+		exchange(
+			&bound,
+			&state,
+			&cookie,
+			&signed_token("pool-s", "moving", "Moving", now, "password"),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403,
+		"a second sign-in before the restore stays refused"
+	);
+	// Only a Deployment Administrator restore admits it again, as bound.
+	let id: uuid::Uuid = scalar(
+		&f,
+		"SELECT id FROM dashboard_identities WHERE subject = 'moving'",
+	)
+	.await;
+	let restored = browser()
+		.post(bound.url(format!("/api/dashboard/identities/{id}/restore")))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(restored.status(), 204);
+	sign_in_as(&bound, "pool-s", "moving", "Moving").await;
+	let recorded: Option<String> = scalar(
+		&f,
+		&format!("SELECT tenant FROM gcip_admissions WHERE identity_id = '{id}'"),
+	)
+	.await;
+	assert_eq!(recorded.as_deref(), Some("third"));
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_gcip_tenant_neither_shared_nor_bound_admits_nobody(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	let (state, cookie) = transaction(&app, "pool-s").await;
+	sign_in_as(&app, "pool-s", "shared", "Shared").await;
+	// Act: the Deployment stops naming a Shared Pool.
+	reconfigure(&mut f, |gcip| gcip.shared_pool = None);
+	let unshared = common::application(f.clone()).await;
+	// Assert
+	assert_eq!(
+		discover(
+			&unshared,
+			"email=alice%40unmapped.example",
+			Some("http://127.0.0.1:8080")
+		)
+		.await
+		.headers()["location"],
+		"/sign-in?error=not_found&return_to=%2F"
+	);
+	assert_eq!(
+		exchange(
+			&unshared,
+			&state,
+			&cookie,
+			&signed_token(
+				"pool-s",
+				"shared",
+				"Shared",
+				Utc::now().timestamp(),
+				"password"
+			),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	assert!(identity_disabled(&f, "shared").await);
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Run startup with these GCIP settings, as a Cloud Environment's managed file
+/// supplies them.
+async fn start(
+	f: &Federation,
+	url: &str,
+	gcip: &GcipConfig,
+) -> aidash_server::Result<aidash_server::federation::Federation> {
+	let mut settings = common::settings_for(url);
+	settings.node.node_id = f.config.node_id.clone();
+	settings.node.endpoint = f.config.endpoint.clone();
+	settings.node.api_token = f.config.api_token.clone();
+	let managed = tempfile::NamedTempFile::new().unwrap();
+	std::fs::write(
+		managed.path(),
+		serde_json::to_vec(&json!({"dashboard": {"gcip": gcip}})).unwrap(),
+	)
+	.unwrap();
+	// SAFETY: no other test of this binary reads the variable.
+	unsafe { std::env::set_var("AIDASH_GCIP_SETTINGS", managed.path()) };
+	let context = reinhardt::test::fixtures::injection_context::default();
+	let started =
+		aidash_server::bootstrap::initialize(&context, &settings, f.store.pool.connection()).await;
+	unsafe { std::env::remove_var("AIDASH_GCIP_SETTINGS") };
+	if let Ok(started) = &started {
+		started.store.control_pool.close().await;
+	}
+	started
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn startup_refuses_a_binding_to_a_missing_or_personal_tenant_and_keeps_a_deleted_one(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let bind = |tenant: &str| {
+		let mut gcip = gcip_settings();
+		gcip.tenant_bindings.insert("pool-b".into(), tenant.into());
+		gcip
+	};
+	let refusal = start(&f, &url, &bind("missing")).await.err().unwrap();
+	assert_eq!(
+		refusal.to_string(),
+		"a sign-in restricts identities to Tenant missing, which has no root record"
+	);
+	common::tenant_root(&f, "solo").await;
+	sqlx::query("UPDATE tenants SET personal = true WHERE name = 'solo'")
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let refusal = start(&f, &url, &bind("solo")).await.err().unwrap();
+	assert_eq!(
+		refusal.to_string(),
+		"a sign-in restricts identities to Tenant solo, which is a Personal Tenant"
+	);
+	// A deleted bound Tenant keeps its root record: startup proceeds, and
+	// sign-in through its GCIP Tenant gets the deleted Tenant's answer.
+	sqlx::query(
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after) VALUES (gen_random_uuid(), 'other', clock_timestamp(), 'deployment_administrator', clock_timestamp() + interval '30 days')",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	start(&f, &url, &gcip_settings()).await.unwrap();
+	let app = common::application(f.clone()).await;
+	let (state, cookie) = transaction(&app, "pool-b").await;
+	let refused = exchange(
+		&app,
+		&state,
+		&cookie,
+		&token("pool-b", "Person", Utc::now().timestamp()),
+		"http://127.0.0.1:8080",
+	)
+	.await;
+	assert_eq!(refused.status(), 410);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_bound_tenants_administrators_decide_a_shared_pool_identitys_invitation(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	administered_tenants(&f).await;
+	share(&mut f);
+	let app = common::application(f.clone()).await;
+	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
+	let invitation: Value = admin
+		.send(&app, reqwest::Method::POST, "/api/tenants/acme/invitations")
+		.json(&json!({}))
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let (cookie, csrf) = sign_in_as(&app, "pool-s", "guest", "Guest").await;
+	let redeemed = browser()
+		.post(app.url("/auth/invitations/redeem"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", &csrf)
+		.json(&json!({"tenant": "acme", "secret": invitation["secret"]}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(redeemed.status(), 200);
+	let request: Value = redeemed.json().await.unwrap();
+	// Assert: the bound Tenant's administrators see and decide it.
+	let listed: Value = admin
+		.get(&app, "/api/tenants/acme/registrations")
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+	assert_eq!(listed[0]["id"], request["id"]);
+	let approved = admin
+		.send(
+			&app,
+			reqwest::Method::POST,
+			&format!(
+				"/api/tenants/acme/registrations/{}/approve",
+				request["id"].as_str().unwrap()
+			),
+		)
+		.json(&json!({"subject": "guest", "groups": ["members"]}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
 	common::cleanup(f, &url, &schema).await;
 }

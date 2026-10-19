@@ -180,7 +180,7 @@ fn file_settings_builder(
                 .with_value("provider_credentials", serde_json::json!({}))
                 .with_value("cache_salt", serde_json::json!({}))
                 .with_value("keyless_endpoints", serde_json::json!({}))
-                // Tenancy Rules default to the Self-hosted Offering's.
+                // The Offering supplies each Tenancy Rule left out.
                 .with_value("tenancy", serde_json::json!({}))
                 .with_value("plan_connections", serde_json::json!({}))
                 .with_value("research_providers", serde_json::json!({}))

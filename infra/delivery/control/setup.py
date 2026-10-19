@@ -480,7 +480,7 @@ def main():
     parser.add_argument("--prefix")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--review-bootstrap-migration", action="store_true")
-    parser.add_argument("--operator-directory", type=Path, default=ROOT / ".ignore/delivery/operator")
+    parser.add_argument("--operator-directory", type=Path, default=ROOT / "secrets/delivery/operator")
     args = parser.parse_args()
     try:
         if args.action == "inventory":

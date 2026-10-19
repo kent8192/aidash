@@ -266,13 +266,13 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
     page.getByRole("heading", { name: "Policy bundle", exact: true }),
   ).toBeVisible();
   await page.screenshot({
-    path: "../.ignore/dashboard-authorization-desktop.png",
+    path: "../private/dashboard-authorization-desktop.png",
     fullPage: true,
   });
   await selectDashboardLanguage(page, "ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
-    path: "../.ignore/dashboard-authorization-mobile.png",
+    path: "../private/dashboard-authorization-mobile.png",
     fullPage: true,
   });
   expect(
@@ -396,7 +396,7 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
   expect(JSON.stringify(history)).not.toContain(first.token);
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({
-    path: "../.ignore/dashboard-peer-mappings-en.png",
+    path: "../private/dashboard-peer-mappings-en.png",
     fullPage: true,
   });
   await selectDashboardLanguage(page, "ja-JP");
@@ -413,7 +413,7 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
     ),
   ).toBe(true);
   await page.screenshot({
-    path: "../.ignore/dashboard-peer-mappings-ja.png",
+    path: "../private/dashboard-peer-mappings-ja.png",
     fullPage: true,
   });
 });

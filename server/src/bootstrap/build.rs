@@ -10,6 +10,7 @@ use reinhardt::conf::settings::scoped::ScopedSettings;
 use std::sync::{Arc, OnceLock};
 
 static INSTALLED: OnceLock<&'static Build> = OnceLock::new();
+static OFFERING: OnceLock<Offering> = OnceLock::new();
 
 /// Make `build` the build of this process. Only the first call counts.
 pub fn install(build: &'static Build) {
@@ -20,6 +21,15 @@ pub fn install(build: &'static Build) {
 /// this library, is the Community build.
 pub fn current() -> &'static Build {
 	INSTALLED.get().copied().unwrap_or(&Build::COMMUNITY)
+}
+
+/// The Offering the settings check admitted, or the build's first one before
+/// any settings load, which decides the endpoints this process mounts.
+pub fn offering() -> Offering {
+	OFFERING
+		.get()
+		.copied()
+		.unwrap_or_else(|| current().offerings[0])
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,13 +59,22 @@ pub trait Extension: Sync + std::fmt::Debug {
 	) -> reinhardt::conf::settings::builder::SettingsBuilder {
 		builder
 	}
-	/// The browser sign-in that `[dashboard.gcip]` configures.
+	/// The browser sign-in the build adds, read from its own settings, if
+	/// they configure one. Community parses none of those settings.
 	fn sign_in(
 		&self,
-		gcip: &serde_json::Value,
-	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>;
-	/// Endpoints the build adds to Community's.
-	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
+	) -> crate::Result<Option<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>> {
+		Ok(None)
+	}
+	/// Whether External Identities of `issuer` sign in only through the sign-in
+	/// this build adds, which also reads their Account Status. With that
+	/// sign-in unconfigured, their Mappings are refused rather than left
+	/// unrestricted.
+	fn owns_issuer(&self, _issuer: &str) -> bool {
+		false
+	}
+	/// Endpoints the build adds to Community's for `offering`.
+	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		None
 	}
 	/// The Provider Credential Store of an Enterprise `kind`, from its settings
@@ -76,15 +95,6 @@ pub struct ProvidedStore {
 struct Community;
 
 impl Extension for Community {
-	fn sign_in(
-		&self,
-		_: &serde_json::Value,
-	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>> {
-		Err(crate::Error::Invalid(
-			"the Community build has no GCIP sign-in; [dashboard.gcip] needs the Enterprise build"
-				.into(),
-		))
-	}
 	fn provider_credential_store(
 		&self,
 		store: &serde_json::Map<String, serde_json::Value>,
@@ -150,7 +160,9 @@ impl Build {
 		let offering = settings
 			.optional_path::<Offering>(&["deployment", "offering"])?
 			.unwrap_or_default();
-		self.admit(offering)
+		self.admit(offering)?;
+		let _ = OFFERING.set(offering);
+		Ok(())
 	}
 }
 
@@ -168,15 +180,9 @@ mod tests {
 
 	#[test]
 	fn the_community_build_refuses_enterprise_adapters() {
+		use aidash_domain::offering::Offering::SelfHosted;
 		let extension = Build::COMMUNITY.extension;
-		assert_eq!(
-			extension
-				.sign_in(&serde_json::json!({"project_id": "fixture"}))
-				.err()
-				.unwrap()
-				.to_string(),
-			"the Community build has no GCIP sign-in; [dashboard.gcip] needs the Enterprise build"
-		);
+		assert!(extension.sign_in().unwrap().is_none());
 		let store = serde_json::json!({"kind": "secret_manager"});
 		assert_eq!(
 			extension
@@ -186,7 +192,7 @@ mod tests {
 				.to_string(),
 			"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
 		);
-		assert!(extension.routes().is_none());
+		assert!(extension.routes(SelfHosted).is_none());
 	}
 
 	#[rstest]

@@ -10,7 +10,8 @@ use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::model;
 use reinhardt::query::{
-	Alias, IntoValue, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, IntoValue, OnConflict, PostgresQueryBuilder, Query,
+	QueryStatementBuilder,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -59,4 +60,57 @@ pub async fn record(
 			Ok(())
 		})
 		.await
+}
+
+/// Disable each identity whose GCIP Tenant `status` now makes shared where it
+/// was admitted bound, or bound where it was admitted shared, and remember the
+/// new status: only a Deployment Administrator restore lets it sign in again,
+/// under the new status. A GCIP Tenant that admits nobody is the shared
+/// authority's to retire. Returns whether `only` (or any identity) was disabled.
+pub async fn reconcile(
+	f: &Federation,
+	only: Option<Uuid>,
+	status: impl Fn(&str) -> Option<super::settings::PoolStatus>,
+) -> Result<bool> {
+	let admissions = f
+		.store
+		.pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			let admissions = GcipAdmission::objects();
+			let admissions = match only {
+				Some(identity) => {
+					admissions.filter(GcipAdmission::field_identity_id().eq(identity))
+				}
+				None => admissions.all(),
+			};
+			Ok(admissions.all_with_db(tx).await?)
+		})
+		.await?;
+	let mut changed = false;
+	for admission in admissions {
+		let Some(current) = status(&admission.gcip_tenant) else {
+			continue;
+		};
+		// Moving a Tenant Binding to another Tenant keeps the status: the
+		// restriction already confines the identity to the new Tenant.
+		if current.tenant().is_some() == admission.tenant.is_some() {
+			continue;
+		}
+		aidash_server::authorization::sign_in::disable(f, admission.identity_id).await?;
+		let (sql, values) = Query::update()
+			.table(Alias::new(GcipAdmission::table_name()))
+			.value(Alias::new("tenant"), current.tenant().map(str::to_owned))
+			.value(Alias::new("admitted_at"), Utc::now())
+			.and_where(Expr::col("identity_id").eq(Expr::value(admission.identity_id)))
+			.build(PostgresQueryBuilder);
+		f.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
+				Ok(())
+			})
+			.await?;
+		changed = true;
+	}
+	Ok(changed)
 }

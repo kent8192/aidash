@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockGcip } from "./fixtures/gcip";
 
-test("organization selection and popup exchange keep GCIP tokens out of browser storage", async ({
+test("email routing and popup exchange keep GCIP tokens out of browser storage", async ({
   page,
 }) => {
   const token = await mockGcip(page);
@@ -9,15 +9,20 @@ test("organization selection and popup exchange keep GCIP tokens out of browser 
     route.fulfill({ contentType: "text/html", body: "<h1>Signed in</h1>" }),
   );
   await page.goto("/sign-in?return_to=%2Fsettings");
-  await page
-    .getByRole("button", { name: "Use your organization ID instead" })
-    .click();
-  await page.getByLabel("Organization").fill("acme");
-  const login = page.waitForRequest("**/auth/login?**");
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  expect(new URL((await login).url()).searchParams.get("return_to")).toBe(
-    "/settings",
+  // No Tenant name selects a sign-in: the address alone routes it.
+  await expect(
+    page.getByRole("button", { name: "Use your organization ID instead" }),
+  ).toHaveCount(0);
+  await page.getByLabel("Email", { exact: true }).fill("person@acme.test");
+  const login = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/auth/login" &&
+      request.method() === "POST",
   );
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  expect(
+    new URLSearchParams((await login).postData() ?? "").get("return_to"),
+  ).toBe("/settings");
   await page
     .getByRole("button", { name: "Continue with Google", exact: true })
     .click();
@@ -256,7 +261,7 @@ test("self-hosted OIDC never requests the GCIP SDK", async ({ page }) => {
   const modules: string[] = [];
   page.on("request", (request) => modules.push(request.url()));
   await page.route("**/auth/config", (route) =>
-    route.fulfill({ json: { enabled: true, provider: "keycloak" } }),
+    route.fulfill({ json: { enabled: true, provider: "oidc" } }),
   );
   await page.goto("/sign-in");
   await expect(page.getByRole("status")).toContainText("OIDC");
@@ -561,31 +566,6 @@ test("unknown sign-in entries show one generic message", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveText(
     "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
   );
-});
-
-test("organization link reveals the org form and clears the email handoff", async ({
-  page,
-}) => {
-  await mockGcip(page);
-  await page.goto("/sign-in?return_to=%2Fsettings");
-  await page.evaluate(() =>
-    sessionStorage.setItem("aidash.gcip.email", "stale@acme.test"),
-  );
-  await expect(page.getByLabel("Organization")).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Use your organization ID instead" })
-    .click();
-  await page.getByLabel("Organization").fill("acme");
-  const login = page.waitForRequest("**/auth/login?**");
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  const url = new URL((await login).url());
-  expect(url.searchParams.get("org")).toBe("acme");
-  expect(url.searchParams.get("return_to")).toBe("/settings");
-  await expect(page).toHaveURL(/state=browser-bound-state$/);
-  await expect(page.getByLabel("Email", { exact: true })).toHaveValue("");
-  expect(
-    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
-  ).toBeNull();
 });
 
 // A second factor is owed after the first one succeeds; the fixture SDK mimics

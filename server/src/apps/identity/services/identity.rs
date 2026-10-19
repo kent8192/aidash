@@ -212,10 +212,7 @@ impl SubjectIdentity {
 		let Some((id, issuer)) = row else {
 			return Ok(());
 		};
-		let allowed = pool
-			.dashboard_policy()
-			.is_none_or(|policy| policy.require_identity(&issuer).is_ok());
-		if allowed {
+		if admits_identity(pool.dashboard_policy().as_ref(), &issuer) {
 			return Ok(());
 		}
 		if crate::apps::identity::models::DashboardIdentity::disable_if_current(pool, id, None)
@@ -483,20 +480,40 @@ impl Injectable for Actor {
 pub use crate::apps::identity::serializers::identity::{Credential, IssuedCredential};
 pub(crate) fn validate_dashboard_status(validity: Option<IdentityValidity>) -> Result<()> {
 	use aidash_domain::identity::authority::DashboardStatusFailure;
-	aidash_domain::identity::authority::dashboard_status(
-		validity,
-		Utc::now(),
-		crate::config::GOOGLE_OIDC_ISSUER,
-	)
-	.map_err(|reason| match reason {
-		DashboardStatusFailure::Forbidden => Error::Forbidden,
-		DashboardStatusFailure::Unavailable => Error::IdentityStatusUnavailable,
-	})
+	aidash_domain::identity::authority::dashboard_status(validity, Utc::now(), reports_status)
+		.map_err(|reason| match reason {
+			DashboardStatusFailure::Forbidden => Error::Forbidden,
+			DashboardStatusFailure::Unavailable => Error::IdentityStatusUnavailable,
+		})
 }
 
 use reinhardt::query::SimpleExpr;
 
-/// Without a configured sign-in, fixture and legacy Mappings are not restricted.
+/// Whether `issuer` reports Account Status: only the sign-in a build adds
+/// reads it, for the issuers it owns.
+pub(crate) fn reports_status(issuer: &str) -> bool {
+	crate::bootstrap::build::current()
+		.extension
+		.owns_issuer(issuer)
+}
+
+/// Whether External Identities of `issuer` may act at all. Without a
+/// configured sign-in, only identities of an issuer that no build's sign-in
+/// owns, such as fixtures', are unrestricted.
+fn admits_identity(
+	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	issuer: &str,
+) -> bool {
+	match policy {
+		Some(policy) => policy.require_identity(issuer).is_ok(),
+		None => !crate::bootstrap::build::current()
+			.extension
+			.owns_issuer(issuer),
+	}
+}
+
+/// [`admits_identity`], and a Mapping only into the Tenant an issuer's
+/// restriction allows.
 pub(crate) fn require_dashboard_mapping(
 	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	issuer: &str,
@@ -504,6 +521,7 @@ pub(crate) fn require_dashboard_mapping(
 ) -> Result<()> {
 	match policy {
 		Some(policy) => policy.require_mapping(issuer, tenant).map_err(Into::into),
-		None => Ok(()),
+		None if admits_identity(None, issuer) => Ok(()),
+		None => Err(Error::Forbidden),
 	}
 }

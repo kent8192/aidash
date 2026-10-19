@@ -3565,9 +3565,6 @@ fn browser_oidc_runtime(
 			client_id: "fixture".into(),
 			client_secret: "fixture".into(),
 			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: String::new(),
-			status_client_id: String::new(),
-			status_client_secret: String::new(),
 			session_absolute_seconds: 3600,
 			session_idle_seconds: 1800,
 		});

@@ -22,7 +22,6 @@ import { clearEmailHint, EMAIL_KEY, takeEmailHint } from "./gcip-email-hint";
 const copy = {
   "en-US": {
     title: "Sign in to Aidash",
-    organization: "Organization",
     next: "Continue",
     email: "Email",
     password: "Password",
@@ -38,8 +37,6 @@ const copy = {
     provider: "Continue with",
     error: "Sign-in failed. Please try again.",
     loading: "Loading sign-in…",
-    useOrganization: "Use your organization ID instead",
-    useEmail: "Use your email instead",
     notFound:
       "We couldn't find a sign-in for that entry. Check it, or contact your administrator.",
     challengeTitle: "Two-step verification",
@@ -69,7 +66,6 @@ const copy = {
   },
   "ja-JP": {
     title: "Aidash にサインイン",
-    organization: "組織名",
     next: "続ける",
     email: "メールアドレス",
     password: "パスワード",
@@ -86,8 +82,6 @@ const copy = {
     provider: "続ける",
     error: "サインインできませんでした。もう一度お試しください。",
     loading: "サインインを準備中…",
-    useOrganization: "組織 ID で続ける",
-    useEmail: "メールアドレスで続ける",
     notFound:
       "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
     challengeTitle: "2 段階認証",
@@ -222,7 +216,6 @@ export default function GcipSignIn({
   const state = params.get("state");
   const returnTo = params.get("return_to");
   const notFound = params.get("error") === "not_found";
-  const [byOrg, setByOrg] = useState(false);
   // Read during the first render so it happens before any await. Without a
   // state, discovery failed (or never ran), so any handoff left is stale.
   const [loginHint] = useState(() => {
@@ -244,7 +237,6 @@ export default function GcipSignIn({
   const [enrollment, setEnrollment] = useState<TotpEnrollment>();
   const [code, setCode] = useState("");
   const [codeError, setCodeError] = useState<CodeError>();
-  const [org, setOrg] = useState("");
   const [email, setEmail] = useState(loginHint);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -438,101 +430,67 @@ export default function GcipSignIn({
       {!state ? (
         <div className="grid gap-3">
           {notFound && <Notice role="alert">{text.notFound}</Notice>}
-          {byOrg ? (
-            <form
-              className="grid gap-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                clearEmailHint();
-                const query = new URLSearchParams({ org });
-                if (returnTo) query.set("return_to", returnTo);
-                window.location.assign(`/auth/login?${query}`);
-              }}
-            >
-              <label className={field}>
-                {text.organization}
-                <Input
-                  required
-                  value={org}
-                  onChange={(event) => setOrg(event.target.value)}
-                  autoComplete="organization"
-                />
-              </label>
-              <Button type="submit" size="lg">
-                {text.next}
-              </Button>
-            </form>
-          ) : (
-            <form
-              className="grid gap-3"
-              method="post"
-              action="/auth/login"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (busy) return;
-                setBusy(true);
-                setMessage(undefined);
-                const address = email.trim();
-                const body = new URLSearchParams({ email: address });
-                if (returnTo) body.set("return_to", returnTo);
-                // Follow the 303 here so the email handoff is stored only
-                // when discovery succeeded (the redirect carries a state).
-                // Errors answered directly (429, 400) never leave it behind.
-                fetch("/auth/login", {
-                  method: "POST",
-                  body,
-                  credentials: "same-origin",
-                })
-                  .then((response) => {
-                    const next = new URL(response.url);
-                    if (
-                      !response.ok ||
-                      !response.redirected ||
-                      next.origin !== window.location.origin
-                    )
-                      throw new Error("discovery failed");
-                    if (next.searchParams.has("state")) {
-                      try {
-                        sessionStorage.setItem(EMAIL_KEY, address);
-                      } catch {
-                        // Prefill is a convenience; continue without it.
-                      }
+          <form
+            className="grid gap-3"
+            method="post"
+            action="/auth/login"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (busy) return;
+              setBusy(true);
+              setMessage(undefined);
+              const address = email.trim();
+              const body = new URLSearchParams({ email: address });
+              if (returnTo) body.set("return_to", returnTo);
+              // Follow the 303 here so the email handoff is stored only
+              // when discovery succeeded (the redirect carries a state).
+              // Errors answered directly (429, 400) never leave it behind.
+              fetch("/auth/login", {
+                method: "POST",
+                body,
+                credentials: "same-origin",
+              })
+                .then((response) => {
+                  const next = new URL(response.url);
+                  if (
+                    !response.ok ||
+                    !response.redirected ||
+                    next.origin !== window.location.origin
+                  )
+                    throw new Error("discovery failed");
+                  if (next.searchParams.has("state")) {
+                    try {
+                      sessionStorage.setItem(EMAIL_KEY, address);
+                    } catch {
+                      // Prefill is a convenience; continue without it.
                     }
-                    window.location.assign(next.pathname + next.search);
-                  })
-                  .catch(() => {
-                    setBusy(false);
-                    setMessage("error");
-                  });
-              }}
-            >
-              <label className={field}>
-                {text.email}
-                <Input
-                  type="email"
-                  name="email"
-                  required
-                  value={email}
-                  autoComplete="username"
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </label>
-              {returnTo && (
-                <input type="hidden" name="return_to" value={returnTo} />
-              )}
-              <Button type="submit" size="lg" disabled={busy}>
-                {text.next}
-              </Button>
-            </form>
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setByOrg(!byOrg)}
+                  }
+                  window.location.assign(next.pathname + next.search);
+                })
+                .catch(() => {
+                  setBusy(false);
+                  setMessage("error");
+                });
+            }}
           >
-            {byOrg ? text.useEmail : text.useOrganization}
-          </Button>
+            <label className={field}>
+              {text.email}
+              <Input
+                type="email"
+                name="email"
+                required
+                value={email}
+                autoComplete="username"
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </label>
+            {returnTo && (
+              <input type="hidden" name="return_to" value={returnTo} />
+            )}
+            <Button type="submit" size="lg" disabled={busy}>
+              {text.next}
+            </Button>
+          </form>
         </div>
       ) : step ? (
         <form

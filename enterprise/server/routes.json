@@ -1,0 +1,12 @@
+[
+  {
+    "method": "GET",
+    "path": "/auth/gcip/transaction",
+    "offerings": ["cloud", "dedicated"]
+  },
+  {
+    "method": "POST",
+    "path": "/auth/gcip/exchange",
+    "offerings": ["cloud", "dedicated"]
+  }
+]

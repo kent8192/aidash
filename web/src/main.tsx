@@ -658,9 +658,7 @@ function Dashboard({
             }}
           >
             {signInMethods[oidcProvider]?.label[locale] ??
-              (oidcProvider === "keycloak"
-                ? auth.signIn.replace("Google", "Keycloak")
-                : auth.signIn)}
+              (oidcProvider === "oidc" ? auth.signInOidc : auth.signIn)}
           </Button>
         ) : (
           <>

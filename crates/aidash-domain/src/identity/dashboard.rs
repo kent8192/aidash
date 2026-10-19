@@ -5,8 +5,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Account {
 	pub id: Uuid,
-	/// The issuer that knows this External Identity. A GCIP Tenant is part of
-	/// it, so the same person in two GCIP Tenants is two External Identities.
+	/// The issuer that knows this External Identity. A sign-in with several
+	/// user pools folds the pool into it, so the same person in two pools is
+	/// two External Identities.
 	pub issuer: String,
 	pub subject: String,
 	pub valid_since: Option<DateTime<Utc>>,
@@ -45,7 +46,8 @@ impl std::fmt::Debug for SignIn {
 }
 
 /// Only the issuer-reported value drives session revocation; events that advance
-/// it must be verified in a GCIP sandbox, never inferred from account attributes.
+/// it must be verified against the issuer itself, never inferred from account
+/// attributes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AccountState {
 	pub disabled: bool,

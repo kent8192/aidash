@@ -406,7 +406,7 @@ async fn a_deleted_personal_tenant_is_replaced_only_on_request(
 		runtime,
 		TenancyRules {
 			personal_tenants: true,
-			..TenancyRules::default()
+			..TenancyRules::of(Offering::SelfHosted)
 		},
 	)
 	.await;

@@ -22,15 +22,16 @@ test("GCIP browser sign-in returns through the existing desktop consent and loop
       }),
     );
     await page.goto(`/sign-in?return_to=${encodeURIComponent(consent)}`);
-    await page
-      .getByRole("button", { name: "Use your organization ID instead" })
-      .click();
-    await page.getByLabel("Organization").fill("acme");
-    const login = page.waitForRequest("**/auth/login?**");
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
-    expect(new URL((await login).url()).searchParams.get("return_to")).toBe(
-      consent,
+    await page.getByLabel("Email", { exact: true }).fill("person@acme.test");
+    const login = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === "/auth/login" &&
+        request.method() === "POST",
     );
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    expect(
+      new URLSearchParams((await login).postData() ?? "").get("return_to"),
+    ).toBe(consent);
     await page
       .getByRole("button", { name: "Continue with Google", exact: true })
       .click();

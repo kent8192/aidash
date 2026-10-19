@@ -74,10 +74,8 @@ fn invalid_node_settings_fail_before_startup(
 #[fixture]
 fn oidc_settings(mut settings_source: Value) -> Value {
 	settings_source["dashboard"]["oidc"] = json!({
-		"issuer":"https://identity.example/realms/test", "client_id":"dashboard",
-		"client_secret":"test-only-client-secret", "public_origin":"https://example.com:443/",
-		"keycloak_admin_url":"https://identity.example/admin/", "status_client_id":"status",
-		"status_client_secret":"test-only-status-secret"
+		"issuer":"https://identity.example", "client_id":"dashboard",
+		"client_secret":"test-only-client-secret", "public_origin":"https://example.com:443/"
 	});
 	settings_source
 }
@@ -90,15 +88,13 @@ fn optional_oidc_is_normalized_and_secrets_are_redacted(oidc_settings: Value) {
 	let oidc = Config::from_settings(&settings).unwrap().oidc.unwrap();
 	// Assert
 	assert_eq!(oidc.public_origin, "https://example.com");
-	assert_eq!(oidc.keycloak_admin_url, "https://identity.example/admin");
 	assert_eq!(oidc.session_idle_seconds, 1800);
 	let debug = format!("{oidc:?}");
 	assert!(!debug.contains("test-only-client-secret"));
-	assert!(!debug.contains("test-only-status-secret"));
 }
 
 #[rstest]
-#[case("issuer", json!("http://identity.example/realms/test"))]
+#[case("issuer", json!("http://identity.example/issuer"))]
 #[case("public_origin", json!("https://example.com/path"))]
 #[case("session_idle_seconds", json!(604800))]
 fn invalid_oidc_settings_fail_before_startup(

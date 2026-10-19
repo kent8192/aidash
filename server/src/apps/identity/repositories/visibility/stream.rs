@@ -30,8 +30,8 @@ impl StreamAuthorityStore for Authority<'_> {
 	fn node_id(&self) -> &str {
 		&self.workspaces.store.node_id
 	}
-	fn google_issuer(&self) -> &str {
-		crate::config::GOOGLE_OIDC_ISSUER
+	fn reports_status(&self, issuer: &str) -> bool {
+		crate::authorization::identity::reports_status(issuer)
 	}
 	fn now(&self) -> chrono::DateTime<chrono::Utc> {
 		chrono::Utc::now()

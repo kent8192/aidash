@@ -30,14 +30,29 @@ impl Extension for Adapters {
 		builder.add_source(gcip::ManagedGcipSource::from_env())
 	}
 
-	fn sign_in(
-		&self,
-		settings: &serde_json::Value,
-	) -> aidash_server::Result<Arc<dyn SignInProvider>> {
-		Ok(Arc::new(gcip::Gcip::from_settings(settings)?))
+	/// `[dashboard.gcip]`, which only this build reads, from the same sources
+	/// as every other setting, including the managed one above.
+	fn sign_in(&self) -> aidash_server::Result<Option<Arc<dyn SignInProvider>>> {
+		let invalid = |error: reinhardt::conf::settings::builder::BuildError| {
+			aidash_server::Error::Invalid(error.to_string())
+		};
+		let settings = aidash_server::config::settings::get_scoped_settings().map_err(invalid)?;
+		settings
+			.optional_path::<serde_json::Value>(&["dashboard", "gcip"])
+			.map_err(invalid)?
+			.map(
+				|value| Ok(Arc::new(gcip::Gcip::from_settings(&value)?) as Arc<dyn SignInProvider>),
+			)
+			.transpose()
 	}
 
-	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
+	fn owns_issuer(&self, issuer: &str) -> bool {
+		aidash_gcp::gcip::is_issuer(issuer)
+	}
+
+	/// Every Enterprise route serves both of this build's Offerings so far;
+	/// `enterprise/server/routes.json` lists them per Offering.
+	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		Some(gcip::routes())
 	}
 
