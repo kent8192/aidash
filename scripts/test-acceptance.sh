@@ -10,4 +10,5 @@ npm ci --prefix web
 npm run build --prefix web
 scripts/install-browser.sh
 AIDASH_TEST_BINARY=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/aidash")')
-python3 scripts/golden_path.py --binary "$AIDASH_TEST_BINARY" --dashboard
+# No argument runs the golden path with its @golden-path browser specs; --browser-suite runs the rest of the browser suite after the setup alone.
+python3 scripts/golden_path.py --binary "$AIDASH_TEST_BINARY" "${@:---dashboard}"
