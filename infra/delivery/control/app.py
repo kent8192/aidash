@@ -26,7 +26,7 @@ PERMISSIONS = {
 }
 HOMEPAGE = "https://github.com/kent8192/aidash"
 OWNER, REPOSITORY = "kent8192", "kent8192/aidash"
-DIRECTORY = Path(__file__).resolve().parents[3] / ".ignore/delivery/operator/github-app"
+DIRECTORY = Path(__file__).resolve().parents[3] / "secrets/delivery/operator/github-app"
 
 
 def manifest(port, session):

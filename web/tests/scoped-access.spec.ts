@@ -227,7 +227,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     await selectDashboardLanguage(page, "en-US");
     await expect(page.getByText("Signed in as", { exact: true })).toBeVisible();
     await page.screenshot({
-      path: "../.ignore/dashboard-scoped-access.png",
+      path: "../private/dashboard-scoped-access.png",
       fullPage: true,
     });
     await api(

@@ -19,12 +19,11 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 NODE = "kindest/node@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
-GVISOR = "20260921.0"
+# The same pin the Runner image bundles; local setups still download it.
+PIN = json.loads((ROOT / "runner/gvisor.json").read_text())
+GVISOR = PIN["version"]
 CILIUM = "1.20.2"
-HASHES = {
-    "aarch64": "edf717346495ec5e995551e84e47beb5d0ecbfd872d9773ffb554aa24a158c4e",
-    "x86_64": "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646",
-}
+HASHES = PIN["sha256"]
 
 
 def run(args, *, data=None, capture=False):

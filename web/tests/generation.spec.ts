@@ -475,7 +475,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await expect(dialog).toContainText("Approved embedding · 1.0.0");
     await expect(dialog).toContainText("埋め込み試行数");
     await page.screenshot({
-      path: "../.ignore/dashboard-generation-approval-ja.png",
+      path: "../private/dashboard-generation-approval-ja.png",
       fullPage: true,
     });
     await dialog
@@ -517,7 +517,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       dialog.getByText("Embedding attempts", { exact: true }),
     ).toBeVisible();
     await page.screenshot({
-      path: "../.ignore/dashboard-generation-complete-en.png",
+      path: "../private/dashboard-generation-complete-en.png",
       fullPage: true,
     });
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
@@ -560,12 +560,12 @@ test("generation dashboard manages policy, approval, completion and retained his
       .click();
     await expect(page.locator(".generation-policy .badge")).toHaveText("有効");
     await page.screenshot({
-      path: "../.ignore/dashboard-generation-page-ja.png",
+      path: "../private/dashboard-generation-page-ja.png",
       fullPage: true,
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({
-      path: "../.ignore/dashboard-generation-mobile-ja.png",
+      path: "../private/dashboard-generation-mobile-ja.png",
       fullPage: true,
     });
     const policies = await api(
