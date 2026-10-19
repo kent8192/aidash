@@ -593,7 +593,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.await
 		.unwrap();
 		if blocker == "ordering" {
-			let previous = unblock::insert_run(&f, "PAUSED").await;
+			let previous = unblock::insert_run(&f, "PAUSED", "acme").await;
 			let generation: i64 = sqlx::query_scalar(
 				&Query::select()
 					.column(a("generation"))

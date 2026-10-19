@@ -238,6 +238,9 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 	let f = database.await;
 	let pool = server_pool(&f).await;
 	let acme = TenancyScope::tenant("acme").unwrap();
+	for tenant in ["acme", "beta", "gamma"] {
+		f.tenant(tenant).await;
+	}
 	for tenant in ["acme", "beta"] {
 		pool.atomic(&TEST_FIXTURE, async |tx| {
 			TenantRetentionRule::objects()

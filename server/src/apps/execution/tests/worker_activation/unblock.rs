@@ -1,7 +1,7 @@
 use super::*;
 
-pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
-	tenant_root_in(f.store.pool.fixture_driver(), "default").await;
+pub(super) async fn insert_run(f: &Federation, control: &str, tenant: &str) -> Uuid {
+	tenant_root_in(f.store.pool.fixture_driver(), tenant).await;
 	let id = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -27,7 +27,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
 				"fixture".into(),
 				"1.0.0".into(),
 				control.into(),
-				"default".into(),
+				tenant.into(),
 			])
 			.to_string(PostgresQueryBuilder),
 	)
@@ -78,7 +78,12 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 	let mut runs = Vec::new();
 	for sequence in 0..5_i64 {
 		// A paused head still owns its position; successors must not skip it.
-		let run = insert_run(&f, if sequence == 3 { "PAUSED" } else { "ACTIVE" }).await;
+		let run = insert_run(
+			&f,
+			if sequence == 3 { "PAUSED" } else { "ACTIVE" },
+			"default",
+		)
+		.await;
 		sqlx::query(
 			&Query::insert()
 				.into_table(a("core_runs"))
@@ -144,7 +149,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 	let (f, url, schema) = runtime.parts();
 	let environment = runtime.environment();
 	for _ in 0..32 {
-		insert_run(&f, "PAUSED").await;
+		insert_run(&f, "PAUSED", "default").await;
 	}
 	let obligations = count(&f, "TRUE").await;
 	let transaction = Uuid::new_v4();
@@ -218,8 +223,8 @@ async fn approval_notifications_target_only_the_bound_run(
 ) {
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();
-	let target = insert_run(&f, "ACTIVE").await;
-	let unrelated = insert_run(&f, "ACTIVE").await;
+	let target = insert_run(&f, "ACTIVE", "default").await;
+	let unrelated = insert_run(&f, "ACTIVE", "default").await;
 	let approval = Uuid::new_v4();
 	// A stale/mismatched pointer on another Run must not receive this approval.
 	for run in [target, unrelated] {

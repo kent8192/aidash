@@ -979,9 +979,10 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 	.into_iter()
 	.find(|m| m.app_label == "registry" && m.name == "0021_tool_parallelism")
 	.unwrap();
-	// Migrations run as the table owner, as a deployment's migration Job does.
+	// The rollback guard reads the Runs of every Tenant, which row-level security
+	// shows only to a login that bypasses it.
 	let mut executor = DatabaseMigrationExecutor::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(common::owner_pool(b.f.store.pool.fixture_driver()).await),
+		PostgresBackend::new(common::admin_pool(b.f.store.pool.fixture_driver()).await),
 	)));
 	// Act / Assert: the unfinished Run refuses the rollback.
 	let error = executor

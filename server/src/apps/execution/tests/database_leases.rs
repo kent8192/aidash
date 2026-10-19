@@ -46,11 +46,11 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 				.unwrap(),
 		);
 	}
-	let mut lock = database.connection.begin().await.unwrap();
+	let mut lock = database.begin_fixture().await;
 	Run::objects()
 		.filter(Run::field_id().eq(records[0].id))
 		.select_for_update()
-		.all_with_executor(lock.as_mut())
+		.all_with_executor(&mut *lock)
 		.await
 		.unwrap();
 	let a = Uuid::new_v4();
