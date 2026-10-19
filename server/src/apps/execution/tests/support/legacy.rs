@@ -159,8 +159,113 @@ async fn bootstrap_with_resources(
 	semantic: bool,
 	files: bool,
 ) -> (Value, String, Uuid) {
+	bootstrap_with_policy(f, app, endpoint, semantic, files, policy(&f.config.node_id)).await
+}
+/// Like [`bootstrap`], under a policy that grants no direct permission to call a
+/// Tenant's tool, so every such call waits for a Tool call approval.
+#[allow(dead_code)]
+pub async fn bootstrap_requiring_tool_call_approval(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	let mut policy = policy(&f.config.node_id);
+	require_tool_call_approval(&mut policy);
+	bootstrap_with_policy(f, app, endpoint, false, false, policy).await
+}
+/// Grant `tool.call_unapproved` by name, which a wildcard never does, so the
+/// Run's calls of a Tenant's tool need no Tool call approval.
+#[allow(dead_code)]
+pub async fn bootstrap_allowing_unapproved_tool_calls(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	let mut policy = policy(&f.config.node_id);
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}));
+	bootstrap_with_policy(f, app, endpoint, false, false, policy).await
+}
+/// Narrow `approved-work` so that no subject may call a Tenant's tool without a
+/// Tool call approval: agents keep every action, and users keep what members
+/// have, including approving the tool calls of their own Runs (ADR 0075).
+#[allow(dead_code)]
+pub fn require_tool_call_approval(policy: &mut Value) {
+	let resources = policy["policies"][0]["resources"].clone();
+	policy["policies"][0]["subjects"] = json!({"kinds":["agent"]});
+	let policies = policy["policies"].as_array_mut().unwrap();
+	policies.push(json!({"id":"member-work","effect":"allow","subjects":{"kinds":["user"]},"actions":aidash_domain::identity::tenancy::MEMBER_ACTIONS,"resources":resources}));
+	policies.push(json!({"id":"member-tool-call-approval","effect":"allow","subjects":{"kinds":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}));
+}
+/// The Tool call approval the Run waits for, with the call it asks about.
+#[allow(dead_code)]
+pub fn awaited_tool_call(
+	run: &aidash_server::domain::Run,
+) -> Option<(Uuid, aidash_domain::provider::ToolCall)> {
+	use aidash_domain::{RunState, WaitingState, run_state::ApprovalRef};
+	let RunState::Waiting(waiting) = &run.state else {
+		return None;
+	};
+	let WaitingState::Approval {
+		approval: ApprovalRef::Capability { approval_id },
+		resume,
+	} = waiting.as_ref()
+	else {
+		return None;
+	};
+	Some((
+		*approval_id,
+		resume.response.tool_calls[resume.cursor].clone(),
+	))
+}
+/// Decide the pending Tool call approval `approval` as the approver `token`
+/// names, through the same list and decision API the dashboard uses.
+/// `choice` is `allow_once`, `allow_run` or `deny`; an `allow_run` lasts ten minutes.
+#[allow(dead_code)]
+pub async fn decide_tool_call(
+	app: &TestApplication,
+	token: &str,
+	approval: Uuid,
+	choice: &str,
+) -> (u16, Value) {
+	let (status, inbox) = request(
+		app,
+		token,
+		"GET",
+		"/api/capabilities/approvals?state=pending&role=approver",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{inbox}");
+	let card = inbox["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap_or_else(|| panic!("approval {approval} is not pending for this approver: {inbox}"));
+	assert_eq!(card["kind"], "tool_call", "{card}");
+	let mut decision = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":choice});
+	if choice == "allow_run" {
+		decision["targets"] = card["targets"].clone();
+		decision["expires_at"] = json!(chrono::Utc::now() + chrono::Duration::minutes(10));
+	}
+	request(
+		app,
+		token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		decision,
+	)
+	.await
+}
+async fn bootstrap_with_policy(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+	semantic: bool,
+	files: bool,
+	policy: Value,
+) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
-	let policy = policy(&f.config.node_id);
 	tenant_root(f, "acme").await;
 	let (status, snapshot) = request(
 		app,

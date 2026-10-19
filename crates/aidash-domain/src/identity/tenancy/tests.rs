@@ -223,9 +223,36 @@ fn members_approve_tool_calls_and_nothing_else_they_could_be_asked_for() {
 	for kind in ["outbound", "research", "generation"] {
 		assert!(!evaluate("alice", kind, "capability.approve"), "{kind}");
 	}
-	// Direct permission to call without approval stays with administrators.
+	// Calling without approval is never granted by default, not even by an
+	// administrator's wildcard: the Tenant has to name it.
 	assert!(!evaluate("alice", "tool", "tool.call_unapproved"));
-	assert!(evaluate(OWNER, "tool", "tool.call_unapproved"));
+	assert!(!evaluate(OWNER, "tool", "tool.call_unapproved"));
+}
+
+#[test]
+fn a_wildcard_allow_never_grants_an_explicit_action_but_a_wildcard_deny_covers_it() {
+	let mut bundle = initial_policy("t", true).unwrap();
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(!allows(&bundle, OWNER, action), "{action}");
+	}
+	let mut named = bundle.policies[0].clone();
+	named.id = "named".into();
+	named.actions = crate::policy::EXPLICIT_ACTIONS
+		.iter()
+		.map(|action| (*action).to_owned())
+		.collect();
+	bundle.policies.push(named);
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(allows(&bundle, OWNER, action), "{action}");
+	}
+	let mut deny = bundle.policies[0].clone();
+	deny.id = "deny-all".into();
+	deny.effect = crate::policy::Effect::Deny;
+	deny.actions = ["*".to_owned()].into();
+	bundle.policies.push(deny);
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(!allows(&bundle, OWNER, action), "{action}");
+	}
 }
 
 #[test]
