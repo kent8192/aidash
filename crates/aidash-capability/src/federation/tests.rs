@@ -281,6 +281,7 @@ async fn the_two_token_types_never_stand_in_for_each_other() {
 			model: "author/model".into(),
 			max_output_tokens: 100,
 			cache_breakpoints: false,
+			hosts: vec![],
 		},
 		&signer(),
 	)
