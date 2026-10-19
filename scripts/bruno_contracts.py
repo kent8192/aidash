@@ -828,6 +828,13 @@ def render():
             add(endpoint, "Only a deleted Tenant can be restored", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["name"] == "tenants-purge":
+            # Only a Deployment Administrator purges, and only a deleted Tenant (ADR 0061).
+            add(endpoint, "Subject Credential bearer never purges a Tenant", 403,
+                headers=SUBJECT, immutable=True)
+            add(endpoint, "Only a deleted Tenant can be purged", 409,
+                headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
             body = json.dumps(tenant_route["body"])
