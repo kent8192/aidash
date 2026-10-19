@@ -122,7 +122,7 @@ def diagnose(base, token, tenant, workspace, database):
     # The database answers even when the API is too slow to (#386).
     for label, query in [
         ("runs", "SELECT id, agent_id, phase, control, step, coalesce(error, ''), pending_human_request_id FROM runs ORDER BY updated_at"),
-        ("human requests", "SELECT run_id, kind, left(prompt, 160), response IS NOT NULL, coalesce(answered_by, '') FROM human_requests ORDER BY created_at"),
+        ("human requests", "SELECT run_id, kind, left(prompt, 160), response IS NOT NULL, coalesce(answered_by, ''), to_char(created_at, 'HH24:MI:SS') FROM human_requests ORDER BY created_at"),
         ("decision count", "SELECT count(*) FROM authorization_decisions"),
         ("decisions by action", "SELECT action, count(*) FROM authorization_decisions GROUP BY action ORDER BY 2 DESC LIMIT 15"),
         ("decisions by subject", "SELECT left(subject, 80), count(*) FROM authorization_decisions GROUP BY 1 ORDER BY 2 DESC LIMIT 8"),
