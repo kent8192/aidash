@@ -24,13 +24,13 @@ fn call(name: &str, arguments: Value) -> ToolCall {
 fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_request() {
 	// Arrange
 	let snapshot = snapshot();
-	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
 	let digest = binding(&snapshot, "workspace_observe").digest.clone();
 	let mut state = ExposureState::default();
 	let evaluate = |name: &str, arguments: Value, state: &mut ExposureState| {
 		deferred
 			.evaluate(
-				binding(&snapshot, name),
+				Some(binding(&snapshot, name)),
 				&call(name, arguments),
 				state,
 				0,
@@ -96,12 +96,12 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
 	// Arrange: the next test request carries at most `limit` result bytes.
 	let snapshot = snapshot();
-	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
 	let evaluate = |name: &str, arguments: Value, limit: usize| {
 		let fits = |result: &Value, reserve: usize| result.to_string().len() + reserve <= limit;
 		deferred
 			.evaluate(
-				binding(&snapshot, name),
+				Some(binding(&snapshot, name)),
 				&call(name, arguments),
 				&mut ExposureState::default(),
 				0,
@@ -201,7 +201,7 @@ fn plugin_skills_are_discoverable_in_a_deferred_draft() {
 		vec![],
 		vec![plugin],
 	);
-	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
 
 	let (resident, _) = deferred
 		.request(&snapshot, &ExposureState::default())

@@ -32,6 +32,8 @@ struct State {
 }
 struct Repository {
 	entry: Entry,
+	plugins: Vec<crate::ports::bindings::StoredAgentPlugin>,
+	rules: Vec<RealToolRule>,
 	state: Mutex<State>,
 	failure: Option<(usize, &'static str)>,
 	stop_after_progress: bool,
@@ -40,6 +42,8 @@ impl Repository {
 	fn new() -> Self {
 		Self {
 			entry: crate::test_support::agent("agent"),
+			plugins: vec![],
+			rules: vec![],
 			state: Mutex::new(State {
 				active: false,
 				commits: 0,
@@ -222,7 +226,7 @@ impl RealDispatchScope for Scope<'_> {
 			rules: if self.0.failing("profile_rules") {
 				json!(["changed"])
 			} else {
-				json!([])
+				json!(self.0.rules)
 			},
 			updated_at: Utc.timestamp_opt(100, 0).unwrap(),
 		})
@@ -244,11 +248,12 @@ impl ExecutionScope for Scope<'_> {
 		_: &Draft,
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		Ok(crate::test_support::resolve(
+		Ok(crate::test_support::resolve_with_plugins(
 			"aidash://local",
 			entry,
 			false,
 			vec![],
+			self.0.plugins.clone(),
 		))
 	}
 
@@ -392,6 +397,7 @@ fn job(model: Arc<Model>) -> Job {
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
 		pinned_draft: draft(7),
+		plugin_tools: Default::default(),
 		exposure: None,
 	}
 }
@@ -502,7 +508,7 @@ async fn deferred_load_results_reshape_the_next_request() {
 	job.limits.max_total_tokens = 100_000;
 	job.context_window = 100_000;
 	let state = ExposureState::default();
-	let (text, tools) = deferred::Deferred::new(&snapshot)
+	let (text, tools) = deferred::Deferred::new(&snapshot, None)
 		.unwrap()
 		.unwrap()
 		.request(&snapshot, &state)
@@ -577,7 +583,7 @@ async fn deferred_search_without_room_stops_instead_of_retaining_a_result() {
 	let mut job = job(model.clone());
 	job.limits.max_total_tokens = 100_000;
 	let state = ExposureState::default();
-	let (text, tools) = deferred::Deferred::new(&snapshot)
+	let (text, tools) = deferred::Deferred::new(&snapshot, None)
 		.unwrap()
 		.unwrap()
 		.request(&snapshot, &state)
@@ -946,6 +952,291 @@ async fn fixture_cannot_enable_an_unbound_tool_alias() {
 	let outcome = simulate(&execution(repository), session().id, &job)
 		.await
 		.unwrap();
+	assert_eq!(outcome.status, "blocked");
+	assert_eq!(outcome.tool_calls[0]["outcome"], "denied");
+	assert_eq!(model.requests.lock().unwrap().len(), 1);
+}
+
+const PLUGIN_TOOL: &str = "acme__docs__search";
+
+/// A repository whose Agent takes in a plugin with one remote server, and what a
+/// session pinned from that server's `search` tool.
+async fn plugin_repository(
+	exposure: Option<&str>,
+) -> (
+	Repository,
+	aidash_domain::registry::bindings::BindingSnapshot,
+	aidash_domain::agent_plugin::PluginTools,
+) {
+	let stored = crate::test_support::stored_plugin("acme", &[]);
+	let mut repository = Repository::new();
+	repository.entry.config["agent_plugins"] =
+		json!([crate::test_support::plugin_reference(&stored)]);
+	if let Some(exposure) = exposure {
+		repository.entry.config["exposure"] = json!({"version":"deferred@1"});
+		repository.entry.config["agent_plugin_settings"] =
+			json!({"acme":{"docs":{"exposure":exposure}}});
+	}
+	repository.plugins = vec![stored];
+	let snapshot = crate::test_support::resolve_with_plugins(
+		"aidash://local",
+		&repository.entry,
+		false,
+		vec![],
+		repository.plugins.clone(),
+	);
+	repository.state.get_mut().unwrap().session.scenario = json!({"binding_snapshot":snapshot});
+	let sessions = crate::test_support::FakeSessions::default();
+	sessions.script(
+		"docs",
+		crate::test_support::Listed::Tools(vec![crate::test_support::listed_tool("search")]),
+	);
+	let pinned = crate::plugin_tools::pin_for_run(&sessions, Uuid::new_v4(), &snapshot)
+		.await
+		.unwrap();
+	assert_eq!(pinned.servers[0].tools[0].alias, PLUGIN_TOOL);
+	(repository, snapshot, pinned)
+}
+
+/// `job` as admission builds it for a session that pinned `pinned`.
+fn offering(
+	mut job: Job,
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	pinned: aidash_domain::agent_plugin::PluginTools,
+	deferred: bool,
+) -> Job {
+	if deferred {
+		let state = ExposureState::default();
+		let (text, tools) = deferred::Deferred::new(snapshot, Some(&pinned))
+			.unwrap()
+			.unwrap()
+			.request(snapshot, &state)
+			.unwrap();
+		job.request.instructions = format!("sandbox{text}");
+		job.request.tools = tools;
+		job.limits.max_total_tokens = 100_000;
+		job.context_window = 100_000;
+		job.exposure = Some(SessionExposure {
+			prefix: "sandbox".into(),
+			suffix: String::new(),
+			state,
+		});
+	} else {
+		job.request.tools = crate::tools::agent_plugin::pinned_specifications(Some(&pinned))
+			.into_values()
+			.collect();
+	}
+	job.plugin_tools = pinned;
+	job
+}
+
+fn calling(name: &str) -> ModelResponse {
+	let mut answer = response(true);
+	answer.tool_calls[0].name = name.into();
+	answer.tool_calls[0].arguments = json!({"q":"x"});
+	answer
+}
+
+fn plugin_fixture() -> Fixture {
+	Fixture {
+		status: FixtureStatus::Success,
+		response: json!({"content":[{"type":"text","text":"found"}]}),
+	}
+}
+
+#[rstest]
+#[case::legacy_with_fixture(None, true)]
+#[case::legacy_without_fixture(None, false)]
+#[case::deferred_with_fixture(Some("eager"), true)]
+#[case::deferred_without_fixture(Some("eager"), false)]
+#[tokio::test]
+async fn a_pinned_plugin_tool_is_answered_only_by_its_fixture(
+	#[case] exposure: Option<&str>,
+	#[case] fixture: bool,
+) {
+	// Arrange: a session that pinned the tool and a model that calls it.
+	let (repository, snapshot, pinned) = plugin_repository(exposure).await;
+	let repository = Arc::new(repository);
+	let model = model(
+		repository.clone(),
+		vec![calling(PLUGIN_TOOL), response(false)],
+	);
+	let mut job = offering(job(model.clone()), &snapshot, pinned, exposure.is_some());
+	if fixture {
+		job.input
+			.fixtures
+			.insert(PLUGIN_TOOL.into(), plugin_fixture());
+	}
+	// Act
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	// Assert: the first request offered the tool; the call is simulated or missing.
+	let requests = model.requests.lock().unwrap();
+	assert!(
+		requests[0]
+			.tools
+			.iter()
+			.any(|tool| tool.name == PLUGIN_TOOL)
+	);
+	if fixture {
+		assert_eq!(outcome.status, "completed");
+		assert_eq!(outcome.error, None);
+		assert_eq!(outcome.tool_calls[0]["outcome"], "simulated");
+		assert_eq!(outcome.tool_calls[0]["fixture"]["status"], "success");
+		assert_eq!(requests.len(), 2);
+	} else {
+		assert_eq!(outcome.status, "blocked");
+		assert_eq!(
+			outcome.error.as_deref(),
+			Some("a tool call has no explicit simulated fixture")
+		);
+		assert_eq!(outcome.tool_calls[0]["outcome"], "missing_fixture");
+		assert_eq!(outcome.tool_calls[0]["fixture"], Value::Null);
+		assert_eq!(requests.len(), 1);
+	}
+}
+
+#[tokio::test]
+async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
+	// Arrange: the server's tools are Discoverable, so the first request only indexes them.
+	let (repository, snapshot, pinned) = plugin_repository(Some("deferred")).await;
+	let digest = pinned.servers[0].tools[0].schema_digest.clone();
+	let repository = Arc::new(repository);
+	let respond = |tool_calls| ModelResponse {
+		text: "step".into(),
+		tool_calls,
+		input_tokens: 3,
+		output_tokens: 5,
+		usage_complete: true,
+		..Default::default()
+	};
+	let call = |id: &str, name: &str, arguments: Value| ToolCall {
+		id: id.into(),
+		name: name.into(),
+		arguments,
+	};
+	let model = model(
+		repository.clone(),
+		vec![
+			respond(vec![
+				call("early", PLUGIN_TOOL, json!({"q":"x"})),
+				call(
+					"load",
+					"capability_load",
+					json!({"alias":PLUGIN_TOOL,"digest":digest}),
+				),
+				call("same", PLUGIN_TOOL, json!({"q":"x"})),
+			]),
+			respond(vec![call("late", PLUGIN_TOOL, json!({"q":"x"}))]),
+			respond(vec![]),
+		],
+	);
+	let mut job = offering(job(model.clone()), &snapshot, pinned, true);
+	job.limits.max_steps = 8;
+	job.agent_max_steps = 8;
+	job.input
+		.fixtures
+		.insert(PLUGIN_TOOL.into(), plugin_fixture());
+	// Act
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	// Assert: an unloaded tool is not simulated, and a loaded one is answered by its fixture.
+	assert_eq!(outcome.status, "completed");
+	assert_eq!(outcome.error, None);
+	assert_eq!(outcome.tool_calls[0]["outcome"], deferred::EVALUATED);
+	assert_eq!(
+		outcome.tool_calls[0]["result"]["error"],
+		format!("capability {PLUGIN_TOOL} is not loaded; use capability_load")
+	);
+	assert_eq!(outcome.tool_calls[1]["result"]["status"], "loaded");
+	assert_eq!(
+		outcome.tool_calls[2]["result"]["error"],
+		format!(
+			"capability {PLUGIN_TOOL} was loaded in this response; call it after the next model request"
+		)
+	);
+	assert_eq!(outcome.tool_calls[3]["outcome"], "simulated");
+	let requests = model.requests.lock().unwrap();
+	let advertises =
+		|request: &ModelRequest| request.tools.iter().any(|tool| tool.name == PLUGIN_TOOL);
+	assert!(!advertises(&requests[0]));
+	assert!(
+		requests[0]
+			.instructions
+			.contains(&format!("{PLUGIN_TOOL} [tool]"))
+	);
+	assert!(advertises(&requests[1]));
+}
+
+#[rstest]
+#[case::offered_and_missing(false)]
+#[case::offered_and_simulated(true)]
+#[tokio::test]
+async fn a_real_tool_profile_never_dispatches_a_plugin_tool(#[case] fixture: bool) {
+	// Arrange: a profile that permits a Registry tool, in a session that also pinned a plugin tool.
+	let (mut repository, snapshot, pinned) = plugin_repository(None).await;
+	let permitted = EntityRef {
+		id: "message".into(),
+		version: "1.0.0".into(),
+	};
+	repository.rules = vec![RealToolRule {
+		read_only_verified: true,
+		tool: permitted.clone(),
+		endpoint: "https://test.example/rpc".into(),
+		allowed_actions: vec!["read".into()],
+		allowed_resources: vec!["fixture".into()],
+	}];
+	let repository = Arc::new(repository);
+	let model = model(
+		repository.clone(),
+		vec![calling(PLUGIN_TOOL), response(false)],
+	);
+	let mut job = offering(job(model), &snapshot, pinned, false);
+	job.input.mode = "real".into();
+	job.input.profile_id = Some("profile".into());
+	job.profile = Some(ProfilePin {
+		id: "profile".into(),
+		revision: 7,
+		tenant: "tenant".into(),
+		rules: repository.rules.clone(),
+	});
+	job.tool_references = BTreeMap::from([("workspace_message".to_owned(), permitted)]);
+	if fixture {
+		job.input
+			.fixtures
+			.insert(PLUGIN_TOOL.into(), plugin_fixture());
+	}
+	// Act: the repository panics if the session reaches for a real dispatch.
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(
+		outcome.tool_calls[0]["outcome"],
+		if fixture {
+			"simulated"
+		} else {
+			"missing_fixture"
+		}
+	);
+}
+
+#[tokio::test]
+async fn a_plugin_tool_the_session_did_not_pin_stays_denied_despite_a_fixture() {
+	// Arrange: the session pinned `search` only.
+	let (repository, snapshot, pinned) = plugin_repository(None).await;
+	let repository = Arc::new(repository);
+	let alias = "acme__docs__other";
+	let model = model(repository.clone(), vec![calling(alias)]);
+	let mut job = offering(job(model.clone()), &snapshot, pinned, false);
+	job.input.fixtures.insert(alias.into(), plugin_fixture());
+	// Act
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	// Assert
 	assert_eq!(outcome.status, "blocked");
 	assert_eq!(outcome.tool_calls[0]["outcome"], "denied");
 	assert_eq!(model.requests.lock().unwrap().len(), 1);

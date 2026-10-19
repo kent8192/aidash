@@ -160,7 +160,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	} else {
 		instructions.push_str("\n\nSandbox: all tool calls are simulated from explicit fixtures. Never claim an unprovided tool result.\n");
 	}
-	let (tool_specs, exposure) = if let Some(discoverable) = Deferred::new(&snapshot)? {
+	let (tool_specs, exposure) = if let Some(discoverable) = Deferred::new(&snapshot, None)? {
 		let prefix = instructions.clone();
 		// A continued session resumes the Exposure set it ended with.
 		let state = deferred::replayed(&conversation)?;
@@ -245,6 +245,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 			request,
 			initial_conversation: conversation,
 			pinned_draft: draft,
+			plugin_tools: Default::default(),
 			exposure,
 		},
 	})
