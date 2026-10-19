@@ -19,20 +19,18 @@ impl DashboardAuthority {
 	pub fn configured(&self) -> bool {
 		self.accounts.policy().is_some()
 	}
-	/// Install GCIP policy durably before admitting requests or refreshing status.
+	/// Install a restricting policy durably before admitting requests or
+	/// refreshing status.
 	pub async fn reconcile_policy(&self) -> Result<()> {
 		let Some(policy) = self
 			.accounts
 			.policy()
-			.filter(|policy| policy.tenant_bindings.is_some())
+			.filter(|policy| policy.issuers.retires_refused())
 		else {
 			return Ok(());
 		};
 		for account in self.accounts.identities().await? {
-			if policy
-				.require_identity(&account.issuer, account.gcip_tenant.as_deref())
-				.is_err()
-			{
+			if policy.require_identity(&account.issuer).is_err() {
 				self.disable(account.id, None).await?;
 			}
 		}
@@ -47,32 +45,30 @@ impl DashboardAuthority {
 			.accounts
 			.policy()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		if let Err(error) = policy.require_identity(&policy.issuer, sign_in.gcip_tenant.as_deref())
-		{
+		if let Err(error) = policy.require_identity(&sign_in.issuer) {
 			// A verified login reaches inactive identities that the background
 			// refresh cannot see. Retire their authority before rejecting it.
-			if (policy.tenant_bindings.is_some() || sign_in.gcip_tenant.is_some())
-				&& let Some(account) = scope.find(&policy.issuer, sign_in).await?
+			if policy.issuers.retires_refused()
+				&& let Some(account) = scope.find(sign_in).await?
 			{
 				self.disable(account.id, None).await?;
 			}
 			return Err(error);
 		}
-		policy.require_sign_in_provider(sign_in)?;
 		let started = self.accounts.now();
 		let status = if policy.google {
 			None
 		} else {
 			Some(
 				self.status
-					.lookup(&sign_in.subject, sign_in.gcip_tenant.as_deref())
+					.lookup(&sign_in.issuer, &sign_in.subject)
 					.await?,
 			)
 		};
 		if status.is_some_and(|status| {
 			status.disabled || session_revoked(sign_in.auth_time, status.valid_since)
 		}) {
-			if let Some(account) = scope.find(&policy.issuer, sign_in).await?
+			if let Some(account) = scope.find(sign_in).await?
 				&& let Some(status) = status
 			{
 				if status.disabled {
@@ -85,11 +81,11 @@ impl DashboardAuthority {
 			}
 			return Err(Error::Forbidden);
 		}
-		let account = scope.register(&policy.issuer, sign_in).await?;
+		let account = scope.register(sign_in).await?;
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
 		}
-		if policy.provisions_personal(sign_in.gcip_tenant.as_deref()) {
+		if policy.provisions_personal(&sign_in.issuer) {
 			scope.provision_personal(account.id).await?;
 		}
 		if let Some(status) = status {
@@ -107,13 +103,10 @@ impl DashboardAuthority {
 			.accounts
 			.policy()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		if policy
-			.require_identity(&account.issuer, account.gcip_tenant.as_deref())
-			.is_err()
-		{
-			// GCIP Binding removal takes effect durably at this boundary. Keep
+		if policy.require_identity(&account.issuer).is_err() {
+			// Removing a restriction takes effect durably at this boundary. Keep
 			// generic OIDC's request rejection and background issuer retirement.
-			if policy.tenant_bindings.is_some() || account.gcip_tenant.is_some() {
+			if policy.issuers.retires_refused() {
 				self.disable(account.id, None).await?;
 			}
 			return Err(Error::Forbidden);
@@ -129,11 +122,7 @@ impl DashboardAuthority {
 			return Ok(());
 		}
 		// The deadline begins before provider IO, including a slow response body.
-		match self
-			.status
-			.lookup(&account.subject, account.gcip_tenant.as_deref())
-			.await
-		{
+		match self.status.lookup(&account.issuer, &account.subject).await {
 			Ok(status) if !status.disabled => {
 				self.accounts
 					.record_valid(account.id, now, status.valid_since)
@@ -186,10 +175,7 @@ impl DashboardAuthority {
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
 		let mut scope = self.accounts.recovery().await?;
 		let account = scope.account(identity).await?;
-		if policy
-			.require_identity(&account.issuer, account.gcip_tenant.as_deref())
-			.is_err() || account.disabled_at.is_none()
-		{
+		if policy.require_identity(&account.issuer).is_err() || account.disabled_at.is_none() {
 			return Err(Error::Conflict(
 				"identity is not disabled for the configured issuer".into(),
 			));
@@ -197,7 +183,7 @@ impl DashboardAuthority {
 		let started = self.accounts.now();
 		if self
 			.status
-			.lookup(&account.subject, account.gcip_tenant.as_deref())
+			.lookup(&account.issuer, &account.subject)
 			.await?
 			.disabled
 		{
@@ -210,12 +196,10 @@ impl DashboardAuthority {
 		if policy.as_ref().is_some_and(|policy| policy.google) {
 			return;
 		}
-		if policy.as_ref().is_some_and(|policy| {
-			account.issuer != policy.issuer
-				|| policy
-					.require_identity(&account.issuer, account.gcip_tenant.as_deref())
-					.is_err()
-		}) {
+		if policy
+			.as_ref()
+			.is_some_and(|policy| policy.require_identity(&account.issuer).is_err())
+		{
 			if let Err(error) = self.disable(account.id, None).await {
 				tracing::warn!(identity_id=%account.id, %error, "old-issuer identity could not be disabled");
 			}

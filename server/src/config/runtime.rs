@@ -13,43 +13,38 @@ pub struct Config {
 	pub lease_seconds: i32,
 	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
 	pub oidc: Option<OidcConfig>,
-	pub gcip: Option<GcipConfig>,
+	/// A sign-in that the build adds, such as GCIP in the Enterprise build.
+	pub sign_in:
+		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
 }
 
-pub use crate::apps::identity::serializers::settings::{GcipConfig, OidcConfig, SessionConfig};
+pub use crate::apps::identity::serializers::settings::{OidcConfig, SessionConfig};
 
 pub const PROTOCOL_VERSION: &str = aidash_domain::federation::protocol::CURRENT;
 
 impl Config {
 	pub fn dashboard_session(&self) -> Option<SessionConfig<'_>> {
-		self.gcip
+		self.sign_in
 			.as_ref()
-			.map(Into::into)
+			.map(|sign_in| sign_in.session())
 			.or_else(|| self.oidc.as_ref().map(Into::into))
 	}
 	pub fn dashboard_policy(
 		&self,
 	) -> Option<aidash_application::ports::authorization::dashboard::AccountPolicy> {
-		self.gcip
+		use aidash_application::ports::authorization::dashboard::{AccountPolicy, Issuer};
+		self.sign_in
 			.as_ref()
-			.map(
-				|gcip| aidash_application::ports::authorization::dashboard::AccountPolicy {
-					issuer: gcip.issuer(),
-					google: false,
-					tenant_bindings: Some(gcip.tenant_bindings.clone()),
-					gcip_providers: gcip.providers.clone(),
-					personal_tenants: self.tenancy.personal_tenants,
-				},
-			)
+			.map(|sign_in| AccountPolicy {
+				issuers: sign_in.issuers(),
+				google: false,
+				personal_tenants: self.tenancy.personal_tenants,
+			})
 			.or_else(|| {
-				self.oidc.as_ref().map(|oidc| {
-					aidash_application::ports::authorization::dashboard::AccountPolicy {
-						issuer: oidc.issuer.clone(),
-						google: oidc.is_google(),
-						tenant_bindings: None,
-						gcip_providers: Default::default(),
-						personal_tenants: self.tenancy.personal_tenants,
-					}
+				self.oidc.as_ref().map(|oidc| AccountPolicy {
+					issuers: std::sync::Arc::new(Issuer(oidc.issuer.clone())),
+					google: oidc.is_google(),
+					personal_tenants: self.tenancy.personal_tenants,
 				})
 			})
 	}
@@ -89,11 +84,11 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(),
-			gcip: settings
+			sign_in: settings
 				.dashboard
 				.gcip
 				.as_ref()
-				.map(GcipConfig::normalized)
+				.map(|gcip| crate::bootstrap::build::current().extension.sign_in(gcip))
 				.transpose()?,
 			oidc: settings
 				.dashboard

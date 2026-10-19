@@ -81,9 +81,8 @@ import { AppShell } from "./shell/app-shell";
 import { AuthCard } from "./shell/auth-card";
 import { Alert, Loading, Notice } from "./components/patterns";
 import { authCopy, shellCopy } from "./shell/copy";
-import { takeEmailHint } from "./gcip-email-hint";
-import { markEnrollIntent } from "./gcip-intent";
-import { desktopAvailable } from "./desktop";
+import { signInMethods } from "@slots/sign-in";
+import { BillingNotice } from "@slots/billing";
 import {
   CreateTenantForm,
   InvitationLanding,
@@ -92,10 +91,6 @@ import {
   type CreatedTenant,
 } from "./tenancy";
 import { DeletedTenants, type DeletedTenant } from "./tenant-deletion";
-
-const GcipSignIn = lazy(() => import("./gcip-sign-in"));
-// Move any discovery email handoff out of sessionStorage immediately.
-takeEmailHint();
 
 function SignInEntry({
   locale,
@@ -115,7 +110,10 @@ function SignInEntry({
       }>;
     },
   });
-  if (configuration.data?.enabled && configuration.data.provider === "gcip")
+  const method = configuration.data?.enabled
+    ? signInMethods[configuration.data.provider ?? ""]
+    : undefined;
+  if (method)
     return (
       <Suspense
         fallback={
@@ -124,7 +122,7 @@ function SignInEntry({
           </AuthCard>
         }
       >
-        <GcipSignIn locale={locale} setLocale={setLocale} />
+        <method.Page locale={locale} setLocale={setLocale} />
       </Suspense>
     );
   return (
@@ -403,16 +401,6 @@ function Dashboard({
     setRegistrationError("");
     client.clear();
   };
-  // Enrollment re-authenticates through the GCIP Tenant that admitted this
-  // browser session; its Tenant Binding name is the mapping's tenant.
-  const secondFactorTenant =
-    oidcProvider === "gcip" && !desktopAvailable()
-      ? (
-          browserSession?.mappings.find(
-            (mapping) => context === mappingContext(mapping),
-          ) ?? browserSession?.mappings[0]
-        )?.tenant
-      : undefined;
   const chooseContext = (selected: string) => {
     void client.cancelQueries();
     client.clear();
@@ -669,13 +657,10 @@ function Dashboard({
                 .finally(() => setAuthLoading(false));
             }}
           >
-            {oidcProvider === "gcip"
-              ? locale === "ja-JP"
-                ? "サインイン"
-                : "Sign in"
-              : oidcProvider === "keycloak"
+            {signInMethods[oidcProvider]?.label[locale] ??
+              (oidcProvider === "keycloak"
                 ? auth.signIn.replace("Google", "Keycloak")
-                : auth.signIn}
+                : auth.signIn)}
           </Button>
         ) : (
           <>
@@ -877,6 +862,7 @@ function Dashboard({
               session.data?.access.kind === "subject"
                 ? session.data.access.subject
                 : auth.deploymentAdministrator,
+            provider: oidcProvider,
             context,
             mappings: browserSession?.mappings ?? [],
             deploymentAdministratorAllowed:
@@ -900,23 +886,11 @@ function Dashboard({
             chooseContext,
             setLocale,
             logOut: (allDevices) => void logOut(allDevices),
-            // The desktop app signs in through the system browser, so it
-            // enrolls there too; only the web page can start it from here.
-            setUpSecondFactor: secondFactorTenant
-              ? () => {
-                  markEnrollIntent();
-                  const query = new URLSearchParams({
-                    org: secondFactorTenant,
-                    return_to:
-                      window.location.pathname + window.location.search,
-                  });
-                  window.location.assign(`/auth/login?${query}`);
-                }
-              : undefined,
             preference,
             setPreference,
           }}
         >
+          <BillingNotice />
           {((error && !selection) ||
             state.isError ||
             (data &&
@@ -1040,6 +1014,7 @@ function Dashboard({
                         tenant={subjectTenant}
                         subject={subjectName}
                         initiallyOpen={route.integration === "authorization"}
+                        evidenceOpen={route.integration === "evidence"}
                       />
                     )
                   }
@@ -1072,6 +1047,7 @@ function Dashboard({
                 tenant={subjectTenant}
                 subject={subjectName}
                 initiallyOpen={route.integration === "authorization"}
+                evidenceOpen={route.integration === "evidence"}
               />
             </div>
           )}

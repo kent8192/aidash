@@ -306,6 +306,7 @@ async function research(
           sources: 100,
           snapshots: 50,
           snapshot_bytes: 8388608,
+          page_views: 30,
         },
       });
     }
@@ -345,6 +346,7 @@ async function research(
           sources: 100,
           snapshots: 50,
           snapshot_bytes: 8388608,
+          page_views: 30,
         },
         usage: {
           search_attempts: 3,
@@ -352,6 +354,7 @@ async function research(
           sources: 4,
           snapshots: 1,
           snapshot_bytes: 2048,
+          page_views: 2,
         },
         estimated_micro_usd: 15000,
         uncertain_attempts: 1,
@@ -448,7 +451,7 @@ test("an Agent's bound research operations show their availability, the Run's us
   await expect(panel).not.toContainText("Deployment Administrator");
   await expect(
     panel.getByText(
-      "This Run: searches 3/20 · page readings 1/50 · sources 4/100 · snapshots 1/50 · estimated research cost $0.0150 (an estimate, not an invoice; the Research account holder pays)",
+      "This Run: searches 3/20 · page readings 1/50 · sources 4/100 · snapshots 1/50 · page views 2/30 · estimated research cost $0.0150 (an estimate, not an invoice; the Research account holder pays)",
     ),
   ).toBeVisible();
   // The URL intent comes from its record, not from the Task's text.

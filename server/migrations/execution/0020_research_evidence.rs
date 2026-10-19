@@ -129,6 +129,10 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("pages", FieldType::Jsonb).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
             ], constraints: vec![
+				Constraint::Unique {
+					name: "research_fragments_tenant_id_key".to_owned(),
+					columns: vec!["tenant".to_owned(), "id".to_owned()],
+				},
             	Constraint::ForeignKey {
             		name: "research_fragments_tenant_root_fkey".to_owned(),
             		columns: vec!["tenant".to_owned()],

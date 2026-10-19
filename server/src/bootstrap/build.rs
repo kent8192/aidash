@@ -7,7 +7,7 @@
 use aidash_domain::offering::Offering;
 use reinhardt::conf::settings::builder::BuildError;
 use reinhardt::conf::settings::scoped::ScopedSettings;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 static INSTALLED: OnceLock<&'static Build> = OnceLock::new();
 
@@ -29,6 +29,75 @@ pub struct Build {
 	/// The launcher package, for Reinhardt's Cargo checks.
 	pub manifest_dir: &'static str,
 	pub package: &'static str,
+	/// The labels of the apps this build adds to Community's.
+	pub apps: &'static [&'static str],
+	/// The migration roots of those apps, relative to `core.base_dir` like
+	/// Community's own `migrations`, so that an image mirrors the source tree.
+	pub migrations: &'static [&'static str],
+	/// The adapters this build installs into the server.
+	pub extension: &'static dyn Extension,
+}
+
+/// What a build adds to the Community server. Community defines each hook and
+/// adds nothing; an Enterprise build implements them with its own crates, so
+/// Community never names them (ADR 0032).
+pub trait Extension: Sync + std::fmt::Debug {
+	/// Settings sources the build adds, such as managed settings files.
+	fn settings(
+		&self,
+		builder: reinhardt::conf::settings::builder::SettingsBuilder,
+	) -> reinhardt::conf::settings::builder::SettingsBuilder {
+		builder
+	}
+	/// The browser sign-in that `[dashboard.gcip]` configures.
+	fn sign_in(
+		&self,
+		gcip: &serde_json::Value,
+	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>;
+	/// Endpoints the build adds to Community's.
+	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
+		None
+	}
+	/// The Provider Credential Store of an Enterprise `kind`, from its settings
+	/// fields, and the Capability Token issuer of its Credential Broker.
+	fn provider_credential_store(
+		&self,
+		store: &serde_json::Map<String, serde_json::Value>,
+		broker: Option<&serde_json::Value>,
+	) -> crate::Result<ProvidedStore>;
+}
+
+pub struct ProvidedStore {
+	pub store: Arc<dyn aidash_application::provider_credentials::Store>,
+	pub issuer: Option<Arc<dyn aidash_application::provider_access::TokenIssuer>>,
+}
+
+#[derive(Debug)]
+struct Community;
+
+impl Extension for Community {
+	fn sign_in(
+		&self,
+		_: &serde_json::Value,
+	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>> {
+		Err(crate::Error::Invalid(
+			"the Community build has no GCIP sign-in; [dashboard.gcip] needs the Enterprise build"
+				.into(),
+		))
+	}
+	fn provider_credential_store(
+		&self,
+		store: &serde_json::Map<String, serde_json::Value>,
+		_: Option<&serde_json::Value>,
+	) -> crate::Result<ProvidedStore> {
+		let kind = store
+			.get("kind")
+			.and_then(serde_json::Value::as_str)
+			.unwrap_or_default();
+		Err(crate::Error::Invalid(format!(
+			"the Community build has no {kind} Provider Credential Store; it needs the Enterprise build"
+		)))
+	}
 }
 
 impl Build {
@@ -37,7 +106,27 @@ impl Build {
 		offerings: &[Offering::SelfHosted],
 		manifest_dir: env!("CARGO_MANIFEST_DIR"),
 		package: env!("CARGO_PKG_NAME"),
+		apps: &[],
+		migrations: &[],
+		extension: &Community,
 	};
+
+	/// Community's installed apps followed by this build's.
+	pub fn installed_apps(&self) -> Vec<&'static str> {
+		crate::config::apps::APP_LABELS
+			.iter()
+			.chain(self.apps)
+			.copied()
+			.collect()
+	}
+
+	/// Community's migration root followed by this build's.
+	pub fn migration_roots(&self, base_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+		std::iter::once("migrations")
+			.chain(self.migrations.iter().copied())
+			.map(|root| base_dir.join(root))
+			.collect()
+	}
 
 	pub fn admit(&self, offering: Offering) -> Result<(), BuildError> {
 		if self.offerings.contains(&offering) {
@@ -76,6 +165,29 @@ mod tests {
 		offerings: &[Cloud, Dedicated],
 		..Build::COMMUNITY
 	};
+
+	#[test]
+	fn the_community_build_refuses_enterprise_adapters() {
+		let extension = Build::COMMUNITY.extension;
+		assert_eq!(
+			extension
+				.sign_in(&serde_json::json!({"project_id": "fixture"}))
+				.err()
+				.unwrap()
+				.to_string(),
+			"the Community build has no GCIP sign-in; [dashboard.gcip] needs the Enterprise build"
+		);
+		let store = serde_json::json!({"kind": "secret_manager"});
+		assert_eq!(
+			extension
+				.provider_credential_store(store.as_object().unwrap(), None)
+				.err()
+				.unwrap()
+				.to_string(),
+			"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+		);
+		assert!(extension.routes().is_none());
+	}
 
 	#[rstest]
 	#[case(Build::COMMUNITY, SelfHosted, None)]

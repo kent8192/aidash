@@ -24,10 +24,10 @@ The Sandboxed tools (shell, code, package installs, outbound requests, patches a
 | `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                                        |
 | `file_share`       | `aidash.bundle.file_share`       | `file_share`                                                         |
 | `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                                         |
-| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`                                   |
-| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`                      |
+| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`                           |
+| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view`              |
 
-Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch` and `research_find` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
+Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
 
 A Tenant subject with `catalog.approve` approves a group by approving its bundle and every member in one `POST /api/authorization/{tenant}/catalog/approvals` request; a bundle's approval is refused while a member is unapproved. `task_assign` only starts a generation inside Aidash, so it is an ordinary built-in.
 

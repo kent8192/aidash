@@ -117,12 +117,12 @@ async fn inspect_in(
 			return Err(Error::Forbidden);
 		}
 	}
-	if let Some(compactor) = &input.compactor {
+	if let Some(decider) = &input.decider {
 		definition(
 			access,
-			compactor,
-			"compactor",
-			"compaction.invoke",
+			decider,
+			"decider",
+			"decision.invoke",
 			&mut definitions,
 		)
 		.await?;
@@ -138,7 +138,7 @@ async fn inspect_in(
 		agent: entry,
 		definitions: definitions.into_values().collect(),
 		semantic_memory: aidash_domain::semantic::remote::VERSION,
-		compactor: input.compactor.clone(),
+		decider: input.decider.clone(),
 	})
 }
 

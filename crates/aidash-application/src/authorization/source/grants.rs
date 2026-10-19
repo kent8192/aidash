@@ -51,7 +51,7 @@ async fn inspect<R: GrantRepository>(
 		.source_require(&resource, "federation.execute")
 		.await?;
 	require_peer(scope, node, repository.protocol_version()).await?;
-	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"tenant":input.tenant,"subject":input.subject,"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"compactor":input.compactor})).await?;
+	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"tenant":input.tenant,"subject":input.subject,"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider})).await?;
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,
@@ -59,7 +59,7 @@ async fn inspect<R: GrantRepository>(
 		&input.agent,
 		&input.requirements,
 	)?;
-	if inspection.compactor != input.compactor {
+	if inspection.decider != input.decider {
 		return Err(Error::Forbidden);
 	}
 	Ok(inspection)
@@ -69,7 +69,7 @@ fn inspection_input<S: HomeScope>(
 	task: Uuid,
 	agent: &EntityRef,
 	requirements: Search,
-	compactor: Option<&EntityRef>,
+	decider: Option<&EntityRef>,
 ) -> InspectInput {
 	let identity = scope.identity();
 	InspectInput {
@@ -78,7 +78,7 @@ fn inspection_input<S: HomeScope>(
 		subject: identity.subject,
 		agent: agent.clone(),
 		requirements,
-		compactor: compactor.cloned(),
+		decider: decider.cloned(),
 	}
 }
 /// Inspect under the same task, subject chain and peer authority as preparation,
@@ -163,7 +163,7 @@ pub async fn prepare<R: GrantRepository>(
   scope.require(&resource,"task.delegate").await?;
   scope.require(&resource,"task.execute").await?;
   let requirements:Search=serde_json::from_value(task.requirements.clone())?;
-  let request=inspection_input(&scope,task.id,&input.agent,requirements,input.semantic.compactor());
+  let request=inspection_input(&scope,task.id,&input.agent,requirements,input.semantic.decider());
   let inspection=inspect(repository,&mut scope,&input.node_id,request).await?;
   crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
   let semantic=serde_json::to_value(scope.semantic_binding(&task,&input.node_id,&inspection,&input.semantic).await?)?;
@@ -281,7 +281,7 @@ pub async fn description_mode<R: GrantRepository>(
 		let requirements = serde_json::from_value(task.requirements.clone())?;
 		let semantic: Binding = serde_json::from_value(current.semantic)?;
 		let request = semantic.request();
-		let input = inspection_input(&scope, task.id, &agent, requirements, request.compactor());
+		let input = inspection_input(&scope, task.id, &agent, requirements, request.decider());
 		let fresh = inspect(repository, &mut scope, node, input).await?;
 		if !fresh.satisfies(&inspection) {
 			return Err(Error::Forbidden);

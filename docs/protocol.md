@@ -168,13 +168,15 @@ the working context. This changes only observation representation; human
 records, other tool results and the underlying audit journal are preserved.
 The conversion commits only when the complete request fits.
 
-Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events. Jev receives a fitted classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events, non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch sees the same fitted state, with bounded request size and four concurrent requests. Invalid answers, a missing OpenRouter binding or insufficient compaction leave the original context unchanged. Only a Run with an approved compactor is pruned; any other Run that outgrows its window stops with `prune_unavailable` (ADR 0041). Compaction uses the compactor's exact Jev release and the Tenant's current OpenRouter Provider Credential, independently of the explicitly selected inference model and of whichever grant serves it. Token estimates are conservative and are not provider tokenization.
+Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events and runs through the [decision gate](decision-gate.md) at the compaction boundary (#108). A Run prunes only through the compaction Decider its Agent's Binding names: a `decider` Registry definition whose exact version has a Catalog Approval on the Node. Jev receives a classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events (on `native`, Model Turns), non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch of questions sees the same state. Token estimates are conservative and are not provider tokenization.
 
-The default retention threshold is 0.5: keep the complete pair when the result probability reaches the threshold; otherwise retain the call with the first 300 result characters and a notice when the call probability reaches it; otherwise drop the pair. Results up to 420 characters are unchanged. The first and latest six history events are pinned.
+The Decider version fixes a keep threshold of 0.5: keep the complete pair when the result probability reaches the threshold; otherwise retain the call with the first 300 result characters and a notice when the call probability reaches it; otherwise drop the pair. Results up to 420 characters are unchanged. The first and latest `preserve_recent` (at least six) events, or Model Turns on `native`, are never classified. On `native` a dropped result is elided under its call, and a Model Turn is removed only as a whole, when every call it ran is dropped and its response has no text.
 
-The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens, below the 32,000-token context OpenRouter lists for Jev. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
+Jev sees the task's goal, the text of every non-tool event, each tool call's input, and each result only by status and size. The Decider version fixes a state budget in bytes (ADR 0042). Tool inputs are abridged in stages (complete, 200 and 60 characters) until the state fits Jev's default mode: about 32,000 bytes per request, with 24,000 for the state. Only a state that still does not fit after the last stage is sent in OpenRouter's long-context mode, up to 262,144 tokens, which TypeSafe describes as slower and less accurate. A larger state pauses the Run with `decider_unavailable`. Questions are split into requests that each fit the mode their state travels in.
 
-Requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.13`; aliases are refused. Each request is a Decision Attempt with its own identifier: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.13-20260917`). The reported `usage.cost` is logged with the Decision Attempt and is not a Usage Record. The upstream license notice is listed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+Requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.14`; aliases are refused. Each request is a Decision Attempt with its own identifier, charged against the Decider version's per-Run call limit (which a Binding can only lower) and, in a generated chain, against every ancestor's call budget: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.14-20261001`). The reported `usage.cost` is kept with the Decision Attempt and is not a Usage Record. The upstream license notice is listed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+A bound Decider that cannot run pauses the Run with a typed reason and never falls back to the Summary Stage: `decider_unapproved` when its exact version has no Catalog Approval on the Node, `decider_calls_exhausted` when a call limit is spent, and `decider_unavailable` when the Tenant has no OpenRouter connection, the provider fails or the state is too large. A paused Run continues through the ordinary resume control. An Agent without a compaction Decider, or with one in Shadow mode, is not pruned: its Summary Stage may reduce the context on its own, and without one the Run pauses with `context_unreducible`.
 
 ### Context recovery
 
@@ -195,7 +197,8 @@ with its `seq`, the `journal` cursor and any `execution_summary`.
 An Agent version selects its recovery behavior with an immutable
 `context_policy`. Without one, the Run keeps the prune-only behavior above,
 `prune-only/1`, and its provider requests are byte-identical to earlier
-versions. The opt-in `context-recovery/1` policy accepts:
+versions; such a Run has no Summary Stage, so it pauses with
+`context_unreducible` when pruning cannot fit its request. The opt-in `context-recovery/1` policy accepts:
 
 | Field                 | Default | Bounds                | Meaning                                                                                           |
 | --------------------- | ------- | --------------------- | ------------------------------------------------------------------------------------------------- |
@@ -206,11 +209,15 @@ versions. The opt-in `context-recovery/1` policy accepts:
 | `summary.max_tokens`  | 4,096   | 256–4,096             | Summary output bound, further capped at an eighth of the window and the summarizer's output limit |
 | `summary.call_budget` | 8       | 1–64                  | Summary requests per Run, including failed attempts                                               |
 
-The pipeline is fixed: fit check, Jev pruning, the optional Summary Stage, then
-complete-request validation. Under an explicit policy an unavailable Jev pauses
-the Run with `prune_unavailable`; the Summary Stage never stands in for Jev.
-When pruning cannot fit the request, the Summary Stage merges eligible older
-events into the structured Execution Summary. It absorbs only `tool` events
+The pipeline is fixed: fit check, pruning through the compaction Decider, the
+optional Summary Stage, then complete-request validation. A bound Decider that
+cannot run pauses the Run with its typed reason; the Summary Stage never stands
+in for it. An applied pruning saves the pruned context, which ends the step.
+When pruning cannot fit the request, the Summary Stage continues from the pruned
+projection and merges eligible older events into the structured Execution
+Summary; the Decider's decision is then recorded as `staged` in the same
+transaction that adopts the summary, or as rejected when no summary is adopted
+(ADR 0056). It absorbs only `tool` events
 that are older than the protected tail and were already part of an accepted
 inference request. Human answers, corrections, continuation markers and
 `model_media_observation` events, whose source messages a summary could not

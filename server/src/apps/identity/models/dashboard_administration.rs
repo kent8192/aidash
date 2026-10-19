@@ -363,7 +363,6 @@ impl DashboardRegistrationRequest {
 			crate::authorization::identity::require_dashboard_mapping(
 				policy.as_ref(),
 				&candidate.issuer,
-				&candidate.gcip_tenant,
 				&input.tenant,
 			)?;
 			let mut snapshot = match snapshot.take() {
@@ -478,7 +477,6 @@ impl DashboardRegistrationRequest {
 			crate::authorization::identity::require_dashboard_mapping(
 				policy.as_ref(),
 				&identity.issuer,
-				&identity.gcip_tenant,
 				&input.tenant,
 			)?;
 			let previously_mapped = DashboardMapping::objects()
@@ -994,7 +992,6 @@ impl DashboardIdentity {
 			id: self.id,
 			issuer: self.issuer,
 			subject: self.subject,
-			gcip_tenant: (!self.gcip_tenant.is_empty()).then_some(self.gcip_tenant),
 			verified_email: self.verified_email,
 			display_name: self.display_name,
 			disabled_at: self.disabled_at,

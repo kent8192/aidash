@@ -3755,7 +3755,7 @@ impl Store {
 		worker: Uuid,
 		key: &str,
 		result: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		let mut tx = self
 			.pool
 			.begin(scope)
@@ -3766,6 +3766,16 @@ impl Store {
 				"worker lease lost while recording tool result".into(),
 			));
 		}
+		// A research result whose Provider result account terms expired
+		// meanwhile is stored as its tombstone (ADR 0058).
+		let expired = crate::apps::execution::models::research::ResearchAttempt::expired_result(
+			tx.as_mut(),
+			run.id,
+			key,
+			result,
+		)
+		.await?;
+		let result = expired.as_ref().unwrap_or(result);
 		if InvocationRecord::complete(tx.as_mut(), run.id, key, result).await? {
 			event_records::append(
 				tx.as_mut(),
@@ -3777,7 +3787,8 @@ impl Store {
 			.await?;
 		}
 		tx.commit().await?;
-		Ok(())
+		// The caller carries on with what was stored, never the expired copy.
+		Ok(result.clone())
 	}
 	/// Durable before provider I/O. Like other worker writes, a lost lease
 	/// cannot dispatch; this lease supersedes every attempt left dispatched.

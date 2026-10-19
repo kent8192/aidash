@@ -1161,41 +1161,30 @@ async fn tool_configs_reject_undecodable_shapes(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn compactor_and_embedding_configs_reject_undecodable_shapes(
+async fn the_decider_kind_replaces_compactors_and_embedding_configs_reject_undecodable_shapes(
 	#[future(awt)]
 	#[from(common::runtime)]
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
 	let mut entry = serde_json::to_value(model()).unwrap();
+	// The compactor kind is gone (#108); compaction runs through a Decider,
+	// whose configuration the application validates.
 	entry["id"] = json!("compactor");
 	entry["kind"] = json!("compactor");
-	for invalid in [
-		json!({}),
-		json!({"provider":"wrong"}),
-		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":"128"}),
-		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128,"unexpected":true}),
-		// ADR 0041: no TypeSafe endpoint, environment key, other provider or alias.
-		json!({"provider":"typesafe-system-one","endpoint":"http://localhost","model":"typesafe/jev-1.13","credential_env":"AIDASH_SECRET_JEV","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
-		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13","credential_env":"AIDASH_SECRET_JEV","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
-		json!({"provider_credential":"typesafe","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
-		json!({"provider_credential":"openrouter","model":"~typesafe/jev-latest","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
-		json!({"provider_credential":"openrouter","model":"jev-latest","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
-		// A Capability Token carries at most 256 bytes of model ID.
-		json!({"provider_credential":"openrouter","model":format!("typesafe/jev-1.{}", "1".repeat(256)),"max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
-	] {
-		entry["config"] = invalid;
-		check_rejected(
-			insert_entry(f.store.pool.fixture_driver(), &entry).await,
-			"registry_compactor_config",
-		);
-	}
+	entry["config"] = json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13"});
+	check_rejected(
+		insert_entry(f.store.pool.fixture_driver(), &entry).await,
+		"registry_kind_check",
+	);
+	entry["id"] = json!("decider");
+	entry["kind"] = json!("decider");
 	entry["config"] = json!({
-		"provider_credential":"openrouter",
-		"model":"typesafe/jev-1.13",
-		"max_request_bytes":65536,
-		"max_questions":8,
-		"max_response_bytes":16384
+		"hook":"compaction","answer_type":"noul","description":"Keep needed history",
+		"provider_contract":"typesafe.jev/1","provider_credential":"openrouter",
+		"model":"typesafe/jev-1.14","builder":"aidash.compaction/2",
+		"option_source":"history_event/1","rule":"compaction.keep/1",
+		"keep_threshold":"3fe0000000000000","mode":"enforce","max_calls_per_run":20
 	});
 	insert_entry(f.store.pool.fixture_driver(), &entry)
 		.await

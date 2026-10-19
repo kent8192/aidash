@@ -92,7 +92,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -196,7 +198,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -354,7 +358,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -362,7 +366,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -885,7 +890,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1003,7 +1010,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1161,7 +1170,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1312,7 +1323,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1528,7 +1541,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -1536,7 +1549,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -1874,7 +1888,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1992,7 +2008,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -4077,7 +4095,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4085,7 +4103,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4457,7 +4476,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4465,7 +4484,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -13652,6 +13672,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -13699,6 +13723,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -14719,7 +14748,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -15476,7 +15507,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -15486,9 +15522,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -18233,7 +18276,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -18243,9 +18291,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -18677,7 +18732,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -18685,7 +18740,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -23875,6 +23931,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -23922,6 +23982,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -25049,7 +25114,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -25621,7 +25688,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -25631,9 +25703,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -26161,6 +26240,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -26208,6 +26291,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -27228,7 +27316,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -27985,7 +28075,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -27995,9 +28090,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -28187,6 +28289,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -28234,6 +28340,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -29242,7 +29353,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -29999,7 +30112,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -30009,9 +30127,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -30243,9 +30368,20 @@
             "estimated_micro_usd",
             "uncertain_attempts",
             "in_flight_attempts",
-            "url_intents"
+            "url_intents",
+            "revoked_at",
+            "can_revoke",
+            "can_read_revocation"
           ],
           "properties": {
+            "can_read_revocation": {
+              "type": "boolean",
+              "description": "Whether the reader may read the Run's revocation record."
+            },
+            "can_revoke": {
+              "type": "boolean",
+              "description": "Whether the reader may revoke the Run's research evidence."
+            },
             "estimated_micro_usd": {
               "type": "integer",
               "format": "uint64",
@@ -30260,6 +30396,11 @@
             },
             "limits": {
               "$ref": "#/components/schemas/ResearchLimits"
+            },
+            "revoked_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Run's research evidence was revoked (ADR 0046). Who revoked it\nand why is in its revocation record, readable only by its audience."
             },
             "uncertain_attempts": {
               "type": "integer",
@@ -30287,12 +30428,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images the Run has viewed.",
               "minimum": 0
             },
             "search_attempts": {
@@ -30353,12 +30501,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images one Run may view.",
               "minimum": 0
             },
             "search_attempts": {
@@ -30473,12 +30628,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images one Run may view.",
               "minimum": 0
             },
             "search_attempts": {
@@ -31293,24 +31455,6 @@
   },
   {
     "method": "GET",
-    "path": "/auth/gcip/transaction",
-    "name": "sessions-gcip-transaction",
-    "source": "server/src/apps/identity/views/sessions.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": ["state"]
-  },
-  {
-    "method": "POST",
-    "path": "/auth/gcip/exchange",
-    "name": "sessions-gcip-exchange",
-    "source": "server/src/apps/identity/views/sessions.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
-    "method": "GET",
     "path": "/api/tenants/{tenant}/administration",
     "name": "tenant-administration",
     "source": "server/src/apps/identity/views/tenant_administration.rs",
@@ -31929,10 +32073,13 @@
             "completeness",
             "text_digest",
             "text",
+            "passage_digest",
+            "expired",
             "line_start",
             "line_end",
             "pages",
-            "context"
+            "context",
+            "image"
           ],
           "properties": {
             "completeness": {
@@ -31957,10 +32104,25 @@
               "type": "string",
               "description": "`ev_<uuid>`, as cited in the Run's text."
             },
+            "expired": {
+              "type": "boolean",
+              "description": "The Research account terms of the service that returned the page no\nlonger keep the passage (ADR 0058)."
+            },
             "fetched_at": {
               "type": "string",
               "format": "date-time",
               "description": "When the snapshot was retrieved; the live page may have changed since."
+            },
+            "image": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EvidenceImage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The page image delivered to the Agent, for a fragment that is a page\nimage rather than a passage (ADR 0053); then `text` is empty and the\nlines are zero."
             },
             "line_end": {
               "type": "integer",
@@ -31984,6 +32146,10 @@
                 "minimum": 0
               }
             },
+            "passage_digest": {
+              "type": "string",
+              "description": "`sha256:` digest of the passage as delivered. It outlives the text,\nso the citation can still be verified."
+            },
             "requested_url": {
               "type": "string",
               "description": "The address the Run asked for."
@@ -31998,7 +32164,7 @@
             },
             "text": {
               "type": "string",
-              "description": "The passage exactly as delivered to the Agent."
+              "description": "The passage exactly as delivered to the Agent; empty once `expired`."
             },
             "text_digest": {
               "type": "string",
@@ -32045,6 +32211,47 @@
             }
           }
         },
+        "EvidenceImage": {
+          "type": "object",
+          "description": "One page of a PDF rendered from the retained original, as the Agent saw it.",
+          "required": [
+            "page",
+            "media_type",
+            "width",
+            "height",
+            "digest",
+            "data"
+          ],
+          "properties": {
+            "data": {
+              "type": "string",
+              "description": "The image bytes, base64-encoded."
+            },
+            "digest": {
+              "type": "string",
+              "description": "`sha256:` digest of the image bytes."
+            },
+            "height": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "page": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "The 1-based physical page.",
+              "minimum": 0
+            },
+            "width": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        },
         "Line": {
           "type": "object",
           "required": ["text"],
@@ -32069,6 +32276,104 @@
     "name": "run-research-revocation",
     "source": "server/src/apps/execution/views/research.rs",
     "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RevocationRecord"
+      },
+      "definitions": {
+        "RevocationRecord": {
+          "type": "object",
+          "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
+          "required": [
+            "run_id",
+            "tenant",
+            "revoked_by",
+            "reason",
+            "revoked_at",
+            "removed"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "removed": {
+              "$ref": "#/components/schemas/RemovedCopies"
+            },
+            "revoked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revoked_by": {
+              "type": "string",
+              "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token."
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Run's Tenant, when it has one."
+            }
+          }
+        },
+        "RemovedCopies": {
+          "type": "object",
+          "description": "What a revocation removed, counted and identified by digest only.",
+          "required": [
+            "sources",
+            "snapshots",
+            "fragments",
+            "attempts",
+            "invocations",
+            "snapshot_digests"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "fragments": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocations": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_digests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`sha256:` text digests of the revoked Document snapshots."
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/research-revocation",
+    "name": "run-research-revocation-read",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
     "uuid_parameters": ["id"],
     "query_parameters": [],
     "response": {
@@ -32272,38 +32577,9 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/TenantRetention"
+        "$ref": "#/components/schemas/TenantRetentionView"
       },
       "definitions": {
-        "TenantRetention": {
-          "type": "object",
-          "description": "The periods that apply to one Tenant and where they come from.",
-          "required": ["tenant", "deployment", "tenant_rules", "effective"],
-          "properties": {
-            "deployment": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "The Deployment's periods, also the longest the Tenant may keep."
-            },
-            "effective": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "What applies: the shorter of the two for every period."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "tenant_rules": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/RetentionRules"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The Tenant's own shorter periods, if it stores any."
-            }
-          }
-        },
         "RetentionRules": {
           "type": "object",
           "description": "The periods of every kind of content Aidash keeps only for a while.",
@@ -32334,6 +32610,55 @@
             }
           },
           "additionalProperties": false
+        },
+        "TenantRetentionView": {
+          "type": "object",
+          "description": "The Retention Rules that apply to one Tenant, with what the caller may do\nabout them, so a dashboard offers only that.",
+          "required": [
+            "tenant",
+            "deployment",
+            "tenant_rules",
+            "effective",
+            "can_update",
+            "can_read_history",
+            "can_read_revocations"
+          ],
+          "properties": {
+            "can_read_history": {
+              "type": "boolean",
+              "description": "Whether the caller may read the history of the Tenant's periods."
+            },
+            "can_read_revocations": {
+              "type": "boolean",
+              "description": "Whether the caller may read the Tenant's Evidence Revocation records."
+            },
+            "can_update": {
+              "type": "boolean",
+              "description": "Whether the caller may change or clear the Tenant's periods."
+            },
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
         }
       }
     }
@@ -32348,38 +32673,9 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/TenantRetention"
+        "$ref": "#/components/schemas/TenantRetentionView"
       },
       "definitions": {
-        "TenantRetention": {
-          "type": "object",
-          "description": "The periods that apply to one Tenant and where they come from.",
-          "required": ["tenant", "deployment", "tenant_rules", "effective"],
-          "properties": {
-            "deployment": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "The Deployment's periods, also the longest the Tenant may keep."
-            },
-            "effective": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "What applies: the shorter of the two for every period."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "tenant_rules": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/RetentionRules"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The Tenant's own shorter periods, if it stores any."
-            }
-          }
-        },
         "RetentionRules": {
           "type": "object",
           "description": "The periods of every kind of content Aidash keeps only for a while.",
@@ -32410,6 +32706,55 @@
             }
           },
           "additionalProperties": false
+        },
+        "TenantRetentionView": {
+          "type": "object",
+          "description": "The Retention Rules that apply to one Tenant, with what the caller may do\nabout them, so a dashboard offers only that.",
+          "required": [
+            "tenant",
+            "deployment",
+            "tenant_rules",
+            "effective",
+            "can_update",
+            "can_read_history",
+            "can_read_revocations"
+          ],
+          "properties": {
+            "can_read_history": {
+              "type": "boolean",
+              "description": "Whether the caller may read the history of the Tenant's periods."
+            },
+            "can_read_revocations": {
+              "type": "boolean",
+              "description": "Whether the caller may read the Tenant's Evidence Revocation records."
+            },
+            "can_update": {
+              "type": "boolean",
+              "description": "Whether the caller may change or clear the Tenant's periods."
+            },
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
         }
       }
     }

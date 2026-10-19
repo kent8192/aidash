@@ -5,89 +5,20 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Account {
 	pub id: Uuid,
+	/// The issuer that knows this External Identity. A GCIP Tenant is part of
+	/// it, so the same person in two GCIP Tenants is two External Identities.
 	pub issuer: String,
-	pub gcip_tenant: Option<String>,
 	pub subject: String,
 	pub valid_since: Option<DateTime<Utc>>,
 	pub last_valid_at: Option<DateTime<Utc>>,
 	pub disabled_at: Option<DateTime<Utc>>,
 }
 
-/// A GCIP Tenant is a user pool, never an authorization Tenant by itself.
-pub fn bound_tenant<'a>(
-	bindings: &'a std::collections::BTreeMap<String, String>,
-	gcip_tenant: Option<&str>,
-) -> Option<&'a str> {
-	gcip_tenant
-		.and_then(|tenant| bindings.get(tenant))
-		.map(String::as_str)
-}
-
-/// Canonical form of a Sign-in Domain: IDNA ASCII, lowercase, at least two DNS
-/// labels and no trailing dot. Returns `None` for anything else.
-pub fn sign_in_domain(raw: &str) -> Option<String> {
-	// The URL host parser percent-decodes its input, so only DNS characters
-	// (and non-ASCII for IDN) may reach it; `%61cme.com` must not become `acme.com`.
-	if raw.is_empty()
-		|| raw.len() > 253
-		|| raw.ends_with('.')
-		|| raw
-			.bytes()
-			.any(|b| b.is_ascii() && !(b.is_ascii_alphanumeric() || b == b'-' || b == b'.'))
-	{
-		return None;
-	}
-	let url::Host::Domain(domain) = url::Host::parse(raw).ok()? else {
-		return None;
-	};
-	let labels = domain.split('.').collect::<Vec<_>>();
-	(domain.len() <= 253
-		&& labels.len() >= 2
-		&& labels.iter().all(|label| {
-			(1..=63).contains(&label.len())
-				&& !label.starts_with('-')
-				&& !label.ends_with('-')
-				&& label
-					.bytes()
-					.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-		}))
-	.then_some(domain)
-}
-
-/// A Sign-in Domain only routes sign-in to a GCIP Tenant; it grants no authority.
-/// Malformed addresses and unmapped domains are indistinguishable (`None`).
-/// The local part must be an RFC 5322 dot-atom of ASCII `atext`; quoted and
-/// internationalized local parts are not supported.
-pub fn routed_gcip_tenant<'a>(
-	sign_in_domains: &'a std::collections::BTreeMap<String, String>,
-	email: &str,
-) -> Option<&'a str> {
-	let email = email.trim();
-	if email.len() > 320 {
-		return None;
-	}
-	let (local, domain) = email.split_once('@')?;
-	let atext = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{|}~-".contains(&b);
-	if local.len() > 64
-		|| domain.contains('@')
-		|| !local
-			.split('.')
-			.all(|atom| !atom.is_empty() && atom.bytes().all(atext))
-	{
-		return None;
-	}
-	sign_in_domains
-		.get(&sign_in_domain(domain)?)
-		.map(String::as_str)
-}
-
 /// Verified display attributes never establish authority or link identities.
 #[derive(Clone)]
 pub struct SignIn {
+	pub issuer: String,
 	pub subject: String,
-	pub gcip_tenant: Option<String>,
-	/// The sign-in method from a verified GCIP token, independent of UI choices.
-	pub gcip_provider: Option<String>,
 	pub auth_time: DateTime<Utc>,
 	pub verified_email: Option<String>,
 	pub display_name: Option<String>,
@@ -98,9 +29,8 @@ pub struct SignIn {
 impl std::fmt::Debug for SignIn {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("SignIn")
+			.field("issuer", &self.issuer)
 			.field("subject", &self.subject)
-			.field("gcip_tenant", &self.gcip_tenant)
-			.field("gcip_provider", &self.gcip_provider)
 			.field("auth_time", &self.auth_time)
 			.field(
 				"verified_email",

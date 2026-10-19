@@ -322,6 +322,21 @@ pub fn native_process_args(_f: &Federation, mode: &str) -> Vec<String> {
 	vec![mode.to_owned()]
 }
 
+/// Every migration of the installed build: Community's, then the build's own.
+pub async fn native_migrations() -> Vec<reinhardt::db::migrations::Migration> {
+	let server = PathBuf::from(aidash_server::bootstrap::build::Build::COMMUNITY.manifest_dir);
+	let mut migrations = Vec::new();
+	for root in aidash_server::bootstrap::build::current().migration_roots(&server) {
+		migrations.extend(
+			FilesystemSource::new(root)
+				.all_migrations()
+				.await
+				.expect("load the native migration graph"),
+		);
+	}
+	migrations
+}
+
 /// A Store on the server role's URL, after migrating the same database as its owner.
 #[allow(dead_code)]
 pub async fn native_store(database_url: &str, node: &str) -> Store {
@@ -329,11 +344,7 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 		.await
 		.unwrap();
 	let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone())));
-	let migrations =
-		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-			.all_migrations()
-			.await
-			.unwrap();
+	let migrations = native_migrations().await;
 	postgres::apply_migrations(connection, &migrations).await;
 	owner.close().await;
 	let pool = sqlx::PgPool::connect(database_url).await.unwrap();
@@ -423,12 +434,7 @@ pub fn execution_database(
 					.connect(&logins.owner_url)
 					.await
 					.unwrap();
-				let migrations = FilesystemSource::new(
-					PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
-				)
-				.all_migrations()
-				.await
-				.expect("load the native migration graph");
+				let migrations = native_migrations().await;
 				postgres::apply_migrations(
 					DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone()))),
 					&migrations,
@@ -484,7 +490,6 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			.unwrap();
 		let federation = Federation {
 			sandbox: Default::default(),
-			gcip: None,
 			store,
 			registry: Registry::new(database.pool.clone(), "aidash://execution-test").unwrap(),
 			config: Config {
@@ -497,7 +502,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				lease_seconds: 30,
 				tenancy: Default::default(),
 				oidc: None,
-				gcip: None,
+				sign_in: None,
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),

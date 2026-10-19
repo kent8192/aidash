@@ -216,7 +216,7 @@ fn receipts_reject_incomplete_or_rebound_reservations(usage: Usage, #[case] muta
 
 #[rstest]
 #[case(Purpose::Embedding, "embedding", "embedding.invoke")]
-#[case(Purpose::Compaction, "compaction", "compaction.invoke")]
+#[case(Purpose::Compaction, "compaction", "decision.invoke")]
 #[case(Purpose::Inference, "inference", "model.infer")]
 fn purpose_preserves_wire_names_and_authorization_actions(
 	#[case] purpose: Purpose,

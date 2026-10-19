@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import { TenantPolicyAdministration } from "./authorization";
 import { TenantIdentityAdministration } from "./dashboard-identity";
 import { OwnCredentials } from "./subject-credentials";
-import { useTenantAdministration } from "./tenant-administration";
 import { LeaveTenantButton } from "./tenant-deletion";
+import { useTenantAdministration } from "./tenant-administration";
 
 /** What a subject manages of its own Tenant through its Mapping: its own
  *  Subject Credentials, then the people, policy, credentials and Peer
@@ -32,7 +32,7 @@ export function TenantAccess({
       <TenantIdentityAdministration
         key={tenant}
         tenant={tenant}
-        // A member who administers nothing can still leave the Tenant.
+        // A member without administration actions still leaves from here.
         fallback={subject ? <LeaveTenantButton tenant={tenant} /> : fallback}
       />
       {can("policy.read") && (

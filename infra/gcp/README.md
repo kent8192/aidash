@@ -510,7 +510,7 @@ Admin does not provide the required
 permission. Environment automation consumes their IDs and removes
 only service/signing bindings on disable or retirement. Keep the bootstrap
 environment set to preserve immutable KMS names. See the
-[broker deployment guide](../../crates/aidash-broker/README.md) for the input
+[broker deployment guide](../../enterprise/crates/aidash-broker/README.md) for the input
 contract and manual import steps for any pre-merge draft deployment.
 
 ### Deploy pipeline boundary
@@ -650,7 +650,7 @@ changes are gated by review of the pull request to `main`.
 #### Updating the broker image digest
 
 1. Build from the reviewed commit: `docker buildx build --platform linux/amd64
---provenance=false --sbom=false -f crates/aidash-broker/Dockerfile -t
+--provenance=false --sbom=false -f enterprise/crates/aidash-broker/Dockerfile -t
 us-central1-docker.pkg.dev/<project>/aidash/broker:<sha> --push .`
 2. Read the manifest digest: `docker buildx imagetools inspect
 us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.

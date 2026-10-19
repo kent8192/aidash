@@ -1413,7 +1413,6 @@ async fn child_runtime(
 		.unwrap();
 	Federation {
 		sandbox: Default::default(),
-		gcip: None,
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
 		store,
 		config: aidash_server::config::Config {
@@ -1426,7 +1425,7 @@ async fn child_runtime(
 			lease_seconds: 30,
 			tenancy: Default::default(),
 			oidc: None,
-			gcip: None,
+			sign_in: None,
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),

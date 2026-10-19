@@ -30,7 +30,6 @@ type Identity = {
   id: string;
   issuer: string;
   subject: string;
-  gcip_tenant: string | null;
   verified_email: string | null;
   display_name: string | null;
   disabled_at: string | null;
@@ -155,9 +154,6 @@ export function DashboardIdentityAdministration() {
                 </strong>
                 <p className="truncate font-mono text-[11px] text-faint">
                   {identity(request.identity_id)?.issuer}
-                </p>
-                <p className="truncate font-mono text-[11px] text-faint">
-                  {identity(request.identity_id)?.gcip_tenant}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
                   {[
@@ -337,7 +333,6 @@ export function DashboardIdentityAdministration() {
               <span className="grid min-w-0 flex-1 gap-0.5">
                 <span className="truncate font-mono text-xs">
                   {item.subject} ({item.issuer})
-                  {item.gcip_tenant && ` / ${item.gcip_tenant}`}
                 </span>
                 {(item.display_name || item.verified_email) && (
                   <span className="truncate text-xs text-muted-foreground">

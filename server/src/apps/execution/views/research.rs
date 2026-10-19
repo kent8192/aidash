@@ -25,6 +25,22 @@ pub async fn revoke(
 	crate::http::json(service.research_revocation(actor, browser, id, input).await)
 }
 
+/// The Run's Evidence Revocation record, readable by the audience of its
+/// Tenant's records. A Run whose evidence was not revoked has none (404).
+#[get(
+	"/api/runs/{id}/research-revocation",
+	name = "run-research-revocation-read",
+	auth = "protected"
+)]
+pub async fn revocation(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(service.research_revocation_record(actor, browser, id).await)
+}
+
 /// The Tenant's Evidence Revocation records, newest first.
 #[get(
 	"/api/tenants/{tenant}/research-revocations",

@@ -128,7 +128,12 @@ fn research_groups_declare_interchangeable_provider_operations() {
 	// production providers, so it replaces them without an Agent change.
 	assert_eq!(
 		aliases.keys().cloned().collect::<Vec<_>>(),
-		["research_fetch", "research_find", "research_search"]
+		[
+			"research_fetch",
+			"research_find",
+			"research_search",
+			"research_view"
+		]
 	);
 	for providers in aliases.values() {
 		assert!(

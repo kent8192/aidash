@@ -103,17 +103,12 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/browser.json
       - name: Validate required capability browser journeys
         run: python3 scripts/core-capability-evidence.py browser web/test-results
-      - name: Test GCIP sign-in with the signed SDK fixture
-        run: npm run test:gcip --prefix web -- --reporter=list,json
-        env:
-          PLAYWRIGHT_JSON_OUTPUT_NAME: gcip-test-results/browser.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: collaboration-browser-evidence
           path: |
             web/test-results/
-            web/gcip-test-results/
           if-no-files-found: ignore
   rust-tests:
     name: Rust tests (${{ matrix.partition }}, ${{ matrix.shard }}/2)
@@ -235,8 +230,18 @@ jobs:
           cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
           python3 scripts/check-enterprise-alignment.py
           python3 -m unittest discover -s scripts -p test_enterprise_alignment.py
+      # The GCIP sign-in tests run the Community server's PostgreSQL fixtures,
+      # with the environment scripts/test-rust.sh gives Community's.
       - name: Build and test the Enterprise build
-        run: cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
+        run: |
+          scripts/build-test-postgres.sh
+          profile=$(mktemp -d)
+          printf '{"admission":true,"storage":"%s/storage","outbound_origins":["https://example.com"]}' "$profile" > "$profile/profile.json"
+          export AIDASH_CAPABILITY_PROFILE="$profile/profile.json"
+          export RUST_TEST_THREADS=2 RUST_MIN_STACK=8388608
+          export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
+          export AIDASH_SECRET_GRAPH_THIRD=local-third-graph-peer-token-9876543210
+          cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
   community-export:
     name: Community export
     runs-on: ubuntu-latest
@@ -248,6 +253,73 @@ jobs:
       - run: rustup show active-toolchain
       - name: Build and serve the Community build from a tree without enterprise/
         run: scripts/check-community-export.sh
+  community-bundle:
+    name: Community web bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.12.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: production-http
+      - name: Build the Community dashboard with source maps
+        run: npm run build --prefix web -- --sourcemap
+      - name: Reject Enterprise code in the Community bundle and its source maps
+        run: python3 scripts/check-community-bundle.py web/dist
+  enterprise-web:
+    name: Enterprise web
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.12.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: enterprise
+          workspaces: "enterprise -> target"
+      - name: Export the Enterprise API contract and generate its client
+        run: npm run generate:api --prefix enterprise/web
+      - name: Build the Enterprise dashboard with source maps
+        run: npm run build --prefix enterprise/web -- --sourcemap
+      - name: Check that the Community bundle check rejects the Enterprise bundle
+        run: |
+          if python3 scripts/check-community-bundle.py enterprise/web/dist 2>"$RUNNER_TEMP/rejected.txt"; then
+            echo "the Enterprise bundle passed the Community bundle check" >&2
+            exit 1
+          fi
+          grep -F 'is under enterprise/' "$RUNNER_TEMP/rejected.txt"
+          grep -F 'a GCIP name' "$RUNNER_TEMP/rejected.txt"
+      - run: scripts/install-browser.sh
+      - name: Test GCIP sign-in with the signed SDK fixture
+        run: npm run test:gcip --prefix enterprise/web -- --reporter=list,json
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/browser.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: enterprise-web-browser-evidence
+          path: enterprise/web/test-results/
+          if-no-files-found: ignore
   infrastructure-tests:
     name: Infrastructure contract tests
     runs-on: ubuntu-latest
@@ -259,6 +331,7 @@ jobs:
       # Interim licensing (#250): no license declarations until #255 replaces this guard.
       - run: python3 scripts/check-license-declarations.py
       - run: python3 -m unittest discover -s scripts -p test_license_declarations.py
+      - run: python3 -m unittest discover -s scripts -p test_check_community_bundle.py
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
@@ -354,6 +427,8 @@ jobs:
         infrastructure-tests,
         enterprise,
         community-export,
+        community-bundle,
+        enterprise-web,
         bruno,
         acceptance,
       ]

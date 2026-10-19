@@ -7,7 +7,11 @@ use std::sync::Arc;
 
 #[routes]
 pub fn routes() -> UnifiedRouter {
-	UnifiedRouter::new()
+	let router = match crate::bootstrap::build::current().extension.routes() {
+		Some(extension) => UnifiedRouter::new().mount_unified("/", extension),
+		None => UnifiedRouter::new(),
+	};
+	router
 		.mount_unified("/", identity::urls::url_patterns())
 		.mount_unified("/", execution::capabilities::urls::url_patterns())
 		.mount_unified("/", workspaces::urls::url_patterns())

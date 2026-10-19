@@ -75,7 +75,7 @@ LIVE_LIMITATIONS = [
     "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
     "(--network none, no host environment, no parent process visibility).",
     "External Jev compaction is excluded by the evaluator's attestation that the evaluated Tenant approves no "
-    "compactor: the Node does not report its approvals over HTTP. A Run that applied a compaction stops all "
+    "compaction Decider: the Node does not report its approvals over HTTP. A Run that applied a compaction stops all "
     "further dispatch.",
 ]
 
@@ -848,7 +848,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         harness = {"compaction": "server-configured", "cache_salt": True,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": "excluded: the approval attests the Tenant approves no compactor"}
+                   "jev_classifier": "excluded: the approval attests the Tenant approves no compaction Decider"}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
                   "spend_ceiling_nanocredits": args.max_spend_nanocredits}

@@ -20,7 +20,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::query::{Expr, QueryStatementBuilder as _, SimpleExpr};
+use reinhardt::query::{Expr, ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct NativeCompactionAuthority<'a> {
@@ -119,6 +119,23 @@ impl GenerationCompactionRepository for NativeCompactionRepository {
 }
 #[async_trait]
 impl GenerationCompactionSession for Session {
+	async fn reserved(&mut self, id: Uuid, attempt: Uuid) -> Result<bool> {
+		let found: Option<Uuid> = crate::database::native::query_scalar(
+			&reinhardt::query::Query::select()
+				.column(reinhardt::query::Alias::new("attempt_id"))
+				.from(reinhardt::query::Alias::new("generation_compaction_usage"))
+				.and_where(
+					Expr::col(reinhardt::query::Alias::new("request_id")).eq(Expr::value(id)),
+				)
+				.and_where(
+					Expr::col(reinhardt::query::Alias::new("attempt_id")).eq(Expr::value(attempt)),
+				)
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.transaction)
+		.await?;
+		Ok(found.is_some())
+	}
 	async fn charge(&mut self, id: Uuid) -> Result<bool> {
 		let tx = &mut self.transaction;
 		let reserved: Option<Uuid> = {

@@ -8,8 +8,8 @@ use aidash_domain::research::{
 	citations::EvidenceRef,
 	document::{Completeness, Line},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Original, Purge,
-		PurgeReason, SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, FragmentImage, Original,
+		Purge, PurgeReason, SourceRecord,
 	},
 	revocation::{EvidenceRevocation, Removed},
 };
@@ -76,6 +76,19 @@ pub struct ResearchAttempt {
 	pub created_at: DateTime<Utc>,
 	#[field(null = true)]
 	pub completed_at: Option<DateTime<Utc>>,
+	/// The account whose Research account terms govern the result, for a
+	/// provider with such terms (ADR 0058).
+	#[field(field_type = "text", null = true)]
+	pub retention_account_id: Option<String>,
+	/// The `retention_days` of those terms when the result was retrieved.
+	#[field(null = true)]
+	pub retention_days: Option<i32>,
+	/// When the result was replaced with a tombstone; null while it is kept.
+	#[field(null = true)]
+	pub purged_at: Option<DateTime<Utc>>,
+	/// `account_terms`, set together with `purged_at`.
+	#[field(field_type = "text", null = true)]
+	pub purge_reason: Option<String>,
 }
 
 #[model(app_label = "execution", table_name = "research_sources")]
@@ -93,6 +106,9 @@ pub struct ResearchSource {
 	pub title: String,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// The invocation key of the attempt that created the record.
+	#[field(field_type = "text", null = true)]
+	pub attempt_key: Option<String>,
 }
 
 #[model(app_label = "execution", table_name = "research_snapshots")]
@@ -133,7 +149,8 @@ pub struct ResearchSnapshot {
 	/// When the contents were purged; null while they are retained.
 	#[field(null = true)]
 	pub purged_at: Option<DateTime<Utc>>,
-	/// `retention` or `revocation`, set together with `purged_at`.
+	/// `retention`, `revocation` or `account_terms`, set together with
+	/// `purged_at`.
 	#[field(field_type = "text", null = true)]
 	pub purge_reason: Option<String>,
 	/// The page count of a paginated source such as a PDF.
@@ -150,6 +167,9 @@ pub struct ResearchSnapshot {
 	/// Whether `research_originals` still holds the original.
 	#[field]
 	pub original_retained: bool,
+	/// The invocation key of the attempt that read the page.
+	#[field(field_type = "text", null = true)]
+	pub attempt_key: Option<String>,
 }
 
 /// The original of a snapshot with pages that carry no text (ADR 0053). It is
@@ -188,8 +208,55 @@ pub struct ResearchFragment {
 	pub line_end: i32,
 	#[field]
 	pub pages: Json<Value>,
+	/// The page of a page-image fragment (ADR 0053); null for a passage.
+	#[field(null = true)]
+	pub image_page: Option<i32>,
+	#[field(field_type = "text", null = true)]
+	pub image_media_type: Option<String>,
+	#[field(null = true)]
+	pub image_width: Option<i32>,
+	#[field(null = true)]
+	pub image_height: Option<i32>,
+	#[field(field_type = "text", null = true)]
+	pub image_digest: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// `sha256:` digest of the passage as delivered, kept once `text` is gone.
+	#[field(field_type = "text", null = true)]
+	pub passage_digest: Option<String>,
+}
+
+/// The bytes of a page-image Evidence fragment (ADR 0053), kept apart so that
+/// reading fragments never loads them.
+#[model(app_label = "execution", table_name = "research_page_images")]
+#[derive(Serialize, Deserialize)]
+pub struct ResearchPageImage {
+	#[field(primary_key = true, field_type = "uuid")]
+	pub fragment_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub run_id: Uuid,
+	#[field]
+	pub bytes: Vec<u8>,
+	#[field(auto_now_add = true)]
+	pub created_at: DateTime<Utc>,
+}
+
+/// The recorded end of one Research account holder's agreement (ADR 0058).
+/// It outlives the account's declaration, so removing the declaration never
+/// undoes it.
+#[model(app_label = "execution", table_name = "research_account_terminations")]
+#[derive(Serialize, Deserialize)]
+pub struct ResearchAccountTermination {
+	#[field(primary_key = true, field_type = "text")]
+	pub account_id: String,
+	#[field]
+	pub terminated_at: DateTime<Utc>,
+	#[field]
+	pub deletion_after_termination_days: i32,
+	#[field(auto_now_add = true)]
+	pub recorded_at: DateTime<Utc>,
 }
 
 /// The audit record of one Evidence Revocation (ADR 0046). It does not
@@ -402,7 +469,7 @@ impl ResearchAttempt {
 		let limits = &reservation.limits;
 		let maximum = match reservation.operation {
 			Operation::Search => limits.search_attempts,
-			Operation::Fetch | Operation::Find => limits.fetch_attempts,
+			Operation::Fetch | Operation::Find | Operation::View => limits.fetch_attempts,
 		};
 		if Self::count(tx, run, reservation.operation).await? >= maximum {
 			return Ok(Reserved::AttemptLimit);
@@ -452,6 +519,20 @@ impl ResearchAttempt {
 			.outcome(DISPATCHED.to_owned())
 			.result(None)
 			.completed_at(None)
+			.retention_account_id(
+				reservation
+					.retention
+					.as_ref()
+					.map(|terms| terms.account_id.clone()),
+			)
+			.retention_days(
+				reservation
+					.retention
+					.as_ref()
+					.map(|terms| i32::from(terms.retention_days)),
+			)
+			.purged_at(None)
+			.purge_reason(None)
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -460,7 +541,11 @@ impl ResearchAttempt {
 		// The Source record of a page read by address holds its slot from now
 		// on, under the same Run lock, so nothing is sent without it.
 		let source = match &reservation.source_url {
-			Some(url) => Some(ResearchSource::record(tx, run, url, "").await?.id),
+			Some(url) => Some(
+				ResearchSource::record(tx, run, &reservation.key, url, "")
+					.await?
+					.id,
+			),
 			None => None,
 		};
 		Ok(Reserved::Reserved { source })
@@ -495,6 +580,7 @@ impl ResearchSource {
 	pub(crate) async fn record(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
+		key: &str,
 		url: &str,
 		title: &str,
 	) -> Result<SourceRecord> {
@@ -505,6 +591,7 @@ impl ResearchSource {
 			.run_id(run)
 			.url(url.to_owned())
 			.title(title.to_owned())
+			.attempt_key(Some(key.to_owned()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -546,6 +633,7 @@ impl ResearchSource {
 impl ResearchSnapshot {
 	pub(crate) async fn record(
 		tx: &mut dyn TransactionExecutor,
+		key: &str,
 		snapshot: &DocumentSnapshot,
 	) -> Result<()> {
 		let bytes = snapshot
@@ -600,6 +688,7 @@ impl ResearchSnapshot {
 					.as_ref()
 					.is_some_and(|original| original.retained),
 			)
+			.attempt_key(Some(key.to_owned()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -714,6 +803,32 @@ impl ResearchFragment {
 			.line_start(stored(fragment.line_start))
 			.line_end(stored(fragment.line_end))
 			.pages(Json(serde_json::to_value(&fragment.pages)?))
+			.passage_digest(Some(fragment.passage_digest.clone()))
+			.image_page(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| i32::try_from(image.page).unwrap_or(i32::MAX)),
+			)
+			.image_media_type(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| image.media_type.clone()),
+			)
+			.image_width(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| i32::try_from(image.width).unwrap_or(i32::MAX)),
+			)
+			.image_height(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| i32::try_from(image.height).unwrap_or(i32::MAX)),
+			)
+			.image_digest(fragment.image.as_ref().map(|image| image.digest.clone()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -752,10 +867,29 @@ impl ResearchFragment {
 				document_id: snapshot.id,
 				source_id: snapshot.source_id,
 				text_digest: snapshot.text_digest,
+				passage_digest: record.passage_digest.unwrap_or_else(|| {
+					aidash_domain::research::evidence::passage_digest(&record.text)
+				}),
 				text: record.text,
 				line_start: usize::try_from(record.line_start).unwrap_or(0),
 				line_end: usize::try_from(record.line_end).unwrap_or(0),
 				pages: serde_json::from_value(record.pages.0)?,
+				image: match (record.image_page, record.image_media_type) {
+					(Some(page), Some(media_type)) => Some(FragmentImage {
+						page: u32::try_from(page).unwrap_or(0),
+						media_type,
+						width: record
+							.image_width
+							.and_then(|width| u32::try_from(width).ok())
+							.unwrap_or(0),
+						height: record
+							.image_height
+							.and_then(|height| u32::try_from(height).ok())
+							.unwrap_or(0),
+						digest: record.image_digest.unwrap_or_default(),
+					}),
+					_ => None,
+				},
 			});
 		}
 		Ok(fragments)
@@ -984,7 +1118,7 @@ impl ResearchAttempt {
 	/// the tombstone of its operation. Attempts stay, with their charges.
 	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
 		let mut removed = 0;
-		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		for operation in Operation::ALL {
 			let (sql, values) = Query::update()
 				.table(Alias::new(Self::table_name()))
 				.value(Alias::new("result"), revoked_result(operation))
@@ -1015,6 +1149,66 @@ impl ResearchAttempt {
 			.pop()
 			.and_then(|record| Operation::parse(&record.operation)))
 	}
+
+	/// The tombstone `key`'s result becomes once account terms expired its
+	/// attempt, which they may do before the attempt settles; `None` while
+	/// the attempt keeps its result. Call under the Run's research lock.
+	pub(crate) async fn expired_tombstone(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+	) -> Result<Option<Value>> {
+		Ok(Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_invocation_key().eq(key.to_owned()))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.filter(|record| {
+				record.purged_at.is_some()
+					&& record.purge_reason.as_deref() == Some(PurgeReason::AccountTerms.as_str())
+			})
+			.and_then(|record| Operation::parse(&record.operation))
+			.map(aidash_domain::research::expiry::tombstone))
+	}
+
+	/// The tombstone a research result stored now becomes when account terms
+	/// already expired the Provider result it carries: its own attempt's, or
+	/// the Document snapshot it was built from. Takes the Run's research lock,
+	/// so an expiry either finished before and is seen here, or runs after
+	/// and replaces what this transaction stores. `None` for other results.
+	pub(crate) async fn expired_result(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+		result: &Value,
+	) -> Result<Option<Value>> {
+		let Some(operation) = aidash_domain::research::revocation::result_operation(result) else {
+			return Ok(None);
+		};
+		lock(tx, &format!("research-run:{run}")).await?;
+		if let Some(tombstone) = Self::expired_tombstone(tx, run, key).await? {
+			return Ok(Some(tombstone));
+		}
+		let Some(document) = result["data"]["document_id"]
+			.as_str()
+			.and_then(|id| id.parse::<Uuid>().ok())
+		else {
+			return Ok(None);
+		};
+		let expired = ResearchSnapshot::objects()
+			.filter(ResearchSnapshot::field_run_id().eq(run))
+			.filter(ResearchSnapshot::field_id().eq(document))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.is_some_and(|snapshot| {
+				snapshot.purge_reason.as_deref() == Some(PurgeReason::AccountTerms.as_str())
+			});
+		Ok(expired.then(|| aidash_domain::research::expiry::tombstone(operation)))
+	}
 }
 
 /// Replace the stored tool results of research invocations with tombstones,
@@ -1026,7 +1220,7 @@ pub(crate) async fn revoke_invocations(
 	run: Option<Uuid>,
 ) -> Result<u32> {
 	let mut removed = 0;
-	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+	for operation in Operation::ALL {
 		let tombstone = revoked_result(operation);
 		let result = || Expr::col(Alias::new("result"));
 		let mut update = Query::update();
@@ -1133,7 +1327,7 @@ async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>)
 		}
 	};
 	let data = || Expr::col(Alias::new("data"));
-	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+	for operation in Operation::ALL {
 		let tombstone = revoked_result(operation).to_string();
 		let result = || json_field(data(), "result");
 		let (sql, values) = Query::update()
@@ -1217,13 +1411,13 @@ pub(crate) fn json_text(json: Expr, key: &str) -> SimpleExpr {
 }
 
 /// A JSON text bound as a `jsonb` value.
-fn jsonb(text: &str) -> SimpleExpr {
+pub(crate) fn jsonb(text: &str) -> SimpleExpr {
 	Expr::value(text.to_owned()).cast_as("jsonb")
 }
 
 /// `json || jsonb_build_object(key, value)`: the object with its top-level
 /// `key` set to `value`, as `jsonb_set(json, '{key}', value)` sets it.
-fn with_key(json: Expr, key: &str, value: &str) -> SimpleExpr {
+pub(crate) fn with_key(json: Expr, key: &str, value: &str) -> SimpleExpr {
 	json.binary(
 		reinhardt::query::types::BinOper::PgOperator(
 			reinhardt::query::types::PgBinOper::Concatenate,
@@ -1309,4 +1503,347 @@ impl ResearchRevocation {
 /// What a research result is replaced with once its Run's evidence is revoked.
 pub(crate) fn revoked_result(operation: Operation) -> Value {
 	aidash_domain::research::revocation::tombstone(operation)
+}
+
+/// The research attempts of one Run whose Provider results expire together,
+/// by invocation key and operation (ADR 0058).
+pub(crate) struct ExpiringAttempts {
+	pub run: Uuid,
+	pub keys: Vec<(String, Operation)>,
+}
+
+impl ExpiringAttempts {
+	fn keys_of(&self, operation: Operation) -> Vec<String> {
+		self.keys
+			.iter()
+			.filter(|(_, of)| *of == operation)
+			.map(|(key, _)| key.clone())
+			.collect()
+	}
+
+	/// Replace every stored copy of these attempts' Provider results with
+	/// tombstones under the Run's research lock, keeping identities, digests
+	/// and what Aidash itself sent: the attempts' recorded results, the titles
+	/// of the Source records a search created, the contents and originals of
+	/// the Document snapshots a read created and the text of their Evidence
+	/// fragments, and every stored research result built from either, in
+	/// `invocations` and in `tool.completed` events. Attempts and snapshots
+	/// are marked purged at `at` unless an earlier purge already marked them.
+	/// Returns how many attempts were purged now.
+	pub(crate) async fn expire(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		at: DateTime<Utc>,
+	) -> Result<u64> {
+		lock(tx, &format!("research-run:{}", self.run)).await?;
+		// Revocation dominates later cleanup: a Run revoked after these
+		// attempts were chosen keeps its revoked tombstones (ADR 0046).
+		if ResearchRevocation::exists(tx, self.run).await? {
+			return Ok(0);
+		}
+		let searches = self.keys_of(Operation::Search);
+		let reads = self.keys_of(Operation::Fetch);
+		let all = self
+			.keys
+			.iter()
+			.map(|(key, _)| key.clone())
+			.collect::<Vec<_>>();
+		if !searches.is_empty() {
+			let (sql, values) = Query::update()
+				.table(Alias::new(ResearchSource::table_name()))
+				.value(Alias::new("title"), "")
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					Expr::col("attempt_key")
+						.is_in(searches.iter().map(|key| Expr::value(key.clone()))),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		let documents = if reads.is_empty() {
+			Vec::new()
+		} else {
+			ResearchSnapshot::objects()
+				.filter(ResearchSnapshot::field_run_id().eq(self.run))
+				.filter(
+					ResearchSnapshot::field_attempt_key()
+						.is_in(reads.into_iter().map(Some).collect::<Vec<_>>()),
+				)
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.into_iter()
+				.map(|snapshot| snapshot.id)
+				.collect::<Vec<_>>()
+		};
+		if !documents.is_empty() {
+			let in_documents =
+				|| Expr::col("id").is_in(documents.iter().map(|id| Expr::value(*id)));
+			let (sql, values) = ResearchSnapshot::removal(at, PurgeReason::AccountTerms)
+				.and_where(in_documents())
+				.and_where(Expr::col("purged_at").is_null())
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+			// The page title came from the provider too, and an earlier purge
+			// kept it, so it goes from every expired snapshot.
+			let (sql, values) = Query::update()
+				.table(Alias::new(ResearchSnapshot::table_name()))
+				.value(Alias::new("title"), Option::<String>::None)
+				.and_where(in_documents())
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+			ResearchOriginal::purge(tx, &documents).await?;
+			// Page images were rendered from those originals.
+			ResearchPageImage::expire(tx, self.run, &documents).await?;
+			// Fragments of a snapshot an earlier purge emptied go too: their
+			// passages are copies of what the provider returned.
+			let (sql, values) = Query::update()
+				.table(Alias::new(ResearchFragment::table_name()))
+				.value(Alias::new("text"), "")
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					Expr::col("snapshot_id").is_in(documents.iter().map(|id| Expr::value(*id))),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		// An attempt still dispatched holds no result yet, though its Sources
+		// and snapshots may exist. Marked purged, it settles with a tombstone.
+		let (sql, values) = Query::update()
+			.table(Alias::new(ResearchAttempt::table_name()))
+			.value(Alias::new("purged_at"), at)
+			.value(
+				Alias::new("purge_reason"),
+				PurgeReason::AccountTerms.as_str(),
+			)
+			.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+			.and_where(
+				Expr::col("invocation_key").is_in(all.iter().map(|key| Expr::value(key.clone()))),
+			)
+			.and_where(Expr::col("result").is_null())
+			.and_where(Expr::col("purged_at").is_null())
+			.build(PostgresQueryBuilder);
+		let mut purged = tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected;
+		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+			let tombstone = aidash_domain::research::expiry::tombstone(operation);
+			// The attempts themselves, and any attempt of the Run whose result
+			// was built from an expired Document snapshot.
+			let mut attempts = Query::update();
+			attempts
+				.table(Alias::new(ResearchAttempt::table_name()))
+				.value(Alias::new("result"), tombstone.clone())
+				.value(Alias::new("purged_at"), at)
+				.value(
+					Alias::new("purge_reason"),
+					PurgeReason::AccountTerms.as_str(),
+				)
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(Expr::col("operation").eq(Expr::value(operation.as_str())))
+				.and_where(Expr::col("result").is_not_null())
+				.and_where(Expr::col("purged_at").is_null())
+				.and_where(produced_by(
+					Expr::col(Alias::new("invocation_key")),
+					json_text(
+						Expr::from(json_field(Expr::col(Alias::new("result")), "data")),
+						"document_id",
+					),
+					&all,
+					&documents,
+				));
+			let (sql, values) = attempts.build(PostgresQueryBuilder);
+			purged += tx
+				.execute(&sql, convert_values(values))
+				.await?
+				.rows_affected;
+			let (sql, values) = Query::update()
+				.table(Alias::new("invocations"))
+				.value(Alias::new("result"), tombstone.clone())
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					json_text(Expr::col(Alias::new("result")), "contract")
+						.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+				)
+				.and_where(
+					json_text(Expr::col(Alias::new("result")), "operation")
+						.eq(Expr::value(operation.as_str())),
+				)
+				.and_where(produced_by(
+					Expr::col(Alias::new("idempotency_key")),
+					json_text(
+						Expr::from(json_field(Expr::col(Alias::new("result")), "data")),
+						"document_id",
+					),
+					&all,
+					&documents,
+				))
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+			let data = || Expr::col(Alias::new("data"));
+			let result = || Expr::from(json_field(data(), "result"));
+			let (sql, values) = Query::update()
+				.table(Alias::new("events"))
+				.value_expr(
+					Alias::new("data"),
+					with_key(data(), "result", &tombstone.to_string()),
+				)
+				.and_where(Expr::col("kind").eq("tool.completed"))
+				.and_where(json_text(data(), "run_id").eq(Expr::value(self.run.to_string())))
+				.and_where(
+					json_text(result(), "contract")
+						.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+				)
+				.and_where(json_text(result(), "operation").eq(Expr::value(operation.as_str())))
+				.and_where(produced_by(
+					Expr::from(json_text(data(), "idempotency_key")),
+					json_text(Expr::from(json_field(result(), "data")), "document_id"),
+					&all,
+					&documents,
+				))
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		Ok(purged)
+	}
+}
+
+/// A stored research result produced by one of `keys`, or built from one of
+/// `documents`; false when both are empty.
+fn produced_by(key: Expr, document: SimpleExpr, keys: &[String], documents: &[Uuid]) -> SimpleExpr {
+	let by_key =
+		(!keys.is_empty()).then(|| key.is_in(keys.iter().map(|key| Expr::value(key.clone()))));
+	let by_document = (!documents.is_empty()).then(|| {
+		Expr::from(document).is_in(documents.iter().map(|id| Expr::value(id.to_string())))
+	});
+	match (by_key, by_document) {
+		(Some(key), Some(document)) => key.or(document),
+		(Some(only), None) | (None, Some(only)) => only,
+		(None, None) => Expr::value(false).into(),
+	}
+}
+
+impl ResearchFragment {
+	/// Page images delivered to `run`; call under the Run's lock to check the
+	/// view limit.
+	pub(crate) async fn page_views(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Func::count(Expr::col(Alias::new("id")).into()),
+				Alias::new("n"),
+			)
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("image_page").is_not_null())
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one(&sql, convert_values(values)).await?;
+		let n = QueryRow::from_backend_row(row).data["n"]
+			.as_i64()
+			.unwrap_or(0);
+		Ok(u32::try_from(n).unwrap_or(u32::MAX))
+	}
+
+	/// The page-image fragment of `page` of snapshot `snapshot` delivered to
+	/// `run`, if that page was viewed.
+	pub(crate) async fn viewed(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		snapshot: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>> {
+		let page = i32::try_from(page).ok();
+		let Some(id) = Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_snapshot_id().eq(snapshot))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.into_iter()
+			.find(|record| page.is_some() && record.image_page == page)
+			.map(|record| record.id)
+		else {
+			return Ok(None);
+		};
+		Ok(Self::delivered(tx, run, &[EvidenceRef(id)]).await?.pop())
+	}
+}
+
+impl ResearchPageImage {
+	/// Keep the bytes of the recorded page-image fragment `fragment` of `run`.
+	pub(crate) async fn record(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		fragment: Uuid,
+		bytes: &[u8],
+	) -> Result<()> {
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let record = Self::build()
+			.tenant(tenant)
+			.fragment_id(fragment)
+			.run_id(run)
+			.bytes(bytes.to_vec())
+			.finish();
+		Self::objects()
+			.insert_with_executor(tx, &record)
+			.await
+			.map_err(FrameworkError::from)?;
+		Ok(())
+	}
+
+	/// The bytes of the page-image fragment `fragment` of `run`.
+	pub(crate) async fn get(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		fragment: Uuid,
+	) -> Result<Option<Vec<u8>>> {
+		Ok(Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_fragment_id().eq(fragment))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.map(|record| record.bytes))
+	}
+
+	/// Remove the page images rendered from `run`'s snapshots `documents`,
+	/// whose Provider results the Research account terms no longer keep
+	/// (ADR 0058). A retention purge keeps them (ADR 0053).
+	pub(crate) async fn expire(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		documents: &[Uuid],
+	) -> Result<u64> {
+		if documents.is_empty() {
+			return Ok(0);
+		}
+		let fragments = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new(ResearchFragment::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("snapshot_id").is_in(documents.iter().map(|id| Expr::value(*id))))
+			.to_owned();
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("fragment_id").in_subquery(fragments))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected)
+	}
+
+	/// Remove the page images of `run` for an Evidence Revocation.
+	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u64> {
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected)
+	}
 }

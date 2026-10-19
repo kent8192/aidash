@@ -260,6 +260,13 @@ pub(super) fn migration() -> Migration {
 						deferrable: None,
 					},
 		})
+        .add_operation(Operation::DropConstraintDefinition {
+            table: "research_fragments".to_string(),
+            constraint: Constraint::Unique {
+                name: "research_fragments_tenant_id_key".to_string(),
+                columns: vec!["tenant".to_string(), "id".to_string()],
+            },
+        })
 
         .add_dependency("execution", "0020_research_evidence")
         .atomic(true)

@@ -49,8 +49,8 @@ pub fn validate_inspection(
 			pinned.definition.kind.as_str(),
 		);
 	}
-	if let Some(reference) = &inspection.compactor {
-		expected.insert((&reference.id, &reference.version), "compactor");
+	if let Some(reference) = &inspection.decider {
+		expected.insert((&reference.id, &reference.version), "decider");
 	}
 	if inspection.definitions.len() != expected.len() {
 		return Err(Error::External("incomplete receiver definitions".into()));

@@ -39,8 +39,18 @@ const DashboardIdentityAdministration = lazy(() =>
     default: m.DashboardIdentityAdministration,
   })),
 );
+const ResearchEvidenceGovernance = lazy(() =>
+  import("./research-governance").then((m) => ({
+    default: m.ResearchEvidenceGovernance,
+  })),
+);
 const TenantAccess = lazy(() =>
   import("./tenant-access").then((m) => ({ default: m.TenantAccess })),
+);
+const LeaveTenantButton = lazy(() =>
+  import("./tenant-deletion").then((m) => ({
+    default: m.LeaveTenantButton,
+  })),
 );
 
 export function ToolSection({
@@ -105,6 +115,7 @@ export function TrustTools({
   tenant,
   subject,
   initiallyOpen,
+  evidenceOpen = false,
 }: {
   deploymentAdministrator: boolean;
   /** Whether this Deployment issues Invitations. */
@@ -114,6 +125,8 @@ export function TrustTools({
   /** The subject the selected Mapping acts as. */
   subject: string | null;
   initiallyOpen: boolean;
+  /** Whether the Research evidence retention and revocation tools start open. */
+  evidenceOpen?: boolean;
 }) {
   const { locale, t } = useI18n();
   const loading = (
@@ -123,30 +136,52 @@ export function TrustTools({
     <Hint role="status">{t("administratorsOnly")}</Hint>
   );
   return (
-    <ToolSection
-      title={
-        locale === "ja-JP" ? "アクセス権とアカウント" : "Access and accounts"
-      }
-      initiallyOpen={initiallyOpen}
-    >
-      {deploymentAdministrator ? (
+    <>
+      <ToolSection
+        title={
+          locale === "ja-JP" ? "アクセス権とアカウント" : "Access and accounts"
+        }
+        initiallyOpen={initiallyOpen}
+      >
+        {deploymentAdministrator ? (
+          <Suspense fallback={loading}>
+            <DashboardIdentityAdministration />
+            <AuthorizationPage invitations={invitations} />
+          </Suspense>
+        ) : tenant ? (
+          <Suspense fallback={loading}>
+            <TenantAccess
+              key={tenant}
+              tenant={tenant}
+              subject={subject}
+              fallback={
+                <>
+                  {administratorsOnly}
+                  <LeaveTenantButton tenant={tenant} />
+                </>
+              }
+            />
+          </Suspense>
+        ) : (
+          administratorsOnly
+        )}
+      </ToolSection>
+      <ToolSection
+        title={
+          locale === "ja-JP"
+            ? "Research evidence の保持と取り消し"
+            : "Research evidence retention and revocation"
+        }
+        initiallyOpen={evidenceOpen}
+      >
         <Suspense fallback={loading}>
-          <DashboardIdentityAdministration />
-          <AuthorizationPage invitations={invitations} />
-        </Suspense>
-      ) : tenant ? (
-        <Suspense fallback={loading}>
-          <TenantAccess
-            key={tenant}
+          <ResearchEvidenceGovernance
             tenant={tenant}
-            subject={subject}
-            fallback={administratorsOnly}
+            deploymentAdministrator={deploymentAdministrator}
           />
         </Suspense>
-      ) : (
-        administratorsOnly
-      )}
-    </ToolSection>
+      </ToolSection>
+    </>
   );
 }
 export function ConversationTools({

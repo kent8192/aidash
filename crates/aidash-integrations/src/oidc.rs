@@ -49,16 +49,16 @@ pub struct AccountLookup {
 impl aidash_application::ports::authorization::dashboard::AccountStatus for AccountLookup {
 	async fn lookup(
 		&self,
+		issuer: &str,
 		subject: &str,
-		gcip_tenant: Option<&str>,
 	) -> Result<aidash_domain::identity::dashboard::AccountState> {
-		if gcip_tenant.is_some() {
-			return Err(Error::Forbidden);
-		}
 		let settings = self
 			.settings
 			.as_ref()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
+		if issuer != settings.issuer {
+			return Err(Error::Forbidden);
+		}
 		Ok(aidash_domain::identity::dashboard::AccountState {
 			disabled: !keycloak_enabled(&self.client, settings, subject).await?,
 			valid_since: None,
@@ -299,9 +299,8 @@ pub async fn exchange_identity(
 		.map(str::to_owned);
 	Ok((
 		aidash_domain::identity::dashboard::SignIn {
+			issuer: config.issuer.clone(),
 			subject,
-			gcip_tenant: None,
-			gcip_provider: None,
 			auth_time: chrono::Utc::now(),
 			verified_email,
 			display_name,
@@ -365,9 +364,8 @@ async fn exchange_google_identity(
 	}
 	Ok((
 		aidash_domain::identity::dashboard::SignIn {
+			issuer: config.issuer.clone(),
 			subject: claims.sub,
-			gcip_tenant: None,
-			gcip_provider: None,
 			auth_time: chrono::Utc::now(),
 			verified_email: claims
 				.email

@@ -80,9 +80,12 @@ pub const TABLES: &[Table] = &[
 	table("execution", "inference_progress", TenantOwned),
 	table("execution", "inference_usage", TenantOwned),
 	table("execution", "invocations", TenantOwned),
+	// recorded ends of Research account holders' agreements (ADR 0058)
+	table("execution", "research_account_terminations", DeploymentWide),
 	table("execution", "research_attempts", TenantOwned),
 	table("execution", "research_fragments", TenantOwned),
 	table("execution", "research_originals", TenantOwned),
+	table("execution", "research_page_images", TenantOwned),
 	table("execution", "research_revocations", TenantOwned),
 	table("execution", "research_snapshots", TenantOwned),
 	table("execution", "research_sources", TenantOwned),

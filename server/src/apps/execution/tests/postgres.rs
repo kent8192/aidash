@@ -723,7 +723,6 @@ fn federation(
 		let store = &store_fixture.store;
 		let federation = Federation {
 			sandbox: Default::default(),
-			gcip: None,
 			store: store.clone(),
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			config: Config {
@@ -736,7 +735,7 @@ fn federation(
 				lease_seconds: 30,
 				tenancy: Default::default(),
 				oidc: None,
-				gcip: None,
+				sign_in: None,
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
@@ -2586,7 +2585,7 @@ fn authenticated_runtime(
 			lease_seconds: 30,
 			tenancy: Default::default(),
 			oidc: None,
-			gcip: None,
+			sign_in: None,
 		};
 		runtime.federation.client = http_client;
 		runtime
