@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 mod agent_plugins;
+mod plugin_tools;
 
 const NODE: &str = "aidash://node-a";
 fn reference(id: &str) -> QualifiedRef {
@@ -436,6 +437,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live.clone(),
+		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	assert!(!tools.contains_key("memory_mutate"));
@@ -1260,6 +1262,7 @@ async fn sent_tool_definitions(bindings: [&str; 3]) -> String {
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live,
+		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	let specifications = tools
@@ -1284,6 +1287,7 @@ async fn saved_dispatch_enforces_narrowing_and_rechecks_revocation_and_provider_
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live.clone(),
+		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	let read = &tools["workspace_read"];
@@ -1322,6 +1326,7 @@ async fn activation_cannot_add_or_replace_a_binding_graph_after_execution_starts
 	let resolver = execution::PinnedResolver {
 		providers: Arc::new(Live::new()),
 		authority: Arc::new(Live::new()),
+		sessions: None,
 	};
 	assert!(resolver.tools(&run).await.is_err());
 }
@@ -1372,6 +1377,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live.clone(),
+		sessions: None,
 	};
 	assert!(matches!(
 		resolver.tools(&run).await,
@@ -2018,6 +2024,7 @@ async fn file_read_tool(run: &Run) -> (ToolContract, Option<ConcurrentCall>) {
 	let resolver = execution::PinnedResolver {
 		providers: providers.clone(),
 		authority: providers,
+		sessions: None,
 	};
 	let tools = resolver.tools(run).await.unwrap();
 	let read = &tools["file_read"];
