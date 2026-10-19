@@ -55,6 +55,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
   "use_pem",
 ] }
+regex = "1.12"
 reinhardt = { workspace = true, features = ["test", "testcontainers"] }
 rstest.workspace = true
 sqlx = { version = "0.8.6", default-features = false, features = [

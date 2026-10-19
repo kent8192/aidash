@@ -3,8 +3,10 @@
 use aidash_domain::offering::Offering;
 use aidash_server::authorization::sign_in::SignInProvider;
 use aidash_server::bootstrap::build::{Build, Extension, ProvidedStore};
+use aidash_server::database::classification::Table;
 use std::sync::Arc;
 
+pub mod classification;
 pub mod gcip;
 pub mod provider_credentials;
 
@@ -54,6 +56,10 @@ impl Extension for Adapters {
 	/// `enterprise/server/routes.json` lists them per Offering.
 	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		Some(gcip::routes())
+	}
+
+	fn tables(&self) -> &'static [Table] {
+		classification::TABLES
 	}
 
 	fn provider_credential_store(

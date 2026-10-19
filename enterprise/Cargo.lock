@@ -173,6 +173,7 @@ dependencies = [
  "indexmap 2.14.2",
  "jsonwebtoken 11.1.0",
  "linkme",
+ "regex",
  "reinhardt-web",
  "reqwest 0.13.5",
  "rstest",

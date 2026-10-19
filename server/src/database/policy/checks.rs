@@ -79,7 +79,10 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 		}
 	}
 	let expected: BTreeSet<String> = owned.iter().copied().map(str::to_owned).collect();
-	assert_eq!(covered, expected);
+	assert_eq!(
+		covered, expected,
+		"left: tables the policy migrations enable; right: Tenant-owned tables of the classification"
+	);
 	policies
 }
 
@@ -143,5 +146,8 @@ pub fn assert_no_migration_writes_tenant_owned_rows(
 		.iter()
 		.map(|label| (*label).to_owned())
 		.collect::<BTreeSet<_>>();
-	assert_eq!(writers, known);
+	assert_eq!(
+		writers, known,
+		"left: migration directions that write Tenant-owned rows; right: the known writers"
+	);
 }
