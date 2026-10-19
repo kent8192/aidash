@@ -32,6 +32,8 @@ ALLOWED = [
     r"expression\['operator'\]",
     r"key, operator, values",
     r"\}\[operator\]",
+    r"Stateful HA Operator",
+    r"the operator gives that for StatefulSets",
     # Search query operators of the Brave API.
     r'"operators": true',
     r"search operators",
@@ -62,6 +64,8 @@ ALLOWED_FILES = {
     # This guard and its test.
     "scripts/check-role-terminology.py",
     "scripts/test_check_role_terminology.py",
+    # The ADR that records the rename.
+    "docs/adr/0044-the-operator-role-is-named-deployment-administrator.md",
 }
 
 PATTERN = re.compile("|".join(f"(?:{p})" for p in ALLOWED))
