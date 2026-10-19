@@ -65,9 +65,10 @@ worker_count = 4
 # probe_listen = "127.0.0.1:8081"
 background_enabled = true
 
-# Tenancy Rules: how Tenants come to exist and how people join them. These are
-# the Self-hosted defaults. Identities of a GCIP Tenant with a Tenant Binding
-# are never covered.
+# Tenancy Rules: how Tenants come to exist and how people join them. The
+# Offering supplies each rule left out; these are the Self-hosted Offering's.
+# Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
+# one Tenant are never covered.
 [tenancy]
 # Create a Personal Tenant for each External Identity at its first sign-in.
 personal_tenants = false

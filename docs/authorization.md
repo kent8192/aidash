@@ -105,16 +105,16 @@ Approvals, rejections, Mapping disables, group changes, policy replacements (`po
 
 Every Tenant has a root record keyed by its Tenant name, `<adjective>-<noun>-<8 random characters>` such as `brave-otter-k3m9q2xa`. Aidash assigns the name, it never changes and it is never reused; the root record outlives purge with only its label cleared. A policy replacement at `expected_revision: 0` for a Tenant without a root record answers 404, so `POST /api/authorization/{tenant}` never creates a Tenant.
 
-The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's policy decides them. Identities of a GCIP Tenant with a Tenant Binding are never covered: they hold no Personal Tenant, create no Tenants and redeem no other Tenant's Invitation.
+The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's policy decides them. The `[deployment] offering` supplies each rule the settings leave out, and an explicit value overrides it. Identities of a GCIP Tenant with a Tenant Binding are never covered: they hold no Personal Tenant, create no Tenants and redeem no other Tenant's Invitation.
 
-| Setting               | Default | Meaning                                                                    |
-| --------------------- | ------- | -------------------------------------------------------------------------- |
-| `personal_tenants`    | `false` | Provision a Personal Tenant at an identity's first sign-in                 |
-| `tenant_creation`     | `false` | Let signed-in External Identities create Tenants                           |
-| `creation_per_hour`   | `5`     | Creations per External Identity within any 60 minutes                      |
-| `creation_total`      | `20`    | Tenants one External Identity created and has not had purged               |
-| `invitations`         | `true`  | Let Tenant Administrators and Deployment Administrators issue Invitations  |
-| `deletion_grace_days` | `30`    | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
+| Setting               | Self-hosted | Cloud  | Dedicated | Meaning                                                                    |
+| --------------------- | ----------- | ------ | --------- | -------------------------------------------------------------------------- |
+| `personal_tenants`    | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                 |
+| `tenant_creation`     | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                           |
+| `creation_per_hour`   | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                      |
+| `creation_total`      | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged               |
+| `invitations`         | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations  |
+| `deletion_grace_days` | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 

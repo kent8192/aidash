@@ -2,6 +2,7 @@
 //! and the last-administrator guard (#238), over HTTP and PostgreSQL.
 use super::*;
 use aidash_domain::identity::tenancy::TenancyRules;
+use aidash_domain::offering::Offering;
 
 const DEPLOYMENT_ADMINISTRATOR: &str = "deployment-administrator-execution-fixture";
 
@@ -174,7 +175,7 @@ struct Person {
 fn open_rules() -> TenancyRules {
 	TenancyRules {
 		tenant_creation: true,
-		..TenancyRules::default()
+		..TenancyRules::of(Offering::SelfHosted)
 	}
 }
 
@@ -190,7 +191,7 @@ fn assert_assigned_name(name: &str) {
 async fn deployment_administrators_create_tenants_under_assigned_names(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let d = Deployment::new(runtime, TenancyRules::of(Offering::SelfHosted)).await;
 
 	let (status, created) = d
 		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"  Research  "}))
@@ -254,7 +255,7 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 async fn a_policy_needs_a_root_record_so_tenants_are_never_created_implicitly(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let d = Deployment::new(runtime, TenancyRules::of(Offering::SelfHosted)).await;
 
 	let (status, body) = d
 		.as_deployment_administrator(
@@ -278,7 +279,7 @@ async fn a_policy_needs_a_root_record_so_tenants_are_never_created_implicitly(
 async fn only_signed_in_people_and_deployment_administrators_create_tenants(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let closed = Deployment::new(runtime.clone(), TenancyRules::default()).await;
+	let closed = Deployment::new(runtime.clone(), TenancyRules::of(Offering::SelfHosted)).await;
 	let alice = closed.person("alice").await;
 	let (status, body) = closed
 		.as_person(
@@ -304,7 +305,7 @@ async fn a_browser_deployment_administrator_creates_tenants_only_while_granted(
 ) {
 	// Arrange: Carol holds a Deployment Administrator grant; the Tenancy
 	// Rules allow nobody to create Tenants.
-	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let d = Deployment::new(runtime, TenancyRules::of(Offering::SelfHosted)).await;
 	let carol = d.person("carol").await;
 	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
 		.bind(carol.identity)
@@ -852,7 +853,7 @@ impl Deployment {
 async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_by_invitation(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let d = Deployment::new(runtime, TenancyRules::of(Offering::SelfHosted)).await;
 	let dana = d.person("dana").await;
 	let (_, created) = d
 		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Customer"}))
@@ -911,7 +912,7 @@ async fn lock_waiters(d: &Deployment, count: i64) {
 async fn a_logout_committing_during_redemption_leaves_the_link_unspent(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let d = Deployment::new(runtime, TenancyRules::of(Offering::SelfHosted)).await;
 	let bob = d.person("bob").await;
 	let (_, created) = d
 		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Customer"}))
@@ -1080,7 +1081,7 @@ async fn personal_tenants_follow_the_rules_and_are_never_restored(
 		runtime,
 		TenancyRules {
 			personal_tenants: true,
-			..TenancyRules::default()
+			..TenancyRules::of(Offering::SelfHosted)
 		},
 	)
 	.await;
@@ -1137,7 +1138,7 @@ async fn invitations_follow_the_rules(#[from(common::runtime)] runtime: common::
 		runtime,
 		TenancyRules {
 			invitations: false,
-			..TenancyRules::default()
+			..TenancyRules::of(Offering::SelfHosted)
 		},
 	)
 	.await;
@@ -1232,7 +1233,7 @@ async fn display_retention_follows_the_request_that_ended_last(
 ) {
 	// Arrange: Bob holds Invitation requests to two Tenants, the first made
 	// before the second.
-	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let d = Deployment::new(runtime, TenancyRules::of(Offering::SelfHosted)).await;
 	let bob = d.person("bob").await;
 	let mut requests = Vec::new();
 	for label in ["First", "Second"] {

@@ -733,7 +733,9 @@ fn federation(
 				api_token: "test-access-token".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
-				tenancy: Default::default(),
+				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+					aidash_domain::offering::Offering::SelfHosted,
+				),
 				oidc: None,
 				sign_in: None,
 			},
@@ -2583,7 +2585,9 @@ fn authenticated_runtime(
 			api_token: "test-access-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			tenancy: Default::default(),
+			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+				aidash_domain::offering::Offering::SelfHosted,
+			),
 			oidc: None,
 			sign_in: None,
 		};

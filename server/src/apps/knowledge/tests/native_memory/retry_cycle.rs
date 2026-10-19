@@ -280,7 +280,9 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 		sandbox: Default::default(),
 		registry,
 		config: Config {
-			tenancy: Default::default(),
+			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+				aidash_domain::offering::Offering::SelfHosted,
+			),
 			node_id: store.node_id.clone(),
 			endpoint: "http://127.0.0.1:1".into(),
 			database_url: database.url.clone(),

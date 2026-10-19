@@ -500,7 +500,9 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				api_token: "deployment-administrator-execution-fixture".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
-				tenancy: Default::default(),
+				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+					aidash_domain::offering::Offering::SelfHosted,
+				),
 				oidc: None,
 				sign_in: None,
 			},

@@ -81,7 +81,7 @@ impl Config {
 			api_token: node.api_token.clone(),
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
-			tenancy: settings.tenancy.rules(),
+			tenancy: settings.tenancy.rules(settings.deployment.offering),
 			sign_in: settings
 				.dashboard
 				.gcip
