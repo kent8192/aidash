@@ -743,7 +743,10 @@ async fn a_refusal_pauses_without_asking_another_route() {
 			.iter()
 			.all(|route| *route == 0)
 	);
-	assert_eq!(fixture.saved.lock().unwrap().evidence.len(), 1);
+	let refused = fixture.saved.lock().unwrap().evidence.clone();
+	assert_eq!(refused.len(), 1);
+	assert_eq!(refused[0].reason, Reason::ProviderFailure);
+	refused[0].validate_rejection().unwrap();
 }
 #[tokio::test]
 async fn every_route_unavailable_is_an_outage_the_step_retries() {

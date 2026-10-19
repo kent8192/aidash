@@ -349,6 +349,8 @@ impl DecisionGate<'_> {
 		}
 		evidence.restrictions = restrictions.clone();
 		if failure.is_none() && validate_answers(&evidence.questions, &evidence.answers).is_err() {
+			// The journal lost answers it charged: final, never another Route.
+			unavailable = false;
 			failure = Some((
 				Reason::IncompleteAnswers,
 				Error::Invalid("incomplete durable decision answers".into()),
