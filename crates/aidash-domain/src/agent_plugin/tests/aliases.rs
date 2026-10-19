@@ -37,6 +37,15 @@ fn sixty_four_characters_are_kept_whole() {
 }
 
 #[test]
+fn one_character_over_the_cap_is_already_truncated() {
+	let tool = "t".repeat(65 - "demo__srv__".len());
+	let alias = alias("demo", "srv", &tool);
+	assert_eq!(alias.len(), 64);
+	assert_eq!(alias[..56], format!("demo__srv__{}_", "t".repeat(44)));
+	assert!(alias[56..].chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
 fn a_longer_alias_keeps_55_characters_an_underscore_and_a_hash() {
 	let alias = alias("demo", "srv", &"t".repeat(80));
 	assert_eq!(alias, format!("demo__srv__{}_b1c34149", "t".repeat(44)));

@@ -49,25 +49,37 @@ fn a_complete_plugin_loads_with_exactly_the_expected_parts() {
 	assert_eq!(plugin.manifest.keywords, ["acme", "tools"]);
 	assert_eq!(plugin.manifest.license.as_deref(), Some("Apache-2.0"));
 
-	let names: Vec<_> = plugin
-		.skills
-		.iter()
-		.map(|skill| skill.directory.as_str())
-		.collect();
-	assert_eq!(names, ["deploy", "lint"]);
 	assert_eq!(
-		plugin.skills[0].instructions,
-		skill_md("deploy", "Deploys code.")
+		plugin.skills,
+		[
+			PluginSkill {
+				directory: "deploy".into(),
+				name: "deploy".into(),
+				description: "Deploys code.".into(),
+				license: None,
+				compatibility: None,
+				instructions: skill_md("deploy", "Deploys code."),
+				files: vec![SkillFile {
+					path: "assets/logo.bin".into(),
+					content: "AAEC/w==".into(),
+					encoding: Some("base64".into()),
+				}],
+			},
+			PluginSkill {
+				directory: "lint".into(),
+				name: "lint".into(),
+				description: "Lints code.".into(),
+				license: None,
+				compatibility: None,
+				instructions: skill_md("lint", "Lints code."),
+				files: vec![SkillFile {
+					path: "references/rules.md".into(),
+					content: "# Rules".into(),
+					encoding: None,
+				}],
+			},
+		]
 	);
-	assert_eq!(
-		plugin.skills[0].files,
-		[SkillFile {
-			path: "assets/logo.bin".into(),
-			content: "AAEC/w==".into(),
-			encoding: Some("base64".into()),
-		}]
-	);
-	assert_eq!(plugin.skills[1].files[0].path, "references/rules.md");
 
 	assert_eq!(
 		plugin.servers,

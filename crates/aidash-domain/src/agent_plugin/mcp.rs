@@ -1,8 +1,6 @@
 //! `mcp.json`: a file-level problem disables MCP for the plugin, an entry-level problem skips one
 //! server, and neither stops the plugin's other components from loading.
-use super::{
-	Component, Finding, MCP_SCHEMA, PluginFile, Reason, SUPPORTED_VERSION, schema_version,
-};
+use super::{Component, Finding, PluginFile, Reason, SUPPORTED_VERSION, schema_version};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -150,7 +148,7 @@ fn entries(bytes: &[u8]) -> Result<Vec<(String, Value)>, Finding> {
 		return Err(invalid("$schema must be a string"));
 	};
 	match schema_version(schema, "mcp.schema.json") {
-		Some(SUPPORTED_VERSION) => debug_assert_eq!(schema, MCP_SCHEMA),
+		Some(SUPPORTED_VERSION) => {}
 		Some(version) => return Err(disabled(Reason::McpVersionMismatch, version)),
 		None => return Err(invalid("$schema is not an Agent Plugins mcp schema")),
 	}

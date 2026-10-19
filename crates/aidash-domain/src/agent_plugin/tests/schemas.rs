@@ -34,6 +34,14 @@ fn the_schema_identifiers_are_the_vendored_ones() {
 }
 
 #[test]
+fn the_schema_constants_name_the_supported_version() {
+	for (constant, document) in [(PLUGIN_SCHEMA, "plugin"), (MCP_SCHEMA, "mcp")] {
+		let expected = format!("{SCHEMA_PREFIX}{SUPPORTED_VERSION}/{document}.schema.json");
+		assert_eq!(constant, expected);
+	}
+}
+
+#[test]
 fn the_manifest_keys_are_the_schemas() {
 	let plugin = schema(PLUGIN_SCHEMA_TEXT);
 	assert_eq!(names(&manifest::TOP_LEVEL_KEYS), property_names(&plugin));

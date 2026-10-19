@@ -1,8 +1,5 @@
 //! `plugin.json`: the one file whose violations refuse the whole plugin.
-use super::{
-	Component, Finding, PLUGIN_SCHEMA, PluginFile, Reason, Rejection, SUPPORTED_VERSION,
-	schema_version,
-};
+use super::{Component, Finding, PluginFile, Reason, Rejection, SUPPORTED_VERSION, schema_version};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -155,10 +152,7 @@ fn check_schema(object: &Map<String, Value>) -> Result<(), Rejection> {
 		_ => return Err(Rejection::SchemaViolation("$schema".into())),
 	};
 	match schema_version(schema, "plugin.schema.json") {
-		Some(SUPPORTED_VERSION) => {
-			debug_assert_eq!(schema, PLUGIN_SCHEMA);
-			Ok(())
-		}
+		Some(SUPPORTED_VERSION) => Ok(()),
 		Some(version) => Err(Rejection::UnsupportedVersion(version.to_owned())),
 		None => Err(Rejection::SchemaViolation("$schema".into())),
 	}
