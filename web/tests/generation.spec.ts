@@ -7,7 +7,6 @@ import {
 import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
-import { routeTenantActions } from "./registry-fixture";
 
 test("generation dashboard manages policy, approval, completion and retained history in both languages", async ({
   page,
@@ -18,6 +17,7 @@ test("generation dashboard manages policy, approval, completion and retained his
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
   let semanticRoot = "";
+  // alice's credential, once issued; the semantic index is her Tenant's.
   const cleanupHeaders = { authorization: "" };
   let semanticIndex:
     | { collection: string; spec: { vector: { endpoint: string } } }
@@ -208,9 +208,20 @@ test("generation dashboard manages policy, approval, completion and retained his
       tenant,
       name: "alice",
     });
-    // Tenant actions come from the Tenant administration overview, which only
-    // an OIDC browser session's Mapping receives.
-    await routeTenantActions(page, ["registry.create"], { tenant });
+    // The Tenant overview answers only a dashboard Mapping, never a Bearer
+    // credential, so it is the one read this fixture supplies. The registry
+    // still checks alice's policy on every write.
+    await page.route(`**/api/tenants/${tenant}/administration`, (route) =>
+      route.fulfill({
+        json: {
+          tenant,
+          label: null,
+          actions: ["registry.create"],
+          assignable_groups: [],
+          policy_revision: null,
+        },
+      }),
+    );
     await page.goto("/");
     await expect(page.locator("#main")).toBeVisible();
     const navigate = async (label: string) => {
@@ -276,15 +287,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await expect(registryDialog).toHaveCount(0);
     await page.unroute("**/api/registry");
     expect(embedder).not.toBe("");
-    expect(
-      (
-        await api(
-          `/api/registry/${embedder}/1.0.0`,
-          undefined,
-          credential.token,
-        )
-      ).config,
-    ).toEqual(embeddingConfig);
+    // A Tenant subject reads only versions its Tenant approved.
     await api(
       `/api/authorization/${tenant}/catalog`,
       {
@@ -294,6 +297,15 @@ test("generation dashboard manages policy, approval, completion and retained his
       },
       credential.token,
     );
+    expect(
+      (
+        await api(
+          `/api/registry/${embedder}/1.0.0`,
+          undefined,
+          credential.token,
+        )
+      ).config,
+    ).toEqual(embeddingConfig);
     await page.reload();
     await navigate("Agent生成");
     await page
@@ -380,27 +392,23 @@ test("generation dashboard manages policy, approval, completion and retained his
       (item: { title: string }) => item.title === id,
     );
     semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
-    semanticIndex = await api(
-      `${semanticRoot}/index`,
-      {
-        expected_revision: 0,
-        spec: {
-          embedding: embeddingConfig,
-          vector: {
-            provider: "postgres",
-            endpoint: "local",
-            credential_env: null,
-          },
-          enabled: true,
-          auto_context: true,
-          max_sources: 64,
-          max_results: 10,
-          max_result_tokens: 4096,
-          max_input_bytes: 8192,
+    semanticIndex = await api(`${semanticRoot}/index`, {
+      expected_revision: 0,
+      spec: {
+        embedding: embeddingConfig,
+        vector: {
+          provider: "postgres",
+          endpoint: "local",
+          credential_env: null,
         },
+        enabled: true,
+        auto_context: true,
+        max_sources: 64,
+        max_results: 10,
+        max_result_tokens: 4096,
+        max_input_bytes: 8192,
       },
-      credential.token,
-    );
+    });
     const memory = await api(
       `${semanticRoot}/entries`,
       {

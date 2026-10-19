@@ -198,10 +198,16 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
       localStorage.setItem("aidash-locale", "en-US");
     });
     await subjectPage.goto("/authorization");
-    // A member without administration actions may only leave its Tenant.
+    // A member who administers nothing may only leave the Tenant (#239).
     await expect(
-      subjectPage.getByRole("heading", { name: "Leave this Tenant" }),
+      subjectPage.getByRole("button", { name: "Leave Tenant", exact: true }),
     ).toBeVisible();
+    await expect(
+      subjectPage.getByRole("button", {
+        name: "Edit access policy",
+        exact: true,
+      }),
+    ).toHaveCount(0);
     await expect(
       subjectPage.locator(
         '.collab-settings-select option[value="authorization"]',

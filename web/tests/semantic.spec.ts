@@ -1,11 +1,11 @@
 import { test, expect } from "@playwright/test";
 import {
-  acceptanceSubject,
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
 import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
+import { acceptanceSubject } from "./tenant-fixture";
 
 test("semantic dashboard configures, searches, migrates and deletes persistent sources in both languages", async ({
   page,
@@ -47,7 +47,10 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   let releaseRefresh = () => {};
   let releaseConfigure = () => {};
   try {
-    await installBearerDashboard(page, subject.token, subject);
+    await installBearerDashboard(page, subject.token, {
+      tenant: subject.tenant,
+      name: subject.name,
+    });
     await page.addInitScript(() => {
       localStorage.setItem("aidash-locale", "en-US");
     });

@@ -14,3 +14,22 @@ export async function createTenant(
   expect(response.status(), await response.text()).toBe(201);
   return ((await response.json()) as { name: string }).name;
 }
+
+/** The golden path's subject in Node A's research Tenant. Only Tenant
+ *  subjects do Tenant work (#371), so live specs that create Workspaces or
+ *  assign the golden path's agents act as it. golden_path.py issues the
+ *  credential just before the browser run. */
+export function acceptanceSubject(): {
+  token: string;
+  tenant: string;
+  name: string;
+} {
+  const token = process.env.AIDASH_E2E_TOKEN;
+  const tenant = process.env.AIDASH_E2E_TENANT;
+  const name = process.env.AIDASH_E2E_SUBJECT;
+  if (!token || !tenant || !name)
+    throw new Error(
+      "AIDASH_E2E_TOKEN, AIDASH_E2E_TENANT and AIDASH_E2E_SUBJECT are required",
+    );
+  return { token, tenant, name };
+}
