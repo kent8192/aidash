@@ -38,7 +38,7 @@ ALLOWED = [
     # The private input directory of infra/delivery.
     r"--operator-directory",
     r"operator_directory",
-    r"\.ignore/delivery/operator",
+    r"secrets/delivery/operator",
     r"operator\.tfvars\.json",
     # Until #243 removes untenanted Deployment Administrator execution.
     r"OperatorConversations",

@@ -306,7 +306,7 @@ supplies termination proof; the operation stays uncertain through the existing
 recovery path. Accepted code is never replayed by infrastructure.
 
 For disposable local verification of these components, run
-`python3 scripts/verify-execution-chart.py --name aidash-155-local --directory .ignore/issue155/local`.
+`python3 scripts/verify-execution-chart.py --name aidash-155-local --directory private/issue155/local`.
 It uses a private kubeconfig, a new kind cluster and upstream gVisor, and deletes
 only that cluster after saving health/resource evidence. ARM's archive checksum
 is used only for local verification; it does not establish a GKE ARM profile.

@@ -407,7 +407,7 @@ def main():
     port_a = int(os.environ.get("AIDASH_E2E_PORT_A", "18080"))
     port_b = int(os.environ.get("AIDASH_E2E_PORT_B", "18081"))
     base_a, base_b = f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"
-    logs = ROOT / ".ignore" / "acceptance"
+    logs = ROOT / "private" / "acceptance"
     logs.mkdir(parents=True, exist_ok=True)
     (logs / "report.json").unlink(missing_ok=True)
     (logs / "source.json").write_text(json.dumps({"source": source, "binary_sha256": binary_sha256}, indent=2) + "\n")
@@ -648,7 +648,7 @@ def main():
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print("Golden path passed:", json.dumps(report, ensure_ascii=False), flush=True)
         if args.keep:
-            (ROOT / ".ignore/e2e-ready.json").write_text(json.dumps(report))
+            (ROOT / "private/e2e-ready.json").write_text(json.dumps(report))
             while True:
                 time.sleep(1)
     finally:
@@ -670,7 +670,7 @@ def main():
             file.close()
         for db in [db_a, db_b]:
             psql("aidash_a", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
-        (ROOT / ".ignore/e2e-ready.json").unlink(missing_ok=True)
+        (ROOT / "private/e2e-ready.json").unlink(missing_ok=True)
         profile_directory.cleanup()
 
 

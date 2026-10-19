@@ -66,7 +66,7 @@ try {
   expect(response.status()).toBe(200);
   await expect(dialog).not.toBeVisible({ timeout: 30000 });
   await page.screenshot({
-    path: ".ignore/acceptance/dashboard-goal.png",
+    path: "private/acceptance/dashboard-goal.png",
     fullPage: true,
   });
   process.stdout.write(JSON.stringify(payload));

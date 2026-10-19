@@ -28,7 +28,7 @@ Do not enable Terraform debug logging. Work from the repository root:
 
 ```sh
 umask 077
-mkdir -p .ignore/delivery/operator
+mkdir -p secrets/delivery/operator
 python3 infra/delivery/control/setup.py inventory
 python3 infra/delivery/control/setup.py verify
 ```
@@ -42,14 +42,14 @@ Terraform never manages GitHub secret payloads. Empty placeholder secrets are
 refused: remove entries that are not being installed in that operation.
 
 Every stack uses an explicit private GCS state bucket. The helper keeps a private
-module copy, input, log, saved plan and outputs under `.ignore/delivery/operator/<stack>`.
+module copy, input, log, saved plan and outputs under `secrets/delivery/operator/<stack>`.
 Its public plan summary contains resource addresses/actions only. Review that
 summary and the private saved plan before applying. Deletions and replacements
 are refused by default. Replan after a partial provider failure; do not reuse a
 stale saved plan or erase the state.
 
 ```sh
-python3 infra/delivery/control/setup.py plan --stack github --file .ignore/delivery/operator/github.tfvars.json --state-bucket YOUR_PRIVATE_STATE_BUCKET
+python3 infra/delivery/control/setup.py plan --stack github --file secrets/delivery/operator/github.tfvars.json --state-bucket YOUR_PRIVATE_STATE_BUCKET
 python3 infra/delivery/control/setup.py apply --stack github --state-bucket YOUR_PRIVATE_STATE_BUCKET
 ```
 
@@ -96,10 +96,10 @@ with the two private `outputs.json` paths, the App metadata path, both public GC
 pool maps, zone/account IDs and ACME email. Compose and review the account plan:
 
 ```sh
-python3 infra/delivery/control/setup.py compose --file .ignore/delivery/operator/account.tfvars.json --output .ignore/delivery/operator/github.tfvars.json
-python3 infra/delivery/control/setup.py plan --stack github --file .ignore/delivery/operator/github.tfvars.json --state-bucket YOUR_PRIVATE_STATE_BUCKET
+python3 infra/delivery/control/setup.py compose --file secrets/delivery/operator/account.tfvars.json --output secrets/delivery/operator/github.tfvars.json
+python3 infra/delivery/control/setup.py plan --stack github --file secrets/delivery/operator/github.tfvars.json --state-bucket YOUR_PRIVATE_STATE_BUCKET
 python3 infra/delivery/control/setup.py apply --stack github --state-bucket YOUR_PRIVATE_STATE_BUCKET
-python3 infra/delivery/control/setup.py secrets --file .ignore/delivery/operator/secrets.tfvars.json
+python3 infra/delivery/control/setup.py secrets --file secrets/delivery/operator/secrets.tfvars.json
 ```
 
 Composition publishes only controller fields; it strips bootstrap-only registry,
@@ -119,14 +119,14 @@ all activation acknowledgements false. Complete account setup before activating.
 The existing `aidash.run` Email Sending registration reports Configured. Do not
 onboard it again. Follow [token issuance permissions](cloudflare/README.md#tokens-to-issue-later)
 and copy [cloudflare.example.tfvars.json](cloudflare.example.tfvars.json) into
-`.ignore/delivery/operator/cloudflare.bootstrap.tfvars.json`. Fill the bootstrap
+`secrets/delivery/operator/cloudflare.bootstrap.tfvars.json`. Fill the bootstrap
 token, exact account ID and already verified private forwarding destination.
 The discovery command makes only GETs and resolves existing registration and
 destination IDs; it never sends a verification email or notification.
 
 ```sh
-python3 infra/delivery/control/cloudflare_setup.py discover --file .ignore/delivery/operator/cloudflare.bootstrap.tfvars.json --output .ignore/delivery/operator/cloudflare.tfvars.json
-python3 infra/delivery/control/setup.py plan --stack cloudflare --file .ignore/delivery/operator/cloudflare.tfvars.json --state-bucket YOUR_PRIVATE_STATE_BUCKET
+python3 infra/delivery/control/cloudflare_setup.py discover --file secrets/delivery/operator/cloudflare.bootstrap.tfvars.json --output secrets/delivery/operator/cloudflare.tfvars.json
+python3 infra/delivery/control/setup.py plan --stack cloudflare --file secrets/delivery/operator/cloudflare.tfvars.json --state-bucket YOUR_PRIVATE_STATE_BUCKET
 python3 infra/delivery/control/setup.py apply --stack cloudflare --state-bucket YOUR_PRIVATE_STATE_BUCKET
 ```
 
@@ -140,8 +140,8 @@ live Environment protection before creation and handoff, never writes token valu
 to Terraform, and revokes a newly created token if handoff fails:
 
 ```sh
-python3 infra/delivery/control/cloudflare_setup.py sending-token --file .ignore/delivery/operator/cloudflare.bootstrap.tfvars.json --output .ignore/delivery/operator/sending-token-receipt.json
-python3 infra/delivery/control/cloudflare_setup.py sending-token --file .ignore/delivery/operator/cloudflare.bootstrap.tfvars.json --output .ignore/delivery/operator/sending-token-receipt.json --apply
+python3 infra/delivery/control/cloudflare_setup.py sending-token --file secrets/delivery/operator/cloudflare.bootstrap.tfvars.json --output secrets/delivery/operator/sending-token-receipt.json
+python3 infra/delivery/control/cloudflare_setup.py sending-token --file secrets/delivery/operator/cloudflare.bootstrap.tfvars.json --output secrets/delivery/operator/sending-token-receipt.json --apply
 ```
 
 Keep `configure_routing_dns=false` for already-ready incoming Routing. Opting in

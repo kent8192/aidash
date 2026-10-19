@@ -16,7 +16,7 @@ fi
 cluster="aidash-ci-$(date +%s)-$$"
 # Parallel profiles must never replace a running, code-signed tool binary or
 # share partially downloaded archives and diagnostic files.
-tools_dir="$PWD/.ignore/platform/$cluster-tools"
+tools_dir="$PWD/private/platform/$cluster-tools"
 mkdir -p "$tools_dir"
 export PATH="$tools_dir:$PATH"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -39,7 +39,7 @@ assert hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() == pat
 PY
 chmod +x "$tools_dir/kubectl"
 
-export KUBECONFIG="$PWD/.ignore/platform/$cluster.kubeconfig"
+export KUBECONFIG="$PWD/private/platform/$cluster.kubeconfig"
 created=false
 cleanup() {
   if "$created"; then
@@ -57,7 +57,7 @@ chmod +x "$tools_dir/kind"
 created=true
 kind create cluster --name "$cluster" --kubeconfig "$KUBECONFIG" --image kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a --wait 180s
 helm lint deploy/helm/aidash --set node.id=aidash://acceptance --set existingSecret=acceptance
-export AIDASH_CLUSTER_SOURCE_MANIFEST="$PWD/.ignore/platform/$cluster-source.json"
+export AIDASH_CLUSTER_SOURCE_MANIFEST="$PWD/private/platform/$cluster-source.json"
 python3 - <<'SOURCE_MANIFEST'
 import hashlib,json,os,pathlib,subprocess,datetime
 files=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z']).decode().split('\0')
