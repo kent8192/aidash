@@ -124,15 +124,6 @@ export function createClient(config, options = {}) {
       },
     }),
   );
-  await page.route("**/auth/login?**", (route) => {
-    const url = new URL(route.request().url());
-    expect(url.searchParams.get("org")).toBe("acme");
-    return route.fulfill({
-      status: 303,
-      headers: { location: "/sign-in?state=browser-bound-state" },
-      body: "",
-    });
-  });
   await page.route("**/auth/login", (route) => {
     const request = route.request();
     expect(request.method()).toBe("POST");
