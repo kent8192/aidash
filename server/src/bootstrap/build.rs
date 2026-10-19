@@ -67,8 +67,9 @@ pub trait Extension: Sync + std::fmt::Debug {
 		Ok(None)
 	}
 	/// Whether External Identities of `issuer` sign in only through the sign-in
-	/// this build adds. With that sign-in unconfigured, their Mappings are
-	/// refused rather than left unrestricted.
+	/// this build adds, which also reads their Account Status. With that
+	/// sign-in unconfigured, their Mappings are refused rather than left
+	/// unrestricted.
 	fn owns_issuer(&self, _issuer: &str) -> bool {
 		false
 	}

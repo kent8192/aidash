@@ -108,18 +108,38 @@ pub(super) async fn credential_current(access: &mut Access) -> Result<()> {
 		.session_current(&mut access.tx, false)
 		.await?;
 	// Mapping/identity rows are already locked by Access. Only the clock can
-	// advance the non-Google identity-status deadline while those locks are held.
-	let current: Option<bool> = {
+	// advance an Account Status deadline while those locks are held.
+	let current: Option<(String, bool, bool)> = {
 		let query_bind_1 = access.identity.credential_id;
-		let query_bind_2 = crate::config::GOOGLE_OIDC_ISSUER;
-		crate::database::native::query_scalar(&Query::select()
-		.expr(SimpleExpr::CustomWithExpr("(i.disabled_at IS NULL AND (i.issuer=? OR i.last_valid_at>clock_timestamp()-interval '15 minutes'))".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
-		.from_as(Alias::new("dashboard_mappings"), Alias::new("m"))
-		.join(JoinType::InnerJoin, TableRef::table_alias(Alias::new("dashboard_identities"), Alias::new("i")), Expr::cust("m.identity_id=i.id"))
-		.and_where(SimpleExpr::CustomWithExpr("(m.credential_id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
-		.scalar_optional(&mut **access.tx).await?
+		crate::database::native::query_as(
+			&Query::select()
+				.column((Alias::new("i"), Alias::new("issuer")))
+				.expr_as(Expr::cust("i.disabled_at IS NULL"), Alias::new("enabled"))
+				.expr_as(
+					Expr::cust(
+						"coalesce(i.last_valid_at>clock_timestamp()-interval '15 minutes', false)",
+					),
+					Alias::new("fresh"),
+				)
+				.from_as(Alias::new("dashboard_mappings"), Alias::new("m"))
+				.join(
+					JoinType::InnerJoin,
+					TableRef::table_alias(Alias::new("dashboard_identities"), Alias::new("i")),
+					Expr::cust("m.identity_id=i.id"),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(m.credential_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&["issuer", "enabled", "fresh"])
+		.fetch_optional(&mut **access.tx)
+		.await?
 	};
-	if current == Some(false) {
+	if current.is_some_and(|(issuer, enabled, fresh)| {
+		!enabled || (crate::authorization::identity::reports_status(&issuer) && !fresh)
+	}) {
 		return Err(Error::IdentityStatusUnavailable);
 	}
 	Ok(())

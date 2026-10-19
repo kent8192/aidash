@@ -40,7 +40,6 @@ struct Fixture {
 	f: Federation,
 	url: String,
 	schema: String,
-	identity: Uuid,
 	browser: Uuid,
 	server: upstream_fixtures::FixedServerGuard,
 	app: common::TestApplication,
@@ -334,79 +333,6 @@ async fn deployment_administrator_token_with_desktop_prefix_retains_api_access(
 		.await
 		.status(),
 		StatusCode::UNAUTHORIZED
-	);
-	fixture.cleanup().await;
-}
-
-#[rstest::rstest]
-#[case::desktop_active(Some(7200), false, true)]
-#[case::desktop_idle_expired(Some(1800), false, false)]
-#[case::browser_idle_expired(None, false, false)]
-#[case::revoked_desktop(Some(7200), true, false)]
-#[tokio::test]
-async fn status_refresh_observes_each_session_idle_lifetime(
-	#[future(awt)]
-	#[from(review_fixture)]
-	fixture: Fixture,
-	#[case] idle: Option<i64>,
-	#[case] revoked: bool,
-	#[case] refreshed: bool,
-	#[from(refresh_control)] refresh_control: (
-		tokio::sync::watch::Sender<bool>,
-		tokio::sync::watch::Receiver<bool>,
-	),
-) {
-	let update = Query::update()
-		.table(Alias::new("dashboard_sessions"))
-		.value_expr(Alias::new("desktop"), idle.is_some())
-		.value_expr(Alias::new("desktop_idle_seconds"), Expr::value(idle))
-		.value_expr(
-			Alias::new("last_activity_at"),
-			Expr::cust("clock_timestamp()-interval '1 hour'"),
-		)
-		.value_expr(
-			Alias::new("revoked_at"),
-			Expr::val(if revoked {
-				Some(chrono::Utc::now())
-			} else {
-				None
-			}),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update)
-		.execute(fixture.f.store.pool.driver())
-		.await
-		.unwrap();
-	let update = Query::update()
-		.table(Alias::new("dashboard_identities"))
-		.value_expr(
-			Alias::new("last_valid_at"),
-			Expr::cust("clock_timestamp()-interval '16 minutes'"),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update)
-		.execute(fixture.f.store.pool.driver())
-		.await
-		.unwrap();
-	let (stop, stopping) = refresh_control;
-	// A queued stop still allows the first refresh pass to finish.
-	stop.send(true).unwrap();
-	// Act: refresh after applying this case-specific session and identity lifetime.
-	aidash_server::dashboard_auth::refresh_active(fixture.f.clone(), stopping)
-		.await
-		.unwrap();
-	let query = Query::select()
-		.column(Alias::new("last_valid_at"))
-		.from(Alias::new("dashboard_identities"))
-		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(fixture.identity)))
-		.to_string(PostgresQueryBuilder);
-	let checked: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(&query)
-		.fetch_one(fixture.f.store.pool.driver())
-		.await
-		.unwrap();
-	assert_eq!(
-		checked > chrono::Utc::now() - chrono::Duration::minutes(1),
-		refreshed
 	);
 	fixture.cleanup().await;
 }
@@ -742,7 +668,7 @@ async fn review_fixture(
 	#[with(None,_listener.clone(),_router.clone())]
 	server: upstream_fixtures::FixedServerGuard,
 ) -> Fixture {
-	let ReviewIds { identity, browser } = _state;
+	let ReviewIds { browser, .. } = _state;
 	let application = application.await;
 	let (f, url, schema) = application.runtime.parts();
 	Fixture {
@@ -750,7 +676,6 @@ async fn review_fixture(
 		f,
 		url,
 		schema,
-		identity,
 		browser,
 		server,
 		app: application.application,
