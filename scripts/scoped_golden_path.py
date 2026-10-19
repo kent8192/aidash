@@ -26,11 +26,11 @@ from golden_path import tool_descriptor, tool_binding, PEER_TOKEN, api_request, 
 RECOVERY_BUDGET_SECONDS = 300
 
 
-def denied(base, path, body=None, **kwargs):
+def denied(base, path, body=None, codes=(403, 404), **kwargs):
     try:
         api_request(base, path, body, **kwargs)
     except urllib.error.HTTPError as error:
-        assert error.code in (403, 404), f"Expected authorization denial, got {error.code}"
+        assert error.code in codes, f"Expected authorization denial, got {error.code}"
     else:
         raise AssertionError(f"Unauthorized request succeeded: {path}")
 
@@ -297,9 +297,11 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             assert activated["admission_id"] == run_id
             assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
 
-            # The legacy path must reject even an authenticated peer.
+            # The legacy path must reject even an authenticated peer. #371
+            # removed its route, so the dashboard's GET-only asset route
+            # answers the POST with 405.
             peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.2"}
-            denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, token=PEER_TOKEN, headers=peer_headers)
+            denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(403, 404, 405), token=PEER_TOKEN, headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}", token=mapped["token"])["run"]
