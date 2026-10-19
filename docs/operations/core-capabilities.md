@@ -33,7 +33,7 @@ the exact kernel cgroup ceiling. Admission does not exhaust the entire Pod's
 host task budget, which also contains gVisor's own threads.
 
 The pinned acceptance installation uses Kubernetes 1.34, Cilium 1.20.2 and
-gVisor 20260921.0. The image pins Python 3.13 and hash-verified Python dependencies
+the gVisor release pinned in `runner/gvisor.json` (20260921.0). The image pins Python 3.13 and hash-verified Python dependencies
 in `runner/requirements.lock`. The runtime image's final OCI digest is recorded
 by the setup command and the admission result. Admission is required separately
 on each architecture and deployment; a local arm64 result does not certify an

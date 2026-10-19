@@ -23,5 +23,10 @@ RUN printf '%s\n' 'Types: deb' "URIs: https://snapshot.debian.org/archive/debian
     && echo "$(cat /tmp/kubectl.sha256)  /usr/local/bin/kubectl" | sha256sum --check \
     && chmod 755 /usr/local/bin/kubectl && rm -rf /var/lib/apt/lists/* /tmp/kubectl.sha256
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-COPY control.py node_guard.py gvisor_installer.py /opt/aidash/
+# The pinned gVisor release ships in the image, verified against gvisor.json, so
+# a new or recreated Cluster Node installs it without reaching Google's release
+# bucket (#394). Only these two files invalidate the downloaded layer.
+COPY gvisor.json gvisor_installer.py /opt/aidash/
+RUN python3 -I /opt/aidash/gvisor_installer.py bundle "${TARGETARCH}"
+COPY control.py node_guard.py /opt/aidash/
 ENTRYPOINT ["python3", "-I", "/opt/aidash/control.py"]
