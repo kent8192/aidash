@@ -72,6 +72,7 @@ pub(super) fn migration() -> Migration {
 			name: "marketplace_requests".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
 			],
 			constraints: vec![],

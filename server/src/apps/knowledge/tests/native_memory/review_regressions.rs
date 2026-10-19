@@ -505,6 +505,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 					"content",
 					"idempotency_key",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -516,6 +517,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 					.expr(Expr::value(body))
 					.expr(Expr::value(format!("primary-{message}")))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -665,6 +667,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 					"created_at",
 					"updated_at",
 					"mental_model",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -697,6 +700,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 					.expr(Expr::value(Some(
 						json!({"question":"private occurrence", "automatic_refresh":false}),
 					)))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

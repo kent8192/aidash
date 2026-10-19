@@ -4599,7 +4599,14 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 			&Query::insert()
 				.into_table(Alias::new("authorization_remote_grant_reads"))
 				.columns(
-					["grant_id", "workspace_id", "resource_kind", "resource_id"].map(Alias::new),
+					[
+						"grant_id",
+						"workspace_id",
+						"resource_kind",
+						"resource_id",
+						"tenant",
+					]
+					.map(Alias::new),
 				)
 				.from_subquery(
 					Query::select()
@@ -4616,6 +4623,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_3.to_owned()).into()],
 						))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -5206,7 +5214,17 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("generation_remote_dispatches"))
-				.columns(["attempt_id", "usage", "digest", "peer_node", "boundary"].map(Alias::new))
+				.columns(
+					[
+						"attempt_id",
+						"usage",
+						"digest",
+						"peer_node",
+						"boundary",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
 				.from_subquery(
 					Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
@@ -5229,6 +5247,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_5.to_owned()).into()],
 						))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),

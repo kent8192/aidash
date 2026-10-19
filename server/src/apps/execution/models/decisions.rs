@@ -14,6 +14,8 @@ use uuid::Uuid;
 pub struct DecisionAttempt {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
 	#[field]
@@ -68,6 +70,8 @@ pub struct DecisionAttempt {
 pub struct DecisionEvidence {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
 	#[field]
@@ -89,6 +93,8 @@ pub struct DecisionEvidence {
 pub struct DecisionState {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub evidence_id: Uuid,
 	#[field]
@@ -109,6 +115,8 @@ pub struct DecisionState {
 pub struct DecisionOutcome {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
 	#[field]

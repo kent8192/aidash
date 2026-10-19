@@ -81,6 +81,7 @@ impl ConversationScope for NativeConversation<'_> {
 						Alias::new("target"),
 						Alias::new("target_kind"),
 						Alias::new("created_by"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -103,6 +104,11 @@ impl ConversationScope for NativeConversation<'_> {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)

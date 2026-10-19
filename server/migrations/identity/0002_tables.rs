@@ -162,6 +162,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_remote_commands".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("request_key", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("result", FieldType::Jsonb).with_not_null(true),
@@ -175,6 +176,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_remote_execution".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("admission_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("task_revision", FieldType::BigInteger).with_not_null(true),
@@ -192,6 +194,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_remote_outputs".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("resource_kind", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("resource_id", FieldType::Uuid).with_not_null(true),
@@ -225,6 +228,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_run_outputs".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("resource_kind", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("resource_id", FieldType::Uuid).with_not_null(true),
@@ -238,6 +242,7 @@ pub(super) fn migration() -> Migration {
 				            name: "authorization_run_reads".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("resource_kind",
 				                FieldType::Text).with_not_null(true),
@@ -257,6 +262,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_run_registry_reads".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
 			],
@@ -269,6 +275,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_run_remote_reads".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
@@ -316,6 +323,7 @@ pub(super) fn migration() -> Migration {
 			name: "dashboard_execution_origins".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("mapping_id", FieldType::Uuid).with_not_null(true),
 			],
@@ -432,6 +440,28 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("revoked_at", FieldType::TimestampTz),
 			],
 			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "tenants".into(),
+			columns: vec![
+				ColumnDefinition::new("name", FieldType::Text).with_not_null(true).with_primary_key(true),
+				ColumnDefinition::new("label", FieldType::Text).with_not_null(false),
+				ColumnDefinition::new("personal", FieldType::Boolean)
+					.with_not_null(true)
+					.with_default(Some("false".into())),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("created_by_kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_by_identity", FieldType::Uuid).with_not_null(false),
+			],
+			constraints: vec![
+				Constraint::Check {
+					name: "tenants_root".into(),
+					expression: "length(name) BETWEEN 1 AND 256 AND created_by_kind IN ('identity','deployment_administrator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND (label IS NULL OR length(label) BETWEEN 1 AND 256)".into(),
+				},
+			],
 			without_rowid: None,
 			interleave_in_parent: None,
 			partition: None,

@@ -11,6 +11,8 @@ use uuid::Uuid;
 pub struct RunContextEvent {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true)]
 	pub seq: i64,
 	/// `appended` or `imported` from a projection saved before the journal.
@@ -30,6 +32,8 @@ pub struct RunContextEvent {
 pub struct ContextCompactionAttempt {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field(field_type = "text")]

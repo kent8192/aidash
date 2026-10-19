@@ -44,7 +44,7 @@ async fn usage_row(store: &Store, attempt: Uuid) -> UsageRow {
 		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(attempt)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_as::<_, UsageRow>(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -261,7 +261,7 @@ async fn dispatch_does_not_wait_for_the_workers_own_run_references(
 	let (store, url, schema) = _store_fixture.parts();
 	let token = Uuid::new_v4();
 	let run = leased_run(&store, token).await;
-	let mut authority = store.pool.driver().begin().await.unwrap();
+	let mut authority = store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
@@ -324,7 +324,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(store.pool.driver())
+	.execute(store.pool.fixture_driver())
 	.await
 	.unwrap();
 
@@ -353,7 +353,7 @@ async fn cache_identity(store: &Store, attempt: Uuid) -> Option<String> {
 		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(attempt)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar::<_, Option<String>>(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -436,7 +436,7 @@ async fn usage_records_admit_tokenized_estimates(
 		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(tokenized.attempt)))
 		.to_string(PostgresQueryBuilder);
 	let row = sqlx::query_as::<_, (String, String, i64)>(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -466,7 +466,7 @@ async fn estimate_parts(store: &Store, attempt: Uuid) -> EstimateParts {
 		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(attempt)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_as::<_, EstimateParts>(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -482,7 +482,7 @@ async fn sample_columns(store: &Store) -> Vec<String> {
 		.order_by(Alias::new("column_name"), reinhardt::query::Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar::<_, String>(&sql)
-		.fetch_all(store.pool.driver())
+		.fetch_all(store.pool.fixture_driver())
 		.await
 		.unwrap()
 }

@@ -234,6 +234,7 @@ pub(crate) async fn admit(
 					"provider_id",
 					"provider_version",
 					"participant_revision",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -244,6 +245,7 @@ pub(crate) async fn admit(
 					.expr(Expr::value(&binding.provider.id))
 					.expr(Expr::value(&binding.provider.version))
 					.expr(Expr::value(revision))
+					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

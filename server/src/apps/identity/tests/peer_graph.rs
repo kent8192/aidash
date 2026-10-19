@@ -264,7 +264,12 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("workspaces"))
-				.columns([Alias::new("id"), Alias::new("title"), Alias::new("goal")])
+				.columns([
+					Alias::new("id"),
+					Alias::new("title"),
+					Alias::new("goal"),
+					Alias::new("tenant"),
+				])
 				.from_subquery(
 					reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
@@ -273,6 +278,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 						))
 						.expr(Expr::cust("'Other tenant'"))
 						.expr(Expr::cust("'Unrelated'"))
+						.expr(Expr::cust("'other'"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -316,6 +322,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				Alias::new("workspace_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
+				Alias::new("tenant"),
 			])
 			.values_panic([
 				IntoValue::into_value(Uuid::new_v4()),
@@ -323,6 +330,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				IntoValue::into_value(other_workspace),
 				IntoValue::into_value("workspace.updated"),
 				IntoValue::into_value(json!({})),
+				IntoValue::into_value("other"),
 			])
 			.to_string(PostgresQueryBuilder),
 	)
@@ -347,10 +355,23 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.find(|task| task.id == task_id)
 		.unwrap()
 		.workspace_id;
+	let tenant: String = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id = $1")
+		.bind(workspace_id)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let mut tasks = Query::insert();
-	tasks
-		.into_table(Alias::new("tasks"))
-		.columns(["id", "workspace_id", "title", "description", "created_by"].map(Alias::new));
+	tasks.into_table(Alias::new("tasks")).columns(
+		[
+			"id",
+			"workspace_id",
+			"title",
+			"description",
+			"created_by",
+			"tenant",
+		]
+		.map(Alias::new),
+	);
 	for index in 1..=81_u128 {
 		tasks.values_panic([
 			IntoValue::into_value(Uuid::from_u128(index + 1000)),
@@ -358,6 +379,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			IntoValue::into_value(format!("Task {index}")),
 			IntoValue::into_value("Fixture"),
 			IntoValue::into_value("alice"),
+			IntoValue::into_value(tenant.as_str()),
 		]);
 	}
 	sqlx::query(&tasks.to_string(PostgresQueryBuilder))
@@ -375,6 +397,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			"agent_version",
 			"phase",
 			"control",
+			"tenant",
 		]
 		.map(Alias::new),
 	);
@@ -388,6 +411,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			IntoValue::into_value("1.0.0"),
 			IntoValue::into_value("THINKING"),
 			IntoValue::into_value(if index == 1 { "PAUSED" } else { "ACTIVE" }),
+			IntoValue::into_value(tenant.as_str()),
 		]);
 	}
 	sqlx::query(&runs.to_string(PostgresQueryBuilder))
@@ -848,6 +872,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			Alias::new("id"),
 			Alias::new("title"),
 			Alias::new("goal"),
+			Alias::new("tenant"),
 		]);
 		let mut authorities = Query::insert();
 		authorities
@@ -862,6 +887,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				IntoValue::into_value(*id),
 				IntoValue::into_value("Hidden"),
 				IntoValue::into_value("Hidden goal"),
+				IntoValue::into_value("sparse"),
 			]);
 			authorities.values_panic([
 				IntoValue::into_value(*id),
@@ -883,7 +909,12 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("workspaces"))
-				.columns([Alias::new("id"), Alias::new("title"), Alias::new("goal")])
+				.columns([
+					Alias::new("id"),
+					Alias::new("title"),
+					Alias::new("goal"),
+					Alias::new("tenant"),
+				])
 				.from_subquery(
 					reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
@@ -892,6 +923,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 						))
 						.expr(Expr::cust("'Last'"))
 						.expr(Expr::cust("'Reachable goal'"))
+						.expr(Expr::cust("'sparse'"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -935,6 +967,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		Alias::new("kind"),
 		Alias::new("data"),
 		Alias::new("created_at"),
+		Alias::new("tenant"),
 	]);
 	let samples = std::iter::once((final_id, "workspace.updated"))
 		.chain(std::iter::repeat_n((ids[0], "workspace.updated"), 600))
@@ -947,6 +980,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			IntoValue::into_value(kind),
 			IntoValue::into_value(json!({})),
 			IntoValue::into_value(occurred),
+			IntoValue::into_value("sparse"),
 		]);
 	}
 	sqlx::query(&events.to_string(PostgresQueryBuilder))

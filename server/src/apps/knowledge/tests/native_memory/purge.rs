@@ -249,7 +249,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	// Fixture-only DDL injects a real PostgreSQL DELETE failure without bypassing
 	// visibility, tombstones or production cleanup. Runtime queries stay typed.
 	// Only the table owner changes the schema; the server role holds DML.
-	let owner = crate::native_database::owner_pool(store.pool.driver()).await;
+	let owner = crate::native_database::owner_pool(store.pool.fixture_driver()).await;
 	sqlx::query("CREATE TABLE fixture_memory_history_hold (unit_id UUID, revision BIGINT, FOREIGN KEY (unit_id, revision) REFERENCES memory_history(unit_id, revision))")
 		.execute(&owner).await.unwrap();
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
@@ -382,7 +382,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.fixture_driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.

@@ -1907,6 +1907,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				.expr(Expr::cust("'{}'::jsonb"))
 				.expr(Expr::val("fixture"))
 				.expr(Expr::val(format!("hidden-{n}")))
+				.column(Alias::new("tenant"))
 				.from(Alias::new("tasks"))
 				.and_where(
 					Expr::col(Alias::new("id"))
@@ -1925,6 +1926,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 							"requirements",
 							"created_by",
 							"creation_key",
+							"tenant",
 						]
 						.map(Alias::new),
 					)

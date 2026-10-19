@@ -135,6 +135,7 @@ pub(crate) async fn record(
 					"attempts",
 					"max_attempts",
 					"next_attempt",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -147,6 +148,7 @@ pub(crate) async fn record(
 					.expr(Expr::value(0_i32))
 					.expr(Expr::value(attempts as i32))
 					.expr(Expr::value(expires))
+					.expr(crate::database::scope::tenant_of("runs", "id", run))
 					.to_owned(),
 			)
 			.on_conflict(

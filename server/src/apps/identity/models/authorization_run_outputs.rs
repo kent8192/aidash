@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct AuthorizationRunOutput {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub run_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field(primary_key = true, field_type = "text")]

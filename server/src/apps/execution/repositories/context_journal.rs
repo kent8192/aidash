@@ -58,7 +58,7 @@ pub(crate) async fn append(
 	let mut insert = Query::insert();
 	insert
 		.into_table(Alias::new(EVENTS))
-		.columns(["run_id", "seq", "origin", "event", "digest"].map(Alias::new));
+		.columns(["run_id", "seq", "origin", "event", "digest", "tenant"].map(Alias::new));
 	let mut pending = false;
 	for entry in context.unjournaled(persisted) {
 		let event = serde_json::to_value(&entry.event)?;
@@ -68,13 +68,16 @@ pub(crate) async fn append(
 		} else {
 			"appended"
 		};
-		insert.values_panic([
-			Expr::value(run),
-			Expr::value(signed(entry.seq)?),
-			Expr::value(origin),
-			Expr::value(event),
-			Expr::value(digest),
-		]);
+		insert
+			.values_expr(vec![
+				Expr::value(run).into(),
+				Expr::value(signed(entry.seq)?).into(),
+				Expr::value(origin).into(),
+				Expr::value(event).into(),
+				Expr::value(digest).into(),
+				crate::database::scope::tenant_of("runs", "id", run),
+			])
+			.expect("one value per column");
 		pending = true;
 	}
 	if pending {
@@ -262,21 +265,24 @@ impl Store {
 						"base_revision",
 						"observed_input_seq",
 						"before_tokens",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
-				.values_panic([
-					Expr::value(attempt.id),
-					Expr::value(run.id),
-					Expr::value(attempt.stage.label()),
-					Expr::value(attempt.policy_version.as_str()),
-					Expr::value(attempt.provider.as_str()),
-					Expr::value(signed(attempt.source_from_seq)?),
-					Expr::value(signed(attempt.source_through_seq)?),
-					Expr::value(attempt.base_revision),
-					Expr::value(attempt.observed_input_seq),
-					Expr::value(signed(attempt.before_tokens)?),
+				.values_expr(vec![
+					Expr::value(attempt.id).into(),
+					Expr::value(run.id).into(),
+					Expr::value(attempt.stage.label()).into(),
+					Expr::value(attempt.policy_version.as_str()).into(),
+					Expr::value(attempt.provider.as_str()).into(),
+					Expr::value(signed(attempt.source_from_seq)?).into(),
+					Expr::value(signed(attempt.source_through_seq)?).into(),
+					Expr::value(attempt.base_revision).into(),
+					Expr::value(attempt.observed_input_seq).into(),
+					Expr::value(signed(attempt.before_tokens)?).into(),
+					crate::database::scope::tenant_of("runs", "id", run.id),
 				])
+				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)

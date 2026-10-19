@@ -252,6 +252,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 					"content",
 					"idempotency_key",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -263,6 +264,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 					.expr(Expr::value(body))
 					.expr(Expr::value(format!("primary-{message}")))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -1664,6 +1666,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 ) {
 	use aidash_domain::semantic::{VectorConfig, VectorFilter};
 	let database = database.await;
+	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
 		"aidash://vectors".into(),
@@ -3159,6 +3162,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					"phase",
 					"pending",
 					"revision",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -3173,6 +3177,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value("COMPLETED"))
 					.expr(Expr::value(pending))
 					.expr(Expr::value(1_i64))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -3183,12 +3188,13 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_run_reads"))
-			.columns(["run_id", "unit_id", "revision"].map(Alias::new))
+			.columns(["run_id", "unit_id", "revision", "tenant"].map(Alias::new))
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(id))
 					.expr(Expr::value(source_id))
 					.expr(Expr::value(1_i64))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -3208,6 +3214,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					"input_seq",
 					"body",
 					"captured_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -3220,6 +3227,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value(0_i64))
 					.expr(Expr::value(serde_json::to_value(&task).unwrap()))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -3252,6 +3260,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					"participant_revision",
 					"provider_id",
 					"provider_version",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -3262,6 +3271,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value(participant.revision))
 					.expr(Expr::value("p"))
 					.expr(Expr::value("1.0.0"))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -3281,6 +3291,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					"status",
 					"result",
 					"replay_safe",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -3293,6 +3304,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value("UNCERTAIN"))
 					.expr(Expr::value(json!({"body":full_result})))
 					.expr(Expr::value(false))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

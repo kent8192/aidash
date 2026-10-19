@@ -1022,7 +1022,7 @@ async fn identity_of(f: &Federation, subject: &str) -> Uuid {
 		.and_where(Expr::col(Alias::new("subject")).eq(subject))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }

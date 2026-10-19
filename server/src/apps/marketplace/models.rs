@@ -82,6 +82,8 @@ pub struct InstalledRevision {
 #[derive(Serialize, Deserialize)]
 pub struct IdempotentRequest {
 	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
+	#[field(primary_key = true, field_type = "text")]
 	pub key: String,
 	#[field]
 	pub document: Json<Value>,

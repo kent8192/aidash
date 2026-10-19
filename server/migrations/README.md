@@ -269,10 +269,16 @@ login and the activity observer all need a scope.
 
 - A row whose `tenant` is NULL or empty is visible only in a Deployment Scope.
 - Each app's `*_row_level_security` migration enables and forces the policy on
-  its own tables and depends on the functions migration: `execution/0034`,
-  `federation/0010`, `identity/0027`, `knowledge/0032`, `marketplace/0010` and
-  `registry/0031`. Reversal drops the policy, removes `FORCE`, then disables row
-  security. Reinhardt has no policy operations
+  its own tables and depends on the functions migration: `execution/0036`,
+  `federation/0010`, `identity/0029`, `knowledge/0033`, `marketplace/0010` and
+  `registry/0033` for the tables that carried a `tenant` column before #265, and
+  `NNNN_tenant_owned_row_level_security` (`execution/0043`, `federation/0011`,
+  `identity/0032`, `knowledge/0034`, `marketplace/0011`, `registry/0037` and
+  `workspaces/0009`) for the tables that gained it there. The policy asset test
+  selects migrations by the `_row_level_security` suffix, and a separate
+  migration after the app's first policy migration keeps those files unchanged
+  for the branches that already contain them. Reversal drops the policy,
+  removes `FORCE`, then disables row security. Reinhardt has no policy operations
   ([#6770](https://github.com/kent8192/reinhardt-web/issues/6770)), so these are
   `RunSQL` assets. `server/src/database/policy.rs` renders them, and a unit test
   fails when an asset differs from its rendering or when the assets and the
@@ -287,6 +293,42 @@ login and the activity observer all need a scope.
   `Pool::fixture_driver()`. Its sessions hold the `test-fixture` Deployment
   Scope, and scoped transactions still override it. Only debug builds have it,
   and clippy bans it outside tests.
+
+## The Tenant on every Tenant-owned table
+
+Every Tenant-owned table carries `tenant text NOT NULL` (#265), except
+`research_revocations` and `dashboard_administration_history`, whose rows may
+address no Tenant, and `events`, whose Deployment-level rows (a peer
+registration) concern none until #241 gives peers a Tenant. A row without a
+Tenant is visible only in a Deployment Scope. The definitions are edited in the
+migration that creates each table, because Aidash is undeployed:
+
+- `tenant` references the Tenant root record, `tenants(name)`, through
+  `<table>_tenant_root_fkey`. The root record outlives a purge as a tombstone.
+  `tenants` is therefore created with the other identity tables in
+  `identity/0002_tables` rather than in `identity/0020`: the baseline tables of
+  every app precede `identity/0020`, and a reference needs its target first.
+- A child keeps its parent's Tenant through a composite key,
+  `(tenant, parent_id) -> parent(tenant, id)`. Each parent gains
+  `UNIQUE (tenant, <referenced columns>)` named `<table>_tenant_<columns>_key`
+  for it. Every reference between two Tenant-owned tables compares `tenant`;
+  a test in `server/src/apps/execution/tests/tenancy.rs` fails on one that does
+  not. A reference whose parent is on another Node, or has no foreign key,
+  carries the local Tenant and the `tenants` reference only.
+- A table created by a state-and-database migration (`knowledge/0009`, for
+  example) lists these constraints inline, and the following state-only
+  migration drops them from the model state again, as it does for the table's
+  other references.
+- Trigger functions that insert into these tables copy `NEW.tenant`
+  (`execution/sql/forward/0001_functions.sql`, `workspaces/sql/forward/0001_functions.sql`).
+- `marketplace_requests` is keyed by `(tenant, key)`. `marketplace_consents`
+  stays Deployment-wide: a source's owner writes a consent for the redistributor
+  that reads it, so it belongs to neither Tenant's scope, as
+  `marketplace_audiences` and `marketplace_versions` do not.
+- Inserts name `tenant`. Statements built for a Tenant scope write the scope's
+  Tenant with `crate::database::scope::tenant()`, a child of a row reads its
+  parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant
+  itself.
 
 ## Maintenance cutover
 

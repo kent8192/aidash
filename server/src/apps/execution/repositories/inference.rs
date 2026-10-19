@@ -174,7 +174,18 @@ async fn insert_row(
 		tx,
 		Query::insert()
 			.into_table(Alias::new(InferenceProgressRecord::table_name()))
-			.columns(["run_id", "seq", "attempt_id", "kind", "item", "created_at"].map(Alias::new))
+			.columns(
+				[
+					"run_id",
+					"seq",
+					"attempt_id",
+					"kind",
+					"item",
+					"created_at",
+					"tenant",
+				]
+				.map(Alias::new),
+			)
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(run))
@@ -183,6 +194,7 @@ async fn insert_row(
 					.expr(Expr::value(kind))
 					.expr(Expr::value(item).cast_as("jsonb"))
 					.expr(Expr::current_timestamp())
+					.expr(crate::database::scope::tenant_of("runs", "id", run))
 					.to_owned(),
 			),
 	)
@@ -357,6 +369,7 @@ pub(crate) async fn start(
 					"first_seq",
 					"last_seq",
 					"started_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -368,6 +381,7 @@ pub(crate) async fn start(
 					.expr(Expr::value(seq))
 					.expr(Expr::value(seq))
 					.expr(Expr::current_timestamp())
+					.expr(crate::database::scope::tenant_of("runs", "id", run))
 					.to_owned(),
 			),
 	)

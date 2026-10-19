@@ -15,6 +15,7 @@ pub(super) fn migration() -> Migration {
 				            name: "artifacts".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("task_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("kind", FieldType::Text)
@@ -41,6 +42,7 @@ pub(super) fn migration() -> Migration {
 			name: "channel_attachments".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("uploaded_by", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("idempotency_key", FieldType::Uuid).with_not_null(true),
@@ -68,6 +70,7 @@ pub(super) fn migration() -> Migration {
 			name: "channel_message_context".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("message_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("thread_id", FieldType::Uuid),
 				ColumnDefinition::new("attachment_digest", FieldType::Text)
@@ -86,6 +89,7 @@ pub(super) fn migration() -> Migration {
 			name: "channel_threads".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("root_message_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("created_by", FieldType::Text).with_not_null(true),
@@ -102,6 +106,7 @@ pub(super) fn migration() -> Migration {
 			name: "conversations".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("target", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("target_kind", FieldType::Text).with_not_null(true),
@@ -124,6 +129,7 @@ pub(super) fn migration() -> Migration {
 			name: "messages".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("sender", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("content", FieldType::Text).with_not_null(true),
@@ -141,6 +147,7 @@ pub(super) fn migration() -> Migration {
 			name: "task_dependencies".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("dependency_id", FieldType::Uuid).with_not_null(true),
 			],
@@ -153,6 +160,7 @@ pub(super) fn migration() -> Migration {
 				            name: "tasks".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("title", FieldType::Text)
 				                .with_not_null(true), ColumnDefinition::new("description",
@@ -202,6 +210,7 @@ pub(super) fn migration() -> Migration {
 				            name: "workspaces".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("title", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("goal", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("state", FieldType::Jsonb).with_not_null(true)

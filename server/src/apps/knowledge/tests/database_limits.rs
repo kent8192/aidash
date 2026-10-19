@@ -307,7 +307,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 
 #[rstest]
 #[tokio::test]
-async fn deployment_administrator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
+async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain_workspace_scoped(
 	#[future] database: DatabaseFixture,
 	spec: IndexSpec,
 ) {
@@ -327,7 +327,7 @@ async fn deployment_administrator_vectors_accept_empty_tenants_and_remain_worksp
 			&scope,
 			"alice",
 			"Deployment Administrator vectors",
-			"Empty tenant remains scoped",
+			"Workspace scope is kept",
 		)
 		.await
 		.unwrap();
@@ -348,7 +348,7 @@ async fn deployment_administrator_vectors_accept_empty_tenants_and_remain_worksp
 			"deployment-administrator-fixture",
 			point,
 			&values,
-			json!({"workspace_id":workspace.id,"tenant":""}),
+			json!({"workspace_id":workspace.id,"tenant":"acme"}),
 		)
 		.await
 		.unwrap();
@@ -361,7 +361,7 @@ async fn deployment_administrator_vectors_accept_empty_tenants_and_remain_worksp
 				VectorFilter {
 					allowed: &[point],
 					workspace: scope,
-					tenant: "",
+					tenant: "acme",
 				},
 				1,
 			)

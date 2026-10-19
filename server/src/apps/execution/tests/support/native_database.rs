@@ -113,6 +113,38 @@ impl DatabaseFixture {
 			.unwrap()
 	}
 
+	/// Write the Tenant root record `name`, which every row of that Tenant
+	/// references, and return the Tenant's scope.
+	pub async fn tenant(&self, name: &str) -> aidash_application::tenancy::TenancyScope {
+		use reinhardt::query::{
+			Alias, Expr, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let insert = Query::insert()
+			.into_table(Alias::new("tenants"))
+			.columns(["name", "personal", "created_at", "created_by_kind"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(name))
+					.expr(Expr::value(false))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::value("deployment_administrator"))
+					.to_owned(),
+			)
+			.on_conflict(
+				OnConflict::column(Alias::new("name"))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		let mut tx = self.begin_fixture().await;
+		aidash_server::database::native::query(&insert)
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+		aidash_application::tenancy::TenancyScope::tenant(name).unwrap()
+	}
+
 	/// Begin a transaction in the test-fixture Deployment Scope.
 	pub async fn begin_fixture(&self) -> aidash_server::database::native::Transaction {
 		self.begin_in(&aidash_application::tenancy::TEST_FIXTURE)
@@ -213,8 +245,17 @@ pub fn database(postgres_container: PostgresFuture, temp_dir: TempDir) -> Databa
 			BackendConnection::connect_postgres_with_pool_size(&logins.server_url, Some(12))
 				.await
 				.expect("connect Reinhardt to the isolated test database as the server");
+		// The lease is the fixture's own handle for seeding and inspecting rows of
+		// every Tenant, so its sessions hold the test-fixture Deployment Scope.
+		// The connection stays strict: server code under test opens its own scopes.
+		let fixture_pool = aidash_server::database::scope::test_fixture_driver(
+			std::str::FromStr::from_str(&logins.server_url).expect("the server URL parses"),
+			4,
+		);
+		let fixture_connection =
+			aidash_server::database::native::Pool::from(fixture_pool).connection();
 		DatabaseFixture {
-			lease: DatabaseConnectionLease::register(connection.clone()).unwrap(),
+			lease: DatabaseConnectionLease::register(fixture_connection).unwrap(),
 			connection,
 			owner_connection: owner,
 			url: logins.server_url,

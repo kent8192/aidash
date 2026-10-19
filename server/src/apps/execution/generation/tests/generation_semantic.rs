@@ -1710,6 +1710,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 					"next_attempt",
 					"created_at",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -1729,6 +1730,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 					.expr(Expr::value(chrono::Utc::now()))
 					.expr(Expr::value(chrono::Utc::now()))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

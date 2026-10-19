@@ -24,6 +24,7 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 	terminal_run: Run,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let pool = database.connection.into_postgres().unwrap();
 	let store = Store::from_pool(pool, "aidash://local-delivery".into())
 		.await
@@ -99,6 +100,7 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 			.unwrap();
 		if input {
 			let record = RunInput::build()
+				.tenant("acme")
 				.seq(index as i64 + 1)
 				.run_id(run.id)
 				.sender("human")

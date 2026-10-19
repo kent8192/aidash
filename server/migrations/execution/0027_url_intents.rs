@@ -9,13 +9,23 @@ pub(super) fn migration() -> Migration {
             name: "url_intents".into(),
             columns: vec![
                 ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("input_key", FieldType::Text),
                 ColumnDefinition::new("pages", FieldType::Jsonb).with_not_null(true),
                 ColumnDefinition::new("requested_by", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "url_intents_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "url_intents_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "url_intents_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 // At most five readable pages per input; the host validates each.
                 Constraint::Check { name: "url_intents_pages".into(), expression: "jsonb_typeof(pages) = 'array' AND jsonb_array_length(pages) BETWEEN 1 AND 5".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,

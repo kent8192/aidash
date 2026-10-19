@@ -68,18 +68,21 @@ impl HumanRequest {
 					"prompt",
 					"request_key",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
-			.values_panic([
-				IntoValue::into_value(request.id),
-				IntoValue::into_value(workspace),
-				IntoValue::into_value(run),
-				IntoValue::into_value(kind),
-				IntoValue::into_value(prompt),
-				IntoValue::into_value(key),
-				IntoValue::into_value(request.created_at),
+			.values_expr(vec![
+				IntoValue::into_value(request.id).into(),
+				IntoValue::into_value(workspace).into(),
+				IntoValue::into_value(run).into(),
+				IntoValue::into_value(kind).into(),
+				IntoValue::into_value(prompt).into(),
+				IntoValue::into_value(key).into(),
+				IntoValue::into_value(request.created_at).into(),
+				crate::database::scope::tenant_of("runs", "id", run),
 			])
+			.expect("one value per column")
 			.on_conflict(OnConflict::columns(["request_key"]).do_nothing())
 			.returning_all()
 			.build(PostgresQueryBuilder);

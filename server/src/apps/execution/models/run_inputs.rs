@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct RunInput {
 	#[field(primary_key = true)]
 	pub seq: i64,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]

@@ -15,9 +15,9 @@ pub(super) fn migration() -> Migration {
 			table: "agent_draft_registrations".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "agent_draft_registrations_draft_id_fkey".to_owned(),
-				columns: vec!["draft_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "draft_id".to_owned()],
 				referenced_table: "agent_drafts".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -27,9 +27,9 @@ pub(super) fn migration() -> Migration {
 			table: "agent_draft_shares".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "agent_draft_shares_draft_id_fkey".to_owned(),
-				columns: vec!["draft_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "draft_id".to_owned()],
 				referenced_table: "agent_drafts".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -39,9 +39,9 @@ pub(super) fn migration() -> Migration {
 			table: "agent_incident_events".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "agent_incident_events_incident_id_fkey".to_owned(),
-				columns: vec!["incident_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "incident_id".to_owned()],
 				referenced_table: "agent_incidents".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -71,9 +71,9 @@ pub(super) fn migration() -> Migration {
 			table: "agent_test_sessions".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "agent_test_sessions_draft_id_fkey".to_owned(),
-				columns: vec!["draft_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "draft_id".to_owned()],
 				referenced_table: "agent_drafts".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -160,6 +160,162 @@ pub(super) fn migration() -> Migration {
 				],
 				on_delete: ForeignKeyAction::Restrict,
 				on_update: ForeignKeyAction::Restrict,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_draft_registrations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_draft_registrations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_draft_shares".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_draft_shares_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_drafts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_drafts_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_incident_events".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_incident_events_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_incidents".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_incidents_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_knowledge".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_knowledge_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_test_limits".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_test_limits_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_test_profiles".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_test_profiles_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_test_sessions".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "agent_test_sessions_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "registry".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "registry_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "registry_agent_model_refs".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "registry_agent_model_refs_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "registry_agent_resource_refs".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "registry_agent_resource_refs_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "registry_requests".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "registry_requests_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
 			},
 		})

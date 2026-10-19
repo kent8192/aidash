@@ -223,6 +223,7 @@ impl GenerationReservationSession for Session {
 						"purpose",
 						"digest",
 						"reserved_tokens",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -237,6 +238,7 @@ impl GenerationReservationSession for Session {
 						.expr(Expr::cust("$7"))
 						.expr(Expr::cust("$8"))
 						.expr(Expr::cust("$9"))
+						.expr(crate::database::scope::tenant())
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
