@@ -4,7 +4,10 @@
 //! Deployment-wide table holds data that belongs to no Tenant. A test compares
 //! this list with the migrated database and fails on any table that is missing
 //! from it or classified differently from its policies, so a migration that
-//! adds a table classifies it here in the same change.
+//! adds a table classifies it here in the same change. A build that adds
+//! tables lists them itself and hands its list over through
+//! [`Extension::tables`](crate::bootstrap::build::Extension::tables); the same
+//! comparison (`classification/comparison.rs`) checks the combined list.
 
 /// How row-level security treats a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +31,7 @@ pub struct Table {
 	pub classification: Classification,
 }
 
-const fn table(app: &'static str, name: &'static str, classification: Classification) -> Table {
+pub const fn table(app: &'static str, name: &'static str, classification: Classification) -> Table {
 	Table {
 		app,
 		name,

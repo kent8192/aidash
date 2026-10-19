@@ -238,6 +238,13 @@ workspaces:
   Deployment-wide. The `startup` test target compares the list with the
   migrated database, so a migration that adds a table classifies it in the same
   change.
+- The Enterprise workspace classifies its own tables in
+  `enterprise/server/src/classification.rs`, one `table(...)` line each. The
+  Enterprise build hands that list to Community through `Extension::tables`, so
+  `Build::tables` returns the combined list that purge reads.
+  `enterprise/server/tests/classification.rs` runs the same comparison
+  (`server/src/database/classification/comparison.rs`) on a database migrated
+  with both workspaces' roots, and its failure names the Enterprise file.
 
 ## Row-level policies
 
@@ -289,6 +296,12 @@ login and the activity observer all need a scope.
   test scans every migration source, outside function bodies, for such writes.
   Seed Tenant-owned rows from the server inside a scope, or change the table's
   baseline definition.
+- A Tenant-owned Enterprise table gets the same policy from an
+  `NNNN_row_level_security` migration of its own app. The policy checks
+  (`server/src/database/policy/checks.rs`) run on Community's migrations in the
+  unit tests and on the Enterprise root in
+  `enterprise/server/tests/classification.rs`, where they also refuse a write
+  to any Tenant-owned row of either workspace.
 - Test fixtures that seed or inspect Tenant-owned rows with plain SQLx use
   `Pool::fixture_driver()`. Its sessions hold the `test-fixture` Deployment
   Scope, and scoped transactions still override it. Only debug builds have it,

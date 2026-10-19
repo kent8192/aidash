@@ -3,9 +3,11 @@
 use aidash_domain::offering::Offering;
 use aidash_server::authorization::sign_in::SignInProvider;
 use aidash_server::bootstrap::build::{Build, Extension, ProvidedStore};
+use aidash_server::database::classification::Table;
 use std::sync::Arc;
 
 pub mod billing;
+pub mod classification;
 pub mod gcip;
 pub mod provider_credentials;
 
@@ -84,6 +86,10 @@ impl Extension for Adapters {
 		vec![Box::pin(billing::meter::maintain(
 			store, settings, stopping,
 		))]
+	}
+
+	fn tables(&self) -> &'static [Table] {
+		classification::TABLES
 	}
 
 	fn provider_credential_store(

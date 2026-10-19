@@ -4,7 +4,6 @@
 //! [`payments::PaymentState`]; nothing here names one.
 use aidash_domain::offering::Offering;
 use aidash_server::config::settings::get_scoped_settings;
-use aidash_server::database::classification::{Classification::DeploymentWide, Table};
 use aidash_server::federation::Federation;
 use aidash_server::store::Store;
 use aidash_server::{Error, Result};
@@ -20,43 +19,6 @@ pub mod service;
 pub mod settings;
 pub mod store;
 pub mod views;
-
-/// Every table the billing migrations create, all Deployment-wide: they hold
-/// no Tenant's content, name a Tenant by its Tenant name without owning it,
-/// and outlive its purge. This list joins the Enterprise table classification
-/// list that #266 adds when the two branches merge.
-pub const BILLING_TABLES: &[Table] = &[
-	Table {
-		app: "billing",
-		name: "billing_accounts",
-		classification: DeploymentWide,
-	},
-	Table {
-		app: "billing",
-		name: "billing_attachment_consents",
-		classification: DeploymentWide,
-	},
-	Table {
-		app: "billing",
-		name: "billing_attachments",
-		classification: DeploymentWide,
-	},
-	Table {
-		app: "billing",
-		name: "billing_pod_usage",
-		classification: DeploymentWide,
-	},
-	Table {
-		app: "billing",
-		name: "billing_storage_samples",
-		classification: DeploymentWide,
-	},
-	Table {
-		app: "billing",
-		name: "billing_subscriptions",
-		classification: DeploymentWide,
-	},
-];
 
 /// `[billing]` from the Deployment's settings, whose defaults are the sandbox
 /// Tiers.

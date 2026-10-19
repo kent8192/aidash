@@ -15,7 +15,7 @@ use aidash_enterprise_server::billing::payments::{
 };
 use aidash_enterprise_server::billing::service::{Billing, Consented, Party};
 use aidash_enterprise_server::billing::settings::{Settings, sandbox_defaults};
-use aidash_enterprise_server::billing::{BILLING_TABLES, store};
+use aidash_enterprise_server::billing::store;
 use aidash_server::config::OidcConfig;
 use aidash_server::federation::Federation;
 use chrono::{DateTime, Duration, Utc};
@@ -356,35 +356,6 @@ fn refusal(result: aidash_server::Result<()>) -> String {
 
 fn at(offset: Duration) -> DateTime<Utc> {
 	Utc::now() + offset
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn the_billing_tables_are_listed_and_deployment_wide(
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
-) {
-	let d = Cloud::new(runtime).await;
-	let mut tables: Vec<String> = sqlx::query_scalar(
-		"SELECT tablename::text FROM pg_tables WHERE tablename LIKE 'billing\\_%' ORDER BY 1",
-	)
-	.fetch_all(d.federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let mut listed: Vec<String> = BILLING_TABLES
-		.iter()
-		.map(|table| table.name.to_owned())
-		.collect();
-	tables.sort();
-	listed.sort();
-	assert_eq!(tables, listed, "every billing table is classified");
-	let policies: i64 = d
-		.scalar("SELECT count(*) FROM pg_policies WHERE tablename LIKE 'billing\\_%'")
-		.await;
-	assert_eq!(
-		policies, 0,
-		"Deployment-wide tables carry no row-level policy"
-	);
-	d.finish().await;
 }
 
 #[rstest::rstest]
