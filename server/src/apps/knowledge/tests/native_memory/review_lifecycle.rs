@@ -349,6 +349,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						"home_node",
 						"agent_id",
 						"agent_version",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -360,17 +361,19 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						.expr(Expr::value(&store.node_id))
 						.expr(Expr::value("a"))
 						.expr(Expr::value("1.0.0"))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
 			Query::insert()
 				.into_table(Alias::new("memory_run_reads"))
-				.columns(["run_id", "unit_id", "revision"].map(Alias::new))
+				.columns(["run_id", "unit_id", "revision", "tenant"].map(Alias::new))
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(last_run))
 						.expr(Expr::value(units[0].id))
 						.expr(Expr::value(1_i64))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -386,6 +389,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						"authority",
 						"deleted",
 						"created_at",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -399,6 +403,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						.expr(Expr::value(json!({"kind":"deployment_administrator"})))
 						.expr(Expr::value(false))
 						.expr(Expr::value(chrono::Utc::now()))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),

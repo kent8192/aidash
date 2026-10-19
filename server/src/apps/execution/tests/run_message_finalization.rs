@@ -58,7 +58,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	sqlx::query(&old_lease)
 		.bind(run.id)
 		.bind(old_worker)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
@@ -103,7 +103,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		sqlx::query(&old_lease)
 			.bind(run.id)
 			.bind(Uuid::new_v4())
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.is_err()
 	);
@@ -178,7 +178,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 		}
 		.is_err()
@@ -215,7 +215,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -322,11 +322,11 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
-	let mut tx = f.store.pool.driver().begin().await.unwrap();
+	let mut tx = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query_scalar::<_, String>(
 		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
 	)
@@ -334,7 +334,7 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO run_inputs (run_id, sender, content, idempotency_key) VALUES ($1, 'human', 'pause before continuing', $2)",
+		"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'pause before continuing', $2)",
 	)
 	.bind(run.id)
 	.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
@@ -404,7 +404,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -432,12 +432,12 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
 	let input_key = format!("human:{}:{}", run.id, Uuid::new_v4());
-	let mut backfill = f.store.pool.driver().begin().await.unwrap();
+	let mut backfill = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query_scalar::<_, String>(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust(
@@ -461,6 +461,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 					reinhardt::query::Alias::new("sender"),
 					reinhardt::query::Alias::new("content"),
 					reinhardt::query::Alias::new("idempotency_key"),
+					reinhardt::query::Alias::new("tenant"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -480,6 +481,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_4.to_owned()).into()],
 						))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -516,7 +518,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -551,10 +553,10 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	)
 	.bind(run.id)
 	.bind(old_worker)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let mut tx = f.store.pool.driver().begin().await.unwrap();
+	let mut tx = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query_scalar::<_, String>(
 		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
 	)
@@ -562,7 +564,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO run_inputs (run_id, sender, content, idempotency_key) VALUES ($1, 'human', 'backfilled correction', $2)",
+		"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'backfilled correction', $2)",
 	)
 	.bind(run.id)
 	.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
@@ -574,7 +576,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 		"UPDATE runs SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1",
 	)
 	.bind(run.id)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let upgraded_worker = Uuid::new_v4();
@@ -751,7 +753,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		.unwrap();
 	let tracked: bool = { let query_bind_1 = run.id; let query_bind_2 = correction.id; sqlx::query_scalar(&reinhardt::query::Query::select()
 		.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_run_reads WHERE run_id = ? AND resource_kind = 'message' AND resource_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-		.to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.driver()).await }.unwrap();
+		.to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await }.unwrap();
 	assert!(
 		tracked,
 		"run-directed message must be tracked as an authorized source"
@@ -1301,7 +1303,7 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		.await
 		.unwrap()
 		.remove(0);
-	let mut tx = f.store.pool.driver().begin().await.unwrap();
+	let mut tx = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query_scalar::<_, String>(
 		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
 	)
@@ -1366,7 +1368,7 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	);
 	let invocations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invocations WHERE run_id = $1")
 		.bind(run.id)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(invocations, 0);
@@ -1456,7 +1458,7 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	let stale_invocation_count: i64 = sqlx::query_scalar(
 		"SELECT COUNT(*) FROM invocations WHERE idempotency_key = 'stale-invocation'",
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(stale_invocation_count, 0);
@@ -1786,7 +1788,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.execute(f.store.pool.driver())
+				.execute(f.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -1858,7 +1860,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 			)
 			.and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 			.to_string(reinhardt::query::PostgresQueryBuilder))
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await }
 	.unwrap();
 	let stale = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();

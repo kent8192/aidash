@@ -280,7 +280,7 @@ async fn a_gap_replaces_pruned_rows_and_outcomes_are_still_delivered(
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attempt.0)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(c.f.store.pool.driver())
+	.execute(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(c.f.store.prune_inference_progress().await.unwrap(), 1);

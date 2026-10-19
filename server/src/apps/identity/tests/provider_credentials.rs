@@ -123,6 +123,13 @@ async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
 	}), "json").await.unwrap(),200);
 }
 
+/// The Tenant root records that the store tests' credentials reference.
+async fn roots(f: &EndpointFixture) {
+	for tenant in ["alpha", "beta"] {
+		endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), tenant).await;
+	}
+}
+
 async fn all_database_text(f: &EndpointFixture) -> String {
 	let mut tx = f.database.begin_fixture().await;
 	let (sql, values) = Query::select()
@@ -930,6 +937,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	};
 	use reinhardt::db::orm::Model;
 	let mut f = endpoint.await;
+	roots(&f).await;
 	authorize_tenant(&f, "beta").await;
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
@@ -1487,6 +1495,7 @@ async fn postgres_store(
 	current: &str,
 	retired: Vec<SecretString>,
 ) -> Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore> {
+	roots(f).await;
 	Arc::new(
 		aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
 			f.runtime.store.control_pool.clone(),
@@ -1507,6 +1516,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 		Context, KeyMaterialReader, KeylessAccess, ProviderAccess, Source, TenantAccess,
 	};
 	let f = endpoint.await;
+	roots(&f).await;
 	let store = postgres_store(&f, &"11".repeat(32), vec![]).await;
 	let service = Service {
 		repository: Arc::new(NativeRepository {
@@ -2730,6 +2740,7 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 	use aidash_application::provider_credentials::{RECONCILIATION_BATCH_SIZE, Repository};
 	use aidash_domain::provider_credentials::{ProviderCredential, State};
 	let f = endpoint.await;
+	roots(&f).await;
 	let repository = NativeRepository {
 		pool: f.runtime.store.control_pool.clone(),
 		node: f.runtime.store.node_id.clone(),

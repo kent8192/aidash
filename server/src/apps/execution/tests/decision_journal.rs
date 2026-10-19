@@ -354,7 +354,7 @@ async fn evidence_rows(store: &Store, run: Uuid) -> Vec<(String, Evidence)> {
 			.order_by(Alias::new("created_at"), Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(store.pool.driver())
+	.fetch_all(store.pool.fixture_driver())
 	.await
 	.unwrap();
 	use sqlx::Row as _;
@@ -377,7 +377,7 @@ async fn count(store: &Store, table: &str, run: Uuid) -> i64 {
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(store.pool.driver())
+	.fetch_one(store.pool.fixture_driver())
 	.await
 	.unwrap()
 	.get(0)

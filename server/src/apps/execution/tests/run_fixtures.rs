@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub fn run() -> Run {
 	Run {
 		id: Uuid::new_v4(),
+		tenant: "acme".into(),
 		task_id: Uuid::new_v4(),
 		workspace_id: Uuid::new_v4(),
 		home_node: "aidash://remote-delivery".into(),

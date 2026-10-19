@@ -288,6 +288,7 @@ pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 	let model = format!("{id}-fixture-model");
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	tenant_root_in(fixture.runtime.store.pool.fixture_driver(), "acme").await;
 	fixture.runtime.registry.seed(&tenant).await.unwrap();
 	for (kind, key, config) in [
 		(

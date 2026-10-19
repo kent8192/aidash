@@ -402,7 +402,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder);
 		let rows: Vec<String> = sqlx::query_scalar(&sql)
-			.fetch_all(store.pool.driver())
+			.fetch_all(store.pool.fixture_driver())
 			.await
 			.unwrap();
 		assert!(!rows.is_empty(), "{table}");

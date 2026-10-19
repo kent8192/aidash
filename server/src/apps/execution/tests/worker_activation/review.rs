@@ -162,6 +162,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 	let held = proxy.signals.held.lock().unwrap().take().unwrap();
 	f.config.nats_url = proxy.endpoint.clone();
 
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let mut insert = Query::insert();
 	insert.into_table(a("runs")).columns([
 		a("id"),
@@ -171,6 +172,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		a("agent_id"),
 		a("agent_version"),
 		a("control"),
+		a("tenant"),
 	]);
 	insert.values_panic::<_, reinhardt::query::Value>([
 		Uuid::new_v4().into(),
@@ -180,6 +182,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		"fixture".into(),
 		"1.0.0".into(),
 		"PAUSED".into(),
+		"acme".into(),
 	]);
 	sqlx::query(&insert.to_string(PostgresQueryBuilder))
 		.execute(f.store.pool.fixture_driver())
@@ -604,13 +607,15 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 			sqlx::query(
 				&Query::insert()
 					.into_table(a("core_runs"))
-					.columns(["run_id", "area_id", "sequence", "generation"].map(a))
-					.values_panic([
-						reinhardt::query::IntoValue::into_value(previous),
-						reinhardt::query::IntoValue::into_value(area),
-						reinhardt::query::IntoValue::into_value(0_i64),
-						reinhardt::query::IntoValue::into_value(generation),
+					.columns(["run_id", "area_id", "sequence", "generation", "tenant"].map(a))
+					.values_expr(vec![
+						reinhardt::query::IntoValue::into_value(previous).into(),
+						reinhardt::query::IntoValue::into_value(area).into(),
+						reinhardt::query::IntoValue::into_value(0_i64).into(),
+						reinhardt::query::IntoValue::into_value(generation).into(),
+						Expr::value("acme").into(),
 					])
+					.expect("one value per column")
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(f.store.pool.fixture_driver())

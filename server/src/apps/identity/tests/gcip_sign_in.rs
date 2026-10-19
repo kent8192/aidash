@@ -1417,20 +1417,17 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	for (table, id) in [
-		("dashboard_mappings", id),
-		("authorization_credentials", credential),
-	] {
-		let update = Query::update()
-			.table(Alias::new(table))
-			.value_expr(Alias::new("tenant"), Expr::val("other"))
-			.and_where(Expr::col("id").eq(Expr::val(id)))
-			.to_string(PostgresQueryBuilder);
-		sqlx::query(&update)
-			.execute(f.store.pool.fixture_driver())
-			.await
-			.unwrap();
-	}
+	// A Mapping and its credential move together: each names the other's Tenant.
+	common::tenant_root_in(f.store.pool.fixture_driver(), "other").await;
+	sqlx::query(
+		"WITH moved AS (UPDATE authorization_credentials SET tenant = 'other' WHERE id = $1) \
+		 UPDATE dashboard_mappings SET tenant = 'other' WHERE id = $2",
+	)
+	.bind(credential)
+	.bind(id)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	assert_eq!(
 		browser()
 			.get(app.url("/api/session"))

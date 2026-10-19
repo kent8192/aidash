@@ -49,7 +49,7 @@ impl Deployment {
 			"SELECT count(*) FROM tenant_deletions WHERE tenant = $1 AND {condition}"
 		))
 		.bind(tenant)
-		.fetch_one(self.federation.store.pool.driver())
+		.fetch_one(self.federation.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	}
@@ -492,7 +492,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	assert_eq!(status, 200, "{task}");
 	let task: Uuid = task["id"].as_str().unwrap().parse().unwrap();
 	// A Run of the Tenant as a worker would hold it, recorded directly.
-	let pool = d.federation.store.pool.driver();
+	let pool = d.federation.store.pool.fixture_driver();
 	let run = Uuid::new_v4();
 	let mut tx = pool.begin().await.unwrap();
 	sqlx::query("SELECT set_config('aidash.input_ledger_worker', 'true', true)")
@@ -500,8 +500,8 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO runs (id, task_id, workspace_id, home_node, agent_id, agent_version, phase, control, context, pending) \
-		 VALUES ($1, $2, $3, $4, 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb)",
+		"INSERT INTO runs (id, task_id, workspace_id, home_node, agent_id, agent_version, phase, control, context, pending, tenant) \
+		 VALUES ($1, $2, $3, $4, 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM workspaces WHERE id = $3))",
 	)
 	.bind(run)
 	.bind(task)

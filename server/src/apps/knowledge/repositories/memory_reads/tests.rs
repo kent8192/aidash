@@ -80,6 +80,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				"phase",
 				"pending",
 				"revision",
+				"tenant",
 			],
 			vec![
 				Expr::value(run),
@@ -91,6 +92,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				Expr::value("COMPLETED"),
 				Expr::value(pending),
 				Expr::value(1_i64),
+				Expr::value("acme"),
 			],
 		),
 		(
@@ -101,6 +103,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				"participant_revision",
 				"provider_id",
 				"provider_version",
+				"tenant",
 			],
 			vec![
 				Expr::value(run),
@@ -108,12 +111,18 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				Expr::value(1_i64),
 				Expr::value("p"),
 				Expr::value("1.0.0"),
+				Expr::value("acme"),
 			],
 		),
 		(
 			"memory_run_reads",
-			vec!["run_id", "unit_id", "revision"],
-			vec![Expr::value(run), Expr::value(unit), Expr::value(1_i64)],
+			vec!["run_id", "unit_id", "revision", "tenant"],
+			vec![
+				Expr::value(run),
+				Expr::value(unit),
+				Expr::value(1_i64),
+				Expr::value("acme"),
+			],
 		),
 	] {
 		let mut row = Query::select();

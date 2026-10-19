@@ -51,6 +51,7 @@ async fn registry_natural_key_round_trips_through_the_orm(
 	definition: Definition,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let mut connection = database.lease.handle();
 	let saved = Definition::objects()
 		.create_with_conn(&mut connection, &definition)
@@ -98,6 +99,7 @@ async fn nullable_timestamps_round_trip_through_the_orm(
 	nullable_identity: NullableIdentity,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let mut connection = database.lease.handle();
 	let saved = NullableIdentity::objects()
 		.create_with_conn(&mut connection, &nullable_identity)
@@ -121,6 +123,7 @@ async fn native_null_parameters_retain_timestamp_and_uuid_types(
 		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	};
 	let database = database.await;
+	database.tenant("acme").await;
 	// Query renders absent values inline; positional expressions exercise the
 	// native backend's separate parameter contract without that substitution.
 	let sql = Query::select()

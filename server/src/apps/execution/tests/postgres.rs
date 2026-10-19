@@ -368,7 +368,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -590,7 +590,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&outage_pause)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let explicitly_paused = store
@@ -811,7 +811,7 @@ async fn final_response(store: &Store, task: Uuid) {
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -875,7 +875,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(store.pool.driver())
+			.execute(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -1059,7 +1059,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1209,7 +1209,7 @@ async fn write_approval(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1263,7 +1263,7 @@ async fn write_approval(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(store.pool.driver())
+			.execute(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -1299,7 +1299,7 @@ async fn write_approval(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(store.pool.driver())
+			.execute(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -1325,7 +1325,7 @@ async fn write_approval(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(store.pool.driver())
+			.execute(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -1565,7 +1565,7 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1719,7 +1719,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1791,7 +1791,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1878,7 +1878,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1911,7 +1911,7 @@ async fn peer_disable_does_not_require_a_live_peer(
 			.and_where(reinhardt::query::Expr::cust("node_id = 'aidash://offline'"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(store.pool.driver())
+	.execute(store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let disabled = f
@@ -1950,7 +1950,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	// Simulate an event insertion failure after the primary mutation.
 	// SeaQuery cannot add a CHECK constraint to an existing table.
 	// Only the table owner can add a constraint; the server role holds DML.
-	let owner = common::owner_pool(store.pool.driver()).await;
+	let owner = common::owner_pool(store.pool.fixture_driver()).await;
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_registration CHECK(kind <> 'registry.registered')",
 	)
@@ -2038,7 +2038,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2084,7 +2084,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(store.pool.driver())
+			.fetch_one(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap()
@@ -2217,7 +2217,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

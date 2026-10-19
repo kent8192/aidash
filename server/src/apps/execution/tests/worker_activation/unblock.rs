@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
+	tenant_root_in(f.store.pool.fixture_driver(), "default").await;
 	let id = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -14,6 +15,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
 					"agent_id",
 					"agent_version",
 					"control",
+					"tenant",
 				]
 				.map(a),
 			)
@@ -25,6 +27,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
 				"fixture".into(),
 				"1.0.0".into(),
 				control.into(),
+				"default".into(),
 			])
 			.to_string(PostgresQueryBuilder),
 	)
@@ -41,6 +44,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 ) {
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();
+	tenant_root_in(f.store.pool.fixture_driver(), "default").await;
 	let area = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -78,11 +82,12 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 		sqlx::query(
 			&Query::insert()
 				.into_table(a("core_runs"))
-				.columns(["run_id", "area_id", "sequence"].map(a))
+				.columns(["run_id", "area_id", "sequence", "tenant"].map(a))
 				.values_panic::<_, reinhardt::query::Value>([
 					run.into(),
 					area.into(),
 					sequence.into(),
+					"default".into(),
 				])
 				.to_string(PostgresQueryBuilder),
 		)

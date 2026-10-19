@@ -124,6 +124,7 @@ pub async fn remote_run(
 				"agent_id",
 				"agent_version",
 				"context",
+				"tenant",
 			]
 			.map(Alias::new),
 		)
@@ -136,6 +137,9 @@ pub async fn remote_run(
 				.expr(Expr::cust("$5"))
 				.expr(Expr::cust("$6"))
 				.expr(Expr::cust("$7"))
+				.expr(Expr::cust(
+					"COALESCE((SELECT tenant FROM workspaces WHERE id = $3), 'acme')",
+				))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);

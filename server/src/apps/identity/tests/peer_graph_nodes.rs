@@ -116,7 +116,7 @@ async fn connect(local: &Node, remote: &Node) {
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(local.f.store.pool.driver())
+		.execute(local.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

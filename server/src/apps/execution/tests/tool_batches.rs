@@ -847,7 +847,7 @@ async fn rejected_batch_admission_writes_nothing(
 	match rejection {
 		Rejection::NewerInput => {
 			sqlx::query(
-				"INSERT INTO run_inputs (run_id, sender, content, idempotency_key) VALUES ($1, 'human', 'correction', $2)",
+				"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'correction', $2)",
 			)
 			.bind(run.id)
 			.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))

@@ -425,6 +425,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 			.await
 			.unwrap();
 	let delegation = Delegation::build()
+		.tenant("acme")
 		.task_id(task.id)
 		.node_id(&b.f.config.node_id)
 		.agent_id(&agent.id)
@@ -433,8 +434,14 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		.human_requests(json!([]).into())
 		.binding_snapshot(None)
 		.finish();
-	Delegation::objects()
-		.create_with_conn(&mut a.database.lease.handle(), &delegation)
+	a.f.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			Delegation::objects()
+				.create_with_conn(tx, &delegation)
+				.await?;
+			Ok(())
+		})
 		.await
 		.unwrap();
 	let run = crate::fixtures::tenant_roots::remote_run(

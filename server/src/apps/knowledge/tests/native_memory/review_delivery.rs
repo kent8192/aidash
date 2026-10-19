@@ -38,6 +38,7 @@ pub(super) async fn candidate(store: &Store, bank: &Bank) -> Uuid {
 					"state",
 					"created_at",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -61,6 +62,7 @@ pub(super) async fn candidate(store: &Store, bank: &Bank) -> Uuid {
 					.expr(Expr::value("pending"))
 					.expr(Expr::value(now))
 					.expr(Expr::value(now))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
