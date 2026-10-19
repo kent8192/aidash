@@ -14,3 +14,4 @@ Every kind of approval now resumes the exact call that was approved. Before, an 
 - Only a Designated approver decides a Tool call approval. A Thread participant who could answer the Run's questions but whom the Tenant's policy does not let approve can no longer approve its tool calls.
 - An expired or denied approval refuses the call; the model is told, and the Run continues.
 - The evaluation escalation oracle reads the Tool call approval record instead of a denied `APPROVAL_REQUIRED` human request.
+- A Run executing for another Node still asks that Node through a human request, as before, because the person who can approve is at that Node and a capability approval needs the executing Node's own authority. Approval Modes and Rules never cover such Runs. Building capability approvals at the requesting Node is left to a later Issue.
