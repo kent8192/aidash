@@ -187,7 +187,6 @@ export function agentPlugins(entry: {
   return plugins.every(isAgentPluginRef) ? plugins : null;
 }
 
-/** Whether a plugin Skill makes the Agent instructional without further text. */
 export function hasPluginSkills(plugins: readonly AgentPluginRef[]): boolean {
   return plugins.some((plugin) => plugin.skills.length > 0);
 }
@@ -209,7 +208,6 @@ export type ServerDescription =
       headers: string[];
     };
 
-/** What an approver reads about one server: where it runs and what it is given. */
 export function describeServer(server: McpServer): ServerDescription {
   if ("remote" in server) {
     const { url, headers = [] } = server.remote;
@@ -240,7 +238,6 @@ function joined(base: string, path: string): string {
   return path ? `${base}/${path}` : base;
 }
 
-/** The part of a plugin a finding is about. */
 export function describeComponent(component: FindingComponent): {
   kind: "manifest" | "mcp" | "skill" | "server";
   name: string | null;
@@ -268,7 +265,6 @@ function attached(config: Config): unknown[] {
 const nameOf = (plugin: unknown) =>
   isRecord(plugin) && isString(plugin.name) ? plugin.name : null;
 
-/** Whether `withPlugin` can take a plugin of this name: it replaces one or there is room. */
 export function canAttach(config: Config, name: string): boolean {
   const current = attached(config);
   return (
@@ -297,7 +293,6 @@ export function withPlugin(config: Config, reference: AgentPluginRef): Config {
   };
 }
 
-/** `config` without the plugin of this name, and without the key once none is left. */
 export function withoutPlugin(config: Config, name: string): Config {
   const kept = attached(config).filter((plugin) => nameOf(plugin) !== name);
   const next = { ...config };

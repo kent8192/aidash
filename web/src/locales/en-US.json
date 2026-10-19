@@ -701,7 +701,7 @@
   "agentPluginEnv": "Environment",
   "agentPluginCwd": "Working directory",
   "agentPluginServerUrl": "URL",
-  "agentPluginHeaders": "Header names (values are not shown)",
+  "agentPluginHeaders": "Headers (names only)",
   "agentPluginIgnored": "Ignored",
   "agentPluginIgnoredHelp": "These have no effect. The plugin still loads.",
   "agentPluginSkipped": "Skipped",

@@ -701,7 +701,7 @@
   "agentPluginEnv": "環境変数",
   "agentPluginCwd": "作業ディレクトリ",
   "agentPluginServerUrl": "URL",
-  "agentPluginHeaders": "ヘッダー名（値は表示しません）",
+  "agentPluginHeaders": "ヘッダー（名前のみ）",
   "agentPluginIgnored": "無視",
   "agentPluginIgnoredHelp": "影響はなく、プラグインは読み込まれます。",
   "agentPluginSkipped": "スキップ",
