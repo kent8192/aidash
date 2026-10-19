@@ -1,7 +1,7 @@
 //! Deferred exposure tools: discovery, Load/Unload and Skill asset reads over the
 //! Run's Discoverable capabilities. They never mutate the Run; Load/Unload
 //! return an `exposure_update` that the Executor stages for the next request.
-use super::{ToolContext, required};
+use super::{ToolContext, agent_plugin::pinned_specifications, required};
 use crate::{Error, Result};
 use aidash_domain::{
 	Run,
@@ -49,7 +49,9 @@ pub(super) async fn invoke(name: &str, ctx: &ToolContext<'_>, input: Value) -> R
 		let (_, catalog) = catalog(ctx.run, &BTreeMap::new(), &direct)?;
 		return asset(ctx, &catalog, &input).await;
 	}
-	let specifications = ctx.operations.binding_specifications().await?;
+	// A plugin tool belongs to no Binding: the Run's pin supplies it, exactly as dispatch does.
+	let mut specifications = ctx.operations.binding_specifications().await?;
+	specifications.extend(pinned_specifications(ctx.run.context.plugin_tools.as_ref()));
 	let (budgets, catalog) = catalog(ctx.run, &specifications, &direct)?;
 	// Earlier Load/Unload results of this response are staged, not exposed.
 	let state = &ctx.run.context.exposure.effective();
