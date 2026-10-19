@@ -16,6 +16,7 @@ mod paths;
 mod reference;
 mod settings;
 mod skills;
+mod tools;
 
 pub use alias::model_alias;
 pub use expand::expand;
@@ -28,6 +29,10 @@ pub use reference::{
 pub(crate) use settings::validate as validate_settings;
 pub use settings::{MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, ServerSettings};
 pub use skills::PluginSkill;
+pub use tools::{
+	ListedTool, Listing, MAX_DESCRIPTION_BYTES, MAX_RUN_TOOLS, MAX_SCHEMA_BYTES, PinnedServer,
+	PinnedTool, PluginFinding, PluginTools, pin, schema_digest,
+};
 
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
 pub const MCP_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
@@ -116,6 +121,18 @@ pub enum Reason {
 	PathOutsideRoot,
 	SkillInvalid,
 	SkillLimit,
+	/// A Run-start listing of a remote server failed or was never made.
+	ServerUnavailable,
+	/// The Agent's allowlist names a tool the server did not list.
+	ToolNotListed,
+	ToolInvalid,
+	ToolLimit,
+	/// The tool's alias is one the Run's Bindings or the reserved names already use.
+	ReservedAlias,
+	/// An earlier plugin tool of the Run has the tool's alias.
+	AliasCollision,
+	/// A Read-only declaration was made against a different input schema.
+	ReadOnlyChanged,
 }
 
 /// Fatal outcomes: the plugin is refused and none of its components run.

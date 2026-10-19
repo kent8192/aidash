@@ -10,6 +10,7 @@ mod reference;
 mod schemas;
 mod settings;
 mod skills;
+mod tools;
 mod tree;
 
 fn file(path: &str, content: &str) -> PluginFile {
