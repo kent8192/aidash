@@ -8,6 +8,7 @@ mod manifest;
 mod mcp;
 mod reference;
 mod schemas;
+mod settings;
 mod skills;
 mod tree;
 

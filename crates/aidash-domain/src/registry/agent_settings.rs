@@ -21,6 +21,7 @@ impl AgentConfig {
 			prompt_cache: self.prompt_cache,
 			completion: self.completion.clone(),
 			agent_plugins: self.agent_plugins.clone(),
+			agent_plugin_settings: self.agent_plugin_settings.clone(),
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
@@ -50,6 +51,7 @@ impl AgentConfig {
 			prompt_cache: input.prompt_cache,
 			completion: input.completion,
 			agent_plugins: input.agent_plugins,
+			agent_plugin_settings: input.agent_plugin_settings,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],
 			skill_roots: vec![],

@@ -80,7 +80,7 @@ impl AgentPluginRef {
 	}
 }
 
-fn valid_digest(digest: &str) -> bool {
+pub(super) fn valid_digest(digest: &str) -> bool {
 	digest.strip_prefix("sha256:").is_some_and(|hex| {
 		hex.len() == 64
 			&& hex

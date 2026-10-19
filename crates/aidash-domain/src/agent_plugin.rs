@@ -14,6 +14,7 @@ mod manifest;
 mod mcp;
 mod paths;
 mod reference;
+mod settings;
 mod skills;
 
 pub use alias::model_alias;
@@ -24,6 +25,8 @@ pub use paths::tree_digest;
 pub use reference::{
 	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, PinnedAgentPlugin,
 };
+pub(crate) use settings::validate as validate_settings;
+pub use settings::{MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, ServerSettings};
 pub use skills::PluginSkill;
 
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";

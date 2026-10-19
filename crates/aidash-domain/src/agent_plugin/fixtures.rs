@@ -55,3 +55,19 @@ pub(crate) fn plugin(name: &str, skills: &[&str]) -> LoadedPlugin {
 pub(crate) fn reference(name: &str, skills: &[&str]) -> AgentPluginRef {
 	AgentPluginRef::of(&plugin(name, skills), SOURCE)
 }
+
+/// A plugin named `name` whose `mcp.json` holds exactly `servers`.
+pub(crate) fn reference_with_servers(name: &str, servers: serde_json::Value) -> AgentPluginRef {
+	let files = [
+		file(
+			"plugin.json",
+			&json!({"$schema": PLUGIN_SCHEMA, "name": name}).to_string(),
+		),
+		file(
+			"mcp.json",
+			&json!({"$schema": MCP_SCHEMA, "mcpServers": servers}).to_string(),
+		),
+	];
+	let loaded = load(&files).unwrap_or_else(|rejection| panic!("plugin refused: {rejection:?}"));
+	AgentPluginRef::of(&loaded, SOURCE)
+}

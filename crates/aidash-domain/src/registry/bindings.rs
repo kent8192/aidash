@@ -211,6 +211,10 @@ pub struct AgentBindings {
 	/// definitions without plugins keep their bytes and digests.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub agent_plugins: Vec<crate::agent_plugin::AgentPluginRef>,
+	/// What this Agent version decides about the servers of those plugins. Omitted when empty,
+	/// so definitions without settings keep their bytes and digests.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub agent_plugin_settings: crate::agent_plugin::PluginSettings,
 }
 impl AgentBindings {
 	/// Whether some Agent Plugin carries a Skill, which makes it a Skill context like a Skill
@@ -321,7 +325,11 @@ impl AgentBindings {
 				"SKILL_BINDING_LIMIT: an Agent pins at most {MAX_RUN_SKILLS} plugin Skills"
 			)));
 		}
-		Ok(())
+		crate::agent_plugin::validate_settings(
+			&self.agent_plugin_settings,
+			&self.agent_plugins,
+			self.exposure_policy().is_deferred(),
+		)
 	}
 	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
 		match self.context_policy.as_ref()? {
