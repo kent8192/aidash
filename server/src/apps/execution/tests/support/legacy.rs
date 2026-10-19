@@ -492,10 +492,14 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			)
 			.await
 			.unwrap();
+		// Fixtures permit their origins on the Store after startup.
+		let registry = Registry::new(database.pool.clone(), "aidash://execution-test")
+			.unwrap()
+			.with_keyless_origins(store.keyless.clone());
 		let federation = Federation {
 			sandbox: Default::default(),
 			store,
-			registry: Registry::new(database.pool.clone(), "aidash://execution-test").unwrap(),
+			registry,
 			config: Config {
 				node_id: "aidash://execution-test".into(),
 				endpoint: "http://localhost:8080".into(),
