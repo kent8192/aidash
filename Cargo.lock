@@ -79,6 +79,7 @@ dependencies = [
 name = "aidash-application"
 version = "0.1.0"
 dependencies = [
+ "aidash-capability",
  "aidash-domain",
  "async-trait",
  "base64 0.22.1",
@@ -164,6 +165,7 @@ name = "aidash-integrations"
 version = "0.1.0"
 dependencies = [
  "aidash-application",
+ "aidash-capability",
  "aidash-domain",
  "aidash-runtime",
  "async-nats",
@@ -172,6 +174,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "encoding_rs",
  "flate2",
  "futures-util",
@@ -181,6 +184,8 @@ dependencies = [
  "metrics",
  "openidconnect",
  "percent-encoding",
+ "pkcs8",
+ "rand_core 0.6.4",
  "reqwest 0.13.5",
  "rmcp",
  "rstest",
@@ -2520,6 +2525,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2 0.10.9",
  "signature",
