@@ -334,14 +334,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0043_policy_probe")
+		.get_migration("execution", "0045_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0042_decision_evidence_v3_state".to_owned()
+			"0044_decision_routes_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());

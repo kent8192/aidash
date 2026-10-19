@@ -16,6 +16,10 @@ pub struct Boundary {
 	/// The Run's resume cycle (`RecoveryState::decision_cycle`).
 	#[serde(default)]
 	pub cycle: u32,
+	/// The outage retry of this step (`RecoveryState::decider_retry`). Every
+	/// Route failing schedules one, which starts a new decision (ADR 0066).
+	#[serde(default)]
+	pub retry: u32,
 }
 impl Boundary {
 	pub fn validate(&self) -> Result<()> {
@@ -164,9 +168,15 @@ pub struct Evidence {
 	pub boundary: Boundary,
 	pub hook: Hook,
 	pub decider: DeciderPin,
+	/// The Decider Route this decision asked, by its place in the version.
+	pub route: u32,
+	/// The model of every Route in order; with the mode and the parameters
+	/// digest they complete the pinned configuration commitment.
+	pub route_models: Vec<String>,
+	/// The contract and model of the Route asked.
 	pub provider_contract: String,
 	pub model: String,
-	/// Completes the pinned configuration commitment with the exact model above.
+	/// Completes the pinned configuration commitment with the Route models.
 	pub configuration_parameters_digest: String,
 	pub builder: String,
 	pub option_source: String,
@@ -436,13 +446,19 @@ impl Evidence {
 			));
 		}
 		validate_digest(&self.state_digest)?;
-		validate_model(&self.model)?;
+		match self.provider_contract.as_str() {
+			PROVIDER => validate_model(&self.model)?,
+			_ => validate_decision_model(&self.model)?,
+		}
 		validate_digest(&self.configuration_parameters_digest)?;
-		if model_configuration_digest(
-			&self.model,
-			self.mode,
-			&self.configuration_parameters_digest,
-		) != self.decider.configuration_digest
+		let route = usize::try_from(self.route).unwrap_or(usize::MAX);
+		if self.route_models.get(route) != Some(&self.model)
+			|| self.route_models.len() > MAX_ROUTES
+			|| configuration_digest(
+				&self.route_models,
+				self.mode,
+				&self.configuration_parameters_digest,
+			) != self.decider.configuration_digest
 		{
 			return Err(Error::Invalid(
 				"historical model or mode differs from the pinned Decider configuration".into(),
@@ -509,7 +525,7 @@ impl Evidence {
 	fn validate_contract(&self) -> Result<()> {
 		if self.version != EVIDENCE_VERSION
 			|| self.rule != RULE
-			|| self.provider_contract != PROVIDER
+			|| !matches!(self.provider_contract.as_str(), PROVIDER | DECISIONS)
 			|| self.builder != BUILDER
 			|| self.option_source != OPTION_SOURCE
 			|| self.restrictions.validate_floor().is_err()

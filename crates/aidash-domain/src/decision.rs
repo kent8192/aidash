@@ -14,11 +14,19 @@ pub mod pruning;
 pub use evidence::*;
 pub use probability::Probability;
 
+/// Jev through OpenRouter's System One API.
 pub const PROVIDER: &str = "typesafe.jev/1";
+/// OpenRouter's Decisions API, which asks every decision model the same typed
+/// questions on the hosts a Route names (ADR 0066).
+pub const DECISIONS: &str = "openrouter.decisions/1";
 pub const BUILDER: &str = "aidash.compaction/2";
 pub const OPTION_SOURCE: &str = "history_event/1";
 pub const RULE: &str = "compaction.keep/1";
-pub const EVIDENCE_VERSION: u8 = 3;
+pub const EVIDENCE_VERSION: u8 = 4;
+/// Decider Routes one version may list.
+pub const MAX_ROUTES: usize = 4;
+/// OpenRouter hosts one Decisions Route may name.
+pub const MAX_HOSTS: usize = 8;
 pub const INVOKE: &str = "decision.invoke";
 pub const EVIDENCE_READ: &str = "decision.evidence.read";
 pub const STATE_READ: &str = "decision.state.read";
@@ -42,32 +50,108 @@ pub enum Mode {
 	Enforce,
 }
 
-/// A Decider reaches Jev only through OpenRouter's System One API, with the
-/// Tenant's Provider Credential for the named catalog entry (ADR 0006, ADR 0041).
+/// A Decider reaches its models only through OpenRouter, with the Tenant's
+/// Provider Credential for the named catalog entry (ADR 0006, ADR 0041), along
+/// the Decider Routes its version lists in order (ADR 0066).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeciderConfig {
 	pub hook: Hook,
 	pub answer_type: AnswerType,
 	pub description: String,
-	pub provider_contract: String,
-	/// The Provider Catalog entry whose Tenant binding supplies the credential.
+	/// The Provider Catalog entry whose Tenant binding supplies the credential
+	/// of every Route.
 	pub provider_credential: String,
-	pub model: String,
+	/// Tried in order; a later Route only when every earlier one is unavailable.
+	pub routes: Vec<DeciderRoute>,
 	pub builder: String,
 	pub option_source: String,
 	pub rule: String,
-	pub keep_threshold: Probability,
 	pub mode: Mode,
-	/// Decision Attempts one Run may send; a Binding can only lower it.
+	/// Decision Attempts one Run may send, on every Route together; a Binding
+	/// can only lower it.
 	pub max_calls_per_run: u64,
 	/// Classification state kept with its evidence. A Catalog Approval of this
 	/// exact version is what allows it.
 	#[serde(default)]
 	pub state_retention: policy::StateRetention,
-	/// How much state this version sends to Jev and how it abridges it.
+}
+
+/// One way a Decider version can be answered (ADR 0066). The System One Route
+/// reaches Jev, which TypeSafe alone serves; a Decisions Route reaches its model
+/// only on the OpenRouter hosts it names. Models calibrate their probabilities
+/// differently, so each Route keeps its own threshold and state budget.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeciderRoute {
+	pub provider_contract: String,
+	pub model: String,
+	/// OpenRouter host slugs allowed to run the model, sent as `provider.only`.
+	/// Empty on the System One Route.
+	#[serde(default)]
+	pub hosts: Vec<String>,
+	/// The probability at which this Route's answers keep content. A Binding's
+	/// stricter threshold still applies.
+	pub keep_threshold: Probability,
+	/// How much state this Route sends and how it abridges it.
 	#[serde(default)]
 	pub state_budget: StateBudget,
+}
+impl DeciderRoute {
+	/// Jev through System One at the 0.5 threshold and the default budget.
+	pub fn jev(model: impl Into<String>) -> Self {
+		Self {
+			provider_contract: PROVIDER.into(),
+			model: model.into(),
+			hosts: vec![],
+			keep_threshold: Probability::half(),
+			state_budget: StateBudget::default(),
+		}
+	}
+	pub fn validate(&self) -> Result<()> {
+		self.state_budget.validate()?;
+		let threshold = self.keep_threshold.value();
+		if threshold <= 0.0 || threshold > 0.5 {
+			return Err(Error::Invalid(
+				"a Decider Route keeps content at a threshold above 0 and at most 0.5".into(),
+			));
+		}
+		match self.provider_contract.as_str() {
+			PROVIDER if self.hosts.is_empty() => validate_model(&self.model),
+			DECISIONS if self.state_budget.long_context_request_bytes.is_none() => {
+				validate_hosts(&self.hosts)?;
+				validate_decision_model(&self.model)
+			}
+			_ => Err(Error::Invalid(
+				"unsupported Decider Route contract, hosts or long-context mode".into(),
+			)),
+		}
+	}
+}
+
+/// Exact OpenRouter host slugs such as `cloudflare` or `deepinfra`, each named
+/// once, so a host OpenRouter adds later never receives state.
+fn validate_hosts(hosts: &[String]) -> Result<()> {
+	let slug = |host: &str| {
+		!host.is_empty()
+			&& host.len() <= 64
+			&& host.split('-').all(|part| {
+				!part.is_empty()
+					&& part
+						.bytes()
+						.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+			})
+	};
+	let unique = hosts
+		.iter()
+		.collect::<std::collections::BTreeSet<_>>()
+		.len() == hosts.len();
+	if hosts.is_empty() || hosts.len() > MAX_HOSTS || !unique || !hosts.iter().all(|h| slug(h)) {
+		return Err(Error::Invalid(
+			"a Decisions Route names one to eight distinct OpenRouter host slugs".into(),
+		));
+	}
+	Ok(())
 }
 
 /// Jev's default mode takes requests up to about 32,000 bytes (32k tokens for
@@ -161,49 +245,87 @@ impl DeciderConfig {
 	pub fn validate(&self) -> Result<()> {
 		validate_provider_credential(&self.provider_credential)?;
 		if self.description.trim().is_empty()
-			|| self.provider_contract != PROVIDER
 			|| self.builder != BUILDER
 			|| self.option_source != OPTION_SOURCE
 			|| self.rule != RULE
-			|| self.keep_threshold.value() != 0.5
 			|| !(1..=1_000).contains(&self.max_calls_per_run)
 			|| !(1..=30).contains(&self.state_retention.days)
+			|| self.routes.is_empty()
+			|| self.routes.len() > MAX_ROUTES
 		{
 			return Err(Error::Invalid(
 				"unsupported Decider contract or compaction rule".into(),
 			));
 		}
-		self.state_budget.validate()?;
-		validate_model(&self.model)
+		for (index, route) in self.routes.iter().enumerate() {
+			route.validate()?;
+			if self.routes[..index].iter().any(|earlier| {
+				earlier.provider_contract == route.provider_contract
+					&& earlier.model == route.model
+					&& earlier.hosts == route.hosts
+			}) {
+				return Err(Error::Invalid(
+					"a Decider version lists the same Route twice".into(),
+				));
+			}
+		}
+		Ok(())
+	}
+	/// The models of the Routes, in order.
+	pub fn models(&self) -> Vec<String> {
+		self.routes
+			.iter()
+			.map(|route| route.model.clone())
+			.collect()
 	}
 	pub fn digest(&self) -> Result<String> {
-		Ok(model_configuration_digest(
-			&self.model,
+		Ok(configuration_digest(
+			&self.models(),
 			self.mode,
 			&self.parameters_digest()?,
 		))
 	}
-	/// A replay witness for all fields but the model and mode, which evidence
-	/// records on its own, without disclosing transport references.
+	/// A replay witness for all fields but the Route models and the mode, which
+	/// evidence records on its own, without disclosing transport references.
 	pub fn parameters_digest(&self) -> Result<String> {
 		let mut parameters = serde_json::to_value(self)?;
-		parameters["model"] = serde_json::Value::Null;
+		for route in parameters["routes"].as_array_mut().into_iter().flatten() {
+			route["model"] = serde_json::Value::Null;
+		}
 		parameters["mode"] = serde_json::Value::Null;
 		Ok(digest(&parameters))
 	}
 	pub fn contract_digest(&self) -> Result<String> {
 		self.validate()?;
+		let providers: Vec<_> = self
+			.routes
+			.iter()
+			.map(|route| route.provider_contract.as_str())
+			.collect();
 		Ok(digest(
-			&serde_json::json!({"provider":self.provider_contract,"builder":self.builder,"options":self.option_source,"rule":self.rule}),
+			&serde_json::json!({"providers":providers,"builder":self.builder,"options":self.option_source,"rule":self.rule}),
 		))
+	}
+	/// The largest request any Route may send; owners that cannot see the
+	/// request charge this bound instead of its claimed size.
+	pub fn max_request_bytes(&self) -> usize {
+		self.routes
+			.iter()
+			.map(|route| route.state_budget.max_request_bytes())
+			.max()
+			.unwrap_or_default()
 	}
 }
 
-/// Commits to the model and mode evidence records, so a decision that sent no
-/// request still proves the mode its Decider ran in.
-fn model_configuration_digest(model: &str, mode: Mode, parameters_digest: &str) -> String {
+/// Commits to the Route models and the mode evidence records, so a decision
+/// that sent no request still proves the mode its Decider ran in.
+pub(crate) fn configuration_digest(
+	models: &[String],
+	mode: Mode,
+	parameters_digest: &str,
+) -> String {
 	digest(
-		&serde_json::json!({"model": model, "mode": mode, "parameters_digest": parameters_digest}),
+		&serde_json::json!({"models": models, "mode": mode, "parameters_digest": parameters_digest}),
 	)
 }
 
@@ -217,6 +339,22 @@ pub fn validate_provider_credential(provider: &str) -> Result<()> {
 		));
 	}
 	Ok(())
+}
+
+/// An exact OpenRouter model ID for a Decisions Route, such as
+/// `cloudflare/clef`. Aliases (`~…`) move under a pinned version and variants
+/// (`…:free`) route to other endpoints, so both are refused.
+pub fn validate_decision_model(model: &str) -> Result<()> {
+	let exact = model.split_once('/').is_some_and(|(maker, name)| {
+		!maker.is_empty() && !name.is_empty() && !maker.starts_with('~')
+	}) && !model.contains(':');
+	if !exact {
+		return Err(Error::Invalid(
+			"a Decisions Route requires an exact OpenRouter model ID such as cloudflare/clef"
+				.into(),
+		));
+	}
+	crate::provider_credentials::validate_model_id(model)
 }
 
 /// An exact OpenRouter Jev release such as `typesafe/jev-1.13`. Aliases such as
@@ -285,19 +423,28 @@ impl Restrictions {
 		}
 		Ok(())
 	}
+	/// A Route's own threshold is intersected in when that Route is tried, so
+	/// only the floor bounds the threshold here.
 	pub fn validate(&self, config: &DeciderConfig) -> Result<()> {
 		config.validate()?;
 		self.validate_floor()?;
-		if self.keep_threshold.value() > config.keep_threshold.value()
-			|| self
-				.max_calls_per_run
-				.is_some_and(|limit| limit > config.max_calls_per_run)
+		if self
+			.max_calls_per_run
+			.is_some_and(|limit| limit > config.max_calls_per_run)
 		{
 			return Err(Error::Invalid(
 				"Decision restrictions must preserve at least the declared history".into(),
 			));
 		}
 		Ok(())
+	}
+	/// These restrictions with a Route's own threshold, whichever keeps more.
+	pub fn with_route(&self, route: &DeciderRoute) -> Self {
+		let mut restrictions = self.clone();
+		if route.keep_threshold.value() < restrictions.keep_threshold.value() {
+			restrictions.keep_threshold = route.keep_threshold;
+		}
+		restrictions
 	}
 	/// Whether these restrictions keep everything `other` keeps.
 	pub fn at_least_as_strict(&self, other: &Self) -> bool {

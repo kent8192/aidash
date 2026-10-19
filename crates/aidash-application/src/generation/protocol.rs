@@ -92,7 +92,7 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 			// Home cannot verify the execution peer's Decision Attempt. Charge
 			// the Decider version's largest request instead of trusting its
 			// claimed byte count.
-			if usage.reserved_tokens != (config.state_budget.max_request_bytes() + 1024) as i64 {
+			if usage.reserved_tokens != (config.max_request_bytes() + 1024) as i64 {
 				return Err(Error::Forbidden);
 			}
 		}

@@ -233,10 +233,19 @@ fn failure(f: Failure) -> Response {
 fn safe_error(status: StatusCode, reason: &str) -> Response {
 	(status, axum::Json(json!({"error":{"message":reason}}))).into_response()
 }
+/// The operation, the upstream path relative to the API root (`…/api`), and
+/// the request size limit.
 fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize), Failure> {
 	let uri = request.uri();
 	if uri.scheme().is_some() || uri.authority().is_some() || uri.query().is_some() {
 		return Err(Failure::ClaimViolation);
+	}
+	// The Decisions API is the alpha endpoint beside `v1` (ADR 0066).
+	if request.method() == axum::http::Method::POST && uri.path() == "/api/alpha/decisions" {
+		if !claims.ops.contains(&Operation::Decision) {
+			return Err(Failure::Operation);
+		}
+		return Ok((Operation::Decision, DECISIONS_PATH.into(), DECISION_LIMIT));
 	}
 	let path = uri
 		.path()
@@ -272,9 +281,11 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 	if !claims.ops.contains(&result.0) {
 		return Err(Failure::Operation);
 	}
-	Ok((result.0, path.into(), result.1))
+	Ok((result.0, format!("v1/{path}"), result.1))
 }
-fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failure> {
+/// The Decisions API's path under the API root.
+const DECISIONS_PATH: &str = "alpha/decisions";
+fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Result<(), Failure> {
 	if op == Operation::Discovery {
 		return if body.is_empty() {
 			Ok(())
@@ -349,7 +360,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 		policy::chat_input(&value, claims.cache_breakpoints)?;
 	}
 	if op == Operation::Decision {
-		policy::decision_input(&value)?;
+		policy::decision_input(&value, path == DECISIONS_PATH)?;
 	}
 	Ok(())
 }
@@ -484,7 +495,7 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		Ok(Err(_)) => return guard.failure(Failure::ClaimViolation),
 		Err(_) => return guard.error(StatusCode::REQUEST_TIMEOUT, "request admission timed out"),
 	};
-	if let Err(e) = body_policy(&body, &claims, op) {
+	if let Err(e) = body_policy(&body, &claims, op, &path) {
 		return guard.failure(e);
 	}
 	let key = match tokio::time::timeout_at(deadline, broker.key(&claims)).await {
@@ -498,9 +509,12 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		}
 	};
 	// Only the code-defined Provider Catalog chooses the base, never inbound headers/URLs.
+	let Some(root) = base.trim_end_matches('/').strip_suffix("/v1") else {
+		return guard.failure(Failure::Tenant);
+	};
 	let call = broker
 		.client
-		.request(method, format!("{}/{path}", base.trim_end_matches('/')))
+		.request(method, format!("{root}/{path}"))
 		.bearer_auth(key.expose_secret())
 		.header(header::CONTENT_TYPE, "application/json")
 		.body(body);

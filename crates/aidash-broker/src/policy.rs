@@ -187,11 +187,40 @@ fn chat_messages(
 	Ok(())
 }
 
-/// A System One body may carry only the decision itself and the zero-data-retention
-/// routing flag. `trace`, `user` and `session_id` reach OpenRouter's observability
-/// destinations, and any other `provider` preference could widen routing.
-pub(crate) fn decision_input(value: &Value) -> Result<(), Failure> {
+/// A decision body may carry only the decision itself and its routing. `trace`,
+/// `user` and `session_id` reach OpenRouter's observability destinations, and
+/// any other `provider` preference could widen routing. A System One body routes
+/// only by zero data retention; a Decisions API body also names its hosts, and
+/// OpenRouter may move only between those (ADR 0066).
+pub(crate) fn decision_input(value: &Value, decisions: bool) -> Result<(), Failure> {
 	let fields = value.as_object().ok_or(Failure::ClaimViolation)?;
+	let provider = fields.get("provider");
+	let routed = if decisions {
+		provider.and_then(Value::as_object).is_some_and(|provider| {
+			let hosts = provider.get("only").and_then(Value::as_array);
+			provider.len() == 3
+				&& provider.get("zdr") == Some(&Value::Bool(true))
+				&& provider.get("allow_fallbacks") == Some(&Value::Bool(true))
+				&& hosts.is_some_and(|hosts| {
+					!hosts.is_empty()
+						&& hosts.len() <= 8
+						&& hosts.iter().all(|host| {
+							host.as_str().is_some_and(|host| {
+								!host.is_empty()
+									&& host.len() <= 64 && host.bytes().all(|b| {
+									b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+								})
+							})
+						}) && hosts
+						.iter()
+						.filter_map(Value::as_str)
+						.collect::<std::collections::BTreeSet<_>>()
+						.len() == hosts.len()
+				})
+		})
+	} else {
+		provider == Some(&json!({"zdr": true}))
+	};
 	if fields
 		.keys()
 		.any(|key| !matches!(key.as_str(), "model" | "state" | "questions" | "provider"))
@@ -200,7 +229,7 @@ pub(crate) fn decision_input(value: &Value) -> Result<(), Failure> {
 			.get("questions")
 			.and_then(Value::as_object)
 			.is_none_or(|questions| questions.is_empty())
-		|| fields.get("provider") != Some(&json!({"zdr": true}))
+		|| !routed
 	{
 		return Err(Failure::ClaimViolation);
 	}

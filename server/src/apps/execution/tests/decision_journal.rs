@@ -55,17 +55,14 @@ fn config(mode: Mode) -> DeciderConfig {
 		hook: Hook::Compaction,
 		answer_type: AnswerType::Noul,
 		description: "Keep needed history".into(),
-		provider_contract: PROVIDER.into(),
 		provider_credential: "openrouter".into(),
-		model: "typesafe/jev-1.13".into(),
+		routes: vec![DeciderRoute::jev("typesafe/jev-1.13")],
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
-		keep_threshold: Probability::half(),
 		mode,
 		max_calls_per_run: 1_000,
 		state_retention: StateRetention::default(),
-		state_budget: StateBudget::default(),
 	}
 }
 
@@ -149,6 +146,7 @@ impl DecisionProvider for Provider {
 	}
 	fn plan(
 		&self,
+		_: usize,
 		state: &Value,
 		questions: &Questions,
 	) -> aidash_application::Result<Vec<PreparedRequest>> {
@@ -159,6 +157,7 @@ impl DecisionProvider for Provider {
 	}
 	async fn prepare(
 		&self,
+		_: usize,
 		request: &PreparedRequest,
 		_: Uuid,
 	) -> aidash_application::Result<Box<dyn PreparedDispatch + '_>> {
@@ -294,6 +293,7 @@ fn boundary_in(
 		worker,
 		input_digest: compaction_input_digest(context, &budget, &json!({})).unwrap(),
 		cycle: 0,
+		retry: 0,
 	}
 }
 
@@ -438,9 +438,11 @@ fn record(
 			worker,
 			input_digest: format!("sha256:{}", "c".repeat(64)),
 			cycle: 0,
+			retry: 0,
 		},
 		decider: decider.pin.clone(),
 		binding_restrictions: Restrictions::default(),
+		route: 0,
 		request_digest: format!("sha256:{}", request.to_string().repeat(64)),
 		state_digest: format!("sha256:{}", "d".repeat(64)),
 		questions: questions.iter().map(|q| (*q).to_owned()).collect(),
