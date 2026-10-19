@@ -110,9 +110,9 @@ pub(super) fn migration() -> Migration {
             table: "research_attempts".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "research_attempts_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -130,9 +130,9 @@ pub(super) fn migration() -> Migration {
             table: "research_fragments".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "research_fragments_snapshot".to_string(),
-                columns: vec!["run_id".to_string(), "snapshot_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string(), "snapshot_id".to_string()],
                 referenced_table: "research_snapshots".to_string(),
-                referenced_columns: vec!["run_id".to_string(), "id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "run_id".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -164,9 +164,9 @@ pub(super) fn migration() -> Migration {
             table: "research_snapshots".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "research_snapshots_source".to_string(),
-                columns: vec!["run_id".to_string(), "source_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string(), "source_id".to_string()],
                 referenced_table: "research_sources".to_string(),
-                referenced_columns: vec!["run_id".to_string(), "id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "run_id".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -184,9 +184,9 @@ pub(super) fn migration() -> Migration {
             table: "research_sources".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "research_sources_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -198,7 +198,69 @@ pub(super) fn migration() -> Migration {
                 name: "research_sources_run_identity".to_string(),
                 columns: vec!["run_id".to_string(), "id".to_string()],
             },
-        })
+        })		.add_operation(Operation::DropConstraintDefinition {
+			table: "research_snapshots".to_owned(),
+			constraint: Constraint::Unique {
+						name: "research_snapshots_tenant_run_id_id_key".to_owned(),
+						columns: vec!["tenant".to_owned(), "run_id".to_owned(), "id".to_owned()],
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "research_sources".to_owned(),
+			constraint: Constraint::Unique {
+						name: "research_sources_tenant_run_id_id_key".to_owned(),
+						columns: vec!["tenant".to_owned(), "run_id".to_owned(), "id".to_owned()],
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "research_attempts".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "research_attempts_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "research_fragments".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "research_fragments_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "research_snapshots".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "research_snapshots_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "research_sources".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "research_sources_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+
         .add_dependency("execution", "0020_research_evidence")
         .atomic(true)
         .with_initial(None)

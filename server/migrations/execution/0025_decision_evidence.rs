@@ -19,6 +19,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("id", FieldType::Uuid)
 					.with_primary_key(true)
 					.with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("decision_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
@@ -43,10 +44,19 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "decision_attempts_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "decision_attempt_run".to_owned(),
-					columns: vec!["run_id".to_owned()],
+					columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 					referenced_table: "runs".to_owned(),
-					referenced_columns: vec!["id".to_owned()],
+					referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
@@ -94,6 +104,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("id", FieldType::Uuid)
 					.with_primary_key(true)
 					.with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("decision_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("outcome", FieldType::Text).with_not_null(true),
@@ -105,10 +116,23 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "decision_evidence_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::Unique {
+					name: "decision_evidence_tenant_run_id_id_key".to_owned(),
+					columns: vec!["tenant".to_owned(), "run_id".to_owned(), "id".to_owned()],
+				},
+				Constraint::ForeignKey {
 					name: "decision_evidence_run".to_owned(),
-					columns: vec!["run_id".to_owned()],
+					columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 					referenced_table: "runs".to_owned(),
-					referenced_columns: vec!["id".to_owned()],
+					referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
@@ -158,6 +182,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("id", FieldType::Uuid)
 					.with_primary_key(true)
 					.with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("evidence_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
@@ -169,10 +194,19 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "decision_states_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "decision_state_evidence".to_owned(),
-					columns: vec!["run_id".to_owned(), "evidence_id".to_owned()],
+					columns: vec!["tenant".to_owned(), "run_id".to_owned(), "evidence_id".to_owned()],
 					referenced_table: "decision_evidence".to_owned(),
-					referenced_columns: vec!["run_id".to_owned(), "id".to_owned()],
+					referenced_columns: vec!["tenant".to_owned(), "run_id".to_owned(), "id".to_owned()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
@@ -208,6 +242,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("id", FieldType::Uuid)
 					.with_primary_key(true)
 					.with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("decision_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("next_inference", FieldType::Text),
@@ -218,10 +253,19 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "decision_outcomes_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "decision_outcome_run".to_owned(),
-					columns: vec!["run_id".to_owned()],
+					columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 					referenced_table: "runs".to_owned(),
-					referenced_columns: vec!["id".to_owned()],
+					referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,

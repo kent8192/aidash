@@ -75,7 +75,7 @@ BEGIN
     IF TG_OP = 'UPDATE' THEN
         DELETE FROM task_dependencies WHERE task_id = OLD.id;
     END IF;
-    INSERT INTO task_dependencies(task_id, workspace_id, dependency_id)
-        SELECT DISTINCT NEW.id, NEW.workspace_id, unnest(NEW.dependencies);
+    INSERT INTO task_dependencies(task_id, tenant, workspace_id, dependency_id)
+        SELECT DISTINCT NEW.id, NEW.tenant, NEW.workspace_id, unnest(NEW.dependencies);
     RETURN NEW;
 END $$;

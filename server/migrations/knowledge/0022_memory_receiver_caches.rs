@@ -7,6 +7,7 @@ pub(super) fn migration() -> Migration {
             name: "memory_receiver_caches".into(),
             columns: vec![
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
                 ColumnDefinition::new("invalidated", FieldType::Boolean).with_not_null(true),
                 ColumnDefinition::new("state", FieldType::Text).with_not_null(true),
@@ -16,7 +17,16 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("last_error", FieldType::Text),
             ],
             constraints: vec![
-                Constraint::ForeignKey { name: "memory_receiver_cache_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "memory_receiver_caches_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "memory_receiver_cache_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "memory_receiver_cache_state".into(), expression: "state IN ('pending','purged','failed') AND attempts >= 0 AND max_attempts > 0 AND attempts <= max_attempts".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

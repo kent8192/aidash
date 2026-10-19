@@ -56,6 +56,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_credentials".to_owned(),
+			constraint: Constraint::Unique {
+				name: "authorization_credentials_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_decisions".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "authorization_decisions_pkey".to_owned(),
@@ -195,6 +202,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_workspaces".to_owned(),
+			constraint: Constraint::Unique {
+				name: "authorization_workspaces_tenant_workspace_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "dashboard_execution_origins".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "dashboard_execution_origins_pkey".to_owned(),
@@ -252,6 +266,13 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "dashboard_mappings_pkey".to_owned(),
 				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "dashboard_mappings".to_owned(),
+			constraint: Constraint::Unique {
+				name: "dashboard_mappings_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {

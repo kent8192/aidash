@@ -9,6 +9,7 @@ pub(super) fn migration() -> Migration {
             name: "research_attempts".into(),
             columns: vec![
                 ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("invocation_key", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("operation", FieldType::Text).with_not_null(true),
@@ -21,7 +22,16 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
                 ColumnDefinition::new("completed_at", FieldType::TimestampTz),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "research_attempts_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "research_attempts_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "research_attempts_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Unique { name: "research_attempts_invocation".into(), columns: vec!["run_id".into(), "invocation_key".into()] },
                 Constraint::Check { name: "research_attempts_operation".into(), expression: "operation IN ('search', 'fetch')".into() },
                 Constraint::Check { name: "research_attempts_outcome".into(), expression: "outcome IN ('dispatched', 'completed', 'failed', 'unknown') AND (outcome = 'dispatched') = (completed_at IS NULL) AND (outcome = 'dispatched') = (result IS NULL)".into() },
@@ -43,12 +53,26 @@ pub(super) fn migration() -> Migration {
             name: "research_sources".into(),
             columns: vec![
                 ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("url", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("title", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "research_sources_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "research_sources_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+            	Constraint::Unique {
+            		name: "research_sources_tenant_run_id_id_key".to_owned(),
+            		columns: vec!["tenant".to_owned(), "run_id".to_owned(), "id".to_owned()],
+            	},
+                Constraint::ForeignKey { name: "research_sources_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Unique { name: "research_sources_run_identity".into(), columns: vec!["run_id".into(), "id".into()] },
                 Constraint::Check { name: "research_sources_bounds".into(), expression: "length(url) BETWEEN 1 AND 4096 AND length(title) <= 512".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
@@ -57,6 +81,7 @@ pub(super) fn migration() -> Migration {
             name: "research_snapshots".into(),
             columns: vec![
                 ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("source_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("requested_url", FieldType::Text).with_not_null(true),
@@ -71,8 +96,21 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("text_bytes", FieldType::BigInteger).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
             ], constraints: vec![
+            	Constraint::ForeignKey {
+            		name: "research_snapshots_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+            	Constraint::Unique {
+            		name: "research_snapshots_tenant_run_id_id_key".to_owned(),
+            		columns: vec!["tenant".to_owned(), "run_id".to_owned(), "id".to_owned()],
+            	},
                 // A snapshot's source must belong to the same Run.
-                Constraint::ForeignKey { name: "research_snapshots_source".into(), columns: vec!["run_id".into(), "source_id".into()], referenced_table: "research_sources".into(), referenced_columns: vec!["run_id".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+                Constraint::ForeignKey { name: "research_snapshots_source".into(), columns: vec!["tenant".into(), "run_id".into(), "source_id".into()], referenced_table: "research_sources".into(), referenced_columns: vec!["tenant".into(), "run_id".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Unique { name: "research_snapshots_run_identity".into(), columns: vec!["run_id".into(), "id".into()] },
                 Constraint::Check { name: "research_snapshots_completeness".into(), expression: "completeness IN ('complete', 'text_limit')".into() },
                 Constraint::Check { name: "research_snapshots_digests".into(), expression: "raw_digest LIKE 'sha256:%' AND text_digest LIKE 'sha256:%' AND text_bytes >= 0 AND jsonb_typeof(lines) = 'array'".into() },
@@ -82,6 +120,7 @@ pub(super) fn migration() -> Migration {
             name: "research_fragments".into(),
             columns: vec![
                 ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("snapshot_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("text", FieldType::Text).with_not_null(true),
@@ -90,8 +129,17 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("pages", FieldType::Jsonb).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
             ], constraints: vec![
+            	Constraint::ForeignKey {
+            		name: "research_fragments_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
                 // A fragment is evidence only for the Run whose snapshot it came from.
-                Constraint::ForeignKey { name: "research_fragments_snapshot".into(), columns: vec!["run_id".into(), "snapshot_id".into()], referenced_table: "research_snapshots".into(), referenced_columns: vec!["run_id".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+                Constraint::ForeignKey { name: "research_fragments_snapshot".into(), columns: vec!["tenant".into(), "run_id".into(), "snapshot_id".into()], referenced_table: "research_snapshots".into(), referenced_columns: vec!["tenant".into(), "run_id".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "research_fragments_lines".into(), expression: "line_start >= 1 AND line_end >= line_start AND jsonb_typeof(pages) = 'array'".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

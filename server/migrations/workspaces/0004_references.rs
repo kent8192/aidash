@@ -15,9 +15,9 @@ pub(super) fn migration() -> Migration {
 			table: "artifacts".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "artifacts_task_id_fkey".to_owned(),
-				columns: vec!["task_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "task_id".to_owned()],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -27,9 +27,17 @@ pub(super) fn migration() -> Migration {
 			table: "artifacts".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "artifacts_task_workspace".to_owned(),
-				columns: vec!["task_id".to_owned(), "workspace_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"task_id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -39,9 +47,9 @@ pub(super) fn migration() -> Migration {
 			table: "artifacts".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "artifacts_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "workspaces".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -51,9 +59,9 @@ pub(super) fn migration() -> Migration {
 			table: "channel_attachments".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "channel_attachments_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "workspaces".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -63,9 +71,17 @@ pub(super) fn migration() -> Migration {
 			table: "channel_attachments".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "channel_attachments_workspace_id_message_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned(), "message_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"message_id".to_owned(),
+				],
 				referenced_table: "messages".to_owned(),
-				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -75,9 +91,17 @@ pub(super) fn migration() -> Migration {
 			table: "channel_message_context".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "channel_message_context_workspace_id_message_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned(), "message_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"message_id".to_owned(),
+				],
 				referenced_table: "messages".to_owned(),
-				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -87,9 +111,17 @@ pub(super) fn migration() -> Migration {
 			table: "channel_message_context".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "channel_message_context_workspace_id_thread_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned(), "thread_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"thread_id".to_owned(),
+				],
 				referenced_table: "channel_threads".to_owned(),
-				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -99,9 +131,17 @@ pub(super) fn migration() -> Migration {
 			table: "channel_threads".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "channel_threads_workspace_id_root_message_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned(), "root_message_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"root_message_id".to_owned(),
+				],
 				referenced_table: "messages".to_owned(),
-				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"workspace_id".to_owned(),
+					"id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -111,9 +151,9 @@ pub(super) fn migration() -> Migration {
 			table: "conversations".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "conversations_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "workspaces".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -123,9 +163,9 @@ pub(super) fn migration() -> Migration {
 			table: "messages".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "messages_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "workspaces".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -135,9 +175,17 @@ pub(super) fn migration() -> Migration {
 			table: "task_dependencies".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "tasks_dependencies_source_workspace".to_owned(),
-				columns: vec!["task_id".to_owned(), "workspace_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"task_id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -147,9 +195,17 @@ pub(super) fn migration() -> Migration {
 			table: "task_dependencies".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "tasks_dependencies_target_workspace".to_owned(),
-				columns: vec!["dependency_id".to_owned(), "workspace_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"dependency_id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -159,9 +215,9 @@ pub(super) fn migration() -> Migration {
 			table: "tasks".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "tasks_parent_id_fkey".to_owned(),
-				columns: vec!["parent_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "parent_id".to_owned()],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -171,9 +227,17 @@ pub(super) fn migration() -> Migration {
 			table: "tasks".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "tasks_parent_workspace".to_owned(),
-				columns: vec!["parent_id".to_owned(), "workspace_id".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"parent_id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"workspace_id".to_owned(),
+				],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -183,9 +247,117 @@ pub(super) fn migration() -> Migration {
 			table: "tasks".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "tasks_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "workspaces".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "artifacts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "artifacts_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_attachments".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_message_context".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_message_context_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_threads".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_threads_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "conversations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "conversations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "messages".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "messages_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "task_dependencies".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "task_dependencies_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "tasks".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "tasks_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "workspaces".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "workspaces_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
