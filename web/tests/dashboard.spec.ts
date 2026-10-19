@@ -3,6 +3,7 @@ import {
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
+import { acceptanceSubject } from "./tenant-fixture";
 
 test.beforeEach(async ({ page }) => {
   await installBearerDashboard(page, "acceptance-access-token");
@@ -131,6 +132,14 @@ test("observes the two-node execution and all management screens", async ({
 test("creates a workspace and task and receives live assignment changes", async ({
   page,
 }) => {
+  // A Tenant subject's state can take seconds to refresh (#404).
+  test.setTimeout(120000);
+  // The research agent belongs to the golden path's Tenant.
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
   const name = `Browser workspace ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
   await page.goto("/collaboration");
@@ -201,7 +210,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     const response = await route.fetch({
       headers: {
         ...route.request().headers(),
-        authorization: "Bearer acceptance-access-token",
+        authorization: `Bearer ${subject.token}`,
       },
     });
     const discovery = await response.json();
@@ -221,7 +230,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await openTasks();
-  await expect(row).toContainText("完了", { timeout: 30000 });
+  await expect(row).toContainText("完了", { timeout: 60000 });
 });
 
 test("preserves a draft after a failed message request and clears it after success", async ({
@@ -254,7 +263,12 @@ test("preserves a draft after a failed message request and clears it after succe
 test("creates task dependencies and a parent through the dashboard", async ({
   page,
 }) => {
-  const headers = { authorization: "Bearer acceptance-access-token" };
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
+  const headers = { authorization: `Bearer ${subject.token}` };
   const name = `Relationships ${Date.now()}`;
   const workspace = await (
     await page.request.post("/api/workspaces", {

@@ -676,7 +676,12 @@ def main():
             browser_report = logs / "browser-report.json"
             for proxy in browser_provider_proxies:
                 proxy.start()
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name})
+            # Live specs do Tenant work as alice in Node A's research Tenant
+            # (#371). Her first credential may have expired during the scenarios.
+            browser = api_request(base_a, f"/api/authorization/{tenant_a}/credentials", {"subject": "alice", "expires_in_seconds": 3600})
+            # The fixture approver swallows OSError, so an expired token would stop approvals silently.
+            tokens[base_a] = browser["token"]
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": browser["token"], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
