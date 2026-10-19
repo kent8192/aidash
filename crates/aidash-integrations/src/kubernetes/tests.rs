@@ -97,6 +97,10 @@ async fn projected_tokens_are_resolved_again_after_rotation() {
 			"/apis/apps/v1/namespaces/tenant-a/deployments",
 			get(handler),
 		)
+		.route(
+			"/apis/apps/v1/namespaces/tenant-a/statefulsets",
+			get(handler),
+		)
 		.route("/api/v1/namespaces/tenant-a/pods", get(handler))
 		.route("/api/v1/namespaces/tenant-a/events", get(handler))
 		.with_state(headers_seen.clone());
@@ -115,17 +119,57 @@ async fn projected_tokens_are_resolved_again_after_rotation() {
 	client.observe().await.unwrap();
 	// Assert
 	let seen = headers_seen.lock().unwrap();
-	assert_eq!(seen.len(), 6);
+	assert_eq!(seen.len(), 8);
 	assert!(
-		seen[..3]
+		seen[..4]
 			.iter()
 			.all(|header| header == "Bearer first-token")
 	);
 	assert!(
-		seen[3..]
+		seen[4..]
 			.iter()
 			.all(|header| header == "Bearer second-token")
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn stateful_sets_are_observed_beside_deployments() {
+	// Arrange: production runs its disk-holding workloads as StatefulSets (ADR 0067).
+	let workload = |name: &str| json!({"items":[{"metadata":{"name":name,"uid":name,"namespace":"tenant-a","labels":{"app.kubernetes.io/name":"aidash","app.kubernetes.io/instance":"release-a","app.kubernetes.io/component":name}},"spec":{"replicas":1},"status":{"readyReplicas":1}}],"metadata":{}});
+	let (deployment, stateful_set) = (workload("edge"), workload("server"));
+	let empty = json!({"items":[],"metadata":{}});
+	let router = Router::new()
+		.route(
+			"/apis/apps/v1/namespaces/tenant-a/deployments",
+			get(move || async move { Json(deployment) }),
+		)
+		.route(
+			"/apis/apps/v1/namespaces/tenant-a/statefulsets",
+			get(move || async move { Json(stateful_set) }),
+		)
+		.route(
+			"/api/v1/namespaces/tenant-a/pods",
+			get({
+				let empty = empty.clone();
+				move || async move { Json(empty) }
+			}),
+		)
+		.route(
+			"/api/v1/namespaces/tenant-a/events",
+			get(move || async move { Json(empty) }),
+		);
+	let (endpoint, _server) = serve(router).await;
+	let client = Kubernetes::new(settings(endpoint, String::new()));
+	// Act
+	let inventory = client.observe_with_token("fixture-token").await.unwrap();
+	// Assert
+	let roles: Vec<_> = inventory
+		.deployments
+		.iter()
+		.map(|workload| (workload.value.role.as_str(), workload.value.ready))
+		.collect();
+	assert_eq!(roles, [("edge", 1), ("server", 1)]);
 }
 
 #[rstest]

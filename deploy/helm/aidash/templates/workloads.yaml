@@ -374,7 +374,7 @@ metadata:
   name: {{ $name }}-observe
 rules:
   - apiGroups: [apps]
-    resources: [deployments]
+    resources: [deployments, statefulsets]
     verbs: [list]
   - apiGroups: [""]
     resources: [pods, events]
