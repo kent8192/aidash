@@ -344,7 +344,7 @@ generated columns, key definitions, deferred/validated flags, index predicates,
 trigger enablement/function bodies, and sequence ownership/settings must match
 verbatim. Counts alone never establish parity. The script removes only its own
 target database and writes complete catalogs, ledgers, command exit codes, source
-state, and executable hashes under `.ignore/schema-parity/`. Intentional physical
+state, and executable hashes under `private/schema-parity/`. Intentional physical
 schema changes require a separately reviewed immutable reference update.
 
 The native memory additions end with generated state-only ORM metadata checkpoints

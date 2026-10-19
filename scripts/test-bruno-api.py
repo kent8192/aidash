@@ -594,7 +594,7 @@ def main():
         ),
     )
     parser.add_argument(
-        "--evidence-dir", type=pathlib.Path, default=ROOT / ".ignore/bruno"
+        "--evidence-dir", type=pathlib.Path, default=ROOT / "private/bruno"
     )
     args = parser.parse_args()
     # Servers no longer log in as the bootstrap user (#262); a password set only

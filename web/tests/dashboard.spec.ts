@@ -117,12 +117,12 @@ test("observes the two-node execution and all management screens", async ({
     page.getByRole("button", { name: "New request", exact: true }),
   ).toBeVisible();
   await page.screenshot({
-    path: "../.ignore/dashboard-overview.png",
+    path: "../private/dashboard-overview.png",
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
-    path: "../.ignore/dashboard-mobile.png",
+    path: "../private/dashboard-mobile.png",
     fullPage: true,
   });
   expect(errors).toEqual([]);

@@ -179,7 +179,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       page.locator('.semantic-page [aria-live="polite"]'),
     ).toContainText("v2");
     await page.screenshot({
-      path: "../.ignore/dashboard-semantic-desktop.png",
+      path: "../private/dashboard-semantic-desktop.png",
       fullPage: true,
     });
     await page.reload();
@@ -213,7 +213,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       page.getByRole("heading", { name: "埋め込み索引", exact: true }),
     ).toBeVisible();
     await page.screenshot({
-      path: "../.ignore/dashboard-semantic-mobile.png",
+      path: "../private/dashboard-semantic-mobile.png",
       fullPage: true,
     });
     expect(

@@ -372,8 +372,8 @@ jobs:
           name: acceptance-evidence
           include-hidden-files: true
           path: |
-            .ignore/acceptance/
-            .ignore/dashboard-*.png
+            private/acceptance/
+            private/dashboard-*.png
             web/test-results/
       - name: Stop verification services
         if: always()
@@ -409,7 +409,7 @@ jobs:
         with:
           name: bruno-api-evidence
           include-hidden-files: true
-          path: .ignore/bruno/
+          path: private/bruno/
           if-no-files-found: error
       - name: Stop owned verification services
         if: always()

@@ -26,7 +26,7 @@ class ViolationsTest(unittest.TestCase):
             "server/migrations/a.rs:1:operator_class: Some(\"vector_l2_ops\".into()),",
             "deploy/values.yaml:2:  - { key: aidash.run/metadata-server, operator: DoesNotExist }",
             "README.md:3:Provision using NATS operator credentials.",
-            "infra/delivery/README.md:4:mkdir -p .ignore/delivery/operator",
+            "infra/delivery/README.md:4:mkdir -p secrets/delivery/operator",
             "crates/x/brave.rs:5:\t\t\t\"operators\": true,",
         ]
         self.assertEqual(list(guard.violations(lines)), [])

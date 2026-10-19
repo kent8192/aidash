@@ -94,10 +94,10 @@ API, authentication, federation, and health requests to the internal backend Ser
 The dashboard requires a configured Google OAuth client. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Kubernetes startup uses the example Secrets in `deploy/local-k8s/` and does not load `.env`. Add the three `AIDASH_OIDC_*` connection values (`CLIENT_ID`, `CLIENT_SECRET`, and `PUBLIC_ORIGIN`) to the `aidash-local-app` Secret, including `AIDASH_OIDC_PUBLIC_ORIGIN=http://127.0.0.1:8080`, then re-run `cargo make k8s-up` to restart the Pods. Register `http://127.0.0.1:8080/auth/callback` in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
 ```sh
-kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
 ```
 
-The task keeps a dedicated kubeconfig in `.ignore/local-k8s/` and does not
+The task keeps a dedicated kubeconfig in `private/local-k8s/` and does not
 change the current kubectl context. The local host port is fixed at `8080` in
 `deploy/local-k8s/kind.yaml`.
 
@@ -356,7 +356,7 @@ The multi-node Compose fixture uses `aidash-compose-postgres:17-pg-jsonschema-0.
 from its `runtime` target with separate database initialization. The distinct tags
 keep Compose rebuilds from replacing the image used by isolated ORM fixtures.
 
-`check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and the browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with a deterministic OpenRouter-compatible protocol fixture. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
+`check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and the browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with a deterministic OpenRouter-compatible protocol fixture. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `private/acceptance/report.json`.
 
 Golden Path also requires subject-scoped remote execution on these real Node processes. Separate source and receiver tenants, credentials, catalog approvals and peer mappings authorize the work. It kills the receiver Worker after a Home message or task completion commits but before its response is delivered, checks recovery of the same admission and Run without duplicate effects, and repeats recovery with a peer outage and with a grant revoked while the Worker is stopped. Cross-tenant/workspace access, disabled Agents, unauthorized dependencies and legacy admission are rejected. The `scoped_remote_execution` report records each scenario, the Worker process IDs and persistent execution IDs without credentials. A successful legacy scenario alone cannot pass this gate.
 
