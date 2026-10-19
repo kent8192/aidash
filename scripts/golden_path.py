@@ -92,16 +92,26 @@ def reconcile_uncertain_http(base, run_id, effects, token=TOKEN):
     return key
 
 
-def approve_fixture_external_requests(base, token=TOKEN):
-    """Approve only the owned fixture's exact external-call continuations."""
-    allowed = ("research-http@", "http-runner-tool@", "mcp-runner-tool@")
+FIXTURE_TOOLS = ("research-http@", "http-runner-tool@", "mcp-runner-tool@")
+
+
+def fixture_approval(request):
+    """Whether `request` is a pending approval of the owned fixture's exact external call."""
+    return request.get("response") is None and request.get("kind") == "APPROVAL_REQUIRED" and any(
+        (request.get("prompt") or "").startswith("Approve this exact external tool action once? Tool: " + tool)
+        for tool in FIXTURE_TOOLS
+    )
+
+
+def approve_fixture_external_requests(base, token=TOKEN, claim=lambda request_id: True):
+    """Approve only the owned fixture's exact external-call continuations.
+
+    `claim` lets another approver share the answered set, so each request is answered once.
+    """
     for request in api_request(base, "/api/state", token=token)["human_requests"]:
-        prompt = request["prompt"]
-        if request.get("response") is None and request["kind"] == "APPROVAL_REQUIRED" and any(
-            prompt.startswith("Approve this exact external tool action once? Tool: " + tool)
-            for tool in allowed
-        ):
+        if fixture_approval(request) and claim(request["id"]):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
+            print(f"--- approved {request['id']} after reading /api/state", flush=True)
 
 
 def diagnose(base, token, tenant, workspace, database):
@@ -114,6 +124,11 @@ def diagnose(base, token, tenant, workspace, database):
         ("runs", "SELECT id, agent_id, phase, control, step, coalesce(error, ''), pending_human_request_id FROM runs ORDER BY updated_at"),
         ("human requests", "SELECT run_id, kind, left(prompt, 160), response IS NOT NULL, coalesce(answered_by, '') FROM human_requests ORDER BY created_at"),
         ("decision count", "SELECT count(*) FROM authorization_decisions"),
+        ("decisions by action", "SELECT action, count(*) FROM authorization_decisions GROUP BY action ORDER BY 2 DESC LIMIT 15"),
+        ("decisions by subject", "SELECT left(subject, 80), count(*) FROM authorization_decisions GROUP BY 1 ORDER BY 2 DESC LIMIT 8"),
+        # Rows of one transaction share its timestamp, so these are the largest audits.
+        ("largest decision batches", "SELECT to_char(created_at, 'HH24:MI:SS.MS'), count(*), string_agg(DISTINCT action, ',') FROM authorization_decisions GROUP BY created_at ORDER BY 2 DESC LIMIT 10"),
+        ("decisions per 10 s", "SELECT to_char(date_trunc('minute', created_at) + floor(extract(second FROM created_at) / 10) * interval '10 seconds', 'HH24:MI:SS'), count(*) FROM authorization_decisions GROUP BY 1 ORDER BY 1"),
     ]:
         try:
             show(label, psql(database, query).splitlines())
@@ -123,7 +138,9 @@ def diagnose(base, token, tenant, workspace, database):
         snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
         show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
         tasks = {task["id"] for task in snapshot["tasks"]}
-        for run in api_request(base, "/api/state", token=token)["runs"]:
+        state = api_request(base, "/api/state", token=token)
+        show("api human requests", [[request["run_id"], request["kind"], request.get("response") is not None] for request in state["human_requests"]])
+        for run in state["runs"]:
             if run["task_id"] in tasks:
                 detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
                 response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
@@ -519,6 +536,16 @@ def main():
     local_approvals = threading.Event()
     local_approvals.set()
     approval_errors = []
+    answered = set()
+    answered_lock = threading.Lock()
+
+    def claim(request_id):
+        # The stream and the state poll can both see a request; answer it once.
+        with answered_lock:
+            if request_id in answered:
+                return False
+            answered.add(request_id)
+            return True
 
     def approve_fixture_calls():
         # Each subject read of /api/state journals a policy decision per item,
@@ -528,10 +555,35 @@ def main():
                 continue
             for base, token in list(tokens.items()):
                 try:
-                    approve_fixture_external_requests(base, token)
-                except OSError:
+                    approve_fixture_external_requests(base, token, claim)
+                except OSError as error:
                     # A deliberately unavailable/restarting Node has no approval authority.
-                    pass
+                    print(f"--- approval poll of {base} failed: {error!r}", flush=True)
+                except Exception as error:
+                    approval_errors.append(str(error))
+
+    def approve_streamed_calls():
+        # Node A's event stream delivers each approval as it is requested, the
+        # way the dashboard learns of it, so a slow /api/state does not hold
+        # the Run waiting. The state poll above still catches anything missed.
+        seen = 0
+        while not approval_stop.wait(0.5):
+            events = stream_events[seen:]
+            seen += len(events)
+            if not local_approvals.is_set():
+                continue
+            for event in events:
+                request = event.get("data") or {}
+                if event.get("type") != "human.requested" or not fixture_approval(request) or not claim(request["id"]):
+                    continue
+                try:
+                    api_request(base_a, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=tokens[base_a])
+                    print(f"--- approved {request['id']} from the event stream", flush=True)
+                except OSError as error:
+                    # The state poll retries a request whose answer did not arrive.
+                    print(f"--- streamed approval of {request['id']} failed: {error!r}", flush=True)
+                    with answered_lock:
+                        answered.discard(request["id"])
                 except Exception as error:
                     approval_errors.append(str(error))
 
@@ -567,8 +619,11 @@ def main():
                 for line in response:
                     if line.startswith(b"data:"):
                         stream_events.append(json.loads(line[5:]))
-        except (OSError, ValueError):
-            pass
+                        if stream_events[-1].get("type") == "human.requested":
+                            print(f"--- streamed human.requested {stream_events[-1]['data'].get('id')} at {time.strftime('%H:%M:%S')}", flush=True)
+            print(f"--- event stream ended after {len(stream_events)} events", flush=True)
+        except (OSError, ValueError) as error:
+            print(f"--- event stream stopped after {len(stream_events)} events: {error!r}", flush=True)
 
     try:
         # Create isolated databases; application schema belongs to the native
@@ -609,12 +664,18 @@ def main():
         worker_a = launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
+        threading.Thread(target=approve_streamed_calls, daemon=True).start()
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
             created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
         workspace = created["workspace"]["id"]
-        if not fixture.remote_effect_started.wait(90):
+        # Reaching Actix takes the coordinator's delegation and the Axum
+        # researcher's whole Run first, each step authorized for a Tenant
+        # subject, and the two researchers share a Working Area, so they run
+        # one after the other. Like scoped recovery (#321), this waits for
+        # progress, not a latency bound.
+        if not fixture.remote_effect_started.wait(300):
             diagnose(base_a, tokens[base_a], tenant_a, workspace, db_a)
             raise AssertionError("The Actix research tool was never invoked")
 
