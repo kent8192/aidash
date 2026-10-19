@@ -104,11 +104,21 @@ def approve_fixture_external_requests(base, token=TOKEN):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
 
 
-def diagnose(base, token, tenant, workspace):
-    """Print a stalled workspace's tasks and Runs, and its Tenant's policy, catalog and every policy decision."""
+def diagnose(base, token, tenant, workspace, database):
+    """Print a stalled workspace's Runs and human requests from the database, then its Tenant's state through the API."""
     def show(label, value):
         print(f"--- {label}: {json.dumps(value, ensure_ascii=False)}", flush=True)
 
+    # The database answers even when the API is too slow to (#386).
+    for label, query in [
+        ("runs", "SELECT id, agent_id, phase, control, step, coalesce(error, ''), pending_human_request_id FROM runs ORDER BY updated_at"),
+        ("human requests", "SELECT run_id, kind, left(prompt, 160), response IS NOT NULL, coalesce(answered_by, '') FROM human_requests ORDER BY created_at"),
+        ("decision count", "SELECT count(*) FROM authorization_decisions"),
+    ]:
+        try:
+            show(label, psql(database, query).splitlines())
+        except subprocess.CalledProcessError as error:
+            print(f"--- {label} unavailable: {error!r}", flush=True)
     try:
         snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
         show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
@@ -511,7 +521,9 @@ def main():
     approval_errors = []
 
     def approve_fixture_calls():
-        while not approval_stop.wait(0.25):
+        # Each subject read of /api/state journals a policy decision per item,
+        # so frequent polling slows the Node it waits on.
+        while not approval_stop.wait(2):
             if not local_approvals.is_set():
                 continue
             for base, token in list(tokens.items()):
@@ -603,7 +615,7 @@ def main():
             created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
         workspace = created["workspace"]["id"]
         if not fixture.remote_effect_started.wait(90):
-            diagnose(base_a, tokens[base_a], tenant_a, workspace)
+            diagnose(base_a, tokens[base_a], tenant_a, workspace, db_a)
             raise AssertionError("The Actix research tool was never invoked")
 
         def actix_run():
