@@ -79,6 +79,12 @@ pub struct Store {
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
 	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
 	pub cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
+	/// Where Execution Pod time and storage samples go. The build installs it;
+	/// Community's reports nowhere.
+	pub usage: std::sync::Arc<dyn aidash_application::usage::UsageEvents>,
+	/// Decides whether new work may begin. The build installs it; Community's
+	/// admits everything.
+	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -408,6 +414,8 @@ impl Store {
 			tenancies: Default::default(),
 			tool_slots,
 			cache_salt: None,
+			usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
+			admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 			provider_credentials: None,
 			plan_connections: None,
 			plan_connections_enabled: false,
@@ -511,6 +519,8 @@ impl Store {
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
+			usage: self.usage.clone(),
+			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
@@ -558,6 +568,8 @@ impl Store {
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
+			usage: self.usage.clone(),
+			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
@@ -1137,6 +1149,21 @@ impl Store {
 			};
 			snapshot.validate()?;
 			self.require_projection(&snapshot)?;
+			let tenant: String = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("tenant"))
+					.from(Alias::new("workspaces"))
+					.and_where(Expr::col("id").eq(Expr::value(claimed.workspace_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			aidash_application::usage::require(
+				self.admission.as_ref(),
+				&tenant,
+				aidash_application::usage::Work::Run,
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()

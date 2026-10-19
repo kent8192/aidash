@@ -100,6 +100,7 @@ pub async fn initialize(
 		&settings.provider_credentials,
 		&settings.plan_connections,
 	)?;
+	build::current().extension.install(&mut store)?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
@@ -217,6 +218,12 @@ impl RuntimeTasks {
 					tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
 				}
 			}));
+		}
+		for service in build::current()
+			.extension
+			.services(&federation, receiver.clone())
+		{
+			tasks.spawn_service(runtime_task(service));
 		}
 		let activation = crate::activation::Runtime::new(
 			worker_runtime.clone(),

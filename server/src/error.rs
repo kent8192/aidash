@@ -28,6 +28,9 @@ pub enum Error {
 	Unauthorized,
 	#[error("forbidden")]
 	Forbidden,
+	/// The build's admission gate refused new work (402); the code is stable.
+	#[error("{0}")]
+	Refused(String),
 	#[error("back-channel logout is busy; retry shortly")]
 	RateLimited,
 	/// The Tenancy Rules refuse this Tenant creation now.
@@ -88,6 +91,7 @@ impl Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
+			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
 			Self::TenantDeleted => (StatusCode::GONE, self.to_string()),
 			Self::TenantCreation(refusal) => (
@@ -298,6 +302,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Invalid(message) => Self::Invalid(message),
 			ApplicationError::Conflict(message) => Self::Conflict(message),
 			ApplicationError::NotFound(message) => Self::NotFound(message),
+			ApplicationError::Refused(code) => Self::Refused(code),
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::External(message) => Self::External(message),
@@ -336,6 +341,7 @@ impl From<Error> for aidash_application::Error {
 			Error::NotFound(message) => Self::NotFound(message),
 			// Work stopped by a Tenant Deletion pauses like any refused authority.
 			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
+			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),

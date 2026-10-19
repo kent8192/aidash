@@ -44,6 +44,7 @@ pub async fn prepare<O: Send>(
 		return Err(Error::Conflict(code.into()));
 	}
 	scope.verified_health(kind == "code_interpreter").await?;
+	scope.admit_sandboxed_tool().await?;
 	// A Check needs the Area's pod slot just as the model's shell does.
 	if matches!(kind, "shell" | "python_install" | VERIFICATION) {
 		scope

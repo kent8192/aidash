@@ -26,6 +26,8 @@ pub const MEMBERS: &str = "members";
 pub const TENANT_UPDATE: &str = "tenant.update";
 /// Deleting the Tenant, and restoring it within its grace period (ADR 0060).
 pub const TENANT_DELETE: &str = "tenant.delete";
+/// Consenting, for the Tenant, to its attachment to a Billing Account.
+pub const BILLING_ATTACH: &str = "billing.attach";
 
 /// What every ordinary member may do: use the Tenant and author definitions,
 /// never administer people, change Tenant settings, approve use, hold Provider

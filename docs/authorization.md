@@ -71,6 +71,7 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `peer_mapping.update`           | `peer_mapping` | Create, update and disable a Peer Mapping                                                                      |
 | `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
 | `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
+| `billing.attach`                | `tenant`       | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 

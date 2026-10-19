@@ -77,6 +77,20 @@ pub trait Extension: Sync + std::fmt::Debug {
 	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		None
 	}
+	/// Installs the adapters this build adds to the Store, once its pools exist.
+	/// Community installs none, so its Store reports no usage and admits all work.
+	fn install(&self, _store: &mut crate::store::Store) -> crate::Result<()> {
+		Ok(())
+	}
+	/// Long-running services the build adds to Community's. Each runs until
+	/// `stopping` changes to true.
+	fn services(
+		&self,
+		_federation: &crate::federation::Federation,
+		_stopping: tokio::sync::watch::Receiver<bool>,
+	) -> Vec<Service> {
+		Vec::new()
+	}
 	/// The Provider Credential Store of an Enterprise `kind`, from its settings
 	/// fields, and the Capability Token issuer of its Credential Broker.
 	fn provider_credential_store(
@@ -85,6 +99,9 @@ pub trait Extension: Sync + std::fmt::Debug {
 		broker: Option<&serde_json::Value>,
 	) -> crate::Result<ProvidedStore>;
 }
+
+/// One background service of a build.
+pub type Service = std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<()>> + Send>>;
 
 pub struct ProvidedStore {
 	pub store: Arc<dyn aidash_application::provider_credentials::Store>,
