@@ -164,7 +164,9 @@ impl SignInProvider for Gcip {
 		self.services.status.clone()
 	}
 
-	/// `GET /auth/login?org=<Tenant name>` selects the GCIP Tenant explicitly.
+	/// `GET /auth/login` shows the sign-in page. With a valid browser session it
+	/// signs the same External Identity in again through its own GCIP Tenant,
+	/// which is how second-factor enrollment starts.
 	async fn login(
 		&self,
 		f: &Federation,
@@ -172,17 +174,12 @@ impl SignInProvider for Gcip {
 		query: LoginQuery,
 	) -> Result<Response> {
 		let destination = sign_in::return_path(query.return_to.as_deref())?;
-		let Some(org) = query.org.as_deref() else {
-			return sign_in::sign_in_page(&[("return_to", destination)]);
-		};
-		match self
-			.config
-			.tenant_bindings
-			.iter()
-			.find_map(|(pool, tenant)| (tenant == org).then_some(pool))
-		{
-			Some(pool) => self.begin(f, &headers, destination, pool).await,
-			None => Self::not_found(destination),
+		let pool = sign_in::session_issuer(f, &headers)
+			.await
+			.and_then(|issuer| tenant(&self.config.project_id, &issuer).map(str::to_owned));
+		match pool {
+			Some(pool) => self.begin(f, &headers, destination, &pool).await,
+			None => sign_in::sign_in_page(&[("return_to", destination)]),
 		}
 	}
 

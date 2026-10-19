@@ -26,7 +26,7 @@ async function openAccount(
 const setup = (page: Page) =>
   page.getByRole("button", { name: "Set up two-step verification" });
 
-test("account settings starts GCIP enrollment through the session's tenant", async ({
+test("account settings starts GCIP enrollment through the session's own sign-in", async ({
   page,
 }) => {
   await openAccount(page, "gcip");
@@ -36,7 +36,7 @@ test("account settings starts GCIP enrollment through the session's tenant", asy
   const login = page.waitForRequest("**/auth/login?**");
   await setup(page).click();
   const url = new URL((await login).url());
-  expect(url.searchParams.get("org")).toBe("acme");
+  expect([...url.searchParams.keys()]).toEqual(["return_to"]);
   expect(url.searchParams.get("return_to")).toBe("/");
   // The sign-in page reads this intent after the transaction redirect.
   expect(
@@ -44,17 +44,15 @@ test("account settings starts GCIP enrollment through the session's tenant", asy
   ).not.toBeNull();
 });
 
-test("the setup entry is offered only to GCIP sessions that have a tenant", async ({
-  page,
-}) => {
-  await openAccount(page, "keycloak");
+test("the setup entry is offered only to GCIP sessions", async ({ page }) => {
+  await openAccount(page, "oidc");
   await expect(
     page.getByRole("button", { name: "Log out on this device" }),
   ).toBeVisible();
   await expect(setup(page)).toHaveCount(0);
 });
 
-test("a Deployment Administrator authority has no GCIP tenant to enroll through", async ({
+test("a bearer Deployment Administrator authority has no GCIP session to enroll through", async ({
   page,
 }) => {
   await openAccount(page, "gcip", true);

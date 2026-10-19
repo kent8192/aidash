@@ -493,14 +493,17 @@ impl Middleware for Gateway {
 				.with_body(b"request body too large".to_vec())
 		} else if path.starts_with("/auth/")
 			&& protection.auth_ip(&request).is_some_and(|ip| {
-				// Sign-in discovery (a Tenant name or Sign-in Domain lookup) has
-				// its own budget, so probing cannot exhaust ordinary sign-in.
+				// Sign-in discovery, which resolves an email address to a sign-in,
+				// has its own budget, so probing cannot exhaust ordinary sign-in.
 				// OIDC deployments have no discovery, so every `/auth/*` request
-				// there shares one budget whatever its query says.
+				// there shares one budget.
 				let discovers = context
 					.get_singleton::<crate::federation::Federation>()
 					.is_some_and(|f| f.config.sign_in.is_some());
-				let (key, burst, period) = if discovers && discovery(&request) {
+				let (key, burst, period) = if discovers
+					&& request.method == http::Method::POST
+					&& request.uri.path() == "/auth/login"
+				{
 					(
 						format!("auth-discovery:{ip}"),
 						protection.settings.auth_discovery_burst,
@@ -585,17 +588,6 @@ impl Middleware for Gateway {
 		};
 		Ok(observation.finish(private_response(response, &id, private), &id))
 	}
-}
-/// With a build's sign-in, such as GCIP, `POST /auth/login` and
-/// `GET /auth/login?org=` resolve user input
-/// to a Tenant. Query keys are decoded so encoding `org` cannot dodge the budget.
-fn discovery(request: &Request) -> bool {
-	request.uri.path() == "/auth/login"
-		&& (request.method == http::Method::POST
-			|| request.uri.query().is_some_and(|query| {
-				reqwest::Url::parse(&format!("http://localhost/?{query}"))
-					.is_ok_and(|url| url.query_pairs().any(|(key, _)| key == "org"))
-			}))
 }
 /// The caller's UUID `x-request-id`, or a fresh one when missing or invalid.
 fn request_id(headers: &HeaderMap) -> String {

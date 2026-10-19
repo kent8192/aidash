@@ -16,8 +16,6 @@ pub(crate) struct Configuration {
 #[derive(Deserialize, JsonSchema)]
 pub struct LoginQuery {
 	pub return_to: Option<String>,
-	/// The Tenant whose sign-in to use, for a provider with Tenant Bindings.
-	pub org: Option<String>,
 }
 
 /// Email-domain discovery input. The address is only parsed for its domain and

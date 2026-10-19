@@ -164,6 +164,21 @@ pub async fn pending(
 	}
 }
 
+/// The issuer of the External Identity whose valid browser session `headers`
+/// carry, so that a provider can sign the same person in again through it.
+pub async fn session_issuer(f: &Federation, headers: &HeaderMap) -> Option<String> {
+	let session = oidc::browser_session_from_headers(f, headers).await.ok()?;
+	let identity = f
+		.store
+		.pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			crate::apps::identity::models::DashboardIdentity::find(tx, session.identity_id()).await
+		})
+		.await
+		.ok()?;
+	Some(identity.issuer)
+}
+
 /// Admit a verified sign-in through the shared authority, which also
 /// disables an existing identity whose issuer is no longer admitted.
 pub async fn admit(f: &Federation, sign_in: &SignIn) -> Result<Account> {
