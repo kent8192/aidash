@@ -34,6 +34,14 @@ pub trait DefinitionLookup: Send {
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
 		Err(crate::Error::Forbidden)
 	}
+	/// The Tenant's stored Agent Plugin copy with this tree digest, as registration and
+	/// admission read it. A lookup that never stores plugins refuses.
+	async fn agent_plugin(
+		&mut self,
+		_: &str,
+	) -> Result<Option<super::bindings::StoredAgentPlugin>> {
+		Err(crate::Error::Invalid("AGENT_PLUGIN_UNAVAILABLE".into()))
+	}
 	/// Exact installed references must be active and individually approved for
 	/// new registration/admission. A default adapter never invents that authority.
 	async fn binding_installation(
