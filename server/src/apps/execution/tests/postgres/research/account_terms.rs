@@ -79,7 +79,7 @@ async fn age(store: &Store, run: Uuid, days: i64) {
 		.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
 }
@@ -95,7 +95,7 @@ async fn ended_ago(store: &Store, account: &str, days: i64) {
 		.and_where(Expr::col(Alias::new("account_id")).eq(Expr::value(account)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
 }
@@ -111,7 +111,7 @@ async fn attempt(store: &Store, run: Uuid, key: &str) -> (Option<String>, Value)
 		.and_where(Expr::col(Alias::new("invocation_key")).eq(Expr::value(key)))
 		.to_string(PostgresQueryBuilder);
 	let row: String = sqlx::query_scalar(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let row: Value = serde_json::from_str(&row).unwrap();
@@ -272,7 +272,7 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);
 	let watermark: Option<String> = sqlx::query_scalar(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -354,7 +354,7 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 		)
 		.to_string(PostgresQueryBuilder);
 	let recorded: i64 = sqlx::query_scalar(&sql)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(recorded, 1);

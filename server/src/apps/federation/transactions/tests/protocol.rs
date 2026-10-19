@@ -29,29 +29,38 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 async fn workspace(node: &Node, id: Uuid) -> Workspace {
-	Workspace::objects()
-		.filter(Workspace::field_id().eq(id))
-		.get_with_db(&mut node.database.lease.handle())
+	node.database
+		.fixture(async |tx| {
+			Ok(Workspace::objects()
+				.filter(Workspace::field_id().eq(id))
+				.get_with_db(tx)
+				.await?)
+		})
 		.await
-		.unwrap()
 }
 
 async fn updates(node: &Node, id: Uuid) -> usize {
-	Event::objects()
-		.filter(Event::field_workspace_id().eq(Some(id)))
-		.filter(Event::field_kind().eq("workspace.updated"))
-		.all_with_db(&mut node.database.lease.handle())
+	node.database
+		.fixture(async |tx| {
+			Ok(Event::objects()
+				.filter(Event::field_workspace_id().eq(Some(id)))
+				.filter(Event::field_kind().eq("workspace.updated"))
+				.all_with_db(tx)
+				.await?
+				.len())
+		})
 		.await
-		.unwrap()
-		.len()
 }
 
 async fn run_record(node: &Node, id: Uuid) -> Run {
-	Run::objects()
-		.filter(Run::field_id().eq(id))
-		.get_with_db(&mut node.database.lease.handle())
+	node.database
+		.fixture(async |tx| {
+			Ok(Run::objects()
+				.filter(Run::field_id().eq(id))
+				.get_with_db(tx)
+				.await?)
+		})
 		.await
-		.unwrap()
 }
 
 async fn pending_run(node: &Node, id: Uuid, tool_calls: Value) {
@@ -62,10 +71,12 @@ async fn pending_run(node: &Node, id: Uuid, tool_calls: Value) {
 			"input_tokens":0,"output_tokens":0},"cursor":0
 	}))
 	.into();
-	Run::objects()
-		.update_with_conn(&mut node.database.lease.handle(), &run)
-		.await
-		.unwrap();
+	node.database
+		.fixture(async |tx| {
+			Run::objects().update_with_conn(tx, &run).await?;
+			Ok(())
+		})
+		.await;
 }
 
 async fn steps(node: &Node, id: Uuid, count: usize) {

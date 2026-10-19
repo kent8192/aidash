@@ -1735,10 +1735,29 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 	copied.tenant = destination_tenant.into();
 	copied.nonce = rows[0].nonce.clone();
 	copied.ciphertext = rows[0].ciphertext.clone();
-	Version::objects()
+	let saved = Version::objects()
 		.save_with_executor(tx.as_mut(), &copied)
-		.await
-		.unwrap();
+		.await;
+	if destination_tenant == "beta" {
+		// The composite (tenant, resource) key already refuses a version that
+		// names another Tenant than its resource (#265), before any read can.
+		let error = saved.expect_err("a version cannot move to another Tenant");
+		assert!(
+			error.to_string().contains("credential_store_resource_fk"),
+			"{error}"
+		);
+		drop(tx);
+		assert_eq!(
+			store
+				.read("alpha", &a_resource, &source)
+				.await
+				.unwrap()
+				.expose_secret(),
+			"source-provider-key"
+		);
+		return;
+	}
+	saved.unwrap();
 	tx.commit().await.unwrap();
 	assert_eq!(
 		store
@@ -1771,6 +1790,7 @@ async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_
 	};
 	use reinhardt::db::orm::Model;
 	let f = endpoint.await;
+	roots(&f).await;
 	let pool = f.runtime.store.control_pool.clone();
 	let old = "33".repeat(32);
 	let new = "44".repeat(32);
@@ -2314,6 +2334,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 		vec![("alpha".to_owned(), alpha.id), ("beta".to_owned(), beta.id)];
 	for index in 0..24 {
 		let tenant = format!("lost-page-{index:02}");
+		endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), &tenant).await;
 		let row = old_service
 			.create(
 				&tenant,
@@ -2362,6 +2383,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 			.add_version("alpha", &resource, &"known-orphan-material-157".into())
 			.await
 			.unwrap();
+		endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), "gamma").await;
 		let gamma = known_service
 			.create(
 				"gamma",
@@ -2567,6 +2589,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	}
 	// Recovery never registers the replacement; ordinary startup now can.
 	let recovered = postgres_store(&f, &current, vec![]).await;
+	endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), "reconnected").await;
 	let fresh = real_service(&f, recovered.clone())
 		.create(
 			"reconnected",
