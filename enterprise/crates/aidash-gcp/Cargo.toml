@@ -15,7 +15,12 @@ aidash-domain.workspace = true
 aidash-integrations.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
+chrono.workspace = true
 crc32c = "0.6"
+gcp_auth = "0.12.7"
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+] }
 percent-encoding = "2"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
@@ -31,6 +36,9 @@ zeroize = "1"
 
 [dev-dependencies]
 axum = "0.8"
-chrono.workspace = true
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

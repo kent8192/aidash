@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use uuid::Uuid;
 
-type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+pub(crate) type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 /// Constructed only after authenticating a bearer token. Never deserialize this
 /// from a request body, query parameter or peer-provided identity claim.

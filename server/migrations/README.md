@@ -5,6 +5,21 @@ labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowled
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
 Cargo packages.
 
+## Community and Enterprise migrations
+
+This directory holds the Community build's apps. The Enterprise build adds its
+own apps' migrations under `enterprise/server/migrations/` (ADR 0032), such as
+`gcip/0001_admissions`. Enterprise tables may reference Community tables;
+Community tables never reference Enterprise ones, and the Community schema has
+no Enterprise table. The `Build` descriptor names each build's extra apps and
+their migration roots relative to `core.base_dir`, so the Enterprise image
+places them at `/app/enterprise/server/migrations` beside
+`/app/server/migrations`. `require_current` reads every root. Reinhardt's
+`migrate` and `makemigrations` read one directory and keep SQL assets inside
+it, so `aidash migrate` stages a copy of every root's apps when a build has
+more than one. `enterprise/server/tests/migrations.rs` runs
+`makemigrations --check` over the same union.
+
 ## Supported databases
 
 The initial migration accepts an empty PostgreSQL database. A database already

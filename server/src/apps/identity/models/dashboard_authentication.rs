@@ -33,7 +33,7 @@ impl DashboardLoginTransaction {
 				.ok_or(Error::Unauthorized)?;
 			if row.browser_hash != browser
 				|| row.expires_at <= database_time(tx).await?
-				|| row.gcip_tenant.is_none()
+				|| row.issuer.is_none()
 			{
 				return Err(Error::Unauthorized);
 			}

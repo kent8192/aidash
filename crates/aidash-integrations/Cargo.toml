@@ -54,7 +54,6 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
 ] }
 openidconnect = "4.0.1"
-gcp_auth = "0.12.7"
 
 [features]
 # Fake-provider constructors for tests (ADR 0006). Production dependencies never

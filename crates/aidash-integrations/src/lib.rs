@@ -48,7 +48,7 @@ pub mod activation;
 
 pub mod oidc;
 
-pub mod gcip;
+pub mod jwks;
 
 pub mod chatgpt;
 pub mod provider_authorization;

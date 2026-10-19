@@ -120,7 +120,7 @@ fn clear_cookie<'a>(
 	set_cookie(response, name, "", config, http_only, 0)
 }
 
-pub(crate) fn no_store(response: &mut Response) {
+pub fn no_store(response: &mut Response) {
 	response.headers.insert(
 		header::CACHE_CONTROL,
 		"no-store".parse().expect("static header"),
@@ -137,7 +137,7 @@ async fn provider_metadata(config: &OidcConfig) -> Result<CoreProviderMetadata> 
 		.map_err(Into::into)
 }
 
-pub(crate) fn return_path(value: Option<&str>) -> Result<&str> {
+pub fn return_path(value: Option<&str>) -> Result<&str> {
 	let value = value.unwrap_or("/");
 	if value.len() > 1024
 		|| !value.starts_with('/')
@@ -461,8 +461,8 @@ impl DashboardSessions {
 		Ok(Configuration {
 			enabled: f.config.dashboard_session().is_some(),
 			desktop_protocol: 2,
-			provider: if f.config.gcip.is_some() {
-				"gcip"
+			provider: if let Some(sign_in) = &f.config.sign_in {
+				sign_in.kind()
 			} else if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
 				"google"
 			} else {
@@ -473,8 +473,8 @@ impl DashboardSessions {
 	}
 	pub(crate) async fn login(&self, headers: HeaderMap, query: LoginQuery) -> Result<Response> {
 		let f = self.runtime.clone();
-		if f.config.gcip.is_some() {
-			return crate::apps::identity::services::gcip::login(&f, headers, query).await;
+		if let Some(sign_in) = &f.config.sign_in {
+			return sign_in.login(&f, headers, query).await;
 		}
 		let config = f.config.oidc.as_ref().ok_or(Error::Unauthorized)?;
 		let destination = return_path(query.return_to.as_deref())?;
@@ -499,7 +499,7 @@ impl DashboardSessions {
 			.callback_uri(callback)
 			.expires_at(Utc::now() + Duration::minutes(5))
 			.started_at(None)
-			.gcip_tenant(None)
+			.issuer(None)
 			.finish();
 		let pool = &f.store.pool;
 		reservation.reserve(pool).await?;

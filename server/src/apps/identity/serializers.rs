@@ -29,7 +29,6 @@ pub mod session;
 
 pub(crate) mod openapi;
 
-pub(crate) mod managed_settings;
 pub mod settings;
 
 pub mod peer_graph;

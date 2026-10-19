@@ -111,19 +111,13 @@ pub async fn initialize(
 		.build()?;
 	let federation = Federation {
 		sandbox: Default::default(),
-		gcip: config.gcip.as_ref().map(|gcip| {
-			Arc::new(aidash_integrations::gcip::Services::new(
-				gcip.project_id.clone(),
-				client.clone(),
-			))
-		}),
 		store,
 		registry,
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
 	};
-	// Persist removed GCIP Bindings even for inactive Identities before this
+	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
 	dashboard_authority(&federation).reconcile_policy().await?;
 	context.set_singleton(settings.clone());
@@ -2176,9 +2170,10 @@ pub(crate) fn dashboard_authority(
 			federation.clone(),
 		)),
 		status: federation
-			.gcip
+			.config
+			.sign_in
 			.as_ref()
-			.map(|gcip| gcip.status.clone())
+			.map(|sign_in| sign_in.status())
 			.unwrap_or_else(|| {
 				Arc::new(aidash_integrations::oidc::AccountLookup {
 					client: federation.client.clone(),

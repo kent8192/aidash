@@ -388,9 +388,5 @@ path = "src/apps/registry/tests/tenant_registry_acceptance.rs"
 
 
 [[test]]
-name = "gcip_sign_in"
-path = "src/apps/identity/tests/gcip_sign_in.rs"
-
-[[test]]
 name = "provider_credentials"
 path = "src/apps/identity/tests/provider_credentials.rs"

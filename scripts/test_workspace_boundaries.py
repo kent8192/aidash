@@ -163,6 +163,18 @@ class EnterpriseWorkspaceTests(unittest.TestCase):
             BOUNDARIES.enterprise_violations(metadata, self.root),
         )
 
+    def test_community_may_not_resolve_a_google_cloud_client(self):
+        metadata = copy.deepcopy(self.community)
+        metadata["packages"].append({
+            "id": "registry+https://github.com/rust-lang/crates.io-index#gcp_auth@0.12.7",
+            "name": "gcp_auth", "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/registry/gcp_auth-0.12.7/Cargo.toml", "dependencies": [], "features": {},
+        })
+        self.assertIn(
+            "Community resolves a Google Cloud client: gcp_auth",
+            BOUNDARIES.violations(metadata, ROOT),
+        )
+
     def test_community_may_not_resolve_an_enterprise_package(self):
         metadata = copy.deepcopy(self.community)
         metadata["packages"].append({

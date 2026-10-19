@@ -162,7 +162,7 @@ The [authorization API](docs/authorization.md) issues revocable subject tokens f
 
 ### Aidash Cloud GCIP sign-in
 
-Cloud deployments can select GCIP as the sole dashboard issuer. `[dashboard.gcip]` and `[dashboard.oidc]` are mutually exclusive. Self-hosted OIDC stays optional and unchanged. Add this section to the selected server settings file:
+Cloud deployments can select GCIP as the sole dashboard issuer. GCIP sign-in is part of the Enterprise build; a Community build with `[dashboard.gcip]` refuses to start. `[dashboard.gcip]` and `[dashboard.oidc]` are mutually exclusive. Self-hosted OIDC stays optional and unchanged. Add this section to the selected server settings file:
 
 ```toml
 [dashboard.gcip]

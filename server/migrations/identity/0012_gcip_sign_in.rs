@@ -39,9 +39,10 @@ pub(super) fn migration() -> Migration {
 				.with_default(None),
 			mysql_options: None,
 		})
+		// The issuer a token sign-in must sign in, such as a GCIP Tenant's.
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_login_transactions".into(),
-			column: ColumnDefinition::new("gcip_tenant", FieldType::Text)
+			column: ColumnDefinition::new("issuer", FieldType::Text)
 				.with_not_null(false)
 				.with_default(None),
 			mysql_options: None,

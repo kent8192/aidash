@@ -230,8 +230,18 @@ jobs:
           cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
           python3 scripts/check-enterprise-alignment.py
           python3 -m unittest discover -s scripts -p test_enterprise_alignment.py
+      # The GCIP sign-in tests run the Community server's PostgreSQL fixtures,
+      # with the environment scripts/test-rust.sh gives Community's.
       - name: Build and test the Enterprise build
-        run: cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
+        run: |
+          scripts/build-test-postgres.sh
+          profile=$(mktemp -d)
+          printf '{"admission":true,"storage":"%s/storage","outbound_origins":["https://example.com"]}' "$profile" > "$profile/profile.json"
+          export AIDASH_CAPABILITY_PROFILE="$profile/profile.json"
+          export RUST_TEST_THREADS=2 RUST_MIN_STACK=8388608
+          export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
+          export AIDASH_SECRET_GRAPH_THIRD=local-third-graph-peer-token-9876543210
+          cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
   community-export:
     name: Community export
     runs-on: ubuntu-latest

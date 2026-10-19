@@ -448,7 +448,7 @@ pub(super) async fn lock_identity(tx: &mut Transaction, id: Uuid, lock: LockType
 		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.lock(lock)
 		.to_string(PostgresQueryBuilder);
-	let validity: Option<(String, Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = query_as(&query)
+	let validity: Option<identity::IdentityValidity> = query_as(&query)
 		.columns(&["issuer", "last_valid_at", "disabled_at"])
 		.fetch_optional(&mut **tx)
 		.await?;

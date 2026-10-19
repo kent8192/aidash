@@ -12,6 +12,7 @@ import tomllib
 # `aidash-enterprise-server`.
 ENTERPRISE_PATH = re.compile(r"(?<![\w-])enterprise(?![\w-])")
 PRUNED = {".git", "enterprise", "node_modules", "target"}
+GOOGLE_CLOUD = re.compile(r"^(gcp|google)[-_]")
 
 
 def enterprise_references(root):
@@ -106,6 +107,10 @@ def violations(metadata, root):
     for package in packages.values():
         if package["source"] is None and Path(package["manifest_path"]).is_relative_to(enterprise):
             errors.append(f"Community resolves an Enterprise package: {package['name']}")
+        # Google Cloud clients run only Cloud and Dedicated, which only the
+        # Enterprise build serves (#252).
+        if package["source"] is not None and GOOGLE_CLOUD.match(package["name"]):
+            errors.append(f"Community resolves a Google Cloud client: {package['name']}")
     errors.extend(enterprise_references(root))
     errors.extend(module_violations(root, (root / "crates", root / "server")))
     return errors

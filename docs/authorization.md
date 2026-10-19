@@ -14,7 +14,9 @@ OIDC-origin execution stores an immutable run origin and rechecks its underlying
 
 ### GCIP sign-in
 
-GCIP is opt-in and replaces direct Google OIDC for a Cloud deployment. A deployment selects exactly one issuer. An External Identity is keyed by issuer, GCIP Tenant ID and uid; OIDC rows use an empty GCIP Tenant ID and retain their issuer/subject identity. Emails, names and GCIP custom claims never link identities or grant authority.
+GCIP sign-in is part of the Enterprise build (`enterprise/server/src/gcip.rs`, ADR 0032) and replaces direct Google OIDC for Cloud and Dedicated. A Community build with `[dashboard.gcip]` refuses to start. A deployment selects exactly one issuer configuration. An External Identity is keyed by issuer and subject. The GCIP Tenant is part of the issuer, `https://securetoken.google.com/<project>/tenants/<GCIP Tenant ID>`, so the same person in two GCIP Tenants is two External Identities. Emails, names and GCIP custom claims never link identities or grant authority.
+
+Community knows GCIP only through a port. The `Issuers` port of the account policy names the admitted issuers and the one Tenant an issuer's identities may be restricted to; a generic OIDC or Google issuer never restricts. The Enterprise build adds its sign-in, its two endpoints and its managed settings source through the `Build` descriptor's extension. It records how each GCIP External Identity was first admitted, through the Shared Pool or bound to a named Tenant, in its own `gcip_admissions` table, which references `dashboard_identities`.
 
 A GCIP Tenant's MFA Requirement (`disabled`, `enabled` or `mandatory`) is enforced by GCIP and completed in the sign-in page with a TOTP code. The token verifier ignores `firebase.sign_in_second_factor` and `second_factor_identifier`: a token that carries them and one that does not produce the same verified sign-in, so a second factor is never authority and never changes a Mapping, Deployment Administrator grant or Account Status.
 

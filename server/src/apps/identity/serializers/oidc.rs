@@ -14,18 +14,19 @@ pub(crate) struct Configuration {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub(crate) struct LoginQuery {
-	pub(crate) return_to: Option<String>,
-	pub(crate) org: Option<String>,
+pub struct LoginQuery {
+	pub return_to: Option<String>,
+	/// The Tenant whose sign-in to use, for a provider with Tenant Bindings.
+	pub org: Option<String>,
 }
 
 /// Email-domain discovery input. The address is only parsed for its domain and
 /// is never stored or logged.
 #[derive(Deserialize, JsonSchema)]
-pub(crate) struct LoginDiscovery {
+pub struct LoginDiscovery {
 	#[serde(default)]
-	pub(crate) email: String,
-	pub(crate) return_to: Option<String>,
+	pub email: String,
+	pub return_to: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

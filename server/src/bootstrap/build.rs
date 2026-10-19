@@ -42,6 +42,22 @@ pub struct Build {
 /// adds nothing; an Enterprise build implements them with its own crates, so
 /// Community never names them (ADR 0032).
 pub trait Extension: Sync + std::fmt::Debug {
+	/// Settings sources the build adds, such as managed settings files.
+	fn settings(
+		&self,
+		builder: reinhardt::conf::settings::builder::SettingsBuilder,
+	) -> reinhardt::conf::settings::builder::SettingsBuilder {
+		builder
+	}
+	/// The browser sign-in that `[dashboard.gcip]` configures.
+	fn sign_in(
+		&self,
+		gcip: &serde_json::Value,
+	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>;
+	/// Endpoints the build adds to Community's.
+	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
+		None
+	}
 	/// The Provider Credential Store of an Enterprise `kind`, from its settings
 	/// fields, and the Capability Token issuer of its Credential Broker.
 	fn provider_credential_store(
@@ -60,6 +76,15 @@ pub struct ProvidedStore {
 struct Community;
 
 impl Extension for Community {
+	fn sign_in(
+		&self,
+		_: &serde_json::Value,
+	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>> {
+		Err(crate::Error::Invalid(
+			"the Community build has no GCIP sign-in; [dashboard.gcip] needs the Enterprise build"
+				.into(),
+		))
+	}
 	fn provider_credential_store(
 		&self,
 		store: &serde_json::Map<String, serde_json::Value>,
@@ -140,6 +165,29 @@ mod tests {
 		offerings: &[Cloud, Dedicated],
 		..Build::COMMUNITY
 	};
+
+	#[test]
+	fn the_community_build_refuses_enterprise_adapters() {
+		let extension = Build::COMMUNITY.extension;
+		assert_eq!(
+			extension
+				.sign_in(&serde_json::json!({"project_id": "fixture"}))
+				.err()
+				.unwrap()
+				.to_string(),
+			"the Community build has no GCIP sign-in; [dashboard.gcip] needs the Enterprise build"
+		);
+		let store = serde_json::json!({"kind": "secret_manager"});
+		assert_eq!(
+			extension
+				.provider_credential_store(store.as_object().unwrap(), None)
+				.err()
+				.unwrap()
+				.to_string(),
+			"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+		);
+		assert!(extension.routes().is_none());
+	}
 
 	#[rstest]
 	#[case(Build::COMMUNITY, SelfHosted, None)]

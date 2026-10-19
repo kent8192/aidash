@@ -497,10 +497,10 @@ impl Middleware for Gateway {
 				// its own budget, so probing cannot exhaust ordinary sign-in.
 				// OIDC deployments have no discovery, so every `/auth/*` request
 				// there shares one budget whatever its query says.
-				let gcip = context
+				let discovers = context
 					.get_singleton::<crate::federation::Federation>()
-					.is_some_and(|f| f.config.gcip.is_some());
-				let (key, burst, period) = if gcip && discovery(&request) {
+					.is_some_and(|f| f.config.sign_in.is_some());
+				let (key, burst, period) = if discovers && discovery(&request) {
 					(
 						format!("auth-discovery:{ip}"),
 						protection.settings.auth_discovery_burst,
@@ -586,7 +586,8 @@ impl Middleware for Gateway {
 		Ok(observation.finish(private_response(response, &id, private), &id))
 	}
 }
-/// With GCIP, `POST /auth/login` and `GET /auth/login?org=` resolve user input
+/// With a build's sign-in, such as GCIP, `POST /auth/login` and
+/// `GET /auth/login?org=` resolve user input
 /// to a Tenant. Query keys are decoded so encoding `org` cannot dodge the budget.
 fn discovery(request: &Request) -> bool {
 	request.uri.path() == "/auth/login"
