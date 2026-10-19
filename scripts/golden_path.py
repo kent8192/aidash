@@ -696,7 +696,10 @@ def main():
                 return False
             return snapshot if len(snapshot["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in snapshot["tasks"]) else False
 
-        snapshot = wait_for(complete, timeout=150, label="all four tasks and artifacts")
+        # The rest of the research, Actix's recovery, Rocket's whole Run and the
+        # coordinator's synthesis, is twenty-odd authorized steps; on a CI runner
+        # each takes 10-20 s (#404).
+        snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
         recovered = wait_for(lambda: next((r for r in api_request(base_a, "/api/state", token=tokens[base_a])["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same durable research run")
         assert recovered["id"] == before["id"]
         assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a]))
@@ -704,7 +707,9 @@ def main():
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
         assert fixture.provider_calls["openrouter"] > 0
-        wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), label="SSE result delivery")
+        # Subject event delivery checks each frame's provenance and runs a
+        # minute or two behind on a CI runner (#404).
+        wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), timeout=300, label="SSE result delivery")
         pending_events = int(psql(db_a, queries["pending_events"]))
         assert pending_events > 0, "Outage must leave durable events awaiting publication"
         assert int(psql(db_a, queries["inbox"])) == 0
