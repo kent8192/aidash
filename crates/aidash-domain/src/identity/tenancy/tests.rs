@@ -202,10 +202,37 @@ fn the_creator_administers_and_members_use() {
 }
 
 #[test]
+fn members_approve_tool_calls_and_nothing_else_they_could_be_asked_for() {
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let evaluate = |subject: &str, kind: &str, action: &str| {
+		bundle
+			.evaluate(&Evaluation {
+				subject: subject.into(),
+				action: action.into(),
+				resource: Resource {
+					tenant: bundle.tenant.clone(),
+					kind: kind.into(),
+					id: "tool-1".into(),
+					attributes: json!({}),
+				},
+				environment: json!({}),
+			})
+			.allowed
+	};
+	assert!(evaluate("alice", "tool", "capability.approve"));
+	for kind in ["outbound", "research", "generation"] {
+		assert!(!evaluate("alice", kind, "capability.approve"), "{kind}");
+	}
+	// Direct permission to call without approval stays with administrators.
+	assert!(!evaluate("alice", "tool", "tool.call_unapproved"));
+	assert!(evaluate(OWNER, "tool", "tool.call_unapproved"));
+}
+
+#[test]
 fn a_tenant_without_a_creator_starts_empty() {
 	let bundle = initial_policy("calm-heron-00000000", false).unwrap();
 	assert!(bundle.subjects.is_empty());
-	assert_eq!(bundle.policies.len(), 2);
+	assert_eq!(bundle.policies.len(), 3);
 }
 
 fn with_member(mut bundle: PolicyBundle, name: &str, group: &str) -> PolicyBundle {

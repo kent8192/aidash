@@ -8,7 +8,7 @@ fn tool_data() -> Value {
 		"response_epoch":9,"cursor":0,"included_input_seq":3,"request_window":128000,"request_tokens":100,"finalizing":false,
 		"media_inferred_seq_before_response":0,"observed_input_seq_before_response":0,"inferred_selected_media":[],"deferred_selected_media":[],"selected_media":[],"deferred_human_media":false,
 		"media_inferred_through_seq":null,"media_intake_through_seq":0,"required_run_message_reads":[],"references_read_at_inference":true,"run_message_catchup":false,"run_message_summary_end_seq":0,"run_message_summary_limit":1024,
-		"deferred_reads":thinking_data(),"workspace_read_plan":null,"skill_read_plan":null,"workspace_observation_plan":null,"workbench_approval_result":null
+		"deferred_reads":thinking_data(),"workspace_read_plan":null,"skill_read_plan":null,"workspace_observation_plan":null,"home_approval":null,"approval":null
 	})
 }
 fn thinking_data() -> Value {
@@ -47,8 +47,8 @@ fn current_storage_covers_every_phase_and_wait_continuation() {
 	cases.extend([
 		(RunPhase::Waiting,json!({"reason":"dependencies","wake_at":date,"resume":{}})),
 		(RunPhase::Waiting,json!({"reason":"children","wake_at":date,"resume":thinking_data()})),
-		(RunPhase::Waiting,json!({"reason":"core_approval","approval_id":id,"resume":thinking_data()})),
-		(RunPhase::Waiting,json!({"reason":"external_approval","request_id":id,"key":"run:9:0","call":{"id":"call-1","name":"echo","arguments":{}},"expires_at":date,"resume":tool_data()})),
+		(RunPhase::Waiting,json!({"reason":"approval","approval":{"source":"capability","approval_id":id},"resume":tool_data()})),
+		(RunPhase::Waiting,json!({"reason":"approval","approval":{"source":"home","request_id":id,"key":"run:9:0","call":{"id":"call-1","name":"echo","arguments":{}},"expires_at":date},"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"reconciliation","request_id":id,"key":"run:9:0","resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"failure_delivery","target":"FAILED","wake_at":date,"last_delivery_error":null}))
 	]);
@@ -353,4 +353,57 @@ fn a_runnable_run_that_needs_capabilities_is_waiting_for_a_capable_worker() {
 	assert_eq!(run.lease_wait(&requires), None);
 	run.control = crate::RunControl::Cancelled;
 	assert_eq!(run.lease_wait(&requires), None);
+}
+
+#[rstest::rstest]
+fn advancing_the_cursor_leaves_the_approvals_of_earlier_calls_behind() {
+	let mut state: ToolCallState = serde_json::from_value(tool_data()).unwrap();
+	state.approval = Some(Uuid::from_u128(1));
+	state.home_approval = Some(HomeApproval {
+		key: "run:9:0".into(),
+		call: state.response.tool_calls[0].clone(),
+		approved: true,
+	});
+
+	state.advance(1);
+
+	assert_eq!(state.cursor, 1);
+	assert!(state.approval.is_none() && state.home_approval.is_none());
+}
+
+#[rstest::rstest]
+fn only_an_approval_asked_of_another_node_has_a_deadline_and_a_human_request() {
+	let id = Uuid::from_u128(7);
+	let date: DateTime<Utc> = "2026-10-19T00:00:00Z".parse().unwrap();
+	let resume: ToolCallState = serde_json::from_value(tool_data()).unwrap();
+	let capability = WaitingState::Approval {
+		approval: ApprovalRef::Capability { approval_id: id },
+		resume: Box::new(resume.clone()),
+	};
+	let home = WaitingState::Approval {
+		approval: ApprovalRef::Home {
+			request_id: id,
+			key: "run:9:0".into(),
+			call: resume.response.tool_calls[0].clone(),
+			expires_at: date,
+		},
+		resume: Box::new(resume),
+	};
+
+	assert_eq!(
+		(capability.deadline(), capability.request_id()),
+		(None, None)
+	);
+	assert_eq!((home.deadline(), home.request_id()), (Some(date), Some(id)));
+}
+
+#[rstest::rstest]
+fn the_retired_approval_waits_cannot_become_executable() {
+	let id = "0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf";
+	for data in [
+		json!({"reason":"core_approval","approval_id":id,"resume":thinking_data()}),
+		json!({"reason":"external_approval","request_id":id,"key":"run:9:0","call":{"id":"call-1","name":"echo","arguments":{}},"expires_at":"2026-10-19T00:00:00Z","resume":tool_data()}),
+	] {
+		assert!(decode(RunPhase::Waiting, envelope(data)).is_err());
+	}
 }
