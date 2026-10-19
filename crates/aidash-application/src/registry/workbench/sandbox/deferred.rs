@@ -45,7 +45,7 @@ impl Deferred {
 			.iter()
 			.map(crate::capabilities::skills::attachment_skill)
 			.collect::<Result<Vec<_>>>()?;
-		let catalog = exposure::catalog(snapshot, &specifications, &attachments)?;
+		let catalog = exposure::catalog(snapshot, &specifications, &attachments, None)?;
 		Ok(Some(Self {
 			config,
 			budgets,
@@ -84,6 +84,9 @@ impl Deferred {
 					.ok_or_else(|| {
 						Error::Invalid(format!("selected Skill {alias} is not attached"))
 					})?,
+				CapabilityIdentity::AgentPluginTool { .. } => {
+					return Err(Error::Invalid(format!("selected {alias} is not a Skill")));
+				}
 			};
 			text.push_str(&exposure::resident_block(capability, &body));
 		}

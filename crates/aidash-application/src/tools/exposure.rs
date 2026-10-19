@@ -33,7 +33,12 @@ pub fn catalog(
 		})?;
 	Ok((
 		budgets,
-		exposure::catalog(snapshot, specifications, direct)?,
+		exposure::catalog(
+			snapshot,
+			specifications,
+			direct,
+			run.context.plugin_tools.as_ref(),
+		)?,
 	))
 }
 
@@ -115,6 +120,9 @@ async fn asset(ctx: &ToolContext<'_>, catalog: &[Capability], input: &Value) -> 
 			ctx.operations
 				.direct_skill_file(*skill_id, digest, path)
 				.await?
+		}
+		CapabilityIdentity::AgentPluginTool { .. } => {
+			return Err(Error::Invalid("UNKNOWN_CAPABILITY".into()));
 		}
 	};
 	let Some(text) = bytes

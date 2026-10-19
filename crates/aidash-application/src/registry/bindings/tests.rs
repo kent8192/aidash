@@ -1123,7 +1123,7 @@ async fn explicit_member_exposure_overrides_an_eager_bundle_member() {
 			(alias, spec)
 		})
 		.collect();
-	let capabilities = aidash_domain::exposure::catalog(&saved, &specs, &[]).unwrap();
+	let capabilities = aidash_domain::exposure::catalog(&saved, &specs, &[], None).unwrap();
 	let exposure = |alias: &str| {
 		capabilities
 			.iter()

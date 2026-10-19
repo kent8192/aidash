@@ -3127,7 +3127,12 @@ async fn exposure_catalog(
 		.map(|(alias, tool)| (alias.clone(), tool.specification()))
 		.collect();
 	let direct = environment.direct_skills(run).await?;
-	Ok(exposure::catalog(snapshot, &specs, &direct)?)
+	Ok(exposure::catalog(
+		snapshot,
+		&specs,
+		&direct,
+		run.context.plugin_tools.as_ref(),
+	)?)
 }
 /// Resident blocks of the selected Skills: Registry bodies from the pinned
 /// snapshot, direct bodies from the Run's pinned Skill files.
@@ -3154,6 +3159,9 @@ async fn resident_skills(
 				environment
 					.direct_skill_body(run, *skill_id, &capability.digest)
 					.await?
+			}
+			exposure::CapabilityIdentity::AgentPluginTool { .. } => {
+				return Err(Error::Invalid(format!("selected {alias} is not a Skill")));
 			}
 		};
 		text.push_str(&exposure::resident_block(capability, &body));

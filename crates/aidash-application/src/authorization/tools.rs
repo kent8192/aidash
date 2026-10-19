@@ -218,12 +218,14 @@ fn asset_skill(
 	let snapshot = repository
 		.binding_snapshot()
 		.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
-	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[])?
+	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[], None)?
 		.into_iter()
 		.find(|capability| capability.alias == alias)
 		.and_then(|capability| match capability.identity {
 			CapabilityIdentity::Registry(reference) => Some(reference),
-			CapabilityIdentity::DirectSkill { .. } => None,
+			CapabilityIdentity::DirectSkill { .. } | CapabilityIdentity::AgentPluginTool { .. } => {
+				None
+			}
 		}))
 }
 

@@ -6,6 +6,8 @@ use crate::{
 };
 use rstest::rstest;
 
+mod plugin_tools;
+
 const NODE: &str = "aidash://node-a";
 
 fn reference(id: &str) -> QualifiedRef {
@@ -182,7 +184,7 @@ impl Run {
 		}
 	}
 	fn catalog(&mut self) -> Vec<Capability> {
-		catalog(&self.snapshot(), &self.specs, &[]).unwrap()
+		catalog(&self.snapshot(), &self.specs, &[], None).unwrap()
 	}
 }
 fn capability<'a>(catalog: &'a [Capability], alias: &str) -> &'a Capability {
@@ -648,8 +650,8 @@ fn skill_aliases_are_deterministic_unique_and_valid() {
 		files: vec![],
 	};
 	let snapshot = run.snapshot();
-	let first = catalog(&snapshot, &run.specs, std::slice::from_ref(&direct)).unwrap();
-	let second = catalog(&snapshot, &run.specs, std::slice::from_ref(&direct)).unwrap();
+	let first = catalog(&snapshot, &run.specs, std::slice::from_ref(&direct), None).unwrap();
+	let second = catalog(&snapshot, &run.specs, std::slice::from_ref(&direct), None).unwrap();
 	assert_eq!(first, second);
 	let skills = first
 		.iter()
@@ -709,7 +711,7 @@ fn skill_aliases_are_deterministic_unique_and_valid() {
 	let alias = registry.alias.clone();
 	run.tool(&alias, "Impostor", 0);
 	assert!(matches!(
-		catalog(&run.snapshot(), &run.specs, &[]),
+		catalog(&run.snapshot(), &run.specs, &[], None),
 		Err(Error::Conflict(_))
 	));
 }
@@ -839,7 +841,7 @@ fn renamed_skill_asset_read_stays_mandatory_and_is_named_in_skill_guidance() {
 	.skill("packaged", "Packaged", "Follow the notes.");
 	let snapshot = run.snapshot();
 	// Act
-	let catalog = catalog(&snapshot, &run.specs, &[]).unwrap();
+	let catalog = catalog(&snapshot, &run.specs, &[], None).unwrap();
 	let selection = select(
 		&DeferredBudgets::default(),
 		&catalog,
