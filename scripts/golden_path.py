@@ -104,6 +104,23 @@ def approve_fixture_external_requests(base, token=TOKEN):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
 
 
+def diagnose(base, token, tenant, workspace):
+    """Print what a stalled workspace's tasks and Runs last recorded, and the Tenant's recent policy decisions."""
+    def show(label, value):
+        print(f"--- {label}: {json.dumps(value, ensure_ascii=False)[:4000]}", flush=True)
+
+    try:
+        snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
+        show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
+        tasks = {task["id"] for task in snapshot["tasks"]}
+        for run in api_request(base, "/api/state", token=token)["runs"]:
+            if run["task_id"] in tasks:
+                show(f"run {run['id']}", api_request(base, f"/api/runs/{run['id']}", token=token)["run"])
+        show("decisions", api_request(base, f"/api/authorization/{tenant}/decisions")[-20:])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"--- diagnosis failed: {error!r}", flush=True)
+
+
 def entity(kind, identifier, config, capability="web.search"):
     return {
         "id": identifier, "version": "1.0.0", "kind": kind,
@@ -575,7 +592,9 @@ def main():
         else:
             created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
         workspace = created["workspace"]["id"]
-        assert fixture.remote_effect_started.wait(90), "The Actix research tool was never invoked"
+        if not fixture.remote_effect_started.wait(90):
+            diagnose(base_a, tokens[base_a], tenant_a, workspace)
+            raise AssertionError("The Actix research tool was never invoked")
 
         def actix_run():
             actix = next((t for t in api_request(base_a, f"/api/workspaces/{workspace}", token=tokens[base_a])["tasks"] if t["title"] == "Actix"), None)
