@@ -30,6 +30,7 @@ async fn database_accepts_every_host_operation_and_its_exact_lifecycle(
 	#[future] database: DatabaseFixture,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let groups = aidash_application::registry::system::packages::declarations(
 		&aidash_server::bootstrap::registry_validation(),
 		"aidash://node",

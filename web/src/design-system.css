@@ -11,6 +11,8 @@
 @import "@fontsource/ibm-plex-mono/500.css";
 @import "tailwindcss";
 @import "tw-animate-css";
+/* Tailwind scans only this package; a build that extends it names its sources here. */
+@import "@slots/sources.css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 @custom-variant light (&:where([data-theme="light"], [data-theme="light"] *));

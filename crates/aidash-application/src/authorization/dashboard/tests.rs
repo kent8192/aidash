@@ -1,5 +1,5 @@
 use super::*;
-use crate::ports::authorization::dashboard::{AccountPolicy, StatusRecovery};
+use crate::ports::authorization::dashboard::{AccountPolicy, Issuer, Issuers, StatusRecovery};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::{collections::BTreeSet, sync::Mutex};
@@ -25,10 +25,11 @@ struct Scope {
 	state: Arc<Mutex<State>>,
 	configured: bool,
 	active: bool,
-	google: bool,
+	/// The issuer reports no Account Status, as generic OIDC does.
+	statusless: bool,
 	personal_tenants: bool,
-	tenant_bindings: Option<std::collections::BTreeMap<String, String>>,
-	gcip_providers: std::collections::BTreeMap<String, Vec<String>>,
+	/// Issuers whose identities are restricted to one Tenant each.
+	restrictions: Option<std::collections::BTreeMap<String, String>>,
 	result: ProviderResult,
 	newer_validity: bool,
 	delay_seconds: i64,
@@ -41,7 +42,6 @@ fn scope() -> Scope {
 		id: Uuid::new_v4(),
 		issuer: "issuer".into(),
 		subject: "subject".into(),
-		gcip_tenant: None,
 		valid_since: None,
 		last_valid_at: Some(now - Duration::seconds(400)),
 		disabled_at: None,
@@ -58,26 +58,42 @@ fn scope() -> Scope {
 		})),
 		configured: true,
 		active: true,
-		google: false,
+		statusless: false,
 		personal_tenants: false,
-		tenant_bindings: None,
-		gcip_providers: Default::default(),
+		restrictions: None,
 		result: ProviderResult::Enabled,
 		newer_validity: false,
 		delay_seconds: 0,
 		valid_since: None,
 	}
 }
+struct Restricted(std::collections::BTreeMap<String, String>);
+impl Issuers for Restricted {
+	fn admitted(&self) -> Vec<String> {
+		self.0.keys().cloned().collect()
+	}
+	fn restriction(&self, issuer: &str) -> Option<String> {
+		self.0.get(issuer).cloned()
+	}
+	fn restricted_issuer(&self, tenant: &str) -> Option<String> {
+		self.0
+			.iter()
+			.find_map(|(issuer, restricted)| (restricted == tenant).then(|| issuer.clone()))
+	}
+	fn retires_refused(&self) -> bool {
+		true
+	}
+}
 #[async_trait]
 impl AccountStatus for Scope {
 	async fn lookup(
 		&self,
+		issuer: &str,
 		subject: &str,
-		gcip_tenant: Option<&str>,
 	) -> Result<aidash_domain::identity::dashboard::AccountState> {
 		let mut state = self.state.lock().unwrap();
 		state.trace.push(format!("lookup:{subject}"));
-		assert_eq!(gcip_tenant, state.account.gcip_tenant.as_deref());
+		assert_eq!(issuer, state.account.issuer);
 		state.now += Duration::seconds(self.delay_seconds);
 		match self.result {
 			ProviderResult::Enabled => Ok(aidash_domain::identity::dashboard::AccountState {
@@ -100,10 +116,10 @@ impl AccountStatus for Scope {
 impl Accounts for Scope {
 	fn policy(&self) -> Option<AccountPolicy> {
 		self.configured.then(|| AccountPolicy {
-			issuer: "issuer".into(),
-			google: self.google,
-			tenant_bindings: self.tenant_bindings.clone(),
-			gcip_providers: self.gcip_providers.clone(),
+			issuers: match &self.restrictions {
+				Some(restrictions) => Arc::new(Restricted(restrictions.clone())),
+				None => Arc::new(Issuer("issuer".into())),
+			},
 			personal_tenants: self.personal_tenants,
 		})
 	}
@@ -187,9 +203,10 @@ impl StatusRecovery for Recovery {
 	}
 }
 fn authority(scope: Arc<Scope>) -> DashboardAuthority {
+	let status = (!scope.statusless).then(|| scope.clone() as Arc<dyn AccountStatus>);
 	DashboardAuthority {
-		accounts: scope.clone(),
-		status: scope,
+		accounts: scope,
+		status,
 	}
 }
 
@@ -277,8 +294,8 @@ async fn recovery_rechecks_original_subjects_and_notifies_only_committed_resumes
 
 #[rstest]
 #[tokio::test]
-async fn google_refresh_keeps_existing_provider_independent_behavior(mut scope: Scope) {
-	scope.google = true;
+async fn a_statusless_issuer_refresh_reads_no_account_status(mut scope: Scope) {
+	scope.statusless = true;
 	let account = scope.state.lock().unwrap().account.clone();
 	let scope = Arc::new(scope);
 	authority(scope.clone()).refresh(account).await;
@@ -326,14 +343,14 @@ impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
 			.push(format!("personal:{identity}"));
 		Ok(())
 	}
-	async fn find(&mut self, _: &str, _: &SignIn) -> Result<Option<Account>> {
+	async fn find(&mut self, _: &SignIn) -> Result<Option<Account>> {
 		Ok(None)
 	}
-	async fn register(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Account> {
+	async fn register(&mut self, sign_in: &SignIn) -> Result<Account> {
 		let mut state = self.0.lock().unwrap();
 		state
 			.trace
-			.push(format!("register:{issuer}:{}", sign_in.subject));
+			.push(format!("register:{}:{}", sign_in.issuer, sign_in.subject));
 		Ok(state.account.clone())
 	}
 }
@@ -349,15 +366,15 @@ impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
 			.push(format!("personal:{identity}"));
 		Ok(())
 	}
-	async fn find(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Option<Account>> {
+	async fn find(&mut self, sign_in: &SignIn) -> Result<Option<Account>> {
 		let mut state = self.0.lock().unwrap();
 		state.trace.push("find".into());
-		Ok((state.account.issuer == issuer
-			&& state.account.subject == sign_in.subject
-			&& state.account.gcip_tenant == sign_in.gcip_tenant)
-			.then(|| state.account.clone()))
+		Ok(
+			(state.account.issuer == sign_in.issuer && state.account.subject == sign_in.subject)
+				.then(|| state.account.clone()),
+		)
 	}
-	async fn register(&mut self, _: &str, _: &SignIn) -> Result<Account> {
+	async fn register(&mut self, _: &SignIn) -> Result<Account> {
 		let mut state = self.0.lock().unwrap();
 		state.trace.push("register".into());
 		Ok(state.account.clone())
@@ -416,15 +433,13 @@ async fn login_skips_personal_tenants_when_the_rules_do_not_cover_the_identity(
 ) {
 	scope.personal_tenants = personal_tenants;
 	if let Some(pool) = pool {
-		scope.tenant_bindings = Some([(pool.to_owned(), "acme".to_owned())].into());
-		scope.gcip_providers = [(pool.to_owned(), vec!["google.com".to_owned()])].into();
-		scope.state.lock().unwrap().account.gcip_tenant = Some(pool.to_owned());
+		scope.restrictions = Some([(pool.to_owned(), "acme".to_owned())].into());
+		scope.state.lock().unwrap().account.issuer = pool.into();
 	}
 	let scope = Arc::new(scope);
 	let mut login = ExistingLogin(scope.state.clone());
 	let sign_in = SignIn {
-		gcip_tenant: pool.map(str::to_owned),
-		gcip_provider: pool.map(|_| "google.com".to_owned()),
+		issuer: pool.unwrap_or("issuer").to_owned(),
 		..sign_in()
 	};
 	authority(scope.clone())
@@ -443,27 +458,6 @@ async fn login_skips_personal_tenants_when_the_rules_do_not_cover_the_identity(
 }
 
 #[rstest]
-#[tokio::test]
-async fn gcip_login_rejects_a_signed_provider_outside_the_pool_allowlist(mut scope: Scope) {
-	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
-	scope.gcip_providers = [("pool-a".into(), vec!["google.com".into()])].into();
-	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
-	let sign_in = SignIn {
-		gcip_tenant: Some("pool-a".into()),
-		gcip_provider: Some("password".into()),
-		..sign_in()
-	};
-	let mut login = ExistingLogin(scope.state.clone());
-	assert!(matches!(
-		authority(Arc::new(scope.clone()))
-			.admit_login(&mut login, &sign_in)
-			.await,
-		Err(Error::Forbidden)
-	));
-	assert!(scope.state.lock().unwrap().trace.is_empty());
-}
-
-#[rstest]
 #[case::removed(false)]
 #[case::bound(true)]
 #[tokio::test]
@@ -472,12 +466,12 @@ async fn removed_binding_refresh_disables_an_inactive_identity(
 	#[case] bound: bool,
 ) {
 	scope.active = false;
-	scope.tenant_bindings = Some(if bound {
+	scope.restrictions = Some(if bound {
 		[("pool-a".into(), "acme".into())].into()
 	} else {
 		Default::default()
 	});
-	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
+	scope.state.lock().unwrap().account.issuer = "pool-a".into();
 	assert!(
 		authority(Arc::new(scope.clone()))
 			.active()
@@ -500,11 +494,10 @@ async fn removed_binding_refresh_disables_an_inactive_identity(
 #[rstest]
 #[tokio::test]
 async fn removed_binding_login_persists_disable_across_binding_restoration(mut scope: Scope) {
-	scope.tenant_bindings = Some(Default::default());
-	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
+	scope.restrictions = Some(Default::default());
+	scope.state.lock().unwrap().account.issuer = "pool-a".into();
 	let sign_in = SignIn {
-		gcip_tenant: Some("pool-a".into()),
-		gcip_provider: Some("oidc.company".into()),
+		issuer: "pool-a".into(),
 		..sign_in()
 	};
 	let mut login = ExistingLogin(scope.state.clone());
@@ -519,8 +512,7 @@ async fn removed_binding_login_persists_disable_across_binding_restoration(mut s
 		assert!(state.account.disabled_at.is_some());
 		assert_eq!(state.trace, ["find", "disable-current", "mark-disabled"]);
 	}
-	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
-	scope.gcip_providers = [("pool-a".into(), vec!["oidc.company".into()])].into();
+	scope.restrictions = Some([("pool-a".into(), "acme".into())].into());
 	assert!(matches!(
 		authority(Arc::new(scope))
 			.admit_login(&mut login, &sign_in)
@@ -532,9 +524,9 @@ async fn removed_binding_login_persists_disable_across_binding_restoration(mut s
 #[rstest]
 #[tokio::test]
 async fn removed_binding_unknown_login_never_registers_or_contacts_provider(mut scope: Scope) {
-	scope.tenant_bindings = Some(Default::default());
+	scope.restrictions = Some(Default::default());
 	let sign_in = SignIn {
-		gcip_tenant: Some("pool-a".into()),
+		issuer: "pool-a".into(),
 		..sign_in()
 	};
 	let mut login = Recovery(scope.state.clone());
@@ -611,9 +603,8 @@ async fn signed_login_token_cannot_revoke_sessions_through_backchannel(scope: Sc
 
 fn sign_in() -> SignIn {
 	SignIn {
+		issuer: "issuer".into(),
 		subject: "subject".into(),
-		gcip_tenant: None,
-		gcip_provider: None,
 		auth_time: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
 		verified_email: None,
 		display_name: None,
@@ -622,12 +613,12 @@ fn sign_in() -> SignIn {
 
 #[rstest]
 #[tokio::test]
-async fn gcip_revocation_ends_older_sessions_without_disabling_work(mut scope: Scope) {
+async fn restricted_revocation_ends_older_sessions_without_disabling_work(mut scope: Scope) {
 	scope.result = ProviderResult::Revoked;
-	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	scope.restrictions = Some([("pool-a".into(), "acme".into())].into());
 	let mut account = scope.state.lock().unwrap().account.clone();
-	account.gcip_tenant = Some("pool-a".into());
-	scope.state.lock().unwrap().account.gcip_tenant = account.gcip_tenant.clone();
+	account.issuer = "pool-a".into();
+	scope.state.lock().unwrap().account.issuer = account.issuer.clone();
 	let now = scope.state.lock().unwrap().now;
 	let scope = Arc::new(scope);
 	authority(scope.clone())
@@ -649,12 +640,14 @@ async fn gcip_revocation_ends_older_sessions_without_disabling_work(mut scope: S
 
 #[rstest]
 #[tokio::test]
-async fn disabled_gcip_account_disables_identity_and_marks_work_at_a_boundary(mut scope: Scope) {
+async fn disabled_restricted_account_disables_identity_and_marks_work_at_a_boundary(
+	mut scope: Scope,
+) {
 	scope.result = ProviderResult::Disabled;
-	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	scope.restrictions = Some([("pool-a".into(), "acme".into())].into());
 	let mut account = scope.state.lock().unwrap().account.clone();
-	account.gcip_tenant = Some("pool-a".into());
-	scope.state.lock().unwrap().account.gcip_tenant = account.gcip_tenant.clone();
+	account.issuer = "pool-a".into();
+	scope.state.lock().unwrap().account.issuer = account.issuer.clone();
 	let scope = Arc::new(scope);
 	assert!(matches!(
 		authority(scope.clone()).account_valid(&account).await,
@@ -669,9 +662,9 @@ async fn disabled_gcip_account_disables_identity_and_marks_work_at_a_boundary(mu
 #[rstest]
 #[tokio::test]
 async fn removed_binding_disables_even_a_fresh_identity_before_provider_io(mut scope: Scope) {
-	scope.tenant_bindings = Some(Default::default());
+	scope.restrictions = Some(Default::default());
 	let mut account = scope.state.lock().unwrap().account.clone();
-	account.gcip_tenant = Some("removed-pool".into());
+	account.issuer = "removed-pool".into();
 	account.last_valid_at = Some(scope.state.lock().unwrap().now);
 	let scope = Arc::new(scope);
 	assert!(matches!(
@@ -694,22 +687,17 @@ fn mapping_requires_the_exact_bound_tenant(
 	#[case] allowed: bool,
 ) {
 	let policy = AccountPolicy {
-		issuer: "issuer".into(),
-		google: false,
-		tenant_bindings: Some([("pool-a".into(), "acme".into())].into()),
-		gcip_providers: Default::default(),
+		issuers: Arc::new(Restricted([("pool-a".into(), "acme".into())].into())),
 		personal_tenants: true,
 	};
-	assert_eq!(
-		policy.require_mapping("issuer", Some(pool), tenant).is_ok(),
-		allowed
-	);
-	assert!(
-		policy
-			.require_mapping("old-issuer", Some(pool), tenant)
-			.is_err()
-	);
-	assert!(policy.require_mapping("issuer", None, tenant).is_err());
+	assert_eq!(policy.require_mapping(pool, tenant).is_ok(), allowed);
+	assert!(policy.require_mapping("old-issuer", tenant).is_err());
+	let unrestricted = AccountPolicy {
+		issuers: Arc::new(Issuer("issuer".into())),
+		personal_tenants: true,
+	};
+	assert!(unrestricted.require_mapping("issuer", tenant).is_ok());
+	assert!(unrestricted.require_mapping(pool, tenant).is_err());
 }
 
 #[rstest]

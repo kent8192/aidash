@@ -12,5 +12,40 @@ pub(super) fn migration() -> Migration {
 .add_operation(Operation::AddConstraintDefinition {table:"run_provider_credentials".to_owned(),constraint:Constraint::Check {name:"run_provider_credential_identity".to_owned(),expression:r#"id = run_id::text || ':' || provider AND provider = 'openrouter'"#.to_owned()}})
 .add_operation(Operation::AddConstraintDefinition {table:"provider_credentials".to_owned(),constraint:Constraint::Unique {name:"provider_credential_tenant_provider_id".to_owned(),columns:vec!["tenant".to_owned(),"provider".to_owned(),"id".to_owned()]}})
 .add_operation(Operation::AddConstraintDefinition {table:"provider_credential_bindings".to_owned(),constraint:Constraint::ForeignKey {name:"provider_credential_bindings_tenant_target".to_owned(),columns:vec!["tenant".to_owned(),"provider".to_owned(),"provider_credential_id".to_owned()],referenced_table:"provider_credentials".to_owned(),referenced_columns:vec!["tenant".to_owned(),"provider".to_owned(),"id".to_owned()],on_delete:ForeignKeyAction::NoAction,on_update:ForeignKeyAction::NoAction,deferrable:None}})
-.add_operation(Operation::AddConstraintDefinition {table:"run_provider_credentials".to_owned(),constraint:Constraint::ForeignKey {name:"run_provider_credentials_tenant_target".to_owned(),columns:vec!["tenant".to_owned(),"provider".to_owned(),"provider_credential_id".to_owned()],referenced_table:"provider_credentials".to_owned(),referenced_columns:vec!["tenant".to_owned(),"provider".to_owned(),"id".to_owned()],on_delete:ForeignKeyAction::NoAction,on_update:ForeignKeyAction::NoAction,deferrable:None}})
+.add_operation(Operation::AddConstraintDefinition {table:"run_provider_credentials".to_owned(),constraint:Constraint::ForeignKey {name:"run_provider_credentials_tenant_target".to_owned(),columns:vec!["tenant".to_owned(),"provider".to_owned(),"provider_credential_id".to_owned()],referenced_table:"provider_credentials".to_owned(),referenced_columns:vec!["tenant".to_owned(),"provider".to_owned(),"id".to_owned()],on_delete:ForeignKeyAction::NoAction,on_update:ForeignKeyAction::NoAction,deferrable:None}})		.add_operation(Operation::AddConstraintDefinition {
+			table: "provider_credential_bindings".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "provider_credential_bindings_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "provider_credentials".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "provider_credentials_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "run_provider_credentials".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "run_provider_credentials_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 }

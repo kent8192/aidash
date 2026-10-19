@@ -82,17 +82,25 @@ fn at(seconds: i64) -> DateTime<Utc> {
 fn open() -> TenancyRules {
 	TenancyRules {
 		tenant_creation: true,
-		..TenancyRules::default()
+		..TenancyRules::of(Offering::SelfHosted)
 	}
 }
 
-#[test]
-fn the_defaults_are_the_self_hosted_column() {
+/// #238's table: Dedicated has the Self-hosted column, Cloud lets people start
+/// Tenants, and every Offering has Invitations and the same limits.
+#[rstest]
+#[case(Offering::SelfHosted, false)]
+#[case(Offering::Cloud, true)]
+#[case(Offering::Dedicated, false)]
+fn each_offering_supplies_its_column_of_defaults(
+	#[case] offering: Offering,
+	#[case] self_service: bool,
+) {
 	assert_eq!(
-		TenancyRules::default(),
+		TenancyRules::of(offering),
 		TenancyRules {
-			personal_tenants: false,
-			tenant_creation: false,
+			personal_tenants: self_service,
+			tenant_creation: self_service,
 			creation_per_hour: 5,
 			creation_total: 20,
 			invitations: true,
@@ -104,7 +112,7 @@ fn the_defaults_are_the_self_hosted_column() {
 #[test]
 fn creation_needs_the_rule() {
 	assert_eq!(
-		check_creation(&TenancyRules::default(), at(0), &[], 0),
+		check_creation(&TenancyRules::of(Offering::SelfHosted), at(0), &[], 0),
 		Err(CreationRefusal::NotAllowed)
 	);
 	assert_eq!(check_creation(&open(), at(0), &[], 0), Ok(()));

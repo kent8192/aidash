@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct GenerationRemoteUsage {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub request_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
 	pub attempt_id: uuid::Uuid,
 	#[field]

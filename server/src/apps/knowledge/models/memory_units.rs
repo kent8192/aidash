@@ -50,6 +50,8 @@ pub struct MemoryParticipant {
 pub struct MemoryUnit {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field]
@@ -89,6 +91,8 @@ pub struct MemoryUnit {
 pub struct MemoryRunBinding {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub participant_id: Uuid,
 	#[field(field_type = "text")]

@@ -16,6 +16,8 @@ use uuid::Uuid;
 pub struct DashboardExecutionOrigin {
 	#[field(primary_key = true)]
 	pub run_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub identity_id: uuid::Uuid,
 	#[field]

@@ -136,6 +136,23 @@ pub(super) async fn setup_endpoint_policy(
 	.unwrap();
 	// The model and embedding fixture is a Keyless endpoint on loopback (ADR 0036).
 	store.keyless.permit_origin_of(endpoint).unwrap();
+	// Every row of a Tenant references its root record (ADR 0050).
+	let tenant = Tenant::build()
+		.name("acme".to_owned())
+		.label(Some("acme".to_owned()))
+		.personal(false)
+		.created_at(chrono::Utc::now())
+		.created_by_kind("deployment_administrator".to_owned())
+		.created_by_identity(None)
+		.finish();
+	store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			Tenant::objects().create_with_conn(tx, &tenant).await?;
+			Ok(())
+		})
+		.await
+		.unwrap();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
@@ -228,15 +245,6 @@ pub(super) async fn setup_endpoint_policy(
 	}
 	let bundle: aidash_domain::policy::PolicyBundle =
 		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
-	// A policy references its Tenant's root record (ADR 0050).
-	let tenant = Tenant::build()
-		.name("acme".to_owned())
-		.label(Some("acme".to_owned()))
-		.personal(false)
-		.created_at(chrono::Utc::now())
-		.created_by_kind("deployment_administrator".to_owned())
-		.created_by_identity(None)
-		.finish();
 	let authority = AuthorizationBundle::build()
 		.tenant("acme")
 		.revision(1)
@@ -246,7 +254,6 @@ pub(super) async fn setup_endpoint_policy(
 	store
 		.pool
 		.atomic(&TEST_FIXTURE, async |tx| {
-			Tenant::objects().create_with_conn(tx, &tenant).await?;
 			AuthorizationBundle::objects()
 				.create_with_conn(tx, &authority)
 				.await?;

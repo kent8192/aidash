@@ -71,7 +71,7 @@ RUNTIME_KEYS = {
     "AIDASH_OIDC_SESSION_IDLE_SECONDS",
 }
 GCIP_KEYS = {
-    "project_id", "web_api_key", "public_origin", "tenant_bindings",
+    "project_id", "web_api_key", "public_origin", "shared_pool", "tenant_bindings",
     "providers", "password_sign_up", "auth_helper", "sign_in_domains", "mfa_mandatory",
     "session_absolute_seconds", "session_idle_seconds",
 }
@@ -503,14 +503,16 @@ def gcip_settings(project, output, dashboard):
         or not isinstance(settings.get("web_api_key"), str)
         or not settings["web_api_key"].strip()
         or not isinstance(settings.get("tenant_bindings"), dict)
+        or not isinstance(settings.get("shared_pool", ""), str)
         or not isinstance(settings.get("sign_in_domains", {}), dict)
         or settings.get("auth_helper", "firebase") not in {"firebase", "public_origin"}
     ):
         raise Refused("managed GCIP configuration must match this environment")
     if PREVIEW_HOST.fullmatch(output["hostname"]) and (
-        settings.get("auth_helper", "firebase") != "firebase" or not settings["tenant_bindings"]
+        settings.get("auth_helper", "firebase") != "firebase"
+        or not (settings["tenant_bindings"] or settings.get("shared_pool"))
     ):
-        raise Refused("Random preview origins require the fixed Firebase helper and managed tenant bindings")
+        raise Refused("Random preview origins require the fixed Firebase helper and a managed GCIP Tenant")
     return {"dashboard": {"gcip": deepcopy(settings)}}
 
 

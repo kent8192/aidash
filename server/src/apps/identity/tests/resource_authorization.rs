@@ -925,9 +925,8 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	use aidash_server::apps::identity::models::{
 		AuthorizationRunRead, states::AuthorizationRunReadResourceKind,
 	};
-	use reinhardt::db::orm::{DatabaseConnection, Json, Model};
+	use reinhardt::db::orm::{Json, Model};
 
-	let mut db = *app.context.get_singleton::<DatabaseConnection>().unwrap();
 	let mut journal = aidash_server::context::Context::default();
 	journal.push(
 		aidash_server::context::ContextEvent::ModelMediaObservation {
@@ -936,52 +935,60 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 			truncated: false,
 		},
 	);
-	let mut updated = 0;
-	for run in f.store.runs(&TEST_FIXTURE).await.unwrap() {
-		let mut context = run.context.clone();
-		context.history = journal.history.clone();
-		context.journal = journal.journal;
-		updated += RunRecord::objects()
-			.filter(RunRecord::field_id().eq(run.id))
-			.update_fields_with_conn(
-				&mut db,
-				[(RunRecord::field_context(), Json(json!(context)))],
-			)
-			.await
-			.unwrap();
-	}
-	assert_eq!(
-		updated, 2,
-		"both valid Run contexts retain the cyclic journal fixture"
-	);
-	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
-	assert_eq!(runs.len(), 2);
-	// Build the cycle in the current schema. Existing-data migration is outside
-	// this reset migration, but recursive visibility and revocation remain required.
-	for (run, source) in [(runs[0].id, runs[1].id), (runs[1].id, runs[0].id)] {
-		let read = AuthorizationRunRead::build()
-			.run_id(run)
-			.workspace_id(workspace)
-			.resource_kind(AuthorizationRunReadResourceKind::Run)
-			.resource_id(source)
-			.finish();
-		AuthorizationRunRead::objects()
-			.create_with_conn(&mut db, &read)
-			.await
-			.unwrap();
-	}
-	assert_eq!(
-		AuthorizationRunRead::objects()
-			.filter(
-				AuthorizationRunRead::field_resource_kind()
-					.eq(AuthorizationRunReadResourceKind::Run)
-			)
-			.count_with_db(&mut db)
-			.await
-			.unwrap(),
-		2
-	);
-
+	let runs = f
+		.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |db| {
+			let mut updated = 0;
+			for run in f.store.runs(&TEST_FIXTURE).await.unwrap() {
+				let mut context = run.context.clone();
+				context.history = journal.history.clone();
+				context.journal = journal.journal;
+				updated += RunRecord::objects()
+					.filter(RunRecord::field_id().eq(run.id))
+					.update_fields_with_conn(
+						db,
+						[(RunRecord::field_context(), Json(json!(context)))],
+					)
+					.await
+					.unwrap();
+			}
+			assert_eq!(
+				updated, 2,
+				"both valid Run contexts retain the cyclic journal fixture"
+			);
+			let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+			assert_eq!(runs.len(), 2);
+			// Build the cycle in the current schema. Existing-data migration is outside
+			// this reset migration, but recursive visibility and revocation remain required.
+			for (run, source) in [(runs[0].id, runs[1].id), (runs[1].id, runs[0].id)] {
+				let read = AuthorizationRunRead::build()
+					.tenant("acme")
+					.run_id(run)
+					.workspace_id(workspace)
+					.resource_kind(AuthorizationRunReadResourceKind::Run)
+					.resource_id(source)
+					.finish();
+				AuthorizationRunRead::objects()
+					.create_with_conn(db, &read)
+					.await
+					.unwrap();
+			}
+			assert_eq!(
+				AuthorizationRunRead::objects()
+					.filter(
+						AuthorizationRunRead::field_resource_kind()
+							.eq(AuthorizationRunReadResourceKind::Run)
+					)
+					.count_with_db(db)
+					.await
+					.unwrap(),
+				2
+			);
+			Ok(runs)
+		})
+		.await
+		.unwrap();
 	for run in &runs {
 		assert_eq!(
 			tokio::time::timeout(
@@ -1252,6 +1259,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 					reinhardt::query::Alias::new("created_by"),
 					reinhardt::query::Alias::new("idempotency_key"),
 					reinhardt::query::Alias::new("created_at"),
+					reinhardt::query::Alias::new("tenant"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -1276,6 +1284,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 								.to_owned(),
 							reinhardt::query::Alias::new("i"),
 						)
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -1300,6 +1309,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 					reinhardt::query::Alias::new("created_by"),
 					reinhardt::query::Alias::new("idempotency_key"),
 					reinhardt::query::Alias::new("created_at"),
+					reinhardt::query::Alias::new("tenant"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -1320,6 +1330,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 						.expr(reinhardt::query::Expr::cust(
 							"CURRENT_TIMESTAMP - INTERVAL '1 DAY'",
 						))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),

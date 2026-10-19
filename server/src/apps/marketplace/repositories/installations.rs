@@ -251,12 +251,7 @@ impl InstallationScope for NativeDefinitions<'_, &Store> {
 		get(
 			&mut self.access.tx,
 			"marketplace_requests",
-			&key(&(
-				self.access.identity.tenant.as_str(),
-				self.access.identity.subject.as_str(),
-				operation,
-				request,
-			)),
+			&key(&(self.access.identity.subject.as_str(), operation, request)),
 		)
 		.await
 		.map_err(Into::into)
@@ -271,12 +266,7 @@ impl InstallationScope for NativeDefinitions<'_, &Store> {
 		put(
 			&mut self.access.tx,
 			"marketplace_requests",
-			&key(&(
-				self.access.identity.tenant.as_str(),
-				self.access.identity.subject.as_str(),
-				operation,
-				request,
-			)),
+			&key(&(self.access.identity.subject.as_str(), operation, request)),
 			&Replay {
 				fingerprint,
 				result,

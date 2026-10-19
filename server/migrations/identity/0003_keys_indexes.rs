@@ -56,6 +56,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_credentials".to_owned(),
+			constraint: Constraint::Unique {
+				name: "authorization_credentials_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_decisions".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "authorization_decisions_pkey".to_owned(),
@@ -195,6 +202,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_workspaces".to_owned(),
+			constraint: Constraint::Unique {
+				name: "authorization_workspaces_tenant_workspace_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "dashboard_execution_origins".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "dashboard_execution_origins_pkey".to_owned(),
@@ -252,6 +266,13 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "dashboard_mappings_pkey".to_owned(),
 				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "dashboard_mappings".to_owned(),
+			constraint: Constraint::Unique {
+				name: "dashboard_mappings_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -427,6 +448,32 @@ pub(super) fn migration() -> Migration {
 			table: "dashboard_sessions".to_owned(),
 			name: "dashboard_session_provider_sid".to_owned(),
 			columns: vec!["provider_sid".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "tenants".into(),
+			name: "tenants_creator".into(),
+			columns: vec!["created_by_identity".into(), "created_at".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some("created_by_identity IS NOT NULL".into()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		// The Deployment Administrators' newest-first list, scanned backwards,
+		// so a page stops after its rows however many Tenants there are.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "tenants".into(),
+			name: "tenants_created".into(),
+			columns: vec!["created_at".into(), "name".into()],
 			unique: false,
 			index_type: Some(IndexType::BTree),
 			where_clause: None,

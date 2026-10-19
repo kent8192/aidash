@@ -550,6 +550,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 					reinhardt::query::Alias::new("workspace_id"),
 					reinhardt::query::Alias::new("kind"),
 					reinhardt::query::Alias::new("data"),
+					reinhardt::query::Alias::new("tenant"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -573,6 +574,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 								.to_owned(),
 							reinhardt::query::Alias::new("i"),
 						)
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -1423,20 +1425,24 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 				"agent_id",
 				"agent_version",
 				"updated_at",
+				"tenant",
 			]
 			.map(Alias::new),
 		);
 		let newer = chrono::Utc::now() + chrono::Duration::seconds(1);
 		for id in &denied {
-			insert.values_panic([
-				IntoValue::into_value(*id),
-				IntoValue::into_value(Uuid::new_v4()),
-				IntoValue::into_value(visible.workspace_id),
-				IntoValue::into_value(f.config.node_id.as_str()),
-				IntoValue::into_value("research"),
-				IntoValue::into_value("1.0.0"),
-				IntoValue::into_value(newer),
-			]);
+			insert
+				.values_expr(vec![
+					IntoValue::into_value(*id).into(),
+					IntoValue::into_value(Uuid::new_v4()).into(),
+					IntoValue::into_value(visible.workspace_id).into(),
+					IntoValue::into_value(f.config.node_id.as_str()).into(),
+					IntoValue::into_value("research").into(),
+					IntoValue::into_value("1.0.0").into(),
+					IntoValue::into_value(newer).into(),
+					Expr::value("acme").into(),
+				])
+				.expect("one value per column");
 		}
 		sqlx::query(&insert.to_string(PostgresQueryBuilder))
 			.execute(f.store.pool.fixture_driver())

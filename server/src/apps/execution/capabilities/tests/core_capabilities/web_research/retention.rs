@@ -90,6 +90,7 @@ impl Research {
 					"input",
 					"status",
 					"replay_safe",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -101,6 +102,7 @@ impl Research {
 					.expr(Expr::value(input))
 					.expr(Expr::value("STARTED"))
 					.expr(Expr::value(false))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder);
@@ -116,6 +118,7 @@ impl Research {
 					"destination",
 					"outcome",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -129,12 +132,13 @@ impl Research {
 					.expr(Expr::value("research-fixture.invalid"))
 					.expr(Expr::value("dispatched"))
 					.expr(call("now", Vec::new()))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder);
 		for sql in [invocation, attempt] {
 			sqlx::query(&sql)
-				.execute(self.c.f.store.pool.driver())
+				.execute(self.c.f.store.pool.fixture_driver())
 				.await
 				.unwrap();
 		}
@@ -153,7 +157,7 @@ impl Research {
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query_scalar(&sql)
-			.fetch_all(self.c.f.store.pool.driver())
+			.fetch_all(self.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap()
 	}

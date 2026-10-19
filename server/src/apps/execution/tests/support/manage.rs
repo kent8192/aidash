@@ -93,19 +93,10 @@ async fn native_process(
 	command.env("REINHARDT_ENV", profile);
 	if profile == "oidc" {
 		command.envs([
-			(
-				"AIDASH_OIDC_ISSUER",
-				"https://identity.example/realms/fixture",
-			),
+			("AIDASH_OIDC_ISSUER", "https://identity.example"),
 			("AIDASH_OIDC_CLIENT_ID", "fixture-dashboard"),
 			("AIDASH_OIDC_CLIENT_SECRET", "fixture-dashboard-secret"),
 			("AIDASH_OIDC_PUBLIC_ORIGIN", "https://dashboard.example"),
-			(
-				"AIDASH_OIDC_KEYCLOAK_ADMIN_URL",
-				"https://identity.example/admin/realms/fixture",
-			),
-			("AIDASH_OIDC_STATUS_CLIENT_ID", "fixture-status"),
-			("AIDASH_OIDC_STATUS_CLIENT_SECRET", "fixture-status-secret"),
 		]);
 	}
 	let log = File::create(temp_dir.path().join("manage.log")).unwrap();

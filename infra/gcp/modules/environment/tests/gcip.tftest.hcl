@@ -170,3 +170,59 @@ run "saml_pool_cannot_enable_mfa" {
   }
   expect_failures = [var.gcip_tenants]
 }
+run "a_pool_without_a_tenant_is_the_shared_pool" {
+  command = plan
+  variables {
+    gcip_tenants = {
+      shared = { password_sign_up = true, google_client_id = "google-client" }
+      acme   = { tenant = "acme", sign_in_domains = ["acme.example"] }
+    }
+    gcip_idp_secrets = { "shared/google.com" = "fixture-google" }
+  }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["shared"]
+    override_during = plan
+    values          = { name = "shared-tenant-id" }
+  }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["acme"]
+    override_during = plan
+    values          = { name = "acme-tenant-id" }
+  }
+  assert {
+    condition     = output.gcip.shared_pool == "shared-tenant-id" && output.gcip.tenant_bindings == { "acme-tenant-id" = "acme" }
+    error_message = "The Shared Pool must be named apart from the Tenant Bindings, which list only bound pools."
+  }
+  assert {
+    condition     = output.gcip.providers["shared-tenant-id"] == tolist(["password", "google.com"]) && contains(output.gcip.password_sign_up, "shared-tenant-id")
+    error_message = "The Shared Pool must offer Google and email/password sign-in."
+  }
+}
+run "bindings_are_optional" {
+  command = plan
+  variables { gcip_tenants = { shared = {} } }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["shared"]
+    override_during = plan
+    values          = { name = "shared-tenant-id" }
+  }
+  assert {
+    condition     = output.gcip.tenant_bindings == {} && output.gcip.shared_pool == "shared-tenant-id"
+    error_message = "A Shared Pool alone must need no Tenant Binding."
+  }
+}
+run "only_one_pool_may_be_shared" {
+  command = plan
+  variables { gcip_tenants = { a = {}, b = {} } }
+  expect_failures = [var.gcip_tenants]
+}
+run "the_shared_pool_has_no_sign_in_domains" {
+  command = plan
+  variables { gcip_tenants = { shared = { sign_in_domains = ["acme.example"] } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "the_shared_pool_has_no_sso" {
+  command = plan
+  variables { gcip_tenants = { shared = { password_sign_up = false, oidc = { "oidc.company" = { issuer = "https://issuer.example.test", client_id = "company" } } } } }
+  expect_failures = [var.gcip_tenants]
+}

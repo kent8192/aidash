@@ -74,7 +74,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -96,7 +96,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	.bind(task.id)
 	.bind(run.id)
 	.bind(&key)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(retained);
@@ -132,7 +132,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	)
 	.bind(task.id)
 	.bind(&key)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(consumed);

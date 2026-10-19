@@ -443,20 +443,18 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 // all-device logout must finish after a concurrent handoff or prevent its issue.
 pub(super) async fn lock_identity(tx: &mut Transaction, id: Uuid, lock: LockType) -> Result<()> {
 	let query = Query::select()
-		.columns(["issuer", "gcip_tenant", "last_valid_at", "disabled_at"].map(table))
+		.columns(["issuer", "last_valid_at", "disabled_at"].map(table))
 		.from(table("dashboard_identities"))
 		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.lock(lock)
 		.to_string(PostgresQueryBuilder);
-	let validity: Option<identity::PoolIdentityValidity> = query_as(&query)
-		.columns(&["issuer", "gcip_tenant", "last_valid_at", "disabled_at"])
+	let validity: Option<identity::IdentityValidity> = query_as(&query)
+		.columns(&["issuer", "last_valid_at", "disabled_at"])
 		.fetch_optional(&mut **tx)
 		.await?;
-	let (issuer, pool, valid, disabled) = validity.ok_or(Error::Forbidden)?;
+	let (issuer, valid, disabled) = validity.ok_or(Error::Forbidden)?;
 	if let Some(policy) = tx.pool().dashboard_policy() {
-		policy.require_identity(&issuer, (!pool.is_empty()).then_some(pool.as_str()))?;
-	} else if !pool.is_empty() {
-		return Err(Error::Forbidden);
+		policy.require_identity(&issuer)?;
 	}
 	identity::validate_dashboard_status(Some((issuer, valid, disabled)))
 }

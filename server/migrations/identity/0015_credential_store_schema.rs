@@ -10,7 +10,20 @@ ColumnDefinition::new("resource", FieldType::Text).with_not_null(true).with_prim
 ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true).with_primary_key(false),
 ColumnDefinition::new("next_version", FieldType::BigInteger).with_not_null(true).with_primary_key(false),
 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_primary_key(false),
-], constraints: vec![Constraint::Check { name: "credential_store_counter".into(), expression: "next_version > 0 AND length(tenant) BETWEEN 1 AND 256".into() }], without_rowid: None, interleave_in_parent: None, partition: None })
+], constraints: vec![
+	Constraint::ForeignKey {
+		name: "credential_store_resources_tenant_root_fkey".to_owned(),
+		columns: vec!["tenant".to_owned()],
+		referenced_table: "tenants".to_owned(),
+		referenced_columns: vec!["name".to_owned()],
+		on_delete: ForeignKeyAction::NoAction,
+		on_update: ForeignKeyAction::NoAction,
+		deferrable: None,
+	},
+	Constraint::Unique {
+		name: "credential_store_resources_tenant_resource_key".to_owned(),
+		columns: vec!["tenant".to_owned(), "resource".to_owned()],
+	},Constraint::Check { name: "credential_store_counter".into(), expression: "next_version > 0 AND length(tenant) BETWEEN 1 AND 256".into() }], without_rowid: None, interleave_in_parent: None, partition: None })
 .add_operation(Operation::CreateTable { name: "credential_store_versions".into(), columns: vec![
 ColumnDefinition::new("resource", FieldType::Text).with_not_null(true).with_primary_key(false),
 ColumnDefinition::new("version", FieldType::BigInteger).with_not_null(true).with_primary_key(false),
@@ -22,7 +35,16 @@ ColumnDefinition::new("ciphertext", FieldType::Bytea).with_not_null(true).with_p
 ColumnDefinition::new("state", FieldType::Text).with_not_null(true).with_primary_key(false),
 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_primary_key(false),
 ColumnDefinition::new("disabled_at", FieldType::TimestampTz).with_not_null(false).with_primary_key(false),
-], constraints: vec![Constraint::PrimaryKey { name: "credential_store_versions_pkey".into(), columns: vec!["resource".into(), "version".into()] },Constraint::ForeignKey { name: "credential_store_resource_fk".into(), columns: vec!["resource".into()], referenced_table: "credential_store_resources".into(), referenced_columns: vec!["resource".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::NoAction, deferrable: None },Constraint::Check { name: "credential_store_version_state".into(), expression: "version > 0 AND state IN ('enabled','disabled') AND (state <> 'disabled' OR disabled_at IS NOT NULL) AND octet_length(nonce) = 12".into() }], without_rowid: None, interleave_in_parent: None, partition: None })
+], constraints: vec![
+	Constraint::ForeignKey {
+		name: "credential_store_versions_tenant_root_fkey".to_owned(),
+		columns: vec!["tenant".to_owned()],
+		referenced_table: "tenants".to_owned(),
+		referenced_columns: vec!["name".to_owned()],
+		on_delete: ForeignKeyAction::NoAction,
+		on_update: ForeignKeyAction::NoAction,
+		deferrable: None,
+	},Constraint::PrimaryKey { name: "credential_store_versions_pkey".into(), columns: vec!["resource".into(), "version".into()] },Constraint::ForeignKey { name: "credential_store_resource_fk".into(), columns: vec!["tenant".into(), "resource".into()], referenced_table: "credential_store_resources".into(), referenced_columns: vec!["tenant".into(), "resource".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::NoAction, deferrable: None },Constraint::Check { name: "credential_store_version_state".into(), expression: "version > 0 AND state IN ('enabled','disabled') AND (state <> 'disabled' OR disabled_at IS NOT NULL) AND octet_length(nonce) = 12".into() }], without_rowid: None, interleave_in_parent: None, partition: None })
 .add_operation(Operation::CreateTable { name: "credential_store_keys".into(), columns: vec![
 ColumnDefinition::new("key_id", FieldType::Text).with_not_null(true).with_primary_key(true),
 ColumnDefinition::new("check_nonce", FieldType::Bytea).with_not_null(true).with_primary_key(false),

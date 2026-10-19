@@ -12,16 +12,14 @@ use std::{sync::Arc, time::Duration};
 
 pub async fn migrate(settings: &ProjectSettings) -> Result<()> {
 	let config = Config::from_settings(settings)?;
+	let tree = super::migrations::Tree::stage(
+		&super::build::current().migration_roots(&settings.core.base_dir),
+	)?;
 	let mut context = CommandContext::default();
 	context.set_option("database".into(), config.database_url);
 	context.set_option(
 		"migrations-dir".into(),
-		settings
-			.core
-			.base_dir
-			.join("migrations")
-			.to_string_lossy()
-			.into_owned(),
+		tree.path().to_string_lossy().into_owned(),
 	);
 	super::migrations::run(&context).await
 }
@@ -31,7 +29,7 @@ pub async fn require_migrated(settings: &ProjectSettings) -> Result<()> {
 	let config = Config::from_settings(settings)?;
 	super::migrations::require_current(
 		&config.database_url,
-		&settings.core.base_dir.join("migrations"),
+		&super::build::current().migration_roots(&settings.core.base_dir),
 	)
 	.await
 }

@@ -12,6 +12,8 @@ use uuid::Uuid;
 pub struct InferenceAttempt {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field]
@@ -38,6 +40,8 @@ pub struct InferenceAttempt {
 pub struct InferenceProgressRecord {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	/// Allocated per Run by the repository, not by the database.
 	#[field(primary_key = true, auto_increment = false)]
 	pub seq: i64,

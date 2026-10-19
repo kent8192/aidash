@@ -1,16 +1,9 @@
 // reinhardt-migration-source: 1
-//! GCIP External Identity keys, display attributes and session authentication time.
+//! External Identity display attributes and session authentication time.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0012_gcip_sign_in", "identity")
 		.add_dependency("identity", "0011_home_human_requests_state")
-		.add_operation(Operation::AddColumn {
-			table: "dashboard_identities".into(),
-			column: ColumnDefinition::new("gcip_tenant", FieldType::Text)
-				.with_not_null(true)
-				.with_default(Some("''".into())),
-			mysql_options: None,
-		})
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_identities".into(),
 			column: ColumnDefinition::new("valid_since", FieldType::TimestampTz)
@@ -46,13 +39,17 @@ pub(super) fn migration() -> Migration {
 				.with_default(None),
 			mysql_options: None,
 		})
+		// The issuer a token sign-in must sign in, such as a GCIP Tenant's.
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_login_transactions".into(),
-			column: ColumnDefinition::new("gcip_tenant", FieldType::Text)
+			column: ColumnDefinition::new("issuer", FieldType::Text)
 				.with_not_null(false)
 				.with_default(None),
 			mysql_options: None,
 		})
+		// The database-only baseline created this key; restating it records it
+		// in the model state, where the External Identity key is issuer and
+		// subject.
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "dashboard_identities".into(),
 			constraint: Constraint::Unique {
@@ -64,7 +61,7 @@ pub(super) fn migration() -> Migration {
 			table: "dashboard_identities".into(),
 			constraint: Constraint::Unique {
 				name: "dashboard_identity_key".into(),
-				columns: vec!["issuer".into(), "gcip_tenant".into(), "subject".into()],
+				columns: vec!["issuer".into(), "subject".into()],
 			},
 		})
 }

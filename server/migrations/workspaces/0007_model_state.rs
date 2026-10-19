@@ -81,6 +81,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid)
 					.with_not_null(true)
 					.with_unique(false)
@@ -183,6 +191,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("uploaded_by", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
@@ -220,6 +236,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -274,6 +298,14 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("root_message_id", FieldType::Uuid)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -344,6 +376,14 @@ pub(super) fn migration() -> Migration {
 							ModelEnumValue::String("cluster".to_string()),
 						],
 					})),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid)
 					.with_not_null(true)
 					.with_unique(false)
@@ -411,6 +451,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid)
 					.with_not_null(true)
 					.with_unique(false)
@@ -440,6 +488,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -569,6 +625,14 @@ pub(super) fn migration() -> Migration {
 							ModelEnumValue::String("RUNNING".to_string()),
 						],
 					})),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("title", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
@@ -643,6 +707,14 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("state", FieldType::Jsonb)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)

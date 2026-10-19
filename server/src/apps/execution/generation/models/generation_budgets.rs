@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct GenerationBudget {
 	#[field(primary_key = true)]
 	pub request_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub token_limit: i64,
 	#[field(default = 0)]

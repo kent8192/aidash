@@ -167,8 +167,17 @@ pub(crate) async fn record(
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_remote_read_gates"))
-			.columns([Alias::new("grant_id")])
-			.from_subquery(Query::select().expr(Expr::value(grant)).to_owned())
+			.columns([Alias::new("grant_id"), Alias::new("tenant")])
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(grant))
+					.expr(crate::database::scope::tenant_of(
+						"authorization_remote_grants",
+						"id",
+						grant,
+					))
+					.to_owned(),
+			)
 			.on_conflict(
 				OnConflict::column(Alias::new("grant_id"))
 					.do_nothing()
@@ -204,12 +213,17 @@ pub(crate) async fn record(
 				native::query(
 					&Query::insert()
 						.into_table(Alias::new("memory_remote_reads"))
-						.columns(["grant_id", "unit_id", "revision"].map(Alias::new))
+						.columns(["grant_id", "unit_id", "revision", "tenant"].map(Alias::new))
 						.from_subquery(
 							Query::select()
 								.expr(Expr::value(grant))
 								.expr(Expr::value(unit.id))
 								.expr(Expr::value(unit.revision))
+								.expr(crate::database::scope::tenant_of(
+									"authorization_remote_grants",
+									"id",
+									grant,
+								))
 								.to_owned(),
 						)
 						.on_conflict(

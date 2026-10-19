@@ -22,7 +22,17 @@ pub(crate) async fn reserve(
 	let reservation = native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_receipts"))
-			.columns(["operation_id", "bank_id", "digest", "outcome", "created_at"].map(Alias::new))
+			.columns(
+				[
+					"operation_id",
+					"bank_id",
+					"digest",
+					"outcome",
+					"created_at",
+					"tenant",
+				]
+				.map(Alias::new),
+			)
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(operation))
@@ -30,6 +40,11 @@ pub(crate) async fn reserve(
 					.expr(Expr::value(digest))
 					.expr(Expr::value(serde_json::to_value(outcome)?))
 					.expr(Expr::value(created_at))
+					.expr(crate::database::scope::tenant_of(
+						"memory_banks",
+						"id",
+						bank,
+					))
 					.to_owned(),
 			)
 			.on_conflict(

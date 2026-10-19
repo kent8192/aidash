@@ -182,7 +182,10 @@ impl SemanticCollection {
 		workspace: Uuid,
 		vector: Value,
 	) -> Result<()> {
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "workspaces", "id", workspace).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.collection(collection)
 			.workspace_id(workspace)
 			.vector(vector.into())
@@ -213,7 +216,11 @@ impl SemanticPoint {
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		if !entry.deleted {
+			let tenant =
+				crate::database::scope::parent_tenant(tx, "semantic_entries", "id", entry.id)
+					.await?;
 			let record = Self::build()
+				.tenant(tenant)
 				.id(entry.point_id)
 				.entry_id(entry.id)
 				.collection(collection)
@@ -242,14 +249,26 @@ impl SemanticHistory {
 	) -> Result<()> {
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
-			.columns(["workspace_id", "entry_id", "revision", "state", "detail"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(workspace),
-				IntoValue::into_value(entry),
-				IntoValue::into_value(revision),
-				IntoValue::into_value(state),
-				IntoValue::into_value(detail),
+			.columns(
+				[
+					"workspace_id",
+					"entry_id",
+					"revision",
+					"state",
+					"detail",
+					"tenant",
+				]
+				.map(Alias::new),
+			)
+			.values_expr(vec![
+				IntoValue::into_value(workspace).into(),
+				IntoValue::into_value(entry).into(),
+				IntoValue::into_value(revision).into(),
+				IntoValue::into_value(state).into(),
+				IntoValue::into_value(detail).into(),
+				crate::database::scope::tenant_of("workspaces", "id", workspace),
 			])
+			.expect("one value per column")
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())

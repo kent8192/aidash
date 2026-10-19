@@ -10,6 +10,7 @@ pub(super) fn migration() -> Migration {
 			name: "inference_attempts".into(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("usage_attempt", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("outcome", FieldType::Text).with_not_null(false),
@@ -21,7 +22,20 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("pruned_at", FieldType::TimestampTz).with_not_null(false),
 			],
 			constraints: vec![
-				Constraint::ForeignKey { name: "inference_attempt_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+				Constraint::ForeignKey {
+					name: "inference_attempts_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::Unique {
+					name: "inference_attempts_tenant_id_key".to_owned(),
+					columns: vec!["tenant".to_owned(), "id".to_owned()],
+				},
+				Constraint::ForeignKey { name: "inference_attempt_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
 				Constraint::Check { name: "inference_attempt_outcome".into(), expression: "(outcome IS NULL AND reason IS NULL AND finished_at IS NULL AND pruned_at IS NULL) OR (outcome IN ('accepted', 'discarded') AND reason IS NULL AND finished_at IS NOT NULL) OR (outcome = 'interrupted' AND reason IN ('cancelled', 'lease_lost', 'stall', 'stream_error', 'revoked') AND finished_at IS NOT NULL)".into() },
 				Constraint::Check { name: "inference_attempt_sequence".into(), expression: "first_seq >= 1 AND last_seq >= first_seq".into() },
 			],
@@ -70,6 +84,7 @@ pub(super) fn migration() -> Migration {
 			name: "inference_progress".into(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("seq", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("kind", FieldType::Text).with_not_null(true),
@@ -77,9 +92,18 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
 			],
 			constraints: vec![
+				Constraint::ForeignKey {
+					name: "inference_progress_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
 				Constraint::PrimaryKey { name: "inference_progress_pkey".into(), columns: vec!["run_id".into(), "seq".into()] },
-				Constraint::ForeignKey { name: "inference_progress_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
-				Constraint::ForeignKey { name: "inference_progress_attempt".into(), columns: vec!["attempt_id".into()], referenced_table: "inference_attempts".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+				Constraint::ForeignKey { name: "inference_progress_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+				Constraint::ForeignKey { name: "inference_progress_attempt".into(), columns: vec!["tenant".into(), "attempt_id".into()], referenced_table: "inference_attempts".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
 				Constraint::Check { name: "inference_progress_kind".into(), expression: "kind IN ('started', 'text', 'tool_call', 'outcome')".into() },
 				Constraint::Check { name: "inference_progress_bounds".into(), expression: "seq >= 1 AND octet_length(item::text) <= 16384".into() },
 			],

@@ -10,6 +10,8 @@ use uuid::Uuid;
 pub struct MemoryUnitRetention {
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field]
@@ -31,6 +33,8 @@ pub struct MemoryUnitRetention {
 pub struct MemoryBankDecay {
 	#[field(primary_key = true)]
 	pub bank_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub policy: Json<EntityRef>,
 	#[field(null = true)]

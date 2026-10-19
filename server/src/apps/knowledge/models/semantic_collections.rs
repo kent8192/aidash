@@ -11,6 +11,8 @@ use serde_json::Value;
 pub struct SemanticCollection {
 	#[field(primary_key = true, field_type = "text")]
 	pub collection: String,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field]

@@ -166,6 +166,20 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual(settings["gcip"], {"dashboard": {"gcip": gcip}})
         self.assertFalse(any(key.startswith("AIDASH_OIDC_") for key in self.cluster.secret("aidash-pr-2", "app-runtime")))
 
+    def test_a_shared_pool_alone_is_a_managed_gcip_tenant_for_a_random_origin(self):
+        output = dict(OUTPUT, hostname=RANDOM_HOST)
+        gcip = {
+            "project_id": PROJECT, "web_api_key": "public", "public_origin": "https://" + RANDOM_HOST,
+            "tenant_bindings": {},
+        }
+        with self.assertRaises(Refused):
+            self.materialize({"dashboard": {"gcip": gcip}}, output)
+        shared = dict(gcip, shared_pool="shared-pool")
+        settings = self.materialize({"dashboard": {"gcip": shared}}, output)
+        self.assertEqual(settings["gcip"], {"dashboard": {"gcip": shared}})
+        with self.assertRaises(Refused):
+            self.materialize({"dashboard": {"gcip": dict(gcip, shared_pool=["shared-pool"])}}, output)
+
     def test_random_origin_refuses_legacy_oidc_and_dynamic_auth_helper(self):
         output = dict(OUTPUT, hostname=RANDOM_HOST)
         gcip = {

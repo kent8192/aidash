@@ -12,6 +12,8 @@ pub struct Workspace {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
 	pub title: String,
 	#[field(field_type = "text")]
 	pub goal: String,

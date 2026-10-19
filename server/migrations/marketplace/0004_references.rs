@@ -35,9 +35,45 @@ pub(super) fn migration() -> Migration {
 			table: "marketplace_revisions".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "marketplace_revisions_installation_fkey".to_owned(),
-				columns: vec!["installation".to_owned()],
+				columns: vec!["tenant".to_owned(), "installation".to_owned()],
 				referenced_table: "marketplace_installations".to_owned(),
-				referenced_columns: vec!["key".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "key".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "marketplace_installations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "marketplace_installations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "marketplace_requests".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "marketplace_requests_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "marketplace_revisions".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "marketplace_revisions_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,

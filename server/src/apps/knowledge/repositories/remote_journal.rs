@@ -199,6 +199,7 @@ impl JournalScope for Scope<'_> {
 							"admission_id",
 							"digest",
 							"binding",
+							"tenant",
 						]
 						.map(a),
 					)
@@ -210,6 +211,7 @@ impl JournalScope for Scope<'_> {
 							.expr(Expr::cust("$4"))
 							.expr(Expr::cust("$5"))
 							.expr(Expr::cust("$6"))
+							.expr(crate::database::scope::tenant())
 							.to_owned()
 					)
 					.to_owned()
@@ -408,7 +410,7 @@ impl JournalScope for Scope<'_> {
 				crate::database::native::query(
 					&Query::insert()
 						.into_table(a("semantic_remote_attempts"))
-						.columns(["id", "operation_id", "fence", "cycle", "state"].map(a))
+						.columns(["id", "operation_id", "fence", "cycle", "state", "tenant"].map(a))
 						.from_subquery(
 							reinhardt::query::Query::select()
 								.expr(SimpleExpr::CustomWithExpr(
@@ -422,6 +424,7 @@ impl JournalScope for Scope<'_> {
 								.expr(Expr::value(attempt.fence))
 								.expr(Expr::value(record.cycle))
 								.expr(Expr::value("RESERVING"))
+								.expr(crate::database::scope::tenant())
 								.to_owned(),
 						)
 						.to_string(PostgresQueryBuilder),
@@ -502,6 +505,7 @@ impl JournalScope for Scope<'_> {
 							"entry_id",
 							"revision",
 							"content_digest",
+							"tenant",
 						]
 						.map(a),
 					)
@@ -512,6 +516,7 @@ impl JournalScope for Scope<'_> {
 							.expr(Expr::cust("$3"))
 							.expr(Expr::cust("$4"))
 							.expr(Expr::cust("$5"))
+							.expr(crate::database::scope::tenant())
 							.to_owned()
 					)
 					.to_owned()

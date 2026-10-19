@@ -78,7 +78,17 @@ impl DispatchPreparation for Preparation {
 			"{} ON CONFLICT DO NOTHING",
 			Query::insert()
 				.into_table(Alias::new("generation_remote_dispatches"))
-				.columns(["attempt_id", "usage", "digest", "peer_node", "boundary"].map(Alias::new))
+				.columns(
+					[
+						"attempt_id",
+						"usage",
+						"digest",
+						"peer_node",
+						"boundary",
+						"tenant"
+					]
+					.map(Alias::new)
+				)
 				.from_subquery(
 					Query::select()
 						.expr(Expr::cust("$1"))
@@ -86,6 +96,7 @@ impl DispatchPreparation for Preparation {
 						.expr(Expr::cust("$3"))
 						.expr(Expr::cust("$4"))
 						.expr(Expr::cust("$5"))
+						.expr(crate::database::scope::tenant())
 						.to_owned()
 				)
 				.to_owned()

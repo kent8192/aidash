@@ -121,7 +121,7 @@ impl SessionScope for Scope<'_> {
 				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("core_task_sessions"))
-						.columns(["task_id", "thread_id"].map(Alias::new))
+						.columns(["task_id", "thread_id", "tenant"].map(Alias::new))
 						.from_subquery(
 							reinhardt::query::Query::select()
 								.expr(SimpleExpr::CustomWithExpr(
@@ -131,6 +131,11 @@ impl SessionScope for Scope<'_> {
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_2.to_owned()).into()],
+								))
+								.expr(crate::database::scope::tenant_of(
+									"tasks",
+									"id",
+									query_bind_1,
 								))
 								.to_owned(),
 						)
@@ -650,8 +655,15 @@ impl SessionScope for Scope<'_> {
 					&Query::insert()
 						.into_table(Alias::new("core_runs"))
 						.columns(
-							["run_id", "area_id", "sequence", "generation", "initialized"]
-								.map(Alias::new),
+							[
+								"run_id",
+								"area_id",
+								"sequence",
+								"generation",
+								"initialized",
+								"tenant",
+							]
+							.map(Alias::new),
 						)
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -674,6 +686,11 @@ impl SessionScope for Scope<'_> {
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_5.to_owned()).into()],
+								))
+								.expr(crate::database::scope::tenant_of(
+									"runs",
+									"id",
+									query_bind_1,
 								))
 								.to_owned(),
 						)

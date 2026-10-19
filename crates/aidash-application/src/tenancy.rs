@@ -118,18 +118,18 @@ pub enum DeploymentScopeReason {
 	/// Resolving an inbound peer's local Tenant, until #241 gives every Node a
 	/// Tenant.
 	FederationInbound,
-	/// Finding the Tenant of a Run or a Workspace from its authorization
-	/// records, until #265 records the Tenant on the Run and the Workspace.
+	/// Finding the Tenant of a Run, a Workspace or a remote operation from the
+	/// row that records it, when the caller names only an id.
 	RunTenant,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
 	/// admission pinned by id, before the owner's Tenant Scope opens.
 	PlanConnectionOwner,
-	/// Working on a Run without an execution grant. Since #243 only test
-	/// fixtures create such Runs; #265 removes them by giving every Run a
-	/// Tenant.
-	LegacyRun,
 	/// The activity observer, which writes this label by hand.
 	ActivityObserver,
+	/// Writing one `marketplace.*` event for each audience Tenant of a package
+	/// when its audience changes. It writes nothing else: an event belongs to
+	/// one Tenant, and the writer's scope reaches only its own.
+	MarketplaceDistribution,
 	/// Test fixtures that span Tenants.
 	#[cfg(feature = "test-support")]
 	TestFixture,
@@ -162,8 +162,8 @@ impl DeploymentScopeReason {
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
 			Self::PlanConnectionOwner => "plan-connection-owner",
-			Self::LegacyRun => "legacy-run",
 			Self::ActivityObserver => "activity-observer",
+			Self::MarketplaceDistribution => "marketplace-distribution",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
 		}
@@ -185,10 +185,10 @@ impl DeploymentScopeReason {
 			| Self::MemoryRecovery
 			| Self::CredentialStoreRecovery
 			| Self::DeploymentAdministration
-			| Self::LegacyRun
 			| Self::IdentityTenants
 			| Self::TenantCreation
 			| Self::IdentityStatus
+			| Self::MarketplaceDistribution
 			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -245,8 +245,8 @@ mod tests {
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::PlanConnectionOwner,
-			DeploymentScopeReason::LegacyRun,
 			DeploymentScopeReason::ActivityObserver,
+			DeploymentScopeReason::MarketplaceDistribution,
 		];
 		let labels = reasons
 			.iter()

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct SemanticRunRead {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub run_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
 	pub entry_id: uuid::Uuid,
 	#[field(primary_key = true)]

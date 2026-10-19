@@ -240,10 +240,11 @@ async fn admitted_run(
 					"agent_id",
 					"agent_version",
 					"context",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
-			.from_subquery(((1..=7).map(|index| Expr::cust(format!("${index}")))).fold(
+			.from_subquery(((1..=8).map(|index| Expr::cust(format!("${index}")))).fold(
 				reinhardt::query::Query::select(),
 				|mut select, expr| {
 					select.expr(expr);
@@ -259,6 +260,7 @@ async fn admitted_run(
 	.bind("research")
 	.bind("1.0.0")
 	.bind(serde_json::to_value(context).unwrap())
+	.bind("acme")
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -277,10 +279,11 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 					"kind",
 					"data",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
-			.from_subquery(((1..=6).map(|index| Expr::cust(format!("${index}")))).fold(
+			.from_subquery(((1..=7).map(|index| Expr::cust(format!("${index}")))).fold(
 				reinhardt::query::Query::select(),
 				|mut select, expr| {
 					select.expr(expr);
@@ -295,6 +298,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 	.bind(kind)
 	.bind(data)
 	.bind(chrono::Utc::now() - chrono::Duration::seconds(age))
+	.bind("acme")
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();

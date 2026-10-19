@@ -16,6 +16,8 @@ use uuid::Uuid;
 pub struct Run {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub task_id: uuid::Uuid,
 	#[field]

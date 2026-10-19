@@ -20,6 +20,7 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 	run: Run,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
 		"aidash://lease-test".into(),
@@ -45,11 +46,11 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 				.unwrap(),
 		);
 	}
-	let mut lock = database.connection.begin().await.unwrap();
+	let mut lock = database.begin_fixture().await;
 	Run::objects()
 		.filter(Run::field_id().eq(records[0].id))
 		.select_for_update()
-		.all_with_executor(lock.as_mut())
+		.all_with_executor(&mut *lock)
 		.await
 		.unwrap();
 	let a = Uuid::new_v4();
@@ -87,6 +88,7 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 	run: Run,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
 		"aidash://lease-test".into(),
@@ -201,6 +203,7 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 			.await
 			.unwrap();
 		let request = HumanRequest::build()
+			.tenant("acme")
 			.id(request_id)
 			.workspace_id(saved.workspace_id)
 			.run_id(saved.id)

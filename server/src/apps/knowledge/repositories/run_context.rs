@@ -37,6 +37,7 @@ impl RunSemanticJournal for Journal {
 						reinhardt::query::Alias::new("run_id"),
 						reinhardt::query::Alias::new("entry_id"),
 						reinhardt::query::Alias::new("revision"),
+						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -51,6 +52,11 @@ impl RunSemanticJournal for Journal {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()]
+							))
+							.expr(crate::database::scope::tenant_of(
+								"runs",
+								"id",
+								query_bind_1
 							))
 							.to_owned()
 					)

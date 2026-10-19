@@ -160,8 +160,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	assert_eq!(discoveries.load(Ordering::SeqCst), 1);
 	assert_eq!(key_fetches.load(Ordering::SeqCst), initial_key_fetches + 1);
 	// A full browser queue must be rejected before contacting an uncached issuer.
-	federation.config.oidc.as_mut().unwrap().issuer =
-		"http://127.0.0.1:1/realms/unavailable".into();
+	federation.config.oidc.as_mut().unwrap().issuer = "http://127.0.0.1:1/unavailable".into();
 	// Act: rebuild only after changing the advertised issuer.
 	let unavailable = common::application(federation.clone()).await;
 	let denied = app
@@ -221,7 +220,7 @@ async fn call(
 }
 
 #[rstest::rstest]
-#[case::keycloak("http://127.0.0.1:18099/realms/test")]
+#[case::generic("http://127.0.0.1:18099/issuer")]
 #[tokio::test]
 async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user(
 	#[case] issuer: &str,
@@ -268,7 +267,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	sqlx::query(&insert_identity)
 		.bind(identity_id)
 		.bind(issuer)
-		.bind("keycloak-user-1")
+		.bind("generic-user-1")
 		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
@@ -308,8 +307,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.unwrap();
 
 	let mut changed_issuer = federation.clone();
-	changed_issuer.config.oidc.as_mut().unwrap().issuer =
-		"http://127.0.0.1:18099/realms/other".into();
+	changed_issuer.config.oidc.as_mut().unwrap().issuer = "http://127.0.0.1:18099/other".into();
 	assert_eq!(
 		call(
 			// Act: compare a rebuilt application with a different issuer.
@@ -1314,8 +1312,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.await
 		.unwrap();
 	let mut changed_issuer = federation.clone();
-	changed_issuer.config.oidc.as_mut().unwrap().issuer =
-		"http://127.0.0.1:18099/realms/other".into();
+	changed_issuer.config.oidc.as_mut().unwrap().issuer = "http://127.0.0.1:18099/other".into();
 	let (stop, stopping) = issuer_control;
 	// Act: refresh the sessions after the preceding expiry or issuer mutation.
 	let refresh = tokio::spawn(aidash_server::dashboard_auth::refresh_active(
@@ -1349,157 +1346,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	common::cleanup(federation, &url, &schema).await;
 }
 
-#[rstest::rstest]
-#[tokio::test]
-async fn older_negative_status_cannot_revoke_a_newer_valid_session(
-	#[future(awt)]
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture)]
-	fixture: OlderNegativeStatusCannotRevokeANewerValidSessionFixture,
-) {
-	let (federation, url, schema) = fixture.application.runtime.parts();
-	let app = fixture.application.application;
-	let server = fixture.server;
-	let issuer = federation.config.oidc.as_ref().unwrap().issuer.clone();
-	let checks = fixture.checks;
-	let release = fixture.release;
-	let identity_id = Uuid::new_v4();
-	let identity = Query::insert()
-		.into_table(Alias::new("dashboard_identities"))
-		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
-		.from_subquery(
-			reinhardt::query::Query::select()
-				.expr(Expr::cust("$1"))
-				.expr(Expr::cust("$2"))
-				.expr(Expr::cust("'stale-user'"))
-				.expr(Expr::cust("clock_timestamp()-interval '10 minutes'"))
-				.to_owned(),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&identity)
-		.bind(identity_id)
-		.bind(&issuer)
-		.execute(federation.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let session = Query::insert()
-		.into_table(Alias::new("dashboard_sessions"))
-		.columns(
-			[
-				"id",
-				"token_hash",
-				"csrf_hash",
-				"identity_id",
-				"created_at",
-				"last_activity_at",
-				"expires_at",
-			]
-			.map(Alias::new),
-		)
-		.from_subquery(
-			reinhardt::query::Query::select()
-				.expr(Expr::cust("$1"))
-				.expr(Expr::cust("$2"))
-				.expr(Expr::cust("$3"))
-				.expr(Expr::cust("$4"))
-				.expr(Expr::cust("clock_timestamp()"))
-				.expr(Expr::cust("clock_timestamp()"))
-				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
-				.to_owned(),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&session)
-		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(b"fixture-session").to_vec())
-		.bind(Sha256::digest(b"fixture-csrf").to_vec())
-		.bind(identity_id)
-		.execute(federation.store.pool.fixture_driver())
-		.await
-		.unwrap();
-
-	let old_app = app.clone();
-	let old = tokio::spawn(async move {
-		call(
-			&old_app,
-			"GET",
-			"/auth/session",
-			true,
-			false,
-			None,
-			false,
-			Value::Null,
-		)
-		.await
-		.0
-	});
-	tokio::time::timeout(std::time::Duration::from_secs(5), async {
-		while checks.load(Ordering::SeqCst) == 0 {
-			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-		}
-	})
-	.await
-	.unwrap();
-	assert_eq!(
-		call(
-			&app,
-			"GET",
-			"/auth/session",
-			true,
-			false,
-			None,
-			false,
-			Value::Null
-		)
-		.await
-		.0,
-		200
-	);
-	release.notify_one();
-	assert_eq!(old.await.unwrap(), 403);
-	assert_eq!(
-		call(
-			&app,
-			"GET",
-			"/auth/session",
-			true,
-			false,
-			None,
-			false,
-			Value::Null
-		)
-		.await
-		.0,
-		200
-	);
-	let status = Query::select()
-		.columns([Alias::new("disabled_at"), Alias::new("revoked_at")])
-		.from(Alias::new("dashboard_identities"))
-		.join(
-			reinhardt::query::JoinType::InnerJoin,
-			Alias::new("dashboard_sessions"),
-			Expr::col((Alias::new("dashboard_identities"), Alias::new("id")))
-				.equals((Alias::new("dashboard_sessions"), Alias::new("identity_id"))),
-		)
-		.and_where(
-			reinhardt::query::SimpleExpr::from(Expr::col((
-				Alias::new("dashboard_identities"),
-				Alias::new("id"),
-			)))
-			.eq(Expr::cust("$1")),
-		)
-		.to_string(PostgresQueryBuilder);
-	let (disabled_at, revoked_at): (
-		Option<chrono::DateTime<chrono::Utc>>,
-		Option<chrono::DateTime<chrono::Utc>>,
-	) = sqlx::query_as(&status)
-		.bind(identity_id)
-		.fetch_one(federation.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert!(disabled_at.is_none() && revoked_at.is_none());
-	drop(server);
-	common::cleanup(federation, &url, &schema).await;
-}
-
 struct GoogleBrowser {
 	federation: aidash_server::federation::Federation,
 	app: common::TestApplication,
@@ -1521,9 +1367,6 @@ async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture)
 		client_id: "aidash".into(),
 		client_secret: "test-secret".into(),
 		public_origin: "http://127.0.0.1:8080".into(),
-		keycloak_admin_url: String::new(),
-		status_client_id: String::new(),
-		status_client_secret: String::new(),
 		session_absolute_seconds: 43_200,
 		session_idle_seconds: 1_800,
 	});
@@ -2538,10 +2381,7 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
 ) -> upstream_fixtures::RouterFuture {
 	async move {
-		let issuer = format!(
-			"http://{}/realms/test",
-			listener.await.local_addr().unwrap()
-		);
+		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
 		let metadata_issuer = issuer.clone();
 
 		let discovery_counter = discoveries.clone();
@@ -2553,7 +2393,7 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 		let key_counter = key_fetches.clone();
 		let fixture = reinhardt::test::stub::StubRouter::new()
 			.route(
-				"/realms/test/.well-known/openid-configuration",
+				"/issuer/.well-known/openid-configuration",
 				http::Method::GET,
 				reply(move |_request: reinhardt::Request| {
 					let issuer = metadata_issuer.clone();
@@ -2568,7 +2408,7 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 								"issuer": issuer,
 								"authorization_endpoint": format!("{issuer}/protocol/openid-connect/auth"),
 								"token_endpoint": format!("{issuer}/protocol/openid-connect/token"),
-								"jwks_uri": format!("{issuer}/protocol/openid-connect/certs"),
+								"jwks_uri": format!("{issuer}/certs"),
 								"response_types_supported": ["code"],
 								"subject_types_supported": ["public"],
 								"id_token_signing_alg_values_supported": ["RS256"]
@@ -2578,7 +2418,7 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 				}),
 			)
 			.route(
-				"/realms/test/protocol/openid-connect/certs",
+				"/issuer/certs",
 				http::Method::GET,
 				reply(move |_request: reinhardt::Request| {
 					key_counter.fetch_add(1, Ordering::SeqCst);
@@ -2601,10 +2441,7 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
 	async move {
-		let issuer = format!(
-			"http://{}/realms/test",
-			listener.await.local_addr().unwrap()
-		);
+		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
 		let mut owner = runtime.await;
 		let federation = &mut owner.federation;
 		federation.config.oidc = Some(OidcConfig {
@@ -2612,9 +2449,6 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
 			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: format!("{issuer}/admin"),
-			status_client_id: "status".into(),
-			status_client_secret: "status-secret".into(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
@@ -2687,9 +2521,6 @@ fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existi
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
 			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: String::new(),
-			status_client_id: String::new(),
-			status_client_secret: String::new(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
@@ -2716,129 +2547,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.build(),
 	);
 	application
-}
-
-#[rstest::fixture]
-fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture_checks() -> Arc<AtomicUsize> {
-	Arc::new(AtomicUsize::new(0))
-}
-#[rstest::fixture]
-fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture_release()
--> Arc<tokio::sync::Notify> {
-	Arc::new(tokio::sync::Notify::new())
-}
-#[rstest::fixture]
-fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture_router(
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture_checks)] checks: Arc<
-		AtomicUsize,
-	>,
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture_release)] release: Arc<
-		tokio::sync::Notify,
-	>,
-) -> upstream_fixtures::RouterFuture {
-	async move {
-		let count = checks.clone();
-
-		let released = release.clone();
-		let fixture = reinhardt::test::stub::StubRouter::new()
-			.route(
-				"/realms/test/protocol/openid-connect/token",
-				http::Method::POST,
-				reply(|_request: reinhardt::Request| async {
-					reinhardt::Response::ok()
-						.with_json(&json!({"access_token":"fixture"}))
-						.unwrap()
-				}),
-			)
-			.route(
-				"/realms/test/admin/users/stale-user",
-				http::Method::GET,
-				reply(move |_request: reinhardt::Request| {
-					let index = count.fetch_add(1, Ordering::SeqCst);
-					let released = released.clone();
-					async move {
-						if index == 0 {
-							released.notified().await;
-						}
-						reinhardt::Response::ok()
-							.with_json(&json!({"id":"stale-user","enabled":index != 0}))
-							.unwrap()
-					}
-				}),
-			)
-			.into_server_router();
-		Arc::new(fixture)
-	}
-	.boxed()
-	.shared()
-}
-#[rstest::fixture]
-fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture_runtime(
-	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
-) -> common::RuntimeFuture {
-	async move {
-		let issuer = format!(
-			"http://{}/realms/test",
-			listener.await.local_addr().unwrap()
-		);
-		let mut owner = runtime.await;
-		let federation = &mut owner.federation;
-		federation.config.oidc = Some(OidcConfig {
-			issuer: issuer.clone(),
-			client_id: "aidash".into(),
-			client_secret: "secret".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: format!("{issuer}/admin"),
-			status_client_id: "status".into(),
-			status_client_secret: "status-secret".into(),
-			session_absolute_seconds: 43_200,
-			session_idle_seconds: 1_800,
-		});
-		owner
-	}
-	.boxed()
-	.shared()
-}
-
-struct OlderNegativeStatusCannotRevokeANewerValidSessionFixture {
-	application: common::ApplicationFixture,
-	server: upstream_fixtures::FixedServerGuard,
-	checks: Arc<AtomicUsize>,
-	release: Arc<tokio::sync::Notify>,
-}
-#[rstest::fixture]
-async fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture(
-	#[from(negative_status_state)] _state: NegativeStatusState,
-	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture_router)]
-	#[with(_state.checks.clone(),_state.release.clone())]
-	_router: upstream_fixtures::RouterFuture,
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture_runtime)]
-	#[with(_listener.clone())]
-	_runtime: common::RuntimeFuture,
-	#[from(common::native_application)]
-	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
-	application: common::ApplicationFuture,
-	#[future(awt)]
-	#[from(upstream_fixtures::fixed_upstream)]
-	#[with(None,_listener.clone(),_router.clone())]
-	server: upstream_fixtures::FixedServerGuard,
-	browser_client: reinhardt::test::APIClientBuilder,
-) -> OlderNegativeStatusCannotRevokeANewerValidSessionFixture {
-	let NegativeStatusState { checks, release } = _state;
-	let mut application = application.await;
-	application.application.api_http = Arc::new(
-		browser_client
-			.base_url(&application.application.server.url)
-			.build(),
-	);
-	OlderNegativeStatusCannotRevokeANewerValidSessionFixture {
-		application,
-		server,
-		checks,
-		release,
-	}
 }
 
 #[rstest::fixture]
@@ -2877,23 +2585,6 @@ fn login_state(
 		discovery_release,
 		key_fetches,
 	}
-}
-
-#[derive(Clone)]
-struct NegativeStatusState {
-	checks: Arc<AtomicUsize>,
-	release: Arc<tokio::sync::Notify>,
-}
-#[rstest::fixture]
-fn negative_status_state(
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture_checks)] checks: Arc<
-		AtomicUsize,
-	>,
-	#[from(older_negative_status_cannot_revoke_a_newer_valid_session_fixture_release)] release: Arc<
-		tokio::sync::Notify,
-	>,
-) -> NegativeStatusState {
-	NegativeStatusState { checks, release }
 }
 
 #[path = "dashboard_oidc/tenancy.rs"]

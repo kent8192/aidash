@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct ChannelMessageContext {
 	#[field(primary_key = true)]
 	pub message_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(db_column = "workspace_id")]
 	pub workspace_key: uuid::Uuid,
@@ -22,6 +24,7 @@ impl crate::database::Record for ChannelMessageContext {
 	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			message_id: row.try_get("message_id")?,
+			tenant: row.try_get("tenant")?,
 			workspace_key: row.try_get("workspace_id")?,
 			thread_key: row.try_get("thread_id")?,
 			attachment_digest: row.try_get("attachment_digest")?,

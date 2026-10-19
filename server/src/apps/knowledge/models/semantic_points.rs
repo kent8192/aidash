@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct SemanticPoint {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub entry_id: uuid::Uuid,
 	#[field(field_type = "text", null = true)]

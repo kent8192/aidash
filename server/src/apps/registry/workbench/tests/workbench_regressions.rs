@@ -984,12 +984,13 @@ async fn incident_event_backlog(#[future(awt)] workbench: Workbench) -> (Workben
 		.await;
 	let query = Query::insert()
 		.into_table(Alias::new("agent_incident_events"))
-		.columns(["incident_id", "actor", "change"].map(Alias::new))
+		.columns(["incident_id", "actor", "change", "tenant"].map(Alias::new))
 		.from_subquery(
 			reinhardt::query::Query::select()
 				.expr(Expr::cust("$1"))
 				.expr(Expr::cust("'alice'"))
 				.expr(Expr::cust("$2"))
+				.expr(Expr::value("acme"))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
@@ -1097,6 +1098,7 @@ async fn trust_run_backlog(
 					"agent_id",
 					"agent_version",
 					"phase",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -1109,6 +1111,7 @@ async fn trust_run_backlog(
 					.expr(Expr::cust("$5"))
 					.expr(Expr::cust("'1.0.0'"))
 					.expr(Expr::cust("'COMPLETED'"))
+					.expr(Expr::cust("(SELECT tenant FROM workspaces WHERE id = $3)"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder);
@@ -1606,12 +1609,13 @@ async fn audit_rechecks_incident_visibility_before_returning_event_history(
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("agent_incident_events"))
-				.columns(["incident_id", "actor", "change"].map(Alias::new))
+				.columns(["incident_id", "actor", "change", "tenant"].map(Alias::new))
 				.from_subquery(
 					reinhardt::query::Query::select()
 						.expr(Expr::value(query_bind_1.to_owned()))
 						.expr(Expr::cust("'bob'"))
 						.expr(Expr::value(query_bind_2.to_owned()))
+						.expr(Expr::cust("'acme'"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
