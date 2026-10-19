@@ -200,7 +200,7 @@ pub async fn approve_and_activate(
 		if entry.kind == "tool" {
 			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config.clone())?;
-			if descriptor.registry_node != node {
+			if descriptor.registry_deployment != node {
 				return Err(Error::Forbidden);
 			}
 			if let Some(lifecycle) = descriptor.lifecycle {
@@ -231,7 +231,7 @@ pub async fn approve_and_activate(
 		.map(|entry| {
 			(
 				aidash_domain::registry::bindings::QualifiedRef {
-					registry_node: node.into(),
+					registry_deployment: node.into(),
 					id: entry.id.clone(),
 					version: entry.version.clone(),
 				},

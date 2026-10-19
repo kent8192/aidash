@@ -67,7 +67,7 @@ impl PermissionScope for Scope {
 			},
 			&crate::bootstrap::registry_validation(),
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.clone(),
+				registry_deployment: node.clone(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},

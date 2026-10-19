@@ -49,7 +49,7 @@ pub(super) fn ports<'a>(backend: &Backend, node: &str, run: &Run) -> Option<Deci
 	let decider = BoundDecider {
 		pin: DeciderPin {
 			identity: QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: definition.id.clone(),
 				version: definition.version.clone(),
 			},

@@ -361,7 +361,7 @@ async fn private_documents<E: OrmExecutor>(
 			.ok_or_else(|| {
 				crate::Error::Invalid("Agent lacks registered Binding provenance".into())
 			})?
-			.registry_node
+			.registry_deployment
 			.as_str();
 		let mut documents = vec![];
 		for binding in input
@@ -369,7 +369,7 @@ async fn private_documents<E: OrmExecutor>(
 			.iter()
 			.filter(|b| b.kind == aidash_domain::registry::bindings::BindingKind::Source)
 		{
-			if binding.target.registry_node != node {
+			if binding.target.registry_deployment != node {
 				return Err(crate::Error::Forbidden);
 			}
 			let source = records::definition(

@@ -172,7 +172,7 @@ async fn bootstrap_with_resources(
 	.await;
 	assert_eq!(status, 200, "initial policy: {snapshot}");
 	let mut agent_bindings = vec![
-		json!({"kind":"tool","target":{"registry_node":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
+		json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
@@ -200,7 +200,7 @@ async fn bootstrap_with_resources(
 			.await
 			.unwrap();
 		approve("semantic-memory").await;
-		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.deployment,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
+		agent_bindings.push(json!({"kind":"memory","target":{"registry_deployment":f.config.deployment,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
@@ -214,7 +214,7 @@ async fn bootstrap_with_resources(
 		(
 			"tool",
 			"http",
-			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
+			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 		),
 		(
 			"agent",

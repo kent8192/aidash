@@ -82,7 +82,7 @@ fn bound(node: &str, mode: Mode) -> BoundDecider {
 	BoundDecider {
 		pin: DeciderPin {
 			identity: QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: definition.id.clone(),
 				version: definition.version.clone(),
 			},

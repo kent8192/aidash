@@ -168,7 +168,7 @@ async fn admitted_run(
 		},
 		&aidash_server::bootstrap::registry_validation(),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.config.deployment.to_string(),
+			registry_deployment: f.config.deployment.to_string(),
 			id: agent_entry.id.clone(),
 			version: agent_entry.version.clone(),
 		},

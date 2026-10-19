@@ -25,7 +25,7 @@ fn provider_versions_lifecycle_and_facts_cannot_be_relabelled() {
 fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 	for replay in ["read_only", "idempotent", "unsafe"] {
 		let descriptor = ToolDescriptor {
-			registry_node: "aidash://node-a".into(),
+			registry_deployment: "aidash://node-a".into(),
 			provider: "integration.http@1".into(),
 			operation: "invoke".into(),
 			default_alias: "lookup".into(),
@@ -39,7 +39,7 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 		};
 		let contract = descriptor
 			.declared_contract(QualifiedRef {
-				registry_node: "aidash://node-a".into(),
+				registry_deployment: "aidash://node-a".into(),
 				id: "lookup".into(),
 				version: "1.0.0".into(),
 			})
@@ -70,7 +70,7 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 		assert!(declared(operation, Some(Concurrency::SharedRead)).is_err());
 	}
 	let mut http = serde_json::to_value(ToolDescriptor {
-		registry_node: "aidash://node-a".into(),
+		registry_deployment: "aidash://node-a".into(),
 		provider: "integration.http@1".into(),
 		operation: "invoke".into(),
 		default_alias: "lookup".into(),
@@ -87,7 +87,7 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 	let http: ToolDescriptor = serde_json::from_value(http).unwrap();
 	assert!(
 		http.declared_contract(QualifiedRef {
-			registry_node: "aidash://node-a".into(),
+			registry_deployment: "aidash://node-a".into(),
 			id: "lookup".into(),
 			version: "1.0.0".into(),
 		})
@@ -133,7 +133,7 @@ fn stored_tool_transports_that_name_a_deployment_secret_no_longer_decode() {
 		json!({"transport":"mcp","endpoint":"https://example.invalid","credential_env":null,"tool_name":"lookup","replay":"read_only"}),
 	] {
 		assert!(serde_json::from_value::<ToolConfig>(transport.clone()).is_err());
-		let descriptor = json!({"registry_node":"aidash://node-a","provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":transport});
+		let descriptor = json!({"registry_deployment":"aidash://node-a","provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":transport});
 		assert!(serde_json::from_value::<ToolDescriptor>(descriptor).is_err());
 	}
 }

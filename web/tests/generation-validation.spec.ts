@@ -202,7 +202,7 @@ for (const context of [
               {
                 kind: context.kind,
                 target: {
-                  registry_node: "aidash://test",
+                  registry_deployment: "aidash://test",
                   id: "fixture-skill",
                   version: "1.0.0",
                 },

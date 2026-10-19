@@ -15181,12 +15181,12 @@
         },
         "QualifiedRef": {
           "type": "object",
-          "required": ["registry_node", "id", "version"],
+          "required": ["registry_deployment", "id", "version"],
           "properties": {
             "id": {
               "type": "string"
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "version": {
@@ -15365,7 +15365,7 @@
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
-          "required": ["schema_version", "registry_node", "bindings"],
+          "required": ["schema_version", "registry_deployment", "bindings"],
           "properties": {
             "bindings": {
               "type": "array",
@@ -15373,7 +15373,7 @@
                 "$ref": "#/components/schemas/NormalizedBinding"
               }
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "schema_version": {
@@ -17876,7 +17876,7 @@
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
-          "required": ["schema_version", "registry_node", "bindings"],
+          "required": ["schema_version", "registry_deployment", "bindings"],
           "properties": {
             "bindings": {
               "type": "array",
@@ -17884,7 +17884,7 @@
                 "$ref": "#/components/schemas/NormalizedBinding"
               }
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "schema_version": {
@@ -18193,12 +18193,12 @@
         },
         "QualifiedRef": {
           "type": "object",
-          "required": ["registry_node", "id", "version"],
+          "required": ["registry_deployment", "id", "version"],
           "properties": {
             "id": {
               "type": "string"
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "version": {
@@ -25547,12 +25547,12 @@
         },
         "QualifiedRef": {
           "type": "object",
-          "required": ["registry_node", "id", "version"],
+          "required": ["registry_deployment", "id", "version"],
           "properties": {
             "id": {
               "type": "string"
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "version": {
@@ -27749,12 +27749,12 @@
         },
         "QualifiedRef": {
           "type": "object",
-          "required": ["registry_node", "id", "version"],
+          "required": ["registry_deployment", "id", "version"],
           "properties": {
             "id": {
               "type": "string"
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "version": {
@@ -27933,7 +27933,7 @@
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
-          "required": ["schema_version", "registry_node", "bindings"],
+          "required": ["schema_version", "registry_deployment", "bindings"],
           "properties": {
             "bindings": {
               "type": "array",
@@ -27941,7 +27941,7 @@
                 "$ref": "#/components/schemas/NormalizedBinding"
               }
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "schema_version": {
@@ -29786,12 +29786,12 @@
         },
         "QualifiedRef": {
           "type": "object",
-          "required": ["registry_node", "id", "version"],
+          "required": ["registry_deployment", "id", "version"],
           "properties": {
             "id": {
               "type": "string"
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "version": {
@@ -29970,7 +29970,7 @@
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
-          "required": ["schema_version", "registry_node", "bindings"],
+          "required": ["schema_version", "registry_deployment", "bindings"],
           "properties": {
             "bindings": {
               "type": "array",
@@ -29978,7 +29978,7 @@
                 "$ref": "#/components/schemas/NormalizedBinding"
               }
             },
-            "registry_node": {
+            "registry_deployment": {
               "type": "string"
             },
             "schema_version": {

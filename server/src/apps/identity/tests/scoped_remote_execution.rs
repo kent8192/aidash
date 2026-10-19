@@ -793,7 +793,7 @@ async fn native_remote_fixture(
 		let bindings = agent["config"]["bindings"].as_array_mut().unwrap();
 		bindings.retain(|binding| binding["kind"] != "memory");
 		for (kind, id) in [("memory", "native-memory"), ("source", "native-shared")] {
-			bindings.push(json!({"kind":kind,"target":{"registry_node":runtime.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
+			bindings.push(json!({"kind":kind,"target":{"registry_deployment":runtime.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
 		}
 		let id = agent["id"].as_str().unwrap().to_owned();
 		let (status, body) = request(

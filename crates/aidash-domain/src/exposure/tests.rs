@@ -10,7 +10,7 @@ const NODE: &str = "aidash://node-a";
 
 fn reference(id: &str) -> QualifiedRef {
 	QualifiedRef {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		id: id.into(),
 		version: "1.0.0".into(),
 	}
@@ -45,7 +45,7 @@ struct Run {
 impl Run {
 	fn define(&mut self, definition: Entry) -> (QualifiedRef, String) {
 		let identity = QualifiedRef {
-			registry_node: NODE.into(),
+			registry_deployment: NODE.into(),
 			id: definition.id.clone(),
 			version: definition.version.clone(),
 		};

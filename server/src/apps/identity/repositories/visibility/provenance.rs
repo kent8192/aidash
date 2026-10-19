@@ -114,7 +114,9 @@ impl ReadProvenanceScope for Reads<'_> {
 					snapshot
 						.definitions
 						.into_iter()
-						.filter(|definition| definition.identity.registry_node == this.node_id)
+						.filter(|definition| {
+							definition.identity.registry_deployment == this.node_id
+						})
 						.map(|definition| (definition.identity.id, definition.identity.version)),
 				);
 			}

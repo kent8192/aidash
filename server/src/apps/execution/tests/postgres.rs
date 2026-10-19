@@ -1006,11 +1006,11 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
 			"tool",
 			"retry-tool",
-			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"idempotent"}}),
+			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"idempotent"}}),
 		))
 		.await
 		.unwrap();
-	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Retries", "Independent budgets")
 		.await
@@ -1170,11 +1170,11 @@ async fn write_approval(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
 			"tool",
 			"managed-write",
-			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"unsafe"}}),
+			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
-	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Approval", "Check external effects")
 		.await
@@ -1467,11 +1467,11 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), { let mut tool = entry(
 			"tool",
 			"web-fetch",
-			json!({"registry_node":federation.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"replay":"read_only"}}),
+			json!({"registry_deployment":federation.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"replay":"read_only"}}),
 		); tool.schema = json!({"type":"object","properties":{"url":{"type":"string","pattern":"^http://127\\.0\\.0\\.1:"}},"required":["url"],"additionalProperties":false}); tool })
 		.await
 		.unwrap();
-	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Web research", "Use available evidence")
 		.await
@@ -1674,7 +1674,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	let mut agent = seed(&f.registry).await;
 	agent.id = "skilled-agent".into();
 	agent.binding_normalization = None;
-	agent.config["bindings"] = json!([{"kind":"skill","target":{"registry_node":f.config.deployment,"id":"bundled-skill","version":"1.0.0"},"narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"bundled-skill","version":"1.0.0"},"narrow":{}}]);
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -2154,13 +2154,13 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
 			"tool",
 			"unsafe-http",
-			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://127.0.0.1:9","replay":"unsafe"}}),
+			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://127.0.0.1:9","replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
 	agent.id = "unsafe-agent".into();
 	agent.binding_normalization = None;
-	agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"unsafe-http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"unsafe-http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -2310,7 +2310,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 			entry(
 				"tool",
 				"delegate-tool",
-				json!({"registry_node":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":f.config.deployment,"agent":{"id":agent.id,"version":agent.version}}}),
+				json!({"registry_deployment":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":f.config.deployment,"agent":{"id":agent.id,"version":agent.version}}}),
 			),
 		)
 		.await
@@ -2322,7 +2322,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 			entry(
 				"agent",
 				"delegating",
-				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"delegate-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
+				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"delegate-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
 			),
 		)
 		.await

@@ -288,5 +288,5 @@ pub(super) async fn register_reference_source(
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	json!({"kind":"source","target":{"registry_node":c.f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}})
+	json!({"kind":"source","target":{"registry_deployment":c.f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}})
 }

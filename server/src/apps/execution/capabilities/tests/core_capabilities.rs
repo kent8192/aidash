@@ -308,7 +308,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
-	entry.config["bindings"] = json!(offered.iter().map(|bundle| json!({"kind":"bundle","target":{"registry_node":f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}})).collect::<Vec<_>>());
+	entry.config["bindings"] = json!(offered.iter().map(|bundle| json!({"kind":"bundle","target":{"registry_deployment":f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}})).collect::<Vec<_>>());
 	let instructions = "---\nname: analysis\ndescription: Analyze the selected CSV\nlicense: MIT\n---\nLoad this only when selected. Scripts are data.";
 	let files = json!([{"path":"references/guide.md","content":"東京\n"},{"path":"scripts/analyze.py","content":"raise RuntimeError('must never run on activation')"}]);
 	let digest =
@@ -326,7 +326,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
-	entry.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.deployment,"id":"fixture-skills","version":"1.0.0"},"narrow":{}}));
+	entry.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"fixture-skills","version":"1.0.0"},"narrow":{}}));
 
 	let (status, response) = request(
 		&app,

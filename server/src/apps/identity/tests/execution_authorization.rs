@@ -50,7 +50,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		(
 			"agent",
 			"skilled",
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","schema_version":1,"bindings":[{"kind":"skill","target":{"registry_node":f.config.deployment,"id":"guide","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","schema_version":1,"bindings":[{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"guide","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});

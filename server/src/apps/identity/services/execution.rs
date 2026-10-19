@@ -579,7 +579,7 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let mut access = self.access.write().await;
-		if binding.identity.registry_node != access.node_id {
+		if binding.identity.registry_deployment != access.node_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let current =

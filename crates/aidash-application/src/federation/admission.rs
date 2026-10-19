@@ -31,7 +31,9 @@ pub fn validate_inspection(
 	validation.validate_in(&inspection.agent, true)?;
 	let snapshot = &inspection.binding_snapshot;
 	snapshot.validate()?;
-	if !snapshot.remote || snapshot.agent.registry_node != node || snapshot.agent.local() != *agent
+	if !snapshot.remote
+		|| snapshot.agent.registry_deployment != node
+		|| snapshot.agent.local() != *agent
 	{
 		return Err(Error::External(
 			"receiver Binding placement mismatch".into(),
@@ -39,7 +41,7 @@ pub fn validate_inspection(
 	}
 	let mut expected = BTreeMap::new();
 	for pinned in &snapshot.definitions {
-		if pinned.identity.registry_node != node {
+		if pinned.identity.registry_deployment != node {
 			return Err(Error::External(
 				"unsupported foreign receiver dependency".into(),
 			));

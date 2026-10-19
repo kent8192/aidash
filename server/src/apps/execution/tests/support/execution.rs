@@ -72,12 +72,12 @@ pub fn execution(
 			(
 				"tool",
 				"http",
-				json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
+				json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 			),
 			(
 				"agent",
 				"research",
-				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":node,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
+				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":node,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
 			),
 		] {
 			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});

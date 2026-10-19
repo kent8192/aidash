@@ -698,7 +698,7 @@ impl HarnessManagement {
 		)
 		.execute(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?;
-		Ok(json!({"status":"ok","node_id":f.config.deployment}))
+		Ok(json!({"status":"ok","deployment":f.config.deployment}))
 	}
 	pub(crate) async fn run_media_message(
 		&self,

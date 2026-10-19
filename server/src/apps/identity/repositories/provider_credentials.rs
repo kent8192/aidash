@@ -245,7 +245,7 @@ pub(crate) fn selected_providers(
 			.definitions
 			.iter()
 			.find(|entry| {
-				entry.identity.registry_node == snapshot.agent.registry_node
+				entry.identity.registry_deployment == snapshot.agent.registry_deployment
 					&& entry.identity.id == reference.id
 					&& entry.identity.version == reference.version
 			})

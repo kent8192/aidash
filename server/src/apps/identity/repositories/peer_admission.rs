@@ -505,7 +505,7 @@ impl PeerAdmissionScope for Owned {
 			let node = access.node_id.clone();
 			let snapshot = d.inspection.binding_snapshot.clone();
 			snapshot.validate()?;
-			if snapshot.agent.registry_node != node || !snapshot.remote {
+			if snapshot.agent.registry_deployment != node || !snapshot.remote {
 				return Err(crate::Error::Forbidden);
 			}
 			// The receiver executes the Run, so its own Cache Salt Key decides;

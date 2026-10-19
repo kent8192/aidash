@@ -3657,7 +3657,7 @@ const DIRECT_SKILL: Uuid = Uuid::from_u128(0x31);
 
 fn reference(id: &str) -> QualifiedRef {
 	QualifiedRef {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		id: id.into(),
 		version: "1.0.0".into(),
 	}

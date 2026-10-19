@@ -595,7 +595,7 @@ def render():
                     else 'expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");'
                 )
                 if path == "/health":
-                    checks += 'expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")});'
+                    checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
                     checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.3");'
                 if path == "/auth/config":

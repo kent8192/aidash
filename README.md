@@ -282,7 +282,7 @@ Tools are immutable Registry descriptors with provider-owned behavior and a JSON
 
 ```json
 {
-  "registry_node": "aidash://node-a",
+  "registry_deployment": "aidash://node-a",
   "provider": "integration.http@1",
   "operation": "invoke",
   "default_alias": "research_lookup",
@@ -308,7 +308,7 @@ Bind its exact registered identity in the Agent configuration:
     {
       "kind": "tool",
       "target": {
-        "registry_node": "aidash://node-a",
+        "registry_deployment": "aidash://node-a",
         "id": "research-http",
         "version": "1.0.0"
       },

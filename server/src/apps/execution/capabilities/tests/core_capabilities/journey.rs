@@ -464,7 +464,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		let mut agent = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.deployment,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_deployment":c.f.config.deployment,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
 		agent.config["max_steps"] = json!(200);
 		for entry in [tool, agent] {
 			let (status, result) = request(

@@ -24,7 +24,7 @@ fn tool(id: &str, descriptor: ToolDescriptor) -> ResolvedDefinition {
 	.unwrap();
 	ResolvedDefinition {
 		identity: QualifiedRef {
-			registry_node: NODE.into(),
+			registry_deployment: NODE.into(),
 			id: id.into(),
 			version: "1.0.0".into(),
 		},
@@ -58,7 +58,7 @@ fn snapshot(remote: bool, definitions: Vec<ResolvedDefinition>) -> BindingSnapsh
 	BindingSnapshot {
 		schema_version: 1,
 		agent: QualifiedRef {
-			registry_node: NODE.into(),
+			registry_deployment: NODE.into(),
 			id: "researcher".into(),
 			version: "1.0.0".into(),
 		},

@@ -174,7 +174,7 @@ mod controlled_context_composition {
 				.0,
 				200
 			);
-			bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
+			bindings.push(json!({"kind":kind,"target":{"registry_deployment":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
 		}
 		agent.config["bindings"] = json!(bindings);
 		f.registry.register(&acme, agent).await.unwrap();

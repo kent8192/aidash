@@ -2155,9 +2155,9 @@ mod semantic_fixture_composition {
 				200
 			);
 		}
-		template["config"]["bindings"] = json!([{"kind":"memory","target":{"registry_node":f.config.deployment,"id":"memory","version":"1.0.0"},"narrow":{}}]);
+		template["config"]["bindings"] = json!([{"kind":"memory","target":{"registry_deployment":f.config.deployment,"id":"memory","version":"1.0.0"},"narrow":{}}]);
 		if !maintenance {
-			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.deployment,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
+			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
 		}
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
 		let (status, response) = request(

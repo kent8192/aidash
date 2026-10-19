@@ -99,7 +99,7 @@ async function fixture(
         bindings: [
           {
             kind: "memory",
-            target: { registry_node: "aidash://test", ...ref("memory") },
+            target: { registry_deployment: "aidash://test", ...ref("memory") },
             narrow: {},
           },
         ],

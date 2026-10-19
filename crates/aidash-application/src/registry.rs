@@ -50,7 +50,7 @@ pub async fn validate_references(
 		let bundle: aidash_domain::registry::bindings::BundleConfig =
 			serde_json::from_value(entry.config.clone())?;
 		for member in bundle.members {
-			if member.registry_node != node {
+			if member.registry_deployment != node {
 				return Err(Error::Forbidden);
 			}
 			let definition = scope.definition(&member.id, &member.version).await?;
@@ -64,7 +64,7 @@ pub async fn validate_references(
 	if entry.kind == "tool" && aidash_domain::tool::legacy_config(&entry.config)?.is_none() {
 		let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 			serde_json::from_value(entry.config.clone())?;
-		if descriptor.registry_node != node {
+		if descriptor.registry_deployment != node {
 			return Err(Error::Forbidden);
 		}
 		if let Some(lifecycle) = descriptor.lifecycle {
@@ -96,7 +96,7 @@ pub async fn validate_references(
 			},
 			validation,
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},
@@ -212,7 +212,7 @@ pub async fn validate_references(
 			},
 			validation,
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: coordinator.id.clone(),
 				version: coordinator.version.clone(),
 			},

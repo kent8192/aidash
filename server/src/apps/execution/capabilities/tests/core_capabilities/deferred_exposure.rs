@@ -200,7 +200,7 @@ async fn register_approved(c: &CoreFixture, entry: Value) {
 /// Exposure policy and an Eager binding.
 async fn register_agent(c: &CoreFixture, version: &str, deferred: bool) {
 	let node = c.f.config.deployment.as_str();
-	let target = |id: &str| json!({"registry_node":node,"id":id,"version":"1.0.0"});
+	let target = |id: &str| json!({"registry_deployment":node,"id":id,"version":"1.0.0"});
 	let mut plugin = json!({"kind":"tool","target":target("http"),"alias":EAGER,"narrow":{}});
 	if deferred {
 		plugin["exposure"] = json!("eager");
@@ -745,7 +745,7 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 ) {
 	let d = Box::pin(deferred_fixture).await;
 	let node = d.c.f.config.deployment.to_string();
-	let zebra = |id: &str| json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":"Zebra ledger"},"description":{"en":"Zebra ledger secret tool"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":{"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":id.replace('-', "_"),"tier":"integration","transport":{"transport":"http","endpoint":"http://127.0.0.1:9/effect","replay":"idempotent"}}});
+	let zebra = |id: &str| json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":"Zebra ledger"},"description":{"en":"Zebra ledger secret tool"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":{"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":id.replace('-', "_"),"tier":"integration","transport":{"transport":"http","endpoint":"http://127.0.0.1:9/effect","replay":"idempotent"}}});
 	// Approved for this tenant but never bound.
 	register_approved(&d.c, zebra("zebra-unbound")).await;
 	// Registered on this Node but approved nowhere.

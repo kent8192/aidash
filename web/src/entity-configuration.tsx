@@ -371,7 +371,7 @@ export function EntityConfiguration({
                 (e) => `${e.id}@${e.version}` === key,
               )!;
               return {
-                registry_node: data.node.id,
+                registry_deployment: data.node.id,
                 id: entry.id,
                 version: entry.version,
               };
@@ -387,7 +387,7 @@ export function EntityConfiguration({
             ? { coordinator: reference }
             : kind === "tool"
               ? {
-                  registry_node: data.node.id,
+                  registry_deployment: data.node.id,
                   provider: `integration.${transport}@1`,
                   operation: "invoke",
                   default_alias: alias,

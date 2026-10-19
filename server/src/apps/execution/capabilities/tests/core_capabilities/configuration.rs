@@ -24,7 +24,7 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 		400
 	);
 	let mut missing = input.clone();
-	missing["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":c.f.config.deployment,"id":"missing-source","version":"1.0.0"},"narrow":{}}));
+	missing["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":c.f.config.deployment,"id":"missing-source","version":"1.0.0"},"narrow":{}}));
 	assert_eq!(
 		request(&c.app, &c.token, "POST", path, missing).await.0,
 		404

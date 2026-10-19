@@ -81,13 +81,13 @@ async fn inspect_in(
 		access.bindings(&entry).await?
 	};
 	if !snapshot.remote
-		|| snapshot.agent.registry_node != access.node_id()
+		|| snapshot.agent.registry_deployment != access.node_id()
 		|| snapshot.agent.local() != input.agent
 	{
 		return Err(Error::Forbidden);
 	}
 	for pinned in &snapshot.definitions {
-		if pinned.identity.registry_node != access.node_id() {
+		if pinned.identity.registry_deployment != access.node_id() {
 			return Err(Error::Forbidden);
 		}
 		let action = match pinned.definition.kind.as_str() {

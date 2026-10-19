@@ -242,7 +242,7 @@ impl DefinitionValidation {
 				self.contract(
 					&descriptor,
 					&aidash_domain::registry::bindings::QualifiedRef {
-						registry_node: descriptor.registry_node.clone(),
+						registry_deployment: descriptor.registry_deployment.clone(),
 						id: e.id.clone(),
 						version: e.version.clone(),
 					},
@@ -358,7 +358,7 @@ impl DefinitionValidation {
 			.definitions
 			.iter()
 			.find(|d| {
-				d.identity.registry_node == snapshot.agent.registry_node
+				d.identity.registry_deployment == snapshot.agent.registry_deployment
 					&& d.identity.local() == config.model
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;

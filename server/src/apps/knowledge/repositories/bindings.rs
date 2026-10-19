@@ -272,7 +272,7 @@ pub(crate) async fn configuration(
 			BindingKind::Source => "source",
 			_ => continue,
 		};
-		if binding.target.registry_node != node {
+		if binding.target.registry_deployment != node {
 			return Err(Error::Forbidden);
 		}
 		let entry = crate::semantic::native_memory::definition(

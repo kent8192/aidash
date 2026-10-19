@@ -4948,7 +4948,7 @@ fn require_projection(
 		.find(|d| {
 			d.identity.id == agent.model.id
 				&& d.identity.version == agent.model.version
-				&& d.identity.registry_node == snapshot.agent.registry_node
+				&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or_else(|| Error::Invalid("pinned model is outside the Binding snapshot".into()))?;
 	let model: aidash_domain::model::ModelConfig =

@@ -1069,7 +1069,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		),
 		&aidash_server::bootstrap::registry_validation().with_provider_credentials(true),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.runtime.config.deployment.to_string(),
+			registry_deployment: f.runtime.config.deployment.to_string(),
 			id: agent.id.clone(),
 			version: agent.version.clone(),
 		},

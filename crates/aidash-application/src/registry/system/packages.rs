@@ -45,7 +45,7 @@ impl PackageGroup {
 			providers.contract(
 				&descriptor,
 				&QualifiedRef {
-					registry_node: descriptor.registry_node.clone(),
+					registry_deployment: descriptor.registry_deployment.clone(),
 					id: entry.id.clone(),
 					version: entry.version.clone(),
 				},
@@ -170,7 +170,7 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 			members: operations
 				.iter()
 				.map(|entry| QualifiedRef {
-					registry_node: node.into(),
+					registry_deployment: node.into(),
 					id: entry.id.clone(),
 					version: entry.version.clone(),
 				})

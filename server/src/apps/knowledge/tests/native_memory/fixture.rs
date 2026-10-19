@@ -25,13 +25,13 @@ pub(super) fn replace_memory_binding(agent: &mut Entry, provider: EntityRef) {
 		.iter_mut()
 		.find(|binding| binding["kind"] == "memory")
 		.unwrap();
-	binding["target"] = json!({"registry_node":"aidash://native-memory","id":provider.id,"version":provider.version});
+	binding["target"] = json!({"registry_deployment":"aidash://native-memory","id":provider.id,"version":provider.version});
 }
 pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entry {
 	if kind == "agent" {
 		let mut bindings = vec![];
 		if let Some(provider) = config.get("memory").filter(|value| !value.is_null()) {
-			bindings.push(json!({"kind":"memory","target":{"registry_node":"aidash://native-memory","id":provider["id"],"version":provider["version"]},"narrow":{}}));
+			bindings.push(json!({"kind":"memory","target":{"registry_deployment":"aidash://native-memory","id":provider["id"],"version":provider["version"]},"narrow":{}}));
 		}
 		for source in config
 			.get("sources")
@@ -39,7 +39,7 @@ pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entr
 			.into_iter()
 			.flatten()
 		{
-			bindings.push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
+			bindings.push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
 		}
 		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
 	}

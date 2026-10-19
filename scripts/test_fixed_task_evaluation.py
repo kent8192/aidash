@@ -302,7 +302,7 @@ class OracleTest(unittest.TestCase):
 
         def load(identity, status="loaded"):
             return {"kind": "tool", "call": {"name": "capability_load", "arguments": {"alias": "a", "digest": "d"}},
-                    "result": {"status": status, "identity": {"registry": {"registry_node": "aidash://n",
+                    "result": {"status": status, "identity": {"registry": {"registry_deployment": "aidash://n",
                                                                            "id": identity, "version": "1.0.0"}}}}
         failed = {"kind": "tool", "call": {"name": "capability_load", "arguments": {}},
                   "result": {"error": "UNKNOWN_CAPABILITY"}}

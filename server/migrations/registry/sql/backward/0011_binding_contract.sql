@@ -174,8 +174,8 @@ DROP FUNCTION public.aidash_agent_bindings_is_valid(jsonb);
 CREATE OR REPLACE FUNCTION public.aidash_qualified_ref_is_valid(value jsonb) RETURNS boolean
 LANGUAGE sql IMMUTABLE STRICT AS $$
  SELECT COALESCE(jsonb_typeof(value) = 'object'
- AND value - ARRAY['registry_node','id','version']::text[] = '{}'::jsonb
- AND value->>'registry_node' ~ '^aidash://[A-Za-z0-9-]{1,100}$'
+ AND value - ARRAY['registry_deployment','id','version']::text[] = '{}'::jsonb
+ AND value->>'registry_deployment' ~ '^aidash://[A-Za-z0-9-]{1,100}$'
  AND value->>'id' ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$'
  AND value->>'version' ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$', false)
 $$;

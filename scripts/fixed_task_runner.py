@@ -121,7 +121,7 @@ class Experiment:
         self.catalog_revision = {}
 
     def ref(self, identifier):
-        return {"registry_node": self.node, "id": identifier, "version": "1.0.0"}
+        return {"registry_deployment": self.node, "id": identifier, "version": "1.0.0"}
 
     def authorize(self, agent_ids):
         """Create the Tenant policy on a fresh disposable Node (deterministic tier only).
@@ -170,7 +170,7 @@ def fixture_model_ids(corpus, prefix):
 
 
 def tool_config(experiment, endpoint, alias):
-    return {"registry_node": experiment.node, "provider": "integration.http@1", "operation": "invoke",
+    return {"registry_deployment": experiment.node, "provider": "integration.http@1", "operation": "invoke",
             "default_alias": alias, "tier": "integration", "narrow": {},
             "transport": {"transport": "http", "endpoint": endpoint, "replay": "idempotent"}}
 

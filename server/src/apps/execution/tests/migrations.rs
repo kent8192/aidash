@@ -1536,8 +1536,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 	// so these rollbacks exercise the nested restriction guard itself.
 	for concurrency in [None, Some("sequential"), Some("shared_read")] {
 		let id = format!("binding-{}", concurrency.unwrap_or("unrestricted"));
-		let target =
-			|id: &str| json!({"registry_node":"aidash://migration","id":id,"version":"1.0.0"});
+		let target = |id: &str| json!({"registry_deployment":"aidash://migration","id":id,"version":"1.0.0"});
 		let mut config = agent(json!({"bindings":[
 			{"kind":"tool","target":target("first"),"alias":"first"},
 			{"kind":"tool","target":target("second"),"alias":"second","narrow":{}},

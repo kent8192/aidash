@@ -45,7 +45,7 @@ const registry = [
         {
           kind: "tool",
           target: {
-            registry_node: "aidash://home",
+            registry_deployment: "aidash://home",
             id: ids[1],
             version: "1.0.0",
           },
@@ -160,7 +160,7 @@ for (const locale of ["en-US", "ja-JP"]) {
           {
             kind: "skill",
             target: {
-              registry_node: "aidash://home",
+              registry_deployment: "aidash://home",
               id: ids[2],
               version: "1.0.0",
             },
@@ -169,7 +169,7 @@ for (const locale of ["en-US", "ja-JP"]) {
           {
             kind: "tool",
             target: {
-              registry_node: "aidash://home",
+              registry_deployment: "aidash://home",
               id: ids[1],
               version: "1.0.0",
             },

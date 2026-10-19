@@ -1265,7 +1265,7 @@ async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingS
 		),
 		&aidash_server::bootstrap::registry_validation().with_plan_connections(true),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.config.deployment.to_string(),
+			registry_deployment: f.config.deployment.to_string(),
 			id: agent.id.clone(),
 			version: agent.version.clone(),
 		},

@@ -168,12 +168,12 @@ def artifact_read_state(history, artifact_id):
 
 def tool_descriptor(node, transport, alias="research_lookup"):
     """Declare an integration without asserting provider behavior from its config."""
-    return {"registry_node": node, "provider": "integration." + transport["transport"] + "@1",
+    return {"registry_deployment": node, "provider": "integration." + transport["transport"] + "@1",
             "operation": "invoke", "default_alias": alias, "tier": "integration", "transport": transport}
 
 
 def tool_binding(node, name, alias="research_lookup"):
-    return {"kind": "tool", "target": {"registry_node": node, "id": name, "version": "1.0.0"},
+    return {"kind": "tool", "target": {"registry_deployment": node, "id": name, "version": "1.0.0"},
             "alias": alias, "narrow": {}}
 
 

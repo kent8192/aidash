@@ -368,7 +368,7 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
     .click();
   expect((await posted).postDataJSON()).toMatchObject({
     config: {
-      registry_node: "aidash://test",
+      registry_deployment: "aidash://test",
       provider: "integration.mcp@1",
       operation: "invoke",
       default_alias: "integration_invoke",
@@ -450,7 +450,7 @@ test("HTTP tools validate duplicate argument names and support typed lists", asy
     .click();
   expect((await posted).postDataJSON()).toMatchObject({
     config: {
-      registry_node: "aidash://test",
+      registry_deployment: "aidash://test",
       provider: "integration.http@1",
       operation: "invoke",
       transport: {
@@ -596,7 +596,11 @@ test("bundle members allow one version per ID and reenable siblings on removal",
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
   expect((await posted).postDataJSON().config.members).toEqual([
-    { registry_node: "aidash://test", id: "shared-tool", version: "2.0.0" },
+    {
+      registry_deployment: "aidash://test",
+      id: "shared-tool",
+      version: "2.0.0",
+    },
   ]);
 });
 

@@ -20,7 +20,7 @@ export type ResearchBinding = {
   definitions: { id: string; version: string }[];
 };
 
-type Reference = { id: string; version: string; registry_node?: string };
+type Reference = { id: string; version: string; registry_deployment?: string };
 type Entry = {
   id: string;
   version: string;
@@ -42,9 +42,9 @@ function reference(value: unknown): Reference | undefined {
     ? {
         id: item.id,
         version: item.version,
-        registry_node:
-          typeof item.registry_node === "string"
-            ? item.registry_node
+        registry_deployment:
+          typeof item.registry_deployment === "string"
+            ? item.registry_deployment
             : undefined,
       }
     : undefined;
@@ -67,8 +67,8 @@ export function researchBindings(
   const find = (kind: string, target: Reference | undefined) =>
     target &&
     (node === undefined ||
-      target.registry_node === undefined ||
-      target.registry_node === node) &&
+      target.registry_deployment === undefined ||
+      target.registry_deployment === node) &&
     registry.find(
       (entry) =>
         entry.kind === kind &&

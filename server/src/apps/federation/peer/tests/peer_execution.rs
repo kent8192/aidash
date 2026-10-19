@@ -291,7 +291,7 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 			.await
 			.unwrap();
 	}
-	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.deployment,"agent":{"id":"public-child","version":"1.0.0"}}}});
+	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_deployment":home.runtime.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.deployment,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
 	assert_eq!(registered.0, 200, "{}", registered.1);
 	let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
@@ -303,7 +303,7 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		.unwrap();
 	parent.version = "1.0.1".into();
 	parent.binding_normalization = None;
-	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.deployment,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
+	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":home.runtime.config.deployment,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
 	assert!(matches!(
 		home.runtime.registry.register(&acme, parent).await,
 		Err(aidash_server::Error::Forbidden)

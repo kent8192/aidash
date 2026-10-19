@@ -148,7 +148,7 @@ async fn research_fixture(
 	agent.version = VERSION.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Research with the bound tools.");
-	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_node":c.f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_deployment":c.f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
 	agent.config["remove_default"] = json!([]);
 	for (method, path, body) in [
 		("POST", "/api/registry".to_owned(), json!(agent)),
@@ -218,7 +218,7 @@ impl Research {
 			.unwrap();
 		agent.version = "3.1.0".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
+		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 		for (path, body) in [
 			("/api/registry", json!(agent)),

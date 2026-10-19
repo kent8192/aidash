@@ -2236,7 +2236,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.unwrap();
 		agent.id = "late-agent".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
 		registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),

@@ -391,7 +391,7 @@ impl ExecutionCatalog for Registry {
 			.find(|d| {
 				d.identity.id == id
 					&& d.identity.version == version
-					&& d.identity.registry_node == snapshot.agent.registry_node
+					&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 			})
 			.map(|d| d.definition.clone())
 			.ok_or_else(|| {
@@ -952,7 +952,7 @@ impl ExecutionEnvironment for Environment<'_> {
 				let decider = aidash_domain::decision::BoundDecider {
 					pin: aidash_domain::decision::DeciderPin {
 						identity: aidash_domain::registry::bindings::QualifiedRef {
-							registry_node: self.node_id().to_owned(),
+							registry_deployment: self.node_id().to_owned(),
 							id: definition.id.clone(),
 							version: definition.version.clone(),
 						},

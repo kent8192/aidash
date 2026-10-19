@@ -64,7 +64,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	let pool = f.store.pool.fixture_driver().clone();
 	let agent = |parallelism: Option<Value>, narrow: Value| {
 		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test",
-			"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":narrow}]});
+			"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":narrow}]});
 		if let Some(parallelism) = parallelism {
 			config["tool_parallelism"] = parallelism;
 		}
@@ -101,7 +101,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	// Only Tool and Bundle Bindings bind Tools whose concurrency can be lowered.
 	let binding = |kind: &str, narrow: Value| {
 		let mut config = agent(None, json!({})).remove(0);
-		config["bindings"] = json!([{"kind":kind,"target":{"registry_node":f.config.deployment,"id":kind,"version":"1.0.0"},"narrow":narrow}]);
+		config["bindings"] = json!([{"kind":kind,"target":{"registry_deployment":f.config.deployment,"id":kind,"version":"1.0.0"},"narrow":narrow}]);
 		vec![config]
 	};
 	for kind in ["tool", "bundle"] {
@@ -120,7 +120,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	// A descriptor may restate shared_read only for a provider that declares it.
 	let descriptor = |operation: &str, provider: &str, tier: &str, claim: &str| {
 		vec![
-			json!({"registry_node":f.config.deployment,"provider":provider,"operation":operation,
+			json!({"registry_deployment":f.config.deployment,"provider":provider,"operation":operation,
 			"default_alias":operation,"tier":tier,"narrow":{"concurrency":claim}}),
 		]
 	};
