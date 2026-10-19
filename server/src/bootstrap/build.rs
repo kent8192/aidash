@@ -10,6 +10,7 @@ use reinhardt::conf::settings::scoped::ScopedSettings;
 use std::sync::{Arc, OnceLock};
 
 static INSTALLED: OnceLock<&'static Build> = OnceLock::new();
+static OFFERING: OnceLock<Offering> = OnceLock::new();
 
 /// Make `build` the build of this process. Only the first call counts.
 pub fn install(build: &'static Build) {
@@ -20,6 +21,15 @@ pub fn install(build: &'static Build) {
 /// this library, is the Community build.
 pub fn current() -> &'static Build {
 	INSTALLED.get().copied().unwrap_or(&Build::COMMUNITY)
+}
+
+/// The Offering the settings check admitted, or the build's first one before
+/// any settings load, which decides the endpoints this process mounts.
+pub fn offering() -> Offering {
+	OFFERING
+		.get()
+		.copied()
+		.unwrap_or_else(|| current().offerings[0])
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -62,8 +72,8 @@ pub trait Extension: Sync + std::fmt::Debug {
 	fn owns_issuer(&self, _issuer: &str) -> bool {
 		false
 	}
-	/// Endpoints the build adds to Community's.
-	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
+	/// Endpoints the build adds to Community's for `offering`.
+	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		None
 	}
 	/// The Provider Credential Store of an Enterprise `kind`, from its settings
@@ -149,7 +159,9 @@ impl Build {
 		let offering = settings
 			.optional_path::<Offering>(&["deployment", "offering"])?
 			.unwrap_or_default();
-		self.admit(offering)
+		self.admit(offering)?;
+		let _ = OFFERING.set(offering);
+		Ok(())
 	}
 }
 
@@ -167,6 +179,7 @@ mod tests {
 
 	#[test]
 	fn the_community_build_refuses_enterprise_adapters() {
+		use aidash_domain::offering::Offering::SelfHosted;
 		let extension = Build::COMMUNITY.extension;
 		assert!(extension.sign_in().unwrap().is_none());
 		let store = serde_json::json!({"kind": "secret_manager"});
@@ -178,7 +191,7 @@ mod tests {
 				.to_string(),
 			"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
 		);
-		assert!(extension.routes().is_none());
+		assert!(extension.routes(SelfHosted).is_none());
 	}
 
 	#[rstest]

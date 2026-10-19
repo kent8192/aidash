@@ -50,7 +50,9 @@ impl Extension for Adapters {
 		aidash_gcp::gcip::is_issuer(issuer)
 	}
 
-	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
+	/// Every Enterprise route serves both of this build's Offerings so far;
+	/// `enterprise/server/routes.json` lists them per Offering.
+	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		Some(gcip::routes())
 	}
 
