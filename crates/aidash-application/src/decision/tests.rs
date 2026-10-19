@@ -757,11 +757,10 @@ async fn every_route_unavailable_is_an_outage_the_step_retries() {
 	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
 	assert!(matches!(result, Err(Error::DeciderOutage)));
 	assert_eq!(context.history, original.history);
-	let saved = fixture.saved.lock().unwrap();
-	assert_eq!(
-		saved.evidence.iter().map(|e| e.route).collect::<Vec<_>>(),
-		[0, 1]
-	);
+	let routes: Vec<_> = (fixture.saved.lock().unwrap().evidence.iter())
+		.map(|e| e.route)
+		.collect();
+	assert_eq!(routes, [0, 1]);
 	// A single unavailable Route is an outage too.
 	let fixture = Fixture {
 		faults: BTreeMap::from([(0, Fault::Transport)]),
