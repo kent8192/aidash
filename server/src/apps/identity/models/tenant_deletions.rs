@@ -42,7 +42,11 @@ pub struct TenantDeletion {
 	pub purge_error: Option<String>,
 	#[field(null = true)]
 	pub purge_failed_at: Option<DateTime<Utc>>,
-	/// Until when a purge worker owns this purge, so replicas do not race.
+	/// The purge worker that owns this purge, so replicas do not race. Every
+	/// destructive step locks the row and checks it still holds this token.
+	#[field(null = true)]
+	pub purge_lease: Option<uuid::Uuid>,
+	/// Until when that worker owns it.
 	#[field(null = true)]
 	pub purge_leased_until: Option<DateTime<Utc>>,
 	/// When the audit history that outlived the purge was deleted.

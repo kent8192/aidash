@@ -142,7 +142,7 @@ The Tenant stays restorable for `deletion_grace_days`. `POST /api/tenants/{tenan
 
 #### Purge
 
-After the grace period, Aidash purges the Tenant's data (ADR 0061). The purge is a resumable, idempotent job on the hourly retention loop, so a purge may lag its deadline by up to an hour. It runs in the `tenant-purge` Deployment Scope and works through four steps in order. Each step is idempotent, and a purge that fails resumes from the failed step at the next sweep.
+After the grace period, Aidash purges the Tenant's data (ADR 0061). The purge is a resumable, idempotent job on the hourly retention loop, so a purge may lag its deadline by up to an hour. It runs in the `tenant-purge` Deployment Scope and works through four steps in order. Each step is idempotent, and a purge that fails resumes from the failed step at the next sweep. Each step first locks the deletion row and checks, under that lock, that it is still unrestored, unpurged and leased to this purge, and keeps the lock while it works, so a restore never interleaves with a destructive step. A restore is refused once a purge owns the Tenant or the grace period has ended.
 
 1. **Provider Credentials.** Plan Connections that deletion could not end are ended, then every Provider Credential, bound or not, is revoked and deleted, and its stored Key Material with it. On Cloud this deletes the Secret Manager secrets before the rows that name them.
 2. **Capability object files.** The files that only `core_objects` names are erased before their rows.

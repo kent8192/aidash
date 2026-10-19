@@ -29,12 +29,18 @@ fn is_open(
 		.and_where(Expr::col("purged_at").is_null())
 }
 
+/// Writes the open deletion `id`, and, with a `lease`, only while the purge
+/// still holds it.
 async fn update_one(
 	tx: &mut dyn TransactionExecutor,
 	mut statement: reinhardt::query::UpdateStatement,
 	id: Uuid,
+	lease: Option<Uuid>,
 ) -> Result<()> {
 	statement.and_where(Expr::col("id").eq(Expr::value(id)));
+	if let Some(lease) = lease {
+		statement.and_where(Expr::col("purge_lease").eq(Expr::value(lease)));
+	}
 	let (sql, values) = is_open(&mut statement).build(PostgresQueryBuilder);
 	if tx
 		.execute(&sql, convert_values(values))
@@ -82,7 +88,9 @@ pub(crate) async fn claim(tx: &mut dyn TransactionExecutor) -> Result<Vec<Tenant
 	if ids.is_empty() {
 		return Ok(Vec::new());
 	}
+	let lease = Uuid::new_v4();
 	let (sql, values) = update()
+		.value_expr(Alias::new("purge_lease"), Expr::value(lease))
 		.value_expr(Alias::new("purge_leased_until"), Expr::value(now + LEASE))
 		.and_where(Expr::col("id").is_in(ids.iter().map(|id| Expr::value(*id))))
 		.build(PostgresQueryBuilder);
@@ -96,18 +104,56 @@ pub(crate) async fn claim(tx: &mut dyn TransactionExecutor) -> Result<Vec<Tenant
 }
 
 /// Extends the lease of a purge that is still working.
-pub(crate) async fn renew(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+pub(crate) async fn renew(
+	tx: &mut dyn TransactionExecutor,
+	deletion: &TenantDeletion,
+) -> Result<()> {
 	let now = database_time(tx).await?;
 	let mut statement = update();
 	statement.value_expr(Alias::new("purge_leased_until"), Expr::value(now + LEASE));
-	update_one(tx, statement, id).await
+	update_one(tx, statement, deletion.id, deletion.purge_lease).await
+}
+
+/// Locks the deletion row and checks, under that lock, that it is still
+/// unrestored, unpurged and leased to this purge. The caller keeps the lock
+/// until its transaction ends, so a restore cannot land between this check and
+/// what the step then does; a restore that waits for the lock finds the lease
+/// held and is refused.
+pub(crate) async fn hold(
+	tx: &mut dyn TransactionExecutor,
+	deletion: &TenantDeletion,
+) -> Result<()> {
+	let now = database_time(tx).await?;
+	let lease = deletion
+		.purge_lease
+		.ok_or_else(|| Error::Conflict("the purge holds no lease".into()))?;
+	let (sql, values) = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new(TenantDeletion::table_name()))
+		.and_where(Expr::col("id").eq(Expr::value(deletion.id)))
+		.and_where(Expr::col("restored_at").is_null())
+		.and_where(Expr::col("purged_at").is_null())
+		.and_where(Expr::col("purge_lease").eq(Expr::value(lease)))
+		.and_where(Expr::col("purge_leased_until").gt(Expr::value(now)))
+		.lock(LockType::Update)
+		.build(PostgresQueryBuilder);
+	if tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.is_none()
+	{
+		return Err(Error::Conflict(
+			"the Tenant was restored, purged, or taken over by another purge".into(),
+		));
+	}
+	Ok(())
 }
 
 /// Records that the purge finished every step before `next`, clearing what an
 /// earlier failure left.
 pub(crate) async fn advance(
 	tx: &mut dyn TransactionExecutor,
-	id: Uuid,
+	deletion: &TenantDeletion,
 	next: PurgeStep,
 ) -> Result<()> {
 	let now = database_time(tx).await?;
@@ -121,13 +167,13 @@ pub(crate) async fn advance(
 			Expr::value(None::<DateTime<Utc>>),
 		)
 		.value_expr(Alias::new("purge_leased_until"), Expr::value(now + LEASE));
-	update_one(tx, statement, id).await
+	update_one(tx, statement, deletion.id, deletion.purge_lease).await
 }
 
 /// Records that `step` failed, and releases the purge for the next sweep.
 pub(crate) async fn fail(
 	tx: &mut dyn TransactionExecutor,
-	id: Uuid,
+	deletion: &TenantDeletion,
 	step: PurgeStep,
 	error: &str,
 ) -> Result<()> {
@@ -142,11 +188,12 @@ pub(crate) async fn fail(
 		)
 		.value_expr(Alias::new("purge_error"), Expr::value(error))
 		.value_expr(Alias::new("purge_failed_at"), Expr::value(now))
+		.value_expr(Alias::new("purge_lease"), Expr::value(None::<Uuid>))
 		.value_expr(
 			Alias::new("purge_leased_until"),
 			Expr::value(None::<DateTime<Utc>>),
 		);
-	update_one(tx, statement, id).await
+	update_one(tx, statement, deletion.id, deletion.purge_lease).await
 }
 
 /// Clears the label on the root record and marks the deletion purged. The
@@ -172,11 +219,12 @@ pub(crate) async fn finish(
 			Alias::new("purge_failed_at"),
 			Expr::value(None::<DateTime<Utc>>),
 		)
+		.value_expr(Alias::new("purge_lease"), Expr::value(None::<Uuid>))
 		.value_expr(
 			Alias::new("purge_leased_until"),
 			Expr::value(None::<DateTime<Utc>>),
 		);
-	update_one(tx, statement, deletion.id).await
+	update_one(tx, statement, deletion.id, deletion.purge_lease).await
 }
 
 /// Ends the grace period of `deletion` now, so the next sweep purges it. The
@@ -192,7 +240,7 @@ pub(crate) async fn purge_now(
 		.min(deletion.purge_after);
 	let mut statement = update();
 	statement.value_expr(Alias::new("purge_after"), Expr::value(at));
-	update_one(tx, statement, deletion.id).await?;
+	update_one(tx, statement, deletion.id, None).await?;
 	Ok(TenantDeletion {
 		purge_after: at,
 		..deletion.clone()

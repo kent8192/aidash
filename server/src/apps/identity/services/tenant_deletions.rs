@@ -235,8 +235,9 @@ impl TenantDeletions {
 			.store
 			.pool
 			.atomic(&scope, async |tx| {
+				refuse_purged(tx, &tenant).await?;
 				steward.authorize(tx, &tenant, true).await?;
-				let deletion = tenant_deletions::current(tx, &tenant)
+				let deletion = tenant_deletions::current_locked(tx, &tenant)
 					.await?
 					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
 				tenant_deletions::restore(tx, &deletion, steward.actor()).await?;
@@ -272,7 +273,11 @@ impl TenantDeletions {
 			.store
 			.pool
 			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
-				refuse_purged(tx, &tenant).await?;
+				// A purge that already started, or a deadline already past, is
+				// what this asks for; only a finished purge is refused.
+				if tenant_deletions::ended(tx, &tenant).await? == Some("tenant_purged") {
+					return Err(Error::Conflict("tenant_purged".into()));
+				}
 				steward.authorize(tx, &tenant, true).await?;
 				let deletion = tenant_deletions::current_locked(tx, &tenant)
 					.await?
@@ -360,13 +365,15 @@ impl TenantDeletions {
 	}
 }
 
-/// Refuses a Tenant whose data was purged. Its policy went with its data, so
-/// every later check of the Tenant would fail for that reason alone.
+/// Refuses a Tenant whose purge is under way or done, before taking any lock.
+/// A purge deletes the Tenant's policy, so every later check of the Tenant would
+/// fail for that reason alone, and a purge step holds the deletion row while it
+/// works, so waiting for it behind the policy lock could deadlock.
 async fn refuse_purged(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()> {
-	if tenant_deletions::is_purged(tx, tenant).await? {
-		return Err(Error::Conflict("tenant_purged".into()));
+	match tenant_deletions::ended(tx, tenant).await? {
+		Some(reason) => Err(Error::Conflict(reason.into())),
+		None => Ok(()),
 	}
-	Ok(())
 }
 
 fn event<'a>(action: &'a str, tenant: &'a str) -> AdministrationEvent<'a> {

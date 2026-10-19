@@ -32,17 +32,22 @@ fn scope() -> TenancyScope {
 /// history whose period has ended. A Tenant whose purge fails is logged and
 /// left for the next sweep, so one Tenant never holds up the others.
 pub async fn sweep(store: &Store, audit_retention_days: u32) -> Result<()> {
-	let claimed = store
-		.pool
-		.atomic(&scope(), async |tx| tenant_purge::claim(tx).await)
-		.await?;
-	for deletion in claimed {
+	for deletion in claim(store).await? {
 		let tenant = deletion.tenant.clone();
 		if let Err(error) = purge_tenant(store, deletion).await {
 			tracing::warn!(%tenant, %error, "a Tenant purge failed and will resume at its failed step");
 		}
 	}
 	erase_audit(store, audit_retention_days).await
+}
+
+/// Leases the deletions that are due to this caller. Whoever holds the lease
+/// purges; the others skip the Tenant until the lease runs out.
+pub async fn claim(store: &Store) -> Result<Vec<TenantDeletion>> {
+	store
+		.pool
+		.atomic(&scope(), async |tx| tenant_purge::claim(tx).await)
+		.await
 }
 
 /// Runs the remaining steps of one claimed purge. A failure is recorded on the
@@ -58,7 +63,7 @@ pub async fn purge_tenant(store: &Store, deletion: TenantDeletion) -> Result<()>
 			store
 				.pool
 				.atomic(&scope(), async |tx| {
-					tenant_purge::fail(tx, deletion.id, step, &message).await
+					tenant_purge::fail(tx, &deletion, step, &message).await
 				})
 				.await?;
 			return Err(error);
@@ -69,22 +74,43 @@ pub async fn purge_tenant(store: &Store, deletion: TenantDeletion) -> Result<()>
 		store
 			.pool
 			.atomic(&scope(), async |tx| {
-				tenant_purge::advance(tx, deletion.id, next).await
+				tenant_purge::advance(tx, &deletion, next).await
 			})
 			.await?;
 		step = next;
 	}
 }
 
+/// Runs one step. Every step works while a transaction holds the deletion row
+/// (see [`tenant_purge::hold`]), so a restore can neither land between the
+/// check and the step nor interleave with it, and a restored, purged or taken
+/// over Tenant makes the step refuse before it deletes anything.
 async fn run(store: &Store, deletion: &TenantDeletion, step: PurgeStep) -> Result<()> {
 	match step {
-		PurgeStep::ProviderCredentials => provider_credentials(store, &deletion.tenant).await,
-		PurgeStep::CapabilityObjects => capability_objects(store, &deletion.tenant).await,
+		PurgeStep::ProviderCredentials => {
+			store
+				.pool
+				.atomic(&scope(), async |tx| {
+					tenant_purge::hold(tx, deletion).await?;
+					provider_credentials(store, &deletion.tenant).await
+				})
+				.await
+		}
+		PurgeStep::CapabilityObjects => {
+			store
+				.pool
+				.atomic(&scope(), async |tx| {
+					tenant_purge::hold(tx, deletion).await?;
+					capability_objects(store, &deletion.tenant).await
+				})
+				.await
+		}
 		PurgeStep::Rows => rows(store, deletion).await,
 		PurgeStep::Finish => {
 			store
 				.pool
 				.atomic(&scope(), async |tx| {
+					tenant_purge::hold(tx, deletion).await?;
 					tenant_purge::finish(tx, deletion).await
 				})
 				.await
@@ -151,6 +177,7 @@ async fn rows(store: &Store, deletion: &TenantDeletion) -> Result<()> {
 	store
 		.pool
 		.atomic(&scope(), async |tx| {
+			tenant_purge::hold(tx, deletion).await?;
 			purge::unlink(tx, classification::UNLINKED, &deletion.tenant).await
 		})
 		.await?;
@@ -158,8 +185,9 @@ async fn rows(store: &Store, deletion: &TenantDeletion) -> Result<()> {
 		store
 			.pool
 			.atomic(&scope(), async |tx| {
+				tenant_purge::hold(tx, deletion).await?;
 				purge::delete_tenant_rows(tx, table, &deletion.tenant).await?;
-				tenant_purge::renew(tx, deletion.id).await
+				tenant_purge::renew(tx, deletion).await
 			})
 			.await?;
 	}

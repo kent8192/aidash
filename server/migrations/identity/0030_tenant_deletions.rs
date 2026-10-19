@@ -29,6 +29,9 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("purge_failures", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("purge_error", FieldType::Text).with_not_null(false),
 				ColumnDefinition::new("purge_failed_at", FieldType::TimestampTz).with_not_null(false),
+				// The worker that owns the purge, and until when. Every destructive
+				// step locks the row and checks it still holds this lease.
+				ColumnDefinition::new("purge_lease", FieldType::Uuid).with_not_null(false),
 				ColumnDefinition::new("purge_leased_until", FieldType::TimestampTz).with_not_null(false),
 				ColumnDefinition::new("audit_erased_at", FieldType::TimestampTz).with_not_null(false),
 			],
@@ -62,7 +65,7 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::Check {
 					name: "tenant_deletions_state".into(),
-					expression: "deleted_by_kind IN ('tenant_administrator','deployment_administrator') AND (deleted_by_kind <> 'tenant_administrator' OR deleted_by_identity IS NOT NULL) AND purge_after > deleted_at AND (restored_at IS NULL) = (restored_by_kind IS NULL) AND (restored_by_kind IS NULL OR restored_by_kind IN ('tenant_administrator','deployment_administrator')) AND (restored_by_kind IS DISTINCT FROM 'tenant_administrator' OR restored_by_identity IS NOT NULL) AND (restored_at IS NULL OR restored_at >= deleted_at) AND (restored_at IS NULL OR purged_at IS NULL) AND (purge_step IS NULL OR purge_step IN ('provider_credentials','capability_objects','rows','finish')) AND purge_failures >= 0 AND (purged_at IS NULL OR purge_step IS NULL) AND (purge_failures = 0 OR purge_error IS NOT NULL) AND (audit_erased_at IS NULL OR purged_at IS NOT NULL)".into(),
+					expression: "deleted_by_kind IN ('tenant_administrator','deployment_administrator') AND (deleted_by_kind <> 'tenant_administrator' OR deleted_by_identity IS NOT NULL) AND purge_after > deleted_at AND (restored_at IS NULL) = (restored_by_kind IS NULL) AND (restored_by_kind IS NULL OR restored_by_kind IN ('tenant_administrator','deployment_administrator')) AND (restored_by_kind IS DISTINCT FROM 'tenant_administrator' OR restored_by_identity IS NOT NULL) AND (restored_at IS NULL OR restored_at >= deleted_at) AND (restored_at IS NULL OR purged_at IS NULL) AND (purge_step IS NULL OR purge_step IN ('provider_credentials','capability_objects','rows','finish')) AND purge_failures >= 0 AND (purged_at IS NULL OR purge_step IS NULL) AND (purge_failures = 0 OR purge_error IS NOT NULL) AND (audit_erased_at IS NULL OR purged_at IS NOT NULL) AND (purge_lease IS NULL) = (purge_leased_until IS NULL)".into(),
 				},
 			],
 			without_rowid: None,

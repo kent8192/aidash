@@ -428,3 +428,98 @@ async fn audit_history_is_kept_for_its_own_period_and_then_deleted_with_the_purg
 	);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_restore_is_refused_while_a_purge_owns_the_tenant(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_with_work(&alice, "Team").await;
+	let (status, body) = d.delete(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	let path = format!("/api/tenants/{tenant}/restore");
+	let pool = d.federation.store.pool.fixture_driver();
+
+	// A purge worker's lease, and a step that already ran, each keep a restore out
+	// even though the grace period has not ended.
+	for claim in [
+		"purge_lease = gen_random_uuid(), purge_leased_until = now() + interval '10 minutes'",
+		"purge_step = 'rows'",
+	] {
+		sqlx::query(&format!(
+			"UPDATE tenant_deletions SET {claim} WHERE tenant = $1 AND restored_at IS NULL"
+		))
+		.bind(&tenant)
+		.execute(pool)
+		.await
+		.unwrap();
+		let (status, body) = d
+			.as_deployment_administrator("POST", &path, Value::Null)
+			.await;
+		assert_eq!(status, 409, "{claim}: {body}");
+		sqlx::query(
+			"UPDATE tenant_deletions SET purge_lease = NULL, purge_leased_until = NULL, purge_step = NULL \
+			 WHERE tenant = $1 AND restored_at IS NULL",
+		)
+		.bind(&tenant)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	// Nothing owns it, so the restore works.
+	let (status, body) = d
+		.as_deployment_administrator("POST", &path, Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_purge_step_that_meets_a_restore_deletes_nothing(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	// Arrange: a purge claimed the Tenant, then a restore took the deletion row
+	// and committed while the purge's first step waited for it.
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_with_work(&alice, "Team").await;
+	let (status, body) = d.delete(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	d.grace_period_ends(&tenant).await;
+	let before = d.rows_of(&tenant).await;
+	let mut claimed = tenant_purge::claim(&d.federation.store).await.unwrap();
+	assert_eq!(claimed.len(), 1);
+	let deletion = claimed.remove(0);
+	let pool = d.federation.store.pool.fixture_driver();
+	let mut restore = pool.begin().await.unwrap();
+	sqlx::query("SELECT id FROM tenant_deletions WHERE id = $1 FOR UPDATE")
+		.bind(deletion.id)
+		.execute(&mut *restore)
+		.await
+		.unwrap();
+	let store = d.federation.store.clone();
+	let purge = tokio::spawn(async move { tenant_purge::purge_tenant(&store, deletion).await });
+	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+	assert!(!purge.is_finished(), "the step must wait for the row lock");
+
+	// Act
+	sqlx::query(
+		"UPDATE tenant_deletions SET restored_at = now(), restored_by_kind = 'deployment_administrator', \
+		 purge_lease = NULL, purge_leased_until = NULL WHERE tenant = $1 AND restored_at IS NULL",
+	)
+	.bind(&tenant)
+	.execute(&mut *restore)
+	.await
+	.unwrap();
+	restore.commit().await.unwrap();
+	let outcome = purge.await.unwrap();
+
+	// Assert
+	assert!(outcome.is_err(), "a restored Tenant must not be purged");
+	assert_eq!(d.rows_of(&tenant).await, before);
+	d.finish().await;
+}
