@@ -51,7 +51,7 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- $s := .Values.gcip.settings -}}
 {{- if or (not (kindIs "map" $s)) (ne (keys $s | join ",") "dashboard") (not (kindIs "map" $s.dashboard)) (ne (keys $s.dashboard | join ",") "gcip") (not (kindIs "map" $s.dashboard.gcip)) -}}{{ fail "gcip.settings must select GCIP only: {dashboard: {gcip: {...}}}" }}{{- end -}}
 {{- $g := $s.dashboard.gcip -}}
-{{- $allowed := list "project_id" "web_api_key" "public_origin" "tenant_bindings" "providers" "password_sign_up" "sign_in_domains" "mfa_mandatory" "auth_helper" "session_absolute_seconds" "session_idle_seconds" -}}
+{{- $allowed := list "project_id" "web_api_key" "public_origin" "shared_pool" "tenant_bindings" "providers" "password_sign_up" "sign_in_domains" "mfa_mandatory" "auth_helper" "session_absolute_seconds" "session_idle_seconds" -}}
 {{- range $key := keys $g -}}
 {{- if not (has $key $allowed) -}}{{ fail (printf "gcip.settings.dashboard.gcip.%s is not a managed GCIP setting" $key) }}{{- end -}}
 {{- end -}}

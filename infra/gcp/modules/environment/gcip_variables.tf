@@ -1,7 +1,7 @@
 variable "gcip_tenants" {
-  description = "GCIP pool definitions cloned into each environment. Pool aliases are configuration keys, not GCIP-generated IDs."
+  description = "GCIP pool definitions cloned into each environment. Pool aliases are configuration keys, not GCIP-generated IDs. A pool with a tenant has a Tenant Binding; the one pool without a tenant is the Shared Pool."
   type = map(object({
-    tenant           = string
+    tenant           = optional(string)
     password_sign_up = optional(bool, true)
     google_client_id = optional(string)
     oidc             = optional(map(object({ client_id = string, issuer = string })), {})
@@ -16,8 +16,15 @@ variable "gcip_tenants" {
   }))
   default = {}
   validation {
-    condition     = length(distinct([for pool in values(var.gcip_tenants) : pool.tenant])) == length(var.gcip_tenants) && alltrue([for alias, pool in var.gcip_tenants : can(regex("^[a-zA-Z0-9_-]+$", alias)) && can(regex("^[a-zA-Z0-9_.:-]+$", pool.tenant)) && (!(length(pool.oidc) > 0 || length(pool.saml) > 0) || !pool.password_sign_up) && alltrue([for id in keys(pool.oidc) : startswith(id, "oidc.")]) && alltrue([for id in keys(pool.saml) : startswith(id, "saml.")])])
+    condition     = length(distinct(compact([for pool in values(var.gcip_tenants) : pool.tenant]))) == length(compact([for pool in values(var.gcip_tenants) : pool.tenant])) && alltrue([for alias, pool in var.gcip_tenants : can(regex("^[a-zA-Z0-9_-]+$", alias)) && (pool.tenant == null || can(regex("^[a-zA-Z0-9_.:-]+$", pool.tenant))) && (!(length(pool.oidc) > 0 || length(pool.saml) > 0) || !pool.password_sign_up) && alltrue([for id in keys(pool.oidc) : startswith(id, "oidc.")]) && alltrue([for id in keys(pool.saml) : startswith(id, "saml.")])])
     error_message = "Tenant Bindings must be one-to-one; SSO pools must disable password signup and use oidc./saml. provider IDs."
+  }
+  validation {
+    # A Tenant that brings its own single sign-on has a Tenant Binding, and a
+    # Sign-in Domain routes only to a bound pool; every other address signs in
+    # through the Shared Pool.
+    condition     = length([for pool in values(var.gcip_tenants) : pool if pool.tenant == null]) <= 1 && alltrue([for pool in values(var.gcip_tenants) : pool.tenant != null || (length(pool.oidc) == 0 && length(pool.saml) == 0 && length(pool.sign_in_domains) == 0)])
+    error_message = "At most one pool may omit its tenant, as the Shared Pool, and the Shared Pool has no SSO providers or Sign-in Domains."
   }
   validation {
     # The server's URL host parser reads a name whose last label is a number
