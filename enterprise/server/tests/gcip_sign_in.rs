@@ -1231,13 +1231,22 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		settings.node.node_id = f.config.node_id.clone();
 		settings.node.endpoint = f.config.endpoint.clone();
 		settings.node.api_token = f.config.api_token.clone();
-		settings.dashboard.gcip = Some(serde_json::to_value(gcip_settings()).unwrap());
+		// Only the Enterprise build's own settings source carries the GCIP
+		// settings, as the managed file of a Cloud Environment does.
+		let managed = tempfile::NamedTempFile::new().unwrap();
+		std::fs::write(
+			managed.path(),
+			serde_json::to_vec(&json!({"dashboard": {"gcip": gcip_settings()}})).unwrap(),
+		)
+		.unwrap();
+		// SAFETY: no other test of this binary reads the variable.
+		unsafe { std::env::set_var("AIDASH_GCIP_SETTINGS", managed.path()) };
 		let context = reinhardt::test::fixtures::injection_context::default();
 		let installed =
 			aidash_server::bootstrap::initialize(&context, &settings, f.store.pool.connection())
-				.await
-				.unwrap();
-		installed.store.control_pool.close().await;
+				.await;
+		unsafe { std::env::remove_var("AIDASH_GCIP_SETTINGS") };
+		installed.unwrap().store.control_pool.close().await;
 	} else {
 		let (stop, stopping) = tokio::sync::watch::channel(false);
 		let runtime = f.clone();

@@ -13,9 +13,6 @@ use std::fmt;
 pub struct DashboardSettings {
 	#[setting(optional, node)]
 	pub oidc: Option<OidcConfig>,
-	/// GCIP sign-in, which only the Enterprise build reads.
-	#[setting(default = "None", leaf)]
-	pub gcip: Option<serde_json::Value>,
 }
 
 #[settings(fragment = true)]
@@ -122,11 +119,6 @@ impl<'a> From<&'a OidcConfig> for SessionConfig<'a> {
 }
 impl SettingsValidation for DashboardSettings {
 	fn validate(&self, _profile: &Profile) -> ValidationResult {
-		if self.oidc.is_some() && self.gcip.is_some() {
-			return Err(ValidationError::Constraint(
-				"dashboard.oidc and dashboard.gcip are mutually exclusive".into(),
-			));
-		}
 		if let Some(config) = &self.oidc {
 			config
 				.normalized()
@@ -169,7 +161,6 @@ mod tests {
 		oidc_config.client_secret = client_secret.into();
 		let dashboard = DashboardSettings {
 			oidc: Some(oidc_config),
-			gcip: None,
 		};
 		// Act
 		let error = dashboard.validate(&Profile::Development).unwrap_err();
@@ -192,16 +183,5 @@ mod tests {
 		// Assert: validation must not trim significant credential bytes.
 		assert_eq!(normalized.client_id, oidc_config.client_id);
 		assert_eq!(normalized.client_secret, oidc_config.client_secret);
-	}
-	#[rstest]
-	fn gcip_and_oidc_are_mutually_exclusive(oidc_config: OidcConfig) {
-		assert!(
-			DashboardSettings {
-				oidc: Some(oidc_config),
-				gcip: Some(serde_json::json!({}))
-			}
-			.validate(&Profile::Development)
-			.is_err()
-		);
 	}
 }

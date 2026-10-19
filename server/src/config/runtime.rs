@@ -13,7 +13,7 @@ pub struct Config {
 	pub lease_seconds: i32,
 	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
 	pub oidc: Option<OidcConfig>,
-	/// A sign-in that the build adds, such as GCIP in the Enterprise build.
+	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
 		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
 }
@@ -71,6 +71,12 @@ impl Config {
 		) {
 			return Err(Error::Invalid("Aidash requires PostgreSQL".into()));
 		}
+		let sign_in = crate::bootstrap::build::current().extension.sign_in()?;
+		if sign_in.is_some() && settings.dashboard.oidc.is_some() {
+			return Err(Error::Invalid(
+				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
+			));
+		}
 		let node = &settings.node;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
@@ -82,12 +88,7 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
-			sign_in: settings
-				.dashboard
-				.gcip
-				.as_ref()
-				.map(|gcip| crate::bootstrap::build::current().extension.sign_in(gcip))
-				.transpose()?,
+			sign_in,
 			oidc: settings
 				.dashboard
 				.oidc

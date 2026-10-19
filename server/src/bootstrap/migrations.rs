@@ -389,8 +389,8 @@ mod tests {
 		fs::create_dir_all(community.path().join("identity/sql")).unwrap();
 		fs::write(community.path().join("identity/0001_a.rs"), "a").unwrap();
 		fs::write(community.path().join("identity/sql/a.sql"), "b").unwrap();
-		fs::create_dir_all(enterprise.path().join("gcip")).unwrap();
-		fs::write(enterprise.path().join("gcip/0001_b.rs"), "c").unwrap();
+		fs::create_dir_all(enterprise.path().join("extension")).unwrap();
+		fs::write(enterprise.path().join("extension/0001_b.rs"), "c").unwrap();
 		let roots = [community.path().into(), enterprise.path().into()];
 
 		let tree = Tree::stage(&roots).unwrap();
@@ -401,7 +401,7 @@ mod tests {
 			"b"
 		);
 		assert_eq!(
-			fs::read_to_string(staged.join("gcip/0001_b.rs")).unwrap(),
+			fs::read_to_string(staged.join("extension/0001_b.rs")).unwrap(),
 			"c"
 		);
 		drop(tree);

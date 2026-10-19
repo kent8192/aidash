@@ -219,7 +219,7 @@ impl DashboardRegistrationRequest {
 				&& previous.tenant != tenant
 			{
 				// A pending request addressed elsewhere, as when the identity's
-				// GCIP pool was bound to another Tenant since, can no longer be
+				// issuer was restricted to another Tenant since, can no longer be
 				// approved: it ends now, and a request to the current address
 				// opens. Display retention reads an expired request's end from
 				// `expires_at`, so the deadline it never reached is not kept.
@@ -316,8 +316,8 @@ impl DashboardRegistrationRequest {
 	}
 
 	/// Approves into `input.tenant` and `input.subject`. A Tenant Administrator
-	/// approves only into its own Tenant, and only a Registration Request from
-	/// the bound GCIP Tenant; it creates the subject with `groups` or re-approves
+	/// approves only into its own Tenant, and only a Registration Request it may
+	/// see; it creates the subject with `groups` or re-approves
 	/// the subject that External Identity was previously mapped to.
 	pub(crate) async fn approve(
 		db: &Pool,
@@ -745,9 +745,9 @@ impl DashboardRegistrationRequest {
 	}
 }
 
-/// A Tenant Administrator sees only Registration Requests from the configured
-/// issuer's GCIP Tenant bound to its Tenant, and never acts on its own External
-/// Identity.
+/// A Tenant Administrator sees only Registration Requests addressed to its
+/// Tenant from identities that may be mapped into it, and never acts on its own
+/// External Identity.
 pub(super) fn visible_to(
 	administrator: &TenantAdministrator,
 	registration: &DashboardRegistrationRequest,

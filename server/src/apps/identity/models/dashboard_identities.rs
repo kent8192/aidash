@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 pub struct DashboardIdentity {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
-	/// A GCIP Tenant is part of the issuer, so the same person in two GCIP
-	/// Tenants is two External Identities.
+	/// A sign-in with several user pools folds the pool into the issuer, so
+	/// the same person in two pools is two External Identities.
 	#[field(field_type = "text")]
 	pub issuer: String,
 	#[field(field_type = "text")]
