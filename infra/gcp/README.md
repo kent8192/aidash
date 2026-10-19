@@ -44,7 +44,9 @@ PostgreSQL 17 with pgvector/PGroonga and NATS JetStream are single-replica
 StatefulSets from [the Environment chart](helm/environment/README.md); web/API,
 workers and the opt-in gVisor execution components come from
 [the application chart](../../deploy/helm/aidash/README.md). Execution Pods run
-upstream gVisor installed by the privileged installer DaemonSet.
+upstream gVisor installed by the privileged installer DaemonSet from the archive
+bundled in the trusted `control` image, so a new or recreated Cluster Node needs
+only Artifact Registry, not Google's gVisor release bucket.
 
 Only one Environment of each kind may run; other PR requests wait for the preview
 slot. Stopped PRs retain their own independent data. `stop` scales the

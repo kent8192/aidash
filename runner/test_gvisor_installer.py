@@ -31,23 +31,23 @@ class InstallerTest(unittest.TestCase):
         (self.root / 'etc/containerd/config.toml').write_text('version = 2\n')
         self.data = archive()
         self.sha = hashlib.sha256(self.data).hexdigest()
-        self.download, self.restart = Mock(return_value=self.data), Mock()
+        self.read_archive, self.restart = Mock(return_value=self.data), Mock()
 
     def install(self):
         installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
-                          self.download, self.restart)
+                          self.read_archive, self.restart)
 
     def test_idempotence_verifies_every_archive_binary_and_repairs_tampering(self):
         self.install()
         self.install()
-        self.assertEqual(self.download.call_count, 1)
+        self.assertEqual(self.read_archive.call_count, 1)
         self.assertEqual(self.restart.call_count, 1)
         self.assertTrue(installer.installed(self.root, installer.GVISOR_VERSION, self.sha))
         sentry = self.root / 'usr/local/bin/gvisor-bin/gvisor_sentry'
         sentry.write_bytes(b'tampered')
         self.install()
         self.assertEqual(sentry.read_bytes(), b'binary')
-        self.assertEqual(self.download.call_count, 2)
+        self.assertEqual(self.read_archive.call_count, 2)
         self.assertEqual(self.restart.call_count, 1)
 
     def test_swap_platform_and_root_configuration_repair_restarts_once(self):
@@ -65,7 +65,7 @@ class InstallerTest(unittest.TestCase):
             config.write_text(text)
             with self.assertRaises(ValueError):
                 installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
-                                  self.download, self.restart, drain=drain)
+                                  self.read_archive, self.restart, drain=drain)
             self.assertEqual(config.read_text(), text)
             # Refused before anything is fenced, drained or written.
             self.assertFalse((self.root / 'usr/local/bin' / installer.SHIM).exists())
@@ -84,14 +84,14 @@ class InstallerTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, 'live gVisor'):
             installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
-                              self.download, self.restart, '/run/other', drain=blocked)
+                              self.read_archive, self.restart, '/run/other', drain=blocked)
         # Live sandboxes keep the root the guard reaches them through.
         self.assertEqual(config.read_text(), before)
         self.assertEqual(self.restart.call_count, 1)
         self.assertEqual(shim.stat().st_mode & 0o777, 0o644)
         drained = Mock()
         installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
-                          self.download, self.restart, '/run/other', drain=drained)
+                          self.read_archive, self.restart, '/run/other', drain=drained)
         drained.assert_called_once()
         self.assertIn('root = "/run/other"', config.read_text())
         self.assertEqual(self.restart.call_count, 2)
@@ -99,7 +99,7 @@ class InstallerTest(unittest.TestCase):
         # An unchanged installation neither fences nor drains.
         unchanged = Mock()
         installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
-                          self.download, self.restart, '/run/other', drain=unchanged)
+                          self.read_archive, self.restart, '/run/other', drain=unchanged)
         unchanged.assert_not_called()
 
     def test_shim_stays_fenced_until_every_file_and_containerd_restart_complete(self):
@@ -117,7 +117,7 @@ class InstallerTest(unittest.TestCase):
         restart = Mock(side_effect=lambda: observed.append(('restart', executable())))
         with patch.object(installer, 'write', write):
             installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
-                              self.download, restart)
+                              self.read_archive, restart)
         # The archive lists the shim first; it is still never executable before the end.
         self.assertEqual(observed[0], (installer.SHIM, False))
         self.assertIn(('restart', False), observed)
@@ -148,6 +148,40 @@ class InstallerTest(unittest.TestCase):
             self.assert_locked()
         with installer.node_lock(self.root):
             pass
+
+    def test_a_new_node_installs_the_bundled_archive_without_the_network(self):
+        bundle = self.root / 'image'
+        installer.write(installer.bundled(installer.GVISOR_VERSION, 'x86_64', bundle), self.data)
+        offline = Mock(side_effect=AssertionError('the installer reached the network'))
+        with patch.object(installer.urllib.request, 'urlopen', offline):
+            installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                              lambda version, arch: installer.read_bundled(version, arch, bundle),
+                              self.restart)
+        self.assertTrue(installer.installed(self.root, installer.GVISOR_VERSION, self.sha))
+        offline.assert_not_called()
+
+    def test_a_version_the_image_does_not_bundle_fails_before_any_change(self):
+        bundle = self.root / 'image'
+        installer.write(installer.bundled(installer.GVISOR_VERSION, 'x86_64', bundle), self.data)
+        with self.assertRaisesRegex(FileNotFoundError, 'not bundled'):
+            installer.install(self.root, 'other', self.sha, 'x86_64',
+                              lambda version, arch: installer.read_bundled(version, arch, bundle),
+                              self.restart)
+        self.assertFalse((self.root / 'usr/local/bin').exists())
+        self.restart.assert_not_called()
+
+    def test_the_image_build_bundles_only_a_verified_archive(self):
+        pinned = dict(installer.ARCHIVE_HASHES, x86_64=self.sha)
+        with patch.object(installer, 'ARCHIVE_HASHES', pinned):
+            download = Mock(return_value=self.data)
+            installer.bundle('amd64', self.root / 'good', download)
+            download.assert_called_once_with(
+                f'{installer.RELEASES}/{installer.GVISOR_VERSION}/x86_64/gvisor.tar.bz2')
+            self.assertEqual(installer.read_bundled(installer.GVISOR_VERSION, 'x86_64',
+                                                    self.root / 'good'), self.data)
+            with self.assertRaisesRegex(ValueError, 'checksum'):
+                installer.bundle('amd64', self.root / 'bad', Mock(return_value=archive(content=b'other')))
+        self.assertFalse((self.root / 'bad').exists())
 
     def test_checksum_and_unsafe_archive_members_fail_before_install(self):
         with self.assertRaisesRegex(ValueError, 'checksum'):

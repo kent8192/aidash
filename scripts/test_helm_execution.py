@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DIGEST = '@sha256:' + 'b' * 64
 # The shipped PostgreSQL value is the locally built image's tag; it must be pinned.
 POSTGRES = {'existingSecret': 'db', 'image': 'aidash-postgres' + DIGEST}
+GVISOR = json.loads((ROOT / 'runner/gvisor.json').read_text())
 
 
 def render(chart, values, release='fixture', kube_version=None, namespace='environment'):
@@ -36,6 +37,13 @@ class ChartsTest(unittest.TestCase):
     # The Runner requires the application's capability object claim.
     base = {'node': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
+
+    def test_chart_installs_the_release_the_runner_image_bundles(self):
+        # The installer reads only the archive bundled in its image (#394), so a
+        # chart pin that differs from runner/gvisor.json can never install.
+        values = yaml.safe_load((ROOT / self.aidash / 'values.yaml').read_text())['execution']['gvisor']
+        self.assertEqual(values['version'], GVISOR['version'])
+        self.assertEqual(values['sha256'], GVISOR['sha256']['x86_64'])
 
     def test_execution_is_opt_in(self):
         objects = render(self.aidash, self.base)
@@ -285,7 +293,7 @@ class ChartsTest(unittest.TestCase):
                                            environment={'nodeSelector': {'pool': 'execution'}}))
         runtime = select(objects, 'RuntimeClass', '-runsc')
         self.assertEqual(runtime['handler'], 'runsc')
-        self.assertEqual(runtime['scheduling']['nodeSelector'], {'aidash.run/gvisor': '20260921.0'})
+        self.assertEqual(runtime['scheduling']['nodeSelector'], {'aidash.run/gvisor': GVISOR['version']})
         self.assertEqual(select(objects, 'Namespace', '-sandbox')['metadata']['labels']['pod-security.kubernetes.io/enforce'], 'restricted')
         rule = select(objects, 'ClusterRole', '-installer')['rules']
         self.assertEqual(rule, [{'apiGroups': [''], 'resources': ['nodes'], 'verbs': ['get', 'patch']}])
