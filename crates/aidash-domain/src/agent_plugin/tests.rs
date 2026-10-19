@@ -6,6 +6,7 @@ mod complete;
 mod expansion;
 mod manifest;
 mod mcp;
+mod reference;
 mod schemas;
 mod skills;
 mod tree;

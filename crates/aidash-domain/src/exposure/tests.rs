@@ -178,6 +178,7 @@ impl Run {
 			bindings: self.bindings.clone(),
 			definitions: self.definitions.clone(),
 			foreign_agents: vec![],
+			agent_plugins: vec![],
 		}
 	}
 	fn catalog(&mut self) -> Vec<Capability> {

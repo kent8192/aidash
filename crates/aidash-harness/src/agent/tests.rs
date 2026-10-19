@@ -3741,6 +3741,7 @@ impl DeferredSnapshot {
 			bindings: self.bindings,
 			definitions: self.definitions,
 			foreign_agents: vec![],
+			agent_plugins: vec![],
 		}
 	}
 }

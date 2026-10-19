@@ -66,6 +66,7 @@ fn snapshot(remote: bool, definitions: Vec<ResolvedDefinition>) -> BindingSnapsh
 		bindings,
 		definitions,
 		foreign_agents: vec![],
+		agent_plugins: vec![],
 	}
 }
 

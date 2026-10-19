@@ -1217,6 +1217,7 @@ fn asset_snapshot(repository: &mut Repository, run: &RunMetadata) -> String {
 			})
 			.collect(),
 		foreign_agents: vec![],
+		agent_plugins: vec![],
 	};
 	let alias = aidash_domain::exposure::catalog(&snapshot, &BTreeMap::new(), &[])
 		.unwrap()

@@ -8,9 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod alias;
 mod expand;
+#[cfg(test)]
+pub(crate) mod fixtures;
 mod manifest;
 mod mcp;
 mod paths;
+mod reference;
 mod skills;
 
 pub use alias::model_alias;
@@ -18,6 +21,9 @@ pub use expand::expand;
 pub use manifest::{Author, Manifest, PluginName};
 pub use mcp::{Command, Cwd, Executable, Header, McpServer, RemoteServer, ServerName, StdioServer};
 pub use paths::tree_digest;
+pub use reference::{
+	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, PinnedAgentPlugin,
+};
 pub use skills::PluginSkill;
 
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
