@@ -124,7 +124,9 @@ pub async fn cleanup_database(_url: &str, database: &str) {
 pub fn policy(node: &str) -> Value {
 	let agent = qualified_agent(node, "research", "1.0.0");
 	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
-        "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})
+        "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+            // A wildcard never grants calling a Tenant's tool without approval.
+            {"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})
 }
 
 #[allow(dead_code)]
@@ -173,18 +175,6 @@ pub async fn bootstrap_requiring_tool_call_approval(
 	require_tool_call_approval(&mut policy);
 	bootstrap_with_policy(f, app, endpoint, false, false, policy).await
 }
-/// Grant `tool.call_unapproved` by name, which a wildcard never does, so the
-/// Run's calls of a Tenant's tool need no Tool call approval.
-#[allow(dead_code)]
-pub async fn bootstrap_allowing_unapproved_tool_calls(
-	f: &Federation,
-	app: &TestApplication,
-	endpoint: &str,
-) -> (Value, String, Uuid) {
-	let mut policy = policy(&f.config.node_id);
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}));
-	bootstrap_with_policy(f, app, endpoint, false, false, policy).await
-}
 /// Narrow `approved-work` so that no subject may call a Tenant's tool without a
 /// Tool call approval: agents keep every action, and users keep what members
 /// have, including approving the tool calls of their own Runs (ADR 0075).
@@ -193,6 +183,7 @@ pub fn require_tool_call_approval(policy: &mut Value) {
 	let resources = policy["policies"][0]["resources"].clone();
 	policy["policies"][0]["subjects"] = json!({"kinds":["agent"]});
 	let policies = policy["policies"].as_array_mut().unwrap();
+	policies.retain(|policy| policy["id"] != "call-unapproved");
 	policies.push(json!({"id":"member-work","effect":"allow","subjects":{"kinds":["user"]},"actions":aidash_domain::identity::tenancy::MEMBER_ACTIONS,"resources":resources}));
 	policies.push(json!({"id":"member-tool-call-approval","effect":"allow","subjects":{"kinds":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}));
 }

@@ -2245,9 +2245,8 @@ async fn a_tenant_policy_allowing_unapproved_tool_calls_skips_the_approval(
 	let t = tool_call_approvals;
 	let (f, url, schema) = t.application.runtime.parts();
 	let app = &t.application.application;
-	// A wildcard never grants `tool.call_unapproved`; the Tenant names it.
-	let (_, token, task_id) =
-		bootstrap_allowing_unapproved_tool_calls(&f, app, &t.server.url).await;
+	// The common policy names `tool.call_unapproved`, which a wildcard never grants.
+	let (_, token, task_id) = bootstrap(&f, app, &t.server.url).await;
 	let (status, claimed) = request(
 		app,
 		&token,
