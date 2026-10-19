@@ -364,6 +364,12 @@ SLA**. PR-close cleanup has the same scheduling delay. If Actions is disabled or
 observation/IAM fails, an Environment can keep accruing charges; inspect failed
 runs. No idle timer resumes a stopped Environment.
 
+- **Zone loss in production:** production's retained disks are regional and its
+  disk-holding workloads are StatefulSets under Stateful HA, so they move to the
+  standby pools in `us-central1-b`, which scale up from zero (ADR 0067). The
+  `aidash-retain` StorageClass in production's own cluster is created regional,
+  and the controller refuses a production cluster whose class is zonal, because
+  class parameters cannot change. Nonproduction stays in one zone.
 - **Node loss and Spot preemption:** GKE recreates the node and Kubernetes
   reschedules the Pods; retained disks reattach to the replacement. There is no
   power observation or automatic normal-capacity fallback. In-flight operations

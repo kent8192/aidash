@@ -56,6 +56,21 @@ run "isolated_regional_production" {
     )
     error_message = "Production uses a separate regional control plane, normal persistent nodes, fixed host, and its own retained disk."
   }
+  assert {
+    condition = (
+      google_container_cluster.aidash.addons_config[0].stateful_ha_config[0].enabled &&
+      output.cluster.zones == ["us-central1-a", "us-central1-b"] &&
+      length(google_container_node_pool.system_standby) == 1 &&
+      google_container_node_pool.system_standby[0].node_locations == toset(["us-central1-b"]) &&
+      google_container_node_pool.system_standby[0].autoscaling[0].total_min_node_count == 0 &&
+      google_container_node_pool.system_standby[0].autoscaling[0].total_max_node_count == 1 &&
+      module.environment["production"].standby_node_pools["us-central1-b"].location == "us-central1-b" &&
+      module.environment["production"].standby_node_pools["us-central1-b"].min == 0 &&
+      module.environment["production"].standby_node_pools["us-central1-b"].max == 1 &&
+      module.environment["production"].standby_node_pools["us-central1-b"].taint == "production"
+    )
+    error_message = "Production fails over to us-central1-b: Stateful HA, regional disk zones, and standby pools that start at zero nodes (ADR 0067)."
+  }
 }
 run "production_broker_uses_production_identity" {
   command = plan
