@@ -558,28 +558,32 @@ def main():
                 except Exception as error:
                     approval_errors.append(str(error))
 
-    def watch_lock_waits():
-        # A request stalled on a row or advisory lock names what blocks it,
-        # once per waiter and blocker (#386).
-        reported = set()
+    def watch_slow_sessions():
+        # Name every Node A session that has run a statement or held a
+        # transaction for over 10 s, with what it last ran and what blocks it,
+        # once per statement (#386).
+        reported, failed = set(), False
         query = (
-            "SELECT a.pid, round(extract(epoch FROM now() - a.query_start)), a.wait_event_type || ':' || a.wait_event, "
-            "left(regexp_replace(a.query, '\\s+', ' ', 'g'), 160), b.pid, b.state, "
-            "round(extract(epoch FROM now() - b.xact_start)), left(regexp_replace(b.query, '\\s+', ' ', 'g'), 160) "
-            "FROM pg_stat_activity a CROSS JOIN LATERAL unnest(pg_blocking_pids(a.pid)) AS blocker(pid) "
-            "JOIN pg_stat_activity b ON b.pid = blocker.pid "
-            "WHERE a.datname = current_database() AND now() - a.query_start > interval '5 seconds'"
+            "SELECT pid, state, coalesce(wait_event_type || ':' || wait_event, ''), "
+            "round(extract(epoch FROM now() - query_start)), round(extract(epoch FROM now() - xact_start)), "
+            "pg_blocking_pids(pid)::text, to_char(query_start, 'HH24:MI:SS.MS'), "
+            "left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 200) "
+            "FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND state <> 'idle' AND (now() - query_start > interval '10 seconds' OR now() - xact_start > interval '10 seconds')"
         )
         while not approval_stop.wait(5):
             try:
                 rows = psql(db_a, query).splitlines()
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as error:
+                if not failed:
+                    failed = True
+                    print(f"--- slow session query failed: {error!r}", flush=True)
                 continue
             for row in rows:
                 fields = row.split("|")
-                if (fields[0], fields[4]) not in reported:
-                    reported.add((fields[0], fields[4]))
-                    print(f"--- lock wait (waiter|secs|event|query|blocker|state|xact secs|query): {row}", flush=True)
+                if (fields[0], fields[6]) not in reported:
+                    reported.add((fields[0], fields[6]))
+                    print(f"--- slow session (pid|state|wait|query s|xact s|blockers|started|query): {row}", flush=True)
 
     def node_env(node, database, port, login):
         env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
@@ -658,7 +662,7 @@ def main():
         worker_a = launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
-        threading.Thread(target=watch_lock_waits, daemon=True).start()
+        threading.Thread(target=watch_slow_sessions, daemon=True).start()
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
