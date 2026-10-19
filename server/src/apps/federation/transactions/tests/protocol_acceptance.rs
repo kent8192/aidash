@@ -959,7 +959,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 							vec![reinhardt::query::Expr::value(query_bind_4.to_owned()).into()],
 						))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
-						.expr(reinhardt::query::Expr::value("acme"))
+						.expr(reinhardt::query::Expr::value("atomic"))
 						.to_owned(),
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -968,8 +968,9 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 		.await
 	}
 	.unwrap();
-	let run = common::remote_run(
+	let run = common::remote_run_in(
 		&b.f.store,
+		"atomic",
 		&task,
 		&a.f.config.node_id,
 		&agent.id,

@@ -45,7 +45,7 @@ pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, nat
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	admitted_run, approve_agent, local_run, remote_run, replace_policy, tenant_root,
+	admitted_run, approve_agent, local_run, remote_run, remote_run_in, replace_policy, tenant_root,
 	tenant_root_in, tenant_scope, tenant_token,
 };
 
