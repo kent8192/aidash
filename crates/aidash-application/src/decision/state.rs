@@ -8,11 +8,15 @@ pub struct BuiltState {
 	pub candidates: Vec<Candidate>,
 	pub questions: Questions,
 	pub units: Units,
+	/// Whether the Route's budget accepts this state. When no stage fits, the
+	/// most abridged state is returned unfit, so the Route that refuses it
+	/// still records evidence before the next Route is asked (ADR 0066).
+	pub fits: bool,
 }
 
-/// Build the classification state within the Decider version's byte budget.
+/// Build the classification state within a Decider Route's byte budget.
 /// Disclosed tool inputs are abridged stage by stage; conversation text is never
-/// abridged. A state that fits no stage pauses the Run with `decider_unavailable`.
+/// abridged. A state that fits no stage is returned with `fits` unset.
 pub fn build_compaction_state(
 	context: &Context,
 	boundary: &Boundary,
@@ -59,14 +63,13 @@ pub fn build_compaction_state(
 	}
 	// Only the most abridged state may use the long-context mode.
 	match fallback {
-		Some((built, bytes, request))
-			if budget
+		Some((mut built, bytes, request)) => {
+			built.fits = budget
 				.request_limit(bytes)
-				.is_some_and(|limit| request <= limit) =>
-		{
+				.is_some_and(|limit| request <= limit);
 			Ok(built)
 		}
-		_ => Err(Error::Context(Failure::DeciderUnavailable)),
+		None => Err(Error::Context(Failure::DeciderUnavailable)),
 	}
 }
 
@@ -218,5 +221,6 @@ fn build_stage(
 		candidates,
 		questions,
 		units: units.clone(),
+		fits: true,
 	})
 }

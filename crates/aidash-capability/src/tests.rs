@@ -20,6 +20,7 @@ fn claims() -> Claims {
 		model: "author/model".into(),
 		max_output_tokens: 100,
 		cache_breakpoints: false,
+		hosts: vec![],
 	}
 }
 #[tokio::test]
@@ -232,7 +233,15 @@ async fn decision_tokens_are_alone_for_a_run_without_an_output_bound() {
 		serde_json::to_value(&verified.ops).unwrap(),
 		serde_json::json!(["decision"])
 	);
-	for change in 0..4 {
+	// A Decisions API attempt signs its Route's hosts (ADR 0066).
+	let mut routed = decision();
+	routed.hosts = vec!["cloudflare".into(), "deepinfra".into()];
+	let token = mint(&routed, &signer).await.unwrap();
+	let verified = keys
+		.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
+	assert_eq!(verified.hosts, routed.hosts);
+	for change in 0..5 {
 		let mut value = decision();
 		match change {
 			// A completion bound means nothing for probabilities; refuse rather than ignore it.
@@ -246,6 +255,11 @@ async fn decision_tokens_are_alone_for_a_run_without_an_output_bound() {
 					maintenance: Maintenance::MemoryIndexing,
 					tenant: value.tenant.clone(),
 				}
+			}
+			// Only a Decision Attempt is bound to Route hosts.
+			4 => {
+				value = claims();
+				value.hosts = vec!["cloudflare".into()];
 			}
 			_ => unreachable!(),
 		}

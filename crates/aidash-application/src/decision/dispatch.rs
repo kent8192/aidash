@@ -8,6 +8,9 @@ pub(super) struct BatchResult {
 	pub restrictions: Option<Restrictions>,
 	pub state_expiry: Option<Option<DateTime<Utc>>>,
 	pub failure: Option<(Reason, Error)>,
+	/// The failure is this Route's unavailability: a fresh dispatch failed or
+	/// answered invalidly, so the next Route may be asked (ADR 0066).
+	pub next_route: bool,
 }
 
 fn stable_id(value: &Value) -> Uuid {
@@ -15,7 +18,7 @@ fn stable_id(value: &Value) -> Uuid {
 	Uuid::parse_str(&digest(value)[7..39]).expect("canonical digest contains 32 hex digits")
 }
 
-pub(super) fn decision_id(input: &Evaluation<'_>, state: &str, window: usize) -> Uuid {
+pub(super) fn decision_id(input: &Evaluation<'_>, state: &str, window: usize, route: u32) -> Uuid {
 	decision_identity(
 		input.boundary,
 		&input.decider.pin,
@@ -23,12 +26,15 @@ pub(super) fn decision_id(input: &Evaluation<'_>, state: &str, window: usize) ->
 		state,
 		&input.disclosure.sources,
 		window,
+		route,
 	)
 }
 
 /// The stable identity of one decision: the inputs that must all be the
 /// same for a recovery to reuse its charged answers. A journal recomputes it
-/// at commit, so evidence can never describe other inputs under it.
+/// at commit, so evidence can never describe other inputs under it. Each
+/// Decider Route and each outage retry is a decision of its own, so a retry
+/// never meets the uncertain attempts of the one before it (ADR 0066).
 pub fn decision_identity(
 	boundary: &Boundary,
 	decider: &DeciderPin,
@@ -36,11 +42,13 @@ pub fn decision_identity(
 	state: &str,
 	sources: &[SourcePin],
 	window: usize,
+	route: u32,
 ) -> Uuid {
 	stable_id(&json!({
-		"contract":"aidash.decision/1", "node":boundary.node, "run":boundary.run,
-		"step":boundary.step, "cycle":boundary.cycle, "input_revision":boundary.input_revision,
-		"input_digest":boundary.input_digest, "decider":decider,
+		"contract":"aidash.decision/2", "node":boundary.node, "run":boundary.run,
+		"step":boundary.step, "cycle":boundary.cycle, "retry":boundary.retry,
+		"input_revision":boundary.input_revision, "input_digest":boundary.input_digest,
+		"decider":decider, "route":route,
 		"binding_restrictions":binding_restrictions, "state":state,
 		"sources":sources, "window":window,
 	}))
@@ -57,6 +65,7 @@ pub(super) fn record(
 	decision: Uuid,
 	state: &str,
 	request: &PreparedRequest,
+	route: u32,
 ) -> Result<DispatchRecord> {
 	let questions: Vec<_> = request.questions.keys().cloned().collect();
 	let request_digest = request.digest();
@@ -67,6 +76,7 @@ pub(super) fn record(
 		boundary: input.boundary.clone(),
 		decider: input.decider.pin.clone(),
 		binding_restrictions: input.decider.restrictions.clone(),
+		route,
 		request_digest,
 		state_digest: state.into(),
 		questions,
@@ -102,6 +112,7 @@ pub(super) fn validate_recovered_identity(
 	state: &str,
 	questions: &Questions,
 	recovered: &[RecoveredAttempt],
+	route: u32,
 ) -> Result<()> {
 	let mut coverage = BTreeSet::new();
 	for prior in recovered {
@@ -124,6 +135,7 @@ pub(super) fn validate_recovered_identity(
 			boundary: input.boundary.clone(),
 			decider: input.decider.pin.clone(),
 			binding_restrictions: input.decider.restrictions.clone(),
+			route,
 			request_digest: saved.request_digest.clone(),
 			state_digest: state.into(),
 			questions: saved.questions.clone(),
@@ -205,11 +217,12 @@ impl BatchResult {
 		current: Approval,
 		input: &Evaluation<'_>,
 		config: &DeciderConfig,
+		route: &Restrictions,
 	) -> Result<()> {
 		let restrictions = self
 			.restrictions
 			.as_ref()
-			.unwrap_or(&input.decider.restrictions)
+			.unwrap_or(route)
 			.intersect(&current.restrictions, config)?;
 		// Retain a valid restrictive approval even when it denies this dispatch.
 		let forbidden = restrictions.forbid_apply && config.mode == Mode::Enforce;
@@ -259,6 +272,8 @@ pub(super) fn attempt_evidence(permit: &DispatchPermit, status: AttemptStatus) -
 }
 
 impl DecisionGate<'_> {
+	/// One batch on one Route. `route` holds the Binding restrictions with the
+	/// Route's own threshold.
 	pub(super) async fn dispatch_batch(
 		&self,
 		request: &PreparedRequest,
@@ -266,6 +281,7 @@ impl DecisionGate<'_> {
 		recovered: &[RecoveredAttempt],
 		input: &Evaluation<'_>,
 		config: &DeciderConfig,
+		route: &Restrictions,
 	) -> BatchResult {
 		let mut batch = BatchResult::default();
 		let mut origin = Reason::AuthorityFailure;
@@ -278,7 +294,7 @@ impl DecisionGate<'_> {
 					&input.disclosure.sources,
 				)
 				.await?;
-			batch.approve(current, input, config)?;
+			batch.approve(current, input, config, route)?;
 			if input
 				.disclosure
 				.source_expiry
@@ -298,7 +314,10 @@ impl DecisionGate<'_> {
 				return batch.recover(prior.clone(), request);
 			}
 			origin = Reason::ProviderFailure;
-			let transport = self.provider.prepare(request, record.attempt).await?;
+			let transport = self
+				.provider
+				.prepare(record.route as usize, request, record.attempt)
+				.await?;
 			origin = Reason::JournalFailure;
 			let permit = match self.journal.reserve(record).await? {
 				Reservation::Fresh(permit) => {
@@ -325,7 +344,7 @@ impl DecisionGate<'_> {
 					&input.disclosure.sources,
 				)
 				.await
-				.and_then(|current| batch.approve(current, input, config))
+				.and_then(|current| batch.approve(current, input, config, route))
 				.and_then(|()| {
 					if input
 						.disclosure
@@ -358,6 +377,7 @@ impl DecisionGate<'_> {
 					Some((
 						Reason::InvalidAnswers,
 						Error::Invalid("invalid decision answers".into()),
+						true,
 					)),
 				),
 				Err(DispatchError::ProviderFailure(_)) => (
@@ -366,6 +386,18 @@ impl DecisionGate<'_> {
 					Some((
 						Reason::ProviderFailure,
 						Error::Invalid("decision provider request failed".into()),
+						true,
+					)),
+				),
+				// The provider answered with a refusal, so nothing was decided,
+				// and every other Route would be refused alike.
+				Err(DispatchError::Refused(status)) => (
+					AttemptStatus::Failed,
+					None,
+					Some((
+						Reason::ProviderFailure,
+						Error::Invalid(format!("decision provider refused with HTTP {status}")),
+						false,
 					)),
 				),
 			};
@@ -380,8 +412,9 @@ impl DecisionGate<'_> {
 				return Err(error);
 			}
 			batch.answers = answers.unwrap_or_default();
-			if let Some((reason, error)) = failure {
+			if let Some((reason, error, next_route)) = failure {
 				origin = reason;
+				batch.next_route = next_route;
 				return Err(error);
 			}
 			Ok(())
