@@ -43,7 +43,7 @@ run "empty_runs_no_node_or_dns" {
       google_container_cluster.aidash.release_channel[0].channel == "REGULAR" &&
       google_container_cluster.aidash.datapath_provider == "ADVANCED_DATAPATH" &&
       google_container_cluster.aidash.workload_identity_config[0].workload_pool == "aidash-fixture.svc.id.goog" &&
-      output.cluster == { name = "aidash", location = "us-central1-a", project_id = "aidash-fixture", workload_pool = "aidash-fixture.svc.id.goog", pod_cidr = "10.44.0.0/14" }
+      output.cluster == { name = "aidash", location = "us-central1-a", project_id = "aidash-fixture", workload_pool = "aidash-fixture.svc.id.goog", pod_cidr = "10.44.0.0/14", zones = ["us-central1-a"] }
     )
     error_message = "One protected zonal Dataplane V2 cluster with Workload Identity hosts every environment."
   }
@@ -117,6 +117,15 @@ run "identities_are_separated" {
       google_kms_crypto_key_iam_member.broker_signer["test"].crypto_key_id == module.credential_broker["test"].signing_key
     )
     error_message = "Only the matching worker identity may sign capabilities for its broker."
+  }
+  assert {
+    condition = (
+      !google_container_cluster.aidash.addons_config[0].stateful_ha_config[0].enabled &&
+      output.cluster.zones == ["us-central1-a"] &&
+      length(google_container_node_pool.system_standby) == 0 &&
+      length(module.environment["test"].standby_node_pools) == 0
+    )
+    error_message = "Nonproduction stays in one zone: no standby pools and no Stateful HA (ADR 0067)."
   }
   assert {
     condition = (

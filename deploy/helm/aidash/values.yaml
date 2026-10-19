@@ -61,6 +61,16 @@ providerCredentials:
 # public_origin must equal deployment.endpoint. null renders nothing.
 gcip:
   settings: null
+# Deployment, or StatefulSet for the server, worker and Runner, which hold
+# ReadWriteOnce claims. GKE's Stateful HA fails StatefulSets on regional disks
+# over to another zone (ADR 0067).
+workloadKind: Deployment
+highAvailability:
+  # Render a HighAvailabilityApplication for each StatefulSet; needs the GKE
+  # Stateful HA add-on, regional disks and workloadKind StatefulSet.
+  enabled: false
+  # How long after its Cluster Node is unreachable a Pod is force-deleted.
+  afterNodeUnreachableSeconds: 20
 server:
   serviceAccount:
     annotations: {}

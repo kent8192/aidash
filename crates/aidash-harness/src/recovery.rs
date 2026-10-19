@@ -73,6 +73,23 @@ pub async fn recover(
 			current.recovery.semantic_reason = Some(reason);
 			store.pause_semantic(&current, token, reason).await?;
 		}
+	} else if matches!(failure, ExecutionFailure::DeciderOutage) {
+		// Every Decider Route failed. Retry after 2, 4, 8, 16 and 32 s, each
+		// time as a new decision, then pause until a person resumes (ADR 0066).
+		let retries = current.recovery.decider_retry + 1;
+		if retries <= OUTAGE_RETRIES {
+			current.recovery.decider_retry = retries;
+			current.recovery.retry = Some(RetryState {
+				count: retries,
+				at: now + chrono::Duration::seconds(2_i64.pow(retries)),
+			});
+			current.error = Some(failure.message());
+			store.save(&current, token, "run.decider_retrying").await?;
+		} else {
+			let reason = aidash_domain::context::recovery::Failure::DeciderUnavailable;
+			current.recovery.context_reason = Some(reason);
+			store.pause_context(&current, token, reason).await?;
+		}
 	} else if let ExecutionFailure::Context(reason) = failure {
 		// Final for this step and never a transport retry. Local and remote-hosted
 		// Runs share this path: the store records the typed reason, pauses, and

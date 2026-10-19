@@ -484,6 +484,54 @@ class SealAndMigrationTests(unittest.TestCase):
         static = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)
         self.assertEqual(static["execution"]["runner"]["journal"], {"storageClassName": ""})
 
+    def test_production_keeps_its_retained_disks_on_regional_disks_in_two_zones(self):
+        kube.prepare(self.cluster, "production")
+        regional = self.cluster.get("storageclass", kube.STORAGE_CLASS)
+        self.assertEqual(regional["parameters"], {
+            "type": "pd-balanced", "replication-type": "regional-pd",
+            "availability-class": "regional-hard-failover",
+        })
+        self.assertEqual(regional["allowedTopologies"], [{"matchLabelExpressions": [
+            {"key": "topology.gke.io/zone", "values": ["us-central1-a", "us-central1-b"]},
+        ]}])
+        self.assertEqual(regional["reclaimPolicy"], "Retain")
+        # Every claim the controller creates uses that class.
+        for name, size in kube.CLAIMS.items():
+            claim = kube.claim("aidash-production", name, size)
+            self.assertEqual(claim["spec"]["storageClassName"], kube.STORAGE_CLASS)
+        # Nonproduction's own cluster keeps zonal disks.
+        zonal = FakeCluster([])
+        kube.prepare(zonal, "test")
+        self.assertEqual(zonal.get("storageclass", kube.STORAGE_CLASS)["parameters"], {"type": "pd-balanced"})
+        self.assertNotIn("allowedTopologies", zonal.get("storageclass", kube.STORAGE_CLASS))
+
+    def test_production_is_never_created_on_zonal_disks(self):
+        # Class parameters are immutable; a zonal class would keep the zone a
+        # single point of failure, so production refuses to start on it.
+        kube.prepare(self.cluster, "test")
+        with self.assertRaisesRegex(Refused, "differs"):
+            kube.prepare(self.cluster, "production")
+        single = FakeCluster([])
+        single.zones = ["us-central1-a"]
+        with self.assertRaisesRegex(Refused, "two zones"):
+            kube.prepare(single, "production")
+
+    def test_production_disk_holders_are_statefulsets_under_stateful_ha(self):
+        output = dict(OUTPUT, hostname="aidash.run", runtime_secret="production",
+                      server_service_account="server@fixture", worker_service_account="worker@fixture")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        settings = {"provider": None, "gcip": None}
+        failover = {"workloadKind": "StatefulSet", "highAvailability": {"enabled": True}}
+        for values in (kube.app_values(self.cluster, "production", output, release, "a" * 40, settings),
+                       kube.env_values("production", output, release, settings)):
+            self.assertEqual({key: values[key] for key in failover}, failover)
+        for values in (kube.app_values(self.cluster, "test", OUTPUT | output, release, "a" * 40, settings),
+                       kube.env_values("test", OUTPUT | output, release, settings)):
+            self.assertFalse(failover.keys() & values.keys())
+        for workload in (kube.SERVER, kube.WORKER, kube.RUNNER, kube.EDGE):
+            self.assertEqual(kube.target("production", workload).split("/")[0], "statefulset")
+            self.assertEqual(kube.target("test", workload), workload)
+
     def test_home_ledger_is_initialized_as_a_child_of_its_claim_root(self):
         # A fresh disk's root belongs to root; ledger initialization chmods its
         # directory, so the Home must be a child the application UID creates.

@@ -57,7 +57,7 @@ pub async fn admit(
 	config: &DeciderConfig,
 ) -> Result<Input> {
 	authority.suspend().await?;
-	let amount = i64::try_from(config.state_budget.max_request_bytes() + 1024)
+	let amount = i64::try_from(config.max_request_bytes() + 1024)
 		.map_err(|_| Error::Invalid("decision request bound overflow".into()))?;
 	let reservation = authority
 		.admit(run, attempt, request_digest, amount)

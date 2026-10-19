@@ -810,7 +810,7 @@ impl Environment<'_> {
 		definition: Entry,
 		journal: Box<dyn aidash_application::ports::decision::DecisionJournal + 'a>,
 	) -> Result<aidash_application::ports::decision::DecisionPorts<'a>> {
-		let provider = aidash_integrations::decision::JevDecisionProvider::new(
+		let provider = aidash_integrations::decision::RouteDecisionProvider::new(
 			decider.config.clone(),
 			aidash_application::registry::validation::decision_implementation_id(),
 			Arc::new(
@@ -823,9 +823,7 @@ impl Environment<'_> {
 				run: Some(run.id),
 				..Default::default()
 			},
-			Arc::new(aidash_integrations::decision::ByteBudget(
-				decider.config.state_budget.clone(),
-			)),
+			Arc::new(aidash_integrations::decision::ByteBudget),
 			DECIDER_TIMEOUT,
 		)?;
 		Ok(aidash_application::ports::decision::DecisionPorts {

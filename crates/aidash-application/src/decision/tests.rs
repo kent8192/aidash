@@ -10,23 +10,43 @@ fn config(mode: Mode) -> DeciderConfig {
 		hook: Hook::Compaction,
 		answer_type: AnswerType::Noul,
 		description: "Keep needed history".into(),
-		provider_contract: PROVIDER.into(),
 		provider_credential: "openrouter".into(),
-		model: "typesafe/jev-1.13".into(),
+		routes: vec![DeciderRoute::jev("typesafe/jev-1.13")],
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
-		keep_threshold: Probability::half(),
 		mode,
 		max_calls_per_run: 1_000,
 		state_retention: policy::StateRetention::default(),
-		state_budget: StateBudget::default(),
 	}
 }
 fn definition(mode: Mode) -> aidash_domain::registry::Entry {
+	definition_of(&config(mode))
+}
+fn definition_of(config: &DeciderConfig) -> aidash_domain::registry::Entry {
 	serde_json::from_value(json!({"id":"decider","version":"1.0.0","kind":"decider",
-        "name":{"en":"Compaction"},"description":{"en":"Retain history"},"config":config(mode)}))
+        "name":{"en":"Compaction"},"description":{"en":"Retain history"},"config":config}))
 	.unwrap()
+}
+fn clef() -> DeciderRoute {
+	DeciderRoute {
+		provider_contract: DECISIONS.into(),
+		model: "cloudflare/clef".into(),
+		hosts: vec!["cloudflare".into(), "deepinfra".into()],
+		keep_threshold: Probability::new(0.3).unwrap(),
+		state_budget: StateBudget {
+			long_context_request_bytes: None,
+			long_context_state_bytes: None,
+			..StateBudget::default()
+		},
+	}
+}
+/// How a fixture Route answers a dispatched request.
+#[derive(Clone, Copy)]
+enum Fault {
+	Transport,
+	Invalid,
+	Refused,
 }
 fn history() -> Context {
 	let mut context = Context::default();
@@ -132,8 +152,30 @@ struct Fixture {
 	in_flight: AtomicUsize,
 	peak: AtomicUsize,
 	reads_denied: bool,
+	routes: Vec<DeciderRoute>,
+	faults: BTreeMap<usize, Fault>,
+	/// The Route of every dispatched request, in order.
+	dispatched_routes: Mutex<Vec<usize>>,
 }
 impl Fixture {
+	/// A fixture whose Decider version lists `routes`.
+	fn routed(mode: Mode, routes: Vec<DeciderRoute>) -> Self {
+		let config = DeciderConfig {
+			routes: routes.clone(),
+			..config(mode)
+		};
+		Self {
+			configuration_digest: config.digest().unwrap(),
+			routes,
+			..Self::new(mode)
+		}
+	}
+	fn config(&self, mode: Mode) -> DeciderConfig {
+		DeciderConfig {
+			routes: self.routes.clone(),
+			..config(mode)
+		}
+	}
 	fn new(mode: Mode) -> Self {
 		Self {
 			events: 10,
@@ -185,6 +227,9 @@ impl Fixture {
 			in_flight: AtomicUsize::new(0),
 			peak: AtomicUsize::new(0),
 			reads_denied: false,
+			routes: config(mode).routes,
+			faults: BTreeMap::new(),
+			dispatched_routes: Mutex::new(vec![]),
 		}
 	}
 	fn gate(&self) -> DecisionGate<'_> {
@@ -430,7 +475,7 @@ impl DecisionProvider for Fixture {
 	fn configuration_digest(&self) -> Result<String> {
 		Ok(self.configuration_digest.clone())
 	}
-	fn plan(&self, state: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>> {
+	fn plan(&self, _: usize, state: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>> {
 		let serialized = state.to_string();
 		for forbidden in [
 			"PRIVATE_SUMMARY",
@@ -455,6 +500,7 @@ impl DecisionProvider for Fixture {
 	}
 	async fn prepare(
 		&self,
+		route: usize,
 		request: &PreparedRequest,
 		_: Uuid,
 	) -> Result<Box<dyn PreparedDispatch + '_>> {
@@ -465,12 +511,14 @@ impl DecisionProvider for Fixture {
 		Ok(Box::new(FixtureDispatch {
 			fixture: self,
 			request: request.clone(),
+			route,
 		}))
 	}
 }
 struct FixtureDispatch<'a> {
 	fixture: &'a Fixture,
 	request: PreparedRequest,
+	route: usize,
 }
 #[async_trait]
 impl PreparedDispatch for FixtureDispatch<'_> {
@@ -496,6 +544,15 @@ impl PreparedDispatch for FixtureDispatch<'_> {
 		fixture.in_flight.fetch_sub(1, Ordering::SeqCst);
 		if fixture.revoke_after_dispatch {
 			fixture.denied.store(true, Ordering::SeqCst);
+		}
+		fixture.dispatched_routes.lock().unwrap().push(self.route);
+		match fixture.faults.get(&self.route) {
+			Some(Fault::Transport) => {
+				return Err(Error::External("route outage".into()).into());
+			}
+			Some(Fault::Invalid) => return Err(DispatchError::InvalidAnswers),
+			Some(Fault::Refused) => return Err(DispatchError::Refused(402)),
+			None => {}
 		}
 		if fixture.fail_transport {
 			return Err(Error::External("RAW_PRIVATE_PROVIDER_BODY".into()).into());
@@ -558,11 +615,13 @@ async fn evaluate(
 		worker: Uuid::new_v4(),
 		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
 		cycle: 0,
+		retry: 0,
 	};
 	if fixture.corrupt_boundary {
 		boundary.input_digest = format!("sha256:{}", "b".repeat(64));
 	}
-	let definition = definition(mode);
+	let config = fixture.config(mode);
+	let definition = definition_of(&config);
 	let pin = DeciderPin {
 		identity: aidash_domain::registry::bindings::QualifiedRef {
 			registry_deployment: boundary.node.clone(),
@@ -570,16 +629,16 @@ async fn evaluate(
 			version: definition.version.clone(),
 		},
 		definition_digest: digest(&serde_json::to_value(&definition).unwrap()),
-		configuration_digest: config(mode).digest().unwrap(),
+		configuration_digest: config.digest().unwrap(),
 		provider_implementation: "node-decision-adapter:23".into(),
 	};
 	let mut bound = BoundDecider {
 		pin,
-		config: config(mode),
+		config,
 		restrictions: fixture.binding_restrictions.clone(),
 	};
 	if fixture.corrupt_bound_config {
-		bound.config.model = "typesafe/jev-1.14".into();
+		bound.config.routes[0].model = "typesafe/jev-1.14".into();
 	}
 	let input = Evaluation {
 		boundary: &boundary,
@@ -631,6 +690,164 @@ async fn all_batches_are_reserved_and_evidenced_before_atomic_apply_without_a_co
 	let safe = serde_json::to_string(&evidence.summary()).unwrap();
 	assert!(!safe.contains("safe_tool"));
 	assert!(!safe.contains("authorized-history"));
+}
+#[tokio::test]
+async fn an_unavailable_route_hands_the_decision_to_the_next_route() {
+	for fault in [Fault::Transport, Fault::Invalid] {
+		let fixture = Fixture {
+			faults: BTreeMap::from([(0, fault)]),
+			..Fixture::routed(
+				Mode::Enforce,
+				vec![DeciderRoute::jev("typesafe/jev-1.13"), clef()],
+			)
+		};
+		let (result, context, _) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
+		assert_eq!(context.history.len(), 7);
+		let routes = fixture.dispatched_routes.lock().unwrap().clone();
+		assert_eq!(routes, [[0; 6], [1; 6]].concat());
+		let saved = fixture.saved.lock().unwrap();
+		// The failed Route keeps its own rejected evidence under its own decision.
+		let [failed, answered] = saved.evidence.as_slice() else {
+			panic!("one evidence per Route");
+		};
+		assert_eq!((failed.route, failed.outcome), (0, Outcome::Rejected));
+		assert_ne!(failed.id, answered.id);
+		assert_eq!(answered.route, 1);
+		assert_eq!(answered.model, "cloudflare/clef");
+		assert_eq!(answered.provider_contract, DECISIONS);
+		assert_eq!(answered.outcome, Outcome::Applied);
+		// The Route's own threshold applies, under the Binding's.
+		assert_eq!(answered.restrictions.keep_threshold.value(), 0.3);
+		assert_eq!(answered.replay().unwrap(), answered.branches);
+		// The pin commits to each Route's threshold, so evidence cannot claim a
+		// looser one than the Route it asked, nor rewrite the Route's.
+		let mut looser = answered.clone();
+		looser.restrictions.keep_threshold = Probability::half();
+		assert!(matches!(
+			looser.replay(),
+			Err(aidash_domain::Error::Invalid(message)) if message.contains("Route asked")
+		));
+		looser.route_thresholds[1] = Probability::half();
+		assert!(looser.replay().is_err());
+		failed.validate_rejection().unwrap();
+	}
+}
+#[tokio::test]
+async fn a_route_that_refuses_the_state_records_evidence_before_the_next_route() {
+	// The rubric alone is larger than this budget's state.
+	let budget = StateBudget {
+		default_request_bytes: 200,
+		default_state_bytes: 100,
+		long_context_request_bytes: None,
+		long_context_state_bytes: None,
+		input_stages: vec![Some(20)],
+	};
+	let narrow = DeciderRoute {
+		state_budget: budget.clone(),
+		..DeciderRoute::jev("typesafe/jev-1.13")
+	};
+	let fixture = Fixture::routed(Mode::Enforce, vec![narrow.clone(), clef()]);
+	let (result, context, _) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
+	assert_eq!(context.history.len(), 7);
+	assert!(
+		fixture
+			.dispatched_routes
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|route| *route == 1)
+	);
+	let saved = fixture.saved.lock().unwrap();
+	let [refused, answered] = saved.evidence.as_slice() else {
+		panic!("one evidence per Route");
+	};
+	assert_eq!(
+		(refused.route, refused.reason),
+		(0, Reason::ProviderFailure)
+	);
+	assert!(refused.attempts.is_empty());
+	refused.validate_rejection().unwrap();
+	assert_eq!((answered.route, answered.outcome), (1, Outcome::Applied));
+	drop(saved);
+	// When no Route accepts the state, the Run pauses at once, and each
+	// Route's refusal is on record.
+	let fixture = Fixture::routed(
+		Mode::Enforce,
+		vec![
+			narrow,
+			DeciderRoute {
+				state_budget: budget,
+				..clef()
+			},
+		],
+	);
+	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(
+		result,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::DeciderUnavailable
+		))
+	));
+	assert_eq!(context.history, original.history);
+	assert!(fixture.dispatched_routes.lock().unwrap().is_empty());
+	let routes: Vec<_> = (fixture.saved.lock().unwrap().evidence.iter())
+		.map(|e| (e.route, e.reason))
+		.collect();
+	assert_eq!(
+		routes,
+		[(0, Reason::ProviderFailure), (1, Reason::ProviderFailure)]
+	);
+}
+#[tokio::test]
+async fn a_refusal_pauses_without_asking_another_route() {
+	let fixture = Fixture {
+		faults: BTreeMap::from([(0, Fault::Refused)]),
+		..Fixture::routed(
+			Mode::Enforce,
+			vec![DeciderRoute::jev("typesafe/jev-1.13"), clef()],
+		)
+	};
+	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(!matches!(result, Ok(_) | Err(Error::DeciderOutage)));
+	assert_eq!(context.history, original.history);
+	assert!(
+		fixture
+			.dispatched_routes
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|route| *route == 0)
+	);
+	let refused = fixture.saved.lock().unwrap().evidence.clone();
+	assert_eq!(refused.len(), 1);
+	assert_eq!(refused[0].reason, Reason::ProviderFailure);
+	refused[0].validate_rejection().unwrap();
+}
+#[tokio::test]
+async fn every_route_unavailable_is_an_outage_the_step_retries() {
+	let fixture = Fixture {
+		faults: BTreeMap::from([(0, Fault::Transport), (1, Fault::Invalid)]),
+		..Fixture::routed(
+			Mode::Enforce,
+			vec![DeciderRoute::jev("typesafe/jev-1.13"), clef()],
+		)
+	};
+	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(result, Err(Error::DeciderOutage)));
+	assert_eq!(context.history, original.history);
+	let routes: Vec<_> = (fixture.saved.lock().unwrap().evidence.iter())
+		.map(|e| e.route)
+		.collect();
+	assert_eq!(routes, [0, 1]);
+	// A single unavailable Route is an outage too.
+	let fixture = Fixture {
+		faults: BTreeMap::from([(0, Fault::Transport)]),
+		..Fixture::new(Mode::Enforce)
+	};
+	let (result, _, _) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(result, Err(Error::DeciderOutage)));
 }
 #[tokio::test]
 async fn shadow_records_the_proposal_and_never_mutates_context() {
@@ -1258,7 +1475,7 @@ async fn replay_rejects_models_that_differ_from_the_pinned_configuration(#[case]
 		recovered.replay().is_err(),
 		"changed model in {mode:?} evidence"
 	);
-	recovered.model = config(mode).model;
+	recovered.model = config(mode).routes[0].model.clone();
 	recovered.configuration_parameters_digest = format!("sha256:{}", "a".repeat(64));
 	assert!(
 		recovered.replay().is_err(),
@@ -1422,6 +1639,7 @@ fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 		worker: Uuid::new_v4(),
 		input_digest: format!("sha256:{}", "a".repeat(64)),
 		cycle: 0,
+		retry: 0,
 	};
 	let inputs = |count: usize| -> BTreeMap<usize, Value> {
 		(0..count)
@@ -1486,19 +1704,15 @@ fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 		budget.request_limit(bytes),
 		budget.long_context_request_bytes
 	);
+	assert!(built.fits);
 	// Conversation text is never abridged, so a state beyond the long-context
-	// budget pauses the Run.
+	// budget comes back unfit: the Route refuses it and records why.
 	let too_large = Disclosure {
 		goal: Some("g".repeat(1_100_000)),
 		tool_inputs: inputs(600),
 		..Default::default()
 	};
-	assert!(matches!(
-		build(&too_large),
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::DeciderUnavailable
-		))
-	));
+	assert!(!build(&too_large).unwrap().fits);
 }
 
 #[tokio::test]
@@ -1792,6 +2006,7 @@ async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
 		worker: Uuid::new_v4(),
 		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
 		cycle: 0,
+		retry: 0,
 	};
 	let definition = definition(Mode::Enforce);
 	let decider = BoundDecider {
@@ -1875,6 +2090,7 @@ fn the_resume_cycle_changes_the_decision_identity() {
 		worker: Uuid::from_u128(3),
 		input_digest: format!("sha256:{}", "c".repeat(64)),
 		cycle: 0,
+		retry: 0,
 	};
 	let identity = |boundary: &Boundary| {
 		decision_identity(
@@ -1884,6 +2100,7 @@ fn the_resume_cycle_changes_the_decision_identity() {
 			&format!("sha256:{}", "d".repeat(64)),
 			&[],
 			1_000,
+			0,
 		)
 	};
 	let first = identity(&boundary);
@@ -1891,6 +2108,26 @@ fn the_resume_cycle_changes_the_decision_identity() {
 	boundary.worker = Uuid::from_u128(4);
 	boundary.run_revision = 2;
 	assert_eq!(identity(&boundary), first);
+	// Each outage retry is a decision of its own (ADR 0066).
+	boundary.retry = 1;
+	let retried = identity(&boundary);
+	assert_ne!(retried, first);
+	boundary.retry = 0;
 	boundary.cycle = 1;
 	assert_ne!(identity(&boundary), first);
+	assert_ne!(identity(&boundary), retried);
+	// So is each Route of one decision.
+	boundary.cycle = 0;
+	assert_ne!(
+		decision_identity(
+			&boundary,
+			&decider,
+			&Restrictions::default(),
+			&format!("sha256:{}", "d".repeat(64)),
+			&[],
+			1_000,
+			1,
+		),
+		first
+	);
 }

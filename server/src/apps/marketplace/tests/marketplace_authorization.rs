@@ -2039,6 +2039,118 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 
 #[rstest::rstest]
 #[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn each_audience_tenant_reads_its_own_copy_of_the_events_and_no_other_tenant_reads_one(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use aidash_application::tenancy::TenancyScope;
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	token(&f, "b", "user").await;
+	let c = token(&f, "c", "user").await;
+	token(&f, "gone", "user").await;
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("tenant_deletions"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"deleted_at",
+					"deleted_by_kind",
+					"purge_after",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value("gone"))
+					.expr(Expr::cust("now()"))
+					.expr(Expr::value("deployment_administrator"))
+					.expr(Expr::cust("now() + interval '30 days'"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("announced"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("announced")).await;
+	let package = publish(&app, &a, "announced").await;
+	let key = package["key"].as_str().unwrap();
+	let marketplace_events = |tenant: &'static str| {
+		let store = &f.store;
+		async move {
+			store
+				.events(&TenancyScope::tenant(tenant).unwrap(), 0, None, 1000)
+				.await
+				.unwrap()
+				.into_iter()
+				.filter(|e| e.kind.starts_with("marketplace.") && e.data["key"] == key)
+				.map(|e| e.kind)
+				.collect::<Vec<_>>()
+		}
+	};
+	assert_eq!(marketplace_events("a").await, ["marketplace.published"]);
+	// Act: the audience names a Tenant with no root record and a deleted one beside a real one.
+	let shared = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("/api/marketplace/packages/{key}/audience"),
+		json!({"expected_revision":1,"tenants":["a","b","ghost","gone"]}),
+	)
+	.await;
+	assert_eq!(shared.0, 200, "{shared:?}");
+	// Assert: the publisher keeps its own events, and b has its own copies.
+	assert_eq!(
+		marketplace_events("a").await,
+		["marketplace.published", "marketplace.distribution_changed"]
+	);
+	assert_eq!(
+		marketplace_events("b").await,
+		["marketplace.published", "marketplace.distribution_changed"]
+	);
+	assert!(marketplace_events("c").await.is_empty());
+	assert!(marketplace_events("ghost").await.is_empty());
+	assert!(marketplace_events("gone").await.is_empty());
+	// A Tenant outside the audience reads none through any surface.
+	let polled = request(&app, &c, "GET", "/api/events?after=0", Value::Null).await;
+	assert_eq!(polled.0, 200, "{polled:?}");
+	assert!(!polled.1.to_string().contains(key), "{polled:?}");
+	let state = request(&app, &c, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert!(!state.1["events"].to_string().contains(key), "{state:?}");
+	// A consent change is the owner's to read, so it reaches no recipient.
+	let consent = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("/api/marketplace/packages/{key}/consents/b"),
+		json!({"expected_revision":0,"tenants":["b"]}),
+	)
+	.await;
+	assert_eq!(consent.0, 200, "{consent:?}");
+	assert_eq!(marketplace_events("a").await.len(), 3);
+	assert_eq!(marketplace_events("b").await.len(), 2);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("dependency", false)]
 #[case("dependency", true)]
 #[case("consent", false)]

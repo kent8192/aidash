@@ -1,5 +1,11 @@
 use super::*;
 use crate::{Result, authorization::access::Access, store::Store};
+use aidash_application::{
+	marketplace::publication::Shared,
+	tenancy::{DeploymentScopeReason, TenancyScope},
+};
+use aidash_domain::marketplace::events::Announcement;
+use std::collections::BTreeSet;
 
 pub(super) async fn detail(access: &mut Access, key: &str, node: &str) -> Result<Detail> {
 	aidash_application::marketplace::distribution::detail(
@@ -40,7 +46,7 @@ pub(super) async fn share(
 	key: &str,
 	redistributor: Option<&str>,
 	input: AudienceInput,
-) -> Result<Audience> {
+) -> Result<Shared> {
 	aidash_application::marketplace::publication::share(
 		&mut crate::bootstrap::marketplace_publication_scope(store, access),
 		key,
@@ -52,6 +58,45 @@ pub(super) async fn share(
 	)
 	.await
 	.map_err(Into::into)
+}
+
+/// Write each announcement's copies once the change that owes them has
+/// committed. An event belongs to one Tenant, so each recipient gets its own,
+/// all in one transaction. A recipient with no Tenant root or under a Tenant
+/// Deletion gets none: the name came from the owner's input, and a purge must
+/// not leave rows behind.
+pub(super) async fn deliver(store: &Store, announcements: Vec<Announcement>) -> Result<()> {
+	let named = announcements
+		.iter()
+		.flat_map(|announcement| announcement.tenants.iter().cloned())
+		.collect::<BTreeSet<_>>();
+	if named.is_empty() {
+		return Ok(());
+	}
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::MarketplaceDistribution);
+	store
+		.pool
+		.atomic(&scope, async |tx| {
+			let recipients = crate::apps::identity::repositories::tenants::undeleted(
+				tx,
+				named.into_iter().collect(),
+			)
+			.await?;
+			for announcement in &announcements {
+				for tenant in announcement.tenants.intersection(&recipients) {
+					crate::apps::execution::models::event_records::append_for_tenant(
+						tx,
+						store.deployment.as_str(),
+						tenant,
+						announcement.kind,
+						announcement.payload.clone(),
+					)
+					.await?;
+				}
+			}
+			Ok(())
+		})
+		.await
 }
 
 #[cfg(test)]

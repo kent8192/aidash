@@ -209,8 +209,10 @@ provider requests, source/image identities and server logs are retained under
 semantic execution recovery cases; the other section-12 acceptance gates remain
 separate.
 
-The observer has namespaced `list` access only to Deployments, Pods and Events,
-and returns resources for its configured Helm release. Only Deployment Administrators can
+The observer has namespaced `list` access only to Deployments, StatefulSets,
+Pods and Events, and returns resources for its configured Helm release.
+Production's disk-holding workloads are StatefulSets (ADR 0067), so it reports
+them with the Deployments. Only Deployment Administrators can
 read `/api/deployment`. It cannot read Secrets or mutate workloads. Do not share
 the namespace across mutually untrusted teams, since Kubernetes list RBAC
 cannot restrict objects by label. Set `observability.enabled=false` to remove

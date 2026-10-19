@@ -377,7 +377,7 @@ mod scoped_pair_composition {
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
-		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_contract":"typesafe.jev/1","provider_credential":"openrouter","model":"typesafe/jev-1.13","builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce","max_calls_per_run":20,"state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}});
+		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","keep_threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
 		let (status, body) = request(
 			&ba,
 			&receiver_token,
@@ -5347,15 +5347,17 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 
 #[rstest::rstest]
 // Home allowance and authority failures keep their semantic reason; a Decider
-// that cannot run pauses the Run with its context reason (ADR 0042).
+// that cannot run pauses the Run with its context reason (ADR 0042). An
+// unavailable Route or an invalid answer schedules an outage retry instead,
+// and the Run pauses only after the fifth (ADR 0066).
 #[case("approved", 0, None)]
 #[case("unnecessary", 0, None)]
-#[case("ancestor_limit", 0, Some(("semantic_reason", "allowance")))]
-#[case("catalog_revoked", 0, Some(("semantic_reason", "authority")))]
-#[case("outage", 503, Some(("context_reason", "decider_unavailable")))]
-#[case("bad_answers", 1, Some(("context_reason", "decider_unavailable")))]
-#[case("credential_rejected", 401, Some(("context_reason", "decider_unavailable")))]
-#[case("unbound", 0, Some(("context_reason", "decider_unavailable")))]
+#[case("ancestor_limit", 0, Some(("semantic_reason", json!("allowance"))))]
+#[case("catalog_revoked", 0, Some(("semantic_reason", json!("authority"))))]
+#[case("outage", 503, Some(("decider_retry", json!(1))))]
+#[case("bad_answers", 1, Some(("decider_retry", json!(1))))]
+#[case("credential_rejected", 401, Some(("context_reason", json!("decider_unavailable"))))]
+#[case("unbound", 0, Some(("context_reason", json!("decider_unavailable"))))]
 #[tokio::test]
 async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	#[future(awt)]
@@ -5363,7 +5365,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	scoped_pair: Pair,
 	#[case] scenario: &str,
 	#[case] status: usize,
-	#[case] reason: Option<(&str, &str)>,
+	#[case] reason: Option<(&str, Value)>,
 ) {
 	let p = scoped_pair;
 	if scenario != "unnecessary" {
@@ -5424,7 +5426,9 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	if let Some((field, reason)) = reason {
 		let recovery = serde_json::to_value(&run.recovery).unwrap();
 		assert_eq!(recovery[field], reason, "{run:?}");
-		assert_eq!(run.control.as_str(), "PAUSED");
+		let retrying = field == "decider_retry";
+		assert_eq!(run.control.as_str() == "PAUSED", !retrying, "{run:?}");
+		assert!(!retrying || run.recovery.retry.is_some(), "{run:?}");
 		assert_ne!(run.phase().as_str(), "FAILED");
 		assert!(p.requests.lock().await.is_empty());
 		assert!(

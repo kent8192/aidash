@@ -126,6 +126,10 @@ pub enum DeploymentScopeReason {
 	PlanConnectionOwner,
 	/// The activity observer, which writes this label by hand.
 	ActivityObserver,
+	/// Writing one `marketplace.*` event for each audience Tenant of a package
+	/// when its audience changes. It writes nothing else: an event belongs to
+	/// one Tenant, and the writer's scope reaches only its own.
+	MarketplaceDistribution,
 	/// Test fixtures that span Tenants.
 	#[cfg(feature = "test-support")]
 	TestFixture,
@@ -159,6 +163,7 @@ impl DeploymentScopeReason {
 			Self::RunTenant => "run-tenant",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::ActivityObserver => "activity-observer",
+			Self::MarketplaceDistribution => "marketplace-distribution",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
 		}
@@ -183,6 +188,7 @@ impl DeploymentScopeReason {
 			| Self::IdentityTenants
 			| Self::TenantCreation
 			| Self::IdentityStatus
+			| Self::MarketplaceDistribution
 			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -240,6 +246,7 @@ mod tests {
 			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::ActivityObserver,
+			DeploymentScopeReason::MarketplaceDistribution,
 		];
 		let labels = reasons
 			.iter()

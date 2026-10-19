@@ -3268,6 +3268,7 @@ async fn compact_decided_execution(
 				worker: token,
 				input_digest: compaction_input_digest(&candidate, fitting.budget, fitting.pinned)?,
 				cycle: run.recovery.decision_cycle,
+				retry: run.recovery.decider_retry,
 			};
 			let disclosure = compaction_disclosure(&candidate, fitting.pinned);
 			let decision = Decision {

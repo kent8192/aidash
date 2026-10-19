@@ -10,29 +10,60 @@ run pauses the Run with `decider_unapproved`, `decider_calls_exhausted` or
 `decider_unavailable`, and the Summary Stage, a separately approved generation
 step, never stands in for it.
 
-Decider declarations require an exact OpenRouter Jev release (such as
-`typesafe/jev-1.14`; aliases are refused) and name `provider_credential:
-"openrouter"`. A version also declares its per-Run call limit
-(`max_calls_per_run`, which a Binding can only lower), whether it keeps the
-classification state (`state_retention`, allowed by the version's Catalog
-Approval) and its `state_budget`: the bytes of state and request Jev's default
-mode takes, the long-context limits, and the tool-input abridging stages. The
-builder `aidash.compaction/2` abridges disclosed tool inputs stage by stage until
-the state fits the default mode, sends only the most abridged state in the
-long-context mode, and refuses a larger one with `decider_unavailable`. On the
-`native` Projection Version it protects whole Model Turns. They configure no endpoint or key: the Jev adapter calls
-OpenRouter's System One API with `provider.zdr = true`, resolving the Tenant's
-current OpenRouter Provider Credential for each dispatch rather than when a
-request is prepared, so a revoked or unbound credential stops later attempts
-(ADR 0041). A response must name the pinned release or a dated snapshot of it.
-The adapter validates the declaration before preparing requests.
+Decider declarations name `provider_credential: "openrouter"` and list one to
+four Decider Routes in `routes`, tried in order (ADR 0066). A System One Route
+(`provider_contract: "typesafe.jev/1"`) requires an exact OpenRouter Jev release
+such as `typesafe/jev-1.14` (aliases are refused) and names no hosts. A Decisions
+Route (`"openrouter.decisions/1"`) requires an exact model ID such as
+`cloudflare/clef` (no `~` alias, no `:` variant), one to eight host slugs in
+`hosts`, and no long-context mode. Each Route has its own `keep_threshold`
+(above 0 and at most 0.5) and `state_budget`: the bytes of state and request
+its default mode takes, the long-context limits (System One only), and the
+tool-input abridging stages. A version also declares its per-Run call limit
+(`max_calls_per_run`, shared by every Route and lowered only by a Binding) and
+whether it keeps the classification state (`state_retention`, allowed by the
+version's Catalog Approval). The builder `aidash.compaction/2` abridges
+disclosed tool inputs stage by stage until the state fits the Route's default
+mode, sends only the most abridged state in the long-context mode, and treats a
+larger one as that Route being unavailable. On the `native` Projection Version
+it protects whole Model Turns. They configure no endpoint or key: the adapter
+calls OpenRouter's System One API, or its Decisions API with `provider.only` set
+to the Route's hosts, with `provider.zdr = true`, resolving the Tenant's current
+OpenRouter Provider Credential for each dispatch rather than when a request is
+prepared, so a revoked or unbound credential stops later attempts (ADR 0041). A
+response must name the pinned model or a dated snapshot of it, and a Decisions
+response must name one of the Route's hosts. The adapter validates the
+declaration before preparing requests.
 
-`DeciderConfig::digest()` commits to the canonical JSON object containing `model`,
+A later Route is asked only when the Route before it was unavailable: a
+connection failure, a timeout, HTTP 404, 429 or 5xx, an answer that is malformed
+or fails validation, or a state or plan the Route does not accept. HTTP 400,
+401, 402, 403 and 413, a missing binding, a revoked credential, authority,
+journal and recovery failures stop the decision on the Route that saw them. A
+Route is never chosen for its answer. Each Route is a decision of its own: its
+identity commits to the Route's place, and its rejected evidence stays when the
+next Route answers. The Binding restrictions are intersected with the Route's
+threshold, so a Binding's stricter threshold still applies. When every Route
+was unavailable for a provider reason, the step returns `DeciderOutage` and is
+retried after 2, 4, 8, 16 and 32 seconds; each retry is a decision of its own
+through `Boundary::retry` (`RecoveryState::decider_retry`). After the fifth the
+Run pauses with `decider_unavailable` until a resume. A state no Route accepts
+pauses at once.
+
+`DeciderConfig::digest()` commits to the canonical JSON object containing
+`models` (the Route models in order), `thresholds` (their keep thresholds),
 `mode` and `parameters_digest`. The latter hashes the complete serialized
-configuration with `model` and `mode` replaced by JSON `null`, so evidence that
+configuration with every Route `model` and `keep_threshold` and the `mode`
+replaced by JSON `null`, so evidence that
 sent no request still proves the mode its Decider ran in. Historical `Evidence` retains that hash as
-`configuration_parameters_digest`, allowing replay to reconstruct and check the
-configuration pin using its recorded model. Credentials are never copied into
+`configuration_parameters_digest` with `route_models` and `route_thresholds`,
+allowing replay to reconstruct and check the configuration pin; `route` names
+the Route asked, and `model` and `provider_contract` are that Route's. Replay
+refuses `restrictions` whose threshold is looser than that Route's, so evidence
+cannot claim a more destructive result than the pinned Route permits. A Route
+that refuses the state, because it does not fit the Route's budget, or a plan
+records `provider_failure` evidence with no attempt before the next Route is
+asked. Credentials are never copied into
 evidence. No current definition, policy or provider call is
 needed to verify the commitment.
 
@@ -62,9 +93,9 @@ evidence. Authority and journal failures retain their original application error
 category and use `AuthorityFailure`/`JournalFailure` reasons rather than blaming
 the provider. Invalid answers and actual transport failures remain distinct.
 
-Decision identities commit to the Node, Run, step, the Run's resume cycle, input
-revision/digest, exact Decider pin, Binding restrictions, classification state,
-sources and target window. The resume cycle grows each time a person resumes a
+Decision identities commit to the Node, Run, step, the Run's resume cycle, the
+step's outage retry, input revision/digest, exact Decider pin, the Route,
+Binding restrictions, classification state, sources and target window. The resume cycle grows each time a person resumes a
 paused Run, so a resume starts a new decision, while a recovered lease continues
 the same one. A recovered attempt whose result is unknown is never dispatched
 again: the Run pauses with `decider_unavailable` until a resume.
