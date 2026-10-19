@@ -28,7 +28,7 @@ When the table is absent, the Offering is `self-hosted`. Every command that load
 
 `enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. `scripts/check-enterprise-alignment.py` fails when a copy differs from the Community file, or when `enterprise/Cargo.lock` holds a version of a Community-locked package that `Cargo.lock` does not hold. To fix a version difference, run the `cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>` command that the check prints.
 
-Nothing under `enterprise/` declares a license until the licensing cutover (#255). `scripts/check-license-declarations.py` enforces this.
+Nothing under `enterprise/` declares a license until the licensing cutover (#255).
 
 ## Check the Community export
 
