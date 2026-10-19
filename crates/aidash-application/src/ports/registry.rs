@@ -102,4 +102,39 @@ pub trait SkillSource: Send + Sync {
 	) -> crate::Result<aidash_domain::registry::skill_import::ImportResult>;
 }
 
+/// Names the Agent Plugin to import from a public GitHub URL.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PluginImportRequest {
+	pub url: String,
+	/// A plugin directory from an earlier `Choose` answer, relative to the repository root.
+	pub plugin_path: Option<String>,
+}
+
+/// One plugin directory at an exact commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedPlugin {
+	/// The plugin directory relative to the repository root; empty for the root.
+	pub root: String,
+	/// `https://github.com/<owner>/<repo>/tree/<commit sha>[/<root>]`.
+	pub source: String,
+	/// Paths relative to the plugin root, sorted.
+	pub files: Vec<aidash_domain::agent_plugin::PluginFile>,
+	/// Paths left out because the Agent Plugins specification forbids access to them, sorted.
+	pub denied: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginFetch {
+	/// The repository holds several plugins; these are their roots.
+	Choose(Vec<String>),
+	Fetched(FetchedPlugin),
+}
+
+/// Fetch a bounded plugin directory from a permitted public source.
+#[async_trait::async_trait]
+pub trait AgentPluginSource: Send + Sync {
+	async fn fetch(&self, request: PluginImportRequest) -> crate::Result<PluginFetch>;
+}
+
 pub mod workbench;

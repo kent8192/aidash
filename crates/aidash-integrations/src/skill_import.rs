@@ -157,7 +157,7 @@ pub(crate) fn client() -> Result<Client> {
 }
 
 async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>> {
-	match download(client, url, limit).await? {
+	match download(client, url, limit, "Skill source").await? {
 		Download::Complete(bytes) => Ok(bytes),
 		Download::OverLimit => Err(Error::Invalid("Skill exceeds the import size limit".into())),
 	}
@@ -168,16 +168,22 @@ pub(crate) enum Download {
 	OverLimit,
 }
 
-/// Streams a body and stops at the first chunk that would pass `limit`.
-pub(crate) async fn download(client: &Client, url: &str, limit: usize) -> Result<Download> {
+/// Streams a body and stops at the first chunk that would pass `limit`. `subject` names the
+/// source in error messages.
+pub(crate) async fn download(
+	client: &Client,
+	url: &str,
+	limit: usize,
+	subject: &str,
+) -> Result<Download> {
 	let mut response = client
 		.get(url)
 		.send()
 		.await
-		.map_err(|error| Error::External(format!("Skill source request failed: {error}")))?;
+		.map_err(|error| Error::External(format!("{subject} request failed: {error}")))?;
 	if !response.status().is_success() {
 		return Err(Error::Invalid(format!(
-			"Skill source returned {} for this URL",
+			"{subject} returned {} for this URL",
 			response.status()
 		)));
 	}
