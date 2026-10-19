@@ -40,6 +40,53 @@ pub struct DeploymentSettings {
 	pub background_enabled: bool,
 	#[setting(default = "None", leaf)]
 	pub probe_listen: Option<SocketAddr>,
+	/// Whether this Deployment federates with other Deployments. Off, it
+	/// refuses every token-bearing request and sends none, and still publishes
+	/// its key. Exchange between Nodes of this Deployment never depends on it.
+	#[setting(default = "true")]
+	pub federation: bool,
+	/// `[deployment.key]`: where the Deployment Key lives. Without it this
+	/// Deployment cannot federate with other Deployments.
+	#[setting(optional, node)]
+	pub key: Option<DeploymentKeySettings>,
+}
+
+/// `[deployment.key]`. Name exactly one of `file` and `kms`.
+#[settings(fragment = true)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeploymentKeySettings {
+	/// An Ed25519 private key in a PKCS#8 PEM file that only the server's user
+	/// can read. A relative path starts at `core.base_dir`.
+	#[setting(default = "None")]
+	pub file: Option<String>,
+	/// A Cloud KMS CryptoKeyVersion, `projects/.../cryptoKeyVersions/<n>`. Only
+	/// the Enterprise build holds keys there.
+	#[setting(default = "None")]
+	pub kms: Option<String>,
+}
+
+/// Where the Deployment Key is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploymentKeySource<'a> {
+	File(&'a str),
+	Kms(&'a str),
+}
+
+impl DeploymentKeySettings {
+	pub fn source(&self) -> Result<DeploymentKeySource<'_>, String> {
+		match (
+			self.file.as_deref().map(str::trim),
+			self.kms.as_deref().map(str::trim),
+		) {
+			(Some(_), Some(_)) => Err("deployment.key names both file and kms; name one".into()),
+			(Some(""), None) | (None, Some("")) => {
+				Err("deployment.key.file and deployment.key.kms must not be blank".into())
+			}
+			(Some(file), None) => Ok(DeploymentKeySource::File(file)),
+			(None, Some(kms)) => Ok(DeploymentKeySource::Kms(kms)),
+			(None, None) => Err("deployment.key must name a file or a kms key version".into()),
+		}
+	}
 }
 
 impl fmt::Debug for DeploymentSettings {
@@ -50,6 +97,8 @@ impl fmt::Debug for DeploymentSettings {
 			.field("endpoint", &self.endpoint)
 			.field("worker_count", &self.worker_count)
 			.field("background_enabled", &self.background_enabled)
+			.field("federation", &self.federation)
+			.field("key", &self.key)
 			.finish_non_exhaustive()
 	}
 }
@@ -62,6 +111,9 @@ impl SettingsValidation for DeploymentSettings {
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		if let Some(key) = &self.key {
+			key.source().map_err(ValidationError::Constraint)?;
+		}
 		let url = reqwest::Url::parse(&self.nats_url).map_err(|_| {
 			ValidationError::Constraint("deployment.nats_url must be a NATS URL".into())
 		})?;
@@ -71,5 +123,59 @@ impl SettingsValidation for DeploymentSettings {
 			));
 		}
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	fn settings(extra: serde_json::Value) -> DeploymentSettings {
+		let mut value = json!({
+			"id": "aidash://test", "endpoint": "http://localhost",
+			"api_token": "0123456789abcdef"
+		});
+		value
+			.as_object_mut()
+			.unwrap()
+			.extend(extra.as_object().unwrap().clone());
+		serde_json::from_value(value).unwrap()
+	}
+
+	fn check(settings: &DeploymentSettings) -> ValidationResult {
+		SettingsValidation::validate(settings, &Profile::parse("local"))
+	}
+
+	fn problem(extra: serde_json::Value) -> String {
+		check(&settings(extra)).unwrap_err().to_string()
+	}
+
+	#[test]
+	fn federation_is_on_and_there_is_no_key_unless_the_settings_say_otherwise() {
+		let defaults = settings(json!({}));
+		assert!(defaults.federation);
+		assert!(defaults.key.is_none());
+		check(&defaults).unwrap();
+		assert!(!settings(json!({"federation": false})).federation);
+	}
+
+	#[test]
+	fn a_key_names_exactly_one_of_a_file_and_a_kms_version() {
+		let file = settings(json!({"key": {"file": "keys/deployment.pem"}}));
+		check(&file).unwrap();
+		assert_eq!(
+			file.key.as_ref().unwrap().source().unwrap(),
+			DeploymentKeySource::File("keys/deployment.pem")
+		);
+		let kms = settings(json!({"key": {"kms": "projects/p/cryptoKeyVersions/1"}}));
+		check(&kms).unwrap();
+		assert_eq!(
+			kms.key.as_ref().unwrap().source().unwrap(),
+			DeploymentKeySource::Kms("projects/p/cryptoKeyVersions/1")
+		);
+		assert!(problem(json!({"key": {"file": "a", "kms": "b"}})).contains("both file and kms"));
+		assert!(problem(json!({"key": {}})).contains("must name a file or a kms"));
+		assert!(problem(json!({"key": {"file": "  "}})).contains("must not be blank"));
 	}
 }

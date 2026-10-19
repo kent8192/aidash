@@ -4,6 +4,7 @@
 //! library (ADR 0032). Each binary installs its `Build` before it runs a
 //! command, so that every settings load refuses another build's Offering
 //! before it connects to anything.
+use aidash_application::federation::key::DeploymentKey;
 use aidash_domain::offering::Offering;
 use reinhardt::conf::settings::builder::BuildError;
 use reinhardt::conf::settings::scoped::ScopedSettings;
@@ -51,6 +52,7 @@ pub struct Build {
 /// What a build adds to the Community server. Community defines each hook and
 /// adds nothing; an Enterprise build implements them with its own crates, so
 /// Community never names them (ADR 0032).
+#[async_trait::async_trait]
 pub trait Extension: Sync + std::fmt::Debug {
 	/// Settings sources the build adds, such as managed settings files.
 	fn settings(
@@ -84,6 +86,9 @@ pub trait Extension: Sync + std::fmt::Debug {
 		store: &serde_json::Map<String, serde_json::Value>,
 		broker: Option<&serde_json::Value>,
 	) -> crate::Result<ProvidedStore>;
+	/// The Deployment Key in the Cloud KMS key version `[deployment.key] kms`
+	/// names, with its public key already fetched.
+	async fn deployment_key(&self, kms: &str) -> crate::Result<Arc<dyn DeploymentKey>>;
 }
 
 pub struct ProvidedStore {
@@ -94,7 +99,15 @@ pub struct ProvidedStore {
 #[derive(Debug)]
 struct Community;
 
+#[async_trait::async_trait]
 impl Extension for Community {
+	async fn deployment_key(&self, _: &str) -> crate::Result<Arc<dyn DeploymentKey>> {
+		Err(crate::Error::Invalid(
+			"the Community build has no Cloud KMS Deployment Key; name a file in [deployment.key], or use the Enterprise build"
+				.into(),
+		))
+	}
+
 	fn provider_credential_store(
 		&self,
 		store: &serde_json::Map<String, serde_json::Value>,

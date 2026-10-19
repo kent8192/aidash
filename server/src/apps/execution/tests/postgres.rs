@@ -737,6 +737,8 @@ fn federation(
 					aidash_domain::offering::Offering::SelfHosted,
 				),
 				oidc: None,
+				federation: true,
+				deployment_key: None,
 				sign_in: None,
 			},
 			client: peer_client,
@@ -2589,6 +2591,8 @@ fn authenticated_runtime(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
 		};
 		runtime.federation.client = http_client;

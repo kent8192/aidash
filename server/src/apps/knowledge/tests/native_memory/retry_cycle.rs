@@ -291,6 +291,8 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
 		},
 		store,

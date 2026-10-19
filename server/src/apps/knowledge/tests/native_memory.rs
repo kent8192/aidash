@@ -2420,6 +2420,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
 		},
 		store,

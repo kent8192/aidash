@@ -1435,6 +1435,8 @@ async fn child_runtime(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
 		},
 		client: reinhardt_http_client,

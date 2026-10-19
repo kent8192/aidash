@@ -34,6 +34,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		registry.register_capability(command);
 	}
 	registry.register_capability(Box::new(
+		crate::apps::federation::peer::services::key_commands::Command,
+	));
+	registry.register_capability(Box::new(
 		crate::apps::operations::services::diagnostics::Diagnostics,
 	));
 	registry.register_capability(Box::new(
@@ -64,7 +67,10 @@ pub async fn initialize(
 		.with_writer(std::io::stderr)
 		.with_ansi(false)
 		.try_init();
-	let config = Config::from_settings(settings)?;
+	let mut config = Config::from_settings(settings)?;
+	// A Deployment Key that cannot be loaded refuses to start (ADR 0064).
+	config.deployment_key =
+		configure_deployment_key(settings.deployment.key.as_ref(), &settings.core.base_dir).await?;
 	// A malformed Research provider declaration refuses to start (ADR 0055),
 	// before registry validation reads which providers are available.
 	crate::apps::execution::services::research::configure(
@@ -2222,6 +2228,31 @@ pub(crate) fn desktop_protocol(
 	runtime: &Federation,
 ) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}
+
+/// The Deployment Key `[deployment.key]` names, or none when it is omitted. A
+/// file is read here, and a Cloud KMS key version is read through the build's
+/// extension, which only the Enterprise build implements. The error names the
+/// reason and never the key.
+pub async fn configure_deployment_key(
+	settings: Option<&crate::apps::operations::serializers::deployment::DeploymentKeySettings>,
+	base_dir: &std::path::Path,
+) -> Result<Option<Arc<dyn aidash_application::federation::key::DeploymentKey>>> {
+	use crate::apps::operations::serializers::deployment::DeploymentKeySource;
+	let Some(settings) = settings else {
+		return Ok(None);
+	};
+	let key: Arc<dyn aidash_application::federation::key::DeploymentKey> =
+		match settings.source().map_err(Error::Invalid)? {
+			DeploymentKeySource::File(file) => Arc::new(
+				aidash_integrations::federation::key::FileDeploymentKey::load(
+					&base_dir.join(file),
+				)?,
+			),
+			DeploymentKeySource::Kms(kms) => build::current().extension.deployment_key(kms).await?,
+		};
+	tracing::info!(key_id = %key.key_id(), "Deployment Key available");
+	Ok(Some(key))
 }
 
 /// Load privately supplied keys only at shared server/worker bootstrap.

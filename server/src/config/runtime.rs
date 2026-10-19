@@ -12,6 +12,14 @@ pub struct Config {
 	pub web_dir: String,
 	pub lease_seconds: i32,
 	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
+	/// `[deployment] federation`: whether this Deployment federates with other
+	/// Deployments. Exchange between Nodes of this Deployment never depends on it.
+	pub federation: bool,
+	/// The Deployment Key `[deployment.key]` names. `bootstrap::initialize`
+	/// loads it, not `from_settings`, because a Cloud KMS key is fetched over the
+	/// network. Without one this Deployment cannot federate with others.
+	pub deployment_key:
+		Option<std::sync::Arc<dyn aidash_application::federation::key::DeploymentKey>>,
 	pub oidc: Option<OidcConfig>,
 	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
@@ -88,6 +96,8 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
+			federation: node.federation,
+			deployment_key: None,
 			sign_in,
 			oidc: settings
 				.dashboard
@@ -96,6 +106,22 @@ impl Config {
 				.map(OidcConfig::normalized)
 				.transpose()?,
 		})
+	}
+	/// What `/.well-known/aidash` publishes: this Deployment and its public key,
+	/// never its Nodes.
+	pub fn deployment_identity(&self) -> DeploymentIdentity {
+		DeploymentIdentity {
+			id: self.deployment.to_string(),
+			endpoint: self.endpoint.clone(),
+			protocol_version: PROTOCOL_VERSION.into(),
+			key: self
+				.deployment_key
+				.as_ref()
+				.map(|key| DeploymentKeyIdentity {
+					id: key.key_id().to_string(),
+					public_key_pem: key.public_key_pem().to_owned(),
+				}),
+		}
 	}
 	pub fn identity(&self, clusters: Vec<String>) -> NodeIdentity {
 		NodeIdentity {
@@ -137,7 +163,9 @@ pub fn validate_peer_credential(value: &str) -> Result<()> {
 
 pub(crate) use aidash_domain::configuration::same_secret;
 
-pub use crate::apps::federation::peer::serializers::identity::NodeIdentity;
+pub use crate::apps::federation::peer::serializers::identity::{
+	DeploymentIdentity, DeploymentKeyIdentity, NodeIdentity,
+};
 
 #[cfg(test)]
 #[path = "../apps/execution/tests/config_runtime.rs"]

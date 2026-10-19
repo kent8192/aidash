@@ -521,6 +521,8 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 					aidash_domain::offering::Offering::SelfHosted,
 				),
 				oidc: None,
+				federation: true,
+				deployment_key: None,
 				sign_in: None,
 			},
 			client: http_client,
