@@ -5,6 +5,7 @@ use aidash_server::authorization::sign_in::SignInProvider;
 use aidash_server::bootstrap::build::{Build, Extension, ProvidedStore};
 use std::sync::Arc;
 
+pub mod billing;
 pub mod gcip;
 pub mod provider_credentials;
 
@@ -13,7 +14,7 @@ pub const BUILD: Build = Build {
 	offerings: &[Offering::Cloud, Offering::Dedicated],
 	manifest_dir: env!("CARGO_MANIFEST_DIR"),
 	package: env!("CARGO_PKG_NAME"),
-	apps: &["gcip"],
+	apps: &["gcip", "billing"],
 	migrations: &["../enterprise/server/migrations"],
 	extension: &Adapters,
 };
@@ -27,7 +28,12 @@ impl Extension for Adapters {
 		&self,
 		builder: reinhardt::conf::settings::builder::SettingsBuilder,
 	) -> reinhardt::conf::settings::builder::SettingsBuilder {
-		builder.add_source(gcip::ManagedGcipSource::from_env())
+		builder
+			.add_source(gcip::ManagedGcipSource::from_env())
+			.add_source(
+				reinhardt::conf::settings::sources::DefaultSource::new()
+					.with_value("billing", billing::settings::sandbox_defaults()),
+			)
 	}
 
 	/// `[dashboard.gcip]`, which only this build reads, from the same sources
@@ -50,10 +56,34 @@ impl Extension for Adapters {
 		aidash_gcp::gcip::is_issuer(issuer)
 	}
 
-	/// Every Enterprise route serves both of this build's Offerings so far;
-	/// `enterprise/server/routes.json` lists them per Offering.
-	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
-		Some(gcip::routes())
+	/// `enterprise/server/routes.json` lists the routes per Offering: sign-in
+	/// and the usage report serve both, Billing Accounts only Cloud.
+	fn routes(&self, offering: Offering) -> Option<reinhardt::UnifiedRouter> {
+		let router = reinhardt::UnifiedRouter::new()
+			.mount_unified("/", gcip::routes())
+			.mount_unified("/", billing::views::usage_routes());
+		Some(match offering {
+			Offering::Cloud => router.mount_unified("/", billing::views::account_routes()),
+			Offering::Dedicated | Offering::SelfHosted => router,
+		})
+	}
+
+	fn install(&self, store: &mut aidash_server::store::Store) -> aidash_server::Result<()> {
+		billing::install(store, aidash_server::bootstrap::build::offering())
+	}
+
+	fn services(
+		&self,
+		federation: &aidash_server::federation::Federation,
+		stopping: tokio::sync::watch::Receiver<bool>,
+	) -> Vec<aidash_server::bootstrap::build::Service> {
+		let store = federation.store.clone();
+		let Ok(settings) = billing::load_settings() else {
+			return Vec::new();
+		};
+		vec![Box::pin(billing::meter::maintain(
+			store, settings, stopping,
+		))]
 	}
 
 	fn provider_credential_store(
