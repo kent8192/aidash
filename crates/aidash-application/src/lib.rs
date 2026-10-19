@@ -9,6 +9,7 @@ pub mod federation;
 pub mod lifecycle;
 pub mod memory;
 pub mod plan_connections;
+pub mod plugin_tools;
 pub mod ports;
 pub mod provider_access;
 pub mod provider_authorization;
