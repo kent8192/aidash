@@ -68,32 +68,38 @@ fn run_context() -> Context {
 	}
 }
 struct CapacityFixture(Option<usize>);
-impl JevCapacity for CapacityFixture {
-	fn fits(&self, model: &str, _: &Value, questions: &Questions, _: &[u8]) -> Result<bool> {
-		assert_eq!(model, "typesafe/jev-1.13");
+impl RouteCapacity for CapacityFixture {
+	fn fits(
+		&self,
+		route: &DeciderRoute,
+		_: &Value,
+		questions: &Questions,
+		_: &[u8],
+	) -> Result<bool> {
+		assert_eq!(route.model, "typesafe/jev-1.13");
 		Ok(self.0.is_none_or(|max| questions.len() <= max))
 	}
+}
+fn jev() -> DeciderRoute {
+	DeciderRoute::jev("typesafe/jev-1.13")
 }
 fn config() -> DeciderConfig {
 	DeciderConfig {
 		hook: Hook::Compaction,
 		answer_type: AnswerType::Noul,
 		description: "Keep context".into(),
-		provider_contract: PROVIDER.into(),
 		provider_credential: "openrouter".into(),
-		model: "typesafe/jev-1.13".into(),
+		routes: vec![DeciderRoute::jev("typesafe/jev-1.13")],
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
-		keep_threshold: Probability::half(),
 		mode: Mode::Enforce,
 		max_calls_per_run: 20,
 		state_retention: Default::default(),
-		state_budget: StateBudget::default(),
 	}
 }
-fn provider(endpoint: &str, cap: Option<usize>) -> JevDecisionProvider {
-	JevDecisionProvider::new(
+fn provider(endpoint: &str, cap: Option<usize>) -> RouteDecisionProvider {
+	RouteDecisionProvider::new(
 		config(),
 		"node-decision-adapter:23".into(),
 		AccessFixture::new(endpoint),
@@ -121,11 +127,11 @@ async fn request_planning_splits_only_under_provider_capacity_and_preserves_all_
 	let client = provider("https://example.test", Some(2));
 	let state = json!({"goal":"complete"});
 	let questions = questions(7);
-	let plan = client.plan(&state, &questions).unwrap();
+	let plan = client.plan(0, &state, &questions).unwrap();
 	assert_eq!(plan.len(), 4);
 	let mut coverage = BTreeMap::new();
 	for batch in &plan {
-		client.prepare(batch, Uuid::now_v7()).await.unwrap();
+		client.prepare(0, batch, Uuid::now_v7()).await.unwrap();
 		let payload: Value = serde_json::from_slice(&batch.body).unwrap();
 		assert_eq!(payload["state"], state);
 		assert_eq!(payload["model"], "typesafe/jev-1.13");
@@ -136,7 +142,7 @@ async fn request_planning_splits_only_under_provider_capacity_and_preserves_all_
 	assert_eq!(coverage, questions);
 	assert!(
 		provider("https://example.test", Some(0))
-			.plan(&state, &questions)
+			.plan(0, &state, &questions)
 			.is_err()
 	);
 }
@@ -145,11 +151,11 @@ async fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
 	let client = provider("https://example.test", None);
 	let state = json!({"goal":"x".repeat(1_100_000)});
 	let questions = questions(1100);
-	let plan = client.plan(&state, &questions).unwrap();
+	let plan = client.plan(0, &state, &questions).unwrap();
 	assert_eq!(plan.len(), 1);
 	assert!(plan[0].body.len() > 1_048_576);
 	assert_eq!(plan[0].questions.len(), 1100);
-	client.prepare(&plan[0], Uuid::now_v7()).await.unwrap();
+	client.prepare(0, &plan[0], Uuid::now_v7()).await.unwrap();
 	let payload: Value = serde_json::from_slice(&plan[0].body).unwrap();
 	assert_eq!(payload["state"], state);
 	assert!(
@@ -163,13 +169,9 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 	let questions = questions(1);
 	let good = json!({"model":"typesafe/jev-1.13","answers":{"q0":{"type":"noul","noul":0.5}}});
 	assert_eq!(
-		validate_response(
-			"typesafe/jev-1.13",
-			&questions,
-			&serde_json::to_vec(&good).unwrap()
-		)
-		.unwrap()
-		.answers["q0"],
+		validate_response(&jev(), &questions, &serde_json::to_vec(&good).unwrap())
+			.unwrap()
+			.answers["q0"],
 		Probability::half()
 	);
 	for wrong in [
@@ -183,12 +185,7 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 		json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":1.01}}}),
 	] {
 		assert!(
-			validate_response(
-				"typesafe/jev-1.13",
-				&questions,
-				&serde_json::to_vec(&wrong).unwrap()
-			)
-			.is_err()
+			validate_response(&jev(), &questions, &serde_json::to_vec(&wrong).unwrap()).is_err()
 		);
 	}
 	let exact = f64::from_bits(0x3fdfffffffffffff);
@@ -197,7 +194,7 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 	);
 
 	assert_eq!(
-		validate_response("typesafe/jev-1.13", &questions, wire.as_bytes())
+		validate_response(&jev(), &questions, wire.as_bytes())
 			.unwrap()
 			.answers["q0"]
 			.value()
@@ -210,7 +207,7 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 		br#"{"model":"typesafe/jev-1.13","answers":{"q0":{"noul":1e999}}}"#.as_slice(),
 		br#"{"model":"typesafe/jev-1.13","answers":{"q0":{"noul":"0.5"}}}"#.as_slice(),
 	] {
-		assert!(validate_response("typesafe/jev-1.13", &questions, malformed).is_err());
+		assert!(validate_response(&jev(), &questions, malformed).is_err());
 	}
 }
 struct Server(tokio::task::JoinHandle<()>);
@@ -256,7 +253,7 @@ async fn each_attempt_checks_before_reservation_and_resolves_its_credential_only
 	);
 	let (endpoint, _server) = server(router).await;
 	let access = AccessFixture::new(&endpoint);
-	let client = JevDecisionProvider::new(
+	let client = RouteDecisionProvider::new(
 		config(),
 		"node-decision-adapter:23".into(),
 		access.clone(),
@@ -266,12 +263,12 @@ async fn each_attempt_checks_before_reservation_and_resolves_its_credential_only
 	)
 	.unwrap();
 	let requests = client
-		.plan(&json!({"goal":"authorized"}), &questions(3))
+		.plan(0, &json!({"goal":"authorized"}), &questions(3))
 		.unwrap();
 	let attempts = [Uuid::now_v7(), Uuid::now_v7()];
 	let mut transports = vec![];
 	for (request, attempt) in requests.iter().zip(attempts) {
-		transports.push(client.prepare(request, attempt).await.unwrap());
+		transports.push(client.prepare(0, request, attempt).await.unwrap());
 	}
 	// Preparing checks the binding without minting a short-lived call credential,
 	// which a reservation wait could outlive.
@@ -292,7 +289,10 @@ async fn each_attempt_checks_before_reservation_and_resolves_its_credential_only
 		assert_eq!(inference.call, Some(attempt));
 	}
 	// Revocation after preparation fails the dispatch before any request.
-	let late = client.prepare(&requests[2], Uuid::now_v7()).await.unwrap();
+	let late = client
+		.prepare(0, &requests[2], Uuid::now_v7())
+		.await
+		.unwrap();
 	access.available.store(false, Ordering::SeqCst);
 	let error = late.dispatch().await.unwrap_err();
 	assert!(matches!(error, DispatchError::ProviderFailure(_)));
@@ -304,7 +304,7 @@ async fn each_attempt_checks_before_reservation_and_resolves_its_credential_only
 	// A revoked or unbound credential fails preparation, so no attempt is
 	// reserved and no request is sent.
 	let error = client
-		.prepare(&requests[2], Uuid::now_v7())
+		.prepare(0, &requests[2], Uuid::now_v7())
 		.await
 		.err()
 		.unwrap()
@@ -335,12 +335,12 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
 	let request = client
-		.plan(&json!({"goal":"authorized"}), &questions(1))
+		.plan(0, &json!({"goal":"authorized"}), &questions(1))
 		.unwrap()
 		.remove(0);
 	assert_eq!(
 		client
-			.prepare(&request, Uuid::now_v7())
+			.prepare(0, &request, Uuid::now_v7())
 			.await
 			.unwrap()
 			.dispatch()
@@ -355,7 +355,7 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
 	let error = client
-		.prepare(&request, Uuid::now_v7())
+		.prepare(0, &request, Uuid::now_v7())
 		.await
 		.unwrap()
 		.dispatch()
@@ -397,10 +397,10 @@ async fn redirects_and_failures_do_not_create_unreserved_requests() {
 		);
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
-	let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
+	let request = client.plan(0, &json!({}), &questions(1)).unwrap().remove(0);
 	assert!(
 		client
-			.prepare(&request, Uuid::now_v7())
+			.prepare(0, &request, Uuid::now_v7())
 			.await
 			.unwrap()
 			.dispatch()
@@ -425,10 +425,10 @@ async fn successful_http_with_invalid_answers_is_a_contract_violation() {
 		);
 		let (endpoint, _server) = server(router).await;
 		let client = provider(&endpoint, None);
-		let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
+		let request = client.plan(0, &json!({}), &questions(1)).unwrap().remove(0);
 		assert!(matches!(
 			client
-				.prepare(&request, Uuid::now_v7())
+				.prepare(0, &request, Uuid::now_v7())
 				.await
 				.unwrap()
 				.dispatch()
@@ -440,18 +440,18 @@ async fn successful_http_with_invalid_answers_is_a_contract_violation() {
 #[tokio::test]
 async fn prepared_body_cannot_change_the_model_or_question_map() {
 	let client = provider("https://example.test", None);
-	let mut request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
+	let mut request = client.plan(0, &json!({}), &questions(1)).unwrap().remove(0);
 	let mut body: Value = serde_json::from_slice(&request.body).unwrap();
 	body["model"] = "jev-latest".into();
 	request.body = serde_json::to_vec(&body).unwrap();
-	assert!(client.prepare(&request, Uuid::now_v7()).await.is_err());
+	assert!(client.prepare(0, &request, Uuid::now_v7()).await.is_err());
 }
 #[test]
 fn answered_responses_report_the_served_model_and_numeric_usage_for_the_attempt_trace() {
 	let questions = questions(1);
 	let answers = json!({"q0":{"type":"noul","noul":0.5}});
 	let answered = validate_response(
-		"typesafe/jev-1.13",
+		&jev(),
 		&questions,
 		&serde_json::to_vec(&json!({
 			"model":"typesafe/jev-1.13-20260917","answers":answers,
@@ -475,7 +475,7 @@ fn answered_responses_report_the_served_model_and_numeric_usage_for_the_attempt_
 		json!({"input_tokens":"12","cost":[]}),
 	] {
 		let answered = validate_response(
-			"typesafe/jev-1.13",
+			&jev(),
 			&questions,
 			&serde_json::to_vec(
 				&json!({"model":"typesafe/jev-1.13","answers":answers,"usage":usage}),
@@ -489,32 +489,175 @@ fn answered_responses_report_the_served_model_and_numeric_usage_for_the_attempt_
 
 #[test]
 fn the_byte_budget_keeps_requests_in_the_mode_their_state_allows() {
-	let budget = StateBudget::default();
-	let capacity = ByteBudget(budget.clone());
+	let route = jev();
+	let capacity = ByteBudget;
 	let questions = Questions::new();
 	let state = |bytes: usize| json!("s".repeat(bytes - 2));
 	let small = state(1_000);
 	assert!(
 		capacity
-			.fits("typesafe/jev-1.13", &small, &questions, &[0; 32_000])
+			.fits(&route, &small, &questions, &[0; 32_000])
 			.unwrap()
 	);
 	assert!(
 		!capacity
-			.fits("typesafe/jev-1.13", &small, &questions, &[0; 32_001])
+			.fits(&route, &small, &questions, &[0; 32_001])
 			.unwrap()
 	);
 	// A state beyond the default mode travels in the long-context mode.
 	let large = state(30_000);
 	assert!(
 		capacity
-			.fits("typesafe/jev-1.13", &large, &questions, &[0; 40_000])
+			.fits(&route, &large, &questions, &[0; 40_000])
 			.unwrap()
 	);
 	let too_large = state(560_001);
 	assert!(
 		!capacity
-			.fits("typesafe/jev-1.13", &too_large, &questions, &[0; 1])
+			.fits(&route, &too_large, &questions, &[0; 1])
 			.unwrap()
 	);
+}
+
+fn clef() -> DeciderRoute {
+	DeciderRoute {
+		provider_contract: DECISIONS.into(),
+		model: "cloudflare/clef".into(),
+		hosts: vec!["cloudflare".into(), "deepinfra".into()],
+		keep_threshold: Probability::half(),
+		state_budget: StateBudget {
+			long_context_request_bytes: None,
+			long_context_state_bytes: None,
+			..StateBudget::default()
+		},
+	}
+}
+/// A provider whose second Route is Clef, served under an OpenRouter-shaped base.
+fn routed(endpoint: &str) -> RouteDecisionProvider {
+	RouteDecisionProvider::new(
+		DeciderConfig {
+			routes: vec![jev(), clef()],
+			..config()
+		},
+		"node-decision-adapter:23".into(),
+		AccessFixture::new(&format!("{endpoint}/api/v1")),
+		run_context(),
+		Arc::new(ByteBudget),
+		Duration::from_secs(5),
+	)
+	.unwrap()
+}
+#[tokio::test]
+async fn a_decisions_route_names_its_hosts_and_is_answered_only_by_them() {
+	let host = Arc::new(Mutex::new("DeepInfra"));
+	let served = host.clone();
+	let router = Router::new().route(
+		"/api/alpha/decisions",
+		post(move |bytes: axum::body::Bytes| {
+			let host = served.clone();
+			async move {
+				let body: Value = serde_json::from_slice(&bytes).unwrap();
+				assert_eq!(body["model"], "cloudflare/clef");
+				// Only the hosts the Route approved, with zero data retention.
+				assert_eq!(
+					body["provider"],
+					json!({"zdr":true,"only":["cloudflare","deepinfra"],"allow_fallbacks":true})
+				);
+				Json(
+					json!({"model":"cloudflare/clef","provider":*host.lock().unwrap(),
+					"answers":{"q0":{"type":"noul","noul":0.25}}}),
+				)
+			}
+		}),
+	);
+	let (endpoint, _server) = server(router).await;
+	let client = routed(&endpoint);
+	let request = client
+		.plan(1, &json!({"goal":"authorized"}), &questions(1))
+		.unwrap()
+		.remove(0);
+	// The Route's request differs from the System One one for the same state.
+	assert_ne!(
+		request.body,
+		client
+			.plan(0, &json!({"goal":"authorized"}), &questions(1))
+			.unwrap()[0]
+			.body
+	);
+	let dispatch = || async {
+		client
+			.prepare(1, &request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await
+	};
+	assert_eq!(dispatch().await.unwrap()["q0"].value(), 0.25);
+	*host.lock().unwrap() = "Cloudflare";
+	assert!(dispatch().await.is_ok());
+	// A host the Route does not name is an invalid answer, never accepted.
+	*host.lock().unwrap() = "PrimeIntellect";
+	assert!(matches!(
+		dispatch().await,
+		Err(DispatchError::InvalidAnswers)
+	));
+	assert!(client.plan(2, &json!({}), &questions(1)).is_err());
+}
+#[tokio::test]
+async fn refusals_are_told_apart_from_a_route_being_unavailable() {
+	let status = Arc::new(AtomicUsize::new(402));
+	let returned = status.clone();
+	let router = Router::new().route(
+		"/api/alpha/decisions",
+		post(move || {
+			let status = returned.clone();
+			async move { StatusCode::from_u16(status.load(Ordering::SeqCst) as u16).unwrap() }
+		}),
+	);
+	let (endpoint, _server) = server(router).await;
+	let client = routed(&endpoint);
+	let request = client.plan(1, &json!({}), &questions(1)).unwrap().remove(0);
+	for (code, refused) in [
+		(400, true),
+		(401, true),
+		(402, true),
+		(403, true),
+		(413, true),
+		(404, false),
+		(429, false),
+		(500, false),
+		(503, false),
+		(529, false),
+	] {
+		status.store(code, Ordering::SeqCst);
+		let result = client
+			.prepare(1, &request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await;
+		match result {
+			Err(DispatchError::Refused(returned)) => {
+				assert!(refused, "{code}");
+				assert_eq!(usize::from(returned), code);
+			}
+			Err(DispatchError::ProviderFailure(_)) => assert!(!refused, "{code}"),
+			other => panic!("{code}: {other:?}"),
+		}
+	}
+}
+#[test]
+fn the_decisions_api_is_the_alpha_endpoint_beside_the_v1_base() {
+	assert_eq!(
+		route_url("https://openrouter.ai/api/v1/", DECISIONS).unwrap(),
+		"https://openrouter.ai/api/alpha/decisions"
+	);
+	assert_eq!(
+		route_url("https://broker.example/api/v1", PROVIDER).unwrap(),
+		"https://broker.example/api/v1/systemone"
+	);
+	assert!(route_url("https://openrouter.ai/api", DECISIONS).is_err());
+	assert!(named_host(&["primeintellect".into()], "PrimeIntellect"));
+	assert!(!named_host(&["deepinfra".into()], ""));
+	assert!(!named_host(&["deepinfra".into()], "Cloudflare"));
 }

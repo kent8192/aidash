@@ -447,6 +447,59 @@ async fn typed_context_failures_pause_without_scheduling_a_retry(
 }
 #[rstest]
 #[tokio::test]
+async fn a_decider_outage_retries_as_new_decisions_then_pauses(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Each retry waits 2, 4, 8, 16 and 32 s and counts as the step's next
+	// outage retry, which the next decision commits to (ADR 0066).
+	for retries in 1..=5_u32 {
+		let retry = recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::DeciderOutage,
+			now,
+		)
+		.await
+		.unwrap();
+		assert!(!retry);
+		let run = repository.run.lock().unwrap();
+		let run = run.as_ref().unwrap();
+		assert_eq!(run.recovery.decider_retry, retries);
+		assert_eq!(
+			run.recovery.retry.as_ref().unwrap().at,
+			now + chrono::Duration::seconds(2_i64.pow(retries))
+		);
+		assert_eq!(run.recovery.context_reason, None);
+	}
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::DeciderOutage,
+		now,
+	)
+	.await
+	.unwrap();
+	let writes = repository.writes.lock().unwrap();
+	assert_eq!(writes.len(), 6);
+	assert!(
+		writes[..5]
+			.iter()
+			.all(|write| *write == Write::Save("run.decider_retrying".into()))
+	);
+	assert_eq!(
+		writes[5],
+		Write::Context(ContextFailure::DeciderUnavailable)
+	);
+	let run = repository.run.lock().unwrap();
+	assert_eq!(
+		run.as_ref().unwrap().recovery.context_reason,
+		Some(ContextFailure::DeciderUnavailable)
+	);
+	assert!(!ExecutionFailure::DeciderOutage.retryable());
+}
+#[rstest]
+#[tokio::test]
 async fn transport_failures_still_retry(repository: Repository, now: DateTime<Utc>) {
 	let retry = recover(
 		&repository,

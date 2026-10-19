@@ -1,21 +1,44 @@
 use super::*;
 use chrono::{TimeZone, Utc};
+fn jev() -> DeciderRoute {
+	DeciderRoute {
+		provider_contract: PROVIDER.into(),
+		model: "typesafe/jev-1.13".into(),
+		hosts: vec![],
+		keep_threshold: Probability::half(),
+		state_budget: StateBudget::default(),
+	}
+}
+fn clef() -> DeciderRoute {
+	DeciderRoute {
+		provider_contract: DECISIONS.into(),
+		model: "cloudflare/clef".into(),
+		hosts: vec![
+			"cloudflare".into(),
+			"deepinfra".into(),
+			"primeintellect".into(),
+		],
+		keep_threshold: Probability::half(),
+		state_budget: StateBudget {
+			long_context_request_bytes: None,
+			long_context_state_bytes: None,
+			..StateBudget::default()
+		},
+	}
+}
 fn config() -> DeciderConfig {
 	DeciderConfig {
 		hook: Hook::Compaction,
 		answer_type: AnswerType::Noul,
 		description: "Retain required history".into(),
-		provider_contract: PROVIDER.into(),
 		provider_credential: "openrouter".into(),
-		model: "typesafe/jev-1.13".into(),
+		routes: vec![jev()],
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
-		keep_threshold: Probability::half(),
 		mode: Mode::Enforce,
 		max_calls_per_run: 20,
 		state_retention: policy::StateRetention::default(),
-		state_budget: StateBudget::default(),
 	}
 }
 #[test]
@@ -24,19 +47,9 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 	for (field, value) in [
 		("hook", "approval"),
 		("answer_type", "choice"),
-		("provider_contract", "unknown/1"),
 		("builder", "custom-code/1"),
 		("option_source", "live/1"),
 		("rule", "unknown/2"),
-		("model", "jev-latest"),
-		("model", "jev-1.13"),
-		("model", "~typesafe/jev-latest"),
-		("model", "typesafe/jev-latest"),
-		("model", "typesafe/jev-1"),
-		("model", "typesafe/jev-1.13.0"),
-		("model", "typesafe/jev-01.13"),
-		("model", "typesafe/jev-1.13-20260917"),
-		("model", "other/jev-1.13"),
 		("provider_credential", "typesafe"),
 		("provider_credential", ""),
 		("description", " "),
@@ -48,10 +61,43 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 			"{field}={value}"
 		);
 	}
+	for (field, value) in [
+		("provider_contract", "unknown/1"),
+		("model", "jev-latest"),
+		("model", "jev-1.13"),
+		("model", "~typesafe/jev-latest"),
+		("model", "typesafe/jev-latest"),
+		("model", "typesafe/jev-1"),
+		("model", "typesafe/jev-1.13.0"),
+		("model", "typesafe/jev-01.13"),
+		("model", "typesafe/jev-1.13-20260917"),
+		("model", "other/jev-1.13"),
+	] {
+		let mut json = original.clone();
+		json["routes"][0][field] = value.into();
+		assert!(
+			serde_json::from_value::<DeciderConfig>(json).map_or(true, |c| c.validate().is_err()),
+			"route {field}={value}"
+		);
+	}
 	// A Capability Token carries at most 256 bytes of model ID.
 	let mut json = original.clone();
-	json["model"] = format!("typesafe/jev-1.{}", "1".repeat(256)).into();
+	json["routes"][0]["model"] = format!("typesafe/jev-1.{}", "1".repeat(256)).into();
 	assert!(serde_json::from_value::<DeciderConfig>(json).map_or(true, |c| c.validate().is_err()));
+	for field in [
+		"model",
+		"provider_contract",
+		"keep_threshold",
+		"state_budget",
+	] {
+		// These belong to a Route now.
+		let mut json = original.clone();
+		json[field] = original["routes"][0][field].clone();
+		assert!(
+			serde_json::from_value::<DeciderConfig>(json).is_err(),
+			"{field}"
+		);
+	}
 	for field in [
 		"max_request_bytes",
 		"max_questions",
@@ -66,6 +112,59 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 		assert!(serde_json::from_value::<DeciderConfig>(json).is_err());
 	}
 	config().validate().unwrap();
+}
+#[test]
+fn decisions_routes_pin_exact_models_and_name_their_hosts() {
+	let routes = DeciderConfig {
+		routes: vec![jev(), clef()],
+		..config()
+	};
+	routes.validate().unwrap();
+	assert_eq!(routes.models(), ["typesafe/jev-1.13", "cloudflare/clef"]);
+	let mut long_context = clef();
+	long_context.state_budget = StateBudget::default();
+	let mut hosted_jev = jev();
+	hosted_jev.hosts = vec!["typesafe".into()];
+	let with = |change: fn(&mut DeciderRoute)| {
+		let mut route = clef();
+		change(&mut route);
+		route
+	};
+	for invalid in [
+		// Only Jev has a long-context mode, and only TypeSafe serves it.
+		long_context,
+		hosted_jev,
+		with(|r| r.hosts.clear()),
+		with(|r| r.hosts = vec!["Cloudflare".into()]),
+		with(|r| r.hosts = vec!["deepinfra/fp8".into()]),
+		with(|r| r.hosts = vec!["cloudflare".into(), "cloudflare".into()]),
+		with(|r| r.hosts = (0..9).map(|i| format!("host-{i}")).collect()),
+		with(|r| r.model = "~cloudflare/clef-latest".into()),
+		with(|r| r.model = "cloudflare/clef:free".into()),
+		with(|r| r.model = "clef".into()),
+		with(|r| r.keep_threshold = Probability::new(0.0).unwrap()),
+		with(|r| r.keep_threshold = Probability::new(0.6).unwrap()),
+	] {
+		assert!(invalid.validate().is_err(), "{invalid:?}");
+	}
+	for routes in [vec![], vec![jev(), clef(), clef()], vec![jev(); 5]] {
+		assert!(DeciderConfig { routes, ..config() }.validate().is_err());
+	}
+	let lower = with(|r| r.keep_threshold = Probability::new(0.3).unwrap());
+	lower.validate().unwrap();
+	// A Route's lower threshold keeps more; a Binding's stricter one still wins.
+	assert_eq!(
+		Restrictions::default()
+			.with_route(&lower)
+			.keep_threshold
+			.value(),
+		0.3
+	);
+	let strict = Restrictions {
+		keep_threshold: Probability::new(0.2).unwrap(),
+		..Default::default()
+	};
+	assert_eq!(strict.with_route(&lower).keep_threshold.value(), 0.2);
 }
 #[test]
 fn served_models_match_their_pin_or_a_dated_snapshot_of_it() {
@@ -317,6 +416,27 @@ fn state_budgets_stay_in_the_default_mode_unless_long_context_is_declared() {
 			.validate()
 			.is_err()
 	);
+}
+#[test]
+fn the_configuration_pin_commits_to_every_route_model() {
+	let first = DeciderConfig {
+		routes: vec![jev(), clef()],
+		..config()
+	};
+	let mut second = first.clone();
+	second.routes[1].model = "cloudflare/clef-flash".into();
+	assert_eq!(
+		first.parameters_digest().unwrap(),
+		second.parameters_digest().unwrap()
+	);
+	assert_ne!(first.digest().unwrap(), second.digest().unwrap());
+	let mut hosts = first.clone();
+	hosts.routes[1].hosts.pop();
+	assert_ne!(
+		first.parameters_digest().unwrap(),
+		hosts.parameters_digest().unwrap()
+	);
+	assert_eq!(first.max_request_bytes(), 600_000);
 }
 #[test]
 fn the_configuration_pin_commits_to_the_mode() {

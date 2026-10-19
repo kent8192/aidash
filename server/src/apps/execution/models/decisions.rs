@@ -27,6 +27,9 @@ pub struct DecisionAttempt {
 	/// The Run's resume cycle the decision identity commits to.
 	#[field]
 	pub cycle: i32,
+	/// The step's outage retry the decision identity commits to (ADR 0066).
+	#[field]
+	pub retry: i32,
 	#[field]
 	pub input_revision: i64,
 	#[field(field_type = "text")]
@@ -40,6 +43,9 @@ pub struct DecisionAttempt {
 	pub decider: Json<Value>,
 	#[field]
 	pub binding_restrictions: Json<Value>,
+	/// The Decider Route the attempt asked (ADR 0066).
+	#[field]
+	pub route: i32,
 	#[field(field_type = "text")]
 	pub request_digest: String,
 	#[field(field_type = "text")]

@@ -272,6 +272,7 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		// also reports invariant and allowance violations, which never retry.
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
+		NativeError::DeciderOutage => ExecutionFailure::DeciderOutage,
 		// The harness owns bounded compact-and-retry; an overflow that escapes
 		// it has exhausted recovery and must pause rather than transport-retry.
 		NativeError::ContextOverflow => ExecutionFailure::Context(

@@ -187,11 +187,25 @@ fn chat_messages(
 	Ok(())
 }
 
-/// A System One body may carry only the decision itself and the zero-data-retention
-/// routing flag. `trace`, `user` and `session_id` reach OpenRouter's observability
-/// destinations, and any other `provider` preference could widen routing.
-pub(crate) fn decision_input(value: &Value) -> Result<(), Failure> {
+/// A decision body may carry only the decision itself and its routing. `trace`,
+/// `user` and `session_id` reach OpenRouter's observability destinations, and
+/// any other `provider` preference could widen routing. A System One body routes
+/// only by zero data retention, with a token that names no hosts; a Decisions
+/// API body names exactly the hosts its token signs from the Decider Route, and
+/// OpenRouter may move only between those (ADR 0066).
+pub(crate) fn decision_input(
+	value: &Value,
+	decisions: bool,
+	hosts: &[String],
+) -> Result<(), Failure> {
 	let fields = value.as_object().ok_or(Failure::ClaimViolation)?;
+	let provider = fields.get("provider");
+	let routed = if decisions {
+		!hosts.is_empty()
+			&& provider == Some(&json!({"zdr": true, "only": hosts, "allow_fallbacks": true}))
+	} else {
+		hosts.is_empty() && provider == Some(&json!({"zdr": true}))
+	};
 	if fields
 		.keys()
 		.any(|key| !matches!(key.as_str(), "model" | "state" | "questions" | "provider"))
@@ -200,7 +214,7 @@ pub(crate) fn decision_input(value: &Value) -> Result<(), Failure> {
 			.get("questions")
 			.and_then(Value::as_object)
 			.is_none_or(|questions| questions.is_empty())
-		|| fields.get("provider") != Some(&json!({"zdr": true}))
+		|| !routed
 	{
 		return Err(Failure::ClaimViolation);
 	}

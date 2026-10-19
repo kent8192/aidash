@@ -66,6 +66,11 @@ pub struct Claims {
 	/// authority keep their shape and older brokers still read them.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cache_breakpoints: bool,
+	/// The OpenRouter hosts of the Decider Route a Decisions API request must
+	/// name, in order, as `provider.only` (ADR 0066). Empty for every other
+	/// token, including a System One Decision Attempt's, and then omitted.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub hosts: Vec<String>,
 }
 
 /// Safe, stable broker-owned failure codes. No rejected input is retained.
@@ -209,7 +214,7 @@ impl PublicKeys {
 			{
 				return Err(Failure::ClaimViolation);
 			}
-		} else if claims.max_output_tokens == 0 {
+		} else if claims.max_output_tokens == 0 || !claims.hosts.is_empty() {
 			return Err(Failure::ClaimViolation);
 		}
 		Ok(claims)
