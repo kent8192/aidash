@@ -1,0 +1,12 @@
+{{- $kind := include "aidash.workloadKind" . -}}
+{{- if .Values.highAvailability.enabled }}
+{{- $name := printf "%s-aidash" .Release.Name -}}
+{{- $workloads := list (printf "%s-server" $name) (printf "%s-worker" $name) -}}
+{{- if .Values.execution.runner.enabled -}}
+{{- $workloads = append $workloads (printf "%s-execution-runner" .Release.Name) -}}
+{{- end -}}
+{{- range $workload := $workloads }}
+---
+{{ include "aidash.highAvailability" (dict "name" $workload "seconds" $.Values.highAvailability.afterNodeUnreachableSeconds) }}
+{{- end }}
+{{- end }}

@@ -225,7 +225,8 @@ pub fn database(postgres_container: PostgresFuture, temp_dir: TempDir) -> Databa
 	async move {
 		let (container, pool, _port, url) = postgres_container.await;
 		pool.close().await;
-		let logins = postgres::prepare_database(&url, "native").await;
+		let logins =
+			postgres::prepare_database(&url, "native", postgres::PgroongaRecovery::CrashSafe).await;
 		let owner = BackendConnection::connect_postgres_with_pool_size(&logins.owner_url, Some(4))
 			.await
 			.expect("connect Reinhardt to the isolated test database as its owner");

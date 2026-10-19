@@ -100,6 +100,15 @@ variable "environments" {
     error_message = "Use tier-matching N2 environments, random preview tokens or explicit trusted legacy state, and normal always-running production nodes."
   }
   validation {
+    # Losing us-central1-a makes the system node and every Environment node
+    # NotReady at once. The cluster autoscaler, which grows the standby pools,
+    # halts only when more than three nodes and more than 45% are NotReady
+    # (upstream --ok-total-unready-count=3); GKE documents only the 45%, so the
+    # zone failover drill confirms the allowance (ADR 0067).
+    condition     = alltrue([for e in values(var.environments) : e.kind != "production" || e.nodes <= 2])
+    error_message = "Production runs at most two Environment nodes, so a lost zone leaves at most three NotReady nodes and the autoscaler can still fill the standby zone (ADR 0067)."
+  }
+  validation {
     condition     = length(distinct(compact([for e in values(var.environments) : e.hostname_token]))) == length([for e in values(var.environments) : e if e.hostname_token != null])
     error_message = "Preview tokens must be distinct across managed environments."
   }

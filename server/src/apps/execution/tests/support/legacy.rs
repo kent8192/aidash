@@ -428,7 +428,11 @@ pub fn execution_database(
 		let logins = environment
 			.bounded_setup(
 				format!("create the fixture database {database}"),
-				postgres::prepare_database(&environment.database_url, &database),
+				postgres::prepare_database(
+					&environment.database_url,
+					&database,
+					postgres::PgroongaRecovery::Off,
+				),
 			)
 			.await;
 		// Migrations run as the owner; everything else uses the server role.
