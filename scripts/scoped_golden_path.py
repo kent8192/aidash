@@ -367,7 +367,10 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 # completion command. Any actual retry must retain its input.
                 assert receipts and len(set(receipts)) == 1, "Recovery changed a committed Home command"
                 assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
-            matching = [item for item in api_request(base_b, "/api/state", token=mapped["token"])["runs"] if item["task_id"] == task["id"] and item["home_node"] == node_a]
+            # The receiver holds no row for the source-owned workspace, so a
+            # receiver subject's state never lists this Run. Count Node B's
+            # Runs from the Deployment Administrator's Node-wide view.
+            matching = [item for item in api_request(base_b, "/api/state")["runs"] if item["task_id"] == task["id"] and item["home_node"] == node_a]
             assert len(matching) == 1 and matching[0]["id"] == run_id
             statuses = api_request(base_a, f"/api/tasks/{task['id']}/remote-executions", token=token)
             assert len(statuses) == 1 and statuses[0]["execution"]["run_id"] == run_id
