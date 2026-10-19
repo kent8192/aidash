@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from golden_path import tool_descriptor, tool_binding, PEER_TOKEN, api_request, entity, wait_for
+from golden_path import tool_descriptor, tool_binding, PEER_TOKEN, api_request, entity, tenant_subject, wait_for
 
 # Budget for a scoped Run to reach its crash boundary, and again to complete
 # after the SIGKILL. Each durable phase performs bounded Home RPCs before its
@@ -240,16 +240,13 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
 
     def policy(base, label, subject):
         # Aidash assigns Tenant names; the fixture's names become labels.
-        tenant = api_request(base, "/api/tenants", {"label": label})["name"]
-        bundle = {"tenant": tenant, "subjects": {subject: {"kind": "user"}, executor: {"kind": "agent"}}, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-        api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 1, "bundle": bundle})
-        credential = api_request(base, f"/api/authorization/{tenant}/credentials", {"subject": subject, "expires_in_seconds": 3600})
+        tenant, credential = tenant_subject(base, label, subject, agents=(executor,))
         subject_tokens.append(credential["token"])
         tokens.append(credential["token"])
         return tenant, credential
 
     def catalog(entry, enabled, revision):
-        return api_request(base_b, f"/api/authorization/{receiver_tenant}/catalog", {"entry": entry, "enabled": enabled, "expected_revision": revision})
+        return api_request(base_b, f"/api/authorization/{receiver_tenant}/catalog", {"entry": entry, "enabled": enabled, "expected_revision": revision}, token=mapped["token"])
 
     try:
         peer(base_a, node_b, receiver.url)
@@ -266,7 +263,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         ]
         entries[1]["schema"] = {"type": "object", "required": ["scenario"], "properties": {"scenario": {"type": "string"}}, "additionalProperties": False}
         for entry in entries:
-            api_request(base_b, "/api/registry", entry)
+            api_request(base_b, "/api/registry", entry, token=mapped["token"])
             catalog({"id": entry["id"], "version": entry["version"]}, True, 0)
 
         def create_task(title):
@@ -305,7 +302,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, token=PEER_TOKEN, headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
             def run(run_id=run_id):
-                return api_request(base_b, f"/api/runs/{run_id}")["run"]
+                return api_request(base_b, f"/api/runs/{run_id}", token=mapped["token"])["run"]
 
             def progress(grant=grant, scenario=scenario):
                 stalled = run()
@@ -341,12 +338,12 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 wait_for(lambda: run()["control"] == "PAUSED", timeout=90, label="restarted Worker rejects revoked grant")
                 assert fixture.model_calls[scenario] == before_calls
                 assert not any(effect["scenario"] == scenario for effect in fixture.effects.values())
-                stopped = api_request(base_a, f"/api/workspaces/{workspace['id']}")
+                stopped = api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)
                 assert not stopped["artifacts"] and stopped["tasks"][0]["status"] != "COMPLETED"
                 denied(base_a, f"{path}/{grant}/control", {"action": "resume"}, token=token)
                 api_request(base_a, f"{path}/{grant}/control", {"action": "cancel"}, token=token)
                 wait_for(lambda: run()["phase"] == "CANCELLED", label="revoked remote run cancellation")
-                assert api_request(base_a, f"/api/workspaces/{workspace['id']}")["tasks"][0]["status"] == "CANCELLED"
+                assert api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)["tasks"][0]["status"] == "CANCELLED"
             else:
                 try:
                     wait_for(lambda: run()["phase"] == "COMPLETED", timeout=RECOVERY_BUDGET_SECONDS, label=scenario)
@@ -368,7 +365,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 # completion command. Any actual retry must retain its input.
                 assert receipts and len(set(receipts)) == 1, "Recovery changed a committed Home command"
                 assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
-            matching = [item for item in api_request(base_b, "/api/state")["runs"] if item["task_id"] == task["id"] and item["home_node"] == node_a]
+            matching = [item for item in api_request(base_b, "/api/state", token=mapped["token"])["runs"] if item["task_id"] == task["id"] and item["home_node"] == node_a]
             assert len(matching) == 1 and matching[0]["id"] == run_id
             statuses = api_request(base_a, f"/api/tasks/{task['id']}/remote-executions", token=token)
             assert len(statuses) == 1 and statuses[0]["execution"]["run_id"] == run_id
