@@ -20,6 +20,8 @@ const DISPATCHED: &str = "dispatched";
 pub struct InferenceUsage {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub attempt_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field]
@@ -96,7 +98,9 @@ impl InferenceUsage {
 		dispatch: &UsageDispatch,
 	) -> Result<()> {
 		Self::abandon(tx, run, None).await?;
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.attempt_id(dispatch.attempt)
 			.run_id(run)
 			.lease_token(dispatch.lease)

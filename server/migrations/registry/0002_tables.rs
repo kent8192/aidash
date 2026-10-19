@@ -41,6 +41,7 @@ pub(super) fn migration() -> Migration {
 			name: "agent_draft_shares".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("draft_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("can_edit", FieldType::Boolean)
 					.with_not_null(true)
@@ -89,6 +90,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some(
 						r#"nextval('public.agent_incident_events_id_seq'::regclass)"#.to_owned(),
 					)),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("incident_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("change", FieldType::Jsonb).with_not_null(true),

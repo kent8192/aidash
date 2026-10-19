@@ -29,6 +29,15 @@ with this placement. `capabilities.storage.existingClaim` is mounted at
 child, which the application creates and restricts to its own UID (a fresh
 volume root belongs to root and cannot be chmodded by the application).
 
+`workloadKind: StatefulSet` renders the server, worker and Runner as StatefulSets
+that replace their one Pod in place, keeping the same affinity. With
+`highAvailability.enabled`, which requires StatefulSets, each also gets a GKE
+`HighAvailabilityApplication`: once its Cluster Node has been unreachable for
+`highAvailability.afterNodeUnreachableSeconds` (20), Stateful HA force-deletes
+the Pod and force-attaches its regional disks wherever it is rescheduled. This
+needs the cluster's Stateful HA add-on and claims on a regional
+`regional-hard-failover` StorageClass; production uses both (ADR 0067).
+
 ## Edge, settings and network
 
 `keylessEndpoints.permittedPrivateOrigins` sets `AIDASH_KEYLESS_PRIVATE_ORIGINS` on

@@ -189,3 +189,9 @@ refer here.
   reads. A corrupt record still stops the Runner from starting (as the recovery
   scan always did) instead of reporting idle. The collector's 15-second timeout therefore cannot be
   exhausted by journal growth.
+
+`workloadKind: StatefulSet` renders the edge as a StatefulSet, and
+`highAvailability.enabled` adds a GKE `HighAvailabilityApplication` for
+PostgreSQL, NATS and the edge, which Stateful HA fails over to another zone with
+their regional claims. Production sets both (ADR 0067); the default keeps the
+edge a Deployment.

@@ -111,21 +111,19 @@ pub async fn initialize(
 		.build()?;
 	let federation = Federation {
 		sandbox: Default::default(),
-		gcip: config.gcip.as_ref().map(|gcip| {
-			Arc::new(aidash_integrations::gcip::Services::new(
-				gcip.project_id.clone(),
-				client.clone(),
-			))
-		}),
 		store,
 		registry,
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
 	};
-	// Persist removed GCIP Bindings even for inactive Identities before this
+	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
+	crate::apps::identity::services::sign_in::check_restrictions(&federation).await?;
 	dashboard_authority(&federation).reconcile_policy().await?;
+	if let Some(sign_in) = &federation.config.sign_in {
+		sign_in.reconcile(&federation).await?;
+	}
 	context.set_singleton(settings.clone());
 	context.set_singleton(federation.clone());
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
@@ -2162,9 +2160,6 @@ pub(crate) fn oidc_settings(
 		issuer: config.issuer.clone(),
 		client_id: config.client_id.clone(),
 		client_secret: config.client_secret.clone(),
-		keycloak_admin_url: config.keycloak_admin_url.clone(),
-		status_client_id: config.status_client_id.clone(),
-		status_client_secret: config.status_client_secret.clone(),
 	}
 }
 
@@ -2176,15 +2171,10 @@ pub(crate) fn dashboard_authority(
 			federation.clone(),
 		)),
 		status: federation
-			.gcip
+			.config
+			.sign_in
 			.as_ref()
-			.map(|gcip| gcip.status.clone())
-			.unwrap_or_else(|| {
-				Arc::new(aidash_integrations::oidc::AccountLookup {
-					client: federation.client.clone(),
-					settings: federation.config.oidc.as_ref().map(oidc_settings),
-				})
-			}),
+			.map(|sign_in| sign_in.status()),
 	}
 }
 
@@ -2251,36 +2241,12 @@ pub async fn configure_provider_credentials(
 	type WriteStore = Arc<dyn aidash_application::provider_credentials::Store>;
 	type Reader = Arc<dyn aidash_application::provider_access::KeyMaterialReader>;
 	let (adapter, reader): (WriteStore, Option<Reader>) = match config {
-		StoreConfig::SecretManager {
-			byok_project_id,
-			environment_id,
-		} => {
-			// Settings validation admits a broker only for this Store kind.
-			if let Some(broker) = &settings.broker {
-				use aidash_integrations::capability::{
-					KmsTokenSigner, MetadataTokenSource, issuer::CapabilityIssuer,
-				};
-				let tokens = Arc::new(MetadataTokenSource::new().map_err(|_| {
-					Error::Invalid("Capability Token metadata configuration unavailable".into())
-				})?);
-				let signer = Arc::new(KmsTokenSigner::new(broker.kid.clone(), tokens).map_err(
-					|_| Error::Invalid("invalid Capability Token KMS key version".into()),
-				)?);
-				store.capability_issuer = Some(Arc::new(CapabilityIssuer::new(
-					broker.clone(),
-					byok_project_id.clone(),
-					signer,
-				)?));
-			}
-			(
-				Arc::new(
-					aidash_integrations::provider_credentials::SecretManager::new(
-						byok_project_id.clone(),
-						environment_id.clone(),
-					)?,
-				),
-				None,
-			)
+		StoreConfig::Enterprise(fields) => {
+			let provided = build::current()
+				.extension
+				.provider_credential_store(fields, settings.broker.as_ref())?;
+			store.capability_issuer = provided.issuer;
+			(provided.store, None)
 		}
 		StoreConfig::Postgres { .. } => {
 			let (current, retired) = config.load_postgres_keys().await?;

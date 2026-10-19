@@ -36,6 +36,7 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 	)
 	.await
 	.unwrap();
+	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let neighbor = Record {
 		updated_at: Utc::now() - Duration::minutes(1),
@@ -117,6 +118,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	)
 	.await
 	.unwrap();
+	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let legacy = Record {
 		updated_at: Utc::now() - Duration::minutes(2),
@@ -219,6 +221,7 @@ async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
 	)
 	.await
 	.unwrap();
+	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let mut ids = vec![];
 	for (offset, requires) in [
@@ -288,6 +291,7 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 	)
 	.await
 	.unwrap();
+	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let mut pending = run_fixtures::pending(RunState::Ready(ReadyState {}), Default::default());
 	pending["requires"] = serde_json::json!(["future_capability"]);

@@ -16,23 +16,23 @@ async fn queued_events(
 	#[future] database: DatabaseFixture,
 ) -> QueuedEvents {
 	let database = database.await;
-	let connection = database.lease.handle();
+	let scope = database.tenant("acme").await;
+	let pool = database.pool().await;
 	let mut events = Vec::new();
 	for sequence in 1..=count {
 		events.push(
-			connection
-				.atomic(async |tx| {
-					event_records::create(
-						tx,
-						"aidash://outbox-records",
-						None,
-						"fixture",
-						json!({"sequence":sequence}),
-					)
-					.await
-				})
+			pool.atomic(&scope, async |tx| {
+				event_records::create(
+					tx,
+					"aidash://outbox-records",
+					None,
+					"fixture",
+					json!({"sequence":sequence}),
+				)
 				.await
-				.unwrap(),
+			})
+			.await
+			.unwrap(),
 		);
 	}
 	QueuedEvents { database, events }

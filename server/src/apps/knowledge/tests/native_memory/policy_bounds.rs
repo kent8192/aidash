@@ -75,6 +75,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 						"state",
 						"created_at",
 						"updated_at",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -94,6 +95,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 						.expr(Expr::value("pending"))
 						.expr(Expr::value(chrono::Utc::now()))
 						.expr(Expr::value(chrono::Utc::now()))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -1196,6 +1198,7 @@ pub(super) async fn recorded_run(
 				"phase",
 				"pending",
 				"revision",
+				"tenant",
 			],
 			vec![
 				Expr::value(run),
@@ -1207,6 +1210,7 @@ pub(super) async fn recorded_run(
 				Expr::value("COMPLETED"),
 				Expr::value(pending),
 				Expr::value(1_i64),
+				Expr::value("acme"),
 			],
 		),
 		(
@@ -1217,6 +1221,7 @@ pub(super) async fn recorded_run(
 				"participant_revision",
 				"provider_id",
 				"provider_version",
+				"tenant",
 			],
 			vec![
 				Expr::value(run),
@@ -1224,6 +1229,7 @@ pub(super) async fn recorded_run(
 				Expr::value(1_i64),
 				Expr::value("p"),
 				Expr::value("1.0.0"),
+				Expr::value("acme"),
 			],
 		),
 	] {
@@ -1246,12 +1252,13 @@ pub(super) async fn recorded_run(
 		native::query(
 			&Query::insert()
 				.into_table(Alias::new("memory_run_reads"))
-				.columns(["run_id", "unit_id", "revision"].map(Alias::new))
+				.columns(["run_id", "unit_id", "revision", "tenant"].map(Alias::new))
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(run))
 						.expr(Expr::value(*unit))
 						.expr(Expr::value(1_i64))
+						.expr(Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),

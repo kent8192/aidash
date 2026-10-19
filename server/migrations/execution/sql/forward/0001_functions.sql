@@ -20,8 +20,8 @@ BEGIN
         IF NEW.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') THEN
             -- Only the head's completion releases admission. Notify one successor,
             -- skipping terminal gaps while preserving paused predecessors.
-            INSERT INTO run_activations (run_id, run_revision, reason)
-            SELECT r.id, r.revision, 'ordering_release' FROM core_runs mine
+            INSERT INTO run_activations (run_id, tenant, run_revision, reason)
+            SELECT r.id, r.tenant, r.revision, 'ordering_release' FROM core_runs mine
               JOIN core_runs next ON next.area_id = mine.area_id AND next.generation = mine.generation
               JOIN runs r ON r.id = next.run_id
              WHERE mine.run_id = NEW.id AND next.sequence > mine.sequence
@@ -36,8 +36,8 @@ BEGIN
         END IF;
     ELSIF TG_TABLE_NAME = 'tasks' THEN
         IF NEW.status IS DISTINCT FROM OLD.status THEN
-            INSERT INTO run_activations (run_id, run_revision, reason)
-            SELECT r.id, r.revision, 'dependency_release' FROM task_dependencies d
+            INSERT INTO run_activations (run_id, tenant, run_revision, reason)
+            SELECT r.id, r.tenant, r.revision, 'dependency_release' FROM task_dependencies d
               JOIN runs r ON r.task_id = d.task_id
              WHERE d.dependency_id = NEW.id
                AND r.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED');
@@ -50,8 +50,8 @@ BEGIN
         END IF;
     ELSIF TG_TABLE_NAME = 'core_records' THEN
         IF NEW.kind = 'approval' THEN
-            INSERT INTO run_activations (run_id, run_revision, reason)
-            SELECT id, revision, 'approval' FROM runs
+            INSERT INTO run_activations (run_id, tenant, run_revision, reason)
+            SELECT id, tenant, revision, 'approval' FROM runs
              WHERE id = (NEW.data ->> 'run_id')::UUID
                AND pending -> 'data' ->> 'reason' = 'core_approval' AND pending -> 'data' ->> 'approval_id' = NEW.id::TEXT;
         END IF;
@@ -59,8 +59,8 @@ BEGIN
         PERFORM aidash_request_activation(NEW.run_id, 'core_admission');
     ELSIF TG_TABLE_NAME = 'core_areas' THEN
         IF NEW.state IS DISTINCT FROM OLD.state THEN
-            INSERT INTO run_activations (run_id, run_revision, reason)
-            SELECT r.id, r.revision, 'area_release' FROM runs r JOIN core_runs c ON c.run_id = r.id
+            INSERT INTO run_activations (run_id, tenant, run_revision, reason)
+            SELECT r.id, r.tenant, r.revision, 'area_release' FROM runs r JOIN core_runs c ON c.run_id = r.id
              WHERE c.area_id = NEW.id AND r.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED');
         END IF;
     END IF;
@@ -109,8 +109,8 @@ $_$;
 CREATE FUNCTION public.aidash_request_activation(target uuid, cause text) RETURNS void
     LANGUAGE sql
     AS $$
-    INSERT INTO run_activations (run_id, run_revision, reason)
-    SELECT id, revision, cause FROM runs WHERE id = target;
+    INSERT INTO run_activations (run_id, tenant, run_revision, reason)
+    SELECT id, tenant, revision, cause FROM runs WHERE id = target;
 $$;
 CREATE FUNCTION public.aidash_valid_pending_timestamp(input_value jsonb) RETURNS boolean
     LANGUAGE plpgsql STABLE
@@ -304,8 +304,8 @@ BEGIN
         OR current_run.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') THEN
         RAISE EXCEPTION 'run message arrived after finalization';
     END IF;
-    INSERT INTO run_inputs (run_id, sender, content, idempotency_key, message_id)
-    VALUES (target_run, NEW.sender, NEW.content, NEW.idempotency_key, NEW.id);
+    INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key, message_id)
+    VALUES (target_run, NEW.tenant, NEW.sender, NEW.content, NEW.idempotency_key, NEW.id);
     RETURN NEW;
 END;
 $_$;

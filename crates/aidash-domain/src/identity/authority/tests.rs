@@ -16,7 +16,7 @@ fn now() -> DateTime<Utc> {
 	Duration::minutes(16),
 	Err(DashboardStatusFailure::Unavailable)
 )]
-#[case::google("google",Duration::days(365),Ok(()))]
+#[case::statusless("oidc",Duration::days(365),Ok(()))]
 #[case::future("external",Duration::minutes(-1),Ok(()))]
 #[case::just_inside("external",Duration::minutes(15)-Duration::nanoseconds(1),Ok(()))]
 fn provider_status_preserves_the_exact_freshness_boundary(
@@ -28,7 +28,7 @@ fn provider_status_preserves_the_exact_freshness_boundary(
 		dashboard_status(
 			Some((issuer.into(), Some(now() - age), None)),
 			now(),
-			"google"
+			|issuer| issuer != "oidc"
 		),
 		expected
 	);
@@ -37,12 +37,12 @@ fn provider_status_preserves_the_exact_freshness_boundary(
 #[case::missing(None)]
 #[case::unvalidated(Some(("external".into(),None,None)))]
 #[case::disabled(Some(("external".into(),Some(now()),Some(now()))))]
-#[case::disabled_google(Some(("google".into(),Some(now()),Some(now()))))]
+#[case::disabled_statusless(Some(("oidc".into(),Some(now()),Some(now()))))]
 fn missing_or_disabled_identity_is_denied_before_provider_freshness(
 	#[case] validity: Option<IdentityValidity>,
 ) {
 	assert_eq!(
-		dashboard_status(validity, now(), "google"),
+		dashboard_status(validity, now(), |issuer| issuer != "oidc"),
 		Err(DashboardStatusFailure::Forbidden)
 	);
 }

@@ -83,9 +83,6 @@ fn values_with_oidc(
 		("client_id", "AIDASH_OIDC_CLIENT_ID"),
 		("client_secret", "AIDASH_OIDC_CLIENT_SECRET"),
 		("public_origin", "AIDASH_OIDC_PUBLIC_ORIGIN"),
-		("keycloak_admin_url", "AIDASH_OIDC_KEYCLOAK_ADMIN_URL"),
-		("status_client_id", "AIDASH_OIDC_STATUS_CLIENT_ID"),
-		("status_client_secret", "AIDASH_OIDC_STATUS_CLIENT_SECRET"),
 	] {
 		if let Some(value) = read(name) {
 			oidc.insert(key.into(), Value::String(value));
@@ -226,9 +223,6 @@ mod tests {
 	#[case::client("AIDASH_OIDC_CLIENT_ID")]
 	#[case::secret("AIDASH_OIDC_CLIENT_SECRET")]
 	#[case::origin("AIDASH_OIDC_PUBLIC_ORIGIN")]
-	#[case::admin("AIDASH_OIDC_KEYCLOAK_ADMIN_URL")]
-	#[case::status_client("AIDASH_OIDC_STATUS_CLIENT_ID")]
-	#[case::status_secret("AIDASH_OIDC_STATUS_CLIENT_SECRET")]
 	fn provider_variables_retain_session_tuning_and_partial_validation(#[case] provider: &str) {
 		// Arrange: every legacy provider field still activates normal validation.
 		let data = values(|name| match name {

@@ -1,4 +1,4 @@
-//! OIDC discovery, account lookup and signed token verification are external adapters.
+//! OIDC discovery and signed token verification are external adapters.
 use crate::{Error, Result};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
@@ -26,9 +26,6 @@ pub struct Settings {
 	pub issuer: String,
 	pub client_id: String,
 	pub client_secret: String,
-	pub keycloak_admin_url: String,
-	pub status_client_id: String,
-	pub status_client_secret: String,
 }
 impl Settings {
 	fn is_google(&self) -> bool {
@@ -41,40 +38,6 @@ pub struct PendingLogin<'a> {
 	pub nonce: &'a str,
 }
 
-pub struct AccountLookup {
-	pub client: reqwest::Client,
-	pub settings: Option<Settings>,
-}
-#[async_trait::async_trait]
-impl aidash_application::ports::authorization::dashboard::AccountStatus for AccountLookup {
-	async fn lookup(
-		&self,
-		subject: &str,
-		gcip_tenant: Option<&str>,
-	) -> Result<aidash_domain::identity::dashboard::AccountState> {
-		if gcip_tenant.is_some() {
-			return Err(Error::Forbidden);
-		}
-		let settings = self
-			.settings
-			.as_ref()
-			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		Ok(aidash_domain::identity::dashboard::AccountState {
-			disabled: !keycloak_enabled(&self.client, settings, subject).await?,
-			valid_since: None,
-		})
-	}
-}
-
-#[derive(Deserialize)]
-struct ServiceToken {
-	access_token: String,
-}
-#[derive(Deserialize)]
-struct KeycloakUser {
-	id: Option<String>,
-	enabled: Option<bool>,
-}
 #[derive(Deserialize)]
 struct GoogleTokenResponse {
 	id_token: String,
@@ -180,62 +143,6 @@ fn decoding_key(keys: &JwkSet, kid: &str) -> Result<DecodingKey> {
 	DecodingKey::from_jwk(key).map_err(|_| Error::Invalid("invalid logout signing key".into()))
 }
 
-pub async fn keycloak_enabled(
-	client: &reqwest::Client,
-	config: &Settings,
-	subject: &str,
-) -> Result<bool> {
-	let token_url = format!(
-		"{}/protocol/openid-connect/token",
-		config.issuer.trim_end_matches('/')
-	);
-	let response = client
-		.post(token_url)
-		.form(&[
-			("grant_type", "client_credentials"),
-			("client_id", config.status_client_id.as_str()),
-			("client_secret", config.status_client_secret.as_str()),
-		])
-		.timeout(std::time::Duration::from_secs(10))
-		.send()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	if !response.status().is_success() {
-		return Err(Error::External("Keycloak status unavailable".into()));
-	}
-	let token: ServiceToken = response
-		.json()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	let mut url = reqwest::Url::parse(&config.keycloak_admin_url)
-		.map_err(|_| Error::Invalid("invalid Keycloak admin URL".into()))?;
-	url.path_segments_mut()
-		.map_err(|_| Error::Invalid("invalid Keycloak admin URL".into()))?
-		.push("users")
-		.push(subject);
-	let response = client
-		.get(url)
-		.bearer_auth(token.access_token)
-		.timeout(std::time::Duration::from_secs(10))
-		.send()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	if response.status() == reqwest::StatusCode::NOT_FOUND {
-		return Ok(false);
-	}
-	if !response.status().is_success() {
-		return Err(Error::External("Keycloak status unavailable".into()));
-	}
-	let user: KeycloakUser = response
-		.json()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	if user.id.as_deref() != Some(subject) {
-		return Err(Error::External("Keycloak status unavailable".into()));
-	}
-	Ok(user.enabled == Some(true))
-}
-
 pub async fn exchange_identity(
 	config: &Settings,
 	metadata: CoreProviderMetadata,
@@ -299,9 +206,8 @@ pub async fn exchange_identity(
 		.map(str::to_owned);
 	Ok((
 		aidash_domain::identity::dashboard::SignIn {
+			issuer: config.issuer.clone(),
 			subject,
-			gcip_tenant: None,
-			gcip_provider: None,
 			auth_time: chrono::Utc::now(),
 			verified_email,
 			display_name,
@@ -365,9 +271,8 @@ async fn exchange_google_identity(
 	}
 	Ok((
 		aidash_domain::identity::dashboard::SignIn {
+			issuer: config.issuer.clone(),
 			subject: claims.sub,
-			gcip_tenant: None,
-			gcip_provider: None,
 			auth_time: chrono::Utc::now(),
 			verified_email: claims
 				.email

@@ -97,7 +97,9 @@ impl Task {
 		artifact: &ArtifactInput,
 		key: &str,
 	) -> Result<(TaskContract, ArtifactContract)> {
+		let tenant = crate::database::scope::parent_tenant(tx, "tasks", "id", task.id).await?;
 		let draft = Artifact::build()
+			.tenant(tenant)
 			.workspace_id(task.workspace_id)
 			.task_id(task.id)
 			.kind(serde_json::from_value(Value::String(

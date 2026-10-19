@@ -51,6 +51,7 @@ fn executor_runtime(
 }
 
 async fn insert_entry(pool: &sqlx::PgPool, entry: &Value) -> Result<(), sqlx::Error> {
+	common::tenant_root_in(pool, "acme").await;
 	{
 		let query_bind_1 = entry["id"].as_str().unwrap();
 		let query_bind_2 = entry["version"].as_str().unwrap();
@@ -493,6 +494,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 				"content",
 				"created_by",
 				"idempotency_key",
+				"tenant",
 			]
 			.map(Alias::new),
 		)
@@ -506,6 +508,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 				.expr(Expr::cust("'{}'::jsonb"))
 				.expr(Expr::value("human"))
 				.expr(Expr::value("artifact-key"))
+				.expr(Expr::value("acme"))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
@@ -540,6 +543,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 				"kind",
 				"prompt",
 				"request_key",
+				"tenant",
 			]
 			.map(Alias::new),
 		)
@@ -551,6 +555,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 				.expr(Expr::value("QUESTION"))
 				.expr(Expr::value("Continue?"))
 				.expr(Expr::value("question-key"))
+				.expr(Expr::value("acme"))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
@@ -1639,7 +1644,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		"semantic_indexes",
 		&[
 			("workspace_id", uuid_expr(workspace.id)),
-			("tenant", Expr::value("test").into()),
+			("tenant", Expr::value("acme").into()),
 			("revision", Expr::value(1).into()),
 			("spec", Expr::value(spec.clone()).into()),
 			("collection", Expr::value("test").into()),
@@ -1831,6 +1836,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		"semantic_entries",
 		&[
 			("id", uuid_expr(uuid::Uuid::new_v4())),
+			("tenant", Expr::value("acme").into()),
 			("workspace_id", uuid_expr(workspace.id)),
 			("key", Expr::value("entry").into()),
 			(
@@ -2484,6 +2490,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 			"tasks",
 			&[
 				("id", uuid_expr(uuid::Uuid::new_v4())),
+				("tenant", Expr::value("acme").into()),
 				("workspace_id", uuid_expr(workspace.id)),
 				("title", Expr::value("Direct").into()),
 				("created_by", Expr::value("human").into()),

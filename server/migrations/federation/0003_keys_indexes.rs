@@ -133,6 +133,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_remote_grants".to_owned(),
+			constraint: Constraint::Unique {
+				name: "authorization_remote_grants_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "delegations".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "delegations_pkey".to_owned(),

@@ -35,10 +35,11 @@ pub async fn login_discovery(
 	request: Request,
 	Form(input): Form<LoginDiscovery>,
 ) -> ViewResult<Response> {
-	crate::http::response(
-		crate::apps::identity::services::gcip::discover(&service.runtime, request.headers, input)
-			.await,
-	)
+	let f = &service.runtime;
+	crate::http::response(match &f.config.sign_in {
+		Some(sign_in) => sign_in.discover(f, request.headers, input).await,
+		None => Err(crate::Error::Unauthorized),
+	})
 }
 
 #[get("/auth/callback", name = "sessions-callback", auth = "public")]
@@ -254,39 +255,4 @@ pub async fn backchannel_logout(
 	Form(body): Form<BackchannelLogout>,
 ) -> ViewResult<Response> {
 	crate::http::status(service.backchannel_logout(body).await)
-}
-
-#[get(
-	"/auth/gcip/transaction",
-	name = "sessions-gcip-transaction",
-	auth = "public"
-)]
-pub async fn gcip_transaction(
-	#[inject] service: Depends<DashboardSessions>,
-	request: Request,
-	Query(query): Query<crate::apps::identity::services::gcip::TransactionQuery>,
-) -> ViewResult<Response> {
-	crate::http::response(
-		crate::apps::identity::services::gcip::configuration(
-			&service.runtime,
-			request.headers,
-			query.state,
-		)
-		.await,
-	)
-}
-#[post(
-	"/auth/gcip/exchange",
-	name = "sessions-gcip-exchange",
-	auth = "public"
-)]
-pub async fn gcip_exchange(
-	#[inject] service: Depends<DashboardSessions>,
-	request: Request,
-	Json(input): Json<crate::apps::identity::services::gcip::Exchange>,
-) -> ViewResult<Response> {
-	crate::http::response(
-		crate::apps::identity::services::gcip::exchange(&service.runtime, request.headers, input)
-			.await,
-	)
 }

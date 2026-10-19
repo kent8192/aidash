@@ -100,7 +100,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.store.pool.driver())
+		.execute(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -150,7 +150,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 					.and_where(reinhardt::query::Expr::cust("entry_id = 'remote-only'"))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(a.store.pool.driver())
+			.fetch_one(a.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			if count == 1 {
@@ -197,7 +197,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 				.and_where(reinhardt::query::Expr::cust("id = 'remote-only'"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.store.pool.driver())
+		.execute(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -220,7 +220,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 				.and_where(reinhardt::query::Expr::cust("id = 'remote-only'"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.store.pool.driver())
+		.execute(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

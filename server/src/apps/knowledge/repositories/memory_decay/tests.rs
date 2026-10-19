@@ -48,6 +48,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				"phase",
 				"pending",
 				"revision",
+				"tenant",
 			],
 			vec![
 				Expr::value(id),
@@ -59,6 +60,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				Expr::value("COMPLETED"),
 				Expr::value(pending),
 				Expr::value(1_i64),
+				Expr::value("acme"),
 			],
 		),
 		(
@@ -69,6 +71,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				"participant_revision",
 				"provider_id",
 				"provider_version",
+				"tenant",
 			],
 			vec![
 				Expr::value(id),
@@ -76,6 +79,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				Expr::value(1_i64),
 				Expr::value("p"),
 				Expr::value("1.0.0"),
+				Expr::value("acme"),
 			],
 		),
 	] {

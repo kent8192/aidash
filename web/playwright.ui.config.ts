@@ -34,6 +34,7 @@ export default defineConfig({
     "keyless-approval.spec.ts",
     "catalog-approval.spec.ts",
     "citations.spec.ts",
+    "community-sign-in.spec.ts",
   ],
   workers: 1,
   retries: 0,

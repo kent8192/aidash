@@ -51,9 +51,9 @@ pub(super) fn migration() -> Migration {
 			table: "authorization_peer_mapping_history".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_peer_mapping_history_credential_id_fkey".to_owned(),
-				columns: vec!["credential_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "credential_id".to_owned()],
 				referenced_table: "authorization_credentials".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -75,9 +75,9 @@ pub(super) fn migration() -> Migration {
 			table: "authorization_peer_mappings".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_peer_mappings_credential_id_fkey".to_owned(),
-				columns: vec!["credential_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "credential_id".to_owned()],
 				referenced_table: "authorization_credentials".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -99,9 +99,9 @@ pub(super) fn migration() -> Migration {
 			table: "authorization_remote_grant_reads".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_remote_grant_reads_grant_id_fkey".to_owned(),
-				columns: vec!["grant_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "grant_id".to_owned()],
 				referenced_table: "authorization_remote_grants".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -111,9 +111,9 @@ pub(super) fn migration() -> Migration {
 			table: "authorization_remote_grants".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_remote_grants_task_id_fkey".to_owned(),
-				columns: vec!["task_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "task_id".to_owned()],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -123,9 +123,9 @@ pub(super) fn migration() -> Migration {
 			table: "delegations".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "delegations_task_id_fkey".to_owned(),
-				columns: vec!["task_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "task_id".to_owned()],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -135,10 +135,94 @@ pub(super) fn migration() -> Migration {
 			table: "remote_run_message_fences".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "remote_run_message_fences_task_id_fkey".to_owned(),
-				columns: vec!["task_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "task_id".to_owned()],
 				referenced_table: "tasks".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_peer_mapping_history".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_peer_mapping_history_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_peer_mappings".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_peer_mappings_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_remote_admissions".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_remote_admissions_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_remote_grant_reads".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_remote_grant_reads_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_remote_grants".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_remote_grants_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "delegations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "delegations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "remote_run_message_fences".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "remote_run_message_fences_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
 			},

@@ -55,6 +55,7 @@ pub(crate) async fn configure(
 					"as_of",
 					"cursor",
 					"next_job",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -66,6 +67,11 @@ pub(crate) async fn configure(
 					.expr(Expr::value(None::<DateTime<Utc>>))
 					.expr(Expr::value(None::<Uuid>))
 					.expr(Expr::value(next_job))
+					.expr(crate::database::scope::tenant_of(
+						"memory_banks",
+						"id",
+						bank,
+					))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -96,6 +102,7 @@ async fn ensure(lease: &mut Lease<'_>, bank: Uuid, id: Uuid) -> Result<()> {
 					"pinned",
 					"dormant_policy",
 					"changed_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -109,6 +116,11 @@ async fn ensure(lease: &mut Lease<'_>, bank: Uuid, id: Uuid) -> Result<()> {
 					.expr(Expr::value(false))
 					.expr(Expr::value(None::<serde_json::Value>))
 					.expr(Expr::value(DateTime::<Utc>::UNIX_EPOCH))
+					.expr(crate::database::scope::tenant_of(
+						"memory_banks",
+						"id",
+						bank,
+					))
 					.to_owned(),
 			)
 			.on_conflict(

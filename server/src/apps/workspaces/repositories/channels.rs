@@ -156,6 +156,7 @@ impl ChannelScope for NativeChannels<'_> {
 						Alias::new("workspace_id"),
 						Alias::new("root_message_id"),
 						Alias::new("created_by"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -174,6 +175,11 @@ impl ChannelScope for NativeChannels<'_> {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_4.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)
@@ -265,6 +271,7 @@ impl ChannelScope for NativeChannels<'_> {
 						Alias::new("workspace_id"),
 						Alias::new("thread_id"),
 						Alias::new("attachment_digest"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -283,6 +290,11 @@ impl ChannelScope for NativeChannels<'_> {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_4.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)
@@ -488,6 +500,7 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("sha256"),
 				Alias::new("size_bytes"),
 				Alias::new("content"),
+				Alias::new("tenant"),
 			])
 			.from_subquery(
 				Query::select()
@@ -500,6 +513,7 @@ impl ChannelScope for NativeChannels<'_> {
 					.expr(Expr::cust("$7"))
 					.expr(Expr::cust("$8"))
 					.expr(Expr::cust("$9"))
+					.expr(Expr::cust("(SELECT tenant FROM workspaces WHERE id = $2)"))
 					.to_owned(),
 			)
 			.on_conflict(

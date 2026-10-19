@@ -269,9 +269,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_bank_policy_changes".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_policy_change_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -289,9 +289,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_bank_settings".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_settings_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -309,9 +309,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_banks".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_bank_participant".to_string(),
-                columns: vec!["participant_id".to_string()],
+                columns: vec!["tenant".to_string(), "participant_id".to_string()],
                 referenced_table: "memory_participants".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -328,9 +328,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_banks".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_bank_workspace".to_string(),
-                columns: vec!["workspace_id".to_string()],
+                columns: vec!["tenant".to_string(), "workspace_id".to_string()],
                 referenced_table: "workspaces".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -340,9 +340,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_candidate_reviews".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_review_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -359,9 +359,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_candidates".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_candidate_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -387,9 +387,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_dependencies".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_dependency_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -407,9 +407,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_dependencies".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_dependency_unit".to_string(),
-                columns: vec!["unit_id".to_string()],
+                columns: vec!["tenant".to_string(), "unit_id".to_string()],
                 referenced_table: "memory_units".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -419,9 +419,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_engine_jobs".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_job_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -440,9 +440,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_history".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_history_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -452,9 +452,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_model_attempts".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_attempt_operation".to_string(),
-                columns: vec!["operation_id".to_string()],
+                columns: vec!["tenant".to_string(), "operation_id".to_string()],
                 referenced_table: "memory_model_operations".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -478,9 +478,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_model_operations".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_operation_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -510,9 +510,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_participants".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_participant_workspace".to_string(),
-                columns: vec!["workspace_id".to_string()],
+                columns: vec!["tenant".to_string(), "workspace_id".to_string()],
                 referenced_table: "workspaces".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -522,9 +522,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_publications".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_publication_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -534,9 +534,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_publications".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_publication_source".to_string(),
-                columns: vec!["source_id".to_string()],
+                columns: vec!["tenant".to_string(), "source_id".to_string()],
                 referenced_table: "memory_units".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -546,9 +546,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_purge_jobs".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_purge_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -566,9 +566,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_receipts".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_receipt_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -578,9 +578,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_receiver_caches".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_receiver_cache_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -598,9 +598,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_remote_read_gates".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_remote_read_gate_grant".to_string(),
-                columns: vec!["grant_id".to_string()],
+                columns: vec!["tenant".to_string(), "grant_id".to_string()],
                 referenced_table: "authorization_remote_grants".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -610,9 +610,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_remote_reads".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_remote_read_grant".to_string(),
-                columns: vec!["grant_id".to_string()],
+                columns: vec!["tenant".to_string(), "grant_id".to_string()],
                 referenced_table: "authorization_remote_grants".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -629,9 +629,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_remote_reads".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_remote_read_unit".to_string(),
-                columns: vec!["unit_id".to_string()],
+                columns: vec!["tenant".to_string(), "unit_id".to_string()],
                 referenced_table: "memory_units".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -641,9 +641,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_run_bindings".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_binding_participant".to_string(),
-                columns: vec!["participant_id".to_string()],
+                columns: vec!["tenant".to_string(), "participant_id".to_string()],
                 referenced_table: "memory_participants".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -654,9 +654,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_run_bindings".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_binding_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -666,9 +666,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_run_read_gates".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_read_gate_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -685,9 +685,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_run_reads".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_read_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -697,9 +697,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_run_reads".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_read_unit".to_string(),
-                columns: vec!["unit_id".to_string()],
+                columns: vec!["tenant".to_string(), "unit_id".to_string()],
                 referenced_table: "memory_units".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -709,9 +709,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_task_participants".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_assignment_participant".to_string(),
-                columns: vec!["participant_id".to_string()],
+                columns: vec!["tenant".to_string(), "participant_id".to_string()],
                 referenced_table: "memory_participants".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -721,9 +721,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_task_participants".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_assignment_task".to_string(),
-                columns: vec!["task_id".to_string()],
+                columns: vec!["tenant".to_string(), "task_id".to_string()],
                 referenced_table: "tasks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -740,9 +740,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_unit_origins".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_origin_run".to_string(),
-                columns: vec!["origin_run".to_string()],
+                columns: vec!["tenant".to_string(), "origin_run".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -752,9 +752,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_unit_origins".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_origin_unit".to_string(),
-                columns: vec!["unit_id".to_string()],
+                columns: vec!["tenant".to_string(), "unit_id".to_string()],
                 referenced_table: "memory_units".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -764,9 +764,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_unit_run_origins".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_unit_run_origin_run".to_string(),
-                columns: vec!["run_id".to_string()],
+                columns: vec!["tenant".to_string(), "run_id".to_string()],
                 referenced_table: "runs".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -776,9 +776,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_unit_run_origins".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_unit_run_origin_unit".to_string(),
-                columns: vec!["unit_id".to_string()],
+                columns: vec!["tenant".to_string(), "unit_id".to_string()],
                 referenced_table: "memory_units".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -788,9 +788,9 @@ pub(super) fn migration() -> Migration {
             table: "memory_units".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_unit_bank".to_string(),
-                columns: vec!["bank_id".to_string()],
+                columns: vec!["tenant".to_string(), "bank_id".to_string()],
                 referenced_table: "memory_banks".to_string(),
-                referenced_columns: vec!["id".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string()],
                 on_delete: ForeignKeyAction::NoAction,
                 on_update: ForeignKeyAction::NoAction,
                 deferrable: None,
@@ -864,7 +864,323 @@ pub(super) fn migration() -> Migration {
         })
         .add_operation(Operation::DropTable {
             name: "semantic_vectors".to_string(),
-        })
+        })		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_banks".to_owned(),
+			constraint: Constraint::Unique {
+						name: "memory_banks_tenant_id_key".to_owned(),
+						columns: vec!["tenant".to_owned(), "id".to_owned()],
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_participants".to_owned(),
+			constraint: Constraint::Unique {
+						name: "memory_participants_tenant_id_key".to_owned(),
+						columns: vec!["tenant".to_owned(), "id".to_owned()],
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_units".to_owned(),
+			constraint: Constraint::Unique {
+						name: "memory_units_tenant_id_key".to_owned(),
+						columns: vec!["tenant".to_owned(), "id".to_owned()],
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_banks".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_banks_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_candidates".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_candidates_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_dependencies".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_dependencies_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_history".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_history_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_participants".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_participants_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_receipts".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_receipts_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_run_bindings".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_run_bindings_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_units".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_units_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_model_operations".to_owned(),
+			constraint: Constraint::Unique {
+						name: "memory_model_operations_tenant_id_key".to_owned(),
+						columns: vec!["tenant".to_owned(), "id".to_owned()],
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_model_attempts".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_model_attempts_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_model_operations".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_model_operations_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_publications".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_publications_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_task_participants".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_task_participants_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_bank_policy_changes".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_bank_policy_changes_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_bank_settings".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_bank_settings_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_candidate_reviews".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_candidate_reviews_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_engine_jobs".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_engine_jobs_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_purge_jobs".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_purge_jobs_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_receiver_caches".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_receiver_caches_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_remote_read_gates".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_remote_read_gates_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_remote_reads".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_remote_reads_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_run_read_gates".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_run_read_gates_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_run_reads".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_run_reads_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_unit_origins".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_unit_origins_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "memory_unit_run_origins".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "memory_unit_run_origins_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
+		})
+
         .add_dependency("knowledge", "0022_memory_receiver_caches")
         .atomic(true)
         .with_initial(None)

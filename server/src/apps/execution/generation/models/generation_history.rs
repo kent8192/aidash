@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct GenerationHistory {
 	#[field(primary_key = true)]
 	pub sequence: i64,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub request_id: uuid::Uuid,
 	#[field(field_type = "text")]

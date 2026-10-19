@@ -8,6 +8,7 @@ pub(super) fn migration() -> Migration {
             name: "memory_unit_retention".into(),
             columns: vec![
                 ColumnDefinition::new("unit_id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("bank_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("deliveries", FieldType::BigInteger).with_not_null(true),
                 ColumnDefinition::new("last_delivered_at", FieldType::TimestampTz),
@@ -17,8 +18,17 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("changed_at", FieldType::TimestampTz).with_not_null(true),
             ],
             constraints: vec![
-                Constraint::ForeignKey { name: "retention_unit".into(), columns: vec!["unit_id".into()], referenced_table: "memory_units".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
-                Constraint::ForeignKey { name: "retention_bank".into(), columns: vec!["bank_id".into()], referenced_table: "memory_banks".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "memory_unit_retention_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "retention_unit".into(), columns: vec!["tenant".into(), "unit_id".into()], referenced_table: "memory_units".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+                Constraint::ForeignKey { name: "retention_bank".into(), columns: vec!["tenant".into(), "bank_id".into()], referenced_table: "memory_banks".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "retention_deliveries".into(), expression: "deliveries >= 0 AND deliveries < 9223372036854775807".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })
@@ -26,12 +36,22 @@ pub(super) fn migration() -> Migration {
             name: "memory_bank_decay".into(),
             columns: vec![
                 ColumnDefinition::new("bank_id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("policy", FieldType::Jsonb).with_not_null(true),
                 ColumnDefinition::new("activated_at", FieldType::TimestampTz),
                 ColumnDefinition::new("as_of", FieldType::TimestampTz),
                 ColumnDefinition::new("cursor", FieldType::Uuid),
                 ColumnDefinition::new("next_job", FieldType::TimestampTz).with_not_null(true),
-            ], constraints: vec![Constraint::ForeignKey { name: "decay_bank".into(), columns: vec!["bank_id".into()], referenced_table: "memory_banks".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None }],
+            ], constraints: vec![
+            	Constraint::ForeignKey {
+            		name: "memory_bank_decay_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},Constraint::ForeignKey { name: "decay_bank".into(), columns: vec!["tenant".into(), "bank_id".into()], referenced_table: "memory_banks".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None }],
             without_rowid: None, interleave_in_parent: None, partition: None,
         })
         // Statement trigger installation is not expressible by typed migration operations.

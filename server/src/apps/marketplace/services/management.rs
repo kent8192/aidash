@@ -227,10 +227,7 @@ impl MarketplaceManagement {
 		key: String,
 		input: AudienceInput,
 	) -> Result<Response> {
-		let f = self.runtime.clone();
-		let mut access = begin(&f.store, subject(&actor)?, true).await?;
-		let result = distribution::share(&f.store, &mut access, &key, None, input).await;
-		handoff(&f.store, access, result).await
+		self.change_audience(actor, &key, None, input).await
 	}
 
 	pub(crate) async fn consent(
@@ -239,10 +236,34 @@ impl MarketplaceManagement {
 		(key, tenant): (String, String),
 		input: AudienceInput,
 	) -> Result<Response> {
+		self.change_audience(actor, &key, Some(&tenant), input)
+			.await
+	}
+
+	/// Save an audience or a consent. The events an audience change owes its
+	/// recipients are written after it commits: their Tenants are not the
+	/// owner's, so the owner's transaction cannot write them.
+	async fn change_audience(
+		&self,
+		actor: Actor,
+		key: &str,
+		redistributor: Option<&str>,
+		input: AudienceInput,
+	) -> Result<Response> {
 		let f = self.runtime.clone();
 		let mut access = begin(&f.store, subject(&actor)?, true).await?;
-		let result = distribution::share(&f.store, &mut access, &key, Some(&tenant), input).await;
-		handoff(&f.store, access, result).await
+		let (result, announcements) =
+			match distribution::share(&f.store, &mut access, key, redistributor, input).await {
+				Ok(shared) => (Ok(shared.audience), shared.announcements),
+				Err(error) => (Err(error), vec![]),
+			};
+		let response = handoff(&f.store, access, result).await?;
+		// The change is committed and each recipient still reads the package
+		// through its audience, so a failed delivery loses a notification only.
+		if let Err(error) = distribution::deliver(&f.store, announcements).await {
+			tracing::error!(%error, "audience events were not delivered");
+		}
+		Ok(response)
 	}
 
 	pub(crate) async fn read_consent(

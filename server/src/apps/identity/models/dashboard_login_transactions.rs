@@ -23,6 +23,7 @@ pub struct DashboardLoginTransaction {
 	pub expires_at: DateTime<Utc>,
 	#[field(null = true)]
 	pub started_at: Option<DateTime<Utc>>,
+	/// The issuer whose External Identity a token sign-in must sign in.
 	#[field(field_type = "text", null = true)]
-	pub gcip_tenant: Option<String>,
+	pub issuer: Option<String>,
 }

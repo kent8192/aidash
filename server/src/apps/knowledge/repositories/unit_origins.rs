@@ -126,13 +126,18 @@ pub(crate) async fn record(
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_unit_origins"))
-			.columns(["unit_id", "revision", "authority", "origin_run"].map(Alias::new))
+			.columns(["unit_id", "revision", "authority", "origin_run", "tenant"].map(Alias::new))
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(unit.id))
 					.expr(Expr::value(unit.revision))
 					.expr(Expr::value(serde_json::to_value(origin.authority)?))
 					.expr(Expr::value(origin.run))
+					.expr(crate::database::scope::tenant_of(
+						"memory_units",
+						"id",
+						unit.id,
+					))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -160,11 +165,16 @@ pub(crate) async fn record(
 		native::query(
 			&Query::insert()
 				.into_table(Alias::new("memory_unit_run_origins"))
-				.columns(["unit_id", "run_id"].map(Alias::new))
+				.columns(["unit_id", "run_id", "tenant"].map(Alias::new))
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(unit.id))
 						.expr(Expr::value(run))
+						.expr(crate::database::scope::tenant_of(
+							"memory_units",
+							"id",
+							unit.id,
+						))
 						.to_owned(),
 				)
 				.on_conflict(

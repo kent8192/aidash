@@ -65,9 +65,10 @@ worker_count = 4
 # probe_listen = "127.0.0.1:8081"
 background_enabled = true
 
-# Tenancy Rules: how Tenants come to exist and how people join them. These are
-# the Self-hosted defaults. Identities of a GCIP Tenant with a Tenant Binding
-# are never covered.
+# Tenancy Rules: how Tenants come to exist and how people join them. The
+# Offering supplies each rule left out; these are the Self-hosted Offering's.
+# Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
+# one Tenant are never covered.
 [tenancy]
 # Create a Personal Tenant for each External Identity at its first sign-in.
 personal_tenants = false
@@ -83,13 +84,10 @@ deletion_grace_days = 30
 
 # Omit this table to disable dashboard OIDC.
 # [dashboard.oidc]
-# issuer = "https://identity.example/realms/aidash"
+# issuer = "https://identity.example"
 # client_id = "aidash-dashboard"
 # client_secret = "${OIDC_CLIENT_SECRET}"
 # public_origin = "https://aidash.example"
-# keycloak_admin_url = "https://identity.example/admin"
-# status_client_id = "aidash-status"
-# status_client_secret = "${OIDC_STATUS_CLIENT_SECRET}"
 # session_absolute_seconds = 43200
 # session_idle_seconds = 1800
 
@@ -118,7 +116,8 @@ enabled = false
 # master_key = { file = "/run/secrets/aidash-master-key" }
 # Or master_key = { env = "AIDASH_PROVIDER_STORE_MASTER_KEY" }
 # retired_master_keys = [{ env = "AIDASH_PROVIDER_STORE_MASTER_KEY_OLD" }]
-# Cloud alternative (omit master_key and retired_master_keys):
+# Cloud and Dedicated alternative, only in the Enterprise build (omit
+# master_key and retired_master_keys):
 # kind = "secret_manager"
 # byok_project_id = "your-aidash-byok-project"
 # environment_id = "develop"

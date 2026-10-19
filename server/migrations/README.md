@@ -5,6 +5,29 @@ labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowled
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
 Cargo packages.
 
+## Community and Enterprise migrations
+
+This directory holds the Community build's apps. The Enterprise build adds its
+own apps' migrations under `enterprise/server/migrations/` (ADR 0032), such as
+`gcip/0001_admissions`. Enterprise tables may reference Community tables;
+Community tables never reference Enterprise ones, and the Community schema has
+no Enterprise table. The `Build` descriptor names each build's extra apps and
+their migration roots relative to `core.base_dir`, so the Enterprise image
+places them at `/app/enterprise/server/migrations` beside
+`/app/server/migrations`. `require_current` reads every root. Reinhardt's
+`migrate` and `makemigrations` read one directory and keep SQL assets inside
+it, so `aidash migrate` stages a copy of every root's apps when a build has
+more than one. `enterprise/server/tests/migrations.rs` runs
+`makemigrations --check` over the same union.
+
+`makemigrations` writes into the directory it reads, so a new Enterprise
+migration is generated in a staged project and copied back: copy every app
+directory of both roots into `<project>/migrations`, copy
+`enterprise/server/src/bin/manage.rs` to `<project>/src/bin/`, give it settings
+with `[deployment] offering = "cloud"`, run the Enterprise `manage
+makemigrations <app> --state-source files` from `<project>`, and move the new
+file into `enterprise/server/migrations/<app>/`.
+
 ## Supported databases
 
 The initial migration accepts an empty PostgreSQL database. A database already
@@ -246,10 +269,16 @@ login and the activity observer all need a scope.
 
 - A row whose `tenant` is NULL or empty is visible only in a Deployment Scope.
 - Each app's `*_row_level_security` migration enables and forces the policy on
-  its own tables and depends on the functions migration: `execution/0034`,
-  `federation/0010`, `identity/0027`, `knowledge/0032`, `marketplace/0010` and
-  `registry/0031`. Reversal drops the policy, removes `FORCE`, then disables row
-  security. Reinhardt has no policy operations
+  its own tables and depends on the functions migration: `execution/0036`,
+  `federation/0010`, `identity/0029`, `knowledge/0033`, `marketplace/0010` and
+  `registry/0033` for the tables that carried a `tenant` column before #265, and
+  `NNNN_tenant_owned_row_level_security` (`execution/0043`, `federation/0011`,
+  `identity/0032`, `knowledge/0034`, `marketplace/0011`, `registry/0037` and
+  `workspaces/0009`) for the tables that gained it there. The policy asset test
+  selects migrations by the `_row_level_security` suffix, and a separate
+  migration after the app's first policy migration keeps those files unchanged
+  for the branches that already contain them. Reversal drops the policy,
+  removes `FORCE`, then disables row security. Reinhardt has no policy operations
   ([#6770](https://github.com/kent8192/reinhardt-web/issues/6770)), so these are
   `RunSQL` assets. `server/src/database/policy.rs` renders them, and a unit test
   fails when an asset differs from its rendering or when the assets and the
@@ -264,6 +293,42 @@ login and the activity observer all need a scope.
   `Pool::fixture_driver()`. Its sessions hold the `test-fixture` Deployment
   Scope, and scoped transactions still override it. Only debug builds have it,
   and clippy bans it outside tests.
+
+## The Tenant on every Tenant-owned table
+
+Every Tenant-owned table carries `tenant text NOT NULL` (#265), except
+`research_revocations` and `dashboard_administration_history`, whose rows may
+address no Tenant, and `events`, whose Deployment-level rows (a peer
+registration) concern none until #241 gives peers a Tenant. A row without a
+Tenant is visible only in a Deployment Scope. The definitions are edited in the
+migration that creates each table, because Aidash is undeployed:
+
+- `tenant` references the Tenant root record, `tenants(name)`, through
+  `<table>_tenant_root_fkey`. The root record outlives a purge as a tombstone.
+  `tenants` is therefore created with the other identity tables in
+  `identity/0002_tables` rather than in `identity/0020`: the baseline tables of
+  every app precede `identity/0020`, and a reference needs its target first.
+- A child keeps its parent's Tenant through a composite key,
+  `(tenant, parent_id) -> parent(tenant, id)`. Each parent gains
+  `UNIQUE (tenant, <referenced columns>)` named `<table>_tenant_<columns>_key`
+  for it. Every reference between two Tenant-owned tables compares `tenant`;
+  a test in `server/src/apps/execution/tests/tenancy.rs` fails on one that does
+  not. A reference whose parent is on another Node, or has no foreign key,
+  carries the local Tenant and the `tenants` reference only.
+- A table created by a state-and-database migration (`knowledge/0009`, for
+  example) lists these constraints inline, and the following state-only
+  migration drops them from the model state again, as it does for the table's
+  other references.
+- Trigger functions that insert into these tables copy `NEW.tenant`
+  (`execution/sql/forward/0001_functions.sql`, `workspaces/sql/forward/0001_functions.sql`).
+- `marketplace_requests` is keyed by `(tenant, key)`. `marketplace_consents`
+  stays Deployment-wide: a source's owner writes a consent for the redistributor
+  that reads it, so it belongs to neither Tenant's scope, as
+  `marketplace_audiences` and `marketplace_versions` do not.
+- Inserts name `tenant`. Statements built for a Tenant scope write the scope's
+  Tenant with `crate::database::scope::tenant()`, a child of a row reads its
+  parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant
+  itself.
 
 ## Maintenance cutover
 
@@ -392,7 +457,7 @@ pruning or summary, journals those events as `imported`.
 
 `execution/0041_decision_evidence_v3` (after `execution/0040_research_account_terms_state`) moves Decision Evidence to version 3 (#108 Part B, ADR 0056) with typed operations. `decision_attempts` gains `question_digest`, the commitment to the definitions of the questions an attempt asked, and its shape check requires the digest form. `decision_evidence` admits the `staged` outcome and the `incomplete_answers` reason, and the partial unique index `decision_evidence_final` now keeps one `applied`, `staged` or `shadow` snapshot per decision. Aidash is undeployed, so version 2 rows are not migrated: the new column has no default, and the migration fails while a Decision Attempt exists. The generated state-only checkpoint `execution/0042_decision_evidence_v3_state` records the column in the ORM snapshot without the checks.
 
-`execution/0043_decision_routes` (after `execution/0042_decision_evidence_v3_state`) moves Decision Evidence to version 4 for Decider Routes (#153, ADR 0066) with typed operations. `decision_attempts` gains `retry`, the step's outage retry, and `route`, the Decider Route the attempt asked; a decision identity commits to both, so each Route and each retry is a decision of its own. The shape check requires both to be non-negative. Aidash is undeployed, so version 3 rows are not migrated: the new columns have no default, and the migration fails while a Decision Attempt exists. The generated state-only checkpoint `execution/0044_decision_routes_state` records the columns in the ORM snapshot without the checks.
+`execution/0044_decision_routes` (after `execution/0043_tenant_owned_row_level_security`) moves Decision Evidence to version 4 for Decider Routes (#153, ADR 0066) with typed operations. `decision_attempts` gains `retry`, the step's outage retry, and `route`, the Decider Route the attempt asked; a decision identity commits to both, so each Route and each retry is a decision of its own. The shape check requires both to be non-negative. Aidash is undeployed, so version 3 rows are not migrated: the new columns have no default, and the migration fails while a Decision Attempt exists. The generated state-only checkpoint `execution/0045_decision_routes_state` records the columns in the ORM snapshot without the checks.
 
 `identity/0020_tenancy_schema` (after `identity/0019_provider_authorizations`) creates the Tenant root records (`tenants`, ADR 0050), `personal_tenants` and `tenant_invitations` (indexed by Tenant with `expires_at` and with `created_at`) with typed operations, adds the addressing `tenant` and `invitation_id` columns to `dashboard_registration_requests` (indexed with `status` and `expires_at` for one Tenant's pending requests) and `invitation_id` to `dashboard_administration_history`, and references `authorization_bundles.tenant` to its root record. A reversible SQL asset backfills a root record for every existing policy bundle, and a Personal Tenant link for every `personal-<identity>` Tenant, before the reference is added. Making `dashboard_administration_history.identity_id` nullable is the one `ALTER TABLE` statement in `RunSQL`: the pinned typed `AlterColumn` renders no `NOT NULL` change for PostgreSQL ([#6803](https://github.com/kent8192/reinhardt-web/issues/6803)). The state-only checkpoint `identity/0021_tenancy_state` records the matching models.
 

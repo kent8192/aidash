@@ -29,6 +29,7 @@ pub(super) fn migration() -> Migration {
 			name: "semantic_collections".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("collection", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("vector", FieldType::Jsonb).with_not_null(true),
 				ColumnDefinition::new("retired", FieldType::Boolean)
@@ -49,6 +50,7 @@ pub(super) fn migration() -> Migration {
 				            name: "semantic_entries".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("key", FieldType::Text)
 				                .with_not_null(true), ColumnDefinition::new("source", FieldType::Jsonb)
@@ -112,6 +114,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some(
 						r#"nextval('public.semantic_history_sequence_seq'::regclass)"#.to_owned(),
 					)),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Uuid),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
@@ -184,6 +187,7 @@ pub(super) fn migration() -> Migration {
 			name: "semantic_points".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("content_digest", FieldType::Text),
 				ColumnDefinition::new("collection", FieldType::Text).with_not_null(true),
@@ -205,6 +209,7 @@ pub(super) fn migration() -> Migration {
 				            name: "semantic_remote_attempts".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("operation_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("fence",
 				                FieldType::BigInteger).with_not_null(true),
@@ -232,6 +237,7 @@ pub(super) fn migration() -> Migration {
 				            name: "semantic_remote_operations".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("home_node", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
 				                ColumnDefinition::new("admission_id", FieldType::Uuid)
@@ -265,6 +271,7 @@ pub(super) fn migration() -> Migration {
 			name: "semantic_remote_reads".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("admission_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
@@ -279,6 +286,7 @@ pub(super) fn migration() -> Migration {
 			name: "semantic_remote_receipts".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("operation_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("receipt", FieldType::Jsonb).with_not_null(true),
@@ -295,6 +303,7 @@ pub(super) fn migration() -> Migration {
 			name: "semantic_run_reads".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
 			],

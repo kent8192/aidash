@@ -16,6 +16,8 @@ use uuid::Uuid;
 pub struct UrlIntentRecord {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field(field_type = "text", null = true)]
@@ -52,7 +54,9 @@ impl UrlIntentRecord {
 		{
 			return Ok(());
 		}
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.id(Uuid::now_v7())
 			.run_id(run)
 			.input_key(input_key.map(str::to_owned))

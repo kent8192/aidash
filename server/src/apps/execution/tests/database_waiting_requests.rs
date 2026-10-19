@@ -15,6 +15,7 @@ async fn remote_waiting_requests_keep_home_identity_without_a_local_request(
 	mut run: Run,
 ) {
 	let database = database.await;
+	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let request = Uuid::new_v4();
 	run.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
@@ -52,6 +53,7 @@ async fn waiting_requests_enforce_identity_ownership_and_reverse_references(
 ) {
 	// Arrange: two independent runs each own one request.
 	let database = database.await;
+	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let mut waiting = Run::objects()
 		.create_with_conn(&mut db, &run)
@@ -71,6 +73,7 @@ async fn waiting_requests_enforce_identity_ownership_and_reverse_references(
 	let mut requests = Vec::new();
 	for owner in [&waiting, &other] {
 		let request = HumanRequest::build()
+			.tenant("acme")
 			.id(Uuid::new_v4())
 			.workspace_id(owner.workspace_id)
 			.run_id(owner.id)

@@ -40,6 +40,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_drafts".to_owned(),
+			constraint: Constraint::Unique {
+				name: "agent_drafts_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "agent_incident_events".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "agent_incident_events_pkey".to_owned(),
@@ -51,6 +58,13 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "agent_incidents_pkey".to_owned(),
 				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "agent_incidents".to_owned(),
+			constraint: Constraint::Unique {
+				name: "agent_incidents_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {

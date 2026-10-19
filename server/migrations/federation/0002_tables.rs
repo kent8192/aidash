@@ -246,6 +246,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_remote_grant_reads".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("resource_kind", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("resource_id", FieldType::Uuid).with_not_null(true),
@@ -286,6 +287,7 @@ pub(super) fn migration() -> Migration {
 			name: "delegations".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_version", FieldType::Text).with_not_null(true),
@@ -335,6 +337,7 @@ pub(super) fn migration() -> Migration {
 			name: "remote_run_message_fences".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("idempotency_key", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("content", FieldType::Text).with_not_null(true),

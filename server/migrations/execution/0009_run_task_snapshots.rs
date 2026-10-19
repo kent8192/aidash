@@ -7,6 +7,7 @@ pub(super) fn migration() -> Migration {
             name: "run_task_snapshots".into(),
             columns: vec![
                 ColumnDefinition::new("id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("task_revision", FieldType::BigInteger).with_not_null(true),
                 ColumnDefinition::new("step", FieldType::Integer).with_not_null(true),
@@ -14,7 +15,16 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("body", FieldType::Jsonb).with_not_null(true),
                 ColumnDefinition::new("captured_at", FieldType::TimestampTz).with_not_null(true),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "run_task_snapshot_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "run_task_snapshots_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "run_task_snapshot_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "run_task_snapshot_bounds".into(), expression: "task_revision >= 0 AND step >= 0 AND input_seq >= 0".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

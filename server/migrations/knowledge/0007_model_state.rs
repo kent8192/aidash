@@ -97,6 +97,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("false".to_string()))
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("vector", FieldType::Jsonb)
 					.with_not_null(true)
 					.with_unique(false)
@@ -251,6 +259,14 @@ pub(super) fn migration() -> Migration {
 							ModelEnumValue::String("REVOKED".to_string()),
 						],
 					})),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
 					.with_not_null(true)
 					.with_unique(false)
@@ -330,6 +346,14 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("state", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -475,6 +499,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("false".to_string()))
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 			],
 			constraints: vec![],
 			without_rowid: None,
@@ -557,6 +589,14 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("state", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -701,6 +741,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 			],
 			constraints: vec![],
 			without_rowid: None,
@@ -747,6 +795,14 @@ pub(super) fn migration() -> Migration {
 					.with_unique(false)
 					.with_primary_key(true)
 					.with_auto_increment(true)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
@@ -799,6 +855,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 			],
 			constraints: vec![],
 			without_rowid: None,
@@ -828,6 +892,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)

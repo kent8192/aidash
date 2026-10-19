@@ -53,11 +53,13 @@ pub(super) fn migration() -> Migration {
             name: "research_page_images".into(),
             columns: vec![
                 ColumnDefinition::new("fragment_id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("bytes", FieldType::Bytea).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "research_page_images_fragment".into(), columns: vec!["fragment_id".into()], referenced_table: "research_fragments".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+                Constraint::ForeignKey { name: "research_page_images_tenant_root_fkey".into(), columns: vec!["tenant".into()], referenced_table: "tenants".into(), referenced_columns: vec!["name".into()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None },
+                Constraint::ForeignKey { name: "research_page_images_fragment".into(), columns: vec!["tenant".into(), "fragment_id".into()], referenced_table: "research_fragments".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "research_page_images_bytes".into(), expression: "octet_length(bytes) BETWEEN 1 AND 1048576".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

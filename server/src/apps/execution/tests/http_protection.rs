@@ -297,7 +297,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn without_gcip_an_org_query_does_not_open_a_second_login_budget(
+async fn without_a_build_sign_in_an_org_query_does_not_open_a_second_login_budget(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 	#[from(discovery_settings)] _settings: Settings,
 	#[future(awt)]
@@ -306,7 +306,7 @@ async fn without_gcip_an_org_query_does_not_open_a_second_login_budget(
 	fixture: common::ApplicationFixture,
 ) {
 	let (federation, url, schema) = runtime.await.parts();
-	assert!(federation.config.gcip.is_none());
+	assert!(federation.config.sign_in.is_none());
 	let app = fixture.application;
 	let login = |uri: &str| {
 		Request::builder()

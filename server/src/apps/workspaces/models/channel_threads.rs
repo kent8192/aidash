@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct ChannelThread {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(db_column = "workspace_id")]
 	pub workspace_key: uuid::Uuid,
@@ -25,6 +27,7 @@ impl crate::database::Record for ChannelThread {
 	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			id: row.try_get("id")?,
+			tenant: row.try_get("tenant")?,
 			workspace_key: row.try_get("workspace_id")?,
 			root_message_key: row.try_get("root_message_id")?,
 			created_by: row.try_get("created_by")?,
