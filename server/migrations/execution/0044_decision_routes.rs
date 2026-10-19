@@ -21,9 +21,14 @@ pub(super) fn migration() -> Migration {
 			column: ColumnDefinition::new("route", FieldType::Integer).with_not_null(true),
 			mysql_options: None,
 		})
-		.add_operation(Operation::DropConstraint {
+		// The definition being replaced, so a rollback restores it: the model
+		// state records no checks to rebuild it from.
+		.add_operation(Operation::DropConstraintDefinition {
 			table: "decision_attempts".into(),
-			constraint_name: "decision_attempt_shape".into(),
+			constraint: Constraint::Check {
+				name: "decision_attempt_shape".into(),
+				expression: "mode IN ('shadow', 'enforce') AND step >= 0 AND cycle >= 0 AND input_revision >= 0 AND run_revision >= 0 AND request_digest LIKE 'sha256:%' AND state_digest LIKE 'sha256:%' AND input_digest LIKE 'sha256:%' AND question_digest LIKE 'sha256:%' AND jsonb_typeof(questions) = 'array' AND jsonb_array_length(questions) > 0 AND jsonb_typeof(owner_receipts) = 'object' AND owner_receipts <> '{}'::jsonb AND (answers IS NULL OR jsonb_typeof(answers) = 'object')".into(),
+			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "decision_attempts".into(),

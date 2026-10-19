@@ -759,18 +759,19 @@ async fn a_route_that_refuses_the_state_records_evidence_before_the_next_route()
 			.iter()
 			.all(|route| *route == 1)
 	);
-	let saved = fixture.saved.lock().unwrap();
-	let [refused, answered] = saved.evidence.as_slice() else {
-		panic!("one evidence per Route");
-	};
-	assert_eq!(
-		(refused.route, refused.reason),
-		(0, Reason::ProviderFailure)
-	);
-	assert!(refused.attempts.is_empty());
-	refused.validate_rejection().unwrap();
-	assert_eq!((answered.route, answered.outcome), (1, Outcome::Applied));
-	drop(saved);
+	{
+		let saved = fixture.saved.lock().unwrap();
+		let [refused, answered] = saved.evidence.as_slice() else {
+			panic!("one evidence per Route");
+		};
+		assert_eq!(
+			(refused.route, refused.reason),
+			(0, Reason::ProviderFailure)
+		);
+		assert!(refused.attempts.is_empty());
+		refused.validate_rejection().unwrap();
+		assert_eq!((answered.route, answered.outcome), (1, Outcome::Applied));
+	}
 	// When no Route accepts the state, the Run pauses at once, and each
 	// Route's refusal is on record.
 	let fixture = Fixture::routed(
