@@ -96,6 +96,9 @@ pub async fn authorize(
 			operation = grant.strip_prefix("builtin:").map(str::to_owned);
 			&contract.authorization
 		}
+		// Plugin tools are authorized by the Agent's pinned plugin copy, which a later change
+		// checks here; until then a call is refused.
+		ToolIdentity::AgentPlugin(_) => return Err(Error::Forbidden),
 	};
 	let configured_skill = authorization
 		.requirements

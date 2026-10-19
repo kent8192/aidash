@@ -2516,6 +2516,7 @@ impl<'a> Executor<'a> {
 						ToolIdentity::Descriptor(reference) => (&reference.id, &reference.version),
 						ToolIdentity::Registry(reference) => (&reference.id, &reference.version),
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
+						ToolIdentity::AgentPlugin(_) => return Err(Error::Invalid("plugin tool approval is not available yet".into())),
 					};
 					if let Some(decision) = run
 						.state
