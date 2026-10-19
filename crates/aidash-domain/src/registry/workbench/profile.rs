@@ -1,6 +1,7 @@
 //! Confined real-tool profiles a Tenant writes for its own test endpoints.
-//! They carry no credential: a Deployment secret never reaches a Tenant's
-//! endpoint, and Tenant Secrets for test endpoints come with #296.
+//! A rule never names a Deployment secret: that would never reach a Tenant's
+//! endpoint. It may name a Tenant Secret, whose recorded hosts must include the
+//! test endpoint (ADR 0051).
 use crate::registry::EntityRef;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -18,6 +19,9 @@ pub struct RealToolRule {
 	pub endpoint: String,
 	pub allowed_actions: Vec<String>,
 	pub allowed_resources: Vec<String>,
+	/// A Tenant Secret sent to the test endpoint as its bearer credential.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

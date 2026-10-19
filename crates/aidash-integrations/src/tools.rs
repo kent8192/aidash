@@ -10,6 +10,7 @@ use rmcp::{
 		StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
 	},
 };
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 mod mcp;
 
@@ -35,7 +36,13 @@ pub struct HttpTools {
 }
 #[async_trait]
 impl ToolTransport for HttpTools {
-	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value> {
+	async fn invoke(
+		&self,
+		configuration: &ToolConfig,
+		input: Value,
+		key: &str,
+		secret: Option<&SecretString>,
+	) -> Result<Value> {
 		match configuration {
 			ToolConfig::Native {
 				operation,
@@ -72,14 +79,17 @@ impl ToolTransport for HttpTools {
 				web_fetch_response(response, &url).await
 			}
 			ToolConfig::Http { endpoint, .. } => {
-				let response = self
+				let mut request = self
 					.client
 					.post(endpoint)
 					.header("idempotency-key", key)
-					.json(&input)
-					.send()
-					.await
-					.map_err(crate::http_error)?;
+					.json(&input);
+				// A Tenant Secret goes as the bearer credential, to the host the
+				// application layer already checked against its recorded hosts.
+				if let Some(secret) = secret {
+					request = request.bearer_auth(secret.expose_secret());
+				}
+				let response = request.send().await.map_err(crate::http_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -94,8 +104,11 @@ impl ToolTransport for HttpTools {
 				idempotency_argument,
 				..
 			} => {
-				let transport_config =
+				let mut transport_config =
 					StreamableHttpClientTransportConfig::with_uri(endpoint.clone());
+				if let Some(secret) = secret {
+					transport_config = transport_config.auth_header(secret.expose_secret());
+				}
 				let transport = StreamableHttpClientTransport::with_client(
 					mcp::BoundedClient(self.client.clone()),
 					transport_config,

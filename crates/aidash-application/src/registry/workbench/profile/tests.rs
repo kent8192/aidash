@@ -20,6 +20,8 @@ struct Repository {
 	authorized: bool,
 	pause: bool,
 	revision: i64,
+	/// The hosts of the Tenant Secret `key`; none when empty.
+	secret_hosts: Vec<String>,
 }
 impl Repository {
 	fn new(principal: Principal) -> Self {
@@ -29,6 +31,7 @@ impl Repository {
 			authorized: true,
 			pause: false,
 			revision: 0,
+			secret_hosts: vec![],
 		}
 	}
 }
@@ -76,6 +79,7 @@ fn rule() -> RealToolRule {
 		endpoint: "https://test.example/rpc".into(),
 		allowed_actions: vec!["read".into()],
 		allowed_resources: vec!["fixture".into()],
+		secret: None,
 	}
 }
 fn tool() -> Entry {
@@ -153,6 +157,11 @@ impl ProfileRepository for Repository {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
+	}
+	async fn tenant_secret_hosts(&self, tenant: &str, name: &str) -> Result<Option<Vec<String>>> {
+		assert_eq!(tenant, "tenant");
+		self.state.lock().unwrap().calls.push("secret");
+		Ok((name == "key" && !self.secret_hosts.is_empty()).then(|| self.secret_hosts.clone()))
 	}
 	async fn definition(&self, tenant: &str, entry: &EntityRef) -> Result<Entry> {
 		assert_eq!((tenant, entry), ("tenant", &reference("tool")));
@@ -455,5 +464,36 @@ async fn profile_writers_read_their_tenants_profiles_with_rules(
 	assert_eq!(result.is_ok(), reads);
 	if reads {
 		assert_eq!(result.unwrap()[0].rules, json!([rule()]));
+	}
+}
+
+#[rstest]
+#[case::recorded_host(&["test.example"], true)]
+#[case::other_host(&["production.example"], false)]
+#[case::no_such_secret(&[], false)]
+#[tokio::test]
+async fn a_rule_may_send_a_tenant_secret_only_to_one_of_its_recorded_hosts(
+	#[case] hosts: &[&str],
+	#[case] accepted: bool,
+) {
+	let mut r = Repository::new(Principal::DeploymentAdministrator);
+	r.secret_hosts = hosts.iter().map(|h| (*h).to_owned()).collect();
+	let mut input = input();
+	input.rules[0].secret = Some("key".into());
+	let result = put(
+		&r,
+		&Configuration::new(),
+		"tenant".into(),
+		"profile".into(),
+		input,
+	)
+	.await;
+	assert_eq!(result.is_ok(), accepted, "{result:?}");
+	assert_eq!(r.state.lock().unwrap().saved.is_some(), accepted);
+	if accepted {
+		assert_eq!(
+			r.state.lock().unwrap().saved.as_ref().unwrap()[0]["secret"],
+			"key"
+		);
 	}
 }

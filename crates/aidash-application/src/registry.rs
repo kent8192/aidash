@@ -46,6 +46,11 @@ pub async fn validate_references(
 	node: &str,
 ) -> Result<()> {
 	validation.validate_in(entry, true)?;
+	// A Tenant Secret goes only to the hosts it records (ADR 0051).
+	if let Some((name, endpoint)) = aidash_domain::tenant_secrets::definition_target(entry) {
+		let hosts = scope.tenant_secret_hosts(&name).await?;
+		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
+	}
 	if entry.kind == "bundle" {
 		let bundle: aidash_domain::registry::bindings::BundleConfig =
 			serde_json::from_value(entry.config.clone())?;

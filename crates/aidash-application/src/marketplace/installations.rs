@@ -15,6 +15,7 @@ use aidash_domain::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Serialize in the same order as the existing transport contract for replay keys.
@@ -23,6 +24,9 @@ pub struct InstallCommand {
 	pub digest: String,
 	pub config: Value,
 	pub bindings: Vec<DependencyBinding>,
+	/// Which of the installing Tenant's Tenant Secrets fills each one the
+	/// package declares (ADR 0051).
+	pub secrets: BTreeMap<String, String>,
 	pub idempotency_key: Uuid,
 }
 #[derive(Clone, Serialize)]
@@ -30,6 +34,7 @@ pub struct ConfigureCommand {
 	pub expected_revision: i64,
 	pub config: Value,
 	pub bindings: Vec<DependencyBinding>,
+	pub secrets: BTreeMap<String, String>,
 	pub idempotency_key: Uuid,
 }
 fn conflict() -> Error {
@@ -155,9 +160,11 @@ pub async fn install(
 		&source,
 		&input.config,
 		&input.bindings,
+		&input.secrets,
 		node,
 	)
 	.await?;
+	require_secret_use(scope, &resolved.0).await?;
 	if let Some(existing) = scope.installation(&install.id).await? {
 		let current = scope
 			.revision(&install.id, existing.latest_revision)
@@ -236,9 +243,11 @@ pub async fn configure(
 		&current.source,
 		&input.config,
 		&input.bindings,
+		&input.secrets,
 		node,
 	)
 	.await?;
+	require_secret_use(scope, &resolved.0).await?;
 	// Unchanged retries do not manufacture a new pending revision, including
 	// retries with an old optimistic revision after the identical change won.
 	let next = if same(&current, &resolved.0, &input.config, &resolved.2) {
@@ -266,6 +275,18 @@ pub async fn configure(
 	)
 	.await?;
 	view(scope, id, Some(next), node).await
+}
+
+/// Naming a Tenant Secret needs `secret.use` on it, which is separate from
+/// `secret.manage`: whoever installs a package cannot also choose where a
+/// secret may go (ADR 0051).
+async fn require_secret_use(scope: &mut dyn InstallationScope, entry: &Entry) -> Result<()> {
+	if let Some(name) = aidash_domain::tenant_secrets::definition_secret(entry) {
+		scope
+			.require(&scope.secret_resource(&name), "secret.use")
+			.await?;
+	}
+	Ok(())
 }
 
 async fn replay(

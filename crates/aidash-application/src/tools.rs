@@ -91,11 +91,21 @@ impl Plugin {
 				allowed_hosts,
 			} if operation == "http_get" => {
 				validate_native_http_url(required(&input, "url")?, allowed_hosts)?;
-				transport.invoke(&self.config, input, key).await
+				transport.invoke(&self.config, input, key, None).await
 			}
 			ToolConfig::Native { .. } => Err(Error::Invalid("unknown native tool".into())),
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
-				transport.invoke(&self.config, input, key).await
+				// Resolved at dispatch, after the arguments are valid and before
+				// any effect, so a deleted Tenant Secret fails the call outright.
+				let secret = match aidash_domain::tenant_secrets::named(&self.config) {
+					Some((name, endpoint)) => {
+						Some(ctx.operations.tenant_secret(name, endpoint).await?)
+					}
+					None => None,
+				};
+				transport
+					.invoke(&self.config, input, key, secret.as_ref())
+					.await
 			}
 			ToolConfig::Agent { node_id, agent } => {
 				let mut input: NewTask =

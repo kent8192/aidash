@@ -31,6 +31,7 @@ fn reject_deployment_secret(transport: Option<&Value>) -> Result<()> {
 pub struct DefinitionValidation {
 	provider_credentials_enabled: bool,
 	plan_connections_enabled: bool,
+	tenant_secrets_enabled: bool,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
@@ -38,6 +39,7 @@ impl DefinitionValidation {
 		Self {
 			provider_credentials_enabled: false,
 			plan_connections_enabled: false,
+			tenant_secrets_enabled: false,
 			core_tools,
 		}
 	}
@@ -49,6 +51,13 @@ impl DefinitionValidation {
 	/// turned them on in their settings (ADR 0007).
 	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
 		self.plan_connections_enabled = enabled;
+		self
+	}
+	/// Tenant Secrets exist only where the Secret Store can hold them: a
+	/// self-hosted node with a PostgreSQL Store. Cloud and Dedicated offer
+	/// none until the Credential Broker carries tool calls (#310).
+	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {
+		self.tenant_secrets_enabled = enabled;
 		self
 	}
 	fn provider_source(&self, endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
@@ -293,11 +302,28 @@ impl DefinitionValidation {
 					));
 				}
 			}
-			ToolConfig::Http { endpoint, replay }
+			ToolConfig::Http {
+				endpoint,
+				replay,
+				secret,
+			}
 			| ToolConfig::Mcp {
-				endpoint, replay, ..
+				endpoint,
+				replay,
+				secret,
+				..
 			} => {
 				validate_endpoint(endpoint)?;
+				if let Some(name) = secret {
+					if !self.tenant_secrets_enabled {
+						return Err(Error::Invalid(
+							"Tenant Secrets are not available on this Deployment".into(),
+						));
+					}
+					aidash_domain::tenant_secrets::validate_name(name)?;
+					// The value never travels in plaintext.
+					aidash_domain::tenant_secrets::endpoint_host(endpoint)?;
+				}
 				if !matches!(replay.as_str(), "read_only" | "idempotent" | "unsafe") {
 					return Err(Error::Invalid(
 						"replay must be read_only, idempotent or unsafe".into(),

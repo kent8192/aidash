@@ -45,6 +45,11 @@ pub trait DefinitionLookup: Send {
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		Ok(Some(self.definition(id, version).await?.kind))
 	}
+	/// The hosts the Tenant's active Tenant Secret `name` records, or `None`
+	/// when there is none. A scope without a Secret Store holds none.
+	async fn tenant_secret_hosts(&mut self, _name: &str) -> Result<Option<Vec<String>>> {
+		Ok(None)
+	}
 }
 
 #[async_trait]

@@ -750,6 +750,7 @@ mod tests {
 				&ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
+					secret: None,
 				},
 			);
 			assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));

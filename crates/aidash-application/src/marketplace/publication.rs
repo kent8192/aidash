@@ -58,7 +58,7 @@ pub async fn prepare(
 	crate::registry::system::reject_owner_definition(&stored)?;
 	scope.require_export(&stored).await?;
 	definitions::private_context(scope, &stored).await?;
-	let (entity, mut lineage, dependencies) = if let Some(p) = &stored.installation {
+	let (entity, secrets, mut lineage, dependencies) = if let Some(p) = &stored.installation {
 		let revision = scope.revision(&p.installation, p.revision).await?;
 		let source = load(scope, &revision.source.key, "marketplace.read").await?;
 		readable(scope, &source, node).await?;
@@ -85,11 +85,21 @@ pub async fn prepare(
 			});
 		}
 		// Export source bytes, not the installing tenant's configuration or bindings.
-		(manifest(&source)?.entity, lineage, source.dependencies)
+		let original = manifest(&source)?;
+		(
+			original.entity,
+			original.secrets,
+			lineage,
+			source.dependencies,
+		)
 	} else {
 		let deps =
 			definitions::publication_graph(scope, &stored, &input.dependencies, node).await?;
-		(stored.clone(), BTreeSet::new(), deps)
+		// The Tenant Secret the tool names is a slot its installer fills (ADR 0051).
+		let secrets = aidash_domain::tenant_secrets::definition_secret(&stored)
+			.into_iter()
+			.collect();
+		(stored.clone(), secrets, BTreeSet::new(), deps)
 	};
 	if !matches!(
 		entity.kind.as_str(),
@@ -130,6 +140,7 @@ pub async fn prepare(
 		author: input.author.clone(),
 		permissions: input.permissions.clone(),
 		dependencies: dependencies.iter().map(|d| d.reference.clone()).collect(),
+		secrets,
 	};
 	validation.validate_in(&package.entity, false)?;
 	let manifest_source = serde_json::to_string(&package)?;

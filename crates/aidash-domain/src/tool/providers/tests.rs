@@ -35,6 +35,7 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 			transport: Some(ToolConfig::Http {
 				endpoint: "https://example.invalid".into(),
 				replay: replay.into(),
+				secret: None,
 			}),
 		};
 		let contract = descriptor
@@ -80,6 +81,7 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 		transport: Some(ToolConfig::Http {
 			endpoint: "https://example.invalid".into(),
 			replay: "read_only".into(),
+			secret: None,
 		}),
 	})
 	.unwrap();

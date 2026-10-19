@@ -26,6 +26,11 @@ pub trait DefinitionScope: Send {
 		content: &str,
 	) -> Result<Option<Version>>;
 	async fn require_reference_read(&mut self, id: Uuid) -> Result<()>;
+	/// The hosts the Tenant's active Tenant Secret `name` records, or `None`
+	/// when there is none. A scope without a Secret Store holds none.
+	async fn tenant_secret_hosts(&mut self, _name: &str) -> Result<Option<Vec<String>>> {
+		Ok(None)
+	}
 }
 
 /// Read and distribution decisions use the same scope as dependency admission.
@@ -46,6 +51,15 @@ pub trait DistributionScope: DefinitionScope {
 	) -> aidash_domain::policy::Resource;
 	/// The `registry` resource `{kind}/{id}` that `registry.create` is decided on.
 	fn registry_resource(&self, kind: &str, id: &str) -> aidash_domain::policy::Resource;
+	/// The `secret` resource that `secret.use` is decided on.
+	fn secret_resource(&self, name: &str) -> aidash_domain::policy::Resource {
+		aidash_domain::policy::Resource {
+			tenant: self.tenant().to_owned(),
+			kind: "secret".into(),
+			id: name.to_owned(),
+			attributes: serde_json::json!({"name": name}),
+		}
+	}
 	async fn require(
 		&mut self,
 		resource: &aidash_domain::policy::Resource,

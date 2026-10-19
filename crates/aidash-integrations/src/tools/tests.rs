@@ -58,3 +58,52 @@ async fn native_http_dns_resolution_is_bounded_by_the_tool_deadline() {
 	assert!(matches!(error, Error::External(message) if message.contains("timed out")));
 	assert!(tokio::time::Instant::now() >= deadline);
 }
+
+/// Serves one JSON route that echoes the request's Authorization header, and
+/// reports every header value it saw.
+async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
+	use axum::{Router, http::HeaderMap, routing::post};
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/run", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move {
+		axum::serve(
+			listener,
+			Router::new().route(
+				"/run",
+				post(|headers: HeaderMap| async move {
+					let seen = headers
+						.get("authorization")
+						.and_then(|v| v.to_str().ok())
+						.map(str::to_owned);
+					axum::Json(json!({"authorization": seen}))
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	(endpoint, server)
+}
+
+#[tokio::test]
+async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothing_otherwise() {
+	let (endpoint, server) = authorization_echo().await;
+	let tools = HttpTools {
+		client: reqwest::Client::new(),
+	};
+	let config = ToolConfig::Http {
+		endpoint,
+		replay: "idempotent".into(),
+		secret: Some("search".into()),
+	};
+	let secret = SecretString::from("tenant-secret-value".to_owned());
+	let with = tools
+		.invoke(&config, json!({}), "key", Some(&secret))
+		.await
+		.unwrap();
+	assert_eq!(with["authorization"], "Bearer tenant-secret-value");
+	let without = tools.invoke(&config, json!({}), "key", None).await.unwrap();
+	assert_eq!(without["authorization"], Value::Null);
+	server.abort();
+	let _ = server.await;
+}

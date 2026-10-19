@@ -278,6 +278,7 @@ impl RealToolTransport for Repository {
 		_: Uuid,
 		_: &RealToolRule,
 		_: &ToolCall,
+		_: Option<&secrecy::SecretString>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
 		panic!("fixtures must never use transport")
 	}

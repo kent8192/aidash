@@ -46,6 +46,7 @@ struct Scope {
 	events: Vec<(String, Value)>,
 	documents: Option<Value>,
 	fail_documents: bool,
+	secret_hosts: BTreeMap<String, Vec<String>>,
 }
 
 #[async_trait]
@@ -87,6 +88,9 @@ impl DefinitionLookup for Scope {
 			.get(&identity(id, version))
 			.cloned()
 			.ok_or_else(|| Error::NotFound(id.into()))
+	}
+	async fn tenant_secret_hosts(&mut self, name: &str) -> Result<Option<Vec<String>>> {
+		Ok(self.secret_hosts.get(name).cloned())
 	}
 }
 #[async_trait]
@@ -238,6 +242,72 @@ fn tool_registration_rejects_a_deployment_secret(
 			"{error}"
 		);
 	}
+}
+
+fn tool_with_secret(name: &str) -> Entry {
+	let mut tool = crate::test_support::http_tool("aidash://home", "tool", "lookup");
+	tool.config["transport"]["secret"] = json!(name);
+	tool
+}
+#[rstest]
+fn a_tenant_secret_is_refused_where_the_deployment_offers_none(validation: DefinitionValidation) {
+	let tool = tool_with_secret("search");
+	let error = validation.validate_in(&tool, true).unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("Tenant Secrets are not available"),
+		"{error}"
+	);
+}
+#[rstest]
+#[case::malformed_name("Not A Name")]
+fn tool_registration_validates_the_tenant_secret_name(
+	validation: DefinitionValidation,
+	#[case] name: &str,
+) {
+	let validation = validation.with_tenant_secrets(true);
+	assert!(
+		validation
+			.validate_in(&tool_with_secret(name), true)
+			.is_err()
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn registration_sends_a_tenant_secret_only_to_a_recorded_host(
+	validation: DefinitionValidation,
+) {
+	let validation = validation.with_tenant_secrets(true);
+	let tool = tool_with_secret("search");
+	// No such Tenant Secret.
+	let mut scope = Scope::default();
+	assert!(
+		register_definition(&mut scope, &validation, &tool, "aidash://home")
+			.await
+			.is_err()
+	);
+	// It exists, but records another host.
+	scope
+		.secret_hosts
+		.insert("search".into(), vec!["other.example".into()]);
+	let error = register_definition(&mut scope, &validation, &tool, "aidash://home")
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains("does not record the host"),
+		"{error}"
+	);
+	assert!(scope.entries.is_empty());
+	// It records the endpoint's host.
+	scope
+		.secret_hosts
+		.insert("search".into(), vec!["production.example".into()]);
+	assert!(
+		register_definition(&mut scope, &validation, &tool, "aidash://home")
+			.await
+			.unwrap()
+	);
 }
 
 #[rstest]

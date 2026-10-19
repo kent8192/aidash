@@ -18,6 +18,19 @@ pub trait RealDispatchScope: SandboxScope {
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry>;
 	async fn write_calls(&mut self, id: Uuid, calls: Value, running: bool) -> Result<()>;
 	async fn rollback(self: Box<Self>) -> Result<()>;
+	/// The value of the profile Tenant's Tenant Secret, for a rule that names
+	/// one, to be sent to `endpoint`. `secret_unavailable` when it is missing,
+	/// deleted or does not record the endpoint's host.
+	async fn tenant_secret(
+		&mut self,
+		_tenant: &str,
+		_name: &str,
+		_endpoint: &str,
+	) -> Result<secrecy::SecretString> {
+		Err(crate::Error::Invalid(
+			aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+		))
+	}
 }
 #[async_trait]
 pub trait RealDispatchRepository: Send + Sync {
@@ -34,5 +47,6 @@ pub trait RealToolTransport: Send + Sync {
 		session: Uuid,
 		rule: &RealToolRule,
 		call: &ToolCall,
+		secret: Option<&secrecy::SecretString>,
 	) -> Result<Box<dyn PreparedRealRequest>>;
 }
