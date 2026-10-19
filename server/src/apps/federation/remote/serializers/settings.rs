@@ -1,5 +1,6 @@
 //! Node identity, Deployment Administrator access, and background execution settings.
-use crate::config::{validate_endpoint, validate_node_id};
+use crate::config::validate_endpoint;
+use aidash_domain::nodes::DeploymentId;
 use reinhardt::conf::settings::fragment::SettingsValidation;
 use reinhardt::conf::settings::profile::Profile;
 use reinhardt::conf::settings::validation::{ValidationError, ValidationResult};
@@ -50,7 +51,7 @@ impl SettingsValidation for NodeSettings {
 	fn validate(&self, _profile: &Profile) -> ValidationResult {
 		ValidateRules::validate(self)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
-		validate_node_id(&self.node_id)
+		DeploymentId::parse(&self.node_id)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;

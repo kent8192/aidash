@@ -70,7 +70,7 @@ pub fn offered(
 
 /// Every Sandboxed and research group, whether or not the Deployment runs it.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<PackageGroup>> {
-	aidash_domain::configuration::validate_node_id(node)?;
+	aidash_domain::nodes::DeploymentId::parse(node)?;
 	let specs = validation.node_specifications();
 	SANDBOXED_GROUPS
 		.iter()

@@ -11,7 +11,6 @@ use crate::{
 };
 use aidash_domain::{
 	TaskStatus,
-	configuration::validate_node_id,
 	federation::{
 		execution::{
 			Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
@@ -19,6 +18,7 @@ use aidash_domain::{
 		},
 		protocol::compatible,
 	},
+	nodes::DeploymentId,
 	policy::SubjectKind,
 	qualified_agent,
 	registry::{EntityRef, Search},
@@ -89,7 +89,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 	input: aidash_domain::federation::execution::AgentInspectionInput,
 ) -> Result<aidash_domain::federation::execution::AgentMemoryRequirements> {
 	repository.source_identity().ok_or(Error::Forbidden)?;
-	validate_node_id(&input.node_id)?;
+	DeploymentId::parse(&input.node_id)?;
 	if input.node_id == repository.source_node_id() {
 		return Err(Error::Invalid(
 			"inspection requires a remote destination".into(),
@@ -147,7 +147,7 @@ pub async fn prepare<R: GrantRepository>(
 			"invalid remote grant destination or lifetime".into(),
 		));
 	}
-	validate_node_id(&input.node_id)?;
+	DeploymentId::parse(&input.node_id)?;
 	let mut scope = repository.source_begin().await?;
 	let result=async {
   scope.inherit_task_origin(task_id).await?;

@@ -10,7 +10,7 @@ pub mod runtime;
 pub(crate) use runtime::same_secret;
 pub use runtime::{
 	Config, NodeIdentity, OidcConfig, PROTOCOL_VERSION, SessionConfig, peer_secret, secret,
-	validate_endpoint, validate_node_id, validate_peer_credential, validate_secret_reference,
+	validate_endpoint, validate_peer_credential, validate_secret_reference,
 };
 
 pub mod openapi;

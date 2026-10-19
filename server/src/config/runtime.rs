@@ -112,10 +112,6 @@ impl Config {
 	}
 }
 
-pub fn validate_node_id(value: &str) -> Result<()> {
-	aidash_domain::configuration::validate_node_id(value).map_err(Into::into)
-}
-
 pub fn validate_endpoint(value: &str) -> Result<()> {
 	aidash_domain::configuration::validate_endpoint(value).map_err(Into::into)
 }

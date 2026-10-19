@@ -1,5 +1,5 @@
 //! Immutable transaction manifests and monotonic coordinator decisions.
-use crate::{ArtifactInput, Error, configuration::validate_node_id};
+use crate::{ArtifactInput, Error, nodes::DeploymentId};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ impl Manifest {
 	where
 		E: From<Error> + From<serde_json::Error>,
 	{
-		validate_node_id(&self.coordinator)?;
+		DeploymentId::parse(&self.coordinator)?;
 		if self.id.is_nil() || self.participants.is_empty() || self.participants.len() > 16 {
 			return Err(
 				Error::Invalid("transaction requires an ID and 1..16 participants".into()).into(),
@@ -69,7 +69,7 @@ impl Manifest {
 		let mut previous: Option<&str> = None;
 		let mut count = 0;
 		for participant in &self.participants {
-			validate_node_id(&participant.node_id)?;
+			DeploymentId::parse(&participant.node_id)?;
 			if previous.is_some_and(|p| p >= participant.node_id.as_str())
 				|| participant.mutations.len() > 64
 			{

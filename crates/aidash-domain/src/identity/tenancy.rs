@@ -14,7 +14,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 pub mod deletion;
-mod words;
+pub(crate) mod words;
 
 /// The subject a Tenant Creator is mapped to.
 pub const OWNER: &str = "owner";
@@ -117,9 +117,29 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"workspace.update",
 ];
 
-const RANDOM_LENGTH: usize = 8;
+pub(crate) const RANDOM_LENGTH: usize = 8;
 const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 const LABEL_MAX: usize = 64;
+/// The longest name `assigned_name` can draw.
+pub(crate) const ASSIGNED_NAME_MAX_LEN: usize =
+	words::LONGEST_ADJECTIVE + 1 + words::LONGEST_NOUN + 1 + RANDOM_LENGTH;
+
+/// Draws `<adjective>-<noun>-<8 random characters>` from 16 bytes of
+/// caller-supplied entropy. Tenant names and Node names share this form.
+pub(crate) fn assigned_name(entropy: [u8; 16]) -> String {
+	let adjective = words::ADJECTIVES[usize::from(entropy[0]) % words::ADJECTIVES.len()];
+	let noun = words::NOUNS[usize::from(entropy[1]) % words::NOUNS.len()];
+	let mut random = u64::from_le_bytes(entropy[2..10].try_into().expect("eight bytes"))
+		^ u64::from(u32::from_le_bytes(
+			entropy[10..14].try_into().expect("four bytes"),
+		));
+	let mut suffix = String::with_capacity(RANDOM_LENGTH);
+	for _ in 0..RANDOM_LENGTH {
+		suffix.push(char::from(ALPHABET[(random % 36) as usize]));
+		random /= 36;
+	}
+	format!("{adjective}-{noun}-{suffix}")
+}
 
 /// The identifier Aidash assigns to a Tenant: `<adjective>-<noun>-<8 random
 /// characters>`. Nobody chooses it, it never changes and it is never reused.
@@ -130,18 +150,7 @@ impl TenantName {
 	/// Draws a name from 16 bytes of caller-supplied entropy, such as a random
 	/// UUID, so this crate stays free of a random source.
 	pub fn from_entropy(entropy: [u8; 16]) -> Self {
-		let adjective = words::ADJECTIVES[usize::from(entropy[0]) % words::ADJECTIVES.len()];
-		let noun = words::NOUNS[usize::from(entropy[1]) % words::NOUNS.len()];
-		let mut random = u64::from_le_bytes(entropy[2..10].try_into().expect("eight bytes"))
-			^ u64::from(u32::from_le_bytes(
-				entropy[10..14].try_into().expect("four bytes"),
-			));
-		let mut suffix = String::with_capacity(RANDOM_LENGTH);
-		for _ in 0..RANDOM_LENGTH {
-			suffix.push(char::from(ALPHABET[(random % 36) as usize]));
-			random /= 36;
-		}
-		Self(format!("{adjective}-{noun}-{suffix}"))
+		Self(assigned_name(entropy))
 	}
 
 	pub fn as_str(&self) -> &str {

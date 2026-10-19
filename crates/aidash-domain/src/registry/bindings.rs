@@ -2,8 +2,8 @@
 use super::{EntityRef, Entry, Projection};
 use crate::{
 	Error, Result,
-	configuration::validate_node_id,
 	exposure::{BindingExposure, ExposurePolicy},
+	nodes::DeploymentId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -287,7 +287,7 @@ impl AgentBindings {
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
-		crate::configuration::validate_node_id(node)?;
+		crate::nodes::DeploymentId::parse(node)?;
 		let mut result = Vec::new();
 		let has_skills = self.bindings.iter().any(|b| b.kind == BindingKind::Skill);
 		let policy = self.exposure_policy();
@@ -394,7 +394,7 @@ pub struct QualifiedRef {
 }
 impl QualifiedRef {
 	pub fn validate(&self) -> Result<()> {
-		validate_node_id(&self.registry_node)?;
+		DeploymentId::parse(&self.registry_node)?;
 		if self.id.is_empty()
 			|| self.id.len() > 100
 			|| !self

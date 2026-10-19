@@ -13,7 +13,7 @@ impl Service {
 		node: &str,
 		mut stopping: watch::Receiver<bool>,
 	) -> Result<()> {
-		crate::config::validate_node_id(node)?;
+		aidash_domain::nodes::DeploymentId::parse(node)?;
 		metrics::gauge!("aidash_sse_subscriber_ready").set(0.0);
 		let subject = format!(
 			"aidash.{}.events",

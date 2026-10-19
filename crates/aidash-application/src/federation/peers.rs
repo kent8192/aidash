@@ -7,8 +7,9 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	configuration::{same_secret, validate_node_id, validate_peer_endpoint},
+	configuration::{same_secret, validate_peer_endpoint},
 	federation::{Peer, protocol::compatible},
+	nodes::DeploymentId,
 };
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ pub struct PeerAuthority {
 }
 impl PeerAuthority {
 	pub async fn register(&self, peer: Peer) -> Result<Peer> {
-		validate_node_id(&peer.node_id)?;
+		DeploymentId::parse(&peer.node_id)?;
 		if peer.node_id == self.node || !compatible(&self.protocol, &peer.protocol_version) {
 			return Err(Error::Invalid(format!(
 				"peer must be another node with protocol_version {}",

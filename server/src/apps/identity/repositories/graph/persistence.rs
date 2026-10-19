@@ -627,7 +627,7 @@ pub(crate) async fn set_grant(
 	input: PeerGraphGrantInput,
 ) -> Result<PeerGraphGrant> {
 	identifier(&tenant)?;
-	crate::config::validate_node_id(&input.source_node)?;
+	aidash_domain::nodes::DeploymentId::parse(&input.source_node)?;
 	if input.source_node == f.config.node_id || !(0..i64::MAX).contains(&input.expected_revision) {
 		return Err(Error::Invalid(
 			"invalid Peer Graph Grant or revision".into(),

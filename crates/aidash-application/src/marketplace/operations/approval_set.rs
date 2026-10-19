@@ -33,7 +33,7 @@ pub async fn approve_and_activate(
 	input: &ApprovalSet,
 	node: &str,
 ) -> Result<Vec<Installation>> {
-	aidash_domain::configuration::validate_node_id(node)?;
+	aidash_domain::nodes::DeploymentId::parse(node)?;
 	aidash_domain::policy::identifier(&input.tenant)?;
 	super::require_approving(scope, &input.tenant)?;
 	if input.installations.is_empty()

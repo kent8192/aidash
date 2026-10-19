@@ -224,7 +224,7 @@ pub fn core_descriptor(node: &str, operation: &str) -> Result<ToolDescriptor> {
 
 impl ToolDescriptor {
 	pub fn validate(&self) -> Result<()> {
-		crate::configuration::validate_node_id(&self.registry_node)?;
+		crate::nodes::DeploymentId::parse(&self.registry_node)?;
 		validate_alias(&self.default_alias)?;
 		if self.provider.is_empty() || self.operation.is_empty() {
 			return Err(Error::Invalid(

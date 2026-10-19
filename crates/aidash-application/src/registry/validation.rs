@@ -8,8 +8,9 @@ use aidash_domain::exposure::{
 };
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
-	configuration::{validate_endpoint, validate_node_id},
+	configuration::validate_endpoint,
 	model::ModelConfig,
+	nodes::DeploymentId,
 	registry::{AgentConfig, ClusterConfig, Entry},
 	tool::ToolConfig,
 };
@@ -323,7 +324,7 @@ impl DefinitionValidation {
 				}
 			}
 			ToolConfig::Agent { node_id, agent } => {
-				validate_node_id(node_id)?;
+				DeploymentId::parse(node_id)?;
 				if agent.id.is_empty()
 					|| agent.id.len() > 100
 					|| !agent

@@ -59,7 +59,7 @@ pub(crate) async fn expand(
 	input: GraphExpandInput,
 ) -> Result<GraphPage> {
 	input.options.validate()?;
-	crate::config::validate_node_id(&input.node_id)?;
+	aidash_domain::nodes::DeploymentId::parse(&input.node_id)?;
 	match actor {
 		Actor::Subject(identity) => {
 			if input.options.target_tenant.is_some() {

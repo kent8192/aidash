@@ -60,7 +60,7 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 			entry.config = serde_json::to_value(config)?;
 		}
 		"tool" => {
-			crate::configuration::validate_node_id(node)?;
+			crate::nodes::DeploymentId::parse(node)?;
 			let mut c: crate::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config.clone())?;
 			c.registry_node = node.into();
@@ -80,7 +80,7 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 			entry.config = serde_json::to_value(c)?;
 		}
 		"bundle" => {
-			crate::configuration::validate_node_id(node)?;
+			crate::nodes::DeploymentId::parse(node)?;
 			let mut c: crate::registry::bindings::BundleConfig =
 				serde_json::from_value(entry.config.clone())?;
 			for reference in &mut c.members {

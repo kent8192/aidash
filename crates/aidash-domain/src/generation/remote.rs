@@ -115,7 +115,7 @@ impl Approvals {
 			.chain(self.compaction.iter().map(|a| &a.provider))
 			.chain(self.summary.iter().map(|a| &a.provider))
 		{
-			crate::configuration::validate_node_id(&provider.node_id)?;
+			crate::nodes::DeploymentId::parse(&provider.node_id)?;
 			crate::nonempty(&provider.entry.id, "remote provider")?;
 			crate::nonempty(&provider.entry.version, "remote provider version")?;
 			if [&provider.digest, &provider.configuration_digest]
@@ -173,7 +173,8 @@ impl Usage {
 		{
 			return Err(ContractError::Semantic(Failure::ProviderContract));
 		}
-		crate::configuration::validate_node_id(&self.dispatcher_node).map_err(Into::into)
+		crate::nodes::DeploymentId::parse(&self.dispatcher_node)?;
+		Ok(())
 	}
 }
 

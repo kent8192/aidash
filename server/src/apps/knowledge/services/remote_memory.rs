@@ -93,7 +93,7 @@ pub(crate) async fn bind(
 		));
 	}
 	if let Some(origin) = generation {
-		aidash_domain::configuration::validate_node_id(&origin.node_id)?;
+		aidash_domain::nodes::DeploymentId::parse(&origin.node_id)?;
 		if origin.node_id == home || origin.intent_id.is_nil() {
 			return Err(Error::Forbidden);
 		}

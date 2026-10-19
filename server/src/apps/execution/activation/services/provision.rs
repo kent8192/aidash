@@ -20,7 +20,7 @@ impl SettingsView for ActivationTarget {
 			));
 		}
 		let node_id = settings.require_path::<String>(&["node", "node_id"])?;
-		crate::config::validate_node_id(&node_id).map_err(|_| {
+		aidash_domain::nodes::DeploymentId::parse(&node_id).map_err(|_| {
 			BuildError::Deserialization("node.node_id must be a valid Aidash identity".into())
 		})?;
 		let nats_url = settings
