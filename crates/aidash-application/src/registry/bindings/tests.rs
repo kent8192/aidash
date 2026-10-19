@@ -1,7 +1,10 @@
 use super::*;
+use crate::ports::bindings::StoredAgentPlugin;
 use aidash_domain::tool::{ToolContract, providers::*};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+
+mod agent_plugins;
 
 const NODE: &str = "aidash://node-a";
 fn reference(id: &str) -> QualifiedRef {
@@ -32,6 +35,7 @@ struct Catalog {
 	entries: BTreeMap<QualifiedRef, Entry>,
 	reject_installations: bool,
 	foreign: BTreeMap<QualifiedRef, ForeignAgentSnapshot>,
+	plugins: BTreeMap<String, StoredAgentPlugin>,
 }
 impl Catalog {
 	fn new() -> Self {
@@ -39,6 +43,7 @@ impl Catalog {
 			entries: BTreeMap::new(),
 			reject_installations: false,
 			foreign: BTreeMap::new(),
+			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
 		for operation in crate::registry::system::operations() {
@@ -66,6 +71,9 @@ impl Catalog {
 }
 #[async_trait]
 impl BindingCatalog for Catalog {
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		Ok(self.plugins.get(digest).cloned())
+	}
 	async fn foreign_agent(&mut self, reference: &QualifiedRef) -> Result<ForeignAgentSnapshot> {
 		self.foreign.get(reference).cloned().ok_or(Error::Forbidden)
 	}

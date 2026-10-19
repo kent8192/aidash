@@ -1,9 +1,10 @@
 //! Small registered Binding graphs for portable adapter and lifecycle tests.
 use crate::{
 	Error, Result,
-	ports::bindings::{BindingCatalog, ProviderCatalog},
+	ports::bindings::{BindingCatalog, ProviderCatalog, StoredAgentPlugin},
 };
 use aidash_domain::{
+	agent_plugin::{AgentPluginRef, MCP_SCHEMA, PLUGIN_SCHEMA, PluginFile},
 	registry::{
 		Entry, Projection,
 		bindings::{BindingSnapshot, QualifiedRef},
@@ -47,12 +48,60 @@ pub(crate) fn agent(id: &str) -> Entry {
 		json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Do the task.","bindings":[],"remove_default":[]}),
 	)
 }
+pub(crate) const PLUGIN_SOURCE: &str =
+	"https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567";
+
+/// A plugin copy named `name` with a remote server, a skipped server and one Skill per
+/// `(directory, body)`.
+pub(crate) fn stored_plugin(name: &str, skills: &[(&str, &str)]) -> StoredAgentPlugin {
+	let file = |path: String, content: String| PluginFile {
+		path,
+		bytes: content.into_bytes(),
+	};
+	let mut files = vec![
+		file(
+			"plugin.json".into(),
+			json!({"$schema": PLUGIN_SCHEMA, "name": name, "version": "1.0.0"}).to_string(),
+		),
+		file(
+			"mcp.json".into(),
+			json!({"$schema": MCP_SCHEMA, "mcpServers": {
+				"docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp"},
+				"legacy": {"type": "sse", "url": "https://legacy.example.com/sse"},
+			}})
+			.to_string(),
+		),
+	];
+	for (directory, body) in skills {
+		files.push(file(
+			format!("skills/{directory}/SKILL.md"),
+			format!("---\nname: {directory}\ndescription: Does {directory}.\n---\n\n{body}\n"),
+		));
+	}
+	StoredAgentPlugin {
+		source: PLUGIN_SOURCE.into(),
+		plugin: aidash_domain::agent_plugin::load(&files).expect("the fixture plugin loads"),
+	}
+}
+
+pub(crate) fn plugin_reference(stored: &StoredAgentPlugin) -> AgentPluginRef {
+	AgentPluginRef::of(&stored.plugin, &stored.source)
+}
+
 struct Catalog {
 	node: String,
 	entries: Vec<Entry>,
+	plugins: Vec<StoredAgentPlugin>,
 }
 #[async_trait]
 impl BindingCatalog for Catalog {
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		Ok(self
+			.plugins
+			.iter()
+			.find(|stored| stored.plugin.digest == digest)
+			.cloned())
+	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		if reference.registry_node != self.node {
 			return Err(Error::Forbidden);
@@ -99,6 +148,15 @@ pub(crate) fn resolve(
 	remote: bool,
 	extras: Vec<Entry>,
 ) -> BindingSnapshot {
+	resolve_with_plugins(node, root, remote, extras, vec![])
+}
+pub(crate) fn resolve_with_plugins(
+	node: &str,
+	root: &Entry,
+	remote: bool,
+	extras: Vec<Entry>,
+	plugins: Vec<StoredAgentPlugin>,
+) -> BindingSnapshot {
 	let mut entries = extras;
 	if !entries.iter().any(|entry| entry.kind == "model") {
 		let model = &root.config["model"];
@@ -114,6 +172,7 @@ pub(crate) fn resolve(
 		&mut Catalog {
 			node: node.into(),
 			entries,
+			plugins,
 		},
 		&Providers,
 		QualifiedRef {

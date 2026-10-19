@@ -187,3 +187,25 @@ fn replay_uses_only_results_the_session_evaluated() {
 	assert!(state.unloaded_eager.contains("evaluated"));
 	assert!(state.pending.is_empty());
 }
+
+#[test]
+fn plugin_skills_are_discoverable_in_a_deferred_draft() {
+	let plugin = crate::test_support::stored_plugin("acme-tools", &[("lint", "Lint it.")]);
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["exposure"] = json!({"version":"deferred@1"});
+	agent.config["agent_plugins"] = json!([crate::test_support::plugin_reference(&plugin)]);
+	let snapshot = crate::test_support::resolve_with_plugins(
+		"aidash://local",
+		&agent,
+		false,
+		vec![],
+		vec![plugin],
+	);
+	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+
+	let (resident, _) = deferred
+		.request(&snapshot, &ExposureState::default())
+		.unwrap();
+
+	assert!(resident.contains("Does lint."), "{resident}");
+}
