@@ -103,15 +103,16 @@ def fixture_approval(request):
     )
 
 
-def approve_fixture_external_requests(base, token=TOKEN, claim=lambda request_id: True):
+def approve_fixture_external_requests(base, token=TOKEN):
     """Approve only the owned fixture's exact external-call continuations.
 
-    `claim` lets another approver share the answered set, so each request is answered once.
+    An answer that does not arrive is answered again on the next poll; a second
+    answer to an approval that was already answered is refused with 409.
     """
     for request in api_request(base, "/api/state", token=token)["human_requests"]:
-        if fixture_approval(request) and claim(request["id"]):
+        if fixture_approval(request):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
-            print(f"--- approved {request['id']} after reading /api/state", flush=True)
+            print(f"--- approved {request['id']}", flush=True)
 
 
 def diagnose(base, token, tenant, workspace, database):
@@ -536,16 +537,6 @@ def main():
     local_approvals = threading.Event()
     local_approvals.set()
     approval_errors = []
-    answered = set()
-    answered_lock = threading.Lock()
-
-    def claim(request_id):
-        # The stream and the state poll can both see a request; answer it once.
-        with answered_lock:
-            if request_id in answered:
-                return False
-            answered.add(request_id)
-            return True
 
     def approve_fixture_calls():
         # Each subject read of /api/state journals a policy decision per item,
@@ -555,35 +546,10 @@ def main():
                 continue
             for base, token in list(tokens.items()):
                 try:
-                    approve_fixture_external_requests(base, token, claim)
+                    approve_fixture_external_requests(base, token)
                 except OSError as error:
                     # A deliberately unavailable/restarting Node has no approval authority.
                     print(f"--- approval poll of {base} failed: {error!r}", flush=True)
-                except Exception as error:
-                    approval_errors.append(str(error))
-
-    def approve_streamed_calls():
-        # Node A's event stream delivers each approval as it is requested, the
-        # way the dashboard learns of it, so a slow /api/state does not hold
-        # the Run waiting. The state poll above still catches anything missed.
-        seen = 0
-        while not approval_stop.wait(0.5):
-            events = stream_events[seen:]
-            seen += len(events)
-            if not local_approvals.is_set():
-                continue
-            for event in events:
-                request = event.get("data") or {}
-                if event.get("type") != "human.requested" or not fixture_approval(request) or not claim(request["id"]):
-                    continue
-                try:
-                    api_request(base_a, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=tokens[base_a])
-                    print(f"--- approved {request['id']} from the event stream", flush=True)
-                except OSError as error:
-                    # The state poll retries a request whose answer did not arrive.
-                    print(f"--- streamed approval of {request['id']} failed: {error!r}", flush=True)
-                    with answered_lock:
-                        answered.discard(request["id"])
                 except Exception as error:
                     approval_errors.append(str(error))
 
@@ -664,7 +630,6 @@ def main():
         worker_a = launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
-        threading.Thread(target=approve_streamed_calls, daemon=True).start()
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
