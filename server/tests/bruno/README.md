@@ -50,7 +50,7 @@ are disabled so anonymous and bearer requests remain explicit. Raw reports,
 provider keys, credentials and logs stay in a private temporary directory that
 is removed on exit. Sanitized request names, HTTP statuses, check results, source
 revision, executable hash and provider call counts are written under
-`.ignore/bruno/<run-id>/`. A partial, duplicated or skipped collection is a failure. Endpoint coverage
+`private/bruno/<run-id>/`. A partial, duplicated or skipped collection is a failure. Endpoint coverage
 counts executed scenarios and successful assertions independently; missing
 requests cannot be replaced by a duplicate.
 

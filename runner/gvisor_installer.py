@@ -9,16 +9,23 @@ import os
 from pathlib import Path, PurePosixPath
 import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
 import urllib.request
 
-GVISOR_VERSION = '20260921.0'
-GVISOR_SHA = '3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646'
-# ARM is for disposable local verification only; GKE Ubuntu N2 uses x86_64.
-ARCHIVE_HASHES = {'x86_64': GVISOR_SHA,
-                 'aarch64': 'edf717346495ec5e995551e84e47beb5d0ecbfd872d9773ffb554aa24a158c4e'}
+# The one pin of the gVisor release; the image build, the chart and local setup
+# all read it. ARM is for disposable local verification only; GKE Ubuntu N2 uses x86_64.
+PIN = json.loads(Path(__file__).with_name('gvisor.json').read_text())
+GVISOR_VERSION = PIN['version']
+ARCHIVE_HASHES = PIN['sha256']
+# The image build stores the pinned archive here, so installing on a new Cluster
+# Node never reaches the release bucket (#394).
+BUNDLE = Path(__file__).with_name('gvisor')
+RELEASES = 'https://storage.googleapis.com/gvisor/releases/release'
+# Docker's TARGETARCH names for the architectures the pin covers.
+TARGET_ARCHES = {'amd64': 'x86_64', 'arm64': 'aarch64'}
 SHIM = 'containerd-shim-runsc-v1'
 REQUIRED = {'runsc', SHIM, 'gvisor-bin/gvisor_sentry'}
 # Executables the node guard identifies a live sandbox by (`samefile` on /proc/<pid>/exe).
@@ -196,12 +203,36 @@ def drain(root, seconds, sleep=time.sleep, clock=time.monotonic, live=live_sandb
         sleep(5)
 
 
-def install(root, version, checksum, arch, download, restart, runsc_root='/run/containerd/runsc',
+def bundled(version, arch, directory=BUNDLE):
+    return directory / version / arch / 'gvisor.tar.bz2'
+
+
+def read_bundled(version, arch, directory=BUNDLE):
+    path = bundled(version, arch, directory)
+    if not path.is_file():
+        raise FileNotFoundError(f'gVisor {version} for {arch} is not bundled in this image')
+    return path.read_bytes()
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=120) as response:
+        return response.read()
+
+
+def bundle(target, directory=BUNDLE, download=fetch):
+    """Image build step: store the pinned archive for Docker's TARGETARCH."""
+    arch = TARGET_ARCHES[target]
+    data = download(f'{RELEASES}/{GVISOR_VERSION}/{arch}/gvisor.tar.bz2')
+    # The same checks as an install, so a bad archive fails the build.
+    archive_files(data, ARCHIVE_HASHES[arch])
+    write(bundled(GVISOR_VERSION, arch, directory), data)
+
+
+def install(root, version, checksum, arch, archive, restart, runsc_root='/run/containerd/runsc',
             drain=lambda root: None):
     replaced = not installed(root, version, checksum)
     if replaced:
-        url = f'https://storage.googleapis.com/gvisor/releases/release/{version}/{arch}/gvisor.tar.bz2'
-        files = archive_files(download(url), checksum)
+        files = archive_files(archive(version, arch), checksum)
         # Validate every destination before changing any executable.
         paths = {name: destination(root / 'usr/local/bin', name) for name in files}
     changes = configuration(root, runsc_root)
@@ -283,10 +314,6 @@ def main():
     # Existing cells end by maximum_seconds/idle_seconds; allow one idle interval plus margin.
     drain_seconds = int(os.environ.get('AIDASH_GVISOR_DRAIN_SECONDS', '3600'))
 
-    def download(url):
-        with urllib.request.urlopen(url, timeout=120) as response:
-            return response.read()
-
     def restart():
         subprocess.run(['nsenter', '-t', '1', '-m', '-u', '-i', '-n', '-p', '--',
                         'systemctl', 'restart', 'containerd'], check=True, timeout=120)
@@ -296,7 +323,7 @@ def main():
             # Withdraw only admission during startup/repair. The guard must keep
             # watching live sandboxes while a runtime replacement drains them.
             label({admission: None})
-            install(root, version, checksum, arch, download, restart, runsc_root,
+            install(root, version, checksum, arch, read_bundled, restart, runsc_root,
                     drain=lambda host: drain(host, drain_seconds))
             label({admission: version, installed: 'true'})
             ready.touch()
@@ -309,4 +336,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:2] == ['bundle']:
+        bundle(sys.argv[2])
+    else:
+        main()

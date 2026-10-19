@@ -63,7 +63,7 @@ try {
     1,
   );
   await page.screenshot({
-    path: ".ignore/dashboard-deployment-cluster-desktop.png",
+    path: "private/dashboard-deployment-cluster-desktop.png",
     fullPage: true,
   });
   const accountMenu = page.locator(".account-popover > summary");
@@ -75,7 +75,7 @@ try {
     .getByRole("heading", { name: "レプリカの状態", exact: true })
     .waitFor();
   await page.screenshot({
-    path: ".ignore/dashboard-deployment-cluster-mobile.png",
+    path: "private/dashboard-deployment-cluster-mobile.png",
     fullPage: true,
   });
   assert(

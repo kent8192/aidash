@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--reference-database", required=True)
     parser.add_argument("--postgres-port", type=int, required=True)
     parser.add_argument(
-        "--evidence-dir", type=Path, default=ROOT / ".ignore/schema-parity"
+        "--evidence-dir", type=Path, default=ROOT / "private/schema-parity"
     )
     args = parser.parse_args()
     binaries = {
