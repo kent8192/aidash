@@ -2,13 +2,16 @@
 use crate::{
 	Error, Result,
 	ports::{bindings::ProviderCatalog, registry::CoreToolCatalog},
+	provider_access::KeylessAccess,
 };
 use aidash_domain::exposure::{
 	self, CapabilityIdentity, CapabilityKind, DeferredBudgets, ExposureState,
 };
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
+	agent_plugin::McpServer,
 	configuration::{validate_endpoint, validate_node_id},
+	keyless::Destination,
 	model::ModelConfig,
 	registry::{AgentConfig, ClusterConfig, Entry},
 	tool::ToolConfig,
@@ -27,10 +30,18 @@ fn reject_deployment_secret(transport: Option<&Value>) -> Result<()> {
 	Ok(())
 }
 
+enum EndpointRefusal {
+	NonPublic,
+	PlainHttp,
+}
+
 #[derive(Clone)]
 pub struct DefinitionValidation {
 	provider_credentials_enabled: bool,
 	plan_connections_enabled: bool,
+	/// A Tenant chooses its tool endpoints, so they follow the Keyless endpoint
+	/// rule (ADR 0036, #376). Without origins, only public addresses pass.
+	keyless: KeylessAccess,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
@@ -38,8 +49,66 @@ impl DefinitionValidation {
 		Self {
 			provider_credentials_enabled: false,
 			plan_connections_enabled: false,
+			keyless: KeylessAccess::default(),
 			core_tools,
 		}
+	}
+	/// The Deployment's permitted private origins. Every clone of `origins`
+	/// shares one list, so origins added later still count.
+	pub fn with_keyless_origins(mut self, origins: KeylessAccess) -> Self {
+		self.keyless = origins;
+		self
+	}
+	/// Why an endpoint at `origin` may not be called, or `None` when it may.
+	fn refused_endpoint(&self, origin: &str) -> Result<Option<EndpointRefusal>> {
+		Ok(match self.keyless.destination(origin)? {
+			Destination::Forbidden => Some(EndpointRefusal::NonPublic),
+			Destination::PublicOnly if !origin.starts_with("https://") => {
+				Some(EndpointRefusal::PlainHttp)
+			}
+			Destination::Permitted | Destination::PublicOnly => None,
+		})
+	}
+	fn validate_tool_endpoint(&self, endpoint: &str) -> Result<()> {
+		let url =
+			url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+		match self.refused_endpoint(&url.origin().ascii_serialization())? {
+			None => Ok(()),
+			Some(EndpointRefusal::NonPublic) => Err(Error::Invalid(
+				"TOOL_ENDPOINT_FORBIDDEN: a tool endpoint at a non-public address needs its origin in [keyless_endpoints] permitted_private_origins"
+					.into(),
+			)),
+			Some(EndpointRefusal::PlainHttp) => Err(Error::Invalid(
+				"TOOL_ENDPOINT_FORBIDDEN: tool endpoints require HTTPS unless the Deployment permits their origin"
+					.into(),
+			)),
+		}
+	}
+	/// Remote MCP servers of the plugins an Agent takes in follow the same rule.
+	fn validate_plugin_servers(
+		&self,
+		bindings: &aidash_domain::registry::bindings::AgentBindings,
+	) -> Result<()> {
+		for plugin in &bindings.agent_plugins {
+			for (name, server) in &plugin.servers {
+				let McpServer::Remote(remote) = server else {
+					continue;
+				};
+				let reason =
+					match self.refused_endpoint(&remote.url.origin().ascii_serialization())? {
+						None => continue,
+						Some(EndpointRefusal::NonPublic) => "",
+						Some(EndpointRefusal::PlainHttp) => {
+							" needs HTTPS unless its origin is permitted"
+						}
+					};
+				return Err(Error::Invalid(format!(
+					"AGENT_PLUGIN_SERVER_FORBIDDEN: {}/{name}{reason}",
+					plugin.name
+				)));
+			}
+		}
+		Ok(())
 	}
 	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
 		self.provider_credentials_enabled = configured;
@@ -213,6 +282,7 @@ impl DefinitionValidation {
 				let input: aidash_domain::registry::bindings::AgentBindings =
 					serde_json::from_value(e.config.clone())?;
 				input.validate()?;
+				self.validate_plugin_servers(&input)?;
 			}
 			"cluster" => {
 				let cluster: ClusterConfig =
@@ -302,6 +372,7 @@ impl DefinitionValidation {
 				endpoint, replay, ..
 			} => {
 				validate_endpoint(endpoint)?;
+				self.validate_tool_endpoint(endpoint)?;
 				if !matches!(replay.as_str(), "read_only" | "idempotent" | "unsafe") {
 					return Err(Error::Invalid(
 						"replay must be read_only, idempotent or unsafe".into(),

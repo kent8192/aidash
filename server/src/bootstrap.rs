@@ -101,6 +101,7 @@ pub async fn initialize(
 		&settings.plan_connections,
 	)?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
+		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
 	registry.seed_system().await?;
@@ -547,6 +548,14 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 		.and_then(|s| s.resolve().ok())
 		.map(|s| s.into_parts().0);
 	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
+	// Settings that fail to resolve leave no origins, so only public addresses pass.
+	.with_keyless_origins(
+		settings
+			.as_ref()
+			.and_then(|s| s.keyless_endpoints.origins().ok())
+			.map(aidash_application::provider_access::KeylessAccess::permitting)
+			.unwrap_or_default(),
+	)
 	.with_provider_credentials(
 		settings
 			.as_ref()
@@ -563,6 +572,7 @@ pub fn registry_validation_for(
 	store: &Store,
 ) -> aidash_application::registry::DefinitionValidation {
 	registry_validation()
+		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 }
