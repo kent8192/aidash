@@ -351,7 +351,8 @@ async fn only_a_deployment_administrator_purges_a_deleted_tenant_at_once(
 	assert_eq!(status, 200, "{deletion}");
 	let purge_after: chrono::DateTime<chrono::Utc> =
 		serde_json::from_value(deletion["purge_after"].clone()).unwrap();
-	assert!(purge_after <= chrono::Utc::now());
+	// The database clock may differ a little from this host's.
+	assert!(purge_after <= chrono::Utc::now() + chrono::Duration::minutes(5));
 	let (status, body) = d
 		.as_deployment_administrator(
 			"POST",
