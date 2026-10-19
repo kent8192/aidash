@@ -43,6 +43,7 @@ impl OpenRouterProvider {
 			max_output_tokens,
 			cache_breakpoints,
 			call: None,
+			hosts: vec![],
 		});
 		context
 	}

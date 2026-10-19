@@ -103,6 +103,7 @@ async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> 
 		// One answer per question: a large question map yields a provider-sized answer map.
 		"/api/v1/systemone" if value.pointer("/state/large_answer") == Some(&Value::Bool(true)) => json!({"model":"typesafe/jev-1.13-20260917","answers":{"keep":{"type":"noul","noul":0.9}},"padding":"x".repeat(REQUEST_LIMIT),"usage":{"input_tokens":12,"output_tokens":3,"cost":0.000002}}),
 		"/api/v1/systemone" => json!({"model":"typesafe/jev-1.13-20260917","answers":{"keep":{"type":"noul","noul":0.9}},"usage":{"input_tokens":12,"output_tokens":3,"cost":0.000002,"untrusted":CANARY}}),
+		"/api/alpha/decisions" => json!({"model":"cloudflare/clef","provider":"DeepInfra","answers":{"keep":{"type":"noul","noul":0.8}},"usage":{"input_tokens":12,"output_tokens":0,"cost":0.000001}}),
 		_ => json!({"choices":[{"finish_reason":"stop","message":{"content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"untrusted":CANARY}})
 	}).into_response()
 }
@@ -182,6 +183,7 @@ impl Fixture {
 			model: "author/model".into(),
 			max_output_tokens: 10,
 			cache_breakpoints: false,
+			hosts: vec![],
 		}
 	}
 	async fn request(&self, claims: &Claims, method: &str, uri: &str, body: Value) -> Response {
@@ -1250,6 +1252,7 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 		model: "author/model".into(),
 		max_output_tokens: 10,
 		cache_breakpoints: false,
+		hosts: vec![],
 	};
 	broker.key(&c).await.unwrap();
 	source.unavailable.store(true, Ordering::SeqCst);
@@ -1292,6 +1295,92 @@ fn decision_claims(f: &Fixture) -> Claims {
 }
 fn decision() -> Value {
 	json!({"model":"typesafe/jev-1.13","state":{"events":[]},"questions":{"keep":{"type":"noul","instructions":"Keep it?"}},"provider":{"zdr":true}})
+}
+
+#[tokio::test]
+async fn the_decisions_api_relays_only_to_the_hosts_a_route_names() {
+	let f = Fixture::new().await;
+	let mut claims = decision_claims(&f);
+	claims.model = "cloudflare/clef".into();
+	claims.hosts = vec!["cloudflare".into(), "deepinfra".into()];
+	let routed = |provider: Value| {
+		let mut body = decision();
+		body["model"] = "cloudflare/clef".into();
+		body["provider"] = provider;
+		body
+	};
+	let response = f
+		.request(
+			&claims,
+			"POST",
+			"/api/alpha/decisions",
+			routed(json!({"zdr":true,"only":["cloudflare","deepinfra"],"allow_fallbacks":true})),
+		)
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(json_body(response).await["answers"]["keep"]["noul"], 0.8);
+	assert_eq!(
+		f.provider.paths.lock().unwrap().last().map(String::as_str),
+		Some("/api/alpha/decisions")
+	);
+	let sent = f.provider.paths.lock().unwrap().len();
+	for provider in [
+		json!({"zdr":true}),
+		json!({"zdr":false,"only":["cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":[],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["Cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["cloudflare","cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["cloudflare"],"allow_fallbacks":true,"sort":"price"}),
+		json!({"zdr":true,"only":["cloudflare"]}),
+		// Only the signed hosts, in the Route's order, may serve the decision.
+		json!({"zdr":true,"only":["cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["deepinfra","cloudflare"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["cloudflare","deepinfra","novita"],"allow_fallbacks":true}),
+		json!({"zdr":true,"only":["novita","parasail"],"allow_fallbacks":true}),
+	] {
+		let response = f
+			.request(
+				&claims,
+				"POST",
+				"/api/alpha/decisions",
+				routed(provider.clone()),
+			)
+			.await;
+		assert_eq!(response.status(), 403, "{provider}");
+	}
+	// System One keeps its zero-retention-only routing.
+	let mut hosted = decision();
+	hosted["provider"] = json!({"zdr":true,"only":["typesafe"],"allow_fallbacks":true});
+	let response = f
+		.request(&decision_claims(&f), "POST", "/api/v1/systemone", hosted)
+		.await;
+	assert_eq!(response.status(), 403);
+	// A token signed for a Route's hosts cannot reach System One either.
+	let response = f
+		.request(&claims, "POST", "/api/v1/systemone", decision())
+		.await;
+	assert_eq!(response.status(), 403);
+	// Without signed hosts, no Decisions API body is relayed.
+	let response = f
+		.request(
+			&decision_claims(&f),
+			"POST",
+			"/api/alpha/decisions",
+			routed(json!({"zdr":true,"only":["cloudflare","deepinfra"],"allow_fallbacks":true})),
+		)
+		.await;
+	assert_eq!(response.status(), 403);
+	// Neither a refused body nor another alpha path reaches the provider.
+	let response = f
+		.request(
+			&claims,
+			"POST",
+			"/api/alpha/other",
+			routed(json!({"zdr":true})),
+		)
+		.await;
+	assert_ne!(response.status(), 200);
+	assert_eq!(f.provider.paths.lock().unwrap().len(), sent);
 }
 
 #[tokio::test]

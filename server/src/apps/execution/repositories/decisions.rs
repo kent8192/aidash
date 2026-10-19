@@ -44,19 +44,21 @@ const EVIDENCE: &str = "decision_evidence";
 const STATES: &str = "decision_states";
 const OUTCOMES: &str = "decision_outcomes";
 const PENDING: &str = "pending";
-const ATTEMPT_COLUMNS: [&str; 20] = [
+const ATTEMPT_COLUMNS: [&str; 22] = [
 	"id",
 	"decision_id",
 	"run_id",
 	"node",
 	"step",
 	"cycle",
+	"retry",
 	"input_revision",
 	"input_digest",
 	"worker",
 	"run_revision",
 	"decider",
 	"binding_restrictions",
+	"route",
 	"request_digest",
 	"state_digest",
 	"questions",
@@ -94,6 +96,8 @@ fn recovered_status(label: &str) -> Result<AttemptStatus> {
 fn stored_record(row: &native::Row) -> Result<(DispatchPermit, String, Option<Value>)> {
 	let questions: Vec<String> = serde_json::from_value(row.try_get("questions")?)?;
 	let cycle: i32 = row.try_get("cycle")?;
+	let retry: i32 = row.try_get("retry")?;
+	let route: i32 = row.try_get("route")?;
 	let record = DispatchRecord {
 		attempt: row.try_get("id")?,
 		decision: row.try_get("decision_id")?,
@@ -107,11 +111,14 @@ fn stored_record(row: &native::Row) -> Result<(DispatchPermit, String, Option<Va
 			input_digest: row.try_get("input_digest")?,
 			cycle: u32::try_from(cycle)
 				.map_err(|_| Error::Invalid("negative decision cycle".into()))?,
+			retry: u32::try_from(retry)
+				.map_err(|_| Error::Invalid("negative decision retry".into()))?,
 		},
 		decider: serde_json::from_value(row.try_get("decider")?)?,
 		binding_restrictions: serde_json::from_value::<Restrictions>(
 			row.try_get("binding_restrictions")?,
 		)?,
+		route: u32::try_from(route).map_err(|_| Error::Invalid("negative Decider Route".into()))?,
 		request_digest: row.try_get("request_digest")?,
 		state_digest: row.try_get("state_digest")?,
 		questions,
@@ -513,7 +520,7 @@ impl<'a> RunDecisionJournal<'a> {
 			&Query::insert()
 				.into_table(Alias::new(ATTEMPTS))
 				.columns(
-					ATTEMPT_COLUMNS[..19]
+					ATTEMPT_COLUMNS[..21]
 						.iter()
 						.copied()
 						.chain(["tenant"])
@@ -530,12 +537,22 @@ impl<'a> RunDecisionJournal<'a> {
 							.map_err(|_| Error::Invalid("decision cycle overflow".into()))?,
 					)
 					.into(),
+					Expr::value(
+						i32::try_from(record.boundary.retry)
+							.map_err(|_| Error::Invalid("decision retry overflow".into()))?,
+					)
+					.into(),
 					Expr::value(record.boundary.input_revision).into(),
 					Expr::value(record.boundary.input_digest.as_str()).into(),
 					Expr::value(record.boundary.worker).into(),
 					Expr::value(record.boundary.run_revision).into(),
 					Expr::value(decider).into(),
 					Expr::value(serde_json::to_value(&record.binding_restrictions)?).into(),
+					Expr::value(
+						i32::try_from(record.route)
+							.map_err(|_| Error::Invalid("Decider Route overflow".into()))?,
+					)
+					.into(),
 					Expr::value(record.request_digest.as_str()).into(),
 					Expr::value(record.state_digest.as_str()).into(),
 					Expr::value(serde_json::to_value(&record.questions)?).into(),
@@ -703,6 +720,7 @@ impl<'a> RunDecisionJournal<'a> {
 			&evidence.state_digest,
 			&evidence.sources,
 			evidence.fit.window,
+			evidence.route,
 		) != evidence.id
 		{
 			return Err(Error::Invalid(

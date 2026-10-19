@@ -109,18 +109,75 @@ impl DecisionGate<'_> {
 			));
 		}
 		input.decider.restrictions.validate(&config)?;
-		let mut restrictions = input.decider.restrictions.clone();
+		// Each Route is asked only when every earlier one is unavailable, never
+		// for a better answer (ADR 0066).
+		let mut outage = false;
+		for (index, route) in config.routes.iter().enumerate() {
+			let attempt = RouteAttempt {
+				index: u32::try_from(index)
+					.map_err(|_| Error::Invalid("too many Decider Routes".into()))?,
+				route,
+				config: &config,
+				before,
+				native,
+			};
+			match self
+				.compact_route(context, budget, pinned, input, &attempt)
+				.await
+			{
+				Ok(result) => return Ok(result),
+				Err(RouteFailure::Unavailable { transient, error }) => {
+					tracing::warn!(
+						route = index,
+						model = route.model.as_str(),
+						%error,
+						"Decider Route unavailable"
+					);
+					outage |= transient;
+				}
+				Err(RouteFailure::Final(error)) => return Err(error),
+			}
+		}
+		// A provider outage is retried by the step; a state no Route accepts is not.
+		Err(if outage {
+			Error::DeciderOutage
+		} else {
+			Error::Context(aidash_domain::context::recovery::Failure::DeciderUnavailable)
+		})
+	}
+
+	/// One decision on one Route. A failure that only makes this Route
+	/// unavailable lets the caller try the next one; every other failure is final.
+	async fn compact_route(
+		&self,
+		context: &mut Context,
+		budget: &RequestBudget<'_>,
+		pinned: &Value,
+		input: &Evaluation<'_>,
+		attempt: &RouteAttempt<'_>,
+	) -> std::result::Result<CompactionResult, RouteFailure> {
+		let RouteAttempt {
+			index,
+			route,
+			config,
+			before,
+			native,
+		} = *attempt;
+		let size = |context: &Context| budget.request(context, pinned).estimated_total_tokens();
+		// The Route's own threshold, under whatever the Binding already requires.
+		let route_restrictions = input.decider.restrictions.with_route(route);
+		let mut restrictions = route_restrictions.clone();
 		let mut state_expiry = None;
 		let built = build_compaction_state(
 			context,
 			input.boundary,
 			input.disclosure,
 			&input.decider.restrictions,
-			&config.state_budget,
+			&route.state_budget,
 			native,
 		)?;
 		let state_digest = digest(&built.state);
-		let id = dispatch::decision_id(input, &state_digest, budget.window);
+		let id = dispatch::decision_id(input, &state_digest, budget.window, index);
 		let recovered = self.journal.recover(id, input.boundary).await?;
 		let mut evidence = Evidence {
 			version: EVIDENCE_VERSION,
@@ -128,8 +185,11 @@ impl DecisionGate<'_> {
 			boundary: input.boundary.clone(),
 			hook: config.hook,
 			decider: input.decider.pin.clone(),
-			provider_contract: config.provider_contract.clone(),
-			model: config.model.clone(),
+			route: index,
+			route_models: config.models(),
+			route_thresholds: config.thresholds(),
+			provider_contract: route.provider_contract.clone(),
+			model: route.model.clone(),
 			configuration_parameters_digest: config.parameters_digest()?,
 			builder: config.builder.clone(),
 			option_source: config.option_source.clone(),
@@ -167,6 +227,7 @@ impl DecisionGate<'_> {
 			&state_digest,
 			&evidence.questions,
 			&recovered,
+			index,
 		)?;
 		for prior in &recovered {
 			evidence
@@ -185,7 +246,7 @@ impl DecisionGate<'_> {
 			)
 			.await
 			.and_then(|approval| {
-				restrictions = restrictions.intersect(&approval.restrictions, &config)?;
+				restrictions = restrictions.intersect(&approval.restrictions, config)?;
 				evidence.restrictions = restrictions.clone();
 				state_expiry = approval
 					.state_retention
@@ -195,7 +256,7 @@ impl DecisionGate<'_> {
 		if let Err(error) = initial_approval {
 			evidence.reason = dispatch::error_reason(&error, Reason::AuthorityFailure);
 			self.journal.commit(&evidence, None, None).await?;
-			return Err(error);
+			return Err(RouteFailure::Final(error));
 		}
 
 		if evidence.questions.is_empty() {
@@ -208,34 +269,59 @@ impl DecisionGate<'_> {
 		if restrictions.forbid_apply && config.mode == Mode::Enforce {
 			evidence.reason = Reason::Forbidden;
 			self.journal.commit(&evidence, None, None).await?;
-			return Err(Error::Forbidden);
+			return Err(RouteFailure::Final(Error::Forbidden));
 		}
-		let requests = match self.provider.plan(&built.state, &evidence.questions) {
-			Ok(requests) if validate_plan(&requests, &evidence.questions).is_ok() => requests,
-			_ => {
+		let requests = match built.fits.then(|| {
+			self.provider
+				.plan(index as usize, &built.state, &evidence.questions)
+		}) {
+			Some(Ok(requests)) if validate_plan(&requests, &evidence.questions).is_ok() => requests,
+			unplanned => {
+				// Nothing was sent: the state is larger than this Route accepts, or
+				// the questions do not fit its provider. A later Route may take it.
 				evidence.reason = Reason::ProviderFailure;
 				self.journal.commit(&evidence, None, None).await?;
-				return Err(Error::Invalid(
-					"decision cannot plan complete provider requests".into(),
-				));
+				return Err(RouteFailure::Unavailable {
+					transient: false,
+					error: match unplanned {
+						None => Error::Context(
+							aidash_domain::context::recovery::Failure::DeciderUnavailable,
+						),
+						Some(_) => {
+							Error::Invalid("decision cannot plan complete provider requests".into())
+						}
+					},
+				});
 			}
 		};
 		let records = requests
 			.iter()
-			.map(|request| dispatch::record(input, id, &state_digest, request))
+			.map(|request| dispatch::record(input, id, &state_digest, request, index))
 			.collect::<Result<Vec<_>>>()?;
 		if let Err(error) = dispatch::validate_recovered_plan(&records, &requests, &recovered) {
 			evidence.reason = Reason::JournalFailure;
 			self.journal.commit(&evidence, None, None).await?;
-			return Err(error);
+			return Err(RouteFailure::Final(error));
 		}
 		// Every fresh batch rechecks authority after reservation. Recovered attempts
 		// reuse only durable answers; uncertain charges never authorize another I/O.
 		let attempts = futures_util::future::join_all(requests.iter().zip(&records).map(
-			|(request, record)| self.dispatch_batch(request, record, &recovered, input, &config),
+			|(request, record)| {
+				self.dispatch_batch(
+					request,
+					record,
+					&recovered,
+					input,
+					config,
+					&route_restrictions,
+				)
+			},
 		))
 		.await;
 		let mut failure = None;
+		// Only when every failed batch was a fresh dispatch this Route could
+		// not answer may the next Route be asked.
+		let mut unavailable = true;
 		for attempt in attempts {
 			if let Some(record) = attempt.evidence {
 				if let Some(saved) = evidence.attempts.iter_mut().find(|a| a.id == record.id) {
@@ -246,19 +332,22 @@ impl DecisionGate<'_> {
 			}
 			evidence.answers.extend(attempt.answers);
 			if let Some(current) = attempt.restrictions {
-				restrictions = restrictions.intersect(&current, &config)?;
+				restrictions = restrictions.intersect(&current, config)?;
 			}
 			if let Some(expiry) = attempt.state_expiry {
 				state_expiry = dispatch::intersect_expiry(state_expiry, expiry);
 			}
-			if let Some((reason, error)) = attempt.failure
-				&& (failure.is_none() || reason == Reason::Forbidden)
-			{
-				failure = Some((reason, error));
+			if let Some((reason, error)) = attempt.failure {
+				unavailable &= attempt.next_route;
+				if failure.is_none() || reason == Reason::Forbidden {
+					failure = Some((reason, error));
+				}
 			}
 		}
 		evidence.restrictions = restrictions.clone();
 		if failure.is_none() && validate_answers(&evidence.questions, &evidence.answers).is_err() {
+			// The journal lost answers it charged: final, never another Route.
+			unavailable = false;
 			failure = Some((
 				Reason::IncompleteAnswers,
 				Error::Invalid("incomplete durable decision answers".into()),
@@ -267,7 +356,14 @@ impl DecisionGate<'_> {
 		if let Some((reason, error)) = failure {
 			evidence.reason = reason;
 			self.journal.commit(&evidence, None, None).await?;
-			return Err(error);
+			return Err(if unavailable {
+				RouteFailure::Unavailable {
+					transient: true,
+					error,
+				}
+			} else {
+				RouteFailure::Final(error)
+			});
 		}
 		// Current stricter rules may retain more events, but never change the pin or mode.
 		// Invalid final approvals must retain the same fenced evidence as revocation.
@@ -280,7 +376,7 @@ impl DecisionGate<'_> {
 			)
 			.await
 			.and_then(|current| {
-				let restrictions = restrictions.intersect(&current.restrictions, &config)?;
+				let restrictions = restrictions.intersect(&current.restrictions, config)?;
 				evidence.restrictions = restrictions.clone();
 				let expiry = current
 					.state_retention
@@ -292,7 +388,7 @@ impl DecisionGate<'_> {
 			Err(error) => {
 				evidence.reason = dispatch::error_reason(&error, Reason::AuthorityFailure);
 				self.journal.commit(&evidence, None, None).await?;
-				return Err(error);
+				return Err(RouteFailure::Final(error));
 			}
 		};
 		restrictions = current_restrictions;
@@ -411,7 +507,7 @@ impl DecisionGate<'_> {
 		if evidence.outcome == Outcome::Shadow {
 			return Ok(CompactionResult::Shadow(evidence.summary()));
 		}
-		Err(Error::Forbidden)
+		Err(RouteFailure::Final(Error::Forbidden))
 	}
 	/// Record a staged decision as rejected because no summary was adopted.
 	pub async fn reject_staged(&self, staged: &StagedDecision) -> Result<()> {
@@ -424,6 +520,37 @@ impl DecisionGate<'_> {
 		Ok(evidence.replay()?)
 	}
 }
+/// One Route of a decision and what every Route of it shares.
+#[derive(Clone, Copy)]
+struct RouteAttempt<'a> {
+	index: u32,
+	route: &'a DeciderRoute,
+	config: &'a DeciderConfig,
+	before: usize,
+	native: bool,
+}
+
+enum RouteFailure {
+	/// The Route could not answer: a provider failure or invalid answers
+	/// (`transient`), or a state or plan it does not accept. Its evidence is
+	/// already recorded.
+	Unavailable {
+		transient: bool,
+		error: Error,
+	},
+	Final(Error),
+}
+impl From<Error> for RouteFailure {
+	fn from(error: Error) -> Self {
+		Self::Final(error)
+	}
+}
+impl From<aidash_domain::Error> for RouteFailure {
+	fn from(error: aidash_domain::Error) -> Self {
+		Self::Final(error.into())
+	}
+}
+
 fn validate_plan(requests: &[PreparedRequest], questions: &Questions) -> Result<()> {
 	let mut ids = BTreeSet::new();
 	if requests.is_empty() {

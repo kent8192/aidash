@@ -22,8 +22,11 @@ transports can no longer name one (#296).
 
 Jev also runs through OpenRouter, at `POST {base}/systemone` with
 `provider.zdr = true` (ADR 0041). `decider` configurations name
-`provider_credential = "openrouter"` and an exact release such as
-`typesafe/jev-1.14`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
+`provider_credential = "openrouter"` and ordered `routes`: a System One Route
+with an exact release such as `typesafe/jev-1.14`, and optionally Decisions
+Routes, which reach another decision model such as `cloudflare/clef` at
+`POST {root}/alpha/decisions` (the base without `/v1`) with
+`provider: {"zdr": true, "only": [hosts], "allow_fallbacks": true}` (ADR 0066); `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
 `AIDASH_JEV_MODEL` are gone, and the `compactor` kind was removed (#108). Each request is a Decision Attempt of the Run whose
 context it reduces, and it uses the Provider Credential that the Tenant's
 OpenRouter binding names at the time of the call, not the Run's admitted
@@ -31,7 +34,11 @@ inference pin: Runs on a Plan Connection or a Keyless endpoint have no such
 pin. On Cloud its Capability Token names the Run as subject with the Decision
 Attempt as `call`, carries only the `decision` operation and no output bound,
 and the broker admits a body of exactly `model`, `state`, `questions` and
-`provider: {"zdr": true}`. Before reserving remote compaction allowances, the
+`provider: {"zdr": true}` on System One, or that `provider` with
+`allow_fallbacks: true` and an `only` list on the Decisions API. The token of a
+Decisions API attempt signs the Decider Route's hosts as `hosts`, and the broker
+relays only an `only` list equal to them, in order; a System One token signs
+no hosts. Before reserving remote compaction allowances, the
 caller checks that the binding is usable without minting a token or reading
 Key Material.
 
