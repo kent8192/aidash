@@ -1,6 +1,6 @@
 //! Row-level policies on Tenant-owned tables (#264), as the server's login
 //! sees them.
-use super::native_database::{DatabaseFixture, database, owner_pool};
+use super::native_database::{DatabaseFixture, admin_pool, database, owner_pool};
 use aidash_application::tenancy::{TEST_FIXTURE, TenancyScope};
 use aidash_server::apps::identity::models::TenantRetentionRule;
 use aidash_server::database::scope::{SCOPE_SETTING, TENANT_SETTING};
@@ -270,6 +270,108 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 	assert_eq!(all, ["acme", "beta"]);
 }
 
+/// A row of each Tenant in a table that gained its `tenant` column in #265. The
+/// superuser writes them with foreign keys off, so a row needs none of its
+/// parents; what the test asks is how the policy treats the row.
+#[rstest]
+#[case::runs(
+	"runs",
+	"id, tenant, task_id, workspace_id, home_node, agent_id, agent_version",
+	"gen_random_uuid(), $1, gen_random_uuid(), gen_random_uuid(), 'n', 'a', '1'"
+)]
+#[case::messages(
+	"messages",
+	"id, tenant, workspace_id, sender, content",
+	"gen_random_uuid(), $1, gen_random_uuid(), 'alice', 'text'"
+)]
+#[case::events(
+	"events",
+	"id, tenant, node_id, kind, data",
+	"gen_random_uuid(), $1, 'n', 'k', '{}'"
+)]
+#[case::memory_receipts(
+	"memory_receipts",
+	"operation_id, tenant, bank_id, digest, outcome, created_at",
+	"gen_random_uuid(), $1, gen_random_uuid(), 'd', '{}', now()"
+)]
+#[tokio::test]
+async fn tables_that_gained_a_tenant_hide_other_tenants_and_refuse_their_values(
+	#[future] database: DatabaseFixture,
+	#[case] table: &str,
+	#[case] columns: &str,
+	#[case] values: &str,
+) {
+	// Arrange
+	let f = database.await;
+	let pool = server_pool(&f).await;
+	let admin = admin_pool(pool.driver()).await;
+	let insert = format!("INSERT INTO {table} ({columns}) VALUES ({values})");
+	let mut seed = admin.begin().await.unwrap();
+	sqlx::query("SET LOCAL session_replication_role = replica")
+		.execute(&mut *seed)
+		.await
+		.unwrap();
+	for tenant in ["acme", "beta"] {
+		sqlx::query(&insert)
+			.bind(tenant)
+			.execute(&mut *seed)
+			.await
+			.unwrap();
+	}
+	seed.commit().await.unwrap();
+	let acme = TenancyScope::tenant("acme").unwrap();
+	let count = format!("SELECT count(*) FROM {table}");
+	let own = format!("SELECT count(*) FROM {table} WHERE tenant = 'acme'");
+	let foreign = format!("SELECT count(*) FROM {table} WHERE tenant = 'beta'");
+	// Act
+	let seen = pool
+		.scoped(&acme, async |tx| {
+			native::query_scalar::<i64>(&count)
+				.scalar_one(&mut **tx)
+				.await
+		})
+		.await
+		.unwrap();
+	let own_rows = pool
+		.scoped(&acme, async |tx| {
+			native::query_scalar::<i64>(&own)
+				.scalar_one(&mut **tx)
+				.await
+		})
+		.await
+		.unwrap();
+	let foreign_rows = pool
+		.scoped(&acme, async |tx| {
+			native::query_scalar::<i64>(&foreign)
+				.scalar_one(&mut **tx)
+				.await
+		})
+		.await
+		.unwrap();
+	let everything = pool
+		.scoped(&TEST_FIXTURE, async |tx| {
+			native::query_scalar::<i64>(&count)
+				.scalar_one(&mut **tx)
+				.await
+		})
+		.await
+		.unwrap();
+	let written = pool
+		.scoped(&acme, async |tx| {
+			native::query(&insert.replace("$1", "'beta'"))
+				.execute(&mut **tx)
+				.await?;
+			Ok(())
+		})
+		.await;
+	// Assert: a read in another Tenant's scope returns nothing, and a write of
+	// another Tenant's value is refused.
+	assert_eq!((seen, own_rows, foreign_rows, everything), (1, 1, 0, 2));
+	let error = written.unwrap_err().to_string();
+	assert!(error.contains(CHECK_FAILED), "{table}: {error}");
+	admin.close().await;
+}
+
 /// Every plan node of a JSON `EXPLAIN`, depth first.
 fn nodes(plan: &Value, found: &mut Vec<Value>) {
 	found.push(plan.clone());
@@ -296,6 +398,21 @@ fn nodes(plan: &Value, found: &mut Vec<Value>) {
 #[case::generation_request(
 	"SELECT * FROM generation_requests WHERE id = '00000000-0000-0000-0000-000000000001'",
 	"generation_requests_pkey"
+)]
+#[case::event_replay(
+	"SELECT * FROM events WHERE workspace_id = '00000000-0000-0000-0000-000000000001' \
+	 AND sequence > 0 ORDER BY sequence LIMIT 100",
+	"events_workspace"
+)]
+#[case::server_sent_event_read(
+	"SELECT * FROM events WHERE sequence > 0 ORDER BY sequence LIMIT 100",
+	"events_pkey"
+)]
+#[case::activation_claim(
+	"SELECT generation FROM run_activations WHERE state <> 'settled' \
+	 AND due_at <= CURRENT_TIMESTAMP ORDER BY due_at, generation LIMIT 64 \
+	 FOR UPDATE SKIP LOCKED",
+	"activation_due"
 )]
 #[tokio::test]
 async fn hot_reads_use_their_index_and_evaluate_the_policy_once(
