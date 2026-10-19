@@ -310,6 +310,7 @@ struct Repository {
 	outcomes: BTreeMap<(String, String), Outcome>,
 	journal: Arc<Mutex<Journal>>,
 	snapshot: Option<BindingSnapshot>,
+	plugin_tools: Option<aidash_domain::agent_plugin::PluginTools>,
 }
 #[fixture]
 fn repository() -> Repository {
@@ -326,6 +327,7 @@ fn repository() -> Repository {
 		outcomes: BTreeMap::new(),
 		journal: Arc::new(Mutex::new(Journal::default())),
 		snapshot: None,
+		plugin_tools: None,
 	}
 }
 impl Repository {
@@ -361,6 +363,9 @@ impl AgentToolRepository for Repository {
 	}
 	fn binding_snapshot(&self) -> Option<&BindingSnapshot> {
 		self.snapshot.as_ref()
+	}
+	fn plugin_tools(&self) -> Option<&aidash_domain::agent_plugin::PluginTools> {
+		self.plugin_tools.as_ref()
 	}
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>> {
 		self.record("lease");
@@ -1677,4 +1682,162 @@ async fn remote_human_request_authorizes_the_exact_home_run(
 		"require:aidash://home/runs/{}:human.request",
 		run.id
 	)));
+}
+
+mod agent_plugin_tools {
+	use super::*;
+	use crate::test_support::{listed_tool, plugin_reference, stored_plugin};
+	use aidash_domain::{
+		agent_plugin::{
+			AgentPluginRef, Listing, PluginSettings, PluginTools, ReadOnlyTool, ServerName,
+			ServerSettings, pin, schema_digest,
+		},
+		tool::{AgentPluginTool, ToolIdentity},
+	};
+	use std::collections::{BTreeMap, BTreeSet};
+
+	fn server() -> ServerName {
+		ServerName::try_from("docs".to_owned()).unwrap()
+	}
+
+	fn pinned(read_only: bool) -> (AgentPluginRef, PluginTools) {
+		let reference = plugin_reference(&stored_plugin("acme", &[]));
+		let listed = BTreeMap::from([(
+			(reference.name.clone(), server()),
+			Listing::Listed(vec![listed_tool("search")]),
+		)]);
+		let mut settings = PluginSettings::new();
+		if read_only {
+			settings.insert(
+				reference.name.clone(),
+				BTreeMap::from([(
+					server(),
+					ServerSettings {
+						read_only: vec![ReadOnlyTool {
+							name: "search".into(),
+							schema_digest: schema_digest(&listed_tool("search").input_schema),
+						}],
+						..Default::default()
+					},
+				)]),
+			);
+		}
+		let tools = pin(
+			std::slice::from_ref(&reference),
+			&settings,
+			&listed,
+			&BTreeSet::new(),
+		);
+		(reference, tools)
+	}
+
+	fn identity(reference: &AgentPluginRef) -> AgentPluginTool {
+		AgentPluginTool {
+			plugin: reference.name.clone(),
+			digest: reference.digest.clone(),
+			server: server(),
+			tool: "search".into(),
+		}
+	}
+
+	fn setup(
+		repository: &mut Repository,
+		agent: &mut AgentConfig,
+		read_only: bool,
+	) -> (AgentPluginRef, ToolCall) {
+		let (reference, tools) = pinned(read_only);
+		agent.agent_plugins = vec![reference.clone()];
+		repository.plugin_tools = Some(tools);
+		(reference, call("acme__docs__search", json!({"q": "rust"})))
+	}
+
+	#[rstest]
+	#[case::asking(false)]
+	#[case::read_only(true)]
+	#[tokio::test]
+	async fn a_pinned_tool_of_a_referenced_plugin_is_authorized_without_a_registry_entry(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+		#[case] read_only: bool,
+	) {
+		let (reference, input) = setup(&mut repository, &mut agent, read_only);
+		let contract = ToolContract::agent_plugin(identity(&reference), read_only);
+
+		super::super::authorize(&repository, &run, &agent, &input, &contract)
+			.await
+			.unwrap();
+
+		assert_eq!(repository.calls(), ["lease", "release"]);
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn the_contract_must_be_the_one_the_pin_declares(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (reference, input) = setup(&mut repository, &mut agent, false);
+		let lenient = ToolContract::agent_plugin(identity(&reference), true);
+
+		let result = super::super::authorize(&repository, &run, &agent, &input, &lenient).await;
+
+		assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_tool_the_run_did_not_pin_is_refused(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (reference, input) = setup(&mut repository, &mut agent, false);
+		let mut unpinned = identity(&reference);
+		unpinned.tool = "delete".into();
+		let contract = ToolContract::agent_plugin(unpinned, false);
+
+		let result = super::super::authorize(&repository, &run, &agent, &input, &contract).await;
+
+		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_run_that_pinned_nothing_authorizes_no_plugin_tool(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (reference, input) = setup(&mut repository, &mut agent, false);
+		repository.plugin_tools = None;
+		let contract = ToolContract::agent_plugin(identity(&reference), false);
+
+		let result = super::super::authorize(&repository, &run, &agent, &input, &contract).await;
+
+		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_plugin_copy_the_agent_does_not_reference_is_refused(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (reference, input) = setup(&mut repository, &mut agent, false);
+		let mut foreign = identity(&reference);
+		foreign.digest = format!("sha256:{}", "0".repeat(64));
+		let foreign = ToolContract::agent_plugin(foreign, false);
+		let own = ToolContract::agent_plugin(identity(&reference), false);
+
+		let digest = super::super::authorize(&repository, &run, &agent, &input, &foreign).await;
+		agent.agent_plugins.clear();
+		let removed = super::super::authorize(&repository, &run, &agent, &input, &own).await;
+
+		assert!(matches!(digest, Err(Error::Forbidden)), "{digest:?}");
+		assert!(matches!(removed, Err(Error::Forbidden)), "{removed:?}");
+		assert!(matches!(own.identity, ToolIdentity::AgentPlugin(_)));
+	}
 }
