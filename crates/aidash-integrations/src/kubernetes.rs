@@ -105,12 +105,18 @@ impl Kubernetes {
 	}
 
 	async fn observe_with_token(&self, token: &str) -> Result<DeploymentInventory> {
-		let (deployments, pods, events) = tokio::try_join!(
+		let (deployments, stateful_sets, pods, events) = tokio::try_join!(
 			self.list("apis/apps/v1", "deployments", token, true),
+			// Production runs its disk-holding workloads as StatefulSets (ADR 0067).
+			self.list("apis/apps/v1", "statefulsets", token, true),
 			self.list("api/v1", "pods", token, true),
 			self.list("api/v1", "events", token, false)
 		)?;
-		Ok(inventory(deployments, pods, events))
+		Ok(inventory(
+			[deployments, stateful_sets].concat(),
+			pods,
+			events,
+		))
 	}
 }
 

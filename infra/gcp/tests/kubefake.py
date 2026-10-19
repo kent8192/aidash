@@ -49,6 +49,8 @@ class FakeCluster:
         self.now = now
         self.project = PROJECT
         self.pod_cidr = "10.44.0.0/14"
+        # Production's regional disks replicate to these zones (ADR 0067).
+        self.zones = ["us-central1-a", "us-central1-b"]
         self.objects = {}
         self.releases = {}
         self.disks = {"aidash-preview-tls"}
@@ -134,7 +136,7 @@ class FakeCluster:
                 return None
             snapshot = self.results.pop(namespace, None) or self.snapshot(namespace)
             return {"data": {"snapshot.json": json.dumps(snapshot)}}
-        if key[0] == "deployment" and key in self.objects:
+        if key[0] in {"deployment", "statefulset"} and key in self.objects:
             obj = deepcopy(self.objects[key])
             obj["status"] = {"readyReplicas": obj["spec"]["replicas"]}
             return obj
@@ -266,12 +268,14 @@ class FakeCluster:
     def upgrade(self, namespace, release, chart, values):
         self.record("helm", identity(namespace), release)
         self.releases[(namespace, release)] = deepcopy(values)
+        # Like the charts: disk-holding workloads are StatefulSets when asked.
+        kind = values.get("workloadKind", "Deployment").lower()
         if release == "env":
             for name in ("env-environment-postgres", "env-environment-nats"):
                 if self.key("statefulset", name, namespace) not in self.objects:
                     self.dynamic_claim(namespace, "data-" + name + "-0")
                 self.workload("statefulset", namespace, name, 1)
-            self.workload("deployment", namespace, "env-environment-edge", 1)
+            self.workload(kind, namespace, "env-environment-edge", 1)
             if self.key("cronjob", "env-environment-activity", namespace) not in self.objects:
                 self.put({"kind": "CronJob", "metadata": {"name": "env-environment-activity", "namespace": namespace}, "spec": {}})
                 self.put({"kind": "ConfigMap", "metadata": {"name": "env-environment-activity", "namespace": namespace}})
@@ -289,10 +293,10 @@ class FakeCluster:
             }]}}
             for role in ("server", "worker"):
                 self.workload(
-                    "deployment", namespace, "app-aidash-" + role, values[role]["replicas"],
+                    kind, namespace, "app-aidash-" + role, values[role]["replicas"],
                     metadata={"annotations": annotations}, spec={"template": template},
                 )
-            self.workload("deployment", namespace, "app-execution-runner", 1)
+            self.workload(kind, namespace, "app-execution-runner", 1)
             execution = values["execution"]
             for name in (execution["sandboxNamespace"], execution["trustedNamespace"], execution["installerNamespace"]):
                 self.put({"kind": "Namespace", "metadata": {"name": name}})

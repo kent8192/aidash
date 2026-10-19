@@ -308,12 +308,12 @@ data:
     {{- toJson (mergeOverwrite (deepCopy $e.limits) (dict "runner" $runner)) | nindent 4 }}
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: {{ include "aidash.workloadKind" . }}
 metadata:
   name: {{ $name }}-runner
 spec:
   replicas: 1
-  strategy: { type: Recreate }
+  {{- include "aidash.workloadRollout" (dict "kind" (include "aidash.workloadKind" .) "name" (printf "%s-runner" $name) "deployment" "strategy: { type: Recreate }") | nindent 2 }}
   selector: { matchLabels: { aidash.run/runner: {{ .Release.Name | quote }} } }
   template:
     metadata:
