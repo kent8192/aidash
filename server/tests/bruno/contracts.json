@@ -14771,6 +14771,13 @@
             "agent": {
               "$ref": "#/components/schemas/QualifiedRef"
             },
+            "agent_plugins": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedAgentPlugin"
+              },
+              "description": "The Skills of each Agent Plugin copy the Agent definition takes in, in its order."
+            },
             "bindings": {
               "type": "array",
               "items": {
@@ -14799,6 +14806,65 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "PinnedAgentPlugin": {
+          "type": "object",
+          "description": "The Skills of one Agent Plugin copy, pinned into a Run's Binding snapshot.",
+          "required": ["digest", "skills"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillAttachment"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillAttachment": {
+          "type": "object",
+          "required": ["skill_id", "origin", "digest", "instructions", "files"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillFile"
+              }
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "skill_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillFile": {
+          "type": "object",
+          "required": ["path", "content"],
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "encoding": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
             }
           },
           "additionalProperties": false
@@ -18519,6 +18585,339 @@
             }
           },
           "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent-plugins/import",
+    "name": "agent-plugin-import",
+    "source": "server/src/apps/registry/views/management.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/AgentPluginImportResult"
+      },
+      "definitions": {
+        "AgentPluginImportResult": {
+          "type": "object",
+          "required": ["plugins", "selected"],
+          "properties": {
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The plugin roots to choose from when the repository holds several, or\nthe imported root."
+            },
+            "selected": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ImportedAgentPlugin"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The stored copy, absent while the caller still has to choose a root."
+            }
+          }
+        },
+        "ImportedAgentPlugin": {
+          "type": "object",
+          "required": ["reference", "denied"],
+          "properties": {
+            "denied": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths the Agent Plugins specification forbids access to, left out of the copy."
+            },
+            "reference": {
+              "$ref": "#/components/schemas/AgentPluginRef",
+              "description": "What the Agent definition records in `agent_plugins`."
+            }
+          }
+        },
+        "AgentPluginRef": {
+          "type": "object",
+          "description": "What an Agent definition records about one Agent Plugin it takes in (ADR 0072).",
+          "required": [
+            "digest",
+            "name",
+            "source",
+            "skills",
+            "servers",
+            "findings"
+          ],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "description": "The [`LoadedPlugin::digest`] of the copy."
+            },
+            "findings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Finding"
+              },
+              "description": "Everything ignored or skipped, exactly as the loaded plugin has it."
+            },
+            "license": {
+              "type": ["string", "null"]
+            },
+            "name": {
+              "$ref": "#/components/schemas/PluginName"
+            },
+            "servers": {
+              "type": "object",
+              "description": "The accepted servers, exactly as the loaded plugin has them.",
+              "additionalProperties": {
+                "$ref": "#/components/schemas/McpServer"
+              }
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The accepted Skills, in directory order."
+            },
+            "source": {
+              "type": "string",
+              "description": "The commit-pinned GitHub URL of the plugin root."
+            },
+            "version": {
+              "type": ["string", "null"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "Finding": {
+          "type": "object",
+          "description": "A part of a plugin that was ignored or skipped, reported next to the accepted ones.",
+          "required": ["component", "outcome", "reason", "detail"],
+          "properties": {
+            "component": {
+              "$ref": "#/components/schemas/Component"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/Outcome"
+            },
+            "reason": {
+              "$ref": "#/components/schemas/Reason"
+            }
+          }
+        },
+        "Component": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["manifest", "mcp"]
+            },
+            {
+              "type": "object",
+              "required": ["skill"],
+              "properties": {
+                "skill": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["server"],
+              "properties": {
+                "server": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "Outcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The plugin loads; the offending part has no effect.",
+              "enum": ["ignored"]
+            },
+            {
+              "type": "string",
+              "description": "The component is left out; the rest of the plugin loads.",
+              "enum": ["skipped"]
+            }
+          ]
+        },
+        "Reason": {
+          "type": "string",
+          "enum": [
+            "unknown_field",
+            "extensions_not_object",
+            "mcp_invalid",
+            "mcp_version_mismatch",
+            "server_name",
+            "server_invalid",
+            "unsupported_transport",
+            "unsupported_command",
+            "missing_command",
+            "path_outside_root",
+            "skill_invalid",
+            "skill_limit"
+          ]
+        },
+        "PluginName": {
+          "type": "string",
+          "description": "A plugin name: 1-64 characters of `a-z0-9.-`, starting and ending alphanumeric, with neither\n`--` nor `..`."
+        },
+        "McpServer": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["stdio"],
+              "properties": {
+                "stdio": {
+                  "$ref": "#/components/schemas/StdioServer"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["remote"],
+              "properties": {
+                "remote": {
+                  "$ref": "#/components/schemas/RemoteServer"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "`sse` is never represented: a valid legacy entry is reported as an unsupported transport."
+        },
+        "StdioServer": {
+          "type": "object",
+          "required": ["command", "args", "env", "cwd"],
+          "properties": {
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "command": {
+              "$ref": "#/components/schemas/Command"
+            },
+            "cwd": {
+              "$ref": "#/components/schemas/Cwd"
+            },
+            "env": {
+              "type": "object",
+              "default": {},
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "Command": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["bare"],
+              "properties": {
+                "bare": {
+                  "$ref": "#/components/schemas/Executable"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "The normalized path in the plugin tree, without the leading `./`.",
+              "required": ["plugin_relative"],
+              "properties": {
+                "plugin_relative": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "Executable": {
+          "type": "string",
+          "description": "The bare commands the runner image of ADR 0071 provides.",
+          "enum": ["node", "npm", "npx", "python3", "uv", "uvx"]
+        },
+        "Cwd": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["plugin_root"]
+            },
+            {
+              "type": "object",
+              "required": ["plugin"],
+              "properties": {
+                "plugin": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "A path inside `${PLUGIN_DATA}`; empty names the data directory itself.",
+              "required": ["data"],
+              "properties": {
+                "data": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Working directories hold normalized paths relative to their base."
+        },
+        "RemoteServer": {
+          "type": "object",
+          "description": "Aidash's public-address rule (#376) is applied later, in the application layer.",
+          "required": ["url", "headers"],
+          "properties": {
+            "headers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Header"
+              },
+              "default": []
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        },
+        "Header": {
+          "type": "object",
+          "description": "The name keeps the casing the plugin wrote.",
+          "required": ["name", "value"],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
         }
       }
     }
@@ -25137,6 +25536,13 @@
             "agent": {
               "$ref": "#/components/schemas/QualifiedRef"
             },
+            "agent_plugins": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedAgentPlugin"
+              },
+              "description": "The Skills of each Agent Plugin copy the Agent definition takes in, in its order."
+            },
             "bindings": {
               "type": "array",
               "items": {
@@ -25165,6 +25571,65 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "PinnedAgentPlugin": {
+          "type": "object",
+          "description": "The Skills of one Agent Plugin copy, pinned into a Run's Binding snapshot.",
+          "required": ["digest", "skills"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillAttachment"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillAttachment": {
+          "type": "object",
+          "required": ["skill_id", "origin", "digest", "instructions", "files"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillFile"
+              }
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "skill_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillFile": {
+          "type": "object",
+          "required": ["path", "content"],
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "encoding": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
             }
           },
           "additionalProperties": false
@@ -27339,6 +27804,13 @@
             "agent": {
               "$ref": "#/components/schemas/QualifiedRef"
             },
+            "agent_plugins": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedAgentPlugin"
+              },
+              "description": "The Skills of each Agent Plugin copy the Agent definition takes in, in its order."
+            },
             "bindings": {
               "type": "array",
               "items": {
@@ -27367,6 +27839,65 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "PinnedAgentPlugin": {
+          "type": "object",
+          "description": "The Skills of one Agent Plugin copy, pinned into a Run's Binding snapshot.",
+          "required": ["digest", "skills"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillAttachment"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillAttachment": {
+          "type": "object",
+          "required": ["skill_id", "origin", "digest", "instructions", "files"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillFile"
+              }
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "skill_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillFile": {
+          "type": "object",
+          "required": ["path", "content"],
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "encoding": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
             }
           },
           "additionalProperties": false
@@ -29376,6 +29907,13 @@
             "agent": {
               "$ref": "#/components/schemas/QualifiedRef"
             },
+            "agent_plugins": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedAgentPlugin"
+              },
+              "description": "The Skills of each Agent Plugin copy the Agent definition takes in, in its order."
+            },
             "bindings": {
               "type": "array",
               "items": {
@@ -29404,6 +29942,65 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "PinnedAgentPlugin": {
+          "type": "object",
+          "description": "The Skills of one Agent Plugin copy, pinned into a Run's Binding snapshot.",
+          "required": ["digest", "skills"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillAttachment"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillAttachment": {
+          "type": "object",
+          "required": ["skill_id", "origin", "digest", "instructions", "files"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SkillFile"
+              }
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "skill_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SkillFile": {
+          "type": "object",
+          "required": ["path", "content"],
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "encoding": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
             }
           },
           "additionalProperties": false
