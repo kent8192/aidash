@@ -252,7 +252,7 @@ fn authorization_runtime(
 		f.store.provider_credentials = Some(Arc::new(Service {
 			repository: Arc::new(NativeRepository {
 				pool: f.store.control_pool.clone(),
-				node: f.store.node_id.clone(),
+				node: f.store.deployment.to_string(),
 			}),
 			store: parts.store.clone(),
 			validator: Arc::new(parts.validator.clone()),

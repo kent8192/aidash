@@ -447,7 +447,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 	let mut command = recovery_deployment::deployment_command(&database.url, deployment.path());
 	command
 		.kill_on_drop(true)
-		.env("AIDASH_NODE_ID", &store.node_id)
+		.env("AIDASH_DEPLOYMENT_ID", store.deployment.as_str())
 		.env("AIDASH_MEMORY_RECOVERY_DIR", directory)
 		.args(["memory-recovery", "restore", "--directory"])
 		.arg(directory)
@@ -995,9 +995,12 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		memory::operate(&store, &Actor::DeploymentAdministrator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
-	let mut reopened = Store::from_pool(store.pool.fixture_driver().clone(), store.node_id.clone())
-		.await
-		.unwrap();
+	let mut reopened = Store::from_pool(
+		store.pool.fixture_driver().clone(),
+		store.deployment.clone(),
+	)
+	.await
+	.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.
 	reopened.keyless = store.keyless.clone();
 	let reopened = recovery::initialize_if_missing(&reopened, directory.to_owned())
@@ -1062,7 +1065,7 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = Bank {
-		home: store.node_id.clone(),
+		home: store.deployment.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,
@@ -1669,7 +1672,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://vectors".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://vectors").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -2204,7 +2207,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 		let shared = Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -2248,7 +2251,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(&store.node_id, &agent_ref.id, &agent_ref.version);
+	let owner = qualified_agent(store.deployment.as_str(), &agent_ref.id, &agent_ref.version);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -2409,7 +2412,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
-			node_id: store.node_id.clone(),
+			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:1".into(),
 			database_url: database.url.clone(),
 			nats_url: "nats://127.0.0.1:1".into(),
@@ -3085,7 +3088,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0");
 	authorization.replace("acme",1,serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"learning","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(),"deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
@@ -3171,7 +3174,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value(id))
 					.expr(Expr::value(task.id))
 					.expr(Expr::value(workspace))
-					.expr(Expr::value(&store.node_id))
+					.expr(Expr::value(store.deployment.as_str()))
 					.expr(Expr::value("a"))
 					.expr(Expr::value("1.0.0"))
 					.expr(Expr::value("COMPLETED"))
@@ -3322,7 +3325,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		.root_subject("alice")
 		.subject_chain(vec![
 			"alice".into(),
-			aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0"),
+			aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0"),
 		])
 		.finish();
 	// The authorization row holds a row-level policy; seed it in a scope.

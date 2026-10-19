@@ -14,7 +14,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 	let mut app = native_server.await;
 	let store = aidash_server::store::Store::from_pool(
 		app.database.connection.clone().into_postgres().unwrap(),
-		"aidash://manage-fixture".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://manage-fixture").unwrap(),
 	)
 	.await
 	.unwrap();

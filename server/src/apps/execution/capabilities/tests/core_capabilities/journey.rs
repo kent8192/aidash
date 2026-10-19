@@ -172,13 +172,13 @@ async fn journey_fixture(
 	} = peers;
 	let server = _provider.await;
 	let receiver = admit(&peer).await;
-	*recipient.lock().unwrap() = json!({"node_id":peer.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
+	*recipient.lock().unwrap() = json!({"node_id":peer.f.config.deployment,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
 	let (status, result) = request(
 		&c.app,
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.2.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.2.0"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
@@ -464,7 +464,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		let mut agent = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.node_id,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.deployment,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
 		agent.config["max_steps"] = json!(200);
 		for entry in [tool, agent] {
 			let (status, result) = request(
@@ -487,7 +487,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 			assert_eq!(status, 200, "{result}");
 		}
 		c.policy["subjects"]
-			[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
+			[aidash_server::domain::qualified_agent(c.f.config.deployment.as_str(), "research", "1.2.0")] =
 			json!({"kind":"agent"});
 		crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 		c

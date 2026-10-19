@@ -155,7 +155,7 @@ impl ParticipantScope for Scope {
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
 			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			&self.runtime.store.node_id,
+			self.runtime.store.deployment.as_str(),
 			manifest,
 		)
 		.await?;
@@ -176,7 +176,7 @@ impl ParticipantScope for Scope {
 		let mut scope = crate::bootstrap::transaction_mutation_scope(tx);
 		let applied = aidash_application::transactions::mutation::apply(
 			&mut scope,
-			&self.runtime.store.node_id,
+			self.runtime.store.deployment.as_str(),
 			manifest,
 		)
 		.await;
@@ -226,7 +226,7 @@ pub(crate) struct Repository {
 #[async_trait]
 impl ParticipantRepository for Repository {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
 		let tx = AtomicParticipant::begin(&self.runtime.store.control_pool).await?;

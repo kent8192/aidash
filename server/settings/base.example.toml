@@ -47,13 +47,12 @@ managers = []
 url = "/static/"
 root = "staticfiles"
 
-# The Offering this Deployment runs. The Community build runs only
-# "self-hosted", the default; the Enterprise build runs "cloud" or "dedicated".
+# The Deployment: its Offering, identity and runtime. The Community build
+# runs only the "self-hosted" Offering, the default; the Enterprise build runs
+# "cloud" or "dedicated".
 [deployment]
 offering = "self-hosted"
-
-[node]
-node_id = "aidash://local"
+id = "aidash://local"
 endpoint = "http://127.0.0.1:8000"
 # api_token = "set-a-random-deployment-administrator-token-at-least-16-characters"
 nats_url = "nats://127.0.0.1:4222"

@@ -74,7 +74,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		b,
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":a.runtime.config.node_id,"source_tenant":"acme","source_subject":"alice",
+			"source_node":a.runtime.config.deployment,"source_tenant":"acme","source_subject":"alice",
 			"credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true,
 		}),
 	)
@@ -85,7 +85,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	// Identical local IDs must still be authorized within the remote namespace.
 	policy["policies"].as_array_mut().unwrap().push(json!({
         "id":"hide-remote","effect":"deny","subjects":{"any":true},"actions":["registry.read"],
-        "resources":{"kinds":["agent"],"ids":[qualified_agent(&b.runtime.config.node_id,"research","1.0.0")]},
+        "resources":{"kinds":["agent"],"ids":[qualified_agent(b.runtime.config.deployment.as_str(),"research","1.0.0")]},
     }));
 	deployment_administrator(
 		a,
@@ -95,7 +95,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	.await;
 	let result = discover(subject, json!({})).await;
 	assert_eq!(result["agents"].as_array().unwrap().len(), 1);
-	assert_eq!(result["agents"][0]["node_id"], a.runtime.config.node_id);
+	assert_eq!(result["agents"][0]["node_id"], a.runtime.config.deployment);
 	let mut observed = Vec::new();
 	while let Ok(request) = pair.observed.try_recv() {
 		observed.push(request);
@@ -107,7 +107,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 			request.authorization,
 			format!("Bearer {}", pair.source.subject_token)
 		);
-		assert_eq!(request.source, a.runtime.config.node_id);
+		assert_eq!(request.source, a.runtime.config.deployment);
 		assert_eq!(request.protocol, "0.2");
 		let mut keys: Vec<_> = request
 			.body
@@ -276,7 +276,7 @@ async fn source_filters_search_results_and_rejects_invalid_peer_metadata(
 		assert_eq!(result["agents"].as_array().unwrap().len(), 1);
 		assert_eq!(
 			result["agents"][0]["node_id"],
-			fixture.execution.app.runtime.config.node_id
+			fixture.execution.app.runtime.config.deployment
 		);
 		assert_eq!(
 			result["errors"][0]["error"],

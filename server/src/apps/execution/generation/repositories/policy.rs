@@ -107,7 +107,7 @@ impl GenerationPolicies for NativePolicies {
 		Ok(Box::new(Session {
 			configured: self.store.provider_credentials.is_some(),
 			mode,
-			node: self.store.node_id.clone(),
+			node: self.store.deployment.to_string(),
 		}))
 	}
 }

@@ -119,7 +119,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 		.bank
 	} else {
 		Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,

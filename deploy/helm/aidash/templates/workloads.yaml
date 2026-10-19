@@ -2,12 +2,12 @@
 {{- $backend := printf "%s-backend" .Release.Name -}}
 {{- $frontend := printf "%s-frontend" .Release.Name -}}
 {{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-backend:8080" (printf "http://%s:8080" $backend) -}}
-{{- $id := required "node.id must be a stable aidash:// identity" .Values.node.id -}}
+{{- $id := required "deployment.id must be a stable aidash:// identity" .Values.deployment.id -}}
 {{- if gt (len .Release.Name) 49 -}}
 {{- fail "release name must be at most 49 characters" -}}
 {{- end -}}
 {{- if not (regexMatch "^aidash://[A-Za-z0-9-]{1,100}$" $id) -}}
-{{- fail "node.id is not a valid Aidash node identity" -}}
+{{- fail "deployment.id is not a valid Deployment id" -}}
 {{- end -}}
 {{- if lt (int .Values.terminationGracePeriodSeconds) 25 -}}
 {{- fail "terminationGracePeriodSeconds must allow the 20-second application drain" -}}
@@ -135,7 +135,7 @@ spec:
           envFrom:
             - secretRef: { name: {{ $secret | quote }} }
           env:
-            - { name: AIDASH_NODE_ID, value: {{ $id | quote }} }
+            - { name: AIDASH_DEPLOYMENT_ID, value: {{ $id | quote }} }
             {{- if $.Values.memoryRecovery.existingClaim }}
             - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $.Values.memoryRecovery.directory | quote }} }
             {{- end }}
@@ -168,7 +168,7 @@ spec:
             - { name: AIDASH_GCIP_SETTINGS, value: /etc/aidash/gcip/settings.json }
             {{- end }}
             - name: AIDASH_ENDPOINT
-              value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}
+              value: {{ $.Values.deployment.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}
             - { name: AIDASH_LISTEN, value: "0.0.0.0:8080" }
             - { name: AIDASH_PROBE_LISTEN, value: "0.0.0.0:8081" }
             {{- if and $.Values.observability.enabled (eq $role "server") }}

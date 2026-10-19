@@ -347,7 +347,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 	.unwrap();
 	let mut reopened = aidash_server::store::Store::from_pool(
 		p.b.store.pool.fixture_driver().clone(),
-		p.b.store.node_id.clone(),
+		p.b.store.deployment.clone(),
 	)
 	.await
 	.unwrap();
@@ -404,7 +404,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 	assert_eq!(banks.len(), 2, "{receipt}");
 	let ids = ["private", "shared"];
 	for (bank, key) in banks.iter().zip(ids) {
-		assert_eq!(bank["bank"]["home"], p.a.config.node_id);
+		assert_eq!(bank["bank"]["home"], p.a.config.deployment);
 		assert_eq!(bank["recall"]["status"], "ready", "{receipt}");
 		let units = bank["recall"]["units"].as_array().unwrap();
 		assert_eq!(units.len(), 1);
@@ -578,7 +578,7 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 		assert!(
 			!usage.is_empty(),
 			"native recall must debit {}",
-			node.config.node_id
+			node.config.deployment
 		);
 		assert!(
 			usage
@@ -713,10 +713,10 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 			))
 			.timeout(deadline)
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &p.b.config.node_id)
+			.header("x-aidash-node", p.b.config.deployment.as_str())
 			.header("x-aidash-protocol", "0.2")
 			.json(&json!({"tenant":"acme","subject":"alice","reference":{
-				"kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
+				"kind":"grant","node_id":p.a.config.deployment,"execution_node":p.b.config.deployment,
 				"grant_id":p.grant,"admission_id":p.admission,
 			}}))
 			.send()
@@ -822,10 +822,10 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 			))
 			.timeout(deadline)
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &p.b.config.node_id)
+			.header("x-aidash-node", p.b.config.deployment.as_str())
 			.header("x-aidash-protocol", "0.2")
 			.json(&json!({"tenant":"acme","subject":"alice","reference":{
-            "kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
+            "kind":"grant","node_id":p.a.config.deployment,"execution_node":p.b.config.deployment,
             "grant_id":p.grant,"admission_id":p.admission}}))
 	};
 	let body: Value = verify().send().await.unwrap().json().await.unwrap();

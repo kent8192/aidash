@@ -207,7 +207,7 @@ impl DatabaseFixture {
 		wait_for_pgroonga(&pool, Duration::from_secs(30))
 			.await
 			.unwrap_or_else(|error| panic!("{error}"));
-		let mut restarted = aidash_server::store::Store::from_pool(pool, store.node_id.clone())
+		let mut restarted = aidash_server::store::Store::from_pool(pool, store.deployment.clone())
 			.await
 			.unwrap();
 		// Deployment configuration survives a crash; only process state is lost.

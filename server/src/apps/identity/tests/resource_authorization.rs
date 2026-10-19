@@ -146,7 +146,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
 			"resource-test-artifact",
 			&ArtifactInput {
 				kind: "text".into(),
@@ -381,7 +381,7 @@ async fn retained_snapshot_revocation(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
 			"source-revoke",
 			&ArtifactInput {
 				kind: "text".into(),
@@ -401,7 +401,7 @@ async fn retained_snapshot_revocation(
 			.publish_artifact(
 				&TEST_FIXTURE,
 				task,
-				&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+				&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
 				&format!("unrelated-source-{index}"),
 				&ArtifactInput {
 					kind: "text".into(),
@@ -1077,7 +1077,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
 			"hidden-provider-source",
 			&ArtifactInput {
 				kind: "text".into(),

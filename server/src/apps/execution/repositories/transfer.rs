@@ -231,7 +231,7 @@ impl TransferScope for Scope<'_> {
 		Ok(limits(self.store.ok_or_else(missing)?))
 	}
 	fn node_id(&self) -> &str {
-		self.store.map_or("", |s| s.node_id.as_str())
+		self.store.map_or("", |s| s.deployment.as_str())
 	}
 	fn principal(&self) -> &str {
 		&self.authority.get().identity.subject

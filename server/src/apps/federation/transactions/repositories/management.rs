@@ -73,7 +73,7 @@ impl ManagementRepository for Repository {
 		if manifest
 			.participants
 			.iter()
-			.any(|participant| participant.node_id != self.runtime.config.node_id)
+			.any(|participant| participant.node_id != self.runtime.config.deployment)
 			&& AuthorityRepository::origin(&repository, manifest.id)
 				.await?
 				.is_none()

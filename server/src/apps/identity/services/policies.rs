@@ -121,7 +121,7 @@ impl PolicyAdministration {
 		let result = aidash_application::authorization::catalog::approvals::approve(
 			&mut TenantCatalog {
 				access: &mut access,
-				node: &f.config.node_id,
+				node: f.config.deployment.as_str(),
 			},
 			&approvals,
 		)

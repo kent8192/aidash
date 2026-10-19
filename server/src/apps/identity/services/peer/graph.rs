@@ -192,7 +192,7 @@ async fn project_page(f: &Federation, node: &str, input: GraphRequest) -> Result
 			}
 			let mut access = super::access(f, node, tenant, subject).await?;
 			let result = async {
-				let resource = access.resource("node", &f.config.node_id, json!({}));
+				let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
 				access.require(&resource, "federation.graph.read").await?;
 				let mapping_revision =
 					crate::apps::identity::repositories::graph::persistence::mapping_revision(

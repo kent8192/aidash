@@ -87,7 +87,7 @@ impl HomeGenerationRepository for NativeHome {
 		}
 	}
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()

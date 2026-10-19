@@ -140,7 +140,7 @@ impl DispatchPreparation for Preparation {
 #[async_trait]
 impl GenerationDispatchRepository for NativeDispatch {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin_preparation(&self) -> Result<Box<dyn DispatchPreparation>> {
 		Ok(Box::new(Preparation {

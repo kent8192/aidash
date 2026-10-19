@@ -82,7 +82,7 @@ pub(super) async fn install(
 		&crate::bootstrap::registry_validation_for(store),
 		package,
 		&install_command(input),
-		&store.node_id,
+		store.deployment.as_str(),
 	)
 	.await
 	.map_err(Into::into)
@@ -98,7 +98,7 @@ pub(super) async fn configure(
 		&crate::bootstrap::registry_validation_for(store),
 		id,
 		&configure_command(input),
-		&store.node_id,
+		store.deployment.as_str(),
 	)
 	.await
 	.map_err(Into::into)

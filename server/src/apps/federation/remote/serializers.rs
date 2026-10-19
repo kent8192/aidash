@@ -7,5 +7,3 @@ pub mod management;
 pub mod actions;
 
 pub(crate) mod openapi;
-
-pub mod settings;

@@ -249,7 +249,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		json!({"id":"missing","version":"latest"}),
 		json!({"id":"missing","version":"1.0.0"}),
 	] {
-		entry.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":agent}});
+		entry.config = json!({"registry_node":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.deployment,"agent":agent}});
 		assert_ne!(
 			request(&app, &token, "POST", "/api/registry", json!(entry))
 				.await
@@ -564,7 +564,7 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 			} else {
 				("tool", vec!["large-schema"])
 			};
-			agent.config["bindings"] = json!(ids.into_iter().map(|id| json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
+			agent.config["bindings"] = json!(ids.into_iter().map(|id| json!({"kind":kind,"target":{"registry_node":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
 		}
 		assert!(
 			f.registry
@@ -788,7 +788,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 		.await
 		.unwrap()
 		.workspace_id;
-	let mut policy = common::policy(&f.config.node_id);
+	let mut policy = common::policy(f.config.deployment.as_str());
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),

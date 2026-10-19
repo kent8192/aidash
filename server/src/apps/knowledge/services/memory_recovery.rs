@@ -50,11 +50,11 @@ pub struct Report {
 /// Attach an existing external ledger, including its persistent closed state.
 /// A missing/corrupt ledger is never initialized implicitly.
 pub fn attach(store: Store, directory: PathBuf) -> Result<Store> {
-	let ledger = Arc::new(FileRecovery::new(directory, store.node_id.clone())?);
+	let ledger = Arc::new(FileRecovery::new(directory, store.deployment.to_string())?);
 	Ok(store.with_memory_recovery(Some(ledger)))
 }
 fn external(store: &Store, directory: &Path) -> Result<FileRecovery> {
-	FileRecovery::new(directory.to_owned(), store.node_id.clone())
+	FileRecovery::new(directory.to_owned(), store.deployment.to_string())
 }
 fn active_external(store: &Store, directory: &Path) -> Result<FileRecovery> {
 	let recovery = external(store, directory)?;
@@ -82,7 +82,7 @@ pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let result = async {
 		for table in ["memory_banks","memory_participants"] {
 			if native::query(&Query::select().column(Alias::new("id")).from(Alias::new(table))
-				.and_where(Expr::col("home").eq(store.node_id.as_str())).limit(1).to_string(PostgresQueryBuilder))
+				.and_where(Expr::col("home").eq(store.deployment.as_str())).limit(1).to_string(PostgresQueryBuilder))
 				.fetch_optional(&mut **lease.tx()).await?.is_some() {
 				return Err(Error::Conflict("a new recovery epoch requires empty new-format memory; restore the existing external ledger".into()));
 			}
@@ -175,7 +175,7 @@ pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathB
 		let now = Utc::now();
 		let archive = Archive {
 			format: 1,
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			epoch: ledger.epoch,
 			bank,
 			provider: settings.provider,
@@ -186,7 +186,15 @@ pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathB
 		};
 		let archives = directory.join("archives");
 		std::fs::create_dir_all(&archives)?;
-		if prune(&mut lease, &archives, &store.node_id, ledger.epoch, now).await? >= MAX_ARCHIVES {
+		if prune(
+			&mut lease,
+			&archives,
+			store.deployment.as_str(),
+			ledger.epoch,
+			now,
+		)
+		.await? >= MAX_ARCHIVES
+		{
 			return Err(Error::Conflict(
 				"managed memory backup capacity reached".into(),
 			));
@@ -269,8 +277,8 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 	let archive: Archive = recovery::read(path)?;
 	let ledger = recovery.load()?;
 	if archive.format != 1
-		|| archive.home != store.node_id
-		|| archive.bank.home != store.node_id
+		|| archive.home != store.deployment
+		|| archive.bank.home != store.deployment
 		|| archive.epoch != ledger.epoch
 		|| archive.created_at > Utc::now()
 		|| archive.expires_at <= Utc::now()
@@ -723,7 +731,7 @@ pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 		let result = prune(
 			&mut lease,
 			&archives,
-			&store.node_id,
+			store.deployment.as_str(),
 			ledger.epoch,
 			Utc::now(),
 		)
@@ -807,7 +815,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			let store = attach(
 				Store::from_pool(
 					database.into_postgres().ok_or(Error::Forbidden)?,
-					config.node_id,
+					config.deployment,
 				)
 				.await?
 				.with_keyless_origins(settings.keyless_endpoints.origins()?),
@@ -824,7 +832,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 				}
 				Some("backup") => {
 					let bank = Bank {
-						home: store.node_id.clone(),
+						home: store.deployment.to_string(),
 						tenant: matches
 							.get_one::<String>("tenant")
 							.ok_or_else(|| Error::Invalid("backup requires --tenant".into()))?

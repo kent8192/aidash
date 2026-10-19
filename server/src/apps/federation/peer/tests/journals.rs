@@ -121,7 +121,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		.unwrap(),
 		200,
 	);
-	assert_eq!(journal["node_id"], app.runtime.config.node_id);
+	assert_eq!(journal["node_id"], app.runtime.config.deployment);
 	assert_eq!(journal["runs"].as_array().unwrap().len(), 1);
 	assert_eq!(journal["runs"][0]["id"], observed_run.to_string());
 	assert!(journal["runs"][0]["context"].is_null());

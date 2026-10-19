@@ -246,7 +246,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.0,
 		403
 	);
-	let mut other_policy = common::policy(&f.config.node_id);
+	let mut other_policy = common::policy(f.config.deployment.as_str());
 	other_policy["tenant"] = json!("other");
 	common::tenant_root(&f, "other").await;
 	let (status, written) = request(
@@ -326,7 +326,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			])
 			.values_panic([
 				IntoValue::into_value(Uuid::new_v4()),
-				IntoValue::into_value(&f.config.node_id),
+				IntoValue::into_value(f.config.deployment.as_str()),
 				IntoValue::into_value(other_workspace),
 				IntoValue::into_value("workspace.updated"),
 				IntoValue::into_value(json!({})),
@@ -406,7 +406,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			IntoValue::into_value(Uuid::from_u128(index)),
 			IntoValue::into_value(Uuid::from_u128(index + 1000)),
 			IntoValue::into_value(workspace_id),
-			IntoValue::into_value(&f.config.node_id),
+			IntoValue::into_value(f.config.deployment.as_str()),
 			IntoValue::into_value("research"),
 			IntoValue::into_value("1.0.0"),
 			IntoValue::into_value("THINKING"),
@@ -740,7 +740,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.columns(["id", "coordinator", "digest", "manifest", "phase"].map(Alias::new))
 			.values_panic([
 				IntoValue::into_value(gate),
-				IntoValue::into_value(&f.config.node_id),
+				IntoValue::into_value(f.config.deployment.as_str()),
 				IntoValue::into_value("fixture"),
 				IntoValue::into_value(json!({})),
 				IntoValue::into_value("PREPARED"),
@@ -975,7 +975,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	for (id, kind) in samples {
 		events.values_panic([
 			IntoValue::into_value(Uuid::new_v4()),
-			IntoValue::into_value(&f.config.node_id),
+			IntoValue::into_value(f.config.deployment.as_str()),
 			IntoValue::into_value(id),
 			IntoValue::into_value(kind),
 			IntoValue::into_value(json!({})),
@@ -1014,7 +1014,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	assert_eq!(status, 200, "{activity}");
 	let reference = json!([
 		"resource",
-		f.config.node_id,
+		f.config.deployment,
 		"workspace",
 		final_id.to_string()
 	])

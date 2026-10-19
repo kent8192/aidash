@@ -280,7 +280,7 @@ impl Models {
 			aidash_application::ports::generation::embedding::GenerationEmbeddingAuthority::live(
 				&mut generation,
 			),
-			&self.store.node_id,
+			self.store.deployment.as_str(),
 			record.task_id,
 			&EntityRef {
 				id: record.agent_id,

@@ -41,7 +41,7 @@ pub(crate) async fn discover_in(
 		agents: local
 			.into_iter()
 			.map(|entity| DiscoveredAgent {
-				node_id: f.config.node_id.clone(),
+				node_id: f.config.deployment.to_string(),
 				entity,
 			})
 			.collect(),

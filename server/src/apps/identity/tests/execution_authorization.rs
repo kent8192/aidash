@@ -27,7 +27,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let deployment_administrator = &f.config.api_token;
-	let agent_subject = qualified_agent(&f.config.node_id, "skilled", "1.0.0");
+	let agent_subject = qualified_agent(f.config.deployment.as_str(), "skilled", "1.0.0");
 	policy["subjects"][&agent_subject] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
@@ -50,7 +50,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		(
 			"agent",
 			"skilled",
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","schema_version":1,"bindings":[{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"guide","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","schema_version":1,"bindings":[{"kind":"skill","target":{"registry_node":f.config.deployment,"id":"guide","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
@@ -169,7 +169,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
-	let agent = qualified_agent(&f.config.node_id, "research", "1.0.0");
+	let agent = qualified_agent(f.config.deployment.as_str(), "research", "1.0.0");
 	policy["subjects"][&agent]["enabled"] = json!(false);
 	assert_eq!(
 		request(
@@ -510,7 +510,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				other_token,
 				"POST",
 				&path,
-				json!({"revision":0,"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}})
+				json!({"revision":0,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}})
 			)
 			.await
 			.0,
@@ -538,7 +538,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	.await
 	.unwrap();
 	{
-		let query_bind_1 = &f.config.node_id;
+		let query_bind_1 = f.config.deployment.as_str();
 		let query_bind_2 = run.workspace_id;
 		let query_bind_3 = json!({"run_id":run.id,"private":"unreadable-run-journal"});
 		sqlx::query(
@@ -774,10 +774,10 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let child = qualified_agent(&f.config.node_id, "child", "1.0.0");
+	let child = qualified_agent(f.config.deployment.as_str(), "child", "1.0.0");
 	policy["subjects"][&child] = json!({"kind":"agent"});
-	let parent = qualified_agent(&f.config.node_id, "research", "1.0.0");
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/http@1.0.0",f.config.node_id)]}}));
+	let parent = qualified_agent(f.config.deployment.as_str(), "research", "1.0.0");
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/http@1.0.0",f.config.deployment)]}}));
 	assert_eq!(
 		request(
 			&app,
@@ -850,7 +850,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	)
 	.await;
 	let child_task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
-	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":f.config.node_id,"agent":{"id":"child","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
+	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":f.config.deployment,"agent":{"id":"child","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
 	{
 		let query_bind_1 = parent_run.id;
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
@@ -1218,7 +1218,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		"/api/authorization/acme/credentials/{}/revoke",
 		credentials[0]["id"].as_str().unwrap()
 	);
-	policy["subjects"][qualified_agent(&f.config.node_id, "research", "1.0.0")]["enabled"] =
+	policy["subjects"][qualified_agent(f.config.deployment.as_str(), "research", "1.0.0")]["enabled"] =
 		json!(false);
 	let mut replacements = tokio::task::JoinSet::new();
 	// Native ORM mutations acquire SELECT FOR UPDATE locks before writing.
@@ -1347,7 +1347,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 			&token,
 			"POST",
 			&format!("/api/tasks/{task}/delegate"),
-			json!({"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}})
+			json!({"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}})
 		)
 		.await
 		.0,
@@ -1436,7 +1436,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 					IntoValue::into_value(*id).into(),
 					IntoValue::into_value(Uuid::new_v4()).into(),
 					IntoValue::into_value(visible.workspace_id).into(),
-					IntoValue::into_value(f.config.node_id.as_str()).into(),
+					IntoValue::into_value(f.config.deployment.as_str()).into(),
 					IntoValue::into_value("research").into(),
 					IntoValue::into_value("1.0.0").into(),
 					IntoValue::into_value(newer).into(),
@@ -1538,7 +1538,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "bad-id".into(),
 			name: "task_delegate".into(),
-			arguments: json!({"task_id":"not-a-uuid","node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}}),
+			arguments: json!({"task_id":"not-a-uuid","node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
 		}],
 		..Default::default()
 	};

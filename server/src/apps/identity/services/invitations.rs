@@ -112,7 +112,7 @@ impl Invitations {
 						identity,
 						origin.identity_id,
 						mapping,
-						self.runtime.config.node_id.clone(),
+						self.runtime.config.deployment.to_string(),
 						self.runtime.config.dashboard_policy(),
 					)?,
 				)))

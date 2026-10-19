@@ -21,7 +21,7 @@ impl Messages<'_> {
 #[async_trait]
 impl RunMessages for Messages<'_> {
 	fn node(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn run(&self) -> &RunMetadata {
 		&self.run

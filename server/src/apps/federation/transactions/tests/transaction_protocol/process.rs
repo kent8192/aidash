@@ -95,7 +95,7 @@ impl Server {
 			process: command.spawn().unwrap_or_else(|error| {
 				panic!(
 					"spawn {} on {}: {error}",
-					node.f.config.node_id, node.listen
+					node.f.config.deployment, node.listen
 				)
 			}),
 			directory,
@@ -121,7 +121,7 @@ async fn healthy(node: &Node, server: &mut Server, stage: &str) {
 			assert!(
 				exited.is_none(),
 				"server {} pid {} on {} exited {exited:?} during {stage}: {}",
-				node.f.config.node_id,
+				node.f.config.deployment,
 				server.process.id(),
 				node.listen,
 				server.log()
@@ -144,7 +144,7 @@ async fn healthy(node: &Node, server: &mut Server, stage: &str) {
 	assert!(
 		ready.is_ok(),
 		"server startup timed out at {stage} for {} on {}: {}",
-		node.f.config.node_id,
+		node.f.config.deployment,
 		node.listen,
 		server.log()
 	);

@@ -101,8 +101,11 @@ pub(crate) async fn context(
 		|| receipt.admission_id != run.id
 		|| receipt.binding != description.semantic
 		|| receipt.executor
-			!= crate::domain::qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version)
-		|| receipt.sources.len() != receipt.result.matches.len()
+			!= crate::domain::qualified_agent(
+				f.config.deployment.as_str(),
+				&run.agent_id,
+				&run.agent_version,
+			) || receipt.sources.len() != receipt.result.matches.len()
 		|| receipt
 			.sources
 			.iter()

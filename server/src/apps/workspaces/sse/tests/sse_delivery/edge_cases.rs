@@ -158,9 +158,12 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 	assert_eq!(frame(&mut stream).await.1["type"], "workspace.created");
 	// The first frame proves the page containing the later message has been
 	// loaded. Revoke only that resource before polling the remaining page.
-	let mut denied = policy(&fixture.f.config.node_id);
+	let mut denied = policy(fixture.f.config.deployment.as_str());
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"message-denied","effect":"deny","subjects":{"any":true},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[message]}}));
-	for (revision, bundle) in [(1, denied), (2, policy(&fixture.f.config.node_id))] {
+	for (revision, bundle) in [
+		(1, denied),
+		(2, policy(fixture.f.config.deployment.as_str())),
+	] {
 		let (status, value) = request(
 			&fixture.app,
 			&fixture.f.config.api_token,
@@ -204,7 +207,12 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 		.unwrap();
 	let subject = format!(
 		"aidash.{}.events",
-		fixture.f.config.node_id.trim_start_matches("aidash://")
+		fixture
+			.f
+			.config
+			.deployment
+			.as_str()
+			.trim_start_matches("aidash://")
 	);
 	let payload = first.cloud_event().to_string();
 	let (end, mut ending) = tokio::sync::watch::channel(false);

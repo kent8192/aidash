@@ -30,7 +30,7 @@ async fn map_subject(source: &Node, target: &Node) {
 		&target.f,
 		"acme",
 		PeerMappingInput {
-			source_node: source.f.config.node_id.clone(),
+			source_node: source.f.config.deployment.to_string(),
 			source_tenant: "acme".into(),
 			source_subject: "alice".into(),
 			credential_id: credential.id,
@@ -251,7 +251,7 @@ async fn unavailable_peer_hides_only_its_rows(#[future(awt)] scoped_pair: Scoped
 	manifest.id = Uuid::new_v4();
 	manifest
 		.participants
-		.retain(|node| node.node_id == a.f.config.node_id);
+		.retain(|node| node.node_id == a.f.config.deployment);
 	let (status, body) = common::request(
 		&app_a,
 		&token_a,
@@ -325,15 +325,15 @@ async fn bidirectional_new_scoped_submissions_are_rejected_before_preflight(
 	let mut requests = Vec::new();
 	for _ in 0..16 {
 		for (app, token, coordinator) in [
-			(&app_a, &token_a, &a.f.config.node_id),
-			(&app_b, &token_b, &b.f.config.node_id),
+			(&app_a, &token_a, a.f.config.deployment.as_str()),
+			(&app_b, &token_b, b.f.config.deployment.as_str()),
 		] {
 			let app = app.clone();
 			let token = token.clone();
 			let mut manifest = manifest.clone();
 			manifest.id = Uuid::new_v4();
 			ids.push(manifest.id);
-			manifest.coordinator = coordinator.clone();
+			manifest.coordinator = coordinator.to_owned();
 			requests.push(tokio::spawn(async move {
 				common::request(&app, &token, "POST", "/api/transactions", json!(manifest)).await
 			}));
@@ -386,7 +386,7 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 		local
 			.f
 			.register_peer(Peer {
-				node_id: remote.f.config.node_id.clone(),
+				node_id: remote.f.config.deployment.to_string(),
 				endpoint: remote.f.config.endpoint.clone(),
 				credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
 				protocol_version: "0.2".into(),
@@ -399,7 +399,7 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 				.request(
 					reqwest::Method::POST,
 					"/api/transactions/trust",
-					Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))
+					Some(json!({"node_id":remote.f.config.deployment,"enabled":true}))
 				)
 				.await
 				.0,
@@ -415,7 +415,7 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 			.unwrap()
 			.workspace_id;
 	let mut third = manifest.participants[0].clone();
-	third.node_id = c.f.config.node_id.clone();
+	third.node_id = c.f.config.deployment.to_string();
 	third.mutations = vec![aidash_server::transactions::Mutation::WorkspaceState {
 		workspace_id: workspace,
 		expected_revision: 0,

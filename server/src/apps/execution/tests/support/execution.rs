@@ -34,9 +34,9 @@ pub fn execution(
 	let final_server = Box::pin(final_server);
 	async move {
 		let app = endpoint.await;
-		assert_eq!(app.runtime.config.node_id, node_id);
+		assert_eq!(app.runtime.config.deployment, node_id);
 		let provider = final_server.await;
-		let node = &app.runtime.config.node_id;
+		let node = app.runtime.config.deployment.as_str();
 		let agent = qualified_agent(node, "research", "1.0.0");
 		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
 			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});

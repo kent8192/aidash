@@ -4,7 +4,7 @@ use std::env;
 
 #[derive(Clone)]
 pub struct Config {
-	pub node_id: String,
+	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub endpoint: String,
 	pub database_url: String,
 	pub nats_url: String,
@@ -49,7 +49,7 @@ impl Config {
 
 	pub fn from_settings(settings: &super::settings::ProjectSettings) -> Result<Self> {
 		settings
-			.node
+			.deployment
 			.validate(&Profile::parse("local"))
 			.map_err(|error| Error::Invalid(error.to_string()))?;
 		settings
@@ -77,10 +77,10 @@ impl Config {
 				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
 			));
 		}
-		let node = &settings.node;
+		let node = &settings.deployment;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
-			node_id: node.node_id.clone(),
+			deployment: aidash_domain::nodes::DeploymentId::parse(&node.id)?,
 			endpoint: node.endpoint.clone(),
 			database_url: database.to_url(),
 			nats_url: node.nats_url.clone(),
@@ -99,7 +99,7 @@ impl Config {
 	}
 	pub fn identity(&self, clusters: Vec<String>) -> NodeIdentity {
 		NodeIdentity {
-			id: self.node_id.clone(),
+			id: self.deployment.to_string(),
 			endpoint: self.endpoint.clone(),
 			capabilities: vec![
 				"agent.discovery".into(),

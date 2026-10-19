@@ -122,10 +122,10 @@ pub(crate) async fn visible(
 	let description: Description = serde_json::from_value(value)?;
 	if description.grant_id != grant
 		|| description.source_node != run.home_node
-		|| description.target_node != f.config.node_id
+		|| description.target_node != f.config.deployment
 		|| description.task.id != run.task_id
 		|| description.task.workspace_id != run.workspace_id
-		|| description.inspection.node_id != f.config.node_id
+		|| description.inspection.node_id != f.config.deployment
 		|| description.inspection.agent.kind != "agent"
 		|| description.inspection.agent.id != run.agent_id
 		|| description.inspection.agent.version != run.agent_version
@@ -148,7 +148,7 @@ pub(crate) async fn visible(
 		"memory",
 		&run.agent_id,
 		json!({
-			"created_by":crate::domain::qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
+			"created_by":crate::domain::qualified_agent(f.config.deployment.as_str(), &run.agent_id, &run.agent_version),
 			"version":run.agent_version,
 			"source_workspace_id":description.task.workspace_id,
 			"source_task_id":description.task.id,
@@ -276,10 +276,9 @@ pub(super) async fn activity(
 	query
 		.expr(Expr::cust("e.*"))
 		.from_as(Alias::new("events"), Alias::new("e"))
-		.and_where(
-			Expr::col((Alias::new("e"), Alias::new("node_id")))
-				.eq(reinhardt::query::Expr::value(f.config.node_id.clone())),
-		)
+		.and_where(Expr::col((Alias::new("e"), Alias::new("node_id"))).eq(
+			reinhardt::query::Expr::value(f.config.deployment.to_string()),
+		))
 		.and_where(Expr::col((Alias::new("e"), Alias::new("workspace_id"))).is_null())
 		.and_where(Expr::cust("e.kind LIKE 'run.%'"))
 		.and_where(Expr::cust("COALESCE(e.data->>'run_id', e.data->>'id')").is_in(ids))
@@ -303,7 +302,7 @@ pub(super) async fn activity(
 	Ok(events
 		.into_iter()
 		.filter_map(|event| {
-			let reference = event_reference(&event, &f.config.node_id)?;
+			let reference = event_reference(&event, f.config.deployment.as_str())?;
 			visible_nodes
 				.iter()
 				.any(|node| node.id == reference)

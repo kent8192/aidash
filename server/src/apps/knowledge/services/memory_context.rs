@@ -63,7 +63,7 @@ pub(crate) async fn retrieve(
 	agent: &AgentConfig,
 	key: Option<&RetrievalKey>,
 ) -> Result<Context> {
-	if run.home_node != store.node_id {
+	if run.home_node != store.deployment {
 		return Err(Error::Forbidden);
 	}
 	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
@@ -109,7 +109,7 @@ pub(crate) async fn retrieve(
 	};
 	let mut delivered = Vec::new();
 	let mut envelope =
-		json!({"home":store.node_id,"binding":binding,"boundary":boundary,"banks":[]});
+		json!({"home":store.deployment,"binding":binding,"boundary":boundary,"banks":[]});
 	// UTF-8 bytes are the declared conservative tokenizer's token upper bound.
 	// Count wrappers, identity, roles and complete source envelopes as well.
 	for (ordinal, (bank, provider, declared_tokens)) in declared.into_iter().enumerate() {

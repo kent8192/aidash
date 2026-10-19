@@ -25,7 +25,7 @@ impl PeerDependencies {
 pub(crate) async fn verify(f: Federation, headers: HeaderMap, input: Input) -> Result<Checked> {
 	aidash_application::federation::dependencies::require_local_target(
 		&input.reference,
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 	)?;
 	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 	let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;

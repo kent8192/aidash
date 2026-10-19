@@ -78,7 +78,7 @@ impl Process {
 				0,
 			))
 			.env("DATABASE_URL", database.as_str())
-			.env("AIDASH_NODE_ID", &fixture.f.config.node_id)
+			.env("AIDASH_DEPLOYMENT_ID", fixture.f.config.deployment.as_str())
 			.env("AIDASH_ENDPOINT", &endpoint)
 			.env("AIDASH_LISTEN", format!("127.0.0.1:{port}"))
 			.env("AIDASH_METRICS_LISTEN", format!("127.0.0.1:{metrics_port}"))
@@ -401,9 +401,10 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 		assert!(cause(&after[n], "notification") > cause(&before[n], "notification"));
 	}
 	// Production's independent execution consumer must also acknowledge the event.
-	let bus = aidash_server::bus::EventBus::connect(&broker_url, &fixture.f.config.node_id)
-		.await
-		.unwrap();
+	let bus =
+		aidash_server::bus::EventBus::connect(&broker_url, fixture.f.config.deployment.as_str())
+			.await
+			.unwrap();
 	let stream = bus.context.get_stream(&bus.stream_name).await.unwrap();
 	let mut consumer = stream
 		.get_consumer::<async_nats::jetstream::consumer::pull::Config>("execution")
@@ -490,7 +491,12 @@ async fn oversized_reference_notification_replays_canonical_bytes(
 	let mut hints = nats
 		.subscribe(format!(
 			"aidash.{}.events",
-			fixture.f.config.node_id.trim_start_matches("aidash://")
+			fixture
+				.f
+				.config
+				.deployment
+				.as_str()
+				.trim_start_matches("aidash://")
 		))
 		.await
 		.unwrap();
@@ -616,7 +622,7 @@ async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
 	// authorized process that can acknowledge this exact business event.
 	let bus = aidash_server::bus::EventBus::connect(
 		&format!("nats://executor:fixture@{host}:{port}"),
-		&fixture.f.config.node_id,
+		fixture.f.config.deployment.as_str(),
 	)
 	.await
 	.unwrap();

@@ -20,7 +20,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://limits".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://limits").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -152,7 +152,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://limits".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://limits").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -247,7 +247,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://limits".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://limits").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -317,7 +317,7 @@ async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://vectors".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://vectors").unwrap(),
 	)
 	.await
 	.unwrap();

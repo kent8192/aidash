@@ -42,7 +42,7 @@ fn frontend(
 			.unwrap()
 			.as_ref()
 			.clone();
-		settings.node.web_dir = public.to_string_lossy().into_owned();
+		settings.deployment.web_dir = public.to_string_lossy().into_owned();
 		app.context.set_singleton(settings);
 		FrontendFixture {
 			app,

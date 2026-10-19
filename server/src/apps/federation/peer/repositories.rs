@@ -29,7 +29,10 @@ impl PeerWrite for Write {
 impl PeerConfiguration for Configuration {
 	async fn write_scope(&self) -> Result<Box<dyn PeerWrite>> {
 		Ok(Box::new(Write {
-			records: records::PeerRecords::new(&self.0.store.pool, &self.0.config.node_id),
+			records: records::PeerRecords::new(
+				&self.0.store.pool,
+				self.0.config.deployment.as_str(),
+			),
 		}))
 	}
 	async fn enabled(&self, node: &str) -> Result<Peer> {

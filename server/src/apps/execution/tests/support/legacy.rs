@@ -160,7 +160,7 @@ async fn bootstrap_with_resources(
 	files: bool,
 ) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
-	let policy = policy(&f.config.node_id);
+	let policy = policy(f.config.deployment.as_str());
 	tenant_root(f, "acme").await;
 	let (status, snapshot) = request(
 		app,
@@ -172,7 +172,7 @@ async fn bootstrap_with_resources(
 	.await;
 	assert_eq!(status, 200, "initial policy: {snapshot}");
 	let mut agent_bindings = vec![
-		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
+		json!({"kind":"tool","target":{"registry_node":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
@@ -200,7 +200,7 @@ async fn bootstrap_with_resources(
 			.await
 			.unwrap();
 		approve("semantic-memory").await;
-		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
+		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.deployment,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
@@ -214,7 +214,7 @@ async fn bootstrap_with_resources(
 		(
 			"tool",
 			"http",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
+			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 		),
 		(
 			"agent",
@@ -288,13 +288,13 @@ pub fn native_process_environment(
 				.query_pairs()
 				.map(|(key, value)| (key.to_string(), value.to_string())),
 		);
-	settings.node.node_id = f.config.node_id.clone();
-	settings.node.endpoint = f.config.endpoint.clone();
-	settings.node.api_token = f.config.api_token.clone();
-	settings.node.nats_url = f.config.nats_url.clone();
-	settings.node.web_dir = f.config.web_dir.clone();
-	settings.node.background_enabled = true;
-	settings.node.worker_count = worker_count;
+	settings.deployment.id = f.config.deployment.to_string();
+	settings.deployment.endpoint = f.config.endpoint.clone();
+	settings.deployment.api_token = f.config.api_token.clone();
+	settings.deployment.nats_url = f.config.nats_url.clone();
+	settings.deployment.web_dir = f.config.web_dir.clone();
+	settings.deployment.background_enabled = true;
+	settings.deployment.worker_count = worker_count;
 	settings.dashboard.oidc = f.config.oidc.clone();
 	// A child process must reach the same Keyless fixtures (ADR 0036).
 	settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
@@ -348,7 +348,12 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 	postgres::apply_migrations(connection, &migrations).await;
 	owner.close().await;
 	let pool = sqlx::PgPool::connect(database_url).await.unwrap();
-	Store::from_pool(pool, node.to_owned()).await.unwrap()
+	Store::from_pool(
+		pool,
+		aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
+	)
+	.await
+	.unwrap()
 }
 
 #[path = "state.rs"]
@@ -484,16 +489,24 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			.environment
 			.bounded_setup(
 				format!("open the Store on {}", database.schema),
-				Store::from_pool(database.pool.clone(), "aidash://execution-test".into()),
+				Store::from_pool(
+					database.pool.clone(),
+					aidash_domain::nodes::DeploymentId::parse("aidash://execution-test").unwrap(),
+				),
 			)
 			.await
 			.unwrap();
 		let federation = Federation {
 			sandbox: Default::default(),
 			store,
-			registry: Registry::new(database.pool.clone(), "aidash://execution-test").unwrap(),
+			registry: Registry::new(
+				database.pool.clone(),
+				&aidash_domain::nodes::DeploymentId::parse("aidash://execution-test").unwrap(),
+			)
+			.unwrap(),
 			config: Config {
-				node_id: "aidash://execution-test".into(),
+				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")
+					.unwrap(),
 				endpoint: "http://localhost:8080".into(),
 				database_url: database.url.clone(),
 				nats_url: database.environment.nats_url.clone(),

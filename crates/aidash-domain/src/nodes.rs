@@ -110,6 +110,19 @@ impl PartialEq<DeploymentId> for String {
 	}
 }
 
+/// Lets tests compare a JSON field with the Deployment id directly.
+impl PartialEq<DeploymentId> for serde_json::Value {
+	fn eq(&self, other: &DeploymentId) -> bool {
+		self.as_str() == Some(other.0.as_str())
+	}
+}
+
+impl PartialEq<DeploymentId> for &str {
+	fn eq(&self, other: &DeploymentId) -> bool {
+		*self == other.0
+	}
+}
+
 impl PartialEq<DeploymentId> for str {
 	fn eq(&self, other: &DeploymentId) -> bool {
 		self == other.0

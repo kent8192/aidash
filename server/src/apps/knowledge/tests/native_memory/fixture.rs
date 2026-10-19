@@ -124,7 +124,7 @@ pub(super) async fn setup_endpoint_policy(
 ) -> (Store, Registry, Uuid) {
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
-		"aidash://native-memory".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://native-memory").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -153,7 +153,7 @@ pub(super) async fn setup_endpoint_policy(
 		})
 		.await
 		.unwrap();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
 		.await

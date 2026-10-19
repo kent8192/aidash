@@ -52,10 +52,10 @@ fn store(
 	#[default("aidash://test")] node_id: &str,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> StoreFuture {
-	let node_id = node_id.to_owned();
+	let node_id = aidash_domain::nodes::DeploymentId::parse(node_id).unwrap();
 	async move {
 		let mut runtime = runtime.await;
-		runtime.federation.store.node_id = node_id.clone();
+		runtime.federation.store.deployment = node_id.clone();
 		Registry::new(runtime.federation.store.pool.clone(), &node_id)
 			.unwrap()
 			.seed_system()
@@ -102,7 +102,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	_store_fixture: StoreFixture,
 ) {
 	let (store, url, schema) = _store_fixture.parts();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
 		.create_workspace(&ACME, "alice", "Research", "Compare frameworks")
@@ -128,7 +128,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 			.await
 			.is_err()
 	);
-	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
 	let (a, b) = tokio::join!(
 		store.claim(&ACME, task.id, 0, &owner, &agent),
 		store.claim(&ACME, task.id, 0, &owner, &agent)
@@ -238,7 +238,7 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 	// Arrange: a model that declares the salted version and an Agent that
 	// names it, on a node without Cache Salt Keys.
 	let (store, url, schema) = _store_fixture.parts();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
 	let agent = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
 	let workspace = store
@@ -249,7 +249,7 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
 	// Act: claiming would create the Run.
 	let rejected = store.claim(&ACME, task.id, 0, &owner, &agent).await;
 	// Assert: no Run and no claim without a key.
@@ -278,7 +278,7 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		.await
 		.unwrap();
 	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
-	let legacy_owner = qualified_agent(&store.node_id, &legacy.id, &legacy.version);
+	let legacy_owner = qualified_agent(store.deployment.as_str(), &legacy.id, &legacy.version);
 	let claimed = store
 		.claim(&ACME, other.id, 0, &legacy_owner, &legacy)
 		.await
@@ -295,7 +295,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	_store_fixture: StoreFixture,
 ) {
 	let (store, url, schema) = _store_fixture.parts();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
 		.create_workspace(&ACME, "alice", "Journal", "Recover safely")
@@ -475,7 +475,7 @@ async fn registry_versions_and_authenticated_api(
 	http_client: reqwest::Client,
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	seed(&registry).await;
 	let skill = entry(
 		"skill",
@@ -567,7 +567,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 	http_client: reqwest::Client,
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Controls", "Keep human decisions durable")
@@ -724,9 +724,9 @@ fn federation(
 		let federation = Federation {
 			sandbox: Default::default(),
 			store: store.clone(),
-			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
+			registry: Registry::new(store.pool.clone(), &store.deployment).unwrap(),
 			config: Config {
-				node_id: store.node_id.clone(),
+				deployment: store.deployment.clone(),
 				endpoint: "http://127.0.0.1:18080".into(),
 				database_url: store.pool.connect_options().to_url_lossy().to_string(),
 				nats_url: "nats://127.0.0.1:1".into(),
@@ -763,7 +763,7 @@ async fn running_task(
 		.create_task(&ACME, workspace, &input, "alice", None)
 		.await
 		.unwrap();
-	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
 	if parent.is_some() {
 		store
 			.claim(&ACME, task.id, task.revision, &owner, agent)
@@ -1006,11 +1006,11 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
 			"tool",
 			"retry-tool",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"idempotent"}}),
+			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"idempotent"}}),
 		))
 		.await
 		.unwrap();
-	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Retries", "Independent budgets")
 		.await
@@ -1170,11 +1170,11 @@ async fn write_approval(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
 			"tool",
 			"managed-write",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"unsafe"}}),
+			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
-	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Approval", "Check external effects")
 		.await
@@ -1467,11 +1467,11 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), { let mut tool = entry(
 			"tool",
 			"web-fetch",
-			json!({"registry_node":federation.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"replay":"read_only"}}),
+			json!({"registry_node":federation.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"replay":"read_only"}}),
 		); tool.schema = json!({"type":"object","properties":{"url":{"type":"string","pattern":"^http://127\\.0\\.0\\.1:"}},"required":["url"],"additionalProperties":false}); tool })
 		.await
 		.unwrap();
-	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":federation.config.node_id,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Web research", "Use available evidence")
 		.await
@@ -1674,7 +1674,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	let mut agent = seed(&f.registry).await;
 	agent.id = "skilled-agent".into();
 	agent.binding_normalization = None;
-	agent.config["bindings"] = json!([{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"bundled-skill","version":"1.0.0"},"narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"skill","target":{"registry_node":f.config.deployment,"id":"bundled-skill","version":"1.0.0"},"narrow":{}}]);
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -1975,7 +1975,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	// the primary mutation and its event roll back together.
 	assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
 	assert!(
-		Registry::new(store.pool.clone(), &store.node_id)
+		Registry::new(store.pool.clone(), &store.deployment)
 			.unwrap()
 			.get(ACME.tenant_name().unwrap(), "rollback", "1.0.0")
 			.await
@@ -2012,7 +2012,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let mut f = _federation.await.federation;
 	f.config.nats_url = _test_environment.nats_url.clone();
-	let bus = aidash_server::bus::EventBus::connect(&f.config.nats_url, &store.node_id)
+	let bus = aidash_server::bus::EventBus::connect(&f.config.nats_url, store.deployment.as_str())
 		.await
 		.unwrap();
 	let poison = store
@@ -2154,13 +2154,13 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
 			"tool",
 			"unsafe-http",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://127.0.0.1:9","replay":"unsafe"}}),
+			json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://127.0.0.1:9","replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
 	agent.id = "unsafe-agent".into();
 	agent.binding_normalization = None;
-	agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"unsafe-http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"unsafe-http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -2310,7 +2310,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 			entry(
 				"tool",
 				"delegate-tool",
-				json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":f.config.node_id,"agent":{"id":agent.id,"version":agent.version}}}),
+				json!({"registry_node":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":f.config.deployment,"agent":{"id":agent.id,"version":agent.version}}}),
 			),
 		)
 		.await
@@ -2322,7 +2322,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 			entry(
 				"agent",
 				"delegating",
-				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"delegate-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
+				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"delegate-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
 			),
 		)
 		.await
@@ -2576,9 +2576,9 @@ fn authenticated_runtime(
 		let mut runtime = store_fixture.runtime;
 		let store = store_fixture.store;
 		runtime.federation.store = store.clone();
-		runtime.federation.registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+		runtime.federation.registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 		runtime.federation.config = Config {
-			node_id: store.node_id.clone(),
+			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:18080".into(),
 			database_url: runtime.url.clone(),
 			nats_url: "nats://127.0.0.1:42270".into(),

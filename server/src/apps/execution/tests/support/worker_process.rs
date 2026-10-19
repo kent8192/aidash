@@ -42,13 +42,13 @@ pub fn worker_command(
 	async move {
 		let (runtime, url, schema, memory) = worker_configuration.await;
 		let mut settings = settings_for(&url);
-		settings.node.node_id = runtime.config.node_id.clone();
-		settings.node.endpoint = runtime.config.endpoint.clone();
-		settings.node.api_token = runtime.config.api_token.clone();
-		settings.node.nats_url = runtime.config.nats_url.clone();
-		settings.node.lease_seconds = runtime.config.lease_seconds;
-		settings.node.background_enabled = true;
-		settings.node.worker_count = 1;
+		settings.deployment.id = runtime.config.deployment.to_string();
+		settings.deployment.endpoint = runtime.config.endpoint.clone();
+		settings.deployment.api_token = runtime.config.api_token.clone();
+		settings.deployment.nats_url = runtime.config.nats_url.clone();
+		settings.deployment.lease_seconds = runtime.config.lease_seconds;
+		settings.deployment.background_enabled = true;
+		settings.deployment.worker_count = 1;
 		// A worker process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins =
 			runtime.store.keyless.permitted_origins();
@@ -165,13 +165,13 @@ impl WorkerProcess {
 		directory: TempDir,
 	) -> Self {
 		let mut settings = settings_for(url);
-		settings.node.node_id = runtime.config.node_id.clone();
-		settings.node.endpoint = runtime.config.endpoint.clone();
-		settings.node.api_token = runtime.config.api_token.clone();
-		settings.node.nats_url = runtime.config.nats_url.clone();
-		settings.node.lease_seconds = runtime.config.lease_seconds;
-		settings.node.background_enabled = true;
-		settings.node.worker_count = 1;
+		settings.deployment.id = runtime.config.deployment.to_string();
+		settings.deployment.endpoint = runtime.config.endpoint.clone();
+		settings.deployment.api_token = runtime.config.api_token.clone();
+		settings.deployment.nats_url = runtime.config.nats_url.clone();
+		settings.deployment.lease_seconds = runtime.config.lease_seconds;
+		settings.deployment.background_enabled = true;
+		settings.deployment.worker_count = 1;
 		// A worker process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins =
 			runtime.store.keyless.permitted_origins();

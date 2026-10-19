@@ -96,7 +96,7 @@ pub fn install(home: &mut Federation) -> TenantOpenRouter {
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: home.store.control_pool.clone(),
-			node: home.store.node_id.clone(),
+			node: home.store.deployment.to_string(),
 		}),
 		store: Arc::new(MemoryStore::default()),
 		validator: Arc::new(AcceptKeys),

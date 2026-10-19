@@ -867,7 +867,7 @@ impl<'a> Environment<'a> {
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn store(&self) -> &dyn ExecutionStore {
 		&self.run_store

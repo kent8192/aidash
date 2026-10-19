@@ -41,7 +41,7 @@ fn values_with_oidc(
 ) -> Result<IndexMap<String, Value>, SourceError> {
 	let mut node = serde_json::Map::new();
 	for (key, name) in [
-		("node_id", "AIDASH_NODE_ID"),
+		("id", "AIDASH_DEPLOYMENT_ID"),
 		("endpoint", "AIDASH_ENDPOINT"),
 		("api_token", "AIDASH_API_TOKEN"),
 		("nats_url", "NATS_URL"),
@@ -121,7 +121,7 @@ fn values_with_oidc(
 	}
 	let mut result = IndexMap::new();
 	if !node.is_empty() {
-		result.insert("node".into(), Value::Object(node));
+		result.insert("deployment".into(), Value::Object(node));
 	}
 	if !core.is_empty() {
 		result.insert("core".into(), Value::Object(core));
@@ -313,7 +313,7 @@ mod tests {
 	fn deployment_variables_preserve_database_credentials_and_options() {
 		let data = values(|name| match name {
             "DATABASE_URL" => Some("postgres://user:p%40ss@localhost:5433/aidash?sslmode=require&application_name=worker".into()),
-            "AIDASH_NODE_ID" => Some("aidash://test".into()),
+            "AIDASH_DEPLOYMENT_ID" => Some("aidash://test".into()),
             "AIDASH_WORKER_SLOTS" => Some("2".into()),
             _ => None,
         }).unwrap();
@@ -322,7 +322,7 @@ mod tests {
 		assert_eq!(db["port"], 5433);
 		assert_eq!(db["options"]["sslmode"], "require");
 		assert_eq!(db["options"]["application_name"], "worker");
-		assert_eq!(data["node"]["worker_count"], "2");
+		assert_eq!(data["deployment"]["worker_count"], "2");
 		assert!(!data.contains_key("dashboard"));
 	}
 

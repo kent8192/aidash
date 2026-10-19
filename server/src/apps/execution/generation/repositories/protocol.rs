@@ -192,7 +192,7 @@ impl GenerationProtocolLease for Lease {
 #[async_trait]
 impl GenerationProtocolAuthority for NativeProtocolAuthority {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	async fn leaf(
 		&self,

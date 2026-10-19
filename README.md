@@ -260,7 +260,7 @@ Compose creates `aidash_a`, `aidash_b`, and `aidash_test`. Node B needs its own 
 
 ```sh
 DATABASE_URL=postgres://aidash_server:aidash-server-local@127.0.0.1:54370/aidash_b \
-AIDASH_NODE_ID=aidash://node-b \
+AIDASH_DEPLOYMENT_ID=aidash://node-b \
 AIDASH_ENDPOINT=http://127.0.0.1:8081 \
 AIDASH_LISTEN=127.0.0.1:8081 \
 cargo run --locked -- serve

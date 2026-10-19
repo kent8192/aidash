@@ -59,7 +59,7 @@ impl From<NativeRequester> for Requester {
 #[async_trait]
 impl ReceiverRepository for Repository<'_> {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	async fn begin_peer(
 		&self,

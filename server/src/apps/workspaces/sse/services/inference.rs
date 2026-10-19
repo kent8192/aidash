@@ -47,12 +47,12 @@ impl RunContext {
 	/// The run-scoped event every frame is authorized as, using the same
 	/// workspace rule as the Run's own journal events.
 	fn probe(&self) -> Event {
-		let node = &self.base.f.store.node_id;
+		let node = self.base.f.store.deployment.as_str();
 		Event {
 			sequence: 0,
 			id: Uuid::nil(),
-			node_id: node.clone(),
-			workspace_id: (&self.run.home_node == node).then_some(self.run.workspace_id),
+			node_id: node.to_string(),
+			workspace_id: (self.run.home_node == node).then_some(self.run.workspace_id),
 			kind: "inference.progress".into(),
 			data: json!({
 				"run_id": self.run.id,
@@ -94,7 +94,7 @@ impl RunContext {
 				let envelope = json!({
 					"specversion": "1.0",
 					"id": format!("{}:{}", self.run.id, row.seq),
-					"source": self.base.f.store.node_id,
+					"source": self.base.f.store.deployment,
 					"type": CLOUD_EVENT_TYPE,
 					"subject": self.run.id,
 					"time": row.created_at,

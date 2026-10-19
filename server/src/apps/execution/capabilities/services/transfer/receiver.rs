@@ -61,7 +61,7 @@ pub(crate) async fn recipient_list(
 ) -> Result<Value> {
 	application::recipient_list(
 		&mut crate::bootstrap::transfer_scope(Some(&f.store), access),
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 		cursor,
 	)
 	.await

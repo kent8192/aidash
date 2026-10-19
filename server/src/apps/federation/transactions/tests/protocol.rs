@@ -213,7 +213,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	unavailable(&b, wb).await;
 	assert!(matches!(
 		a.f.request::<Value>(
-			&b.f.config.node_id,
+			b.f.config.deployment.as_str(),
 			reqwest::Method::POST,
 			"/scoped/discover",
 			Some(&json!({}))
@@ -267,7 +267,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 			200
 		);
 		assert_eq!(
-			participant::finish(&node.f, &a.f.config.node_id, &manifest)
+			participant::finish(&node.f, a.f.config.deployment.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
@@ -302,14 +302,14 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 			200
 		);
 		assert_eq!(
-			participant::reserve(&node.f, &a.f.config.node_id, &manifest)
+			participant::reserve(&node.f, a.f.config.deployment.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
 			"ABORTED"
 		);
 		assert_eq!(
-			participant::finish(&node.f, &a.f.config.node_id, &manifest)
+			participant::finish(&node.f, a.f.config.deployment.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
@@ -355,7 +355,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 	};
 	let mut second = first.clone();
 	second.id = Uuid::new_v4();
-	second.coordinator = b.f.config.node_id.clone();
+	second.coordinator = b.f.config.deployment.to_string();
 	a.submit(&first).await;
 	b.submit(&second).await;
 	steps(&a, first.id, 1).await;
@@ -402,7 +402,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		.await
 		.unwrap();
 
-	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(b.f.config.deployment.as_str(), &agent.id, &agent.version);
 	let task =
 		a.f.store
 			.create_task(
@@ -438,7 +438,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 	let delegation = Delegation::build()
 		.tenant("acme")
 		.task_id(task.id)
-		.node_id(&b.f.config.node_id)
+		.node_id(b.f.config.deployment.as_str())
 		.agent_id(&agent.id)
 		.agent_version(&agent.version)
 		.delivered(true)
@@ -458,7 +458,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 	let run = crate::fixtures::tenant_roots::remote_run(
 		&b.f.store,
 		&task,
-		&a.f.config.node_id,
+		a.f.config.deployment.as_str(),
 		&agent.id,
 		&agent.version,
 	)
@@ -503,10 +503,10 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		Some("COMMIT")
 	);
 	for _ in 0..2 {
-		participant::finish(&a.f, &a.f.config.node_id, &manifest)
+		participant::finish(&a.f, a.f.config.deployment.as_str(), &manifest)
 			.await
 			.unwrap();
-		participant::finish(&b.f, &a.f.config.node_id, &manifest)
+		participant::finish(&b.f, a.f.config.deployment.as_str(), &manifest)
 			.await
 			.unwrap();
 	}
@@ -606,7 +606,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	let Some((a, b, manifest, wa, wb)) = Box::pin(pair).await else {
 		return;
 	};
-	let set_trust = |enabled| json!({"node_id":a.f.config.node_id,"enabled":enabled});
+	let set_trust = |enabled| json!({"node_id":a.f.config.deployment,"enabled":enabled});
 	assert_eq!(
 		b.post("/api/transactions/trust", &set_trust(false)).await.0,
 		200
@@ -630,14 +630,14 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	admitted.id = Uuid::new_v4();
 	// An authenticated peer cannot claim that a different node coordinates its manifest.
 	let mut forged = admitted.clone();
-	forged.coordinator = b.f.config.node_id.clone();
+	forged.coordinator = b.f.config.deployment.to_string();
 	let client = &b.peer_client;
 	let peer_headers = [
 		(
 			"authorization",
 			format!("Bearer {}", crate::fixtures::PEER_SECRET),
 		),
-		("x-aidash-node", a.f.config.node_id.clone()),
+		("x-aidash-node", a.f.config.deployment.to_string()),
 		("x-aidash-protocol", "0.2".into()),
 	];
 	let peer_headers: Vec<_> = peer_headers.iter().map(|(k, v)| (*k, v.as_str())).collect();

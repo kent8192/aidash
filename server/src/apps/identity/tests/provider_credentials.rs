@@ -118,7 +118,7 @@ impl KeyValidator for Validator {
 async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
 	endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
 	assert_json(f.deployment_administrator.post(&format!("/api/authorization/{tenant}"), &json!({
-		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(&f.runtime.config.node_id,"environment-agent","1.0.0"):{"kind":"agent"}},
+		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(f.runtime.config.deployment.as_str(),"environment-agent","1.0.0"):{"kind":"agent"}},
 		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}
 	}), "json").await.unwrap(),200);
 }
@@ -203,7 +203,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
@@ -355,7 +355,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
@@ -730,7 +730,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
@@ -942,7 +942,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
@@ -1064,12 +1064,12 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		&mut aidash_application::registry::bindings::catalog::LocalCatalog(
 			aidash_application::registry::bindings::catalog::LookupCatalog {
 				definitions: &mut Lookup(&f.runtime.registry),
-				node: &f.runtime.config.node_id,
+				node: f.runtime.config.deployment.as_str(),
 			},
 		),
 		&aidash_server::bootstrap::registry_validation().with_provider_credentials(true),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.runtime.config.node_id.clone(),
+			registry_node: f.runtime.config.deployment.to_string(),
 			id: agent.id.clone(),
 			version: agent.version.clone(),
 		},
@@ -1521,7 +1521,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	let service = Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store: store.clone(),
 		validator: Arc::new(Validator),
@@ -2184,8 +2184,8 @@ fn recovery_settings(f: &EndpointFixture, dir: &std::path::Path, current: &str) 
 		format!(
 			r#"[core]
 secret_key = "recovery-fixture-secret-key-not-for-production-at-least-50-bytes-157"
-[node]
-node_id = {:?}
+[deployment]
+id = {:?}
 endpoint = "http://127.0.0.1:8080"
 api_token = "recovery-fixture-token-at-least-16"
 [provider_credentials]
@@ -2194,7 +2194,7 @@ fingerprint_key = {{ file = {:?} }}
 kind = "postgres"
 master_key = {{ file = {:?} }}
 "#,
-			f.runtime.store.node_id,
+			f.runtime.store.deployment,
 			dir.join("fingerprint"),
 			dir.join("master")
 		),
@@ -2267,7 +2267,7 @@ fn real_service(
 	Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store,
 		validator: Arc::new(Validator),
@@ -2775,7 +2775,7 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 	roots(&f).await;
 	let repository = NativeRepository {
 		pool: f.runtime.store.control_pool.clone(),
-		node: f.runtime.store.node_id.clone(),
+		node: f.runtime.store.deployment.to_string(),
 	};
 	let mut expected = Vec::new();
 	for tenant in ["alpha", "beta"] {
@@ -2902,7 +2902,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
-			node: f.runtime.store.node_id.clone(),
+			node: f.runtime.store.deployment.to_string(),
 		}),
 		store: store.clone(),
 		validator: Arc::new(Validator),
@@ -3137,7 +3137,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		let service = Arc::new(Service {
 			repository: Arc::new(NativeRepository {
 				pool: f.runtime.store.control_pool.clone(),
-				node: f.runtime.store.node_id.clone(),
+				node: f.runtime.store.deployment.to_string(),
 			}),
 			store: store.clone(),
 			validator,

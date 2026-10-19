@@ -243,7 +243,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 		.bank
 	} else {
 		Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -406,7 +406,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		.bank
 	} else {
 		Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -594,7 +594,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 		.bank
 	} else {
 		Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -1138,7 +1138,7 @@ pub(super) async fn recorded_run(
 	units: &[Uuid],
 ) -> (aidash_server::authorization::workspace::Workspaces, Uuid) {
 	// Workspace inspection now resolves built-in capabilities through Registry.
-	aidash_server::registry::Registry::new(store.pool.clone(), &store.node_id)
+	aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)
 		.unwrap()
 		.seed_system()
 		.await
@@ -1146,7 +1146,7 @@ pub(super) async fn recorded_run(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0");
 	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
@@ -1204,7 +1204,7 @@ pub(super) async fn recorded_run(
 				Expr::value(run),
 				Expr::value(task.id),
 				Expr::value(bank.workspace),
-				Expr::value(&store.node_id),
+				Expr::value(store.deployment.as_str()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),
@@ -1283,7 +1283,7 @@ pub(super) async fn run_visible(
 ) -> bool {
 	let state = scope
 		.state(aidash_server::config::NodeIdentity {
-			id: store.node_id.clone(),
+			id: store.deployment.to_string(),
 			endpoint: "http://127.0.0.1:9".into(),
 			capabilities: vec![],
 			clusters: vec![],
@@ -1326,7 +1326,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 		.bank
 	} else {
 		Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,

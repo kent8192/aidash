@@ -29,7 +29,7 @@ fn scope(tenant: &TenantName) -> TenancyScope {
 #[derive(Clone)]
 pub struct Registry {
 	pool: Pool,
-	node_id: String,
+	deployment: aidash_domain::nodes::DeploymentId,
 	provider_credentials: bool,
 	plan_connections: bool,
 }
@@ -53,7 +53,7 @@ impl Registry {
 	pub async fn seed(&self, tenant: &TenantName) -> Result<()> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				seed_tenant(tx, &self.node_id, tenant).await
+				seed_tenant(tx, self.deployment.as_str(), tenant).await
 			})
 			.await
 	}
@@ -70,16 +70,19 @@ impl Registry {
 		for tenant in tenants {
 			self.pool
 				.atomic(&scope(&tenant), async |tx| {
-					seed_tenant(tx, &self.node_id, &tenant).await
+					seed_tenant(tx, self.deployment.as_str(), &tenant).await
 				})
 				.await?;
 		}
 		Ok(())
 	}
-	pub fn new(pool: impl Into<Pool>, node_id: &str) -> Result<Self> {
+	pub fn new(
+		pool: impl Into<Pool>,
+		deployment: &aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
 		Ok(Self {
 			pool: pool.into(),
-			node_id: node_id.into(),
+			deployment: deployment.clone(),
 			provider_credentials: false,
 			plan_connections: false,
 		})
@@ -87,7 +90,7 @@ impl Registry {
 	pub async fn get(&self, tenant: &TenantName, id: &str, version: &str) -> Result<Entry> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				Ok(OrmScope::new(tx, &self.node_id, tenant)
+				Ok(OrmScope::new(tx, self.deployment.as_str(), tenant)
 					.definition(id, version)
 					.await?)
 			})
@@ -104,7 +107,7 @@ impl Registry {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
 				Ok(aidash_application::registry::get_for_run(
-					&mut OrmScope::new(tx, &self.node_id, tenant),
+					&mut OrmScope::new(tx, self.deployment.as_str(), tenant),
 					run,
 					id,
 					version,
@@ -117,7 +120,7 @@ impl Registry {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
 				Ok(aidash_application::registry::list(
-					&mut OrmScope::new(tx, &self.node_id, tenant),
+					&mut OrmScope::new(tx, self.deployment.as_str(), tenant),
 					search,
 				)
 				.await?)
@@ -128,12 +131,12 @@ impl Registry {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
 				Ok(aidash_application::registry::register(
-					&mut OrmScope::new(tx, &self.node_id, tenant),
+					&mut OrmScope::new(tx, self.deployment.as_str(), tenant),
 					&self.validation(),
 					entry,
 					None,
 					false,
-					&self.node_id,
+					self.deployment.as_str(),
 				)
 				.await?)
 			})
@@ -142,7 +145,14 @@ impl Registry {
 	pub async fn validate_references(&self, tenant: &TenantName, entry: &Entry) -> Result<()> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				validate_references_with(tx, tenant, entry, &self.node_id, &self.validation()).await
+				validate_references_with(
+					tx,
+					tenant,
+					entry,
+					self.deployment.as_str(),
+					&self.validation(),
+				)
+				.await
 			})
 			.await
 	}

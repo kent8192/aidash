@@ -15,7 +15,7 @@ use serde_json::json;
 /// A Run of Agent `a` that read revision 1 of `unit`, and a Subject allowed
 /// everything by policy revision 1.
 async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
-	crate::registry::Registry::new(store.pool.clone(), &store.node_id)
+	crate::registry::Registry::new(store.pool.clone(), &store.deployment)
 		.unwrap()
 		.seed_system()
 		.await
@@ -23,7 +23,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0");
 	authorization
 		.replace(
 			"acme",
@@ -86,7 +86,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				Expr::value(run),
 				Expr::value(task.id),
 				Expr::value(bank.workspace),
-				Expr::value(&store.node_id),
+				Expr::value(store.deployment.as_str()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),

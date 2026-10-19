@@ -233,7 +233,7 @@ impl Access {
 	) -> Result<Self> {
 		Self::begin_on(
 			&store.pool,
-			&store.node_id,
+			store.deployment.as_str(),
 			store.semantic_client.clone(),
 			identity,
 			exclusive,

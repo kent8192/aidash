@@ -72,7 +72,7 @@ pub async fn tenant_scope(
 	)
 	.await
 	.expect("the Tenant policy is written");
-	aidash_server::registry::Registry::new(store.pool.clone(), &store.node_id)
+	aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)
 		.unwrap()
 		.seed(&tenant)
 		.await
@@ -87,7 +87,11 @@ pub async fn local_run(
 	task: &aidash_server::domain::Task,
 	agent: &aidash_server::registry::Entry,
 ) -> aidash_server::domain::Run {
-	let owner = aidash_server::domain::qualified_agent(&store.node_id, &agent.id, &agent.version);
+	let owner = aidash_server::domain::qualified_agent(
+		store.deployment.as_str(),
+		&agent.id,
+		&agent.version,
+	);
 	if task.owner.as_deref() != Some(owner.as_str()) {
 		store
 			.claim(scope, task.id, task.revision, &owner, agent)
@@ -207,8 +211,11 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 		pool: f.store.pool.clone(),
 	};
 	let snapshot = authorization.snapshot(tenant).await.unwrap();
-	let subject =
-		aidash_server::domain::qualified_agent(&f.config.node_id, &agent.id, &agent.version);
+	let subject = aidash_server::domain::qualified_agent(
+		f.config.deployment.as_str(),
+		&agent.id,
+		&agent.version,
+	);
 	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
 	if bundle["subjects"].get(&subject).is_none() {
 		bundle["subjects"][&subject] = serde_json::json!({"kind":"agent"});
@@ -242,7 +249,7 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 		pending.extend(
 			aidash_application::authorization::catalog::approvals::dependencies(
 				&entry,
-				&f.config.node_id,
+				f.config.deployment.as_str(),
 			)
 			.unwrap(),
 		);

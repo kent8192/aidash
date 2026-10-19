@@ -123,7 +123,7 @@ struct Session {
 #[async_trait]
 impl GenerationReservationRepository for NativeReservation {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationReservationSession>> {
 		Ok(Box::new(Session {

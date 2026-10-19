@@ -32,7 +32,7 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://targeted-lease-test".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://targeted-lease-test").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -74,7 +74,7 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 		worker,
 		30,
 		Some(target.id),
-		&store.node_id,
+		store.deployment.as_str(),
 		&mut None,
 	)
 	.await
@@ -114,7 +114,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://capability-lease-test".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://capability-lease-test").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -163,7 +163,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		Uuid::new_v4(),
 		30,
 		Some(reserved.id),
-		&store.node_id,
+		store.deployment.as_str(),
 		&mut None,
 	)
 	.await
@@ -195,7 +195,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		Uuid::new_v4(),
 		30,
 		Some(reserved.id),
-		&store.node_id,
+		store.deployment.as_str(),
 		&mut None,
 	)
 	.await
@@ -217,7 +217,7 @@ async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://capability-malformed-test".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://capability-malformed-test").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -287,7 +287,7 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://capability-cancel-test".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://capability-cancel-test").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -328,7 +328,7 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 		Uuid::new_v4(),
 		30,
 		Some(cancelled.id),
-		&store.node_id,
+		store.deployment.as_str(),
 		&mut None,
 	)
 	.await

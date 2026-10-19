@@ -518,7 +518,7 @@ impl HomeScope for Scope {
 	async fn provenance(&mut self, value: Option<Value>) -> Result<Option<Provenance>> {
 		crate::semantic::remote::status::provenance(
 			&mut self.access,
-			&self.runtime.config.node_id,
+			self.runtime.config.deployment.as_str(),
 			value,
 		)
 		.await
@@ -548,7 +548,7 @@ impl HomeScope for Scope {
 impl HomeRepository for Repository {
 	type Scope = Scope;
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
 		match &self.actor {

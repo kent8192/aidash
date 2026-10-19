@@ -188,7 +188,7 @@ fn workbench(
 			(
 				"fixture-tool",
 				"tool",
-				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
+				json!({"registry_node":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 			),
 		] {
 			f.registry
@@ -210,7 +210,7 @@ fn workbench(
 		.await;
 		assert_eq!(status, 200);
 		let token = credential["token"].as_str().unwrap().to_owned();
-		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
+		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
 		assert_eq!(status, 200, "draft: {draft}");
 		Workbench {
 			_fixture: application_fixture,
@@ -612,7 +612,7 @@ async fn registry_reload_preserves_registered_behavior_flags(#[future(awt)] work
 	let registered = wb.register().await;
 	let entry: aidash_server::registry::Entry =
 		serde_json::from_value(registered["entry"].clone()).unwrap();
-	let reloaded = Registry::new(wb.f.store.pool.clone(), &wb.f.config.node_id).unwrap();
+	let reloaded = Registry::new(wb.f.store.pool.clone(), &wb.f.config.deployment).unwrap();
 	assert_eq!(
 		reloaded
 			.get(
@@ -908,7 +908,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 #[rstest::fixture]
 async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","replay":"read_only"}}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","replay":"read_only"}}})).await.0, 200);
 	wb
 }
 
@@ -1123,7 +1123,7 @@ async fn trust_run_backlog(
 			.bind(run_id)
 			.bind(task.id)
 			.bind(workspace)
-			.bind(&wb.f.config.node_id)
+			.bind(wb.f.config.deployment.as_str())
 			.bind(wb.draft["entry"]["id"].as_str().unwrap())
 			.execute(wb.f.store.pool.fixture_driver())
 			.await
@@ -1171,7 +1171,7 @@ async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
 async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
 	wb.register().await;
-	assert_eq!(request(&wb.app,&wb.token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
+	assert_eq!(request(&wb.app,&wb.token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_node":wb.f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.deployment,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
 	wb
 }
 
@@ -1188,7 +1188,7 @@ async fn creator_prompt_validation_charges_only_bound_agent_tools(
 	let mut entry = wb.draft["entry"].clone();
 	// Binding availability is independent of the task_delegate default.
 	entry["config"]["bindings"] = if bound {
-		json!([{"kind":"tool","target":{"registry_node":wb.f.config.node_id,"id":"oversized-agent-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}])
+		json!([{"kind":"tool","target":{"registry_node":wb.f.config.deployment,"id":"oversized-agent-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}])
 	} else {
 		json!([])
 	};

@@ -102,7 +102,7 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 	let (status, upload) = request(&c.app, &c.token, "POST", "/api/references/uploads", json!({"idempotency_key":Uuid::new_v4(),"name":"too-big.txt","media_type":"text/plain","size":33,"digest":"a".repeat(64)})).await;
 	assert_eq!(status, 400, "{upload}");
 	assert_eq!(upload["error"]["code"], "REFERENCE_UPLOAD_LIMIT");
-	let (status, share) = request(&c.app, &c.token, "POST", &format!("{base}/files/share"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":created["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":Uuid::new_v4()}})).await;
+	let (status, share) = request(&c.app, &c.token, "POST", &format!("{base}/files/share"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":created["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.f.config.deployment,"agent_id":"research","agent_version":"1.1.0","thread_id":Uuid::new_v4()}})).await;
 	assert_eq!(status, 400, "{share}");
 	assert_eq!(share["error"]["code"], "SHARE_FILE_LIMIT");
 	let (_, area) = request(

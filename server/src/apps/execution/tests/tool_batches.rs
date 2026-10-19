@@ -64,7 +64,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	let pool = f.store.pool.fixture_driver().clone();
 	let agent = |parallelism: Option<Value>, narrow: Value| {
 		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test",
-			"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":narrow}]});
+			"bindings":[{"kind":"tool","target":{"registry_node":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":narrow}]});
 		if let Some(parallelism) = parallelism {
 			config["tool_parallelism"] = parallelism;
 		}
@@ -101,7 +101,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	// Only Tool and Bundle Bindings bind Tools whose concurrency can be lowered.
 	let binding = |kind: &str, narrow: Value| {
 		let mut config = agent(None, json!({})).remove(0);
-		config["bindings"] = json!([{"kind":kind,"target":{"registry_node":f.config.node_id,"id":kind,"version":"1.0.0"},"narrow":narrow}]);
+		config["bindings"] = json!([{"kind":kind,"target":{"registry_node":f.config.deployment,"id":kind,"version":"1.0.0"},"narrow":narrow}]);
 		vec![config]
 	};
 	for kind in ["tool", "bundle"] {
@@ -120,7 +120,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	// A descriptor may restate shared_read only for a provider that declares it.
 	let descriptor = |operation: &str, provider: &str, tier: &str, claim: &str| {
 		vec![
-			json!({"registry_node":f.config.node_id,"provider":provider,"operation":operation,
+			json!({"registry_node":f.config.deployment,"provider":provider,"operation":operation,
 			"default_alias":operation,"tier":tier,"narrow":{"concurrency":claim}}),
 		]
 	};
@@ -300,7 +300,7 @@ impl Batching {
 		.await;
 		assert_eq!(status, 200, "{body}");
 		policy["subjects"][aidash_server::domain::qualified_agent(
-			&f.config.node_id,
+			f.config.deployment.as_str(),
 			"research",
 			AGENT_VERSION,
 		)] = json!({"kind":"agent"});
@@ -330,7 +330,7 @@ impl Batching {
 			&self.token,
 			"POST",
 			&format!("/api/tasks/{task}/delegate"),
-			json!({"node_id":self.f.config.node_id,"agent":{"id":"research","version":AGENT_VERSION}}),
+			json!({"node_id":self.f.config.deployment,"agent":{"id":"research","version":AGENT_VERSION}}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");

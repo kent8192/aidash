@@ -23,7 +23,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str, tenant: &str) -> U
 				id.into(),
 				Uuid::new_v4().into(),
 				Uuid::new_v4().into(),
-				f.config.node_id.clone().into(),
+				f.config.deployment.to_string().into(),
 				"fixture".into(),
 				"1.0.0".into(),
 				control.into(),
@@ -64,7 +64,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 			.values_panic::<_, reinhardt::query::Value>([
 				area.into(),
 				"default".into(),
-				f.config.node_id.clone().into(),
+				f.config.deployment.to_string().into(),
 				"fixture".into(),
 				"fixture".into(),
 				Uuid::new_v4().into(),
@@ -159,7 +159,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 			.columns(["id", "coordinator", "digest", "manifest", "phase"].map(a))
 			.values_panic::<_, reinhardt::query::Value>([
 				transaction.into(),
-				f.config.node_id.clone().into(),
+				f.config.deployment.to_string().into(),
 				"fixture".into(),
 				json!({}).into(),
 				"PREPARED".into(),
@@ -182,9 +182,13 @@ async fn visibility_release_retries_existing_work_without_fanout(
 		namespace: schema.clone(),
 		..Default::default()
 	};
-	let broker = Broker::provision(&environment.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
+	let broker = Broker::provision(
+		&environment.nats_url,
+		f.config.deployment.as_str(),
+		&settings,
+	)
+	.await
+	.unwrap();
 	let runtime = aidash_server::activation::Runtime::new(f.clone(), settings, false);
 	let (stop, stopping) = tokio::sync::watch::channel(false);
 	let task = tokio::spawn(runtime.run(stopping));

@@ -61,7 +61,7 @@ pub(crate) async fn reserve(
 		usage: Usage {
 			operation_id: origin.operation.id,
 			attempt_id: attempt,
-			dispatcher_node: origin.runtime.config.node_id.clone(),
+			dispatcher_node: origin.runtime.config.deployment.to_string(),
 			grant_id: origin.operation.grant_id,
 			admission_id: origin.operation.admission_id,
 			purpose: Purpose::Memory,

@@ -698,7 +698,7 @@ impl HarnessManagement {
 		)
 		.execute(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?;
-		Ok(json!({"status":"ok","node_id":f.config.node_id}))
+		Ok(json!({"status":"ok","node_id":f.config.deployment}))
 	}
 	pub(crate) async fn run_media_message(
 		&self,
@@ -734,7 +734,7 @@ impl HarnessManagement {
 					.require(&access.resource("run", id, json!({})), "run.message")
 					.await?;
 			}
-			if run.home_node != f.config.node_id {
+			if run.home_node != f.config.deployment {
 				return Err(Error::Invalid(
 					"media run messages require a local run".into(),
 				));
@@ -752,7 +752,7 @@ impl HarnessManagement {
 		let result = async {
 			let (existing, record) = crate::apps::execution::models::RunInput::admit_media(
 				lease.tx(),
-				&f.config.node_id,
+				f.config.deployment.as_str(),
 				id,
 				&sender,
 				&input.content,

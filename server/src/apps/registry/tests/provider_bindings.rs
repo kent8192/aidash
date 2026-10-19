@@ -18,10 +18,13 @@ use serde_json::json;
 async fn registry(database: &DatabaseFixture) -> Registry {
 	let pool = database.connection.clone().into_postgres().unwrap();
 	tenant_roots::tenant_root_in(&pool, "acme").await;
-	let store = Store::from_pool(pool, "aidash://node".into())
-		.await
-		.unwrap();
-	Registry::new(store.pool.clone(), &store.node_id).unwrap()
+	let store = Store::from_pool(
+		pool,
+		aidash_domain::nodes::DeploymentId::parse("aidash://node").unwrap(),
+	)
+	.await
+	.unwrap();
+	Registry::new(store.pool.clone(), &store.deployment).unwrap()
 }
 
 #[rstest]

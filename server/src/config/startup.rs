@@ -66,7 +66,7 @@ impl RunserverHook for AidashRuntime {
 		let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 		let federation = bootstrap::initialize(&context.di_context, &settings, connection).await?;
 		ProcessLifecycle::register(&context.di_context, context.shutdown_coordinator.clone());
-		let probes = if let Some(address) = settings.node.probe_listen {
+		let probes = if let Some(address) = settings.deployment.probe_listen {
 			Some(
 				ProbeServer::start(
 					address,
@@ -78,11 +78,11 @@ impl RunserverHook for AidashRuntime {
 		} else {
 			None
 		};
-		let tasks = if settings.node.background_enabled {
+		let tasks = if settings.deployment.background_enabled {
 			Some(
 				RuntimeTasks::start(
 					federation,
-					settings.node.worker_count,
+					settings.deployment.worker_count,
 					context.shutdown_coordinator.clone(),
 					Some(
 						(*reinhardt::Depends::<crate::sse::Service>::resolve_from_registry(

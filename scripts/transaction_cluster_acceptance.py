@@ -148,7 +148,7 @@ class Cluster:
             "imagePullPolicy": "IfNotPresent", "args": ["migrate"],
             "envFrom": [{"secretRef": {"name": f"tx-{node}"}}],
             "env": [{"name": "DATABASE_URL", "value": self.login_url("owner", node)},
-                    {"name": "AIDASH_NODE_ID", "value": f"aidash://tx-{node:02}"}]}]}}}})
+                    {"name": "AIDASH_DEPLOYMENT_ID", "value": f"aidash://tx-{node:02}"}]}]}}}})
 
     def await_migration(self, node):
         name = f"tx-{node}-migrate"
@@ -331,7 +331,7 @@ class Cluster:
                     "terminationGracePeriodSeconds": 25, "containers": [{"name": "aidash", "image": self.args.image,
                     "imagePullPolicy": "IfNotPresent", "args": [role], "ports": [{"containerPort": 8080}],
                     "envFrom": [{"secretRef": {"name": f"tx-{node}"}}], "env": [
-                    {"name": "AIDASH_NODE_ID", "value": f"aidash://tx-{node:02}"},
+                    {"name": "AIDASH_DEPLOYMENT_ID", "value": f"aidash://tx-{node:02}"},
                     {"name": "AIDASH_ENDPOINT", "value": f"http://tx-{node}:8080"},
                     {"name": "NATS_URL", "value": "nats://nats:4222"}, {"name": "RUST_LOG", "value": "aidash=warn"},
                     {"name": "AIDASH_API_RATE_BURST", "value": "100000"}, {"name": "AIDASH_AUTH_RATE_BURST", "value": "100000"},

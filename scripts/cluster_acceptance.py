@@ -48,7 +48,7 @@ def main():
         """Apply the native history as the owner before the node's release starts;
         its servers and workers log in as aidash_server and never migrate (#262)."""
         name = f"aidash-{node}-migrate"
-        apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name}, "spec": {"backoffLimit": 0, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "migrate", "image": args.image, "imagePullPolicy": "IfNotPresent", "args": ["migrate"], "envFrom": [{"secretRef": {"name": f"aidash-{node}"}}], "env": [{"name": "DATABASE_URL", "value": f"postgres://aidash_owner:{OWNER_PASSWORD}@postgres:5432/aidash_{node}"}, {"name": "AIDASH_NODE_ID", "value": f"aidash://ops-{node}"}]}]}}}})
+        apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name}, "spec": {"backoffLimit": 0, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "migrate", "image": args.image, "imagePullPolicy": "IfNotPresent", "args": ["migrate"], "envFrom": [{"secretRef": {"name": f"aidash-{node}"}}], "env": [{"name": "DATABASE_URL", "value": f"postgres://aidash_owner:{OWNER_PASSWORD}@postgres:5432/aidash_{node}"}, {"name": "AIDASH_DEPLOYMENT_ID", "value": f"aidash://ops-{node}"}]}]}}}})
         try:
             kube("wait", "--for=condition=complete", f"job/{name}", "--timeout=600s")
         finally:

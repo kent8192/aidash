@@ -49,7 +49,7 @@ impl ProfileRepository for Repository<'_> {
 	async fn begin_draft(&self) -> Result<Box<dyn ProfileDraftScope + '_>> {
 		Ok(Box::new(Scope {
 			configured: self.runtime.store.provider_credentials.is_some(),
-			node: self.runtime.config.node_id.clone(),
+			node: self.runtime.config.deployment.to_string(),
 			tx: self
 				.runtime
 				.store
@@ -145,7 +145,7 @@ impl Repository<'_> {
 	fn tenant_actions(&self) -> super::authority::TenantActions {
 		super::authority::TenantActions::new(
 			self.actor.clone(),
-			self.runtime.config.node_id.clone(),
+			self.runtime.config.deployment.to_string(),
 		)
 	}
 }

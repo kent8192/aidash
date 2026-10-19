@@ -19,7 +19,7 @@ pub(crate) struct NativePublication<'a> {
 #[async_trait]
 impl GenerationPublication for NativePublication<'_> {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn snapshot(&self) -> &Snapshot {
 		&self.access.snapshot
@@ -106,7 +106,7 @@ impl GenerationPublication for NativePublication<'_> {
 		crate::registry::register_in(
 			&mut self.access.tx,
 			entry,
-			&self.runtime.config.node_id,
+			self.runtime.config.deployment.as_str(),
 			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 		)
 		.await

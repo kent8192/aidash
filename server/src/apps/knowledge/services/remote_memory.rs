@@ -201,7 +201,7 @@ pub(crate) async fn stamp(
 	binding: &NativeBinding,
 ) -> Result<String> {
 	let current = bind(
-		&store.node_id,
+		store.deployment.as_str(),
 		lease,
 		binding.participant.bank.workspace,
 		&binding.selection,

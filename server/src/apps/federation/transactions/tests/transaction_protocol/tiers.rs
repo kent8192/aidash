@@ -29,7 +29,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 			local
 				.f
 				.register_peer(Peer {
-					node_id: remote.f.config.node_id.clone(),
+					node_id: remote.f.config.deployment.to_string(),
 					endpoint: remote.f.config.endpoint.clone(),
 					credential_env: format!("AIDASH_SECRET_TRANSACTION_{index:02}"),
 					protocol_version: "0.2".into(),
@@ -42,7 +42,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 					.request(
 						reqwest::Method::POST,
 						"/api/transactions/trust",
-						Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))
+						Some(json!({"node_id":remote.f.config.deployment,"enabled":true}))
 					)
 					.await
 					.0,
@@ -51,9 +51,9 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		}
 	}
 	for repetition in 0..3 {
-		let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":nodes[0].f.config.node_id,
+		let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":nodes[0].f.config.deployment,
             "isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-            "participants":nodes.iter().zip(&workspaces).map(|(node,workspace)|json!({"node_id":node.f.config.node_id,
+            "participants":nodes.iter().zip(&workspaces).map(|(node,workspace)|json!({"node_id":node.f.config.deployment,
                 "mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":if abort {0}else{repetition},"state":{"repetition":repetition}}]})).collect::<Vec<_>>() })).unwrap();
 		coordinator::submit(&nodes[0].f, &manifest).await.unwrap();
 		steps(&nodes[0], manifest.id, count * 2).await;

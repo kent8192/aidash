@@ -26,7 +26,7 @@ impl AuthorizationManagement {
 		};
 		Ok(SessionResponse {
 			access,
-			node_id: f.config.node_id,
+			node_id: f.config.deployment.to_string(),
 		})
 	}
 }

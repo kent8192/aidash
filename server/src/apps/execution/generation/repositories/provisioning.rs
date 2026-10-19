@@ -133,7 +133,7 @@ impl Activation {
 #[async_trait]
 impl GenerationPublication for Activation {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn snapshot(&self) -> &Snapshot {
 		&self.access.snapshot
@@ -187,7 +187,7 @@ impl GenerationActivationScope for Activation {
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		let node = self.runtime.config.node_id.clone();
+		let node = self.runtime.config.deployment.to_string();
 		crate::apps::registry::repositories::bindings::preview(
 			&mut *self.access.tx,
 			&node,
@@ -297,7 +297,7 @@ impl GenerationTerminalSession for Terminal {
 		let tx = &mut self.transaction;
 		let phase: Option<String> = {
 			let query_bind_1 = job.task_id;
-			let query_bind_2 = &f.config.node_id;
+			let query_bind_2 = f.config.deployment.as_str();
 			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::SimpleExpr::from(

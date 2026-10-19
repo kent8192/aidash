@@ -75,7 +75,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		200
 	);
 	{
-		let query_bind_1 = &a.config.node_id;
+		let query_bind_1 = a.config.deployment.as_str();
 		sqlx::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("peers"))
@@ -112,10 +112,10 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		json!({"subject":"alice"}),
 	)
 	.await;
-	assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 
 	a.register_peer(Peer {
-		node_id: b.config.node_id.clone(),
+		node_id: b.config.deployment.to_string(),
 		endpoint: b.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
 		protocol_version: "0.2".into(),
@@ -235,7 +235,11 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		(
 			&a,
 			&a_policy,
-			aidash_server::domain::qualified_agent(&b.config.node_id, "remote-only", "1.0.0"),
+			aidash_server::domain::qualified_agent(
+				b.config.deployment.as_str(),
+				"remote-only",
+				"1.0.0",
+			),
 		),
 		(&b, &b_policy, "remote-only".to_owned()),
 	] {

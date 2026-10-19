@@ -131,7 +131,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	);
 	let peer_output_key = format!(
 		"{}:{}:{}:{}:output",
-		f.store.node_id, run.task_id, run.id, run.step
+		f.store.deployment, run.task_id, run.id, run.step
 	);
 	assert!(
 		f.store
@@ -1716,7 +1716,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 		.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-run-correction-read", "effect":"deny",
-		"subjects":{"ids":[qualified_agent(&f.config.node_id,"research","1.0.0")]},
+		"subjects":{"ids":[qualified_agent(f.config.deployment.as_str(),"research","1.0.0")]},
 		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[message.id]}
 	}));
 	assert_eq!(

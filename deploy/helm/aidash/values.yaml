@@ -5,7 +5,8 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
-node:
+deployment:
+  # The Deployment id, aidash://<name>.
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
@@ -57,7 +58,7 @@ metadataServerEgress:
 providerCredentials:
   settings: null
 # Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;
-# public_origin must equal node.endpoint. null renders nothing.
+# public_origin must equal deployment.endpoint. null renders nothing.
 gcip:
   settings: null
 server:

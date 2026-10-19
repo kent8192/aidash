@@ -79,7 +79,7 @@ pub(crate) async fn visible_within(
 #[async_trait]
 impl RunDetailsScope for Scope<'_> {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn set_context(&mut self, context: Value) {
 		self.access.get().context = context;

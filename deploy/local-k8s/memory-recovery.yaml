@@ -40,7 +40,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   { name: aidash-local-migration, key: DATABASE_URL }
-            - { name: AIDASH_NODE_ID, value: "aidash://node-a" }
+            - { name: AIDASH_DEPLOYMENT_ID, value: "aidash://node-a" }
             - { name: AIDASH_MEMORY_RECOVERY_DIR, value: /recovery/home }
           securityContext:
             runAsNonRoot: true
