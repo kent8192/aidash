@@ -130,6 +130,9 @@ pub enum DeploymentScopeReason {
 	/// when its audience changes. It writes nothing else: an event belongs to
 	/// one Tenant, and the writer's scope reaches only its own.
 	MarketplaceDistribution,
+	/// Purging a deleted Tenant's data after its grace period, and deleting the
+	/// audit history that outlived a purge (ADR 0061).
+	TenantPurge,
 	/// Test fixtures that span Tenants.
 	#[cfg(feature = "test-support")]
 	TestFixture,
@@ -164,6 +167,7 @@ impl DeploymentScopeReason {
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::ActivityObserver => "activity-observer",
 			Self::MarketplaceDistribution => "marketplace-distribution",
+			Self::TenantPurge => "tenant-purge",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
 		}
@@ -189,6 +193,7 @@ impl DeploymentScopeReason {
 			| Self::TenantCreation
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
+			| Self::TenantPurge
 			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -247,6 +252,7 @@ mod tests {
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::ActivityObserver,
 			DeploymentScopeReason::MarketplaceDistribution,
+			DeploymentScopeReason::TenantPurge,
 		];
 		let labels = reasons
 			.iter()

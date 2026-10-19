@@ -187,6 +187,8 @@ pub struct TenancyRules {
 	pub invitations: bool,
 	/// How long a deleted Tenant stays restorable before it is purged.
 	pub deletion_grace_days: u32,
+	/// How long audit history outlives a Tenant's purge before it is deleted.
+	pub audit_retention_days: u32,
 }
 
 impl TenancyRules {
@@ -201,6 +203,7 @@ impl TenancyRules {
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
+			audit_retention_days: deletion::DEFAULT_AUDIT_RETENTION_DAYS,
 		};
 		match offering {
 			Offering::Cloud => Self {
