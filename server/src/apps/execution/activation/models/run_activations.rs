@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct RunActivations {
 	#[field(primary_key = true)]
 	pub generation: i64,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub id: uuid::Uuid,
 	#[field]

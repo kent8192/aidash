@@ -101,9 +101,9 @@ impl SemanticConfigurationSession for Configuration {
 		}
 	}
 	async fn tenant(&mut self, workspace: Uuid) -> Result<String> {
-		Ok(AuthorizationWorkspace::tenant_in(self.tx()?, workspace)
+		AuthorizationWorkspace::tenant_in(self.tx()?, workspace)
 			.await?
-			.unwrap_or_default())
+			.ok_or(aidash_application::Error::Forbidden)
 	}
 	async fn index(&mut self, workspace: Uuid) -> Result<Option<Index>> {
 		Ok(SemanticIndexe::locked(self.tx()?, workspace, true)
@@ -408,6 +408,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 							Alias::new("state"),
 							Alias::new("created_by"),
 							Alias::new("authority"),
+							Alias::new("tenant"),
 						])
 						.from_subquery(
 							Query::select()
@@ -456,6 +457,11 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_11.to_owned()).into()],
+								))
+								.expr(crate::database::scope::tenant_of(
+									"workspaces",
+									"id",
+									query_bind_2,
 								))
 								.to_owned(),
 						)

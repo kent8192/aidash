@@ -1,5 +1,8 @@
 .git
 .ignore
+private
+secrets
+notes
 .trunk
 .env
 .env.*
@@ -9,8 +12,8 @@ target
 **/target
 coverage
 openapi
-web/node_modules
-web/dist
+**/node_modules
+**/dist
 web/src/generated
 web/test-results
 web/playwright-report

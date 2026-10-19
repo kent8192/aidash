@@ -136,7 +136,7 @@ impl OperationReconciliationRepository for Repository<'_> {
 		aidash_application::capabilities::withdrawal::withdraw(
 			&crate::bootstrap::operation_withdrawal_repository(
 				self.store,
-				crate::database::scope::recorded(&snapshot.tenant)?,
+				aidash_application::tenancy::TenancyScope::tenant(&snapshot.tenant)?,
 			),
 			snapshot.area_id,
 			snapshot.id,

@@ -1,7 +1,9 @@
 // reinhardt-migration-source: 1
-// Physical schema for the Tenant root record (ADR 0050), Personal Tenant links,
-// Invitations and addressed Registration Requests. Bytea and the constraints
-// are physical; 0021 records the matching model state.
+// Physical schema for Personal Tenant links, Invitations and addressed
+// Registration Requests. The Tenant root record (ADR 0050) is created in
+// 0002_tables, so that the tables created before this migration can reference
+// it (#265). Bytea and the constraints are physical; 0021 records the matching
+// model state.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0020_tenancy_schema", "identity")
@@ -11,63 +13,6 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
-		})
-		.add_operation(Operation::CreateTable {
-			name: "tenants".into(),
-			columns: vec![
-				ColumnDefinition::new("name", FieldType::Text).with_not_null(true).with_primary_key(true),
-				ColumnDefinition::new("label", FieldType::Text).with_not_null(false),
-				ColumnDefinition::new("personal", FieldType::Boolean)
-					.with_not_null(true)
-					.with_default(Some("false".into())),
-				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
-				ColumnDefinition::new("created_by_kind", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("created_by_identity", FieldType::Uuid).with_not_null(false),
-			],
-			constraints: vec![
-				Constraint::ForeignKey {
-					name: "tenants_created_by_identity_fkey".into(),
-					columns: vec!["created_by_identity".into()],
-					referenced_table: "dashboard_identities".into(),
-					referenced_columns: vec!["id".into()],
-					on_delete: ForeignKeyAction::NoAction,
-					on_update: ForeignKeyAction::NoAction,
-					deferrable: None,
-				},
-				Constraint::Check {
-					name: "tenants_root".into(),
-					expression: "length(name) BETWEEN 1 AND 256 AND created_by_kind IN ('identity','deployment_administrator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND (label IS NULL OR length(label) BETWEEN 1 AND 256)".into(),
-				},
-			],
-			without_rowid: None,
-			interleave_in_parent: None,
-			partition: None,
-		})
-		.add_operation(Operation::CreateNamedIndex {
-			table: "tenants".into(),
-			name: "tenants_creator".into(),
-			columns: vec!["created_by_identity".into(), "created_at".into()],
-			unique: false,
-			index_type: Some(IndexType::BTree),
-			where_clause: Some("created_by_identity IS NOT NULL".into()),
-			concurrently: false,
-			expressions: None,
-			mysql_options: None,
-			operator_class: None,
-		})
-		// The Deployment Administrators' newest-first list, scanned backwards,
-		// so a page stops after its rows however many Tenants there are.
-		.add_operation(Operation::CreateNamedIndex {
-			table: "tenants".into(),
-			name: "tenants_created".into(),
-			columns: vec!["created_at".into(), "name".into()],
-			unique: false,
-			index_type: Some(IndexType::BTree),
-			where_clause: None,
-			concurrently: false,
-			expressions: None,
-			mysql_options: None,
-			operator_class: None,
 		})
 		.add_operation(Operation::CreateTable {
 			name: "personal_tenants".into(),
@@ -240,6 +185,18 @@ pub(super) fn migration() -> Migration {
 				columns: vec!["tenant".into()],
 				referenced_table: "tenants".into(),
 				referenced_columns: vec!["name".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "dashboard_administration_history".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "dashboard_administration_history_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,

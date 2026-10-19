@@ -321,10 +321,16 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 				&Query::insert()
 					.into_table(Alias::new("authorization_remote_outputs"))
 					.columns(
-						["grant_id", "workspace_id", "resource_kind", "resource_id"]
-							.map(Alias::new),
+						[
+							"grant_id",
+							"workspace_id",
+							"resource_kind",
+							"resource_id",
+							"tenant",
+						]
+						.map(Alias::new),
 					)
-					.from_subquery(((1..=4).map(|i| Expr::cust(format!("${i}")))).fold(
+					.from_subquery(((1..=5).map(|i| Expr::cust(format!("${i}")))).fold(
 						reinhardt::query::Query::select(),
 						|mut select, expr| {
 							select.expr(expr);
@@ -347,6 +353,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 			.bind(workspace)
 			.bind(kind)
 			.bind(id)
+			.bind(&self.access.identity.tenant)
 			.execute(&mut **self.access.tx)
 			.await?;
 			Ok(())
@@ -469,13 +476,16 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("authorization_remote_commands"))
-					.columns(["grant_id", "request_key", "digest", "result"].map(Alias::new))
+					.columns(
+						["grant_id", "request_key", "digest", "result", "tenant"].map(Alias::new),
+					)
 					.from_subquery(
 						Query::select()
 							.expr(Expr::cust("$1"))
 							.expr(Expr::cust("$2"))
 							.expr(Expr::cust("$3"))
 							.expr(Expr::cust("$4"))
+							.expr(crate::database::scope::tenant())
 							.to_owned(),
 					)
 					.to_string(PostgresQueryBuilder),

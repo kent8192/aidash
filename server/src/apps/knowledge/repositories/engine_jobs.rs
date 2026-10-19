@@ -142,6 +142,7 @@ async fn enqueue(
 					"last_error",
 					"created_at",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -161,6 +162,11 @@ async fn enqueue(
 					.expr(Expr::value(error))
 					.expr(Expr::value(now))
 					.expr(Expr::value(now))
+					.expr(crate::database::scope::tenant_of(
+						"memory_banks",
+						"id",
+						bank_id,
+					))
 					.to_owned(),
 			)
 			.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned())

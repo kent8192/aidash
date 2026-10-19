@@ -29,6 +29,15 @@ with this placement. `capabilities.storage.existingClaim` is mounted at
 child, which the application creates and restricts to its own UID (a fresh
 volume root belongs to root and cannot be chmodded by the application).
 
+`workloadKind: StatefulSet` renders the server, worker and Runner as StatefulSets
+that replace their one Pod in place, keeping the same affinity. With
+`highAvailability.enabled`, which requires StatefulSets, each also gets a GKE
+`HighAvailabilityApplication`: once its Cluster Node has been unreachable for
+`highAvailability.afterNodeUnreachableSeconds` (20), Stateful HA force-deletes
+the Pod and force-attaches its regional disks wherever it is rescheduled. This
+needs the cluster's Stateful HA add-on and claims on a regional
+`regional-hard-failover` StorageClass; production uses both (ADR 0067).
+
 ## Edge, settings and network
 
 `keylessEndpoints.permittedPrivateOrigins` sets `AIDASH_KEYLESS_PRIVATE_ORIGINS` on
@@ -202,8 +211,12 @@ Installer node patch permissions are cluster-wide, so granting them to
 source-built code would cross Environment boundaries.
 
 The only verified GCP profile is GKE Standard on Ubuntu/containerd N2 pools with
-upstream gVisor; GKE Sandbox and Autopilot are excluded. The installer checks the
-release archive SHA-256, validates all archive paths and regular files, writes
+upstream gVisor; GKE Sandbox and Autopilot are excluded. The installer installs
+only the release archive bundled in its image at build time, pinned by version and
+SHA-256 in `runner/gvisor.json`; it never downloads at install time, so a new
+Cluster Node needs only its image registry. Keep `execution.gvisor` equal to that
+pin: a version the image does not bundle fails before any host change. The
+installer checks the archive SHA-256, validates all archive paths and regular files, writes
 every binary (including `gvisor-bin`), verifies a receipt against installed file
 hashes, registers containerd's version-2 `runsc` runtime, and restarts containerd
 through PID 1 only after configuration changes. It publishes
@@ -306,7 +319,7 @@ supplies termination proof; the operation stays uncertain through the existing
 recovery path. Accepted code is never replayed by infrastructure.
 
 For disposable local verification of these components, run
-`python3 scripts/verify-execution-chart.py --name aidash-155-local --directory .ignore/issue155/local`.
+`python3 scripts/verify-execution-chart.py --name aidash-155-local --directory private/issue155/local`.
 It uses a private kubeconfig, a new kind cluster and upstream gVisor, and deletes
 only that cluster after saving health/resource evidence. ARM's archive checksum
 is used only for local verification; it does not establish a GKE ARM profile.

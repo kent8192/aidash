@@ -33,7 +33,7 @@ impl DashboardLoginTransaction {
 				.ok_or(Error::Unauthorized)?;
 			if row.browser_hash != browser
 				|| row.expires_at <= database_time(tx).await?
-				|| row.gcip_tenant.is_none()
+				|| row.issuer.is_none()
 			{
 				return Err(Error::Unauthorized);
 			}
@@ -106,13 +106,12 @@ impl DashboardLoginTransaction {
 impl DashboardIdentity {
 	pub(crate) async fn register(
 		db: &Pool,
-		issuer: &str,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Self> {
 		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
+			let issuer = &sign_in.issuer;
 			let subject = &sign_in.subject;
-			let gcip_tenant = sign_in.gcip_tenant.as_deref().unwrap_or("");
 			let (sql, values) = Query::insert()
 				.into_table(Alias::new(Self::table_name()))
 				.columns(
@@ -121,7 +120,6 @@ impl DashboardIdentity {
 						"issuer",
 						"subject",
 						"last_valid_at",
-						"gcip_tenant",
 						"verified_email",
 						"display_name",
 						"display_observed_at",
@@ -130,25 +128,23 @@ impl DashboardIdentity {
 				)
 				.values_panic([
 					IntoValue::into_value(Uuid::new_v4()),
-					IntoValue::into_value(issuer),
+					IntoValue::into_value(issuer.clone()),
 					IntoValue::into_value(subject.clone()),
 					IntoValue::into_value(now),
-					IntoValue::into_value(gcip_tenant),
 					IntoValue::into_value(sign_in.verified_email.clone()),
 					IntoValue::into_value(sign_in.display_name.clone()),
 					IntoValue::into_value(now),
 				])
 				.on_conflict(
-					OnConflict::columns(["issuer", "gcip_tenant", "subject"])
+					OnConflict::columns(["issuer", "subject"])
 						.do_nothing()
 						.to_owned(),
 				)
 				.build(PostgresQueryBuilder);
 			TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
 			let mut identity = Self::objects()
-				.filter(Self::field_issuer().eq(issuer))
+				.filter(Self::field_issuer().eq(issuer.clone()))
 				.filter(Self::field_subject().eq(subject.clone()))
-				.filter(Self::field_gcip_tenant().eq(gcip_tenant))
 				.select_for_update()
 				.all_with_executor(tx)
 				.await

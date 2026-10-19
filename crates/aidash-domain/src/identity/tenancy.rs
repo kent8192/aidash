@@ -3,6 +3,7 @@
 //! created through Aidash, the conservative last-administrator check, and
 //! Tenant Deletion.
 use crate::identity::tenant_administration::{self as administration, COLLECTION};
+use crate::offering::Offering;
 use crate::policy::{
 	Effect, Evaluation, Group, Policy, PolicyBundle, Resource, ResourceSelector, Subject,
 	SubjectKind, SubjectSelector, identifier,
@@ -176,7 +177,7 @@ pub fn label(value: &str) -> Result<String> {
 pub const PERSONAL_LABEL: &str = "Personal";
 
 /// The deployment-wide rules for how Tenants come to exist and how people join
-/// them. The defaults are the Self-hosted Offering's.
+/// them. The Deployment's Offering supplies their defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenancyRules {
 	pub personal_tenants: bool,
@@ -188,15 +189,26 @@ pub struct TenancyRules {
 	pub deletion_grace_days: u32,
 }
 
-impl Default for TenancyRules {
-	fn default() -> Self {
-		Self {
+impl TenancyRules {
+	/// The rules `offering` supplies where the Deployment states none. Only
+	/// Cloud lets people start their own Tenants; elsewhere a Deployment
+	/// Administrator creates them.
+	pub fn of(offering: Offering) -> Self {
+		let administered = Self {
 			personal_tenants: false,
 			tenant_creation: false,
 			creation_per_hour: 5,
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
+		};
+		match offering {
+			Offering::Cloud => Self {
+				personal_tenants: true,
+				tenant_creation: true,
+				..administered
+			},
+			Offering::SelfHosted | Offering::Dedicated => administered,
 		}
 	}
 }

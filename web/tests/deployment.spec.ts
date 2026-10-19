@@ -83,7 +83,7 @@ test("deployment dashboard shows replica changes, failures and unavailable obser
     page.getByText("CrashLoopBackOff", { exact: false }),
   ).toBeVisible();
   await page.screenshot({
-    path: "../.ignore/dashboard-deployment-desktop.png",
+    path: "../private/dashboard-deployment-desktop.png",
     fullPage: true,
   });
   await selectDashboardLanguage(page, "ja-JP");
@@ -93,7 +93,7 @@ test("deployment dashboard shows replica changes, failures and unavailable obser
   ).toBeVisible();
   await expect(page.getByText("再起動回数", { exact: false })).toBeVisible();
   await page.screenshot({
-    path: "../.ignore/dashboard-deployment-mobile.png",
+    path: "../private/dashboard-deployment-mobile.png",
     fullPage: true,
   });
   expect(

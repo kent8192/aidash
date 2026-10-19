@@ -952,7 +952,7 @@ impl Guard {
 			));
 		}
 		let tenancy = access.tenancy()?;
-		let bytes = i64::try_from(config.state_budget.max_request_bytes()).map_err(|_| {
+		let bytes = i64::try_from(config.max_request_bytes()).map_err(|_| {
 			aidash_application::Error::Invalid("decision request bound overflow".into())
 		})?;
 		let questions = i32::try_from(questions).map_err(|_| {

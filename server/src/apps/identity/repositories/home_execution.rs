@@ -312,6 +312,7 @@ impl HomeScope for Scope {
 								"task_id",
 								"task_revision",
 								"initial_task",
+								"tenant",
 							]
 							.map(Alias::new),
 						)
@@ -337,6 +338,7 @@ impl HomeScope for Scope {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_5.to_owned()).into()]
 								))
+								.expr(crate::database::scope::tenant())
 								.to_owned()
 						)
 						.to_owned()

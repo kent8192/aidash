@@ -50,6 +50,7 @@ impl Access {
 							Alias::new("entry_version"),
 							Alias::new("digest"),
 							Alias::new("metadata"),
+							Alias::new("tenant"),
 						])
 						.from_subquery(
 							Query::select()
@@ -77,6 +78,7 @@ impl Access {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_6.to_owned()).into()],
 								))
+								.expr(crate::database::scope::tenant())
 								.to_owned(),
 						)
 						.on_conflict(

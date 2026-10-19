@@ -38,7 +38,7 @@ impl Models {
 	) -> Result<()> {
 		let mut lease = Lease::within(
 			&self.store,
-			&crate::database::scope::recorded(&self.bank.tenant)?,
+			&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
 		)
 		.await?;
 		let result = async {
@@ -220,7 +220,7 @@ impl Models {
 		crate::generation::embedding::reserve_many(
 			&mut accesses,
 			&self.store,
-			crate::database::scope::recorded(&self.bank.tenant)?,
+			aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
 			self.bank.workspace,
 			config,
 			text,

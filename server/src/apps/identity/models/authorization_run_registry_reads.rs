@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct AuthorizationRunRegistryRead {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub run_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "text")]
 	pub entry_id: String,
 	#[field(primary_key = true, field_type = "text")]

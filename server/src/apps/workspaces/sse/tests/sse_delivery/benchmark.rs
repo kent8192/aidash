@@ -105,7 +105,7 @@ async fn sql_counts(fixture: &Fixture) -> Value {
 			.from((Alias::new("public"), Alias::new("pg_stat_statements")))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(fixture.f.store.pool.driver())
+	.fetch_all(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let rows: Vec<_> = timings
@@ -159,7 +159,7 @@ async fn accepted_load_and_idle_reduction(
 
 		// SeaQuery has no CREATE EXTENSION DDL builder. This is fixture-only
 		// instrumentation, installed by the superuser rather than the server role.
-		common::admin_pool(fixture.f.store.pool.driver())
+		common::admin_pool(fixture.f.store.pool.fixture_driver())
 			.await
 			.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
 			.await
@@ -180,7 +180,7 @@ async fn accepted_load_and_idle_reduction(
 		for sample in 0..300 {
 			tokio::time::sleep_until(window + Duration::from_millis(sample * 100)).await;
 			let ws = fixture.workspaces[sample as usize % 10];
-			let mut barrier = fixture.f.store.pool.driver().begin().await.unwrap();
+			let mut barrier = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 			sqlx::query(
 				&Query::select()
 					.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
@@ -217,7 +217,7 @@ async fn accepted_load_and_idle_reduction(
 							)
 							.to_string(PostgresQueryBuilder),
 					)
-					.fetch_one(fixture.f.store.pool.driver())
+					.fetch_one(fixture.f.store.pool.fixture_driver())
 					.await
 					.unwrap();
 					if waiting > 0 {

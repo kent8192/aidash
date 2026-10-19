@@ -1,14 +1,23 @@
 import { chromium, expect } from "@playwright/test";
+// Only a Tenant subject submits goals (#371); golden_path.py passes its credential.
+const token = process.env.AIDASH_E2E_TOKEN;
+const tenant = process.env.AIDASH_E2E_TENANT;
+const subject = process.env.AIDASH_E2E_SUBJECT;
+if (!token || !tenant || !subject)
+  throw new Error(
+    "AIDASH_E2E_TOKEN, AIDASH_E2E_TENANT and AIDASH_E2E_SUBJECT are required",
+  );
+const mapping = "acceptance-mapping";
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
   });
-  await page.addInitScript(() => {
+  await page.addInitScript((context) => {
     sessionStorage.setItem("aidash-session-id", "acceptance-browser-session");
-    sessionStorage.setItem("aidash-context", "deployment_administrator");
+    sessionStorage.setItem("aidash-context", context);
     localStorage.setItem("aidash-locale", "ja-JP");
-  });
+  }, `mapping:${tenant}:${mapping}`);
   await page.route("**/auth/config", (route) =>
     route.fulfill({ json: { enabled: true } }),
   );
@@ -16,8 +25,8 @@ try {
     route.fulfill({
       json: {
         id: "acceptance-browser-session",
-        deployment_administrator: true,
-        mappings: [],
+        deployment_administrator: false,
+        mappings: [{ id: mapping, tenant, subject }],
       },
     }),
   );
@@ -29,7 +38,7 @@ try {
     const request = route.request();
     const headers = {
       ...request.headers(),
-      authorization: "Bearer acceptance-access-token",
+      authorization: `Bearer ${token}`,
     };
     if (
       request.url().endsWith("/api/conversations") &&
@@ -66,7 +75,7 @@ try {
   expect(response.status()).toBe(200);
   await expect(dialog).not.toBeVisible({ timeout: 30000 });
   await page.screenshot({
-    path: ".ignore/acceptance/dashboard-goal.png",
+    path: "private/acceptance/dashboard-goal.png",
     fullPage: true,
   });
   process.stdout.write(JSON.stringify(payload));

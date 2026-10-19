@@ -433,7 +433,7 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		"INSERT INTO peers (node_id, endpoint, credential_env, protocol_version, enabled) \
 		 VALUES ('aidash://node-remote', 'https://remote.example', 'AIDASH_SECRET_TEST_PEER', '0.1', true)",
 	)
-	.execute(t.d.federation.store.pool.driver())
+	.execute(t.d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let (status, body) = t
@@ -490,7 +490,7 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 	let mapping_credential: Uuid =
 		sqlx::query_scalar("SELECT credential_id FROM dashboard_mappings WHERE id = $1::uuid")
 			.bind(Team::mapping(&t.alice_context))
-			.fetch_one(t.d.federation.store.pool.driver())
+			.fetch_one(t.d.federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	let (status, body) =

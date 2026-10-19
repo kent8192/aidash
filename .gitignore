@@ -109,6 +109,11 @@ docs/Gemfile.lock
 !.env.example
 !.env.sample
 .ignore/
+/private/*
+!/private/.gitkeep
+/secrets/*
+!/secrets/.gitkeep
+/notes/
 .claude/
 .serena/
 .wtp.yml
@@ -148,7 +153,6 @@ examples/examples-twitter/static/admin/
 
 # Design/planning documents (local only)
 /CONTEXT.md
-/docs/adr/
 /docs/design/
 docs/plans/
 docs/superpowers/

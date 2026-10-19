@@ -231,7 +231,7 @@ class BrokerImageTests(unittest.TestCase):
         self.assertTrue(lock["digest"] is None or DIGEST.fullmatch(lock["digest"]))
 
     def test_dockerfile_base_images_are_pinned_by_digest(self):
-        dockerfile = (Path(__file__).resolve().parents[3] / "crates" / "aidash-broker" / "Dockerfile").read_text()
+        dockerfile = (Path(__file__).resolve().parents[3] / "enterprise" / "crates" / "aidash-broker" / "Dockerfile").read_text()
         bases = re.findall(r"^FROM (\S+)", dockerfile, re.M)
         self.assertEqual(len(bases), 2)
         for base in bases:

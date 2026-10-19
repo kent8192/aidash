@@ -69,7 +69,7 @@ async fn journal_rows(store: &Store, run: Uuid) -> Vec<(i64, String, Value, Stri
 			.order_by(Alias::new("seq"), Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(store.pool.driver())
+	.fetch_all(store.pool.fixture_driver())
 	.await
 	.unwrap();
 	use sqlx::Row as _;
@@ -95,7 +95,7 @@ async fn outcomes(store: &Store, run: Uuid) -> Vec<(Uuid, Option<String>, bool)>
 			.order_by(Alias::new("id"), Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(store.pool.driver())
+	.fetch_all(store.pool.fixture_driver())
 	.await
 	.unwrap();
 	use sqlx::Row as _;
@@ -434,7 +434,7 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(compactions, 1);

@@ -314,6 +314,20 @@ pub(crate) async fn labels<E: OrmExecutor>(
 		.collect())
 }
 
+/// The Tenants among `names` that have a root record and no Tenant Deletion in
+/// force, for writing rows a purge would otherwise leave behind.
+pub(crate) async fn undeleted<E: OrmExecutor>(
+	tx: &mut E,
+	names: Vec<String>,
+) -> Result<std::collections::BTreeSet<String>> {
+	let existing = labels(tx, names).await?.into_keys().collect::<Vec<_>>();
+	let deleted = super::tenant_deletions::current_of(tx, existing.clone()).await?;
+	Ok(existing
+		.into_iter()
+		.filter(|name| !deleted.contains_key(name))
+		.collect())
+}
+
 /// Changes a Tenant label. The caller has checked `tenant.update`.
 pub(crate) async fn relabel(
 	tx: &mut dyn TransactionExecutor,

@@ -44,7 +44,9 @@ PostgreSQL 17 with pgvector/PGroonga and NATS JetStream are single-replica
 StatefulSets from [the Environment chart](helm/environment/README.md); web/API,
 workers and the opt-in gVisor execution components come from
 [the application chart](../../deploy/helm/aidash/README.md). Execution Pods run
-upstream gVisor installed by the privileged installer DaemonSet.
+upstream gVisor installed by the privileged installer DaemonSet from the archive
+bundled in the trusted `control` image, so a new or recreated Cluster Node needs
+only Artifact Registry, not Google's gVisor release bucket.
 
 Only one Environment of each kind may run; other PR requests wait for the preview
 slot. Stopped PRs retain their own independent data. `stop` scales the
@@ -362,6 +364,16 @@ SLA**. PR-close cleanup has the same scheduling delay. If Actions is disabled or
 observation/IAM fails, an Environment can keep accruing charges; inspect failed
 runs. No idle timer resumes a stopped Environment.
 
+- **Zone loss in production:** production's retained disks are regional and its
+  disk-holding workloads are StatefulSets under Stateful HA, so they move to the
+  standby pools in `us-central1-b`, which scale up from zero (ADR 0067). Only
+  the cluster autoscaler grows them, and it halts when more than three nodes
+  and more than 45% are NotReady, so production is limited to two Environment
+  nodes beside its system node; if it halts anyway, resize the standby pools by
+  hand as in the release deployment guide. The
+  `aidash-retain` StorageClass in production's own cluster is created regional,
+  and the controller refuses a production cluster whose class is zonal, because
+  class parameters cannot change. Nonproduction stays in one zone.
 - **Node loss and Spot preemption:** GKE recreates the node and Kubernetes
   reschedules the Pods; retained disks reattach to the replacement. There is no
   power observation or automatic normal-capacity fallback. In-flight operations
@@ -510,7 +522,7 @@ Admin does not provide the required
 permission. Environment automation consumes their IDs and removes
 only service/signing bindings on disable or retirement. Keep the bootstrap
 environment set to preserve immutable KMS names. See the
-[broker deployment guide](../../crates/aidash-broker/README.md) for the input
+[broker deployment guide](../../enterprise/crates/aidash-broker/README.md) for the input
 contract and manual import steps for any pre-merge draft deployment.
 
 ### Deploy pipeline boundary
@@ -650,7 +662,7 @@ changes are gated by review of the pull request to `main`.
 #### Updating the broker image digest
 
 1. Build from the reviewed commit: `docker buildx build --platform linux/amd64
---provenance=false --sbom=false -f crates/aidash-broker/Dockerfile -t
+--provenance=false --sbom=false -f enterprise/crates/aidash-broker/Dockerfile -t
 us-central1-docker.pkg.dev/<project>/aidash/broker:<sha> --push .`
 2. Read the manifest digest: `docker buildx imagetools inspect
 us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.
@@ -732,7 +744,7 @@ and manage exact authorized domains; they never use wildcard OAuth callbacks. Th
 `https://<production-hostname>/__/auth/handler` for the separate production project.
 Register them before rolling out a release that sets `auth_helper`. Retain the fixed Firebase callback while random staging/PR hosts use it. Email action links stay on `<project>.firebaseapp.com`, because Identity Platform has one action URL per project.
 
-Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID","sign_in_domains":["acme.example"]}}` creates a fresh pool per environment incarnation. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. `sign_in_domains` lists lowercase ASCII email domains (IDN as `xn--` punycode, exact match, no wildcards) that route `POST /auth/login` email discovery to that pool; a domain may appear in only one pool. It is routing only and grants no authority: membership is still decided by the pool and Tenant Binding, and removing a domain only stops routing. Staff verify domain ownership out of band, and review must reject public mail domains (for example `gmail.com`). OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
+Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID","sign_in_domains":["acme.example"]}}` creates a fresh pool per environment incarnation. A pool without `tenant` is the Environment's Shared Pool, for example `{"shared":{"password_sign_up":true,"google_client_id":"CLIENT_ID"}}`: Google and email/password sign-in for everyone no Sign-in Domain routes elsewhere. At most one pool may omit `tenant`, and it has no SSO providers or Sign-in Domains; Tenant Bindings are optional. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. `sign_in_domains` lists lowercase ASCII email domains (IDN as `xn--` punycode, exact match, no wildcards) that route `POST /auth/login` email discovery to that pool; a domain may appear in only one pool. It is routing only and grants no authority: membership is still decided by the pool and Tenant Binding, and removing a domain only stops routing. Staff verify domain ownership out of band, and review must reject public mail domains (for example `gmail.com`). OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Shared Pool, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
 
 The controller records digests of both desired shared inputs (Tenant configuration, IdP secrets and web API key) and actual public GCIP outputs, including generated Tenant IDs. Before applying changed shared inputs or a plan that changes GCIP tenant resources, in every affected running Environment, including unpublished ones, it closes edge admission and scales server, worker and Runner to zero under the existing lifecycle lock and state. It never calls an HTTP endpoint on a paused or absent application and requires confirmed quiescence before Terraform can apply.
 

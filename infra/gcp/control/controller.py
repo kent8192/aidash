@@ -383,6 +383,10 @@ def provision_secret(config, output, kind):
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        if gcip.get("shared_pool"):
+            settings["shared_pool"] = gcip["shared_pool"]
+        else:
+            settings.pop("shared_pool", None)
         settings["sign_in_domains"] = gcip.get("sign_in_domains", {})
         # A sign-in hint only: GCIP enforces the Requirement and Aidash never reads
         # second-factor claims as authority. The page uses it to lead a user with no
@@ -400,6 +404,7 @@ def provision_secret(config, output, kind):
         # Binding removal must reach the retained server before any subsequent
         # boundary; disabling infrastructure cannot leave an old pool admitted.
         value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={}, mfa_mandatory=[])
+        value["dashboard"]["gcip"].pop("shared_pool", None)
     encoded = json.dumps(value, sort_keys=True)
     # Keep latest enabled after a rollback, even when the selected configuration
     # is unchanged, so every reader of "latest" sees the managed version.

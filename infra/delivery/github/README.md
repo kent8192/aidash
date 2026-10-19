@@ -69,14 +69,12 @@ Secret Manager versions also remain outside this root.
 
 ## Preserve existing policy
 
-The only rulesets this root owns are:
+The only ruleset this root owns is `Aidash delivery main checks`: `CI Success`
+from the GitHub Actions App on exactly `refs/heads/main`. Development branches
+keep only the baseline `develop/x.y.z` ruleset; this root adds no required check
+there.
 
-- `Aidash delivery main checks`: `CI Success` from the GitHub Actions App on
-  exactly `refs/heads/main`.
-- `Aidash delivery develop checks`: the same check on exactly the configured
-  `refs/heads/develop/x.y.z`.
-
-They contain required status checks only: no review/PR-policy replacement,
+It contains required status checks only: no review/PR-policy replacement,
 branch deletion/force-push changes, administrator exemptions or App bypasses.
 Existing broad rulesets and classic branch protection continue to apply through
 [GitHub rule layering](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets).
@@ -96,13 +94,13 @@ Before any real plan, read current environments, their deployment branch/tag
 policies, repository variables and repository rulesets. Build these adoption
 inputs from actual metadata:
 
-| Input                                    | Allowed adoption                                                                                |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `existing_delivery_ruleset_ids`          | Keys `main`/`develop`, IDs whose names and narrow semantics exactly match the owned names above |
-| `existing_environments`                  | Existing names from the five fixed Environments                                                 |
-| `existing_deployment_policy_ids`         | One existing exact branch-only policy ID per owned Environment                                  |
-| `existing_repository_variables`          | Existing names from this phase's fixed managed inventory                                        |
-| `existing_notification_account_variable` | Existing `deployment-notifications:CLOUDFLARE_ACCOUNT_ID` in account phase                      |
+| Input                                    | Allowed adoption                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| `existing_delivery_ruleset_ids`          | Key `main`, the ID whose name and narrow semantics exactly match the owned name above |
+| `existing_environments`                  | Existing names from the five fixed Environments                                       |
+| `existing_deployment_policy_ids`         | One existing exact branch-only policy ID per owned Environment                        |
+| `existing_repository_variables`          | Existing names from this phase's fixed managed inventory                              |
+| `existing_notification_account_variable` | Existing `deployment-notifications:CLOUDFLARE_ACCOUNT_ID` in account phase            |
 
 Do not select an existing ruleset just because its target branch matches. Stop
 on unexpected rules within an owned name instead of losing those controls.

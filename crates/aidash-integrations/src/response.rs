@@ -46,10 +46,7 @@ pub(crate) fn rejection(status: u16, body: Option<&serde_json::Value>, byok: boo
 	}
 }
 
-pub(crate) async fn json<T: DeserializeOwned>(
-	response: reqwest::Response,
-	limit: usize,
-) -> Result<T> {
+pub async fn json<T: DeserializeOwned>(response: reqwest::Response, limit: usize) -> Result<T> {
 	serde_json::from_slice(&bytes(response, limit).await?)
 		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))
 }

@@ -15,7 +15,6 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::database::scope::recorded as tenancy;
 /// Deleting retired points and collections is semantic cleanup.
 const CLEANUP: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
@@ -148,7 +147,10 @@ impl VectorIndex for Transport {
 			let tenant = payload["tenant"]
 				.as_str()
 				.ok_or_else(|| Error::Invalid("missing vector tenant".into()))?;
-			let mut tx = self.pool.begin(&tenancy(tenant)?).await?;
+			let mut tx = self
+				.pool
+				.begin(&aidash_application::tenancy::TenancyScope::tenant(tenant)?)
+				.await?;
 			let width: i32 = native::query_scalar(
 				&Query::select()
 					.column(Alias::new("dimensions"))
@@ -312,7 +314,12 @@ impl VectorIndex for Transport {
 			.limit(limit as u64)
 			.to_string(PostgresQueryBuilder);
 		let rows = native::query(&sql)
-			.fetch_all(self.pool.in_scope(&tenancy(filter.tenant)?))
+			.fetch_all(
+				self.pool
+					.in_scope(&aidash_application::tenancy::TenancyScope::tenant(
+						filter.tenant,
+					)?),
+			)
 			.await
 			.map_err(lookup_failure)?;
 		rows.iter()
@@ -346,7 +353,10 @@ impl VectorIndex for Transport {
 				.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(self.pool.in_scope(&tenancy(tenant)?))
+		.scalar_one(
+			self.pool
+				.in_scope(&aidash_application::tenancy::TenancyScope::tenant(tenant)?),
+		)
 		.await
 		.map_err(lookup_failure)?;
 		Ok(count as usize == ids.iter().collect::<std::collections::BTreeSet<_>>().len())

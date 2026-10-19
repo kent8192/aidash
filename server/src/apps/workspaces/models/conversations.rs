@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Conversation {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field(field_type = "text")]
@@ -30,6 +32,7 @@ impl crate::database::Record for Conversation {
 		let target_kind = serde_json::from_value(serde_json::Value::String(kind))?;
 		Ok(Self {
 			id: row.try_get("id")?,
+			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
 			target: row.try_get("target")?,
 			target_kind,

@@ -9,6 +9,8 @@ use uuid::Uuid;
 pub struct ChannelAttachment {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 
 	#[field(db_column = "workspace_id")]
 	pub workspace_id: uuid::Uuid,
@@ -136,6 +138,7 @@ impl crate::database::Record for ChannelAttachment {
 	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			id: row.try_get("id")?,
+			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
 			uploaded_by: row.try_get("uploaded_by")?,
 			idempotency_key: row.try_get("idempotency_key")?,

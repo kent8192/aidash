@@ -510,7 +510,7 @@ impl PeerAdmissionScope for Owned {
 			}
 			// The receiver executes the Run, so its own Cache Salt Key decides;
 			// the scoped admission's mapped Tenant salts it.
-			self.runtime.store.require_projection(&snapshot, true)?;
+			self.runtime.store.require_projection(&snapshot)?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()
@@ -528,6 +528,7 @@ impl PeerAdmissionScope for Owned {
 							"agent_id",
 							"agent_version",
 							"context",
+							"tenant",
 						]
 						.map(Alias::new),
 					)
@@ -540,6 +541,7 @@ impl PeerAdmissionScope for Owned {
 							.expr(Expr::cust("$5"))
 							.expr(Expr::cust("$6"))
 							.expr(Expr::cust("$7"))
+							.expr(Expr::cust("$8"))
 							.to_owned()
 					)
 					.to_owned()
@@ -552,6 +554,7 @@ impl PeerAdmissionScope for Owned {
 			.bind(&d.inspection.agent.id)
 			.bind(&d.inspection.agent.version)
 			.bind(serde_json::to_value(context)?)
+			.bind(&access.identity.tenant)
 			.execute(&mut **access.tx)
 			.await?;
 			super::provider_credentials::admit(

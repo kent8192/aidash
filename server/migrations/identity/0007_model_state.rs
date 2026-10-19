@@ -487,6 +487,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 			],
 			constraints: vec![],
 			without_rowid: None,
@@ -544,6 +552,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 			],
 			constraints: vec![],
 			without_rowid: None,
@@ -573,6 +589,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -675,6 +699,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid)
 					.with_not_null(true)
 					.with_unique(false)
@@ -723,6 +755,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -783,6 +823,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 			],
 			constraints: vec![],
 			without_rowid: None,
@@ -836,6 +884,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -951,6 +1007,14 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)

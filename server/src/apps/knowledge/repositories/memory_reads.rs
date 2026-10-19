@@ -45,8 +45,13 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_run_read_gates"))
-			.columns([Alias::new("run_id")])
-			.from_subquery(Query::select().expr(Expr::value(run)).to_owned())
+			.columns([Alias::new("run_id"), Alias::new("tenant")])
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(run))
+					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.to_owned(),
+			)
 			.on_conflict(
 				OnConflict::column(Alias::new("run_id"))
 					.do_nothing()
@@ -83,12 +88,13 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 		let inserted = native::query(
 			&Query::insert()
 				.into_table(Alias::new("memory_run_reads"))
-				.columns(["run_id", "unit_id", "revision"].map(Alias::new))
+				.columns(["run_id", "unit_id", "revision", "tenant"].map(Alias::new))
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(run))
 						.expr(Expr::value(unit.id))
 						.expr(Expr::value(unit.revision))
+						.expr(crate::database::scope::tenant_of("runs", "id", run))
 						.to_owned(),
 				)
 				.on_conflict(

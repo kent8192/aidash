@@ -165,6 +165,7 @@ pub(super) fn migration() -> Migration {
 			name: "core_runs".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("area_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("initialized", FieldType::Boolean)
@@ -183,6 +184,7 @@ pub(super) fn migration() -> Migration {
 			name: "core_task_sessions".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("thread_id", FieldType::Uuid).with_not_null(true),
 			],
 			constraints: vec![],
@@ -194,6 +196,7 @@ pub(super) fn migration() -> Migration {
 			name: "events".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(false),
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid),
@@ -217,6 +220,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_budgets".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("token_limit", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("used_tokens", FieldType::BigInteger)
 					.with_not_null(true)
@@ -274,6 +278,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_compaction_usage".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("provider_id", FieldType::Text).with_not_null(true),
@@ -302,6 +307,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_embedding_usage".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid),
@@ -342,6 +348,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_history".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("status", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
@@ -425,6 +432,7 @@ pub(super) fn migration() -> Migration {
 				            name: "generation_remote_dispatches".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("usage", FieldType::Jsonb).with_not_null(true),
 				                ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("peer_node", FieldType::Text).with_not_null(true),
@@ -453,6 +461,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_remote_finalizations".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("result", FieldType::Jsonb),
 			],
@@ -492,6 +501,7 @@ pub(super) fn migration() -> Migration {
 				            name: "generation_remote_usage".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
 				                ColumnDefinition::new("operation_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("dispatcher_node",
@@ -599,6 +609,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_usage".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("reserved_tokens", FieldType::BigInteger).with_not_null(true),
@@ -625,6 +636,7 @@ pub(super) fn migration() -> Migration {
 				            name: "human_requests".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("run_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("kind", FieldType::Text)
@@ -662,6 +674,7 @@ pub(super) fn migration() -> Migration {
 			name: "invocations".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("idempotency_key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("tool", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("input", FieldType::Jsonb).with_not_null(true),
@@ -703,7 +716,8 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 				            name: "run_activations".to_owned(),
 				            columns: vec![ColumnDefinition::new("generation", FieldType::BigInteger)
-				                .with_not_null(true).with_default(Some(r#"nextval('public.run_activations_generation_seq'::regclass)"#.to_owned())), ColumnDefinition::new("id", FieldType::Uuid)
+				                .with_not_null(true).with_default(Some(r#"nextval('public.run_activations_generation_seq'::regclass)"#.to_owned())),
+				            ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true), ColumnDefinition::new("id", FieldType::Uuid)
 				                .with_not_null(true).with_default(Some(r#"gen_random_uuid()"#
 				                .to_owned())), ColumnDefinition::new("run_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("run_revision",
@@ -730,6 +744,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some(
 						r#"nextval('public.run_inputs_seq_seq'::regclass)"#.to_owned(),
 					)),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("sender", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("content", FieldType::Text).with_not_null(true),
@@ -749,6 +764,7 @@ pub(super) fn migration() -> Migration {
 				            name: "runs".to_owned(),
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("home_node", FieldType::Text)

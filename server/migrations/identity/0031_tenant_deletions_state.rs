@@ -1,6 +1,6 @@
 // reinhardt-migration-source: 1
 // Model state for Tenant Deletions. The physical checks, references and
-// partial indexes stay database-only in 0028.
+// partial indexes stay database-only in 0030.
 
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;

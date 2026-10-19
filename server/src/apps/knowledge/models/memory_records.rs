@@ -10,6 +10,8 @@ use uuid::Uuid;
 pub struct MemoryReceiverCache {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub expires_at: DateTime<Utc>,
 	#[field]
@@ -31,6 +33,8 @@ pub struct MemoryReceiverCache {
 pub struct MemoryRemoteRead {
 	#[field(primary_key = true)]
 	pub grant_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
 	#[field(primary_key = true)]
@@ -41,6 +45,8 @@ pub struct MemoryRemoteRead {
 pub struct MemoryRemoteReadGate {
 	#[field(primary_key = true)]
 	pub grant_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 #[model(app_label = "knowledge", table_name = "memory_history")]
@@ -48,6 +54,8 @@ pub struct MemoryRemoteReadGate {
 pub struct MemoryHistory {
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field(primary_key = true)]
@@ -91,6 +99,8 @@ pub struct MemoryHistory {
 pub struct MemoryReceipt {
 	#[field(primary_key = true)]
 	pub operation_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field(field_type = "text")]
@@ -106,6 +116,8 @@ pub struct MemoryReceipt {
 pub struct MemoryDependency {
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field(primary_key = true, field_type = "text")]
@@ -121,6 +133,8 @@ pub struct MemoryDependency {
 pub struct MemoryCandidate {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field]
@@ -160,6 +174,8 @@ pub struct MemoryCandidate {
 pub struct MemoryModelOperation {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field(field_type = "text")]
@@ -183,6 +199,8 @@ pub struct MemoryModelOperation {
 pub struct MemoryModelAttempt {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub operation_id: Uuid,
 	#[field]
@@ -209,6 +227,8 @@ pub struct MemoryModelAttempt {
 pub struct MemoryPublication {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field]
@@ -230,6 +250,8 @@ pub struct MemoryPublication {
 pub struct MemoryTaskParticipant {
 	#[field(primary_key = true)]
 	pub task_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub participant_id: Uuid,
 	#[field]
@@ -241,6 +263,8 @@ pub struct MemoryTaskParticipant {
 pub struct MemoryRunRead {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
 	#[field(primary_key = true)]
@@ -252,6 +276,8 @@ pub struct MemoryRunRead {
 pub struct MemoryRunReadGate {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 #[model(app_label = "knowledge", table_name = "memory_candidate_reviews")]
@@ -259,6 +285,8 @@ pub struct MemoryRunReadGate {
 pub struct MemoryCandidateReview {
 	#[field(primary_key = true)]
 	pub operation_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub candidate_id: Uuid,
 	#[field]
@@ -280,6 +308,8 @@ pub struct MemoryCandidateReview {
 pub struct MemoryPurgeJob {
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field]
@@ -306,6 +336,8 @@ pub struct MemoryBankSettings {
 	#[field(primary_key = true)]
 	pub bank_id: Uuid,
 	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
 	pub provider_id: String,
 	#[field(field_type = "text")]
 	pub provider_version: String,
@@ -320,6 +352,8 @@ pub struct MemoryBankSettings {
 pub struct MemoryEngineJob {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field(field_type = "text")]
@@ -366,6 +400,8 @@ pub struct MemoryLearningDiscovery {
 pub struct MemoryBankPolicyChange {
 	#[field(primary_key = true)]
 	pub operation_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub bank_id: Uuid,
 	#[field(field_type = "text")]

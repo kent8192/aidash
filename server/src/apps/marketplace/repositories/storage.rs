@@ -96,26 +96,34 @@ pub(crate) async fn put(
 	{
 		let query_bind_1 = key;
 		let query_bind_2 = serde_json::to_value(value)?;
+		let tenant_owned = table == "marketplace_requests";
+		let mut columns = vec![Alias::new("key"), Alias::new("document")];
+		let mut row = Query::select();
+		row.expr(SimpleExpr::CustomWithExpr(
+			"(?)".to_owned(),
+			vec![Expr::value(query_bind_1.to_owned()).into()],
+		))
+		.expr(SimpleExpr::CustomWithExpr(
+			"(?)".to_owned(),
+			vec![Expr::value(query_bind_2.to_owned()).into()],
+		));
+		if tenant_owned {
+			columns.push(Alias::new("tenant"));
+			row.expr(crate::database::scope::tenant());
+		}
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new(table))
-				.columns([Alias::new("key"), Alias::new("document")])
-				.from_subquery(
-					Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						))
-						.to_owned(),
-				)
+				.columns(columns)
+				.from_subquery(row)
 				.on_conflict(
-					OnConflict::column(Alias::new("key"))
-						.update_columns([Alias::new("document")])
-						.to_owned(),
+					OnConflict::columns(if tenant_owned {
+						vec![Alias::new("tenant"), Alias::new("key")]
+					} else {
+						vec![Alias::new("key")]
+					})
+					.update_columns([Alias::new("document")])
+					.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
 		)

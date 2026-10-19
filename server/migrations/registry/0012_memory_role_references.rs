@@ -17,6 +17,15 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("reference_version", FieldType::Text).with_not_null(true),
 			],
 			constraints: vec![
+				Constraint::ForeignKey {
+					name: "registry_memory_role_refs_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
 				Constraint::PrimaryKey { name: "registry_memory_role_refs_pkey".into(), columns: vec!["tenant".into(), "source_id".into(), "source_version".into(), "role".into(), "ordinal".into()] },
 				Constraint::ForeignKey { name: "registry_memory_role_source".into(), columns: vec!["tenant".into(), "source_id".into(), "source_version".into()], referenced_table: "registry".into(), referenced_columns: vec!["tenant".into(), "id".into(), "version".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
 				Constraint::ForeignKey { name: "registry_memory_role_target".into(), columns: vec!["tenant".into(), "reference_id".into(), "reference_version".into(), "required_kind".into()], referenced_table: "registry".into(), referenced_columns: vec!["tenant".into(), "id".into(), "version".into(), "kind".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },

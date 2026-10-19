@@ -8,8 +8,8 @@ use aidash_application::ports::decision::{
 };
 use aidash_domain::decision::{
 	AnswerType, AttemptStatus, BUILDER, BoundDecider, Boundary, DeciderConfig, DeciderPin,
-	Evidence, Hook, Mode, OPTION_SOURCE, OutcomeLink, PROVIDER, Probability, Questions, RULE,
-	Restrictions, SourcePin, StateBudget,
+	DeciderRoute, Evidence, Hook, Mode, OPTION_SOURCE, OutcomeLink, Probability, Questions, RULE,
+	Restrictions, SourcePin,
 };
 
 const IMPLEMENTATION: &str = "fixture-decider";
@@ -19,17 +19,14 @@ fn config() -> DeciderConfig {
 		hook: Hook::Compaction,
 		answer_type: AnswerType::Noul,
 		description: "Keep needed history".into(),
-		provider_contract: PROVIDER.into(),
 		provider_credential: "openrouter".into(),
-		model: "typesafe/jev-1.14".into(),
+		routes: vec![DeciderRoute::jev("typesafe/jev-1.14")],
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
-		keep_threshold: Probability::half(),
 		mode: Mode::Enforce,
 		max_calls_per_run: 100,
 		state_retention: Default::default(),
-		state_budget: StateBudget::default(),
 	}
 }
 
@@ -142,7 +139,7 @@ impl DecisionProvider for FixtureDecision {
 	fn configuration_digest(&self) -> Result<String> {
 		Ok(config().digest()?)
 	}
-	fn plan(&self, _: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>> {
+	fn plan(&self, _: usize, _: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>> {
 		Ok(vec![PreparedRequest {
 			body: serde_json::to_vec(&json!({"questions": questions.keys().collect::<Vec<_>>()}))?,
 			questions: questions.clone(),
@@ -150,6 +147,7 @@ impl DecisionProvider for FixtureDecision {
 	}
 	async fn prepare(
 		&self,
+		_: usize,
 		request: &PreparedRequest,
 		_: Uuid,
 	) -> Result<Box<dyn PreparedDispatch + '_>> {

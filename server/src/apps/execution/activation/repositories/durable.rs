@@ -36,12 +36,19 @@ fn request_statement(id: Uuid, run_id: Uuid) -> reinhardt::query::InsertStatemen
 		.column(a("id"))
 		.column(a("revision"))
 		.expr(Expr::value("handoff"))
+		.column(a("tenant"))
 		.from(a("runs"))
 		.and_where(Expr::col("id").eq(Expr::value(run_id)))
 		.to_owned();
 	Query::insert()
 		.into_table(a("run_activations"))
-		.columns([a("id"), a("run_id"), a("run_revision"), a("reason")])
+		.columns([
+			a("id"),
+			a("run_id"),
+			a("run_revision"),
+			a("reason"),
+			a("tenant"),
+		])
 		.from_subquery(select)
 		.to_owned()
 }
@@ -146,6 +153,7 @@ pub(super) async fn reconcile(store: &Store) -> Result<u64> {
 		.column(a("id"))
 		.column(a("revision"))
 		.expr(Expr::value("reconcile"))
+		.column(a("tenant"))
 		.from(a("runs"))
 		.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 		.and_where(Expr::exists(existing).not())
@@ -154,7 +162,7 @@ pub(super) async fn reconcile(store: &Store) -> Result<u64> {
 		.to_owned();
 	let (sql, values) = Query::insert()
 		.into_table(a("run_activations"))
-		.columns([a("run_id"), a("run_revision"), a("reason")])
+		.columns([a("run_id"), a("run_revision"), a("reason"), a("tenant")])
 		.from_subquery(select)
 		.build(PostgresQueryBuilder);
 	Ok({

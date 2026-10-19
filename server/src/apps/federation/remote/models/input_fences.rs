@@ -97,7 +97,9 @@ impl RemoteRunMessageFence {
 			if terminal && !delivered {
 				return Err(Error::Conflict("home task is terminal".into()));
 			}
+			let tenant = crate::database::scope::parent_tenant(tx, "tasks", "id", task_id).await?;
 			let record = Self::build()
+				.tenant(tenant)
 				.task_id(task_id)
 				.run_id(run)
 				.idempotency_key(key.to_owned())

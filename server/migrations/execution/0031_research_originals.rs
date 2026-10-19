@@ -49,11 +49,21 @@ pub(super) fn migration() -> Migration {
             name: "research_originals".into(),
             columns: vec![
                 ColumnDefinition::new("snapshot_id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("bytes", FieldType::Bytea).with_not_null(true),
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "research_originals_snapshot".into(), columns: vec!["run_id".into(), "snapshot_id".into()], referenced_table: "research_snapshots".into(), referenced_columns: vec!["run_id".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "research_originals_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "research_originals_snapshot".into(), columns: vec!["tenant".into(), "run_id".into(), "snapshot_id".into()], referenced_table: "research_snapshots".into(), referenced_columns: vec!["tenant".into(), "run_id".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "research_originals_bytes".into(), expression: "octet_length(bytes) BETWEEN 1 AND 16777216".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

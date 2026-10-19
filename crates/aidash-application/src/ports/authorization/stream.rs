@@ -21,7 +21,9 @@ pub trait StreamAuthorityStore: Send + Sync {
 	fn tenant(&self) -> &str;
 	fn subject(&self) -> &str;
 	fn node_id(&self) -> &str;
-	fn google_issuer(&self) -> &str;
+	/// Whether `issuer` reports Account Status, so its identities expire
+	/// without a fresh status check.
+	fn reports_status(&self, issuer: &str) -> bool;
 	fn now(&self) -> DateTime<Utc>;
 	/// One unlocked MVCC snapshot; credential expiry remains evaluated by PostgreSQL.
 	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>>;

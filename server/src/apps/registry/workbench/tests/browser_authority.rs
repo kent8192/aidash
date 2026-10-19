@@ -24,9 +24,6 @@ async fn browser_workbench(
 		client_id: "aidash".into(),
 		client_secret: "local-test-secret".into(),
 		public_origin: "http://localhost:8080".into(),
-		keycloak_admin_url: String::new(),
-		status_client_id: String::new(),
-		status_client_secret: String::new(),
 		session_absolute_seconds: 43_200,
 		session_idle_seconds: 1_800,
 	});
@@ -38,7 +35,6 @@ async fn browser_workbench(
 		.id(Uuid::new_v4())
 		.issuer(issuer)
 		.subject("browser-fixture")
-		.gcip_tenant("")
 		.valid_since(None)
 		.verified_email(None)
 		.display_name(None)
@@ -116,7 +112,7 @@ async fn browser_workbench(
 
 #[rstest::rstest]
 #[case::google_status_age("https://accounts.google.com", "status_age", 200)]
-#[case::keycloak_status_age("http://localhost/realms/fixture", "status_age", 503)]
+#[case::generic_status_age("http://localhost/issuer", "status_age", 200)]
 #[case::logout("https://accounts.google.com", "logout", 401)]
 #[case::absolute_expiry("https://accounts.google.com", "expired", 401)]
 #[case::idle_expiry("https://accounts.google.com", "idle", 401)]

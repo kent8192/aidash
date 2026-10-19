@@ -53,8 +53,8 @@ impl StreamAuthorityStore for Authority {
 	fn node_id(&self) -> &str {
 		"aidash://local"
 	}
-	fn google_issuer(&self) -> &str {
-		"google"
+	fn reports_status(&self, issuer: &str) -> bool {
+		issuer != "google"
 	}
 	fn now(&self) -> DateTime<Utc> {
 		now()

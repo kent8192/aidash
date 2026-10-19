@@ -165,7 +165,9 @@ impl GenerationUsage {
 		run: Uuid,
 		amount: i64,
 	) -> Result<()> {
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.request_id(request)
 			.attempt_id(attempt)
 			.run_id(run)
@@ -229,21 +231,24 @@ impl GenerationEmbeddingUsage {
 					"provider_version",
 					"request_bytes",
 					"reserved_tokens",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
-			.values_panic([
-				IntoValue::into_value(request),
-				IntoValue::into_value(attempt.id),
-				IntoValue::into_value(attempt.workspace),
-				IntoValue::into_value(attempt.run),
-				IntoValue::into_value(attempt.entry),
-				IntoValue::into_value(attempt.purpose),
-				IntoValue::into_value(&attempt.provider.id),
-				IntoValue::into_value(&attempt.provider.version),
-				IntoValue::into_value(attempt.request_bytes),
-				IntoValue::into_value(attempt.amount),
+			.values_expr(vec![
+				IntoValue::into_value(request).into(),
+				IntoValue::into_value(attempt.id).into(),
+				IntoValue::into_value(attempt.workspace).into(),
+				IntoValue::into_value(attempt.run).into(),
+				IntoValue::into_value(attempt.entry).into(),
+				IntoValue::into_value(attempt.purpose).into(),
+				IntoValue::into_value(&attempt.provider.id).into(),
+				IntoValue::into_value(&attempt.provider.version).into(),
+				IntoValue::into_value(attempt.request_bytes).into(),
+				IntoValue::into_value(attempt.amount).into(),
+				crate::database::scope::tenant_of("generation_requests", "id", request),
 			])
+			.expect("one value per column")
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())

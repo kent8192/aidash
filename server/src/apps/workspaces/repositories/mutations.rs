@@ -31,7 +31,13 @@ impl WorkspaceMutations for NativeMutations<'_> {
 	}
 	async fn insert_workspace(&mut self, id: Uuid, title: &str, goal: &str) -> Result<Workspace> {
 		self.store
-			.create_workspace_in(&mut self.access.tx, id, title, goal)
+			.create_workspace_in(
+				&mut self.access.tx,
+				id,
+				&self.access.identity.tenant,
+				title,
+				goal,
+			)
 			.await
 			.map_err(Into::into)
 	}

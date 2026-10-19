@@ -286,7 +286,7 @@ async fn a_streamed_reply_is_shown_live_and_accepted_once(
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(attempts.len(), 1, "{attempts:?}");
@@ -324,7 +324,7 @@ async fn a_streamed_reply_is_shown_live_and_accepted_once(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	markers.sort();

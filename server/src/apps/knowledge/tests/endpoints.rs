@@ -401,13 +401,19 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	aidash_server::semantic::backend::ensure_collection(store, &vector, second_collection, 8)
 		.await
 		.unwrap();
+	let workspace_tenant: String =
+		sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id = $1")
+			.bind(workspace["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap();
 	aidash_server::semantic::backend::upsert(
 		store,
 		&vector,
 		second_collection,
 		point_id,
 		&[1., 0., 0., 0., 0., 0., 0., 0.],
-		json!({"workspace_id":workspace["id"],"tenant":""}),
+		json!({"workspace_id":workspace["id"],"tenant":workspace_tenant}),
 	)
 	.await
 	.unwrap();
@@ -554,13 +560,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	assert!(collection.next_attempt > Utc::now());
 	point.next_attempt = Utc::now() - Duration::seconds(1);
 	collection.next_attempt = point.next_attempt;
-	let mut tx = app.database.connection.begin().await.unwrap();
+	let mut tx = app.database.begin_fixture().await;
 	SemanticPoint::objects()
-		.save_with_executor(tx.as_mut(), &point)
+		.save_with_executor(&mut *tx, &point)
 		.await
 		.unwrap();
 	SemanticCollection::objects()
-		.save_with_executor(tx.as_mut(), &collection)
+		.save_with_executor(&mut *tx, &collection)
 		.await
 		.unwrap();
 	tx.commit().await.unwrap();
@@ -680,7 +686,9 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 				Query::select()
 					.expr(Expr::value(bank))
 					.expr(Expr::value(store.node_id.as_str()))
-					.expr(Expr::value("corpus-tenant"))
+					.expr(Expr::cust(format!(
+						"(SELECT tenant FROM workspaces WHERE id = '{workspace}')"
+					)))
 					.expr(Expr::value(workspace))
 					.expr(Expr::value(1_i64))
 					.to_owned(),
@@ -778,7 +786,7 @@ async fn members_configure_their_index_under_semantic_index_manage(
 			"SELECT count(*) FROM authorization_decisions WHERE subject = 'member' \
 			 AND action = 'semantic.index.manage' AND NOT (decision->>'allowed')::boolean",
 		)
-		.fetch_one(app.runtime.store.pool.driver())
+		.fetch_one(app.runtime.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	};

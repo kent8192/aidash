@@ -17,6 +17,8 @@ use uuid::Uuid;
 pub struct AuthorizationRemoteGrantRead {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub grant_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
 	pub workspace_id: uuid::Uuid,
 	#[field(primary_key = true, field_type = "text")]
@@ -32,12 +34,22 @@ impl AuthorizationRemoteGrantRead {
 		workspace: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "authorization_remote_grants", "id", grant)
+				.await?;
 		for chunk in sources.chunks(256) {
 			let mut query = Query::insert();
 			query
 				.into_table(Alias::new(Self::table_name()))
 				.columns(
-					["grant_id", "workspace_id", "resource_kind", "resource_id"].map(Alias::new),
+					[
+						"grant_id",
+						"workspace_id",
+						"resource_kind",
+						"resource_id",
+						"tenant",
+					]
+					.map(Alias::new),
 				)
 				.on_conflict(
 					OnConflict::columns([
@@ -54,6 +66,7 @@ impl AuthorizationRemoteGrantRead {
 					IntoValue::into_value(workspace),
 					IntoValue::into_value(kind),
 					IntoValue::into_value(*id),
+					IntoValue::into_value(tenant.as_str()),
 				]);
 			}
 			let (sql, values) = query.build(PostgresQueryBuilder);

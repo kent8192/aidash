@@ -389,6 +389,37 @@ class RuntimeConfigTests(unittest.TestCase):
                 "rotated",
             )
 
+    def test_the_shared_pool_reaches_the_runtime_and_leaves_with_it(self):
+        raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}
+        published = []
+
+        def command(*args, **kwargs):
+            if "list" in args:
+                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]'
+            if "access" in args:
+                return json.dumps(raw).encode()
+            if "add" in args:
+                published.append(json.loads(kwargs["data"]))
+            return b""
+
+        shared = deepcopy(OUTPUT)
+        shared["gcip"].update(tenant_ids=["pool-a", "pool-s"], shared_pool="pool-s")
+        with patch("controller.run", side_effect=command):
+            controller.provision_secret({"project_id": "aidash-fixture"}, shared, "test")
+            gcip = published[-1]["dashboard"]["gcip"]
+            self.assertEqual(gcip["shared_pool"], "pool-s")
+            self.assertEqual(gcip["tenant_bindings"], {"pool-a": "acme"})
+            raw.clear()
+            raw.update(published[-1])
+            controller.provision_secret({"project_id": "aidash-fixture"}, OUTPUT, "test")
+            self.assertNotIn("shared_pool", published[-1]["dashboard"]["gcip"])
+            raw.clear()
+            raw.update({"dashboard": {"gcip": dict(gcip)}})
+            disabled = deepcopy(OUTPUT)
+            disabled["gcip"] = {}
+            controller.provision_secret({"project_id": "aidash-fixture"}, disabled, "test")
+            self.assertNotIn("shared_pool", published[-1]["dashboard"]["gcip"])
+
     def test_mandatory_pools_reach_the_runtime_as_a_sign_in_hint(self):
         raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}
 

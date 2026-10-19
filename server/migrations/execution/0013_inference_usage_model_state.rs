@@ -78,14 +78,26 @@ pub(super) fn migration() -> Migration {
 			table: "inference_usage".to_string(),
 			constraint: Constraint::ForeignKey {
 				name: "inference_usage_run".to_string(),
-				columns: vec!["run_id".to_string()],
+				columns: vec!["tenant".to_string(), "run_id".to_string()],
 				referenced_table: "runs".to_string(),
-				referenced_columns: vec!["id".to_string()],
+				referenced_columns: vec!["tenant".to_string(), "id".to_string()],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::Restrict,
 				deferrable: None,
 			},
+		})		.add_operation(Operation::DropConstraintDefinition {
+			table: "inference_usage".to_owned(),
+			constraint: Constraint::ForeignKey {
+						name: "inference_usage_tenant_root_fkey".to_owned(),
+						columns: vec!["tenant".to_owned()],
+						referenced_table: "tenants".to_owned(),
+						referenced_columns: vec!["name".to_owned()],
+						on_delete: ForeignKeyAction::NoAction,
+						on_update: ForeignKeyAction::NoAction,
+						deferrable: None,
+					},
 		})
+
 		.add_dependency("execution", "0012_inference_usage")
 		.atomic(true)
 		.with_initial(None)

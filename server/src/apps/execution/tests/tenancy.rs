@@ -68,17 +68,6 @@ async fn observe(pool: &sqlx::PgPool) -> BTreeMap<String, Observed> {
 		.collect()
 }
 
-const REGISTRY_KEYED_BY_TENANT: &[&str] = &[
-	"agent_draft_registrations",
-	"agent_knowledge",
-	"marketplace_revisions",
-	"registry",
-	"registry_agent_model_refs",
-	"registry_agent_resource_refs",
-	"registry_memory_role_refs",
-	"registry_requests",
-];
-
 #[rstest]
 #[tokio::test]
 async fn every_table_is_classified_and_matches_its_policies(#[future] database: DatabaseFixture) {
@@ -142,19 +131,8 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 					"{} is enforced; classify it Tenant-owned: {actual:?}",
 					table.name
 				);
-				// #265 copies the Tenant onto the tables that reach it only
-				// through a parent. #243 keyed the Registry tables by Tenant
-				// ahead of #265, which still enforces them.
-				match issue {
-					265 => assert_eq!(
-						actual.tenant_column,
-						REGISTRY_KEYED_BY_TENANT.contains(&table.name),
-						"{} tenant column",
-						table.name
-					),
-					241 => {}
-					other => panic!("{}: no step of #223 is #{other}", table.name),
-				}
+				// #241 gives Nodes and peers a Tenant.
+				assert_eq!(issue, 241, "{}: no step of #223 is #{issue}", table.name);
 			}
 			Classification::DeploymentWide => assert!(
 				!actual.row_security && actual.policies == 0,
@@ -162,6 +140,125 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 				table.name
 			),
 		}
+	}
+}
+
+/// The tables whose `tenant` stays nullable. A Deployment Administrator's
+/// decision on a request that addresses no Tenant keeps a row without one
+/// (#264, #265), and so does an event that concerns the Deployment, such as a
+/// peer registration, until #241 gives peers a Tenant.
+const NULLABLE_TENANT: &[&str] = &[
+	"dashboard_administration_history",
+	"events",
+	"research_revocations",
+];
+
+/// A foreign key as the catalog lists it.
+struct ForeignKey {
+	table: String,
+	name: String,
+	columns: Vec<String>,
+	parent: String,
+	parent_columns: Vec<String>,
+}
+
+async fn foreign_keys(pool: &sqlx::PgPool) -> Vec<ForeignKey> {
+	// Catalog introspection that Reinhardt Query has no builder for.
+	type Row = (String, String, Vec<String>, String, Vec<String>);
+	let rows: Vec<Row> = sqlx::query_as(
+		"SELECT child.relname::text, c.conname::text, \
+		 ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n, o) \
+		 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n ORDER BY k.o), \
+		 parent.relname::text, \
+		 ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n, o) \
+		 JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.n ORDER BY k.o) \
+		 FROM pg_constraint c \
+		 JOIN pg_class child ON child.oid = c.conrelid \
+		 JOIN pg_class parent ON parent.oid = c.confrelid \
+		 WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace ORDER BY 1, 2",
+	)
+	.fetch_all(pool)
+	.await
+	.unwrap();
+	rows.into_iter()
+		.map(
+			|(table, name, columns, parent, parent_columns)| ForeignKey {
+				table,
+				name,
+				columns,
+				parent,
+				parent_columns,
+			},
+		)
+		.collect()
+}
+
+#[rstest]
+#[tokio::test]
+async fn tenant_owned_tables_reference_the_tenant_root_and_agree_with_their_parents(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let f = database.await;
+	let pool = runtime::connect(&f.url, 2)
+		.await
+		.unwrap()
+		.into_postgres()
+		.unwrap();
+	let owned = TABLES
+		.iter()
+		.filter(|table| table.classification == Classification::TenantOwned)
+		.map(|table| table.name)
+		.collect::<BTreeSet<_>>();
+	// Act
+	let not_null: Vec<(String, bool)> = sqlx::query_as(
+		"SELECT c.relname::text, a.attnotnull FROM pg_attribute a \
+		 JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+		 WHERE a.attname = 'tenant' AND NOT a.attisdropped AND c.relkind = 'r' \
+		 AND n.nspname = 'public'",
+	)
+	.fetch_all(&pool)
+	.await
+	.unwrap();
+	let not_null = not_null.into_iter().collect::<BTreeMap<_, _>>();
+	let keys = foreign_keys(&pool).await;
+	// Assert: every Tenant-owned table names its Tenant, and the Tenant root
+	// record survives purge as a tombstone for it to reference.
+	for table in &owned {
+		let required = !NULLABLE_TENANT.contains(table);
+		assert_eq!(
+			not_null.get(*table),
+			Some(&required),
+			"{table}: `tenant` is NOT NULL unless the table is a #264 exception"
+		);
+		assert!(
+			keys.iter().any(|key| key.table == *table
+				&& key.columns == ["tenant"]
+				&& key.parent == "tenants"
+				&& key.parent_columns == ["name"]),
+			"{table} has no foreign key from `tenant` to tenants(name)"
+		);
+	}
+	// Assert: a child keeps its parent's Tenant, so every reference between
+	// two Tenant-owned tables compares the Tenants too.
+	for key in keys
+		.iter()
+		.filter(|key| owned.contains(key.table.as_str()) && owned.contains(key.parent.as_str()))
+	{
+		let child = key.columns.iter().position(|column| column == "tenant");
+		let parent = key
+			.parent_columns
+			.iter()
+			.position(|column| column == "tenant");
+		assert!(
+			child.is_some() && child == parent,
+			"{} ({}): {:?} -> {}{:?} lets a child name another Tenant than its parent",
+			key.table,
+			key.name,
+			key.columns,
+			key.parent,
+			key.parent_columns
+		);
 	}
 }
 

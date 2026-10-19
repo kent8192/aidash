@@ -9,6 +9,8 @@ use serde_json::Value;
 pub struct AuthorizationRemoteCommands {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub grant_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "text")]
 	pub request_key: String,
 	#[field(field_type = "text")]

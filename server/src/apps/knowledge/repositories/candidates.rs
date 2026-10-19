@@ -236,7 +236,7 @@ pub(crate) async fn propose(
 			.map(Alias::new)
 			.to_vec();
 		columns.extend(repository::content_columns());
-		columns.extend(["state", "created_at", "updated_at"].map(Alias::new));
+		columns.extend(["state", "created_at", "updated_at", "tenant"].map(Alias::new));
 		let mut select = Query::select();
 		select
 			.expr(Expr::value(id))
@@ -249,7 +249,12 @@ pub(crate) async fn propose(
 		select
 			.expr(Expr::value("pending"))
 			.expr(Expr::value(now))
-			.expr(Expr::value(now));
+			.expr(Expr::value(now))
+			.expr(crate::database::scope::tenant_of(
+				"memory_banks",
+				"id",
+				bank_id,
+			));
 		native::query(
 			&Query::insert()
 				.into_table(Alias::new("memory_candidates"))
@@ -471,6 +476,7 @@ pub(crate) async fn review(
 					"actor",
 					"outcome",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -486,6 +492,11 @@ pub(crate) async fn review(
 						admitted.as_ref().map(Unit::evidence),
 					)?))
 					.expr(Expr::value(Utc::now()))
+					.expr(crate::database::scope::tenant_of(
+						"memory_banks",
+						"id",
+						bank_id,
+					))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

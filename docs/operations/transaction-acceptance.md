@@ -7,7 +7,7 @@ kubeconfig, exact image and Reinhardt Query diagnostic inputs, creates its own
 namespace and deletes only that namespace. It never changes the current context.
 
 The current profile supports Kubernetes with kind. Source/image identities,
-case inventories and actual outcomes go under `.ignore/transaction-acceptance/`.
+case inventories and actual outcomes go under `private/transaction-acceptance/`.
 A selected case or planned gate is not passing evidence. This profile does not
 establish production availability, cross-version compatibility, durable-data loss
 recovery, external effects, or all-six integrated release acceptance.

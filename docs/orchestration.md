@@ -193,7 +193,7 @@ Japanese; native Kubernetes diagnostic messages retain their original text.
 An observation failure hides old successful observations and shows an error.
 The page remains available while an atomic transaction blocks ordinary reads.
 
-Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `.ignore/transaction-acceptance/`. The platform, transaction and remote-memory profiles are available for manual execution outside CI. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
+Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `private/transaction-acceptance/`. The platform, transaction and remote-memory profiles are available for manual execution outside CI. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
 
 The remote-memory profile is `scripts/test-cluster.sh kubernetes remote-memory`
 which provisions two HTTP Nodes with
@@ -205,12 +205,14 @@ retry, restarts both servers/worker and PostgreSQL, and verifies lineage, receip
 unknown charges and source-invalidation controls. Production leases expire
 naturally. Only this run's namespace and cluster are removed. `remote-memory.json`,
 provider requests, source/image identities and server logs are retained under
-`.ignore/transaction-acceptance/` for the manual run. These are
+`private/transaction-acceptance/` for the manual run. These are
 semantic execution recovery cases; the other section-12 acceptance gates remain
 separate.
 
-The observer has namespaced `list` access only to Deployments, Pods and Events,
-and returns resources for its configured Helm release. Only Deployment Administrators can
+The observer has namespaced `list` access only to Deployments, StatefulSets,
+Pods and Events, and returns resources for its configured Helm release.
+Production's disk-holding workloads are StatefulSets (ADR 0067), so it reports
+them with the Deployments. Only Deployment Administrators can
 read `/api/deployment`. It cannot read Secrets or mutate workloads. Do not share
 the namespace across mutually untrusted teams, since Kubernetes list RBAC
 cannot restrict objects by label. Set `observability.enabled=false` to remove
@@ -266,7 +268,7 @@ executes the two-node research golden path using local OpenRouter-compatible pro
 fixtures, kills a worker after an effect, scales server/worker replicas, rolls
 every Deployment, stops and resumes workers, and checks stable identities,
 original task/run/artifact IDs and three unique external effects. It checks the
-real Kubernetes observation API and writes evidence under `.ignore/platform/`.
+real Kubernetes observation API and writes evidence under `private/platform/`.
 The Python runner only deletes the namespace it created. `--keep` retains it until Ctrl+C
 for browser inspection. The all-six integrated release scenario is separate.
 

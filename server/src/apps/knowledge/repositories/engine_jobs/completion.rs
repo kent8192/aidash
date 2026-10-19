@@ -9,7 +9,7 @@ use reinhardt::query::{
 };
 
 pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<bool> {
-	let scope = crate::database::scope::recorded(&job.tenant)?;
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&job.tenant)?;
 	let Some(run): Option<Run> = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)

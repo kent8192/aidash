@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DIGEST = '@sha256:' + 'b' * 64
 # The shipped PostgreSQL value is the locally built image's tag; it must be pinned.
 POSTGRES = {'existingSecret': 'db', 'image': 'aidash-postgres' + DIGEST}
+GVISOR = json.loads((ROOT / 'runner/gvisor.json').read_text())
 
 
 def render(chart, values, release='fixture', kube_version=None, namespace='environment'):
@@ -36,6 +37,13 @@ class ChartsTest(unittest.TestCase):
     # The Runner requires the application's capability object claim.
     base = {'node': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
+
+    def test_chart_installs_the_release_the_runner_image_bundles(self):
+        # The installer reads only the archive bundled in its image (#394), so a
+        # chart pin that differs from runner/gvisor.json can never install.
+        values = yaml.safe_load((ROOT / self.aidash / 'values.yaml').read_text())['execution']['gvisor']
+        self.assertEqual(values['version'], GVISOR['version'])
+        self.assertEqual(values['sha256'], GVISOR['sha256']['x86_64'])
 
     def test_execution_is_opt_in(self):
         objects = render(self.aidash, self.base)
@@ -275,6 +283,63 @@ class ChartsTest(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(values, node={'id': 'aidash://fixture'}))
 
+    def test_production_disk_holders_are_statefulsets_that_stateful_ha_fails_over(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
+                     'runtimeClass': {'create': True},
+                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'trusted-runner' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'trusted-guard' + DIGEST},
+                     'installer': {'enabled': True, 'image': 'trusted-installer' + DIGEST}}
+        claims = {'memoryRecovery': {'existingClaim': 'memory-recovery', 'directory': '/var/lib/aidash/memory-recovery/home'},
+                  'capabilities': {'storage': {'existingClaim': 'objects'}}}
+        failover = {'workloadKind': 'StatefulSet', 'highAvailability': {'enabled': True}}
+        values = dict(self.base, execution=execution, environment={'nodeSelector': {'pool': 'execution'}}, **claims)
+        objects = render(self.aidash, dict(values, **failover))
+        names = ['fixture-aidash-server', 'fixture-aidash-worker', 'fixture-execution-runner']
+        workloads = {value['metadata']['name']: value for value in objects if value['kind'] == 'StatefulSet'}
+        self.assertEqual(sorted(workloads), names)
+        self.assertFalse([value for value in objects if value['kind'] == 'Deployment' and value['metadata']['name'] in names])
+        for name, workload in workloads.items():
+            # One Pod at a time keeps a ReadWriteOnce claim on one Cluster Node.
+            self.assertEqual(workload['spec']['replicas'], 1)
+            self.assertEqual(workload['spec']['serviceName'], name)
+            self.assertEqual(workload['spec']['updateStrategy'], {'type': 'RollingUpdate'})
+            self.assertNotIn('strategy', workload['spec'])
+        # Server and worker share their claims, so they still move together.
+        for role in ('server', 'worker'):
+            terms = workloads[f'fixture-aidash-{role}']['spec']['template']['spec']['affinity']['podAffinity']
+            self.assertEqual(terms['requiredDuringSchedulingIgnoredDuringExecution'][0]['topologyKey'], 'kubernetes.io/hostname')
+        ha = {value['metadata']['name']: value['spec'] for value in objects if value['kind'] == 'HighAvailabilityApplication'}
+        self.assertEqual(sorted(ha), names)
+        for spec in ha.values():
+            self.assertEqual(spec['resourceSelection'], {'resourceKind': 'StatefulSet'})
+            self.assertEqual(spec['policy']['storageSettings'], {'requireRegionalStorage': True})
+            self.assertEqual(spec['policy']['failoverSettings'], {
+                'forceDeleteStrategy': 'AfterNodeUnreachable', 'afterNodeUnreachable': {'afterNodeUnreachableSeconds': 20}})
+        environment = {'postgres': POSTGRES,
+                       'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                       'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                                    'collectorImage': 'collector' + DIGEST}}
+        objects = render(self.environment, dict(environment, **failover))
+        edge = select(objects, 'StatefulSet', '-edge')
+        self.assertEqual(edge['spec']['serviceName'], 'fixture-environment-edge')
+        self.assertNotIn('strategy', edge['spec'])
+        self.assertEqual(sorted(value['metadata']['name'] for value in objects if value['kind'] == 'HighAvailabilityApplication'),
+                         ['fixture-environment-edge', 'fixture-environment-nats', 'fixture-environment-postgres'])
+        # Outside production nothing changes: Deployments and no HA resources.
+        for chart, plain in ((self.aidash, values), (self.environment, environment)):
+            objects = render(chart, plain)
+            self.assertFalse([value for value in objects if value['kind'] == 'HighAvailabilityApplication'])
+        self.assertEqual(select(render(self.environment, environment), 'Deployment', '-edge')['spec']['strategy'], {'type': 'Recreate'})
+
+    def test_high_availability_needs_statefulsets(self):
+        for chart, values in ((self.aidash, self.base), (self.environment, {'postgres': POSTGRES,
+                              'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                              'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                                           'collectorImage': 'collector' + DIGEST}})):
+            for invalid in ({'highAvailability': {'enabled': True}}, {'workloadKind': 'DaemonSet'}):
+                with self.subTest(chart=chart, invalid=invalid), self.assertRaises(subprocess.CalledProcessError):
+                    render(chart, dict(values, **invalid))
+
     def test_execution_privileges_scheduling_and_independent_trusted_images(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
                      'runtimeClass': {'create': True},
@@ -285,7 +350,7 @@ class ChartsTest(unittest.TestCase):
                                            environment={'nodeSelector': {'pool': 'execution'}}))
         runtime = select(objects, 'RuntimeClass', '-runsc')
         self.assertEqual(runtime['handler'], 'runsc')
-        self.assertEqual(runtime['scheduling']['nodeSelector'], {'aidash.run/gvisor': '20260921.0'})
+        self.assertEqual(runtime['scheduling']['nodeSelector'], {'aidash.run/gvisor': GVISOR['version']})
         self.assertEqual(select(objects, 'Namespace', '-sandbox')['metadata']['labels']['pod-security.kubernetes.io/enforce'], 'restricted')
         rule = select(objects, 'ClusterRole', '-installer')['rules']
         self.assertEqual(rule, [{'apiGroups': [''], 'resources': ['nodes'], 'verbs': ['get', 'patch']}])

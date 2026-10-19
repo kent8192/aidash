@@ -19,6 +19,8 @@ use uuid::Uuid;
 pub struct Invocation {
 	#[field(primary_key = true, field_type = "text")]
 	pub idempotency_key: String,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]

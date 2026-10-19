@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub struct MemoryUnitOrigin {
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub revision: i64,
 	#[field]
@@ -21,6 +23,8 @@ pub struct MemoryUnitOrigin {
 pub struct MemoryUnitRunOrigin {
 	#[field(primary_key = true)]
 	pub unit_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
 }

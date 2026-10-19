@@ -17,6 +17,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
                 ColumnDefinition::new("updated_by", FieldType::Text).with_not_null(true),
             ], constraints: vec![
+            	Constraint::ForeignKey {
+            		name: "tenant_retention_rules_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
                 Constraint::Check { name: "tenant_retention_rules_periods".into(), expression: "snapshot_after_run_seconds BETWEEN 0 AND 315360000 AND snapshot_max_age_seconds BETWEEN 0 AND 315360000".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })
@@ -30,6 +39,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("changed_at", FieldType::TimestampTz).with_not_null(true),
                 ColumnDefinition::new("changed_by", FieldType::Text).with_not_null(true),
             ], constraints: vec![
+            	Constraint::ForeignKey {
+            		name: "tenant_retention_rule_history_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
                 Constraint::Check { name: "tenant_retention_rule_history_periods".into(), expression: "(snapshot_after_run_seconds IS NULL) = (snapshot_max_age_seconds IS NULL) AND (snapshot_after_run_seconds IS NULL OR (snapshot_after_run_seconds BETWEEN 0 AND 315360000 AND snapshot_max_age_seconds BETWEEN 0 AND 315360000))".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

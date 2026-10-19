@@ -11,10 +11,17 @@ impl Run {
 		let mut recovery = self.recovery.clone();
 		let retrying = matches!(
 			event,
-			"run.retrying" | "run.semantic_retrying" | "run.failure_pending"
+			"run.retrying"
+				| "run.semantic_retrying"
+				| "run.decider_retrying"
+				| "run.failure_pending"
 		);
 		if !retrying {
 			recovery.retry = None;
+		}
+		// Only a scheduled Decider retry carries its count to the next lease.
+		if event != "run.decider_retrying" {
+			recovery.decider_retry = 0;
 		}
 		let pending = encode(&self.state, &recovery)?;
 		let error = if retrying || event == "run.failed" {

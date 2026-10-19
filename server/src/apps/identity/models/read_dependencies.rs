@@ -93,11 +93,21 @@ impl AuthorizationRunRead {
 		workspace: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		for chunk in sources.chunks(256) {
 			let mut query = Query::insert();
 			query
 				.into_table(Alias::new(Self::table_name()))
-				.columns(["run_id", "workspace_id", "resource_kind", "resource_id"].map(Alias::new))
+				.columns(
+					[
+						"run_id",
+						"workspace_id",
+						"resource_kind",
+						"resource_id",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
 				.on_conflict(
 					OnConflict::columns(["run_id", "resource_kind", "resource_id"]).do_nothing(),
 				);
@@ -107,6 +117,7 @@ impl AuthorizationRunRead {
 					IntoValue::into_value(workspace),
 					IntoValue::into_value(kind),
 					IntoValue::into_value(*id),
+					IntoValue::into_value(tenant.as_str()),
 				]);
 			}
 			let (sql, values) = query.build(PostgresQueryBuilder);
@@ -160,13 +171,24 @@ impl AuthorizationRunOutput {
 		AuthorizationRunRead::record_sources(tx, run, workspace, &[(kind.into(), id)]).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
-			.columns(["run_id", "workspace_id", "resource_kind", "resource_id"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(run),
-				IntoValue::into_value(workspace),
-				IntoValue::into_value(kind),
-				IntoValue::into_value(id),
+			.columns(
+				[
+					"run_id",
+					"workspace_id",
+					"resource_kind",
+					"resource_id",
+					"tenant",
+				]
+				.map(Alias::new),
+			)
+			.values_expr(vec![
+				IntoValue::into_value(run).into(),
+				IntoValue::into_value(workspace).into(),
+				IntoValue::into_value(kind).into(),
+				IntoValue::into_value(id).into(),
+				crate::database::scope::tenant_of("runs", "id", run),
 			])
+			.expect("one value per column")
 			.on_conflict(
 				OnConflict::columns(["run_id", "resource_kind", "resource_id"]).do_nothing(),
 			)

@@ -26,7 +26,7 @@ ENVIRONMENTS = {
     "release-automation": "develop/0.1.0", "deployment-notifications": "develop/0.1.0",
     "certificate-renewal": "develop/0.1.0",
 }
-RULESETS = {"main": "Aidash delivery main checks", "develop": "Aidash delivery develop checks"}
+RULESETS = {"main": "Aidash delivery main checks"}
 INITIAL_VARIABLES = {"GCP_ENVIRONMENTS_ENABLED", "GCP_PRODUCTION_ENABLED", "GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED", "GCP_CERTIFICATE_RENEWAL_ENABLED"}
 SECRETS = {
     "nonproduction": {"CLOUDFLARE_DNS_API_TOKEN", "GCP_DEVELOP_RUNTIME_CONFIG", "GCP_TEST_RUNTIME_CONFIG", "GCP_PR_RUNTIME_CONFIG", "GCP_GCIP_IDP_SECRETS"},
@@ -107,7 +107,7 @@ def github_adoption(managed_variables=INITIAL_VARIABLES):
             conditions = detail.get("conditions", {}).get("ref_name", {})
             checks = detail.get("rules", [])
             if (detail.get("name") != name or detail.get("target") != "branch" or detail.get("enforcement") != "active"
-                    or detail.get("bypass_actors") or conditions.get("include") != ["refs/heads/" + ("main" if identity == "main" else "develop/0.1.0")]
+                    or detail.get("bypass_actors") or conditions.get("include") != ["refs/heads/main"]
                     or conditions.get("exclude") != [] or len(checks) != 1 or checks[0].get("type") != "required_status_checks"
                     or any(item.get("context") not in {"CI Success", "Staging deployment"} or type(item.get("integration_id")) is not int
                            for item in checks[0].get("parameters", {}).get("required_status_checks", []))):
@@ -480,7 +480,7 @@ def main():
     parser.add_argument("--prefix")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--review-bootstrap-migration", action="store_true")
-    parser.add_argument("--operator-directory", type=Path, default=ROOT / ".ignore/delivery/operator")
+    parser.add_argument("--operator-directory", type=Path, default=ROOT / "secrets/delivery/operator")
     args = parser.parse_args()
     try:
         if args.action == "inventory":
