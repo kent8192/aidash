@@ -522,6 +522,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				),
 				oidc: None,
 				sign_in: None,
+				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),

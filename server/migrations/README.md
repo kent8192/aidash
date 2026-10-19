@@ -325,6 +325,12 @@ migration that creates each table, because Aidash is undeployed:
   stays Deployment-wide: a source's owner writes a consent for the redistributor
   that reads it, so it belongs to neither Tenant's scope, as
   `marketplace_audiences` and `marketplace_versions` do not.
+- A Node is a Tenant-owned row in `nodes`, keyed by `(tenant, name)`, and the
+  Node-owned tables reference `nodes(tenant, name)` with `(tenant, node)`
+  (#241). `node_names` is Deployment-wide and its rows are never deleted: it
+  keeps a Node name taken after a purge, and it names the Tenant of a receiving
+  Node before any Tenant scope opens. `nodes` references it with
+  `(name, tenant)`. Both are created in `identity/0002_tables` after `tenants`.
 - Inserts name `tenant`. Statements built for a Tenant scope write the scope's
   Tenant with `crate::database::scope::tenant()`, a child of a row reads its
   parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant

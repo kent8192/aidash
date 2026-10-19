@@ -137,10 +137,55 @@ impl DatabaseFixture {
 			)
 			.to_string(PostgresQueryBuilder);
 		let mut tx = self.begin_fixture().await;
-		aidash_server::database::native::query(&insert)
+		let inserted = aidash_server::database::native::query(&insert)
 			.execute(&mut *tx)
 			.await
-			.unwrap();
+			.unwrap()
+			.rows_affected();
+		let node = aidash_domain::nodes::NodeName::from_entropy(*uuid::Uuid::new_v4().as_bytes());
+		let claim = Query::insert()
+			.into_table(Alias::new("node_names"))
+			.columns(["name", "tenant", "created_at"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(node.as_str()))
+					.expr(Expr::value(name))
+					.expr(Expr::cust("clock_timestamp()"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		let default_node = Query::insert()
+			.into_table(Alias::new("nodes"))
+			.columns(
+				[
+					"tenant",
+					"name",
+					"label",
+					"is_default",
+					"created_at",
+					"created_by_kind",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(name))
+					.expr(Expr::value(node.as_str()))
+					.expr(Expr::value("Default"))
+					.expr(Expr::value(true))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::value("deployment_administrator"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		if inserted == 1 {
+			for statement in [claim, default_node] {
+				aidash_server::database::native::query(&statement)
+					.execute(&mut *tx)
+					.await
+					.unwrap();
+			}
+		}
 		tx.commit().await.unwrap();
 		aidash_application::tenancy::TenancyScope::tenant(name).unwrap()
 	}

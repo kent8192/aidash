@@ -36,6 +36,9 @@ pub struct TenancySettings {
 	/// Days a deleted Tenant stays restorable before its data is purged: 1 to 90.
 	#[setting(default = "30")]
 	pub deletion_grace_days: u32,
+	/// How many Nodes a Tenant may hold: 1 to 1000. A Tier may be stricter.
+	#[setting(default = "None")]
+	pub nodes_per_tenant: Option<u32>,
 }
 
 impl TenancySettings {
@@ -49,6 +52,7 @@ impl TenancySettings {
 			creation_total: self.creation_total.unwrap_or(defaults.creation_total),
 			invitations: self.invitations.unwrap_or(defaults.invitations),
 			deletion_grace_days: self.deletion_grace_days,
+			nodes_per_tenant: self.nodes_per_tenant.unwrap_or(defaults.nodes_per_tenant),
 		}
 	}
 }
@@ -64,6 +68,10 @@ impl SettingsValidation for TenancySettings {
 		}
 		aidash_domain::identity::tenancy::deletion::grace_days(self.deletion_grace_days)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		if let Some(limit) = self.nodes_per_tenant {
+			aidash_domain::identity::tenancy::nodes_per_tenant(limit)
+				.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		}
 		Ok(())
 	}
 }

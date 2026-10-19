@@ -16,6 +16,8 @@ pub struct Config {
 	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
 		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
+	/// The Tier's limits on a Tenant, which the Enterprise build supplies.
+	pub tier_limits: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
 }
 
 pub use crate::apps::identity::serializers::settings::{OidcConfig, SessionConfig};
@@ -71,7 +73,8 @@ impl Config {
 		) {
 			return Err(Error::Invalid("Aidash requires PostgreSQL".into()));
 		}
-		let sign_in = crate::bootstrap::build::current().extension.sign_in()?;
+		let extension = crate::bootstrap::build::current().extension;
+		let sign_in = extension.sign_in()?;
 		if sign_in.is_some() && settings.dashboard.oidc.is_some() {
 			return Err(Error::Invalid(
 				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
@@ -89,6 +92,7 @@ impl Config {
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
 			sign_in,
+			tier_limits: extension.tier_limits(),
 			oidc: settings
 				.dashboard
 				.oidc

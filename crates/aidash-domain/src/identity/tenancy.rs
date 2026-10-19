@@ -89,6 +89,8 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"message.create",
 	"message.read",
 	"model.infer",
+	"node.read",
+	"node.use",
 	"registry.create",
 	"registry.read",
 	"run.control",
@@ -196,6 +198,8 @@ pub struct TenancyRules {
 	pub invitations: bool,
 	/// How long a deleted Tenant stays restorable before it is purged.
 	pub deletion_grace_days: u32,
+	/// How many Nodes a Tenant may hold. A Tier may be stricter.
+	pub nodes_per_tenant: u32,
 }
 
 impl TenancyRules {
@@ -210,6 +214,7 @@ impl TenancyRules {
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
+			nodes_per_tenant: DEFAULT_NODES_PER_TENANT,
 		};
 		match offering {
 			Offering::Cloud => Self {
@@ -220,6 +225,19 @@ impl TenancyRules {
 			Offering::SelfHosted | Offering::Dedicated => administered,
 		}
 	}
+}
+
+/// The "Nodes per Tenant" Tenancy Rule every Offering starts with.
+pub const DEFAULT_NODES_PER_TENANT: u32 = 10;
+
+/// A configured "Nodes per Tenant" value: 1 to 1000.
+pub fn nodes_per_tenant(value: u32) -> Result<u32> {
+	if !(1..=1000).contains(&value) {
+		return Err(Error::Invalid(
+			"tenancy.nodes_per_tenant must be between 1 and 1000".into(),
+		));
+	}
+	Ok(value)
 }
 
 /// Why an External Identity may not create a Tenant now.

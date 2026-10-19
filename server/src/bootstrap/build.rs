@@ -73,6 +73,10 @@ pub trait Extension: Sync + std::fmt::Debug {
 	fn owns_issuer(&self, _issuer: &str) -> bool {
 		false
 	}
+	/// The Tier's limits on a Tenant (#242). Community sets none.
+	fn tier_limits(&self) -> Arc<dyn aidash_application::ports::nodes::TierLimits> {
+		Arc::new(aidash_application::ports::nodes::NoTierLimits)
+	}
 	/// Endpoints the build adds to Community's for `offering`.
 	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		None

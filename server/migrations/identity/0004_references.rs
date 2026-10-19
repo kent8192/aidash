@@ -615,6 +615,42 @@ pub(super) fn migration() -> Migration {
 				deferrable: None,
 			},
 		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_names".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_names_tenant_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "nodes".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "nodes_tenant_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "nodes".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "nodes_name_fkey".to_owned(),
+				columns: vec!["name".to_owned(), "tenant".to_owned()],
+				referenced_table: "node_names".to_owned(),
+				referenced_columns: vec!["name".to_owned(), "tenant".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),

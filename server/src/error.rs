@@ -37,6 +37,9 @@ pub enum Error {
 	/// this; credentials that could be probed from outside see 401 instead.
 	#[error("tenant_deleted")]
 	TenantDeleted,
+	/// "Nodes per Tenant", or the Tier's limit, refuses another Node.
+	#[error("node_limit_reached")]
+	NodeLimitReached,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	#[error("verified model media route unavailable for {0}")]
@@ -92,6 +95,7 @@ impl Error {
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
 			Self::TenantDeleted => (StatusCode::GONE, self.to_string()),
+			Self::NodeLimitReached => (StatusCode::FORBIDDEN, self.to_string()),
 			Self::TenantCreation(refusal) => (
 				match refusal {
 					CreationRefusal::HourlyLimit { .. } => StatusCode::TOO_MANY_REQUESTS,

@@ -15,7 +15,7 @@ pub struct DashboardAdministrationHistory {
 	#[field]
 	pub occurred_at: DateTime<Utc>,
 	/// `registration.approve`, `registration.reject`, `mapping.disable`,
-	/// `subject.group.update`, `tenant.create`, `tenant.update` or `invitation.*`.
+	/// `subject.group.update`, `tenant.create`, `tenant.update`, `node.create` or `invitation.*`.
 	#[field(field_type = "text")]
 	pub action: String,
 	/// The External Identity the event concerns, if any.

@@ -40,6 +40,51 @@ pub async fn tenant_root_in(pool: &sqlx::PgPool, name: &str) {
 		.execute(pool)
 		.await
 		.expect("the Tenant root record is written");
+	default_node_in(pool, name).await;
+}
+
+/// The Tenant's default Node, created like `tenants::create` does when the
+/// fixture wrote the root record itself.
+#[allow(dead_code)]
+pub async fn default_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain::nodes::NodeName {
+	let existing: Option<String> =
+		sqlx::query_scalar("SELECT name FROM nodes WHERE tenant = $1 AND is_default")
+			.bind(tenant)
+			.fetch_optional(pool)
+			.await
+			.expect("the default Node is read");
+	if let Some(name) = existing {
+		return aidash_domain::nodes::NodeName::parse(&name).unwrap();
+	}
+	let name = aidash_domain::nodes::NodeName::from_entropy(*uuid::Uuid::new_v4().as_bytes());
+	sqlx::query(
+		"INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp())",
+	)
+	.bind(name.as_str())
+	.bind(tenant)
+	.execute(pool)
+	.await
+	.expect("the Node name is claimed");
+	sqlx::query(
+		"INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) \
+		 VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator')",
+	)
+	.bind(tenant)
+	.bind(name.as_str())
+	.execute(pool)
+	.await
+	.expect("the default Node is written");
+	name
+}
+
+/// The address of `tenant`'s default Node on `store`.
+#[allow(dead_code)]
+pub async fn default_node(
+	store: &aidash_server::store::Store,
+	tenant: &str,
+) -> aidash_domain::nodes::NodeAddress {
+	let name = default_node_in(store.pool.fixture_driver(), tenant).await;
+	store.deployment.node(name)
 }
 
 #[allow(dead_code)]

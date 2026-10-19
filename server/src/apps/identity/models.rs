@@ -56,6 +56,8 @@ mod tenant_deletions;
 pub use tenant_deletions::TenantDeletion;
 mod tenants;
 pub use tenants::Tenant;
+mod nodes;
+pub use nodes::{Node, NodeNameRoot};
 
 mod dashboard_administration;
 mod tenant_administration;

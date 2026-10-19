@@ -69,6 +69,10 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `credential.revoke`             | `credential`   | Revoke any Subject Credential of the Tenant                                                                    |
 | `peer_mapping.read`             | `peer_mapping` | List the Tenant's Peer Mappings and their history                                                              |
 | `peer_mapping.update`           | `peer_mapping` | Create, update and disable a Peer Mapping                                                                      |
+| `node.read`                     | `node`         | List the Tenant's Nodes (members hold it)                                                                      |
+| `node.use`                      | `node`         | Work in a Node, such as creating a Workspace there (members hold it)                                           |
+| `node.create`                   | `tenant`       | Create a Node within "Nodes per Tenant"                                                                        |
+| `node.update`                   | `node`         | Change a Node's label                                                                                          |
 | `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
 | `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
 
@@ -115,12 +119,15 @@ The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's po
 | `creation_total`      | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged               |
 | `invitations`         | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations  |
 | `deletion_grace_days` | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
+| `nodes_per_tenant`    | `10`        | `10`   | `10`      | Nodes one Tenant may hold (1 to 1000); a Tier may be stricter              |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 
 - The Deployment Administrator bearer token, or a browser session in the `deployment_administrator` context, creates a Tenant without limits and maps nobody into it. Its first administrator joins through an Invitation the Deployment Administrator issues and approves (`POST /api/dashboard/registrations/{id}/approve` with `groups` creates the subject in any group), or, for a Tenant with a Tenant Binding, through the bound pool's request. The dashboard offers the Invitation controls in the Deployment Administrator's view of a Tenant, and `GET /api/dashboard/registrations` reports each request's `invitation_id` and `proposed_groups`, from which the approval form starts; a request without an Invitation starts from no groups, so `administrators` is always an explicit choice.
 - Any other browser session creates a Tenant for its External Identity, without needing a Mapping, where `tenant_creation` allows it. The identity becomes the Tenant Creator: it receives the first Mapping, to `owner` in `administrators`, and the first policy revision's actor is `oidc:<identity>`. Exceeding `creation_per_hour` answers 429 with `Retry-After` until a slot frees; exceeding `creation_total` answers 403 `tenant_limit_reached`. Personal Tenants never count. An advisory lock per identity serializes concurrent creations.
 - Subject Credentials, agents and peers never create Tenants (403).
+
+Every Tenant starts with one default Node, labelled `Default`, which `tenants::create` writes with the root record for every creator, Personal Tenants included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`, unique in the Deployment, never changed and never reused, so `node_names` outlives a purge) and a label of 1 to 64 characters that its Tenant Administrators change. Its address is `aidash://<deployment>/<name>`. `GET /api/tenants/{tenant}/nodes` lists the Tenant's Nodes under `node.read`, the default first. `POST /api/tenants/{tenant}/nodes` with `{"label":…}` creates a Node under `node.create`, answers 201, and answers 403 `node_limit_reached` when the Tenant holds `nodes_per_tenant` Nodes or the Tier's limit, whichever is lower; an advisory lock per Tenant serializes concurrent creations. The Community build has no Tier limit. `PATCH /api/tenants/{tenant}/nodes/{node}` with `{"label":…}` changes the label under `node.update`. Nodes are created here and never stopped; #388 decides how a Node stops. Creations are appended to `dashboard_administration_history` as `node.create`.
 
 `GET /api/tenants?offset=0` lists root records for Deployment Administrators, newest first, 200 per page, each with its current `deletion`, if any. `PUT /api/tenants/{tenant}/label` changes the label under `tenant.update`, through a browser Mapping of that Tenant.
 

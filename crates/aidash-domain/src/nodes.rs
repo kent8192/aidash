@@ -2,8 +2,10 @@
 //! installation, `aidash://<name>`. A Node is an agent hub inside one Tenant,
 //! addressed as `aidash://<deployment>/<node name>`. Nothing else in the
 //! workspace parses or formats these forms.
-use crate::identity::tenancy::assigned_name;
+use crate::identity::tenancy::{TenancyRules, assigned_name};
+use crate::tenancy::TenantName;
 use crate::{Error, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -337,6 +339,48 @@ impl From<DeploymentKeyId> for String {
 	fn from(value: DeploymentKeyId) -> Self {
 		value.0
 	}
+}
+
+/// A Node as its Tenant sees it. Its name is assigned; its label is free text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Node {
+	pub tenant: TenantName,
+	pub name: NodeName,
+	pub label: String,
+	/// The Node every Tenant starts with. Exactly one per Tenant.
+	pub default: bool,
+	pub created_at: DateTime<Utc>,
+}
+
+/// The label of the Node every Tenant starts with.
+pub const DEFAULT_LABEL: &str = "Default";
+
+/// A Node label as stored, with the Tenant label's rule: trimmed, 1 to 64
+/// characters, without control characters.
+pub fn label(value: &str) -> Result<String> {
+	crate::identity::tenancy::label(value).map_err(|_| {
+		Error::Invalid("a Node label needs 1 to 64 characters without control characters".into())
+	})
+}
+
+/// How many Nodes a Tenant may hold: the Tenancy Rule, narrowed by the Tier's
+/// limit when the Tier sets one.
+pub fn node_limit(rules: &TenancyRules, tier: Option<u32>) -> u32 {
+	tier.map_or(rules.nodes_per_tenant, |tier| {
+		tier.min(rules.nodes_per_tenant)
+	})
+}
+
+/// Why a Node cannot be created now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeLimitReached;
+
+/// Refuses a creation that would exceed `limit`, given `count` Nodes today.
+pub fn check_creation(limit: u32, count: u32) -> std::result::Result<(), NodeLimitReached> {
+	if count >= limit {
+		return Err(NodeLimitReached);
+	}
+	Ok(())
 }
 
 #[cfg(test)]
