@@ -33,8 +33,18 @@ pub struct Registry {
 	node_id: String,
 	provider_credentials: bool,
 	plan_connections: bool,
+	/// The Deployment's permitted private origins; absent means the settings'.
+	keyless: Option<aidash_application::provider_access::KeylessAccess>,
 }
 impl Registry {
+	/// Share the Store's permitted origins, which tests extend after startup.
+	pub fn with_keyless_origins(
+		mut self,
+		origins: aidash_application::provider_access::KeylessAccess,
+	) -> Self {
+		self.keyless = Some(origins);
+		self
+	}
 	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
 		self.provider_credentials = configured;
 		self
@@ -45,9 +55,13 @@ impl Registry {
 		self
 	}
 	pub(crate) fn validation(&self) -> aidash_application::registry::DefinitionValidation {
-		crate::bootstrap::registry_validation()
+		let validation = crate::bootstrap::registry_validation()
 			.with_provider_credentials(self.provider_credentials)
-			.with_plan_connections(self.plan_connections)
+			.with_plan_connections(self.plan_connections);
+		match &self.keyless {
+			Some(origins) => validation.with_keyless_origins(origins.clone()),
+			None => validation,
+		}
 	}
 	/// Writes the built-in definitions into one Tenant's Registry, as Tenant
 	/// creation does.
@@ -95,6 +109,7 @@ impl Registry {
 			node_id: node_id.into(),
 			provider_credentials: false,
 			plan_connections: false,
+			keyless: None,
 		})
 	}
 	pub async fn get(&self, tenant: &TenantName, id: &str, version: &str) -> Result<Entry> {
