@@ -51,6 +51,8 @@ pub(crate) async fn lock(tx: &mut dyn TransactionExecutor, key: &str) -> Result<
 pub struct ResearchAttempt {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field(field_type = "text")]
@@ -81,6 +83,8 @@ pub struct ResearchAttempt {
 pub struct ResearchSource {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field(field_type = "text")]
@@ -96,6 +100,8 @@ pub struct ResearchSource {
 pub struct ResearchSnapshot {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field]
@@ -153,6 +159,8 @@ pub struct ResearchSnapshot {
 pub struct ResearchOriginal {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub snapshot_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field]
@@ -166,6 +174,8 @@ pub struct ResearchOriginal {
 pub struct ResearchFragment {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field]
@@ -428,7 +438,9 @@ impl ResearchAttempt {
 			.map_err(|_| {
 				Error::Invalid("research request price exceeds the recorded range".into())
 			})?;
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.id(Uuid::now_v7())
 			.run_id(run)
 			.invocation_key(reservation.key.clone())
@@ -486,7 +498,9 @@ impl ResearchSource {
 		url: &str,
 		title: &str,
 	) -> Result<SourceRecord> {
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.id(Uuid::now_v7())
 			.run_id(run)
 			.url(url.to_owned())
@@ -539,7 +553,10 @@ impl ResearchSnapshot {
 			.iter()
 			.map(|line| line.text.len())
 			.sum::<usize>();
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "runs", "id", snapshot.run_id).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.id(snapshot.id)
 			.run_id(snapshot.run_id)
 			.source_id(snapshot.source_id)
@@ -686,7 +703,10 @@ impl ResearchFragment {
 		tx: &mut dyn TransactionExecutor,
 		fragment: &EvidenceFragment,
 	) -> Result<()> {
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "runs", "id", fragment.run_id).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.id(fragment.reference.0)
 			.run_id(fragment.run_id)
 			.snapshot_id(fragment.document_id)
@@ -868,7 +888,9 @@ impl ResearchOriginal {
 		snapshot: Uuid,
 		bytes: &[u8],
 	) -> Result<()> {
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
+			.tenant(tenant)
 			.snapshot_id(snapshot)
 			.run_id(run)
 			.bytes(bytes.to_vec())

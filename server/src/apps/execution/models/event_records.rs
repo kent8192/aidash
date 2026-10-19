@@ -60,14 +60,17 @@ async fn insert(
 			Alias::new("workspace_id"),
 			Alias::new("kind"),
 			Alias::new("data"),
+			Alias::new("tenant"),
 		])
-		.values_panic([
-			IntoValue::into_value(id),
-			IntoValue::into_value(node),
-			IntoValue::into_value(workspace),
-			IntoValue::into_value(kind),
-			IntoValue::into_value(data),
+		.values_expr(vec![
+			IntoValue::into_value(id).into(),
+			IntoValue::into_value(node).into(),
+			IntoValue::into_value(workspace).into(),
+			IntoValue::into_value(kind).into(),
+			IntoValue::into_value(data).into(),
+			crate::database::scope::event_tenant(workspace),
 		])
+		.expect("one value per column")
 		.build(PostgresQueryBuilder);
 	TransactionExecutor::execute(tx, &statement, convert_values(values)).await?;
 	Ok(id)

@@ -8,6 +8,8 @@ pub struct SemanticRemoteOperations {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
 	pub home_node: String,
 	#[field]
 	pub grant_id: uuid::Uuid,

@@ -12,6 +12,8 @@ use serde_json::Value;
 pub struct HumanRequest {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field]

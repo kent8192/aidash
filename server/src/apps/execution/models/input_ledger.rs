@@ -170,13 +170,16 @@ impl RunInput {
 				Alias::new("sender"),
 				Alias::new("content"),
 				Alias::new("idempotency_key"),
+				Alias::new("tenant"),
 			])
-			.values_panic([
-				IntoValue::into_value(run_id),
-				IntoValue::into_value(sender),
-				IntoValue::into_value(content),
-				IntoValue::into_value(key),
+			.values_expr(vec![
+				IntoValue::into_value(run_id).into(),
+				IntoValue::into_value(sender).into(),
+				IntoValue::into_value(content).into(),
+				IntoValue::into_value(key).into(),
+				crate::database::scope::tenant_of("runs", "id", run_id),
 			])
+			.expect("one value per column")
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		if run.home_node == node {
@@ -257,15 +260,18 @@ impl RunInput {
 					Alias::new("idempotency_key"),
 					Alias::new("message_id"),
 					Alias::new("reference_only"),
+					Alias::new("tenant"),
 				])
-				.values_panic([
-					IntoValue::into_value(run_id),
-					IntoValue::into_value(&message.sender),
-					IntoValue::into_value(&message.content),
-					IntoValue::into_value(key),
-					IntoValue::into_value(message.id),
-					IntoValue::into_value(reference_only),
+				.values_expr(vec![
+					IntoValue::into_value(run_id).into(),
+					IntoValue::into_value(&message.sender).into(),
+					IntoValue::into_value(&message.content).into(),
+					IntoValue::into_value(key).into(),
+					IntoValue::into_value(message.id).into(),
+					IntoValue::into_value(reference_only).into(),
+					crate::database::scope::tenant_of("runs", "id", run_id),
 				])
+				.expect("one value per column")
 				.on_conflict(
 					OnConflict::columns([Alias::new("run_id"), Alias::new("idempotency_key")])
 						.do_nothing()

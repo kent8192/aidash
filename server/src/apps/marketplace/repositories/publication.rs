@@ -82,12 +82,7 @@ impl PublicationScope for NativeDefinitions<'_, &Store> {
 		.map_err(Into::into)
 	}
 	async fn publication_replay(&mut self, request: Uuid) -> Result<Option<Replay>> {
-		let id = key(&(
-			self.access.identity.tenant.as_str(),
-			self.access.identity.subject.as_str(),
-			"publish",
-			request,
-		));
+		let id = key(&(self.access.identity.subject.as_str(), "publish", request));
 		get(&mut self.access.tx, "marketplace_requests", &id)
 			.await
 			.map_err(Into::into)
@@ -98,12 +93,7 @@ impl PublicationScope for NativeDefinitions<'_, &Store> {
 		fingerprint: String,
 		result: Value,
 	) -> Result<()> {
-		let id = key(&(
-			self.access.identity.tenant.as_str(),
-			self.access.identity.subject.as_str(),
-			"publish",
-			request,
-		));
+		let id = key(&(self.access.identity.subject.as_str(), "publish", request));
 		put(
 			&mut self.access.tx,
 			"marketplace_requests",

@@ -1335,12 +1335,21 @@ pub async fn assign_participant(
 			native::query(
 				&Query::insert()
 					.into_table(Alias::new("memory_task_participants"))
-					.columns(["task_id", "participant_id", "participant_revision"].map(Alias::new))
+					.columns(
+						[
+							"task_id",
+							"participant_id",
+							"participant_revision",
+							"tenant",
+						]
+						.map(Alias::new),
+					)
 					.from_subquery(
 						Query::select()
 							.expr(Expr::value(task))
 							.expr(Expr::value(target.participant_id))
 							.expr(Expr::value(target.participant_revision))
+							.expr(crate::database::scope::tenant_of("tasks", "id", task))
 							.to_owned(),
 					)
 					.to_string(PostgresQueryBuilder),

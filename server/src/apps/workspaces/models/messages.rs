@@ -9,7 +9,9 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, QueryRow};
 use reinhardt::model;
-use reinhardt::query::{Alias, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::query::{
+	Alias, Expr, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -19,6 +21,8 @@ use uuid::Uuid;
 pub struct Message {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field(field_type = "text")]
@@ -53,15 +57,18 @@ impl Message {
 				Alias::new("content"),
 				Alias::new("idempotency_key"),
 				Alias::new("run_id"),
+				Alias::new("tenant"),
 			])
-			.values_panic([
-				IntoValue::into_value(Uuid::new_v4()),
-				IntoValue::into_value(workspace),
-				IntoValue::into_value(sender),
-				IntoValue::into_value(content),
-				IntoValue::into_value(key),
-				IntoValue::into_value(run),
+			.values_expr(vec![
+				Expr::value(Uuid::new_v4()).into(),
+				Expr::value(workspace).into(),
+				Expr::value(sender).into(),
+				Expr::value(content).into(),
+				Expr::value(key).into(),
+				Expr::value(run).into(),
+				crate::database::scope::tenant_of("workspaces", "id", workspace),
 			])
+			.expect("one value per column")
 			.on_conflict(
 				OnConflict::columns([Alias::new("idempotency_key")])
 					.do_nothing()
@@ -99,14 +106,13 @@ impl Message {
 
 impl Message {}
 
-use reinhardt::query::IntoValue;
-
 impl Message {}
 
 impl crate::database::Record for Message {
 	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			id: row.try_get("id")?,
+			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
 			sender: row.try_get("sender")?,
 			content: row.try_get("content")?,

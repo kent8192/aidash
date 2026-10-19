@@ -166,6 +166,7 @@ impl GenerationCompactionSession for Session {
 						reinhardt::query::Alias::new("provider_version"),
 						reinhardt::query::Alias::new("request_bytes"),
 						reinhardt::query::Alias::new("questions"),
+						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -197,6 +198,7 @@ impl GenerationCompactionSession for Session {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_7.to_owned()).into()],
 							))
+							.expr(crate::database::scope::tenant_of("runs", "id", attempt.run))
 							.to_owned(),
 					)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
