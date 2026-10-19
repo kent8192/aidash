@@ -993,12 +993,46 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 	let (cookie, csrf) = sign_in(&app, "pool-a", "Person").await;
 	let first = submit(&app, &cookie, &csrf).await;
 	assert_eq!(first["tenant"], "acme");
-	// The pool moves to another Tenant while the request is pending.
+	// The pool moves to another Tenant while the request is pending. That
+	// changes the identity's pool status, so it signs in again only after a
+	// Deployment Administrator restore (#240).
 	common::tenant_root(&f, "third").await;
 	reconfigure(&mut f, |gcip| {
 		gcip.tenant_bindings.insert("pool-a".into(), "third".into());
 	});
 	let moved = common::application(f.clone()).await;
+	let (state, transaction_cookie) = transaction(&moved, "pool-a").await;
+	assert_eq!(
+		exchange(
+			&moved,
+			&state,
+			&transaction_cookie,
+			&signed_token(
+				"pool-a",
+				"person",
+				"Person",
+				Utc::now().timestamp(),
+				"password"
+			),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	assert!(identity_disabled(&f, "person").await);
+	let id: uuid::Uuid = scalar(
+		&f,
+		"SELECT id FROM dashboard_identities WHERE subject = 'person'",
+	)
+	.await;
+	let restored = browser()
+		.post(moved.url(format!("/api/dashboard/identities/{id}/restore")))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(restored.status(), 204);
 	let (cookie, csrf) = sign_in(&moved, "pool-a", "Person").await;
 	let second = submit(&moved, &cookie, &csrf).await;
 	assert_ne!(second["id"], first["id"]);
@@ -1089,16 +1123,30 @@ async fn an_identity_remembers_the_pool_status_it_was_first_admitted_under(
 		admissions(&f).await,
 		[("pool-a".to_owned(), Some("acme".to_owned()))]
 	);
-	common::tenant_root(&f, "third").await;
-	reconfigure(&mut f, |gcip| {
-		gcip.tenant_bindings.insert("pool-a".into(), "third".into());
-	});
-	let moved = common::application(f.clone()).await;
-	sign_in(&moved, "pool-a", "Person").await;
+	let again = common::application(f.clone()).await;
+	sign_in(&again, "pool-a", "Person").await;
 	assert_eq!(
 		admissions(&f).await,
 		[("pool-a".to_owned(), Some("acme".to_owned()))],
 		"a later sign-in keeps the first admission"
+	);
+	// A Binding moved to another Tenant is a new status: the identity waits
+	// for a restore, and the record names the Tenant it will be admitted to.
+	common::tenant_root(&f, "third").await;
+	reconfigure(&mut f, |gcip| {
+		gcip.tenant_bindings.insert("pool-a".into(), "third".into());
+	});
+	f.config
+		.sign_in
+		.as_ref()
+		.unwrap()
+		.reconcile(&f)
+		.await
+		.unwrap();
+	assert!(identity_disabled(&f, "person").await);
+	assert_eq!(
+		admissions(&f).await,
+		[("pool-a".to_owned(), Some("third".to_owned()))]
 	);
 	common::cleanup(f, &url, &schema).await;
 }

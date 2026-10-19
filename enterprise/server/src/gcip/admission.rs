@@ -62,10 +62,10 @@ pub async fn record(
 		.await
 }
 
-/// Disable each identity whose GCIP Tenant `status` now makes shared where it
-/// was admitted bound, or bound where it was admitted shared, and remember the
-/// new status: only a Deployment Administrator restore lets it sign in again,
-/// under the new status. A GCIP Tenant that admits nobody is the shared
+/// Disable each identity whose GCIP Tenant `status` differs from the one it was
+/// admitted under: shared where it was bound, bound where it was shared, or
+/// bound to another Tenant. Remember the new status: only a Deployment
+/// Administrator restore lets it sign in again, under the new status. A GCIP Tenant that admits nobody is the shared
 /// authority's to retire. Returns whether `only` (or any identity) was disabled.
 pub async fn reconcile(
 	f: &Federation,
@@ -91,9 +91,7 @@ pub async fn reconcile(
 		let Some(current) = status(&admission.gcip_tenant) else {
 			continue;
 		};
-		// Moving a Tenant Binding to another Tenant keeps the status: the
-		// restriction already confines the identity to the new Tenant.
-		if current.tenant().is_some() == admission.tenant.is_some() {
+		if current.tenant() == admission.tenant.as_deref() {
 			continue;
 		}
 		aidash_server::authorization::sign_in::disable(f, admission.identity_id).await?;
