@@ -394,7 +394,7 @@ async fn pod_time_is_metered_once_and_stops_when_a_tenant_deletion_is_recorded(
 	// only until it, and one that began after it is not metered at all.
 	let deleted_at = at(-Duration::hours(4));
 	sqlx::query(
-		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after) VALUES ($1, $2, $3, 'deployment_administrator', $4)",
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) VALUES ($1, $2, $3, 'deployment_administrator', $4, 0)",
 	)
 	.bind(Uuid::new_v4())
 	.bind(&tenant)
@@ -453,7 +453,7 @@ async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
 		.unwrap();
 	}
 	sqlx::query(
-		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after) VALUES ($1, $2, $3, 'deployment_administrator', $4)",
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) VALUES ($1, $2, $3, 'deployment_administrator', $4, 0)",
 	)
 	.bind(Uuid::new_v4())
 	.bind(&deleted)
@@ -550,7 +550,7 @@ async fn records_older_than_the_retention_period_are_swept_and_the_rest_survive(
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purged_at) VALUES ($1, $2, $3, 'deployment_administrator', $4, $5)",
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purged_at, purge_failures) VALUES ($1, $2, $3, 'deployment_administrator', $4, $5, 0)",
 	)
 	.bind(Uuid::new_v4())
 	.bind(&tenant)

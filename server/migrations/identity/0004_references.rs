@@ -1,6 +1,9 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
 // Schema operations use Reinhardt; unsupported migration operations live in sql/.
+// Audit history holds no reference to the data purge deletes (ADR 0061), so
+// `authorization_revisions` and `authorization_catalog_history` reference only
+// their Tenant's root record.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
@@ -25,26 +28,6 @@ pub(super) fn migration() -> Migration {
 					"tenant".to_owned(),
 					"id".to_owned(),
 					"version".to_owned(),
-				],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_catalog_history".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "authorization_catalog_history_tenant_entry_id_entry_versio_fkey".to_owned(),
-				columns: vec![
-					"tenant".to_owned(),
-					"entry_id".to_owned(),
-					"entry_version".to_owned(),
-				],
-				referenced_table: "authorization_catalog".to_owned(),
-				referenced_columns: vec![
-					"tenant".to_owned(),
-					"entry_id".to_owned(),
-					"entry_version".to_owned(),
 				],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
@@ -151,18 +134,6 @@ pub(super) fn migration() -> Migration {
 			table: "authorization_peer_graph_grants".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_peer_graph_grants_tenant_fkey".to_owned(),
-				columns: vec!["tenant".to_owned()],
-				referenced_table: "authorization_bundles".to_owned(),
-				referenced_columns: vec!["tenant".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_revisions".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "authorization_revisions_tenant_fkey".to_owned(),
 				columns: vec!["tenant".to_owned()],
 				referenced_table: "authorization_bundles".to_owned(),
 				referenced_columns: vec!["tenant".to_owned()],

@@ -258,10 +258,11 @@ impl RuntimeTasks {
 		}
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
+		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
-			// orphaned on unscheduled Runs are closed first; hourly workbench
-			// and Research evidence purges keep their cadence on the same loop.
+			// orphaned on unscheduled Runs are closed first; hourly workbench,
+			// Research evidence and Tenant purges keep their cadence on the same loop.
 			let mut ticks = 0_u32;
 			loop {
 				if ticks.is_multiple_of(60) {
@@ -285,6 +286,16 @@ impl RuntimeTasks {
 						.await
 					{
 						tracing::warn!(%error, "research account terms sweep failed");
+					}
+					// Deleted Tenants past their grace period, and the audit
+					// history that outlived an earlier purge (ADR 0061).
+					if let Err(error) = crate::apps::identity::services::tenant_purge::sweep(
+						&retention,
+						audit_retention_days,
+					)
+					.await
+					{
+						tracing::warn!(%error, "Tenant purge sweep failed");
 					}
 					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
 						tracing::warn!(%error, "agent test retention cleanup failed");

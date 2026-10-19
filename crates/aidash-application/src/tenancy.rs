@@ -132,6 +132,9 @@ pub enum DeploymentScopeReason {
 	MarketplaceDistribution,
 	/// Counting the bytes of files each Tenant stores. It reads only.
 	UsageSampling,
+	/// Purging a deleted Tenant's data after its grace period, and deleting the
+	/// audit history that outlived a purge (ADR 0061).
+	TenantPurge,
 	/// Test fixtures that span Tenants.
 	#[cfg(feature = "test-support")]
 	TestFixture,
@@ -167,6 +170,7 @@ impl DeploymentScopeReason {
 			Self::ActivityObserver => "activity-observer",
 			Self::MarketplaceDistribution => "marketplace-distribution",
 			Self::UsageSampling => "usage-sampling",
+			Self::TenantPurge => "tenant-purge",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
 		}
@@ -192,6 +196,7 @@ impl DeploymentScopeReason {
 			| Self::TenantCreation
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
+			| Self::TenantPurge
 			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -252,6 +257,7 @@ mod tests {
 			DeploymentScopeReason::ActivityObserver,
 			DeploymentScopeReason::MarketplaceDistribution,
 			DeploymentScopeReason::UsageSampling,
+			DeploymentScopeReason::TenantPurge,
 		];
 		let labels = reasons
 			.iter()

@@ -36,6 +36,9 @@ pub struct TenancySettings {
 	/// Days a deleted Tenant stays restorable before its data is purged: 1 to 90.
 	#[setting(default = "30")]
 	pub deletion_grace_days: u32,
+	/// Days a purged Tenant's audit history is kept before it is deleted: 1 to 3650.
+	#[setting(default = "365")]
+	pub audit_retention_days: u32,
 }
 
 impl TenancySettings {
@@ -49,6 +52,7 @@ impl TenancySettings {
 			creation_total: self.creation_total.unwrap_or(defaults.creation_total),
 			invitations: self.invitations.unwrap_or(defaults.invitations),
 			deletion_grace_days: self.deletion_grace_days,
+			audit_retention_days: self.audit_retention_days,
 		}
 	}
 }
@@ -63,6 +67,8 @@ impl SettingsValidation for TenancySettings {
 			));
 		}
 		aidash_domain::identity::tenancy::deletion::grace_days(self.deletion_grace_days)
+			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		aidash_domain::identity::tenancy::deletion::audit_retention_days(self.audit_retention_days)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		Ok(())
 	}

@@ -105,6 +105,7 @@ fn each_offering_supplies_its_column_of_defaults(
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: 30,
+			audit_retention_days: 365,
 		}
 	);
 }

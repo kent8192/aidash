@@ -1150,3 +1150,41 @@ async fn refusals_that_the_write_would_make_happen_before_a_key_is_issued() {
 	);
 	assert_eq!(exchange.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn purge_ends_every_credential_of_one_tenant_bound_or_not_and_resumes_after_a_failure() {
+	// Arrange: a bound credential, a revoked one and a pending one in alpha, one in beta.
+	let (s, repo, store) = service();
+	let (mut alpha, mut beta) = (None, None);
+	for (tenant, slot) in [("alpha", &mut alpha), ("beta", &mut beta)] {
+		*slot = Some(create(&s, tenant).await.provider_credential.id);
+	}
+	let (alpha, beta) = (alpha.unwrap(), beta.unwrap());
+	s.bind("alpha", Provider::Openrouter, alpha, 0, "actor")
+		.await
+		.unwrap();
+	let revoked = create(&s, "alpha").await.provider_credential.id;
+	s.revoke("alpha", revoked, 2, "actor").await.unwrap();
+	let pending = Uuid::now_v7();
+	let mut row = repo.0.lock().await.rows[&alpha].clone();
+	row.id = pending;
+	row.state = State::Pending;
+	row.pinned_version = None;
+	row.secret_resource = store.resource(pending);
+	repo.0.lock().await.rows.insert(pending, row);
+	store.create("alpha", pending).await.unwrap();
+	// Act: the first attempt cannot delete the secrets.
+	*store.delete_failure.lock().await = true;
+	assert!(s.purge_tenant("alpha", "purge").await.is_err());
+	*store.delete_failure.lock().await = false;
+	s.purge_tenant("alpha", "purge").await.unwrap();
+	// Assert: every alpha credential is deleted with no secret left, beta's is untouched.
+	let data = repo.0.lock().await;
+	for id in [alpha, revoked, pending] {
+		assert_eq!(data.rows[&id].state, State::Deleted);
+		assert!(data.rows[&id].pinned_version.is_none());
+		assert!(!store.state.lock().await.contains_key(&store.resource(id)));
+	}
+	assert_eq!(data.rows[&beta].state, State::Active);
+	assert!(store.state.lock().await.contains_key(&store.resource(beta)));
+}
