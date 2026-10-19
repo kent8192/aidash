@@ -120,6 +120,21 @@ run "production_rejects_stop" {
   }
   expect_failures = [var.environments]
 }
+run "production_rejects_more_nodes_than_the_autoscaler_survives_losing" {
+  command = plan
+  variables {
+    environments = { production = {
+      kind        = "production"
+      incarnation = "aaaaaaaaaaaa"
+      generation  = 1
+      running     = true
+      published   = false
+      spot        = false
+      nodes       = 3
+    } }
+  }
+  expect_failures = [var.environments]
+}
 run "production_rejects_spot" {
   command = plan
   variables {

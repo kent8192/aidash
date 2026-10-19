@@ -310,7 +310,14 @@ HA add-on: 20 seconds after a Cluster Node becomes unreachable, the Pod is
 force-deleted and its disks are force-attached on a node the standby pool adds
 in the other zone. Recovery takes that delay, a new node, the gVisor install
 from the bundled image (#394) and Pod start, and standby capacity during a real
-zone outage is not guaranteed. Operations in flight surface as uncertain and are
+zone outage is not guaranteed. The standby pools grow only while the cluster
+autoscaler runs, and it halts when more than three nodes and more than 45% of
+them are NotReady, so Terraform keeps production at one system node and at most
+two Environment nodes. If no standby node has joined ten minutes after the zone
+is lost, add one to each standby pool by hand
+(`gcloud container node-pools list --cluster aidash --region us-central1`, then
+`gcloud container clusters resize aidash --region us-central1 --node-pool <pool> --num-nodes 1`).
+Operations in flight surface as uncertain and are
 not replayed. This is not zero downtime, and the loss of the whole region is
 accepted; backups stay in `us-central1`. Terraform validates isolation and prevents accidental shared
 state use; it does not perform a verified backup restore. Complete the isolated
