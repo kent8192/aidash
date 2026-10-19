@@ -128,13 +128,14 @@ pub(crate) async fn context(
 	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("semantic_remote_receipts"))
-			.columns(["operation_id", "run_id", "digest", "receipt"].map(Alias::new))
+			.columns(["operation_id", "run_id", "digest", "receipt", "tenant"].map(Alias::new))
 			.from_subquery(
 				Query::select()
 					.expr(Expr::cust("$1"))
 					.expr(Expr::cust("$2"))
 					.expr(Expr::cust("$3"))
 					.expr(Expr::cust("$4"))
+					.expr(crate::database::scope::tenant())
 					.to_owned(),
 			)
 			.on_conflict(

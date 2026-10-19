@@ -1,0 +1,3 @@
+# A GCIP `validSince` change revokes sessions but does not pause work
+
+When GCIP reports that a user is `disabled`, Aidash applies Identity Disablement: its sessions are revoked, its work pauses, and only a Deployment Administrator restore permits a fresh sign-in, matching Keycloak behavior. When GCIP only advances `validSince`, Aidash revokes the sessions whose sign-in predates it and leaves admitted work running, matching the rule that logging out does not cancel admitted work. `validSince` can advance for routine account changes, such as token revocation and possibly password changes, so treating it as a disablement would stop a user's agents whenever they changed their password.

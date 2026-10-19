@@ -462,7 +462,7 @@ pub(crate) fn content_values(content: &Content) -> Result<Vec<SimpleExpr>> {
 pub(crate) async fn restore_body(lease: &mut Lease<'_>, bank_id: Uuid, unit: &Unit) -> Result<()> {
 	let mut columns = ["id", "bank_id", "revision"].map(Alias::new).to_vec();
 	columns.extend(content_columns());
-	columns.extend(["learned_at", "updated_at", "deleted", "stale"].map(Alias::new));
+	columns.extend(["learned_at", "updated_at", "deleted", "stale", "tenant"].map(Alias::new));
 	let mut select = Query::select();
 	select
 		.expr(Expr::value(unit.id))
@@ -475,7 +475,8 @@ pub(crate) async fn restore_body(lease: &mut Lease<'_>, bank_id: Uuid, unit: &Un
 		.expr(Expr::value(unit.learned_at.trunc_subsecs(6)))
 		.expr(Expr::value(unit.updated_at.trunc_subsecs(6)))
 		.expr(Expr::value(unit.deleted))
-		.expr(Expr::value(unit.stale));
+		.expr(Expr::value(unit.stale))
+		.expr(Expr::value(unit.bank.tenant.clone()));
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_units"))
@@ -515,7 +516,7 @@ async fn save_origin(
 	lease.tx().observe_memory(unit)?;
 	let mut columns = ["id", "bank_id", "revision"].map(Alias::new).to_vec();
 	columns.extend(content_columns());
-	columns.extend(["learned_at", "updated_at", "deleted", "stale"].map(Alias::new));
+	columns.extend(["learned_at", "updated_at", "deleted", "stale", "tenant"].map(Alias::new));
 	let mut values: Vec<SimpleExpr> = vec![
 		Expr::value(unit.id).into(),
 		Expr::value(bank_id).into(),
@@ -527,6 +528,7 @@ async fn save_origin(
 		Expr::value(unit.updated_at.trunc_subsecs(6)).into(),
 		Expr::value(unit.deleted).into(),
 		Expr::value(unit.stale).into(),
+		Expr::value(unit.bank.tenant.clone()).into(),
 	]);
 	let mut select = Query::select();
 	for value in &values {
@@ -616,6 +618,7 @@ pub(crate) async fn refresh_dependencies(
 							"source_kind",
 							"source_id",
 							"source_revision",
+							"tenant",
 						]
 						.map(Alias::new),
 					)
@@ -626,6 +629,11 @@ pub(crate) async fn refresh_dependencies(
 							.expr(Expr::value(kind))
 							.expr(Expr::value(id))
 							.expr(Expr::value(revision))
+							.expr(crate::database::scope::tenant_of(
+								"memory_banks",
+								"id",
+								bank_id,
+							))
 							.to_owned(),
 					)
 					.to_string(PostgresQueryBuilder),
@@ -763,6 +771,7 @@ pub(crate) async fn project(
 		("authority", Expr::value(saved).into()),
 		("updated_at", Expr::value(now).into()),
 		("next_attempt", Expr::value(now).into()),
+		("tenant", Expr::value(unit.bank.tenant.clone()).into()),
 	];
 	let columns: Vec<_> = values.iter().map(|(name, _)| Alias::new(*name)).collect();
 	let mut select = Query::select();

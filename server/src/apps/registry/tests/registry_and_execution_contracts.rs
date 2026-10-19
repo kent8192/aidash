@@ -309,7 +309,7 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-messages","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":denied}}));
@@ -482,7 +482,7 @@ async fn mesh_rejects_a_peer_substituting_another_node_identity(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let (status, mesh) = request(
@@ -644,7 +644,7 @@ async fn malformed_broker_messages_do_not_stop_valid_delivery(
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(f.store.pool.driver())
+				.fetch_one(f.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -721,7 +721,7 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	sqlx::query(
@@ -734,7 +734,7 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.control_pool.driver())
+	.execute(f.store.control_pool.fixture_driver())
 	.await
 	.unwrap();
 	let (status, body) = request(
@@ -753,7 +753,7 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 			.and_where(Expr::col(Alias::new("node_id")).eq("aidash://disabled"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.control_pool.driver())
+	.fetch_one(f.store.control_pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(!enabled);

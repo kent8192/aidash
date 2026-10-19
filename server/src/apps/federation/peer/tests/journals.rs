@@ -72,6 +72,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		}
 		for index in 0..count {
 			let invocation = Invocation::build()
+				.tenant("acme")
 				.idempotency_key(format!("{home}:{index:03}"))
 				.run_id(run.id)
 				.tool("bounded-fixture")
@@ -87,6 +88,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 				.unwrap();
 		}
 		let human = HumanRequest::build()
+			.tenant("acme")
 			.id(Uuid::new_v4())
 			.workspace_id(workspace.id)
 			.run_id(run.id)

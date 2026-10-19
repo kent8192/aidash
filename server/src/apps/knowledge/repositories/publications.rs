@@ -280,6 +280,7 @@ pub(crate) async fn publish(
 						"authority",
 						"deleted",
 						"created_at",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -293,6 +294,11 @@ pub(crate) async fn publish(
 						.expr(Expr::value(authority))
 						.expr(Expr::value(false))
 						.expr(Expr::value(Utc::now()))
+						.expr(crate::database::scope::tenant_of(
+							"memory_banks",
+							"id",
+							destination,
+						))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),

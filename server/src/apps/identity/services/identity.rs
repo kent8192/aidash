@@ -18,9 +18,7 @@ use sha2::{Digest, Sha256};
 
 use uuid::Uuid;
 
-type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
-pub(crate) type PoolIdentityValidity =
-	(String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+pub(crate) type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 /// Constructed only after authenticating a bearer token. Never deserialize this
 /// from a request body, query parameter or peer-provided identity claim.
@@ -177,7 +175,7 @@ impl SubjectIdentity {
 		let col = |table: &str, name: &str| Expr::col((Alias::new(table), Alias::new(name)));
 		let query = Query::select()
 			.columns(
-				["id", "issuer", "gcip_tenant"].map(|name| (Alias::new("i"), Alias::new(name))),
+				["id", "issuer"].map(|name| (Alias::new("i"), Alias::new(name))),
 			)
 			.from_as(Alias::new("dashboard_identities"), Alias::new("i"))
 			.join(
@@ -203,27 +201,18 @@ impl SubjectIdentity {
 					),
 			)
 			.to_string(PostgresQueryBuilder);
-		let row: Option<(Uuid, String, String)> = pool
+		let row: Option<(Uuid, String)> = pool
 			.scoped(&self.tenancy()?, async |tx| {
 				crate::database::native::query_as(&query)
-					.columns(&["id", "issuer", "gcip_tenant"])
+					.columns(&["id", "issuer"])
 					.fetch_optional(&mut **tx)
 					.await
 			})
 			.await?;
-		let Some((id, issuer, gcip_tenant)) = row else {
+		let Some((id, issuer)) = row else {
 			return Ok(());
 		};
-		let allowed = match pool.dashboard_policy() {
-			Some(policy) => policy
-				.require_identity(
-					&issuer,
-					(!gcip_tenant.is_empty()).then_some(gcip_tenant.as_str()),
-				)
-				.is_ok(),
-			None => gcip_tenant.is_empty(),
-		};
-		if allowed {
+		if admits_identity(pool.dashboard_policy().as_ref(), &issuer) {
 			return Ok(());
 		}
 		if crate::apps::identity::models::DashboardIdentity::disable_if_current(pool, id, None)
@@ -400,13 +389,12 @@ impl SubjectIdentity {
 			if !mapping_enabled || mapping_tenant != self.tenant {
 				return Err(Error::Forbidden);
 			}
-			let validity: Option<PoolIdentityValidity> = {
+			let validity: Option<IdentityValidity> = {
 				let query_bind_1 = identity_id;
 				crate::database::native::query_as(
 					&Query::select()
 						.columns([
 							Alias::new("issuer"),
-							Alias::new("gcip_tenant"),
 							Alias::new("last_valid_at"),
 							Alias::new("disabled_at"),
 						])
@@ -422,15 +410,14 @@ impl SubjectIdentity {
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
-				.columns(&["issuer", "gcip_tenant", "last_valid_at", "disabled_at"])
+				.columns(&["issuer", "last_valid_at", "disabled_at"])
 				.fetch_optional(&mut **tx)
 				.await?
 			};
-			let (issuer, gcip_tenant, valid, disabled) = validity.ok_or(Error::Forbidden)?;
+			let (issuer, valid, disabled) = validity.ok_or(Error::Forbidden)?;
 			require_dashboard_mapping(
 				tx.pool().dashboard_policy().as_ref(),
 				&issuer,
-				&gcip_tenant,
 				&mapping_tenant,
 			)?;
 			validate_dashboard_status(Some((issuer, valid, disabled)))?;
@@ -493,31 +480,48 @@ impl Injectable for Actor {
 pub use crate::apps::identity::serializers::identity::{Credential, IssuedCredential};
 pub(crate) fn validate_dashboard_status(validity: Option<IdentityValidity>) -> Result<()> {
 	use aidash_domain::identity::authority::DashboardStatusFailure;
-	aidash_domain::identity::authority::dashboard_status(
-		validity,
-		Utc::now(),
-		crate::config::GOOGLE_OIDC_ISSUER,
-	)
-	.map_err(|reason| match reason {
-		DashboardStatusFailure::Forbidden => Error::Forbidden,
-		DashboardStatusFailure::Unavailable => Error::IdentityStatusUnavailable,
-	})
+	aidash_domain::identity::authority::dashboard_status(validity, Utc::now(), reports_status)
+		.map_err(|reason| match reason {
+			DashboardStatusFailure::Forbidden => Error::Forbidden,
+			DashboardStatusFailure::Unavailable => Error::IdentityStatusUnavailable,
+		})
 }
 
 use reinhardt::query::SimpleExpr;
 
-/// A missing runtime policy must never admit a GCIP Mapping through a fixture or legacy path.
+/// Whether `issuer` reports Account Status: only the sign-in a build adds
+/// reads it, for the issuers it owns.
+pub(crate) fn reports_status(issuer: &str) -> bool {
+	crate::bootstrap::build::current()
+		.extension
+		.owns_issuer(issuer)
+}
+
+/// Whether External Identities of `issuer` may act at all. Without a
+/// configured sign-in, only identities of an issuer that no build's sign-in
+/// owns, such as fixtures', are unrestricted.
+fn admits_identity(
+	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	issuer: &str,
+) -> bool {
+	match policy {
+		Some(policy) => policy.require_identity(issuer).is_ok(),
+		None => !crate::bootstrap::build::current()
+			.extension
+			.owns_issuer(issuer),
+	}
+}
+
+/// [`admits_identity`], and a Mapping only into the Tenant an issuer's
+/// restriction allows.
 pub(crate) fn require_dashboard_mapping(
 	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	issuer: &str,
-	pool: &str,
 	tenant: &str,
 ) -> Result<()> {
 	match policy {
-		Some(policy) => policy
-			.require_mapping(issuer, (!pool.is_empty()).then_some(pool), tenant)
-			.map_err(Into::into),
-		None if pool.is_empty() => Ok(()),
+		Some(policy) => policy.require_mapping(issuer, tenant).map_err(Into::into),
+		None if admits_identity(None, issuer) => Ok(()),
 		None => Err(Error::Forbidden),
 	}
 }

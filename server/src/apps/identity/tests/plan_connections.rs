@@ -368,9 +368,6 @@ fn plan_runtime(
 			client_id: "fixture".into(),
 			client_secret: "server-only-fixture".into(),
 			public_origin: ORIGIN.into(),
-			keycloak_admin_url: String::new(),
-			status_client_id: String::new(),
-			status_client_secret: String::new(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
@@ -1025,7 +1022,7 @@ async fn identity_of(f: &Federation, subject: &str) -> Uuid {
 		.and_where(Expr::col(Alias::new("subject")).eq(subject))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }

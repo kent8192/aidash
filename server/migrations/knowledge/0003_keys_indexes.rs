@@ -26,6 +26,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_collections".to_owned(),
+			constraint: Constraint::Unique {
+				name: "semantic_collections_tenant_collection_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "collection".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "semantic_entries".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "semantic_entries_pkey".to_owned(),
@@ -37,6 +44,13 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::Unique {
 				name: "semantic_entries_workspace_id_key_key".to_owned(),
 				columns: vec!["workspace_id".to_owned(), "key".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_entries".to_owned(),
+			constraint: Constraint::Unique {
+				name: "semantic_entries_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -58,6 +72,13 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "semantic_indexes_pkey".to_owned(),
 				columns: vec!["workspace_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_indexes".to_owned(),
+			constraint: Constraint::Unique {
+				name: "semantic_indexes_tenant_workspace_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {

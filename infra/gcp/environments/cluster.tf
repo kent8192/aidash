@@ -1,8 +1,10 @@
 // Nonproduction shares one zonal cluster. Production uses a separate regional
-// control plane, with node pools pinned to the retained disks' zone. This is
-// control-plane HA; single-zone RWO data does not promise zonal failover.
+// control plane and keeps its retained disks on regional disks in two zones:
+// its pools run in the first zone, and standby pools in the second scale up
+// from zero only when the first is lost (ADR 0067).
 locals {
   zone             = "us-central1-a"
+  standby_zones    = var.deployment_tier == "production" ? ["us-central1-b"] : []
   pod_cidr         = "10.44.0.0/14"
   any_running      = var.deployment_tier == "production" || anytrue([for e in values(var.environments) : e.running])
   cluster_location = var.deployment_tier == "production" ? "us-central1" : local.zone
@@ -113,6 +115,9 @@ resource "google_container_cluster" "aidash" {
   addons_config {
     gce_persistent_disk_csi_driver_config { enabled = true }
     gke_backup_agent_config { enabled = var.gke_backup_enabled }
+    // Fails production's StatefulSets over to the standby zone, force-attaching
+    // their regional disks there (ADR 0067).
+    stateful_ha_config { enabled = var.deployment_tier == "production" }
   }
   // The transient default pool is deleted after creation; keep it off the
   // Compute default service account.
@@ -156,6 +161,36 @@ resource "google_container_node_pool" "system" {
   }
 }
 
+// Production's system pool in the standby zone, at zero nodes until the first
+// zone is lost and kube-dns and the other add-ons have nowhere else to run.
+resource "google_container_node_pool" "system_standby" {
+  count          = length(local.standby_zones)
+  name           = "aidash-system-standby"
+  location       = google_container_cluster.aidash.location
+  cluster        = google_container_cluster.aidash.name
+  node_locations = [local.standby_zones[count.index]]
+  autoscaling {
+    total_min_node_count = 0
+    total_max_node_count = 1
+  }
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+  node_config {
+    machine_type = "e2-medium"
+    # GKE's 100 GB pd-balanced default counts against the regional SSD quota
+    # (250 GB by default) shared with every Environment pool and retained disk.
+    disk_type       = "pd-standard"
+    disk_size_gb    = 30
+    service_account = local.node_service_account_email
+    oauth_scopes    = local.cloud_scope
+    labels          = local.system_labels
+    resource_labels = { application = "aidash", lifecycle = var.deployment_tier }
+    workload_metadata_config { mode = "GKE_METADATA" }
+  }
+}
+
 // ACME account/certificate storage outlives nonproduction incarnations. Production
 // has its own copy in a separate project/backend; never share it across tiers.
 resource "google_compute_disk" "preview_tls" {
@@ -174,6 +209,8 @@ output "cluster" {
     project_id    = var.project_id
     workload_pool = google_container_cluster.aidash.workload_identity_config[0].workload_pool
     pod_cidr      = local.pod_cidr
+    // Where regional retained disks replicate: the pools' zone first.
+    zones = concat([local.zone], local.standby_zones)
   }
 }
 output "preview_tls_volume_handle" {

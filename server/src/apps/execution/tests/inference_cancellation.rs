@@ -374,7 +374,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -408,7 +408,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -576,7 +576,7 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 		.await
 		.expect("worker must reach the provider")
 		.unwrap();
-	let mut reservation = f.store.control_pool.driver().begin().await.unwrap();
+	let mut reservation = f.store.control_pool.fixture_driver().begin().await.unwrap();
 	let update = Query::update()
 		.table(Alias::new("atomic_gate"))
 		.value_expr(Alias::new("transaction_id"), Expr::cust("$1"))
@@ -666,7 +666,7 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 		.await
 		.expect("worker must reach the provider")
 		.unwrap();
-	let mut transaction = f.store.control_pool.driver().begin().await.unwrap();
+	let mut transaction = f.store.control_pool.fixture_driver().begin().await.unwrap();
 	let update = Query::update()
 		.table(Alias::new("atomic_gate"))
 		.value_expr(Alias::new("commit_epoch"), Expr::cust("commit_epoch + 1"))

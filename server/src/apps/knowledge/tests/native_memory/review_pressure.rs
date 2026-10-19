@@ -38,6 +38,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 					"state",
 					"created_at",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -57,6 +58,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 					.expr(Expr::value("pending"))
 					.expr(Expr::value(chrono::Utc::now()))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

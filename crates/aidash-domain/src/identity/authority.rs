@@ -6,15 +6,17 @@ pub enum DashboardStatusFailure {
 	Unavailable,
 }
 pub type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+/// Only an issuer that reports Account Status has a freshness deadline; an
+/// OIDC issuer reports none, so its identity is valid until disabled.
 pub fn dashboard_status(
 	validity: Option<IdentityValidity>,
 	now: DateTime<Utc>,
-	google_issuer: &str,
+	reports_status: impl Fn(&str) -> bool,
 ) -> Result<(), DashboardStatusFailure> {
 	let Some((issuer, Some(last_valid_at), None)) = validity else {
 		return Err(DashboardStatusFailure::Forbidden);
 	};
-	if issuer != google_issuer && last_valid_at <= now - Duration::minutes(15) {
+	if reports_status(&issuer) && last_valid_at <= now - Duration::minutes(15) {
 		return Err(DashboardStatusFailure::Unavailable);
 	}
 	Ok(())

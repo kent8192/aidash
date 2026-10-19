@@ -125,6 +125,7 @@ impl ReadJournalScope for Reads<'_> {
 							Alias::new("run_id"),
 							Alias::new("entry_id"),
 							Alias::new("entry_version"),
+							Alias::new("tenant"),
 						])
 						.from_subquery(
 							Query::select()
@@ -140,6 +141,7 @@ impl ReadJournalScope for Reads<'_> {
 									"(unnest(?::text[]))".to_owned(),
 									vec![crate::database::text_array(query_bind_3.to_owned())],
 								))
+								.expr(crate::database::scope::tenant())
 								.to_owned(),
 						)
 						.on_conflict(

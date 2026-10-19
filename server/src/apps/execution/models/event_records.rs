@@ -1,6 +1,6 @@
 //! Ordered event insertion in a caller-owned native transaction.
 use super::Event;
-use crate::Result;
+use crate::{Result, database::scope::event_tenant};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{AtomicTransaction, Model};
@@ -17,7 +17,28 @@ pub(crate) async fn append(
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	insert(tx, node, workspace, kind, data).await?;
+	insert(tx, node, workspace, event_tenant(workspace), kind, data).await?;
+	Ok(())
+}
+
+/// An event with no Workspace that belongs to `tenant`, for a transaction whose
+/// Deployment Scope names no Tenant of its own.
+pub(crate) async fn append_for_tenant(
+	tx: &mut dyn TransactionExecutor,
+	node: &str,
+	tenant: &str,
+	kind: &str,
+	data: Value,
+) -> Result<()> {
+	insert(
+		tx,
+		node,
+		None,
+		Expr::value(tenant.to_owned()).into(),
+		kind,
+		data,
+	)
+	.await?;
 	Ok(())
 }
 
@@ -28,7 +49,7 @@ pub(crate) async fn create(
 	kind: &str,
 	data: Value,
 ) -> Result<Event> {
-	let id = insert(tx, node, workspace, kind, data).await?;
+	let id = insert(tx, node, workspace, event_tenant(workspace), kind, data).await?;
 	Ok(Event::objects()
 		.filter(Event::field_id().eq(id))
 		.get_with_db(tx)
@@ -39,6 +60,7 @@ async fn insert(
 	tx: &mut dyn TransactionExecutor,
 	node: &str,
 	workspace: Option<Uuid>,
+	tenant: SimpleExpr,
 	kind: &str,
 	data: Value,
 ) -> Result<Uuid> {
@@ -60,14 +82,17 @@ async fn insert(
 			Alias::new("workspace_id"),
 			Alias::new("kind"),
 			Alias::new("data"),
+			Alias::new("tenant"),
 		])
-		.values_panic([
-			IntoValue::into_value(id),
-			IntoValue::into_value(node),
-			IntoValue::into_value(workspace),
-			IntoValue::into_value(kind),
-			IntoValue::into_value(data),
+		.values_expr(vec![
+			IntoValue::into_value(id).into(),
+			IntoValue::into_value(node).into(),
+			IntoValue::into_value(workspace).into(),
+			IntoValue::into_value(kind).into(),
+			IntoValue::into_value(data).into(),
+			tenant,
 		])
+		.expect("one value per column")
 		.build(PostgresQueryBuilder);
 	TransactionExecutor::execute(tx, &statement, convert_values(values)).await?;
 	Ok(id)

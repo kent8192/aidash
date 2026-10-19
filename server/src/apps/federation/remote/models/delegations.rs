@@ -11,6 +11,8 @@ pub struct Delegation {
 	#[field(primary_key = true)]
 	pub task_id: uuid::Uuid,
 	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
 	pub node_id: String,
 	#[field(field_type = "text")]
 	pub agent_id: String,

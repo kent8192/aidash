@@ -9,6 +9,8 @@ use uuid::Uuid;
 pub struct RunTaskSnapshot {
 	#[field(primary_key = true)]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
 	#[field]

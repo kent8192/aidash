@@ -53,6 +53,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
 	f.store.keyless.permit_origin_of(&endpoint).unwrap();
 	let app = application_fixture.application.clone();
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let deployment_administrator = f.config.api_token.clone();
 	for (id, kind, config) in [
 		(
@@ -244,6 +245,7 @@ async fn draft_conflict_register_and_factual_inspection(
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let deployment_administrator = f.config.api_token.clone();
 	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
 	f.registry

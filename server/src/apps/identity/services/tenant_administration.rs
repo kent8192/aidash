@@ -249,8 +249,8 @@ impl TenantAdministrations {
 				)
 				.await?;
 				if administrator
-					.bound_pool()
-					.is_some_and(|pool| pool == member.gcip_tenant)
+					.restricted_issuer()
+					.is_some_and(|issuer| issuer == member.issuer)
 				{
 					return Err(Error::Conflict(
 						"a member mapped through the Tenant Binding cannot leave".into(),

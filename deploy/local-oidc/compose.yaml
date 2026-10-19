@@ -1,6 +1,13 @@
+# Sign in to the development stack through the generic local OIDC issuer.
 services:
-  keycloak:
+  oidc-issuer:
     profiles: [dev, oidc]
+  backend:
+    environment:
+      AIDASH_OIDC_ISSUER: http://127.0.0.1:18099
+      AIDASH_OIDC_CLIENT_ID: aidash-local
+      AIDASH_OIDC_CLIENT_SECRET: aidash-local-secret
+      AIDASH_OIDC_PUBLIC_ORIGIN: http://127.0.0.1:${AIDASH_FRONTEND_PORT:-5173}
   oidc-loopback:
     profiles: [dev, oidc]
     image: node:24.12.0-bookworm-slim
@@ -10,7 +17,7 @@ services:
     depends_on:
       backend:
         condition: service_started
-      keycloak:
+      oidc-issuer:
         condition: service_started
     volumes:
       - ./deploy/local-oidc/loopback.cjs:/oidc-loopback.cjs:ro

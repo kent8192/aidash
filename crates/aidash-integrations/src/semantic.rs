@@ -67,6 +67,7 @@ pub async fn embed(
 		max_output_tokens: 1,
 		cache_breakpoints: false,
 		call: None,
+		hosts: vec![],
 	});
 	let access = access
 		.resolve(

@@ -11,6 +11,8 @@ pub struct GenerationRemoteFinalizations {
 	#[field(primary_key = true)]
 	pub attempt_id: uuid::Uuid,
 	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
 	pub digest: String,
 	#[field]
 	pub result: Option<reinhardt::db::orm::Json<serde_json::Value>>,

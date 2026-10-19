@@ -323,7 +323,9 @@ impl Models {
 		let mut tx = self
 			.store
 			.control_pool
-			.begin(&crate::database::scope::recorded(&self.bank.tenant)?)
+			.begin(&aidash_application::tenancy::TenancyScope::tenant(
+				&self.bank.tenant,
+			)?)
 			.await?;
 		// A ledger gate is independent of source row leases, preventing a nested
 		// lock upgrade while serializing the per-bank storage capacity check.
@@ -378,6 +380,7 @@ impl Models {
 						"tokens",
 						"cost_micros",
 						"created_at",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -392,6 +395,11 @@ impl Models {
 						.expr(Expr::value(0_i64))
 						.expr(Expr::value(0_i64))
 						.expr(Expr::value(Utc::now()))
+						.expr(crate::database::scope::tenant_of(
+							"memory_banks",
+							"id",
+							self.bank_id,
+						))
 						.to_owned(),
 				)
 				.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned())
@@ -531,6 +539,7 @@ impl Models {
 						"tokens",
 						"cost_micros",
 						"created_at",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
@@ -545,6 +554,11 @@ impl Models {
 						.expr(Expr::value(tokens as i64))
 						.expr(Expr::value(cost as i64))
 						.expr(Expr::value(Utc::now()))
+						.expr(crate::database::scope::tenant_of(
+							"memory_model_operations",
+							"id",
+							self.operation,
+						))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -565,7 +579,9 @@ impl Models {
 		let mut tx = self
 			.store
 			.control_pool
-			.begin(&crate::database::scope::recorded(&self.bank.tenant)?)
+			.begin(&aidash_application::tenancy::TenancyScope::tenant(
+				&self.bank.tenant,
+			)?)
 			.await?;
 		// Keep lock order identical to prepare. Only a known successful response
 		// releases unused allowance; incomplete and crashed attempts stay charged.

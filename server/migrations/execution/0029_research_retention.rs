@@ -46,6 +46,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("revoked_at", FieldType::TimestampTz).with_not_null(true),
                 ColumnDefinition::new("removed", FieldType::Jsonb).with_not_null(true),
             ], constraints: vec![
+            	Constraint::ForeignKey {
+            		name: "research_revocations_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
                 Constraint::Check { name: "research_revocations_record".into(), expression: "char_length(reason) BETWEEN 1 AND 1000 AND jsonb_typeof(revoked_by) = 'object' AND jsonb_typeof(removed) = 'object'".into() },
             ], without_rowid: None, interleave_in_parent: None, partition: None,
         })

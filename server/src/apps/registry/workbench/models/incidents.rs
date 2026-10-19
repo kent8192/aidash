@@ -167,12 +167,14 @@ impl AgentIncidentEvent {
 	) -> Result<()> {
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
-			.columns(["incident_id", "actor", "change"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(incident),
-				IntoValue::into_value(actor),
-				IntoValue::into_value(change),
+			.columns(["incident_id", "actor", "change", "tenant"].map(Alias::new))
+			.values_expr(vec![
+				IntoValue::into_value(incident).into(),
+				IntoValue::into_value(actor).into(),
+				IntoValue::into_value(change).into(),
+				crate::database::scope::tenant_of("agent_incidents", "id", incident),
 			])
+			.expect("one value per column")
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())

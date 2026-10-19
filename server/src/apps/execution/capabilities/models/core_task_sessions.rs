@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct CoreTaskSessions {
 	#[field(primary_key = true)]
 	pub task_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub thread_id: uuid::Uuid,
 }

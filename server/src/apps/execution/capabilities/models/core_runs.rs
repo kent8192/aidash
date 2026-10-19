@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct CoreRuns {
 	#[field(primary_key = true)]
 	pub run_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub area_id: uuid::Uuid,
 	#[field]

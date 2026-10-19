@@ -53,6 +53,7 @@ pub(super) fn migration() -> Migration {
 			name: "generation_summary_usage".into(),
 			columns: vec![
 				ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("attempt_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("provider_id", FieldType::Text).with_not_null(true),
@@ -64,6 +65,15 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("clock_timestamp()".into())),
 			],
 			constraints: vec![
+				Constraint::ForeignKey {
+					name: "generation_summary_usage_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
 				Constraint::PrimaryKey {
 					name: "generation_summary_usage_pkey".into(),
 					columns: vec!["request_id".into(), "attempt_id".into()],
@@ -74,18 +84,18 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "generation_summary_usage_request_id_fkey".into(),
-					columns: vec!["request_id".into()],
+					columns: vec!["tenant".into(), "request_id".into()],
 					referenced_table: "generation_requests".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::NoAction,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,
 				},
 				Constraint::ForeignKey {
 					name: "generation_summary_usage_run_id_fkey".into(),
-					columns: vec!["run_id".into()],
+					columns: vec!["tenant".into(), "run_id".into()],
 					referenced_table: "runs".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::NoAction,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,

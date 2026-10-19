@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct SemanticHistory {
 	#[field(primary_key = true)]
 	pub sequence: i64,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field(null = true)]

@@ -238,6 +238,7 @@ pub(crate) async fn set(
 		"provider_version",
 		"revision",
 		"next_maintenance",
+		"tenant",
 	]
 	.map(Alias::new);
 	native::query(
@@ -251,6 +252,7 @@ pub(crate) async fn set(
 					.expr(Expr::value(&provider.version))
 					.expr(Expr::value(revision))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(bank.tenant.clone()))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -337,6 +339,7 @@ pub(crate) async fn configure(
 					"applied_revision",
 					"actor",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -348,6 +351,7 @@ pub(crate) async fn configure(
 					.expr(Expr::value(settings.revision))
 					.expr(Expr::value(actor))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(bank.tenant.clone()))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

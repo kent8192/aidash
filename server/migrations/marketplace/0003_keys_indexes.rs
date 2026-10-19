@@ -47,6 +47,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "marketplace_installations".to_owned(),
+			constraint: Constraint::Unique {
+				name: "marketplace_installations_tenant_key_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "key".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "marketplace_provenance".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "marketplace_provenance_pkey".to_owned(),
@@ -57,7 +64,7 @@ pub(super) fn migration() -> Migration {
 			table: "marketplace_requests".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "marketplace_requests_pkey".to_owned(),
-				columns: vec!["key".to_owned()],
+				columns: vec!["tenant".to_owned(), "key".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {

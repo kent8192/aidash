@@ -180,7 +180,7 @@ impl Gate {
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(self.c.f.store.pool.driver())
+		.fetch_one(self.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	}

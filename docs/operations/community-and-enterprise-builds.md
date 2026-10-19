@@ -28,7 +28,7 @@ When the table is absent, the Offering is `self-hosted`. Every command that load
 
 `enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. `scripts/check-enterprise-alignment.py` fails when a copy differs from the Community file, or when `enterprise/Cargo.lock` holds a version of a Community-locked package that `Cargo.lock` does not hold. To fix a version difference, run the `cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>` command that the check prints.
 
-Nothing under `enterprise/` declares a license until the licensing cutover (#255). `scripts/check-license-declarations.py` enforces this.
+Nothing under `enterprise/` declares a license until the licensing cutover (#255).
 
 ## Check the Community export
 
@@ -47,6 +47,34 @@ The script does these steps:
 5. It starts the `dev` Compose profile's `backend` and waits until `/health` answers.
 
 The CI job `community-export` runs the same script.
+
+## Dashboard
+
+The dashboard in `web/` is one single-page app. It reaches build-specific UI through extension slots. A slot is a module in `web/src/slots/` that `@slots/<name>` resolves to, and Community implements each as a stub.
+
+| Slot           | Community stub                | Enterprise implementation                   |
+| -------------- | ----------------------------- | ------------------------------------------- |
+| `sign-in`      | No sign-in methods            | The GCIP sign-in page and its button label  |
+| `account-menu` | No entries                    | The entry that starts two-step verification |
+| `billing`      | No banner                     | Empty until billing (#242) fills it         |
+| `sources.css`  | Adds no Tailwind source paths | Adds `enterprise/web/src` for Tailwind      |
+
+The contracts are in `web/src/slots/types.ts`. The Enterprise build fails its type check when it lacks a slot or implements one differently.
+
+`enterprise/web/` holds the Enterprise slots and the GCIP sources behind them. Its Vite configuration is the one in `web/vite.config.ts` with `@slots` pointed at `enterprise/web/src/slots`, so both builds read `web/index.html` and the same `node_modules`. `enterprise/web/package.json` declares no dependencies. Its `link` script makes `enterprise/web/node_modules` a link to `web/node_modules`, because packages must resolve from files outside `web/`, and every script runs it first. The GCIP SDK (`firebase`) stays in `web/package.json` and its lockfile, so that the dashboard keeps one dependency set. No Community module imports it, and `scripts/check-community-bundle.py` proves that the Community bundle does not contain it.
+
+Build and test the Enterprise dashboard from the repository root:
+
+```sh
+npm ci --prefix web
+npm run generate:api --prefix enterprise/web
+npm run build --prefix enterprise/web
+npm run test:gcip --prefix enterprise/web
+```
+
+`generate:api` exports the OpenAPI contract of the Enterprise server and generates the client in `web/src/generated/`. `enterprise/Dockerfile` runs the same build.
+
+`scripts/check-community-bundle.py` rejects a Community bundle that holds Enterprise code. Pass it the output of `npm run build --prefix web -- --sourcemap`. It fails when a source map lists a file under `enterprise/`, when any file names a GCIP library or endpoint, or when the directory has no source maps. The CI job `community-bundle` runs it on the Community bundle, and the job `enterprise-web` runs it on the Enterprise bundle and expects both rules to reject it.
 
 ## Develop the Enterprise build locally
 

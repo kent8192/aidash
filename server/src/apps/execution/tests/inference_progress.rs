@@ -119,7 +119,7 @@ impl Conversation {
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attempt.0)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(self.f.store.pool.driver())
+		.fetch_one(self.f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	}
@@ -134,7 +134,7 @@ impl Conversation {
 				.and_where(Expr::col(Alias::new("kind")).eq("outcome"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(self.f.store.pool.driver())
+		.fetch_one(self.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		let markers: i64 = sqlx::query_scalar(
@@ -152,7 +152,7 @@ impl Conversation {
 				]))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(self.f.store.pool.driver())
+		.fetch_one(self.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		(rows, markers)
@@ -356,7 +356,7 @@ async fn writes_after_the_lease_is_lost_are_rejected(
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(c.run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(c.f.store.pool.driver())
+	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(stored, 1, "only the started row was written");

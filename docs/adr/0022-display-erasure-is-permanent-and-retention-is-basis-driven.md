@@ -1,0 +1,9 @@
+# Display Erasure is permanent; other clearing follows a retention basis
+
+A Deployment Administrator's Display Erasure removes an External Identity's Display Attributes and stops later sign-ins from recording them again; nothing lifts it, and Identity Disablement restore does not either. A one-shot erasure would be undone by the next sign-in of any mapped identity, which defeats an erasure request for an identity still in use, and a liftable erasure would need extra state to keep the trace of who erased what and when. Separately, Display Attributes are kept only while the External Identity has a retention basis: an enabled Mapping, an enabled Deployment Administrator grant, an unexpired pending Registration Request, or a live session or a sign-in within the last ten minutes that began after the latest Registration Request ended (its decision, or its deadline when it expired). A disabled External Identity has no basis. The "after the latest request ended" condition preserves the earlier rule that rejection or expiry clears the attributes that request showed, even while the applicant's session lives, and it still protects a fresh sign-in's claims. Clearing for lack of a basis is not sticky, so the next sign-in records the attributes again. The recent-sign-in basis covers the gap between recording the attributes and starting the session, which run in separate transactions, and avoids merging them across the application port boundary.
+
+## Considered Options
+
+- One-shot erasure, with the next sign-in restoring the values: rejected because erasure would not hold for active identities.
+- Deployment Administrator-liftable erasure: rejected because no use case has been named for it, and lifting would overwrite the erasure trace.
+- Making registration and session start a single transaction to close the race: rejected because it crosses the `LoginAccounts` port and the server adapter.

@@ -251,6 +251,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 				"phase",
 				"pending",
 				"revision",
+				"tenant",
 			][..],
 		),
 		(
@@ -262,13 +263,14 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 				"participant_revision",
 				"provider_id",
 				"provider_version",
+				"tenant",
 			][..],
 		),
 		(
 			"memory_run_reads",
 			"run_id",
 			None,
-			&["unit_id", "revision"][..],
+			&["unit_id", "revision", "tenant"][..],
 		),
 	] {
 		let mut copied = Query::select();

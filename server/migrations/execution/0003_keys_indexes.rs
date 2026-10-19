@@ -104,6 +104,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_areas".to_owned(),
+			constraint: Constraint::Unique {
+				name: "core_areas_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "core_task_sessions".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "core_task_sessions_pkey".to_owned(),
@@ -213,6 +220,13 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_requests".to_owned(),
+			constraint: Constraint::Unique {
+				name: "generation_requests_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "generation_usage".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "generation_usage_pkey".to_owned(),
@@ -238,6 +252,13 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::Unique {
 				name: "human_requests_request_key_key".to_owned(),
 				columns: vec!["request_key".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "human_requests".to_owned(),
+			constraint: Constraint::Unique {
+				name: "human_requests_tenant_id_run_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned(), "run_id".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -306,6 +327,20 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "runs_pkey".to_owned(),
 				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "runs".to_owned(),
+			constraint: Constraint::Unique {
+				name: "runs_tenant_id_workspace_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned(), "workspace_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "runs".to_owned(),
+			constraint: Constraint::Unique {
+				name: "runs_tenant_id_key".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
 			},
 		})
 		.add_operation(Operation::CreateNamedIndex {

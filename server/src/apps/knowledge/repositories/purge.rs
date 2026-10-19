@@ -32,6 +32,7 @@ pub(crate) async fn schedule(
 					"backup_until",
 					"state",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -48,6 +49,11 @@ pub(crate) async fn schedule(
 					))
 					.expr(Expr::value("pending"))
 					.expr(Expr::value(now))
+					.expr(crate::database::scope::tenant_of(
+						"memory_banks",
+						"id",
+						bank,
+					))
 					.to_owned(),
 			)
 			.on_conflict(

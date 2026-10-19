@@ -157,7 +157,7 @@ async fn count(f: &Federation, predicate: &str) -> i64 {
 			.and_where(Expr::cust(predicate))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -184,7 +184,7 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 			.and_where(Expr::col(a("home_node")).eq(Expr::value(&f.config.node_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -199,7 +199,7 @@ async fn activations(f: &Federation, id: Uuid) -> Value {
 			.and_where(Expr::col(a("run_id")).eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -330,7 +330,7 @@ async fn separate_process_notifications_and_negative_control(
 					.limit(1)
 					.to_string(PostgresQueryBuilder);
 				if let Some(row) = sqlx::query_as(&query)
-					.fetch_optional(f.store.pool.driver())
+					.fetch_optional(f.store.pool.fixture_driver())
 					.await
 					.unwrap()
 				{
@@ -388,7 +388,7 @@ async fn separate_process_notifications_and_negative_control(
 				.and_where(Expr::col(a("claimed_at")).is_not_null())
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert!(!owners.is_empty());
@@ -590,7 +590,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	std::fs::remove_file(&pause).unwrap();
@@ -616,7 +616,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let envelope = aidash_server::activation::Envelope {
@@ -667,7 +667,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 				.from(a("activation_quarantine"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		if quarantined == 4 {
@@ -728,7 +728,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 			.and_where(Expr::col(a("run_id")).eq(reinhardt::query::Expr::value(active)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(finished.observed_input_seq, seq);
@@ -1045,7 +1045,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		if now >= leased.lease_until.unwrap() {
@@ -1191,6 +1191,7 @@ async fn startup_reconciliation_drains_all_batches(
 ) {
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let mut insert = Query::insert();
 	insert.into_table(a("runs")).columns([
 		a("id"),
@@ -1200,6 +1201,7 @@ async fn startup_reconciliation_drains_all_batches(
 		a("agent_id"),
 		a("agent_version"),
 		a("control"),
+		a("tenant"),
 	]);
 	for _ in 0..257 {
 		insert.values_panic::<_, reinhardt::query::Value>([
@@ -1210,10 +1212,11 @@ async fn startup_reconciliation_drains_all_batches(
 			"fixture".into(),
 			"1.0.0".into(),
 			"PAUSED".into(),
+			"acme".into(),
 		]);
 	}
 	sqlx::query(&insert.to_string(PostgresQueryBuilder))
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	// Model an upgrade from writers predating the activation table/triggers.
@@ -1222,7 +1225,7 @@ async fn startup_reconciliation_drains_all_batches(
 			.from_table(a("run_activations"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let settings = Settings {
@@ -1345,7 +1348,7 @@ async fn embedded_worker_child(#[future(awt)] child_runtime: Federation) {
 					.from(a("activation_quarantine"))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			if quarantined == 1 {
@@ -1410,7 +1413,6 @@ async fn child_runtime(
 		.unwrap();
 	Federation {
 		sandbox: Default::default(),
-		gcip: None,
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
 		store,
 		config: aidash_server::config::Config {
@@ -1421,9 +1423,11 @@ async fn child_runtime(
 			api_token: "fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			tenancy: Default::default(),
+			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+				aidash_domain::offering::Offering::SelfHosted,
+			),
 			oidc: None,
-			gcip: None,
+			sign_in: None,
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),

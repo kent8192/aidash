@@ -32,7 +32,6 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 	}
 	async fn find(
 		&mut self,
-		issuer: &str,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Option<Account>> {
 		use reinhardt::db::orm::Model;
@@ -40,11 +39,7 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 			.0
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				Ok(DashboardIdentity::objects()
-					.filter(DashboardIdentity::field_issuer().eq(issuer.to_owned()))
-					.filter(
-						DashboardIdentity::field_gcip_tenant()
-							.eq(sign_in.gcip_tenant.clone().unwrap_or_default()),
-					)
+					.filter(DashboardIdentity::field_issuer().eq(sign_in.issuer.clone()))
 					.filter(DashboardIdentity::field_subject().eq(sign_in.subject.clone()))
 					.all_with_db(tx)
 					.await?)
@@ -55,11 +50,10 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 
 	async fn register(
 		&mut self,
-		issuer: &str,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Account> {
 		Ok(account(
-			DashboardIdentity::register(&self.0, issuer, sign_in).await?,
+			DashboardIdentity::register(&self.0, sign_in).await?,
 		))
 	}
 }
@@ -76,7 +70,6 @@ pub(crate) fn account(row: DashboardIdentity) -> Account {
 		id: row.id,
 		issuer: row.issuer,
 		subject: row.subject,
-		gcip_tenant: (!row.gcip_tenant.is_empty()).then_some(row.gcip_tenant),
 		valid_since: row.valid_since,
 		last_valid_at: row.last_valid_at,
 		disabled_at: row.disabled_at,

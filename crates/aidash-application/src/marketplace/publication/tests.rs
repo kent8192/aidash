@@ -519,8 +519,8 @@ async fn only_the_package_audience_retains_the_owner_during_withdrawal(
 	.await
 	.unwrap();
 	// Assert
-	assert_eq!(result.tenants.contains("owner"), keep_owner);
-	assert_eq!(result.revision, revision + 1);
+	assert_eq!(result.audience.tenants.contains("owner"), keep_owner);
+	assert_eq!(result.audience.revision, revision + 1);
 	assert_eq!(
 		scope.writes(),
 		vec![
@@ -528,6 +528,76 @@ async fn only_the_package_audience_retains_the_owner_during_withdrawal(
 			"event:marketplace.distribution_changed"
 		]
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_joining_audience_tenant_is_owed_events_that_the_owner_does_not_write() {
+	// Arrange
+	let mut scope = Fixture::new();
+	let result = publish(&mut scope, &validation(), &command(), "node")
+		.await
+		.unwrap();
+	scope.calls.clear();
+	// Act
+	let shared = share(
+		&mut scope,
+		result["key"].as_str().unwrap(),
+		None,
+		AudienceChange {
+			expected_revision: 1,
+			tenants: BTreeSet::from(["recipient".to_owned()]),
+		},
+	)
+	.await
+	.unwrap();
+	// Assert: the owner's own transaction writes one event; the rest wait for delivery.
+	assert_eq!(
+		scope.writes(),
+		vec![
+			"save_distribution",
+			"event:marketplace.distribution_changed"
+		]
+	);
+	let owed = shared
+		.announcements
+		.iter()
+		.map(|a| {
+			(
+				a.kind,
+				a.tenants.iter().map(String::as_str).collect::<Vec<_>>(),
+			)
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(
+		owed,
+		vec![
+			(events::PUBLISHED, vec!["recipient"]),
+			(events::DISTRIBUTION_CHANGED, vec!["recipient"]),
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_consent_change_owes_nothing_to_the_audience() {
+	// Arrange
+	let mut scope = Fixture::new();
+	let result = publish(&mut scope, &validation(), &command(), "node")
+		.await
+		.unwrap();
+	// Act
+	let shared = share(
+		&mut scope,
+		result["key"].as_str().unwrap(),
+		Some("redistributor"),
+		AudienceChange {
+			expected_revision: 0,
+			tenants: BTreeSet::from(["onward".to_owned()]),
+		},
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert!(shared.announcements.is_empty());
 }
 #[rstest]
 #[tokio::test]

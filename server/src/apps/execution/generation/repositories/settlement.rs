@@ -112,11 +112,12 @@ impl GenerationSettlementScope for NativeSettlementScope<'_> {
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("generation_remote_finalizations"))
-				.columns(["attempt_id", "digest"].map(Alias::new))
+				.columns(["attempt_id", "digest", "tenant"].map(Alias::new))
 				.from_subquery(
 					Query::select()
 						.expr(Expr::cust("$1"))
 						.expr(Expr::cust("$2"))
+						.expr(crate::database::scope::tenant())
 						.to_owned(),
 				)
 				.on_conflict(

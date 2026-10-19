@@ -5,6 +5,7 @@ mod endpoint_fixtures;
 #[path = "support/native_database.rs"]
 mod native_database;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::workspaces::models::states::ArtifactKind;
 use aidash_server::apps::workspaces::models::{Artifact, Message};
 use aidash_server::{
@@ -230,29 +231,37 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		)
 		.await
 		.unwrap();
-	let mut db = app.database.lease.handle();
-	let old_message = Message::objects()
-		.filter(Message::field_workspace_id().eq(workspace.id))
-		.filter(Message::field_idempotency_key().eq(Some("observation-old-message".to_owned())))
-		.get_with_db(&mut db)
+	let (old_message, artifact_id) = f
+		.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |db| {
+			let old_message = Message::objects()
+				.filter(Message::field_workspace_id().eq(workspace.id))
+				.filter(
+					Message::field_idempotency_key().eq(Some("observation-old-message".to_owned())),
+				)
+				.get_with_db(db)
+				.await?
+				.id;
+			let artifact = Artifact::build()
+				.tenant("acme")
+				.workspace_id(workspace.id)
+				.task_id(task.id)
+				.kind(ArtifactKind::Text)
+				.name("review artifact")
+				.content(json!("record query regression").into())
+				.created_by("reviewer")
+				.idempotency_key("review-artifact")
+				.run_id(None)
+				.finish();
+			let artifact_id = Artifact::objects()
+				.create_with_conn(db, &artifact)
+				.await?
+				.id;
+			Ok((old_message, artifact_id))
+		})
 		.await
-		.unwrap()
-		.id;
-	let artifact = Artifact::build()
-		.workspace_id(workspace.id)
-		.task_id(task.id)
-		.kind(ArtifactKind::Text)
-		.name("review artifact")
-		.content(json!("record query regression").into())
-		.created_by("reviewer")
-		.idempotency_key("review-artifact")
-		.run_id(None)
-		.finish();
-	let artifact_id = Artifact::objects()
-		.create_with_conn(&mut db, &artifact)
-		.await
-		.unwrap()
-		.id;
+		.unwrap();
 
 	for (kind, id, expected) in [
 		("task", task.id, "Coordinate specialists"),

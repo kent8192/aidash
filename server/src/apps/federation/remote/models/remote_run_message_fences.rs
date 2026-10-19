@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct RemoteRunMessageFence {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub task_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: uuid::Uuid,
 	#[field(primary_key = true, field_type = "text")]
