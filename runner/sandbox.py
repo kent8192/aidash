@@ -22,7 +22,8 @@ output.close()
 resource.setrlimit(resource.RLIMIT_NPROC, (request["processes"], request["processes"]))
 environment = {key: value for key, value in os.environ.items() if key in {
     "PATH", "HOME", "LANG", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
-    "MPLCONFIGDIR", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"
+    "MPLCONFIGDIR", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
+    "UV_PYTHON_DOWNLOADS", "UV_PYTHON"
 }}
 if request["kind"] == "python":
     os.execve("/usr/local/bin/python", ["python", "-I", "/opt/aidash/kernel.py"], environment)
