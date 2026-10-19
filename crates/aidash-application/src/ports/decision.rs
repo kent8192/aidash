@@ -54,12 +54,18 @@ impl PreparedRequest {
 }
 
 /// Safe dispatch categories; raw responses and transport errors never enter evidence.
+/// A provider failure or invalid answers make the Route unavailable, so the next
+/// Route is tried; a refusal fails closed (ADR 0066).
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
+	/// Transport failure, timeout, 404, 429 or 5xx.
 	#[error(transparent)]
 	ProviderFailure(#[from] crate::Error),
 	#[error("invalid decision answers")]
 	InvalidAnswers,
+	/// 400, 401, 402, 403 or 413: no other Route would be treated differently.
+	#[error("decision provider refused the request with HTTP {0}")]
+	Refused(u16),
 }
 
 #[async_trait]
@@ -68,9 +74,14 @@ pub trait DecisionProvider: Send + Sync {
 	/// It must match the admitted implementation, independently of the protocol/config.
 	fn implementation_id(&self) -> &str;
 	fn configuration_digest(&self) -> Result<String>;
-	/// Split only under factual constraints of the pinned external provider.
+	/// Split only under factual constraints of the Route's external provider.
 	/// All question IDs must occur exactly once; no state/candidate truncation is allowed.
-	fn plan(&self, state: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>>;
+	fn plan(
+		&self,
+		route: usize,
+		state: &Value,
+		questions: &Questions,
+	) -> Result<Vec<PreparedRequest>>;
 	/// Credential availability and request construction failures happen before
 	/// reserving a physical call. The returned transport retains the exact request;
 	/// dispatch obtains the short-lived call credential immediately before I/O, so a
@@ -79,6 +90,7 @@ pub trait DecisionProvider: Send + Sync {
 	/// Decision Attempt the physical call will be reserved as, and is its call identity.
 	async fn prepare(
 		&self,
+		route: usize,
 		request: &PreparedRequest,
 		attempt: Uuid,
 	) -> Result<Box<dyn PreparedDispatch + '_>>;
@@ -100,6 +112,8 @@ pub struct DispatchRecord {
 	pub boundary: Boundary,
 	pub decider: DeciderPin,
 	pub binding_restrictions: Restrictions,
+	/// The Decider Route the attempt asked; its decision identity commits to it.
+	pub route: u32,
 	pub request_digest: String,
 	pub state_digest: String,
 	pub questions: Vec<String>,

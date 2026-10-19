@@ -206,6 +206,7 @@ impl RawRun {
 			recovery.semantic_reason = None;
 			recovery.context_reason = None;
 			recovery.decision_cycle = recovery.decision_cycle.saturating_add(1);
+			recovery.decider_retry = 0;
 			Ok(Some(encode(&state, &recovery)?))
 		} else {
 			Ok(None)

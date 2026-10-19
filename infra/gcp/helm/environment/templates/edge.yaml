@@ -75,13 +75,20 @@ spec:
   resources: { requests: { storage: {{ $edge.tlsSize }} } }
 {{- end }}
 ---
+{{- $kind := include "environment.workloadKind" . }}
 apiVersion: apps/v1
-kind: Deployment
+kind: {{ $kind }}
 metadata:
   name: {{ $name }}-edge
 spec:
   replicas: 1
+  {{- if eq $kind "StatefulSet" }}
+  serviceName: {{ $name }}-edge
+  podManagementPolicy: Parallel
+  updateStrategy: { type: RollingUpdate }
+  {{- else }}
   strategy: { type: Recreate }
+  {{- end }}
   selector: { matchLabels: { aidash.run/edge: {{ .Release.Name | quote }} } }
   template:
     metadata:

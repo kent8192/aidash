@@ -23,6 +23,7 @@ module "environment" {
     location       = google_container_cluster.aidash.location
     workload_pool  = google_container_cluster.aidash.workload_identity_config[0].workload_pool
     node_locations = [local.zone]
+    standby_zones  = local.standby_zones
   }
 }
 

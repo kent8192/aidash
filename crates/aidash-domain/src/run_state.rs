@@ -348,6 +348,11 @@ pub struct RecoveryState {
 	/// recovered lease continues the same one (#108).
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub decision_cycle: u32,
+	/// Outage retries of the current step's compaction decision after every
+	/// Decider Route failed. A decision commits to it, so each retry asks the
+	/// Routes again; it is reset once the step saves anything else (ADR 0066).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decider_retry: u32,
 	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
 	#[serde(
 		default,

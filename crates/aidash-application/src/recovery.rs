@@ -9,6 +9,9 @@ pub enum ExecutionFailure {
 	Semantic(SemanticFailure),
 	/// A typed context-recovery outcome. It pauses the Run; never a transport retry.
 	Context(ContextFailure),
+	/// Every Decider Route was unavailable. The step is retried a bounded
+	/// number of times, then pauses as `decider_unavailable` (ADR 0066).
+	DeciderOutage,
 	Authority {
 		identity_unavailable: bool,
 	},
@@ -51,6 +54,7 @@ impl ExecutionFailure {
 				message.clone()
 			}
 			Self::Deferred => "execution state is temporarily unavailable".into(),
+			Self::DeciderOutage => "every Decider Route is unavailable".into(),
 		}
 	}
 }

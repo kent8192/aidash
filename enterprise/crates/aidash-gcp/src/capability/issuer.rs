@@ -100,7 +100,8 @@ impl TokenIssuer for CapabilityIssuer {
 				&& (request.operations.len() != 1
 					|| request.max_output_tokens != 0
 					|| request.cache_breakpoints))
-			|| (!context.is_decision() && request.max_output_tokens == 0)
+			|| (!context.is_decision()
+				&& (request.max_output_tokens == 0 || !request.hosts.is_empty()))
 			|| context.tenant != credential.tenant
 			|| credential.id.is_nil()
 		{
@@ -178,6 +179,7 @@ impl TokenIssuer for CapabilityIssuer {
 			model: request.model.clone(),
 			max_output_tokens: u64::from(request.max_output_tokens),
 			cache_breakpoints: request.cache_breakpoints,
+			hosts: request.hosts.clone(),
 		};
 		let bearer = aidash_capability::mint(&claims, self.signer.as_ref())
 			.await
