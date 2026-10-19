@@ -110,6 +110,7 @@ docs/Gemfile.lock
 !.env.sample
 .ignore/
 /private/
+/secrets/
 /notes/
 .claude/
 .serena/

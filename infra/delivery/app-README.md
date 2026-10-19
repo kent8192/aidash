@@ -14,7 +14,7 @@ Open the printed loopback URL while the helper runs. Submit its form, review the
 manifest on GitHub and create the private App. The callback exchanges its
 short-lived code directly with GitHub, with a random one-hour session and CSRF
 state. It saves `release-app.pem` and `metadata.json` under the ignored
-`private/delivery/operator/github-app/`, with directory 0700 and files 0600.
+`secrets/delivery/operator/github-app/`, with directory 0700 and files 0600.
 Provider responses and OAuth codes never enter access logs. Then use the displayed
 App installation URL, selecting only `kent8192/aidash`.
 

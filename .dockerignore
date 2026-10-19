@@ -1,6 +1,7 @@
 .git
 .ignore
 private
+secrets
 notes
 .trunk
 .env
