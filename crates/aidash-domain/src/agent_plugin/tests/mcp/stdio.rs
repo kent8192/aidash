@@ -114,7 +114,9 @@ fn a_plugin_relative_command_is_normalized(#[case] command: &str, #[case] normal
 #[case::parent("./../server.js")]
 #[case::deep_parent("./bin/../../server.js")]
 #[case::only_parent("./..")]
-fn a_command_that_climbs_out_of_the_plugin_is_skipped(#[case] command: &str) {
+#[case::root("./")]
+#[case::back_to_root("./bin/..")]
+fn a_command_that_leaves_or_names_the_plugin_root_is_skipped(#[case] command: &str) {
 	assert_eq!(
 		the_only_finding(json!({"type": "stdio", "command": command})),
 		skipped(
@@ -128,7 +130,6 @@ fn a_command_that_climbs_out_of_the_plugin_is_skipped(#[case] command: &str) {
 #[rstest]
 #[case::absent("./missing.js")]
 #[case::directory("./bin")]
-#[case::root("./")]
 #[case::case_differs("./bin/Server.js")]
 #[case::normalizes_to_absent("./bin/../missing.js")]
 fn a_command_that_is_not_a_file_of_the_plugin_is_skipped(#[case] command: &str) {

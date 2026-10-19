@@ -108,6 +108,7 @@ fn parse_command(command: &str, tree: &BTreeSet<&str>) -> Result<Command, Refusa
 			return Err(Refusal::invalid("command must name a file"));
 		}
 		let path = paths::normalize(relative)
+			.filter(|path| !path.is_empty())
 			.ok_or_else(|| Refusal::new(Reason::PathOutsideRoot, command))?;
 		return if tree.contains(path.as_str()) {
 			Ok(Command::PluginRelative(path))
