@@ -47,6 +47,8 @@ mod semantic;
 mod transactions;
 #[path = "../../federation/transactions/tests/execution_endpoints.rs"]
 mod transactions_execution;
+#[path = "../../federation/peer/tests/well_known.rs"]
+mod well_known;
 #[path = "../../registry/workbench/tests/endpoints.rs"]
 mod workbench;
 

@@ -65,7 +65,7 @@ impl PeerManagement {
 	}
 	pub(crate) async fn identity(&self) -> Result<Value> {
 		let f = self.runtime.clone();
-		Ok(json!(f.config.identity(vec![])))
+		Ok(json!(f.config.deployment_identity()))
 	}
 	pub(crate) async fn peer_observe(&self, headers: HeaderMap) -> Result<Value> {
 		let f = self.runtime.clone();
