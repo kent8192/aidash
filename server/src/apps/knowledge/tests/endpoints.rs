@@ -778,7 +778,7 @@ async fn members_configure_their_index_under_semantic_index_manage(
 			"SELECT count(*) FROM authorization_decisions WHERE subject = 'member' \
 			 AND action = 'semantic.index.manage' AND NOT (decision->>'allowed')::boolean",
 		)
-		.fetch_one(app.runtime.store.pool.driver())
+		.fetch_one(app.runtime.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	};
