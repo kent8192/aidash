@@ -1,8 +1,8 @@
-//! Offline, count-only recovery after loss of Provider Credential Store Master Keys.
+//! Offline, count-only recovery after loss of Secret Store Master Keys.
 use super::super::{
 	repositories::{
-		credential_store::PostgresStore, plan_connections::NativeRepository as PlanRepository,
-		provider_credentials::NativeRepository,
+		plan_connections::NativeRepository as PlanRepository,
+		provider_credentials::NativeRepository, secret_store::PostgresStore,
 	},
 	serializers::provider_credentials::StoreConfig,
 };
@@ -30,11 +30,11 @@ async fn recover(execute: bool) -> Result<Counts> {
 		.store
 		.as_ref()
 		.ok_or_else(|| {
-			Error::Invalid("Provider Credential Store recovery requires a PostgreSQL Store".into())
+			Error::Invalid("Secret Store recovery requires a PostgreSQL Store".into())
 		})?;
 	if !matches!(keys, StoreConfig::Postgres { .. }) {
 		return Err(Error::Invalid(
-			"Provider Credential Store recovery requires a PostgreSQL Store".into(),
+			"Secret Store recovery requires a PostgreSQL Store".into(),
 		));
 	}
 	let fingerprint_key = settings.provider_credentials.load_fingerprint_key().await?;
@@ -111,12 +111,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 		};
 		for row in affected {
 			service
-				.revoke(
-					&row.tenant,
-					row.id,
-					row.revision,
-					"provider-credential-store-recovery",
-				)
+				.revoke(&row.tenant, row.id, row.revision, "secret-store-recovery")
 				.await?;
 		}
 		let plan_service = aidash_application::plan_connections::Service {
@@ -129,7 +124,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 		};
 		for (id, _) in plans {
 			plan_service
-				.mark_unreadable(id, "provider-credential-store-recovery")
+				.mark_unreadable(id, "secret-store-recovery")
 				.await?;
 		}
 		store.remove_unavailable(&inventory).await?;
@@ -168,7 +163,7 @@ async fn unreadable_plan_connections(
 		let (sql, values) = query.build(PostgresQueryBuilder);
 		// Recovery reconciles every Tenant's pinned Plan Tokens.
 		let scope = aidash_application::tenancy::TenancyScope::Deployment(
-			aidash_application::tenancy::DeploymentScopeReason::CredentialStoreRecovery,
+			aidash_application::tenancy::DeploymentScopeReason::SecretStoreRecovery,
 		);
 		let mut tx = pool.begin(&scope).await?.into_executor()?;
 		let rows = tx.fetch_all(&sql, convert_values(values)).await?;
@@ -209,7 +204,7 @@ pub struct Command;
 #[async_trait::async_trait]
 impl reinhardt::commands::CapabilityCommand for Command {
 	fn cli(&self) -> clap::Command {
-		clap::Command::new("provider-credential-store-recovery")
+		clap::Command::new("secret-store-recovery")
 			.about("Report lost-key recovery counts; stop server and worker before using --execute")
 			.arg(
 				clap::Arg::new("execute")

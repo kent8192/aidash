@@ -1,7 +1,7 @@
 //! Provider Authorization: the provider-hosted OAuth PKCE consent that is the
 //! only way to obtain a Provider Credential (ADR 0006). The host keeps the
 //! `state` and PKCE verifier, and the code exchange returns Key Material that
-//! goes straight into the Provider Credential Store write path.
+//! goes straight into the Secret Store write path.
 use crate::{Error, Result};
 use aidash_domain::provider_credentials::Provider;
 use async_trait::async_trait;

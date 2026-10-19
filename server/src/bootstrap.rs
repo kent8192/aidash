@@ -43,7 +43,7 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		crate::semantic::services::memory_recovery::Command,
 	));
 	registry.register_capability(Box::new(
-		crate::apps::identity::services::credential_store_recovery::Command,
+		crate::apps::identity::services::secret_store_recovery::Command,
 	));
 	registry
 }
@@ -2285,7 +2285,7 @@ pub async fn configure_provider_credentials(
 		StoreConfig::Postgres { .. } => {
 			let (current, retired) = config.load_postgres_keys().await?;
 			let adapter = Arc::new(
-				crate::apps::identity::repositories::credential_store::PostgresStore::new(
+				crate::apps::identity::repositories::secret_store::PostgresStore::new(
 					store.control_pool.clone(),
 					current,
 					retired,
@@ -2321,7 +2321,7 @@ pub async fn configure_provider_credentials(
 	Ok(())
 }
 
-/// Plan Tokens live only in a PostgreSQL Provider Credential Store (ADR 0008):
+/// Plan Tokens live only in a PostgreSQL Secret Store (ADR 0008):
 /// Cloud and Dedicated wait for OpenAI's approval of a hosted flow (#248), so a
 /// server whose Store is in Secret Manager, or that has none, refuses to start
 /// with Plan Connections on. The service exists whenever the Store could hold
@@ -2336,7 +2336,7 @@ pub fn configure_plan_connections(
 	let postgres = matches!(credentials.store, Some(StoreConfig::Postgres { .. }));
 	if settings.enabled && !postgres {
 		return Err(Error::Invalid(
-			"Plan Connections need a PostgreSQL Provider Credential Store; \
+			"Plan Connections need a PostgreSQL Secret Store; \
 			 turn off [plan_connections] enabled"
 				.into(),
 		));

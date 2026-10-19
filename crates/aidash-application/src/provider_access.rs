@@ -109,7 +109,7 @@ pub trait ProviderAccess: Send + Sync {
 		Ok(false)
 	}
 }
-/// Access without a Provider Credential Store: Keyless endpoints only, limited
+/// Access without a Secret Store: Keyless endpoints only, limited
 /// to public addresses except the Deployment's permitted private origins.
 #[derive(Debug, Clone, Default)]
 pub struct KeylessAccess {
@@ -156,9 +156,7 @@ impl ProviderAccess for KeylessAccess {
 		match source {
 			Source::Keyless => {}
 			Source::Tenant { .. } => {
-				return Err(Error::Invalid(
-					"Provider Credential Store is not configured".into(),
-				));
+				return Err(Error::Invalid("Secret Store is not configured".into()));
 			}
 			Source::Plan { .. } => {
 				return Err(Error::Plan(

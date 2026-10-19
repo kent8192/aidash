@@ -114,19 +114,13 @@ impl StoreConfig {
 		} = self
 		else {
 			return Err(crate::Error::Invalid(
-				"Provider Credential Store recovery requires a PostgreSQL Store".into(),
+				"Secret Store recovery requires a PostgreSQL Store".into(),
 			));
 		};
-		let current = master_key
-			.load("Provider Credential Store Master Key")
-			.await?;
+		let current = master_key.load("Secret Store Master Key").await?;
 		let mut retired = Vec::new();
 		for source in retired_master_keys {
-			retired.push(
-				source
-					.load("Provider Credential Store retired Master Key")
-					.await?,
-			);
+			retired.push(source.load("Secret Store retired Master Key").await?);
 		}
 		Ok((current, retired))
 	}
@@ -158,9 +152,7 @@ impl Settings {
 		let key = self
 			.fingerprint_key
 			.as_ref()
-			.ok_or_else(|| {
-				crate::Error::Invalid("Provider Credential Store requires fingerprint_key".into())
-			})?
+			.ok_or_else(|| crate::Error::Invalid("Secret Store requires fingerprint_key".into()))?
 			.load("Provider Credential fingerprint key")
 			.await?;
 		if key.expose_secret().len() < 32 {
@@ -188,14 +180,15 @@ impl SettingsValidation for Settings {
 				Some(StoreConfig::SecretManager { environment_id, .. })
 					if *environment_id == broker.audience
 			) {
-				return Err(invalid("Credential Broker audience must match the configured Provider Credential Store environment".into()));
+				return Err(invalid(
+					"Credential Broker audience must match the configured Secret Store environment"
+						.into(),
+				));
 			}
 		}
 		if let Some(store) = &self.store {
 			if self.fingerprint_key.is_none() {
-				return Err(invalid(
-					"Provider Credential Store requires fingerprint_key".into(),
-				));
+				return Err(invalid("Secret Store requires fingerprint_key".into()));
 			}
 			match store {
 				StoreConfig::Postgres {
@@ -221,7 +214,7 @@ impl SettingsValidation for Settings {
 							.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 					{
 						return Err(invalid(
-							"invalid Provider Credential Store project or environment".into(),
+							"invalid Secret Store project or environment".into(),
 						));
 					}
 				}

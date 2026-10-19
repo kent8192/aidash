@@ -514,7 +514,7 @@ fn compaction_worker_configuration(
 ) -> worker_process::ConfigurationFuture {
 	async move {
 		// The worker provisions definitions that use the Tenant's credential, so it
-		// starts from the runtime that has a Provider Credential Store.
+		// starts from the runtime that has a Secret Store.
 		let (fixture, _, _, credentialed) = queued_compaction.await;
 		let (_, url, schema) = fixture.application.runtime.parts();
 		(credentialed, url, schema, None)

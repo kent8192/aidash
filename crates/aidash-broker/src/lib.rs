@@ -491,10 +491,7 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		Ok(Ok(k)) => k,
 		Ok(Err(KeyMaterialError::Unavailable)) => return guard.failure(Failure::Credential),
 		_ => {
-			return guard.error(
-				StatusCode::SERVICE_UNAVAILABLE,
-				"Provider Credential Store unavailable",
-			);
+			return guard.error(StatusCode::SERVICE_UNAVAILABLE, "Secret Store unavailable");
 		}
 	};
 	// Only the code-defined Provider Catalog chooses the base, never inbound headers/URLs.

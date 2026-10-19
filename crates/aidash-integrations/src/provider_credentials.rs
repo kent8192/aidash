@@ -33,7 +33,7 @@ impl SecretManager {
 				.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 		{
 			return Err(Error::Invalid(
-				"invalid Provider Credential Store project or environment".into(),
+				"invalid Secret Store project or environment".into(),
 			));
 		}
 		let client = |builder: reqwest::ClientBuilder| {
@@ -58,10 +58,10 @@ impl SecretManager {
 	fn validate_resource(&self, resource: &str) -> Result<()> {
 		let prefix = format!("projects/{}/secrets/{}", self.project, self.prefix);
 		let id = resource.strip_prefix(&prefix).ok_or_else(|| {
-			Error::Invalid("Provider Credential Store resource is outside its environment".into())
+			Error::Invalid("Secret Store resource is outside its environment".into())
 		})?;
 		let id = Uuid::parse_str(id)
-			.map_err(|_| Error::Invalid("invalid Provider Credential Store resource".into()))?;
+			.map_err(|_| Error::Invalid("invalid Secret Store resource".into()))?;
 		if id.get_version_num() != 7 {
 			return Err(Error::Invalid(
 				"Provider Credential ID must be UUIDv7".into(),
@@ -72,11 +72,11 @@ impl SecretManager {
 	fn validate_version(&self, version: &str) -> Result<()> {
 		let (resource, id) = version
 			.rsplit_once("/versions/")
-			.ok_or_else(|| Error::Invalid("invalid Provider Credential Store version".into()))?;
+			.ok_or_else(|| Error::Invalid("invalid Secret Store version".into()))?;
 		self.validate_resource(resource)?;
 		if id.parse::<u64>().ok().filter(|n| *n > 0).is_none() {
 			return Err(Error::Invalid(
-				"Provider Credential Store requires a numeric version pin".into(),
+				"Secret Store requires a numeric version pin".into(),
 			));
 		}
 		Ok(())
@@ -100,9 +100,7 @@ impl SecretManager {
 				.and_then(|v| v.to_str().ok())
 				!= Some("Google")
 		{
-			return Err(Error::External(
-				"Provider Credential Store token is unavailable".into(),
-			));
+			return Err(Error::External("Secret Store token is unavailable".into()));
 		}
 		let token: Token = crate::response::json(response, 16384).await?;
 		Ok(token.access_token)
@@ -128,7 +126,7 @@ impl SecretManager {
 		}
 		if !response.status().is_success() {
 			return Err(Error::External(format!(
-				"Provider Credential Store request failed ({})",
+				"Secret Store request failed ({})",
 				response.status().as_u16()
 			)));
 		}
@@ -138,9 +136,7 @@ impl SecretManager {
 		Ok(Some(
 			crate::response::json(response, 1024 * 1024)
 				.await
-				.map_err(|_| {
-					Error::External("Provider Credential Store response is unavailable".into())
-				})?,
+				.map_err(|_| Error::External("Secret Store response is unavailable".into()))?,
 		))
 	}
 }
@@ -176,12 +172,10 @@ impl Store for SecretManager {
 				false,
 			)
 			.await?
-			.ok_or_else(|| {
-				Error::External("Provider Credential Store returned no version".into())
-			})?;
-		let name = response["name"].as_str().ok_or_else(|| {
-			Error::External("Provider Credential Store returned no version".into())
-		})?;
+			.ok_or_else(|| Error::External("Secret Store returned no version".into()))?;
+		let name = response["name"]
+			.as_str()
+			.ok_or_else(|| Error::External("Secret Store returned no version".into()))?;
 		let id = name.rsplit('/').next().unwrap_or_default();
 		let version = format!("{resource}/versions/{id}");
 		self.validate_version(&version)?;
@@ -212,9 +206,7 @@ impl Store for SecretManager {
 						continue;
 					}
 					let name = v["name"].as_str().ok_or_else(|| {
-						Error::External(
-							"Provider Credential Store returned an invalid version".into(),
-						)
+						Error::External("Secret Store returned an invalid version".into())
 					})?;
 					let version = format!(
 						"{resource}/versions/{}",
@@ -230,7 +222,7 @@ impl Store for SecretManager {
 			}
 			if versions.len() > 10000 {
 				return Err(Error::External(
-					"Provider Credential Store version inventory exceeds its limit".into(),
+					"Secret Store version inventory exceeds its limit".into(),
 				));
 			}
 		}

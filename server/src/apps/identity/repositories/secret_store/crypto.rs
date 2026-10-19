@@ -20,7 +20,7 @@ impl Key {
 		let value = value.expose_secret().trim();
 		if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
 			return Err(Error::Invalid(
-				"Provider Credential Store Master Key must be 64 hex characters".into(),
+				"Secret Store Master Key must be 64 hex characters".into(),
 			));
 		}
 		let mut master = Zeroizing::new([0u8; 32]);
@@ -53,7 +53,7 @@ impl Key {
 					aad,
 				},
 			)
-			.map_err(|_| Error::Invalid("Provider Credential Store encryption failed".into()))?;
+			.map_err(|_| Error::Invalid("Secret Store encryption failed".into()))?;
 		Ok((nonce.to_vec(), ciphertext))
 	}
 	pub fn open(&self, nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
@@ -81,9 +81,7 @@ impl Key {
 			.as_slice()
 			!= CHECK
 		{
-			return Err(Error::Invalid(
-				"Provider Credential Store key check failed".into(),
-			));
+			return Err(Error::Invalid("Secret Store key check failed".into()));
 		}
 		Ok(())
 	}

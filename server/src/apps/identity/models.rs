@@ -94,4 +94,4 @@ mod provider_authorizations;
 pub use provider_authorizations::ProviderAuthorization;
 pub mod plan_connections;
 
-pub mod credential_store;
+pub mod secret_store;

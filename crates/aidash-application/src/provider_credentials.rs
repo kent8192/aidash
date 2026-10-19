@@ -39,7 +39,7 @@ pub trait Store: Send + Sync {
 	/// Tokens, such as Cloud's Secret Manager until #248, refuses.
 	async fn create_plan(&self, _tenant: &str, _id: Uuid) -> Result<()> {
 		Err(Error::Invalid(
-			"this Provider Credential Store does not hold Plan Tokens".into(),
+			"this Secret Store does not hold Plan Tokens".into(),
 		))
 	}
 }

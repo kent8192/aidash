@@ -1,6 +1,6 @@
-//! Community Provider Credential Store: independent transactions and pinned AEAD reads.
+//! Community Secret Store: independent transactions and pinned AEAD reads.
 mod crypto;
-use super::super::models::credential_store::{RegisteredKey, Resource, Version};
+use super::super::models::secret_store::{RegisteredKey, Resource, Version};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result, provider_access::KeyMaterialReader, provider_credentials::Store,
@@ -32,9 +32,9 @@ pub(crate) struct RecoveryInventory {
 fn db_error(_: impl std::fmt::Display) -> Error {
 	tracing::error!(
 		reason = "database operation failed",
-		"Provider Credential Store operation failed"
+		"Secret Store operation failed"
 	);
-	Error::External("Provider Credential Store is unavailable".into())
+	Error::External("Secret Store is unavailable".into())
 }
 fn invalid(reason: &str) -> Error {
 	Error::Invalid(reason.into())
@@ -42,7 +42,7 @@ fn invalid(reason: &str) -> Error {
 /// Recovery reads and removes every Tenant's versions that no configured
 /// Master Key can open.
 fn recovery() -> TenancyScope {
-	TenancyScope::Deployment(DeploymentScopeReason::CredentialStoreRecovery)
+	TenancyScope::Deployment(DeploymentScopeReason::SecretStoreRecovery)
 }
 
 async fn lock(tx: &mut dyn TransactionExecutor, identity: &str) -> Result<()> {
@@ -87,20 +87,20 @@ fn resource_id(resource: &str) -> Result<()> {
 		.and_then(|s| Uuid::parse_str(s).ok())
 		.filter(|id| id.get_version_num() == 7);
 	if id.is_none() {
-		return Err(invalid("invalid Provider Credential Store resource"));
+		return Err(invalid("invalid Secret Store resource"));
 	}
 	Ok(())
 }
 fn version_id(value: &str) -> Result<(&str, i64)> {
 	let (resource, number) = value
 		.rsplit_once("/versions/")
-		.ok_or_else(|| invalid("invalid Provider Credential Store version"))?;
+		.ok_or_else(|| invalid("invalid Secret Store version"))?;
 	resource_id(resource)?;
 	let n = number
 		.parse::<i64>()
 		.ok()
 		.filter(|n| *n > 0 && n.to_string() == number)
-		.ok_or_else(|| invalid("invalid Provider Credential Store version"))?;
+		.ok_or_else(|| invalid("invalid Secret Store version"))?;
 	Ok((resource, n))
 }
 impl PostgresStore {
@@ -169,7 +169,7 @@ impl PostgresStore {
 		for row in registered {
 			if let Some(key) = self.keys.get(&row.key_id) {
 				key.verify(&row.check_nonce, &row.check_ciphertext)
-					.map_err(|_| invalid("Provider Credential Store Master Key check failed"))?;
+					.map_err(|_| invalid("Secret Store Master Key check failed"))?;
 			}
 		}
 		Ok(())
@@ -266,14 +266,14 @@ impl PostgresStore {
 			.map_err(db_error)?;
 		if !registered.is_empty() && !registered.iter().any(|r| self.keys.contains_key(&r.key_id)) {
 			return Err(invalid(
-				"Provider Credential Store Master Key does not match any registered key identifier; stop server and worker and use manage provider-credential-store-recovery with the node settings",
+				"Secret Store Master Key does not match any registered key identifier; stop server and worker and use manage secret-store-recovery with the node settings",
 			));
 		}
 		self.verify_configured_keys(&registered)?;
 		let key = &self.keys[&self.current];
 		let (nonce, ciphertext) = key
 			.check()
-			.map_err(|_| invalid("Provider Credential Store key check encryption failed"))?;
+			.map_err(|_| invalid("Secret Store key check encryption failed"))?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("credential_store_keys"))
 			.columns([
@@ -306,9 +306,9 @@ impl PostgresStore {
 			.map_err(db_error)?;
 		let stored = stored
 			.first()
-			.ok_or_else(|| invalid("Provider Credential Store key registration failed"))?;
+			.ok_or_else(|| invalid("Secret Store key registration failed"))?;
 		key.verify(&stored.check_nonce, &stored.check_ciphertext)
-			.map_err(|_| invalid("Provider Credential Store Master Key check failed"))?;
+			.map_err(|_| invalid("Secret Store Master Key check failed"))?;
 		tx.commit().await.map_err(db_error)?;
 
 		// Count unavailable key identifiers without loading every encrypted payload.
@@ -343,7 +343,7 @@ impl PostgresStore {
 			tracing::warn!(
 				key_id,
 				count,
-				"Provider Credential Store versions use an unconfigured Master Key"
+				"Secret Store versions use an unconfigured Master Key"
 			);
 		}
 		Ok(())
@@ -412,16 +412,13 @@ impl KeyMaterialReader for PostgresStore {
 				ReadFailure::Unavailable => {
 					tracing::warn!(
 						reason = "database unavailable",
-						"Provider Credential Store cannot read the pinned version"
+						"Secret Store cannot read the pinned version"
 					);
-					Error::External("Provider Credential Store is unavailable".into())
+					Error::External("Secret Store is unavailable".into())
 				}
 				ReadFailure::Rejected(reason) => {
-					tracing::warn!(
-						reason,
-						"Provider Credential Store cannot read the pinned version"
-					);
-					invalid("Provider Credential Store cannot read the pinned version")
+					tracing::warn!(reason, "Secret Store cannot read the pinned version");
+					invalid("Secret Store cannot read the pinned version")
 				}
 			})
 	}
@@ -454,14 +451,14 @@ impl Store for PostgresStore {
 		let mut row = rows
 			.into_iter()
 			.next()
-			.ok_or_else(|| invalid("Provider Credential Store resource is missing"))?;
+			.ok_or_else(|| invalid("Secret Store resource is missing"))?;
 		if row.tenant != tenant {
-			return Err(invalid("Provider Credential Store Tenant mismatch"));
+			return Err(invalid("Secret Store Tenant mismatch"));
 		}
 		let n = row.next_version;
 		row.next_version = n
 			.checked_add(1)
-			.ok_or_else(|| invalid("Provider Credential Store version counter exhausted"))?;
+			.ok_or_else(|| invalid("Secret Store version counter exhausted"))?;
 		Resource::objects()
 			.save_with_executor(tx.as_mut(), &row)
 			.await
@@ -471,7 +468,7 @@ impl Store for PostgresStore {
 				key_material.expose_secret().as_bytes(),
 				&version_aad(tenant, resource, n),
 			)
-			.map_err(|_| invalid("Provider Credential Store encryption failed"))?;
+			.map_err(|_| invalid("Secret Store encryption failed"))?;
 		let row = Version::build()
 			.resource(resource.to_owned())
 			.version(n)

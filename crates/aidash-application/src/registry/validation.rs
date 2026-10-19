@@ -63,9 +63,7 @@ impl DefinitionValidation {
 	) -> Result<()> {
 		aidash_domain::provider_credentials::validate_grants(endpoint, provider, catalog, plan)?;
 		if catalog.is_some() && !self.provider_credentials_enabled {
-			return Err(Error::Invalid(
-				"Provider Credential Store is not configured".into(),
-			));
+			return Err(Error::Invalid("Secret Store is not configured".into()));
 		}
 		if plan.is_some() && !self.plan_connections_enabled {
 			return Err(Error::Invalid(
@@ -102,9 +100,7 @@ impl DefinitionValidation {
 					serde_json::from_value(e.config.clone())?;
 				config.validate()?;
 				if local && !self.provider_credentials_enabled {
-					return Err(Error::Invalid(
-						"Provider Credential Store is not configured".into(),
-					));
+					return Err(Error::Invalid("Secret Store is not configured".into()));
 				}
 			}
 			"memory" | "source" if e.config.get("schema_version").is_some() => {

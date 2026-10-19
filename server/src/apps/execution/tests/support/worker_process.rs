@@ -52,7 +52,7 @@ pub fn worker_command(
 		// A worker process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins =
 			runtime.store.keyless.permitted_origins();
-		// A runtime with a Provider Credential Store gives its worker a self-hosted
+		// A runtime with a Secret Store gives its worker a self-hosted
 		// Store, so the worker admits definitions that use Tenant credentials.
 		let provider_store = runtime.store.provider_credentials.is_some();
 		if provider_store {

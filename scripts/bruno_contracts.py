@@ -908,7 +908,7 @@ def render():
                 ("Missing Store fails closed for the subject", SUBJECT),
             ]:
                 add(endpoint, label, 404, path=uri, headers=headers, body=body,
-                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Provider Credential Store is not configured"});',
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Secret Store is not configured"});',
                     immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,

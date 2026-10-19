@@ -293,7 +293,7 @@ pub trait KeyMaterialSource: Send + Sync {
 pub enum KeyMaterialError {
 	#[error("Provider Credential unavailable")]
 	Unavailable,
-	#[error("Provider Credential Store unavailable")]
+	#[error("Secret Store unavailable")]
 	StoreUnavailable,
 }
 

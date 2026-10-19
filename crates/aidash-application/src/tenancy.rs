@@ -96,7 +96,7 @@ pub enum DeploymentScopeReason {
 	/// The `memory-recovery` command.
 	MemoryRecovery,
 	/// Recovering the credential store across Tenants.
-	CredentialStoreRecovery,
+	SecretStoreRecovery,
 	/// Listing Provider Credentials whose stored Key Material needs reconciling.
 	CredentialReconcile,
 	/// A Deployment Administrator's lists across Tenants.
@@ -152,7 +152,7 @@ impl DeploymentScopeReason {
 			Self::BuiltInSeeding => "built-in-seeding",
 			Self::SharedRegistry => "shared-registry",
 			Self::MemoryRecovery => "memory-recovery",
-			Self::CredentialStoreRecovery => "credential-store-recovery",
+			Self::SecretStoreRecovery => "secret-store-recovery",
 			Self::CredentialReconcile => "credential-reconcile",
 			Self::DeploymentAdministratorList => "deployment-administrator-list",
 			Self::DeploymentAdministration => "deployment-administration",
@@ -183,7 +183,7 @@ impl DeploymentScopeReason {
 			| Self::BuiltInSeeding
 			| Self::SharedRegistry
 			| Self::MemoryRecovery
-			| Self::CredentialStoreRecovery
+			| Self::SecretStoreRecovery
 			| Self::DeploymentAdministration
 			| Self::LegacyRun
 			| Self::IdentityTenants
@@ -235,7 +235,7 @@ mod tests {
 			DeploymentScopeReason::BuiltInSeeding,
 			DeploymentScopeReason::SharedRegistry,
 			DeploymentScopeReason::MemoryRecovery,
-			DeploymentScopeReason::CredentialStoreRecovery,
+			DeploymentScopeReason::SecretStoreRecovery,
 			DeploymentScopeReason::CredentialReconcile,
 			DeploymentScopeReason::DeploymentAdministratorList,
 			DeploymentScopeReason::DeploymentAdministration,

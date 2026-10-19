@@ -15,7 +15,7 @@ Provider Credential ID or an environment key reference. `credential_env` was
 removed from model and embedding configurations in #158: `provider_access`
 has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
-Every model-provider key therefore comes from a Provider Credential Store, on
+Every model-provider key therefore comes from a Secret Store, on
 Cloud and self-hosted nodes alike. Peer, sandbox, runner and vector store
 references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
 transports can no longer name one (#296).
@@ -59,7 +59,7 @@ extend to another port or scheme on the same host.
   and semantic retrieval does not treat it as an outage. Neither retries it.
 - Under Federation, the list of the Deployment that makes the call applies.
 
-Choose a Provider Credential Store in server settings. Without
+Choose a Secret Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
 unavailable.
 
@@ -210,8 +210,8 @@ After total or partial key loss, stop server and worker and run the following
 with the same settings and key sources as the node, including any retained keys:
 
 ```sh
-manage provider-credential-store-recovery
-manage provider-credential-store-recovery --execute
+manage secret-store-recovery
+manage secret-store-recovery --execute
 ```
 
 The default is a dry run. Both invocations print only JSON counts:

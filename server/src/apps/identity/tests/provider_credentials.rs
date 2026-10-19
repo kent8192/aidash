@@ -61,7 +61,7 @@ impl Store for FakeStore {
 	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
 		if self.fail_create {
 			return Err(aidash_application::Error::External(
-				"Provider Credential Store unavailable".into(),
+				"Secret Store unavailable".into(),
 			));
 		}
 		self.secrets
@@ -1486,9 +1486,9 @@ async fn postgres_store(
 	f: &EndpointFixture,
 	current: &str,
 	retired: Vec<SecretString>,
-) -> Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore> {
+) -> Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore> {
 	Arc::new(
-		aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
+		aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
 			f.runtime.store.control_pool.clone(),
 			current.into(),
 			retired,
@@ -1605,7 +1605,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	store.destroy("alpha", &old).await.unwrap();
 	store.delete("alpha", &resource).await.unwrap();
 	assert!(store.versions("alpha", &resource).await.unwrap().is_empty());
-	use aidash_server::apps::identity::models::credential_store::{Resource, Version};
+	use aidash_server::apps::identity::models::secret_store::{Resource, Version};
 	use reinhardt::db::orm::Model;
 	let mut tx = f.database.begin_fixture().await;
 	assert!(
@@ -1684,7 +1684,7 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 	#[case] same_resource: bool,
 ) {
 	use aidash_application::provider_access::KeyMaterialReader;
-	use aidash_server::apps::identity::models::credential_store::Version;
+	use aidash_server::apps::identity::models::secret_store::Version;
 	use reinhardt::db::orm::Model;
 	let f = endpoint.await;
 	let store = postgres_store(&f, &"22".repeat(32), vec![]).await;
@@ -1736,7 +1736,7 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 			.await
 			.unwrap_err()
 			.to_string(),
-		"Provider Credential Store cannot read the pinned version"
+		"Secret Store cannot read the pinned version"
 	);
 	if destination_tenant == "alpha" {
 		assert_eq!(
@@ -1757,7 +1757,7 @@ async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_
 ) {
 	use aidash_application::provider_access::KeyMaterialReader;
 	use aidash_server::apps::identity::{
-		models::credential_store::RegisteredKey, repositories::credential_store::PostgresStore,
+		models::secret_store::RegisteredKey, repositories::secret_store::PostgresStore,
 	};
 	use reinhardt::db::orm::Model;
 	let f = endpoint.await;
@@ -2170,7 +2170,7 @@ async fn recovery_command(
 	execute: bool,
 ) -> std::process::Output {
 	let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"));
-	command.arg("provider-credential-store-recovery");
+	command.arg("secret-store-recovery");
 	if execute {
 		command.arg("--execute");
 	}
@@ -2223,7 +2223,7 @@ async fn recovery_snapshot(f: &EndpointFixture) -> Value {
 
 fn real_service(
 	f: &EndpointFixture,
-	store: Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore>,
+	store: Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore>,
 ) -> Service {
 	Service {
 		repository: Arc::new(NativeRepository {
@@ -2261,7 +2261,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 
 async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool) {
 	use aidash_domain::provider_credentials::State;
-	use aidash_server::apps::identity::models::credential_store::{RegisteredKey, Version};
+	use aidash_server::apps::identity::models::secret_store::{RegisteredKey, Version};
 	use reinhardt::db::orm::Model;
 	let lost = "91".repeat(32);
 	let current = "92".repeat(32);
@@ -2377,20 +2377,15 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 			.unwrap();
 		tx.commit().await.unwrap();
 	} else {
-		let error =
-			aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
-				f.runtime.store.control_pool.clone(),
-				current.clone().into(),
-				vec![],
-			)
-			.await
-			.err()
-			.unwrap();
-		assert!(
-			error
-				.to_string()
-				.contains("manage provider-credential-store-recovery")
-		);
+		let error = aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+			f.runtime.store.control_pool.clone(),
+			current.clone().into(),
+			vec![],
+		)
+		.await
+		.err()
+		.unwrap();
+		assert!(error.to_string().contains("manage secret-store-recovery"));
 	}
 	let dir = tempfile::tempdir().unwrap();
 	recovery_settings(&f, dir.path(), &current);
@@ -2522,7 +2517,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	let mut tenants = std::collections::BTreeSet::new();
 	for event in events {
 		let data: Value = serde_json::from_str(&event.get::<String>("data").unwrap()).unwrap();
-		assert_eq!(data["actor"], "provider-credential-store-recovery");
+		assert_eq!(data["actor"], "secret-store-recovery");
 		assert_eq!(data["state"], "revoked");
 		tenants.insert(data["tenant"].as_str().unwrap().to_owned());
 	}
@@ -2602,7 +2597,7 @@ async fn recovery_refuses_tampered_configured_key_checks_without_mutation(
 }
 
 async fn recovery_tampered_case(case: &ManageCase, f: EndpointFixture, retired: bool) {
-	use aidash_server::apps::identity::models::credential_store::RegisteredKey;
+	use aidash_server::apps::identity::models::secret_store::RegisteredKey;
 	use reinhardt::db::orm::Model;
 	let lost = "93".repeat(32);
 	let current = "94".repeat(32);
@@ -3122,7 +3117,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		let error = failure.error;
 		if fail_store {
 			assert!(
-				matches!(error, aidash_server::Error::External(ref message) if message == "Provider Credential Store unavailable")
+				matches!(error, aidash_server::Error::External(ref message) if message == "Secret Store unavailable")
 			);
 		} else {
 			assert!(
