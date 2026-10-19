@@ -27,7 +27,7 @@ fn pending_tables_name_a_step_of_the_rollout() {
 	for table in TABLES {
 		if let Classification::Pending(issue) = table.classification {
 			assert!(
-				[265, 241].contains(&issue),
+				issue == 241,
 				"{}: #{issue} enforces no policies",
 				table.name
 			);
