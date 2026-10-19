@@ -24,6 +24,10 @@ APP_CHART = ROOT / "deploy/helm/aidash"
 ENV_CHART = ROOT / "infra/gcp/helm/environment"
 
 STORAGE_CLASS = "aidash-retain"
+# Production keeps every retained disk on regional pd-balanced, replicated to
+# the cluster's standby zone, and fails its StatefulSets over there (ADR 0067).
+PRODUCTION = "production"
+REGIONAL_DISK = {"replication-type": "regional-pd", "availability-class": "regional-hard-failover"}
 JOURNAL_CLAIM = "app-execution-journal"
 PREVIEW_VOLUME = "aidash-preview-tls"
 PREVIEW_CLAIM = "preview-tls"
@@ -36,6 +40,7 @@ CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
 # but could never chmod the root itself as ledger initialization requires.
 RECOVERY_ROOT = "/var/lib/aidash/memory-recovery"
 RECOVERY_HOME = "home"
+# Deployments outside production; see `target`.
 SERVER = "deployment/app-aidash-server"
 WORKER = "deployment/app-aidash-worker"
 RUNNER = "deployment/app-execution-runner"
@@ -98,6 +103,8 @@ class Cluster:
         self.project = cluster["project_id"]
         self.location = cluster["location"]
         self.pod_cidr = cluster["pod_cidr"]
+        # Where regional retained disks replicate, the pools' zone first.
+        self.zones = list(cluster.get("zones") or [])
         self.kubeconfig = self.directory / "kubeconfig"
         os.close(os.open(self.kubeconfig, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         run(
@@ -196,6 +203,32 @@ def connect(config, cluster, directory):
     return Cluster(config, cluster, directory)
 
 
+def target(identity, workload):
+    """A disk-holding workload: a StatefulSet in production, which Stateful HA
+    fails over to the standby zone, and a Deployment elsewhere (ADR 0067)."""
+    if identity == PRODUCTION:
+        return workload.replace("deployment/", "statefulset/", 1)
+    return workload
+
+
+def storage_class(cluster, identity):
+    """The retention class, regional in production's own cluster (ADR 0067)."""
+    manifest = {
+        "apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": STORAGE_CLASS},
+        "provisioner": "pd.csi.storage.gke.io", "parameters": {"type": "pd-balanced"},
+        "reclaimPolicy": "Retain", "volumeBindingMode": "WaitForFirstConsumer", "allowVolumeExpansion": True,
+    }
+    if identity != PRODUCTION:
+        return manifest
+    if len(cluster.zones) != 2:
+        raise Refused("Production needs exactly two zones for its regional disks")
+    manifest["parameters"].update(REGIONAL_DISK)
+    manifest["allowedTopologies"] = [{"matchLabelExpressions": [
+        {"key": "topology.gke.io/zone", "values": cluster.zones},
+    ]}]
+    return manifest
+
+
 def namespaces(identity):
     if not ENVIRONMENT.fullmatch(identity):
         raise Refused("Invalid environment identity")
@@ -222,8 +255,8 @@ def live_pods(cluster, namespace, selector=None):
     ]
 
 
-def exists(cluster, namespace, target):
-    kind, name = target.split("/", 1)
+def exists(cluster, namespace, workload):
+    kind, name = workload.split("/", 1)
     return cluster.get(kind, name, namespace) is not None
 
 
@@ -335,7 +368,7 @@ def install_preview_tls(cluster, identity, certificate_pem, private_key_pem):
     cluster.apply(manifest)
     # Caddy reads the mounted certificate at startup. A changed certificate must
     # roll the edge even when its routing values and release digest are unchanged.
-    kind, name = EDGE.split("/", 1)
+    kind, name = target(identity, EDGE).split("/", 1)
     edge = cluster.get(kind, name, namespace)
     if edge:
         digest = hashlib.sha256(certificate_pem.encode()).hexdigest()
@@ -347,7 +380,7 @@ def install_preview_tls(cluster, identity, certificate_pem, private_key_pem):
             }}}}}, namespace)
         # A prior reconcile may have timed out after patching. Wait again for
         # that rollout without creating another restart or deploying app code.
-        cluster.rollout(namespace, EDGE)
+        cluster.rollout(namespace, target(identity, EDGE))
         return changed
     return False
 
@@ -395,11 +428,16 @@ def bind_preview_tls(cluster, identity, volume_handle):
 
 def prepare(cluster, identity, preview_handle=None):
     namespace = namespace_of(identity)
-    cluster.apply({
-        "apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": STORAGE_CLASS},
-        "provisioner": "pd.csi.storage.gke.io", "parameters": {"type": "pd-balanced"},
-        "reclaimPolicy": "Retain", "volumeBindingMode": "WaitForFirstConsumer", "allowVolumeExpansion": True,
-    })
+    desired = storage_class(cluster, identity)
+    existing = cluster.get("storageclass", STORAGE_CLASS)
+    # Class parameters are immutable, and a zonal disk would keep the zone a
+    # single point of failure: production is created on regional disks.
+    if existing is not None and (
+        existing.get("parameters") != desired["parameters"]
+        or existing.get("allowedTopologies") != desired.get("allowedTopologies")
+    ):
+        raise Refused(f"StorageClass {STORAGE_CLASS} differs from this tier's retained disks")
+    cluster.apply(desired)
     cluster.apply({
         "apiVersion": "v1", "kind": "Namespace",
         "metadata": {"name": namespace, "labels": {LABEL: identity}},
@@ -520,6 +558,14 @@ def materialize(cluster, identity, project, output, runtime):
     return {"gcip": gcip, "provider": provider}
 
 
+def failover(identity):
+    """Chart values that make production's disk-holding workloads StatefulSets
+    which Stateful HA moves to the standby zone (ADR 0067)."""
+    if identity != PRODUCTION:
+        return {}
+    return {"workloadKind": "StatefulSet", "highAvailability": {"enabled": True}}
+
+
 def scheduling(identity):
     return {LABEL: identity}, [
         {"key": LABEL, "operator": "Equal", "value": identity, "effect": "NoSchedule"},
@@ -588,6 +634,7 @@ def app_values(cluster, identity, output, release, sha, settings):
                        "ingress": {"podSelectors": [{"aidash.run/activity": "env"}]},
                        "journal": {"storageClassName": journal_class}},
         },
+        **failover(identity),
     }
 
 
@@ -618,6 +665,7 @@ def env_values(identity, output, release, settings):
             "existingSecret": "env-activity",
             "runnerEndpoint": "http://app-execution-runner:8949",
         },
+        **failover(identity),
     }
 
 
@@ -640,9 +688,9 @@ def admission(cluster, identity, action):
         desired_admission(cluster, namespace, "closed")
         # Without an edge Pod there is no live gate; a new one starts closed.
         if live_pods(cluster, namespace, EDGE_PODS):
-            cluster.exec(namespace, EDGE, "admission", *command)
+            cluster.exec(namespace, target(identity, EDGE), "admission", *command)
     else:
-        cluster.exec(namespace, EDGE, "admission", *command)
+        cluster.exec(namespace, target(identity, EDGE), "admission", *command)
         desired_admission(cluster, namespace, "open")
 
 
@@ -702,22 +750,22 @@ def observe(cluster, identity, since):
     return snapshot if snapshot["observed_at"] >= since else None
 
 
-def drain(cluster, identity, targets=(SERVER, WORKER), selector=WRITER_PODS):
+def drain(cluster, identity, workloads=(SERVER, WORKER), selector=WRITER_PODS):
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
         return
-    for target in targets:
-        if exists(cluster, namespace, target):
-            cluster.scale(namespace, target, 0)
+    for workload in workloads:
+        if exists(cluster, namespace, target(identity, workload)):
+            cluster.scale(namespace, target(identity, workload), 0)
     wait_until(lambda: not live_pods(cluster, namespace, selector), "Application Pods did not drain", 300)
 
 
 def start_writers(cluster, identity):
     namespace = namespace_of(identity)
-    for target in (SERVER, WORKER):
-        cluster.scale(namespace, target, WRITER_REPLICAS)
-    for target in (SERVER, WORKER):
-        cluster.rollout(namespace, target)
+    for workload in (SERVER, WORKER):
+        cluster.scale(namespace, target(identity, workload), WRITER_REPLICAS)
+    for workload in (SERVER, WORKER):
+        cluster.rollout(namespace, target(identity, workload))
 
 
 def unseal(cluster, identity):
@@ -792,23 +840,23 @@ def deploy(cluster, identity, output, release, sha, settings):
     # backend Service name at start and crash-loops until that Service exists.
     cluster.upgrade(namespace, "app", APP_CHART, app_values(cluster, identity, output, release, sha, settings))
     cluster.upgrade(namespace, "env", ENV_CHART, env_values(identity, output, release, settings))
-    for target in (*STATEFULSETS, EDGE):
-        cluster.scale(namespace, target, 1)
+    for workload in (*STATEFULSETS, target(identity, EDGE)):
+        cluster.scale(namespace, workload, 1)
     cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": False}}, namespace)
-    for target in STATEFULSETS:
-        cluster.rollout(namespace, target)
-    cluster.scale(namespace, RUNNER, 1)
-    cluster.rollout(namespace, RUNNER)
+    for workload in STATEFULSETS:
+        cluster.rollout(namespace, workload)
+    cluster.scale(namespace, target(identity, RUNNER), 1)
+    cluster.rollout(namespace, target(identity, RUNNER))
     database_roles(cluster, identity)
     migrate(cluster, identity, sha)
     observer_role(cluster, identity)
-    cluster.rollout(namespace, EDGE)
+    cluster.rollout(namespace, target(identity, EDGE))
 
 
 def migrate(cluster, identity, sha):
     """One-shot Job with the server's exact image, env, mounts and identity."""
     namespace = namespace_of(identity)
-    template = deepcopy(cluster.get("deployment", SERVER.split("/", 1)[1], namespace)["spec"]["template"])
+    template = deepcopy(cluster.get(*target(identity, SERVER).split("/", 1), namespace)["spec"]["template"])
     spec = template["spec"]
     container = next(item for item in spec["containers"] if item["name"] == "aidash")
     for key in ("startupProbe", "readinessProbe", "livenessProbe", "ports"):
@@ -988,8 +1036,8 @@ def reload(cluster, identity, output, settings):
     for role in ("server", "worker"):
         values.setdefault(role, {})["replicas"] = 0
     cluster.upgrade(namespace, "app", APP_CHART, values)
-    cluster.scale(namespace, RUNNER, 1)
-    cluster.rollout(namespace, RUNNER)
+    cluster.scale(namespace, target(identity, RUNNER), 1)
+    cluster.rollout(namespace, target(identity, RUNNER))
     # materialize() points the runtime Secrets at the server and observer logins.
     database_roles(cluster, identity)
     observer_role(cluster, identity)
@@ -999,10 +1047,9 @@ def reload(cluster, identity, output, settings):
 def health(cluster, identity):
     """Return the authorized source of a completely rolled-out server."""
     namespace = namespace_of(identity)
-    cluster.rollout(namespace, SERVER)
-    cluster.rollout(namespace, WORKER)
-    cluster.rollout(namespace, RUNNER)
-    value = cluster.get("deployment", SERVER.split("/", 1)[1], namespace) or {}
+    for workload in (SERVER, WORKER, RUNNER):
+        cluster.rollout(namespace, target(identity, workload))
+    value = cluster.get(*target(identity, SERVER).split("/", 1), namespace) or {}
     status = value.get("status", {})
     if not status.get("readyReplicas"):
         raise RuntimeError("Application server is not ready")
@@ -1031,9 +1078,9 @@ def stop(cluster, identity):
     if cluster.get("namespace", namespace) is None:
         return
     desired_admission(cluster, namespace, "closed")
-    for target in (SERVER, WORKER, RUNNER, EDGE, *STATEFULSETS):
-        if exists(cluster, namespace, target):
-            cluster.scale(namespace, target, 0)
+    for workload in (*(target(identity, w) for w in (SERVER, WORKER, RUNNER, EDGE)), *STATEFULSETS):
+        if exists(cluster, namespace, workload):
+            cluster.scale(namespace, workload, 0)
     if cluster.get("cronjob", ACTIVITY, namespace) is not None:
         cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": True}}, namespace)
     cluster.delete("service", LOAD_BALANCER, namespace)

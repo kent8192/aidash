@@ -34,3 +34,37 @@ spec:
             # (169.254.169.252:988). Dataplane V2 enforces before the DNAT; Calico enforces after it.
             except: [169.254.169.254/32, 169.254.169.252/32]
 {{- end -}}
+{{/*
+The edge's kind: a StatefulSet in production, which GKE's Stateful HA fails over
+to the standby zone with its regional TLS claim (ADR 0067). Keep in step with
+aidash.workloadKind in deploy/helm/aidash/templates/_workload.tpl.
+*/}}
+{{- define "environment.workloadKind" -}}
+{{- $kind := .Values.workloadKind | default "Deployment" -}}
+{{- if not (has $kind (list "Deployment" "StatefulSet")) -}}
+{{- fail "workloadKind must be Deployment or StatefulSet" -}}
+{{- end -}}
+{{- if and .Values.highAvailability.enabled (ne $kind "StatefulSet") -}}
+{{- fail "highAvailability requires workloadKind StatefulSet" -}}
+{{- end -}}
+{{- $kind -}}
+{{- end -}}
+{{/*
+A HighAvailabilityApplication for one StatefulSet of the same name.
+*/}}
+{{- define "environment.highAvailability" -}}
+apiVersion: ha.gke.io/v1
+kind: HighAvailabilityApplication
+metadata:
+  name: {{ .name }}
+spec:
+  resourceSelection:
+    resourceKind: StatefulSet
+  policy:
+    storageSettings:
+      requireRegionalStorage: true
+    failoverSettings:
+      forceDeleteStrategy: AfterNodeUnreachable
+      afterNodeUnreachable:
+        afterNodeUnreachableSeconds: {{ .seconds | int }}
+{{- end -}}
