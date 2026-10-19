@@ -31,13 +31,18 @@ TOKEN = "acceptance-access-token"
 PEER_TOKEN = "acceptance-peer-token-for-local-tests"
 
 
+# A Tenant subject's /api/state waits about 15 s before it is served on a
+# CI runner while the research cluster runs, then takes about 5 s (#404).
+API_TIMEOUT = 60
+
+
 def api_request(base, path, body=None, token=TOKEN, headers=None):
     request = urllib.request.Request(
         base + path,
         data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})},
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=API_TIMEOUT) as response:
         return json.load(response)
 
 
