@@ -1,4 +1,6 @@
 use super::*;
+use crate::jws::{Header, encode};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::ExposeSecret;
 fn claims() -> Claims {
 	Claims {
