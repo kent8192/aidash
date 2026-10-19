@@ -24,14 +24,14 @@ class ReconciliationTests(unittest.TestCase):
             {"answered": True},
         ]
         with patch.object(golden_path, "api_request", side_effect=responses) as request:
-            reconciled = golden_path.reconcile_uncertain_http(base, run_id, lambda: {key: result})
+            reconciled = golden_path.reconcile_uncertain_http(base, run_id, lambda: {key: result}, "subject-token")
 
         self.assertEqual(reconciled, key)
         self.assertEqual(request.call_args_list, [
-            call(base, "/api/runs/remote-run"),
-            call(base, "/api/runs/remote-run"),
-            call(base, "/api/runs/remote-run"),
-            call(base, "/api/human-requests/confirmation/answer", {"result": result}),
+            call(base, "/api/runs/remote-run", token="subject-token"),
+            call(base, "/api/runs/remote-run", token="subject-token"),
+            call(base, "/api/runs/remote-run", token="subject-token"),
+            call(base, "/api/human-requests/confirmation/answer", {"result": result}, token="subject-token"),
         ])
 
     def test_another_invocations_receipt_cannot_answer_the_confirmation(self):
@@ -41,9 +41,9 @@ class ReconciliationTests(unittest.TestCase):
         with patch.object(golden_path, "api_request", return_value=response) as request:
             with self.assertRaisesRegex(AssertionError, "exact external invocation receipt"):
                 golden_path.reconcile_uncertain_http(
-                    "http://receiver.invalid", "remote-run", lambda: {"other-run:4:0": {"ok": True}}
+                    "http://receiver.invalid", "remote-run", lambda: {"other-run:4:0": {"ok": True}}, "subject-token"
                 )
-        request.assert_called_once_with("http://receiver.invalid", "/api/runs/remote-run")
+        request.assert_called_once_with("http://receiver.invalid", "/api/runs/remote-run", token="subject-token")
 
 
 class KeylessFixtureProxyTests(unittest.TestCase):
