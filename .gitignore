@@ -109,8 +109,10 @@ docs/Gemfile.lock
 !.env.example
 !.env.sample
 .ignore/
-/private/
-/secrets/
+/private/*
+!/private/.gitkeep
+/secrets/*
+!/secrets/.gitkeep
 /notes/
 .claude/
 .serena/
