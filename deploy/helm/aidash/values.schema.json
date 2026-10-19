@@ -252,7 +252,7 @@
       "type": "object",
       "properties": {
         "permittedPrivateOrigins": {
-          "description": "Exact origins (scheme://host[:port]) a Tenant's Keyless endpoint may reach on a private address, for AIDASH_KEYLESS_PRIVATE_ORIGINS.",
+          "description": "Exact origins (scheme://host[:port]) a Tenant's Keyless model or embedding endpoint, tool endpoint or Agent Plugin remote MCP server may reach on a private address, for AIDASH_KEYLESS_PRIVATE_ORIGINS.",
           "type": "array",
           "items": {
             "type": "string",

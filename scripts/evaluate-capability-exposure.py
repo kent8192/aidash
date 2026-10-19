@@ -42,7 +42,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
     fixture = fixture or ROOT / "tests/fixtures/capability_exposure_evaluation.toml"
     raw = fixture.read_bytes()
     spec = tomllib.loads(raw.decode())
-    endpoint = endpoint or "http://127.0.0.1:9/aidash-capability-exposure-evaluation"
+    endpoint = endpoint or "https://tools.invalid/aidash-capability-exposure-evaluation"
     report = {} if report is None else report
     report.update({"fixture": spec["version"], "fixture_sha256": hashlib.sha256(raw).hexdigest(),
                    "profile": profile, "grade": "measurement-only",

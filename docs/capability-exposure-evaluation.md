@@ -34,10 +34,12 @@ and model-visible results.
 
 Every fixture tool is an `integration.http@1` declaration, and such calls need
 human approval. By default the runner denies each approval request, so the
-declared endpoint (`--tool-endpoint`, by default an unroutable local address) is
-never contacted. The model's call is still recorded with a denial result. Use
-`--approve-external-calls` only with an endpoint that the server may reach and
-that accepts the fixture arguments. Other human requests receive a fixed
+declared endpoint (`--tool-endpoint`, by default the unresolvable host name
+`tools.invalid`) is never contacted. The model's call is still recorded with a
+denial result. Use `--approve-external-calls` only with an endpoint that the
+server may reach, which must be public or listed in
+`[keyless_endpoints] permitted_private_origins`, and that accepts the fixture
+arguments. Other human requests receive a fixed
 "no human is available" answer. A Run still running after `--run-timeout`
 seconds (default 600) is cancelled and reported with `timed_out: true`.
 
