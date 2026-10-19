@@ -218,7 +218,9 @@ fn core_runtime(
 		let f = &mut owner.federation;
 		f.config.node_id = node.clone();
 		f.store.node_id = node.clone();
-		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
+		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node)
+			.unwrap()
+			.with_keyless_origins(f.store.keyless.clone());
 		let mut profile = if runner {
 			(*Runtime::from_env().unwrap().0).clone()
 		} else {
