@@ -37,6 +37,10 @@ impl Extension for Adapters {
 		Ok(Arc::new(gcip::Gcip::from_settings(settings)?))
 	}
 
+	fn owns_issuer(&self, issuer: &str) -> bool {
+		aidash_gcp::gcip::is_issuer(issuer)
+	}
+
 	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
 		Some(gcip::routes())
 	}

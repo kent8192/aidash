@@ -20,6 +20,11 @@ pub fn issuer(project: &str, tenant: &str) -> String {
 	format!("https://securetoken.google.com/{project}/tenants/{tenant}")
 }
 
+/// Whether `issuer` is a GCIP issuer of any project, configured or not.
+pub fn is_issuer(issuer: &str) -> bool {
+	issuer.starts_with("https://securetoken.google.com/")
+}
+
 /// The GCIP Tenant of an issuer that [`issuer`] made for `project`.
 pub fn tenant<'a>(project: &str, issuer: &'a str) -> Option<&'a str> {
 	issuer

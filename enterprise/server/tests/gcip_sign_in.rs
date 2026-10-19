@@ -3032,3 +3032,74 @@ async fn signing_in_again_from_a_session_reenters_through_its_own_gcip_tenant(
 	);
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn removing_the_gcip_sign_in_refuses_its_identities_durable_credentials(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let policy = serde_json::from_value(json!({
+		"tenant": "acme",
+		"subjects": {"alice": {"kind": "user"}},
+		"policies": [{"id": "alice", "effect": "allow",
+			"subjects": {"ids": ["alice"]}, "actions": ["*"],
+			"resources": {"kinds": ["*"], "ids": []}}]
+	}))
+	.unwrap();
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "deployment_administrator")
+	.await
+	.unwrap();
+	let app = common::application(f.clone()).await;
+	let (member, _) = mapped_browser(&app, &f, ("acme", "pool-a", "member"), "alice").await;
+	// A member's own credential, which outlives every browser session.
+	let issued = browser()
+		.post(app.url("/api/authorization/acme/credentials"))
+		.header("cookie", &member.cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", &member.csrf)
+		.header("x-aidash-context", &member.context)
+		.json(&json!({"subject": "alice", "expires_in_seconds": 3600}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(issued.status(), 200);
+	let token = issued.json::<Value>().await.unwrap()["token"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	// A Tenant boundary, which locks the credential's Mapping and its holder.
+	let session = |app: &common::TestApplication| {
+		browser()
+			.get(app.url("/api/registry/versions"))
+			.bearer_auth(&token)
+			.send()
+	};
+	assert_eq!(session(&app).await.unwrap().status(), 200);
+	// Act: the Deployment drops [dashboard.gcip] and keeps its database.
+	let mut unconfigured = f.clone();
+	unconfigured.config.sign_in = None;
+	unconfigured.store = unconfigured
+		.store
+		.clone()
+		.with_dashboard_policy(unconfigured.config.dashboard_policy());
+	let restarted = common::application(unconfigured.clone()).await;
+	// Assert
+	assert_eq!(session(&restarted).await.unwrap().status(), 403);
+	let disabled: Option<chrono::DateTime<Utc>> = scalar(
+		&f,
+		"SELECT disabled_at FROM dashboard_identities WHERE subject = 'member'",
+	)
+	.await;
+	assert!(disabled.is_some());
+	common::cleanup(f, &url, &schema).await;
+}

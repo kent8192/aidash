@@ -54,6 +54,12 @@ pub trait Extension: Sync + std::fmt::Debug {
 		&self,
 		gcip: &serde_json::Value,
 	) -> crate::Result<Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>;
+	/// Whether External Identities of `issuer` sign in only through the sign-in
+	/// this build adds. With that sign-in unconfigured, their Mappings are
+	/// refused rather than left unrestricted.
+	fn owns_issuer(&self, _issuer: &str) -> bool {
+		false
+	}
 	/// Endpoints the build adds to Community's.
 	fn routes(&self) -> Option<reinhardt::UnifiedRouter> {
 		None
