@@ -1,6 +1,7 @@
 //! Browser sign-in through an identity provider that a build adds: its
-//! sign-in page returns an ID token that the provider verifies. Community owns the login transaction, the shared authority and
-//! the session; the provider owns its issuers and its token.
+//! sign-in page returns an ID token that the provider verifies. Community owns
+//! the login transaction, the shared authority and the session; the provider
+//! owns its issuers and its token.
 use super::oidc::{self, CSRF_COOKIE, LOGIN_COOKIE, SESSION_COOKIE};
 use crate::apps::identity::models::{
 	DashboardLoginTransaction, DashboardSession, byte_key::ByteKey,
