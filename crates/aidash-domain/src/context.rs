@@ -106,6 +106,10 @@ pub struct Context {
 		skip_serializing_if = "crate::completion::CompletionProgress::is_empty"
 	)]
 	pub completion: crate::completion::CompletionProgress,
+	/// The plugin tools the Run pinned at its first step (ADR 0073). `None` means not pinned yet;
+	/// a Run without Agent Plugins never sets it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub plugin_tools: Option<crate::agent_plugin::PluginTools>,
 }
 
 /// Stored contexts written before the Context Journal carry bare history
@@ -147,6 +151,8 @@ struct StoredContext {
 	exposure: ExposureState,
 	#[serde(default)]
 	completion: crate::completion::CompletionProgress,
+	#[serde(default)]
+	plugin_tools: Option<crate::agent_plugin::PluginTools>,
 }
 
 #[derive(Deserialize)]
@@ -238,6 +244,7 @@ impl<'de> Deserialize<'de> for Context {
 			message_inference_coverage: stored.message_inference_coverage,
 			exposure: stored.exposure,
 			completion: stored.completion,
+			plugin_tools: stored.plugin_tools,
 		})
 	}
 }
@@ -354,6 +361,9 @@ pub struct InspectionContext<'a> {
 	/// answering a Completion Review sees each Check's exit code and output.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub completion: Option<&'a crate::completion::CompletionProgress>,
+	/// The plugin tools the Run pinned, with everything left out.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub plugin_tools: Option<&'a crate::agent_plugin::PluginTools>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -372,6 +382,7 @@ impl Context {
 			exposure: &self.exposure,
 			estimate: self.estimate.view(),
 			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
+			plugin_tools: self.plugin_tools.as_ref(),
 		}
 	}
 }
@@ -930,3 +941,5 @@ pub mod summary;
 
 #[cfg(test)]
 mod journal_tests;
+#[cfg(test)]
+mod plugin_tools_tests;
