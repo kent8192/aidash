@@ -74,6 +74,18 @@ pub fn with_login(url: &str, (user, password): (&str, &str)) -> String {
 	url.to_string()
 }
 
+/// Whether a fixture database runs PGroonga with crash-safe recovery, as every
+/// deployment does.
+#[allow(dead_code)] // Shared integration binaries use different fixture constructors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PgroongaRecovery {
+	CrashSafe,
+	/// Each crash-safe database keeps one PGroonga flush worker until it is
+	/// dropped. A container that keeps every database runs out of worker slots,
+	/// and the next `CREATE EXTENSION pgroonga` then waits forever (#381).
+	Off,
+}
+
 /// Create a database owned by the owner role, with the administrator's
 /// extensions and the server role's default privileges, before any migration.
 ///
@@ -81,7 +93,11 @@ pub fn with_login(url: &str, (user, password): (&str, &str)) -> String {
 /// fixture DDL issued as the container's superuser. Default privileges are
 /// per database and apply only to objects created afterwards.
 #[allow(dead_code)]
-pub async fn prepare_database(admin_url: &str, database: &str) -> FixtureDatabase {
+pub async fn prepare_database(
+	admin_url: &str,
+	database: &str,
+	recovery: PgroongaRecovery,
+) -> FixtureDatabase {
 	assert!(
 		database
 			.bytes()
@@ -105,6 +121,14 @@ pub async fn prepare_database(admin_url: &str, database: &str) -> FixtureDatabas
 		.execute(&admin)
 		.await
 		.unwrap();
+	if recovery == PgroongaRecovery::Off {
+		sqlx::raw_sql(&format!(
+			"ALTER DATABASE {database} SET pgroonga.enable_crash_safe = off"
+		))
+		.execute(&admin)
+		.await
+		.unwrap();
+	}
 	admin.close().await;
 	let mut url = reqwest::Url::parse(admin_url).unwrap();
 	url.set_path(database);
