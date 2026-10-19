@@ -86,7 +86,7 @@ pub(super) async fn deliver(store: &Store, announcements: Vec<Announcement>) -> 
 				for tenant in announcement.tenants.intersection(&recipients) {
 					crate::apps::execution::models::event_records::append_for_tenant(
 						tx,
-						&store.node_id,
+						store.deployment.as_str(),
 						tenant,
 						announcement.kind,
 						announcement.payload.clone(),
