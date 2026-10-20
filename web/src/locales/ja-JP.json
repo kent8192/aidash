@@ -555,10 +555,15 @@
   "toolHttpGet": "Webページを取得",
   "toolAllowedHosts": "許可するホスト名",
   "toolRemoteName": "MCPツール名",
-  "toolReplay": "再試行の動作",
-  "toolReplay_unsafe": "自動再試行しない",
-  "toolReplay_read_only": "読み取り専用",
-  "toolReplay_idempotent": "同じリクエストキーで安全に再試行可能",
+  "toolReplay": "呼び出しで行うこと",
+  "toolReplay_unsafe": "変更を伴う可能性あり（承認を求める）",
+  "toolReplay_read_only": "読み取りのみ（承認不要）",
+  "toolReplay_idempotent": "同じリクエストキーで安全に再試行可能（承認を求める）",
+  "toolReplayHelp": "読み取りのみと宣言したバージョンの呼び出しには承認が要りません。バージョンの承認は宣言も対象とし、宣言を変えるには新しいバージョンが必要です。",
+  "toolHintCheck": "サーバーのヒントを確認",
+  "toolHintReadOnly": "サーバーはこのツールが読み取りのみだとヒントしているため、「読み取りのみ」を選択しました。サーバーの申告でツールが読み取り専用になることはありません。選択は変更できます。",
+  "toolHintWrites": "サーバーはこのツールが変更を伴う可能性があるとヒントしています。",
+  "toolHintNone": "サーバーはこのツールについてヒントを示していません。",
   "toolIdempotency": "リクエストキーを渡す引数名",
   "toolAgent": "実行するAgent",
   "toolTaskArguments": "Agentの呼び出しにはタスクの入力を使用します。タイトルと説明は必須、要件・依存タスク・親タスクは任意です。",
@@ -671,5 +676,6 @@
   "catalogTenantDefinitions": "定義は各テナントに属します。登録と承認は、それぞれのテナントのレジストリで行います。",
   "catalogRegistryUnavailable": "現在の権限ではレジストリを表示できません。",
   "deciderClefRoute": "Jevを使えないときはCloudflareのClef（Cloudflare、DeepInfra、PrimeIntellect上）に尋ねる",
-  "catalogDeciderRecipients": "Runの状態の送信先"
+  "catalogDeciderRecipients": "Runの状態の送信先",
+  "catalogReadOnlyNotice": "このバージョンは、呼び出しが読み取りのみであると宣言しているため、ツール呼び出しの承認は不要になります。バージョンを承認すると、この宣言も承認されます。"
 }

@@ -19055,6 +19055,33 @@
   },
   {
     "method": "POST",
+    "path": "/api/registry/mcp-tool-hint",
+    "name": "registry-mcp-tool-hint",
+    "source": "server/src/apps/registry/views/management.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/McpToolHint"
+      },
+      "definitions": {
+        "McpToolHint": {
+          "type": "object",
+          "description": "What an MCP server says about one of its own tools. It only prefills the\nregistration form; a definition version declares a Read-only operation\nitself (ADR 0078).",
+          "required": ["read_only_hint"],
+          "properties": {
+            "read_only_hint": {
+              "type": ["boolean", "null"],
+              "description": "The tool's `annotations.readOnlyHint`, or null when the server gives none."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
     "path": "/api/skills/import",
     "name": "skill-import",
     "source": "server/src/apps/registry/views/management.rs",

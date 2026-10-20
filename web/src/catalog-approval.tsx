@@ -9,6 +9,7 @@ import type { RegistryVersion } from "./generated/models";
 import type { State } from "./types";
 import { ApiError } from "./transport";
 import { keylessOrigin } from "./keyless";
+import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
 import { Badge, useEntryLabel, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
@@ -122,6 +123,7 @@ export function CatalogApprovalSection({
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
   const recipients = deciderRecipients(entry);
+  const readOnly = toolReplay(entry) === "read_only";
   const installed = !!entry.installation;
   const decides =
     tenant !== null &&
@@ -210,6 +212,11 @@ export function CatalogApprovalSection({
           <KeylessOrigin origin={origin} />
         ))}
       {recipients && <DeciderRecipients recipients={recipients} />}
+      {readOnly && decides && state !== "approved" && (
+        <Notice tone="warning" role="status" className="read-only-notice">
+          {t("catalogReadOnlyNotice")}
+        </Notice>
+      )}
       {version.subject && (
         <Facts
           items={[

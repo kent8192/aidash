@@ -4,10 +4,10 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Alert, Check, Group, Hint, pairClass } from "./components/patterns";
 import { useQuery } from "@tanstack/react-query";
-import { discover } from "./generated/aidash";
+import { discover, registryMcpToolHint } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MemoryRegistryFields } from "./memory-registry";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
@@ -265,6 +265,12 @@ function Arguments({
   );
 }
 
+/** What an MCP server said about one tool, or why it could not be asked. */
+type ServerHint = { endpoint: string; toolName: string } & (
+  | { readOnly: boolean | null }
+  | { error: string }
+);
+
 export function EntityConfiguration({
   kind,
   data,
@@ -283,6 +289,9 @@ export function EntityConfiguration({
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
+  const [hint, setHint] = useState<ServerHint | null>(null);
+  const [checkingHint, setCheckingHint] = useState(false);
+  const hintRequest = useRef(0);
   const [instructions, setInstructions] = useState("");
   const [skillFiles, setSkillFiles] = useState<SkillPayload["files"]>([]);
   const [skillSource, setSkillSource] = useState<string>();
@@ -315,6 +324,36 @@ export function EntityConfiguration({
     ? discovery.error.message
     : peerError?.error;
   const remoteLabel = useEntityLabel(remoteAgents.map((agent) => agent.entity));
+
+  // The server's word only prefills the choice; it applies to the endpoint and
+  // tool it was read for, and to nothing the person edits afterwards.
+  const shownHint =
+    hint && hint.endpoint === endpoint && hint.toolName === toolName
+      ? hint
+      : null;
+  const checkHint = async () => {
+    const current = ++hintRequest.current;
+    const asked = { endpoint, toolName };
+    setCheckingHint(true);
+    setHint(null);
+    try {
+      const { read_only_hint } = await registryMcpToolHint({
+        endpoint,
+        tool_name: toolName,
+      });
+      if (current !== hintRequest.current) return;
+      setHint({ ...asked, readOnly: read_only_hint ?? null });
+      if (read_only_hint === true) setReplay("read_only");
+    } catch (cause) {
+      if (current !== hintRequest.current) return;
+      setHint({
+        ...asked,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    } finally {
+      if (current === hintRequest.current) setCheckingHint(false);
+    }
+  };
 
   let settings: Record<string, unknown> = {};
   try {
@@ -600,13 +639,42 @@ export function EntityConfiguration({
                   value={replay}
                   onChange={(event) => setReplay(event.target.value)}
                 >
-                  {["unsafe"].map((value) => (
+                  {["read_only", "unsafe"].map((value) => (
                     <option key={value} value={value}>
                       {t(`toolReplay_${value}`)}
                     </option>
                   ))}
                 </NativeSelect>
               </Field>
+              <Hint>{t("toolReplayHelp")}</Hint>
+              {transport === "mcp" && (
+                <div className="grid min-w-0 gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="justify-self-start"
+                    disabled={!endpoint || !toolName || checkingHint}
+                    onClick={() => void checkHint()}
+                  >
+                    {t("toolHintCheck")}
+                  </Button>
+                  {shownHint &&
+                    ("error" in shownHint ? (
+                      <Alert>{shownHint.error}</Alert>
+                    ) : (
+                      <Hint>
+                        {t(
+                          shownHint.readOnly === true
+                            ? "toolHintReadOnly"
+                            : shownHint.readOnly === false
+                              ? "toolHintWrites"
+                              : "toolHintNone",
+                        )}
+                      </Hint>
+                    ))}
+                </div>
+              )}
               {transport === "mcp" && replay === "idempotent" && (
                 <Field label={t("toolIdempotency")}>
                   <Input

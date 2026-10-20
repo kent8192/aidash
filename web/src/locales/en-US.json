@@ -555,10 +555,15 @@
   "toolHttpGet": "Read a web page",
   "toolAllowedHosts": "Allowed hostnames",
   "toolRemoteName": "MCP tool name",
-  "toolReplay": "Retry behavior",
-  "toolReplay_unsafe": "Do not automatically retry",
-  "toolReplay_read_only": "Read-only operation",
-  "toolReplay_idempotent": "Safe to repeat with the same request key",
+  "toolReplay": "What a call does",
+  "toolReplay_unsafe": "May change things (asks for approval)",
+  "toolReplay_read_only": "Reads only (needs no approval)",
+  "toolReplay_idempotent": "Safe to repeat with the same request key (asks for approval)",
+  "toolReplayHelp": "A version that declares it only reads needs no approval for its calls. Approving the version covers the declaration, and changing it needs a new version.",
+  "toolHintCheck": "Check the server's hint",
+  "toolHintReadOnly": "The server hints that this tool only reads, so \"Reads only\" is selected. A server's word never makes a tool read-only; you can change the choice.",
+  "toolHintWrites": "The server hints that this tool may change things.",
+  "toolHintNone": "The server gives no hint for this tool.",
   "toolIdempotency": "Request key argument",
   "toolAgent": "Executor agent",
   "toolTaskArguments": "Agent calls use task inputs: title and description are required; requirements, dependencies and a parent task are optional.",
@@ -671,5 +676,6 @@
   "catalogTenantDefinitions": "Definitions belong to Tenants. Each Tenant registers and approves its own in its Registry.",
   "catalogRegistryUnavailable": "The Registry is unavailable with your current access.",
   "deciderClefRoute": "Ask Cloudflare's Clef (on Cloudflare, DeepInfra or PrimeIntellect) when Jev is unavailable",
-  "catalogDeciderRecipients": "Sends Run state to"
+  "catalogDeciderRecipients": "Sends Run state to",
+  "catalogReadOnlyNotice": "This version declares that its calls only read, so they need no Tool call approval. Approving the version approves that declaration."
 }

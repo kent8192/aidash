@@ -247,6 +247,11 @@ impl ToolContract {
 	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
 		let (effect, approval, disclosure) = match config {
+			// A Read-only operation still sends its arguments to the registered
+			// service, so disclosure stays External; Concurrency stays Sequential.
+			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } if config.declares_read_only() => {
+				(ToolEffect::ReadOnly, false, DisclosureBoundary::External)
+			}
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
 				(ToolEffect::Unsafe, true, DisclosureBoundary::External)
 			}
@@ -736,28 +741,46 @@ mod tests {
 	const PINNED_WORKSPACE_READ_DIGEST: &str =
 		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
 	#[test]
-	fn registry_effects_and_approval_are_independent() {
+	fn only_a_declared_read_only_operation_needs_no_tool_call_approval() {
 		let reference = EntityRef {
 			id: "tool".into(),
 			version: "1".into(),
 		};
+		// Anything but the exact declaration, including an unknown label, stays
+		// an unproven operation that asks for approval.
 		for (replay, effect, approval, safe) in [
-			("read_only", ToolEffect::Unsafe, true, false),
+			("read_only", ToolEffect::ReadOnly, false, true),
 			("idempotent", ToolEffect::Unsafe, true, false),
 			("unsafe", ToolEffect::Unsafe, true, false),
+			("READ_ONLY", ToolEffect::Unsafe, true, false),
+			("", ToolEffect::Unsafe, true, false),
 		] {
-			let contract = ToolContract::registry(
-				reference.clone(),
-				&ToolConfig::Http {
+			for config in [
+				ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
 				},
-			);
-			assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
-			assert_eq!(contract.behavior.effect, effect);
-			assert_eq!(contract.behavior.tool_call_approval, approval);
-			assert_eq!(contract.replay_safe(), safe);
-			assert!(contract.remote_exposure);
+				ToolConfig::Mcp {
+					endpoint: "https://example.invalid".into(),
+					tool_name: "lookup".into(),
+					replay: replay.into(),
+					idempotency_argument: None,
+				},
+			] {
+				let contract = ToolContract::registry(reference.clone(), &config);
+				assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
+				assert_eq!(contract.behavior.effect, effect, "{replay:?}");
+				assert_eq!(contract.behavior.tool_call_approval, approval, "{replay:?}");
+				assert_eq!(contract.replay_safe(), safe, "{replay:?}");
+				assert_eq!(contract.disclosure, DisclosureBoundary::External);
+				assert!(contract.remote_exposure);
+				// A Read-only operation implies no Concurrency safety.
+				assert!(contract.behavior.concurrency.is_sequential(), "{replay:?}");
+				assert!(
+					!super::super::concurrency::batchable(&contract.behavior),
+					"{replay:?}"
+				);
+			}
 		}
 	}
 }

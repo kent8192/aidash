@@ -1927,17 +1927,28 @@ fn effect_worker_runtime(
 
 /// A scripted model that calls the Tenant's HTTP tool until it has called it
 /// `script` times, then answers; both its upstream and the tool count their hits.
+/// When the Agent also offers `plugin_1`, its first call is that read-only tool.
 struct ToolCallApprovals {
 	application: common::ApplicationFixture,
 	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	effects: Arc<AtomicUsize>,
+	/// Hits of the read-only tool's `/read` route.
+	reads: Arc<AtomicUsize>,
 	inferences: Arc<AtomicUsize>,
 	script: Arc<AtomicUsize>,
 }
 
+/// How often each route of the scripted upstream was hit.
+#[derive(Clone, Default)]
+struct Hits {
+	effects: Arc<AtomicUsize>,
+	inferences: Arc<AtomicUsize>,
+	reads: Arc<AtomicUsize>,
+}
+
 #[rstest::fixture]
-fn tool_call_counter() -> Arc<AtomicUsize> {
-	Arc::new(AtomicUsize::new(0))
+fn tool_call_hits() -> Hits {
+	Hits::default()
 }
 
 #[rstest::fixture]
@@ -1947,13 +1958,29 @@ fn tool_call_script() -> Arc<AtomicUsize> {
 
 #[rstest::fixture]
 fn tool_call_router(
-	#[from(tool_call_counter)] effects: Arc<AtomicUsize>,
-	#[from(tool_call_counter)] inferences: Arc<AtomicUsize>,
+	#[from(tool_call_hits)] hits: Hits,
 	#[from(tool_call_script)] script: Arc<AtomicUsize>,
 ) -> upstream_fixtures::RouterFuture {
 	async move {
-		let counter = effects.clone();
+		let Hits {
+			effects: counter,
+			inferences,
+			reads,
+		} = hits;
 		let server = reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/read",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let counter = reads.clone();
+					async move {
+						counter.fetch_add(1, Ordering::SeqCst);
+						reinhardt::Response::ok()
+							.with_json(&json!({"found":true}))
+							.unwrap()
+					}
+				}),
+			)
 			.route(
 				"/effect",
 				http::Method::POST,
@@ -1984,8 +2011,15 @@ fn tool_call_router(
 							.iter()
 							.filter(|event| event["kind"] == "tool")
 							.count();
+						let reads_first = called == 0
+							&& body["tools"].as_array().is_some_and(|tools| {
+								tools
+									.iter()
+									.any(|tool| tool["function"]["name"] == "plugin_1")
+							});
+						let name = if reads_first { "plugin_1" } else { "plugin_0" };
 						let message = if called < script.load(Ordering::SeqCst) {
-							json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("call-{inference}"),"type":"function","function":{"name":"plugin_0","arguments":json!({"call":called + 1}).to_string()}}]})
+							json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("call-{inference}"),"type":"function","function":{"name":name,"arguments":json!({"call":called + 1}).to_string()}}]})
 						} else {
 							json!({"role":"assistant","content":"Completed authorized work"})
 						};
@@ -2004,12 +2038,11 @@ fn tool_call_router(
 
 #[rstest::fixture]
 fn tool_call_approvals(
-	#[from(tool_call_counter)] effects: Arc<AtomicUsize>,
-	#[from(tool_call_counter)] inferences: Arc<AtomicUsize>,
+	#[from(tool_call_hits)] hits: Hits,
 	#[from(tool_call_script)] script: Arc<AtomicUsize>,
 	#[from(common::runtime)] _runtime: common::RuntimeFuture,
 	#[from(tool_call_router)]
-	#[with(effects.clone(), inferences.clone(), script.clone())]
+	#[with(hits.clone(), script.clone())]
 	_router: upstream_fixtures::RouterFuture,
 	#[from(async_upstream)]
 	#[with(_router.clone())]
@@ -2022,8 +2055,9 @@ fn tool_call_approvals(
 		ToolCallApprovals {
 			application: _application.await,
 			server: _server.await,
-			effects,
-			inferences,
+			effects: hits.effects,
+			reads: hits.reads,
+			inferences: hits.inferences,
 			script,
 		}
 	}
@@ -2274,6 +2308,68 @@ async fn a_tenant_policy_allowing_unapproved_tool_calls_skips_the_approval(
 		approval_cards(app, &token, "?state=pending")
 			.await
 			.is_empty()
+	);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_read_only_operation_runs_without_approval_while_another_tool_of_the_run_waits(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	t.script.store(2, Ordering::SeqCst);
+	let (f, url, schema) = t.application.runtime.parts();
+	let app = &t.application.application;
+	let (_, token, task_id) = bootstrap_with_read_only_tool(&f, app, &t.server.url).await;
+	let (status, claimed) = request(
+		app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, call) = awaited_tool_call(&waiting).unwrap();
+	assert_eq!(
+		call.name, "plugin_0",
+		"only the tool that is not read-only waits"
+	);
+	assert_eq!(
+		t.reads.load(Ordering::SeqCst),
+		1,
+		"the read-only call ran before the approval was raised"
+	);
+	assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+	let pending = approval_cards(app, &token, "?state=pending&role=approver").await;
+	assert_eq!(pending.len(), 1, "{pending:?}");
+	assert_eq!(
+		(pending[0]["id"].clone(), &pending[0]["tool"]),
+		(json!(approval), &json!("http"))
+	);
+	let (status, decided) = decide_tool_call(app, &token, approval, "allow_once").await;
+	assert_eq!(status, 200, "{decided}");
+	step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert_eq!(t.reads.load(Ordering::SeqCst), 1);
+	assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+	let all = approval_cards(app, &token, "").await;
+	assert_eq!(
+		all.iter()
+			.filter(|card| card["kind"] == "tool_call")
+			.map(|card| card["tool"].clone())
+			.collect::<Vec<_>>(),
+		[json!("http")],
+		"the read-only tool never raised an approval: {all:?}"
 	);
 	drop(t.server);
 	cleanup(f, &url, &schema).await;

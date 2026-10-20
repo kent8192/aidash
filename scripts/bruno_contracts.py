@@ -60,6 +60,10 @@ TENANT_ROUTES = {
                            "name": {"en": "Bruno"}, "description": {"en": "Contract probe"}},
                  "documents": []},
     },
+    "POST /api/registry/mcp-tool-hint": {
+        "body": {"endpoint": "https://bruno.example/mcp", "tool_name": "probe"},
+        "refusal": "Subject without registry.create cannot read an MCP tool's hint",
+    },
     "POST /api/skills/import": {
         "body": {"url": "https://github.com/bruno/skills"},
         "refusal": "Subject without registry.create cannot import a Skill",
