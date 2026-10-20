@@ -805,3 +805,51 @@ fn what_a_run_pinned_survives_storage() {
 		json!("alias_collision")
 	);
 }
+
+#[test]
+fn an_event_reports_each_skipped_server_once_with_a_reason_code_and_no_detail() {
+	let plugin = acme();
+	let pinned = PluginTools {
+		servers: Vec::new(),
+		findings: vec![
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Skipped,
+				Reason::ServerUnavailable,
+				"https://docs.example.com/mcp answered 500",
+			),
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Skipped,
+				Reason::ToolInvalid,
+				"a: name",
+			),
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Skipped,
+				Reason::ToolInvalid,
+				"b: name",
+			),
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Ignored,
+				Reason::ToolNotListed,
+				"c",
+			),
+		],
+	};
+
+	let skipped = serde_json::to_value(pinned.skipped()).unwrap();
+
+	assert_eq!(
+		skipped,
+		json!([
+			{"plugin": "acme-tools", "server": "docs", "reason": "server_unavailable"},
+			{"plugin": "acme-tools", "server": "docs", "reason": "tool_invalid"},
+		])
+	);
+}

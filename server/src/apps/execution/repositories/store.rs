@@ -68,6 +68,9 @@ pub struct Store {
 	pub tool_clients: aidash_integrations::tools::ToolClients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
+	/// The MCP sessions of Runs with their Agent Plugins' remote servers, shared by every
+	/// clone of this Store and connecting under the same Keyless rule as `tool_clients`.
+	pub plugin_sessions: std::sync::Arc<aidash_integrations::plugin_sessions::McpPluginSessions>,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
 	/// The Deployment's ceilings on Tenants' Test Limits from
@@ -121,6 +124,19 @@ pub(crate) fn tool_parallelism(value: Option<&str>, pool_connections: usize) -> 
 		));
 	}
 	Ok(ceiling)
+}
+
+/// Sessions that connect under the Deployment's Keyless rule, as `keyless` and `clients` say.
+pub(crate) fn plugin_sessions(
+	keyless: &aidash_application::provider_access::KeylessAccess,
+	clients: &aidash_integrations::tools::ToolClients,
+) -> std::sync::Arc<aidash_integrations::plugin_sessions::McpPluginSessions> {
+	std::sync::Arc::new(
+		aidash_integrations::plugin_sessions::McpPluginSessions::new(
+			keyless.clone(),
+			clients.clone(),
+		),
+	)
 }
 
 pub use crate::apps::execution::serializers::run_inputs::RunInput;
@@ -403,13 +419,15 @@ impl Store {
 					as std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>
 			});
 		let provider_clients = crate::semantic::backend::clients()?;
+		let tool_clients = aidash_integrations::tools::ToolClients::new()?;
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
 			node_id,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
-			tool_clients: aidash_integrations::tools::ToolClients::new()?,
+			plugin_sessions: plugin_sessions(&Default::default(), &tool_clients),
+			tool_clients,
 			keyless: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
@@ -466,6 +484,7 @@ impl Store {
 		origins: aidash_domain::keyless::PermittedOrigins,
 	) -> Self {
 		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins);
+		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
 		self
 	}
 	pub(crate) fn with_memory_recovery(
@@ -517,6 +536,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
+			plugin_sessions: self.plugin_sessions.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -567,6 +587,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
+			plugin_sessions: self.plugin_sessions.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -2978,6 +2999,7 @@ impl Store {
 			"run.sources_observed"
 				| "run.semantic_degraded"
 				| "run.estimate_pinned"
+				| "run.plugin_tools_pinned"
 				| "context.summary_revoked"
 		);
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
@@ -3017,6 +3039,26 @@ impl Store {
 		{
 			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
 			data["cause"] = serde_json::to_value(degraded.cause)?;
+		}
+		if kind == "run.plugin_tools_pinned" {
+			// Only names and reason codes: no URL, header, finding detail or server answer (ADR 0073).
+			data["skipped"] = serde_json::to_value(
+				run.context
+					.plugin_tools
+					.as_ref()
+					.map(aidash_domain::agent_plugin::PluginTools::skipped)
+					.unwrap_or_default(),
+			)?;
+		}
+		if saved.phase().is_terminal() {
+			// A Run that fails or expires never reaches the harness's own close. The save does
+			// not wait for servers, and a session closed too early reopens on the next call.
+			let sessions = self.plugin_sessions.clone();
+			let run = saved.id;
+			tokio::spawn(async move {
+				aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run)
+					.await;
+			});
 		}
 		self.event(
 			tx,

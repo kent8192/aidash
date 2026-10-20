@@ -100,6 +100,17 @@ impl ExecutionStore for RunStore {
 		*run = Store::save_run(&self.store, &self.scope, run, token, "run.estimate_pinned").await?;
 		Ok(())
 	}
+	async fn pin_plugin_tools(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"run.plugin_tools_pinned",
+		)
+		.await?;
+		Ok(())
+	}
 	async fn calibration_samples(
 		&self,
 		upstream_model: &str,
@@ -936,6 +947,25 @@ impl ExecutionEnvironment for Environment<'_> {
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
+	async fn pin_plugin_tools(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		let snapshot = run.context.binding_snapshot.as_deref().ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+		})?;
+		aidash_application::plugin_tools::pin_for_run(
+			self.federation.store.plugin_sessions.as_ref(),
+			run.id,
+			snapshot,
+		)
+		.await
+		.map(Some)
+	}
+	async fn close_plugin_sessions(&self, run: Uuid) {
+		use aidash_application::ports::tools::PluginSessions;
+		self.federation.store.plugin_sessions.close(run).await;
+	}
 	async fn compaction_decider(
 		&self,
 		run: &Run,
@@ -1389,7 +1419,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,
-			sessions: None,
+			sessions: Some(self.federation.store.plugin_sessions.clone()),
 		}
 		.tools(run)
 		.await
