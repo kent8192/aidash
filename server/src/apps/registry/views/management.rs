@@ -63,6 +63,21 @@ pub async fn registry_create(
 	)
 }
 
+#[post(
+	"/api/agent-plugins/import",
+	name = "agent-plugin-import",
+	auth = "protected"
+)]
+pub async fn agent_plugin_import(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Json(request): Json<
+		crate::apps::registry::serializers::agent_plugin_import::PluginImportRequest,
+	>,
+) -> ViewResult<Response> {
+	crate::http::json(service.agent_plugin_import(actor, request).await)
+}
+
 #[post("/api/skills/import", name = "skill-import", auth = "protected")]
 pub async fn skill_import(
 	#[inject] service: Depends<RegistryManagement>,

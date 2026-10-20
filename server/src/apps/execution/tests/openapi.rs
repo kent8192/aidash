@@ -44,6 +44,7 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 		("/api/workbench/versions/{id}/{version}", "get"),
 		("/api/workbench/versions/{id}/{version}/report", "get"),
 		("/api/skills/import", "post"),
+		("/api/agent-plugins/import", "post"),
 		("/api/tasks", "get"),
 		("/api/tasks/{id}/remote-grants", "post"),
 		("/api/tasks/{id}/remote-grants/{grant}/revoke", "post"),

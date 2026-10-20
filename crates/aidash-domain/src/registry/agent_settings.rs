@@ -20,6 +20,8 @@ impl AgentConfig {
 			projection_version: self.projection_version,
 			prompt_cache: self.prompt_cache,
 			completion: self.completion.clone(),
+			agent_plugins: self.agent_plugins.clone(),
+			agent_plugin_settings: self.agent_plugin_settings.clone(),
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
@@ -48,6 +50,8 @@ impl AgentConfig {
 			projection_version: input.projection_version,
 			prompt_cache: input.prompt_cache,
 			completion: input.completion,
+			agent_plugins: input.agent_plugins,
+			agent_plugin_settings: input.agent_plugin_settings,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],
 			skill_roots: vec![],
@@ -152,6 +156,12 @@ impl AgentConfig {
 				}
 				_ => {}
 			}
+		}
+		for plugin in &snapshot.agent_plugins {
+			result.core_capabilities.skills |= !plugin.skills.is_empty();
+			result
+				.skill_attachments
+				.extend(plugin.skills.iter().cloned());
 		}
 		// The workspace slot degrades only when every source feeding it opted in.
 		// Semantic memory without a native provider also reads the Workspace

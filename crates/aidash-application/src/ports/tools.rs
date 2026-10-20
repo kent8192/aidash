@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
+	agent_plugin::{ListedTool, PluginName, RemoteServer, ServerName},
 	exposure::DirectSkill,
 	provider::ToolSpec,
 	registry::{EntityRef, Search, SkillFile},
@@ -15,6 +16,69 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ToolTransport: Send + Sync {
 	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value>;
+}
+
+/// Names one remote server of one Agent Plugin copy a Run takes in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginServer {
+	pub plugin: PluginName,
+	/// The [`aidash_domain::agent_plugin::AgentPluginRef::digest`] of the copy.
+	pub digest: String,
+	pub server: ServerName,
+}
+
+/// Why a server could not be listed, beyond a refused destination
+/// ([`Error::Forbidden`](crate::Error::Forbidden)) and the deadline the caller enforces.
+/// [`Display`](std::fmt::Display) is the cause code a Run's findings carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ListFailure {
+	#[error("unreachable")]
+	Unreachable,
+	#[error("initialize_failed")]
+	InitializeFailed,
+	#[error("invalid_response")]
+	InvalidResponse,
+}
+
+impl From<ListFailure> for crate::Error {
+	fn from(failure: ListFailure) -> Self {
+		Self::Port(Box::new(failure))
+	}
+}
+
+/// A Run's MCP sessions with the remote servers of its Agent Plugins. Implementations keep one
+/// session per Run and server, reopen it when it is missing, and never fail a Run for its absence.
+///
+/// A refused destination is [`Error::Forbidden`](crate::Error::Forbidden). `list` reports every
+/// other failure as a [`ListFailure`] (through `From`) so the Run's findings can name its cause.
+/// Only [`Error::Invalid`](crate::Error::Invalid) becomes a recoverable tool result in the harness.
+#[async_trait]
+pub trait PluginSessions: Send + Sync {
+	/// `tools/list` over the Run's session, opening it when needed.
+	async fn list(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+	) -> Result<Vec<ListedTool>>;
+	/// `tools/call` over the Run's session. When the session had to be (re)opened, the
+	/// implementation lists tools first and refuses with `Error::Invalid("CAPABILITY_CHANGED: …")`
+	/// if the tool's schema digest differs from `schema_digest`. The result mirrors
+	/// [`ToolTransport`]: `{"is_error":true,"content":…}` for an MCP error result, otherwise the
+	/// serialized result.
+	#[allow(clippy::too_many_arguments)]
+	async fn call(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		tool: &str,
+		schema_digest: &str,
+		arguments: Value,
+		key: &str,
+	) -> Result<Value>;
+	/// Ends every session of the Run.
+	async fn close(&self, run: Uuid);
 }
 
 /// Implementations bind one execution identity before any read or mutation.

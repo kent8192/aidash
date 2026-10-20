@@ -96,6 +96,37 @@ pub async fn authorize(
 			operation = grant.strip_prefix("builtin:").map(str::to_owned);
 			&contract.authorization
 		}
+		// The Agent version's Catalog Approval covers the servers of its plugin copies (ADR 0072),
+		// so a plugin tool has no Registry entry. It needs the copy to be referenced and the Run
+		// to have pinned exactly this server and tool.
+		ToolIdentity::AgentPlugin(identity) => {
+			let pinned = configuration
+				.agent_plugins
+				.iter()
+				.any(|plugin| plugin.name == identity.plugin && plugin.digest == identity.digest)
+				.then(|| {
+					repository
+						.plugin_tools()?
+						.servers
+						.iter()
+						.filter(|server| {
+							server.plugin == identity.plugin
+								&& server.digest == identity.digest
+								&& server.server == identity.server
+						})
+						.flat_map(|server| &server.tools)
+						.find(|tool| tool.name == identity.tool)
+				})
+				.flatten()
+				.ok_or(Error::Forbidden)?;
+			current = ToolContract::agent_plugin(identity.clone(), pinned.read_only);
+			if current != *contract {
+				return Err(Error::Conflict(
+					"admitted plugin tool contract changed".into(),
+				));
+			}
+			&current.authorization
+		}
 	};
 	let configured_skill = authorization
 		.requirements
@@ -215,12 +246,14 @@ fn asset_skill(
 	let snapshot = repository
 		.binding_snapshot()
 		.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
-	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[])?
+	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[], None)?
 		.into_iter()
 		.find(|capability| capability.alias == alias)
 		.and_then(|capability| match capability.identity {
 			CapabilityIdentity::Registry(reference) => Some(reference),
-			CapabilityIdentity::DirectSkill { .. } => None,
+			CapabilityIdentity::DirectSkill { .. } | CapabilityIdentity::AgentPluginTool { .. } => {
+				None
+			}
 		}))
 }
 

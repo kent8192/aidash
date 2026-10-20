@@ -156,6 +156,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.estimate_pinned").await
 	}
+	/// Persist the plugin tools the Run just pinned without ending the worker's
+	/// lease, so a recovered Run never lists its servers again (ADR 0073).
+	async fn pin_plugin_tools(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.plugin_tools_pinned").await
+	}
 	/// The newest calibration samples of one key, newest first, at most
 	/// [`aidash_domain::provider::estimate::CALIBRATION_WINDOW`]. Samples are
 	/// Deployment-wide and carry no Run, Tenant or attempt identifiers. A
@@ -489,6 +494,17 @@ pub trait ExecutionEnvironment: Send + Sync {
 		Ok(None)
 	}
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
+	/// Lists the remote servers of the Run's Agent Plugins and decides which tools the Run pins.
+	/// Network I/O: the caller holds no transaction or visibility lock. `None` means this
+	/// environment has no plugin support, so the Run pins nothing.
+	async fn pin_plugin_tools(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		Ok(None)
+	}
+	/// Ends the Run's MCP sessions with its plugin servers. Their absence never fails a Run.
+	async fn close_plugin_sessions(&self, _run: Uuid) {}
 	/// Runs Completion Gate Checks. `None` makes every applicable Check
 	/// unavailable, so a Run with a Completion Policy pauses for a person.
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {

@@ -444,7 +444,7 @@ impl DefinitionValidation {
 			.iter()
 			.map(crate::capabilities::skills::attachment_skill)
 			.collect::<Result<Vec<_>>>()?;
-		let catalog = exposure::catalog(snapshot, &specifications, &attachments)?;
+		let catalog = exposure::catalog(snapshot, &specifications, &attachments, None)?;
 		for capability in &catalog {
 			let (name, budget) = match capability.kind {
 				CapabilityKind::Tool => ("schema_bytes", budgets.schema_bytes),
