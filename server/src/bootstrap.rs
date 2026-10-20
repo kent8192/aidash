@@ -1168,12 +1168,14 @@ pub(crate) fn graph_projection_scope<'a, 'scope>(
 	f: &'a Federation,
 	authority: &'a mut crate::apps::identity::services::peer::graph::GraphAuthority<'scope>,
 	source_node: &'a str,
+	node: &'a str,
 	revision: &'a str,
 ) -> crate::apps::identity::repositories::graph::Projection<'a, 'scope> {
 	crate::apps::identity::repositories::graph::Projection {
 		f,
 		authority,
 		source_node,
+		node,
 		revision,
 	}
 }

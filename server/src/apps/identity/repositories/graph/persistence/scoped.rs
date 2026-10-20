@@ -218,12 +218,11 @@ pub(super) async fn revision(
 }
 
 pub(super) async fn activity(
-	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	options: &GraphOptions,
 	nodes: &[GraphNode],
 	window_end: DateTime<Utc>,
-	source_node: &str,
+	(source_node, node): (&str, &str),
 	workspace: Uuid,
 ) -> Result<Vec<GraphActivity>> {
 	let mut visible_nodes: Vec<&GraphNode> =
@@ -306,7 +305,7 @@ pub(super) async fn activity(
 	Ok(events
 		.into_iter()
 		.filter_map(|event| {
-			let reference = event_reference(&event, f.config.deployment.as_str())?;
+			let reference = event_reference(&event, node)?;
 			visible_nodes
 				.iter()
 				.any(|node| node.id == reference)

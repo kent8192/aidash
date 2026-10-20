@@ -440,20 +440,28 @@ pub(crate) async fn graph_generation(
 	})))
 }
 
+/// `nodes` is the Node a request comes from and the one the page names as its own.
 pub(crate) async fn project_activity(
-	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	options: &GraphOptions,
 	nodes: &[GraphNode],
 	window_end: i64,
-	source_node: &str,
+	(source_node, node): (&str, &str),
 ) -> Result<Vec<GraphActivity>> {
 	if nodes.is_empty() {
 		return Ok(vec![]);
 	}
 	if let Some(workspace) = options.scope_workspace {
 		let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
-		return scoped::activity(f, authority, options, nodes, end, source_node, workspace).await;
+		return scoped::activity(
+			authority,
+			options,
+			nodes,
+			end,
+			(source_node, node),
+			workspace,
+		)
+		.await;
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
 	let workspaces: Vec<Uuid> = nodes
@@ -549,7 +557,7 @@ pub(crate) async fn project_activity(
 		let exhausted = events.len() < 512;
 		before = events.last().map(|event| event.sequence);
 		for event in events {
-			let Some(reference) = event_reference(&event, f.config.deployment.as_str()) else {
+			let Some(reference) = event_reference(&event, node) else {
 				continue;
 			};
 			if !visible.contains(reference.as_str()) || !authority.event_visible(&event).await? {
