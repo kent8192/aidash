@@ -157,7 +157,9 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("dialog")
     .getByRole("button", { name: "作成", exact: true })
     .click();
-  await expect(page.getByRole("dialog")).not.toBeVisible();
+  // The dialog closes once the refreshed state lists the new channel, and a
+  // Tenant subject's state took over 5 s in CI (#404).
+  await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });
   await page
     .getByRole("button", { name: "タスクと成果物", exact: true })
     .click();
