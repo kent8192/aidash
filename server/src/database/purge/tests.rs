@@ -74,7 +74,9 @@ fn an_unlinked_column_breaks_a_cycle() {
 	)
 	.unwrap();
 
-	assert_eq!(order, ["runs", "human_requests"]);
+	// With `runs.pending_request` cleared first, only `human_requests.run_id`
+	// remains, so the Human Requests go before the Runs they name.
+	assert_eq!(order, ["human_requests", "runs"]);
 }
 
 #[test]
