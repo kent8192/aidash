@@ -365,7 +365,6 @@ fn tenant_resources(
 }
 
 pub(crate) async fn graph_generation(
-	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	authority_revision: &str,
 	options: &GraphOptions,
@@ -389,14 +388,7 @@ pub(crate) async fn graph_generation(
 	.fetch_one(authority.connection())
 	.await?;
 	if let Some(workspace) = options.scope_workspace {
-		let scope = scoped::revision(
-			authority,
-			options,
-			workspace,
-			source_node,
-			f.config.deployment.as_str(),
-		)
-		.await?;
+		let scope = scoped::revision(authority, options, workspace, source_node).await?;
 		return Ok(crate::registry::digest(&json!({
 			"authority":authority_revision,"catalog":catalog,"scope":scope,
 		})));
@@ -515,10 +507,6 @@ pub(crate) async fn project_activity(
 		)
 		.and_where(
 			Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::value(tenant.clone())),
-		)
-		.and_where(
-			Expr::col((Alias::new("e"), Alias::new("node_id")))
-				.eq(Expr::value(f.config.deployment.to_string())),
 		)
 		.and_where(Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(end)))
 		.and_where(

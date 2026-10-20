@@ -173,7 +173,6 @@ pub(super) async fn revision(
 	options: &GraphOptions,
 	workspace: Uuid,
 	source_node: &str,
-	local_node: &str,
 ) -> Result<Value> {
 	if !kind_allowed("run", options) {
 		return Ok(Value::Null);
@@ -197,10 +196,6 @@ pub(super) async fn revision(
 				Expr::cust(
 					"e.workspace_id IS NULL AND COALESCE(e.data->>'run_id', e.data->>'id') = r.id::text",
 				),
-			)
-			.and_where(
-				Expr::col((Alias::new("e"), Alias::new("node_id")))
-					.eq(reinhardt::query::Expr::value(local_node)),
 			)
 			.and_where(Expr::cust("e.kind LIKE 'run.%'"))
 			.to_string(PostgresQueryBuilder),
@@ -276,9 +271,6 @@ pub(super) async fn activity(
 	query
 		.expr(Expr::cust("e.*"))
 		.from_as(Alias::new("events"), Alias::new("e"))
-		.and_where(Expr::col((Alias::new("e"), Alias::new("node_id"))).eq(
-			reinhardt::query::Expr::value(f.config.deployment.to_string()),
-		))
 		.and_where(Expr::col((Alias::new("e"), Alias::new("workspace_id"))).is_null())
 		.and_where(Expr::cust("e.kind LIKE 'run.%'"))
 		.and_where(Expr::cust("COALESCE(e.data->>'run_id', e.data->>'id')").is_in(ids))

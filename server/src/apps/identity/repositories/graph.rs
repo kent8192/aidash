@@ -27,15 +27,9 @@ impl GraphProjectionScope for Projection<'_, '_> {
 		graph::decode_cursor(self.f, token).map_err(Into::into)
 	}
 	async fn generation(&mut self, options: &GraphOptions) -> Result<String> {
-		graph::graph_generation(
-			self.f,
-			self.authority,
-			self.revision,
-			options,
-			self.source_node,
-		)
-		.await
-		.map_err(Into::into)
+		graph::graph_generation(self.authority, self.revision, options, self.source_node)
+			.await
+			.map_err(Into::into)
 	}
 	async fn candidates(
 		&mut self,
