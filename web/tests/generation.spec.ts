@@ -386,7 +386,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("ゴール", { exact: true })
       .fill("Complete work with a missing specialist");
     await dialog.getByRole("button", { name: "作成", exact: true }).click();
-    await expect(dialog).toHaveCount(0);
+    // The dialog closes once the refreshed state lists the new channel (#404).
+    await expect(dialog).toHaveCount(0, { timeout: 30000 });
     const { workspaces } = await api("/api/state", undefined, credential.token);
     const workspace = workspaces.find(
       (item: { title: string }) => item.title === id,

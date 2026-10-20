@@ -101,3 +101,66 @@ async fn cancelled_read_tasks_release_the_visit_for_a_later_authorized_attempt()
 	assert!(completion.is_cancelled());
 	assert!(visits.enter(key()).is_some());
 }
+
+fn run(id: u128) -> ReadVisitKey {
+	(
+		"aidash://node".into(),
+		Uuid::from_u128(id),
+		"authority".into(),
+	)
+}
+
+#[rstest]
+fn idleness_follows_the_live_guards() {
+	let visits = ReadVisits::default();
+	assert!(visits.is_idle());
+	let guard = visits.enter(key()).unwrap();
+	assert!(!visits.is_idle());
+	drop(guard);
+	assert!(visits.is_idle());
+}
+
+#[rstest]
+fn an_outermost_true_settles_every_true_reached_inside_it() {
+	let mut verdicts = ReadVerdicts::default();
+	// B was checked inside A, while A was still in progress.
+	verdicts.record(run(2), true, false);
+	assert_eq!(verdicts.get(&run(2)), Some(true));
+	verdicts.record(run(1), true, true);
+	assert_eq!(verdicts.get(&run(1)), Some(true));
+	assert_eq!(verdicts.get(&run(2)), Some(true));
+}
+
+#[rstest]
+fn a_true_resting_on_a_failed_ancestor_is_dropped_not_reused() {
+	let mut verdicts = ReadVerdicts::default();
+	// A reads B's output and B reads A's: B's check met A in progress and
+	// assumed it, then A failed on a denied source of its own.
+	verdicts.record(run(2), true, false);
+	verdicts.record(run(1), false, true);
+	assert_eq!(verdicts.get(&run(1)), Some(false));
+	// B is walked again by the next check instead of answering a stale true.
+	assert_eq!(verdicts.get(&run(2)), None);
+}
+
+#[rstest]
+fn a_denied_read_is_final_wherever_it_is_found() {
+	let mut verdicts = ReadVerdicts::default();
+	verdicts.record(run(2), false, false);
+	verdicts.record(run(1), false, true);
+	assert_eq!(verdicts.get(&run(2)), Some(false));
+	assert_eq!(verdicts.get(&run(1)), Some(false));
+}
+
+#[rstest]
+fn an_abandoned_or_cleared_check_settles_nothing() {
+	let mut verdicts = ReadVerdicts::default();
+	verdicts.record(run(2), true, false);
+	verdicts.abandon();
+	assert_eq!(verdicts.get(&run(2)), None);
+	verdicts.record(run(3), true, true);
+	verdicts.record(run(4), false, true);
+	verdicts.clear();
+	assert_eq!(verdicts.get(&run(3)), None);
+	assert_eq!(verdicts.get(&run(4)), None);
+}
