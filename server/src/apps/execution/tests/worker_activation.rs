@@ -1438,6 +1438,7 @@ async fn child_runtime(
 			federation: true,
 			deployment_key: None,
 			sign_in: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),

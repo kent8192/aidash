@@ -90,6 +90,8 @@ personal_tenants = false
 tenant_creation = false
 creation_per_hour = 5
 creation_total = 20
+# How many Nodes a Tenant may hold (1 to 1000). A Tier may be stricter.
+# nodes_per_tenant = 10
 # Let Tenant Administrators and Deployment Administrators issue Invitations.
 invitations = true
 # Days a deleted Tenant stays restorable before its data is purged (1 to 90).

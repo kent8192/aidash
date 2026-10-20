@@ -294,6 +294,7 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 			federation: true,
 			deployment_key: None,
 			sign_in: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		store,
 		client: runtime_controls.client,

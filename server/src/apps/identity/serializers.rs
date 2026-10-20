@@ -45,6 +45,7 @@ pub mod keyless_endpoints;
 
 pub mod tenancy_settings;
 
+pub mod nodes;
 pub mod tenants;
 
 pub mod invitations;

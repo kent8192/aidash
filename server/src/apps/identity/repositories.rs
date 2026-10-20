@@ -145,6 +145,7 @@ pub(crate) mod dashboard;
 
 pub(crate) mod personal_tenant;
 
+pub(crate) mod nodes;
 pub(crate) mod tenant_deletions;
 pub(crate) mod tenant_purge;
 pub(crate) mod tenants;
