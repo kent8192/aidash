@@ -68,17 +68,15 @@ async function setup(
           ? data
           : path === "/api/discover"
             ? scene.discovery
-            : path === "/api/mesh"
-              ? { nodes: [], errors: [] }
-              : path === "/api/workspaces/product-lab"
-                ? {
-                    workspace: data.workspaces[0],
-                    tasks: data.tasks,
-                    artifacts: data.artifacts,
-                    events: data.events,
-                    messages: [],
-                  }
-                : [];
+            : path === "/api/workspaces/product-lab"
+              ? {
+                  workspace: data.workspaces[0],
+                  tasks: data.tasks,
+                  artifacts: data.artifacts,
+                  events: data.events,
+                  messages: [],
+                }
+              : [];
     return route.fulfill({ json });
   });
   await page.goto("/graph?channel=product-lab");
@@ -99,7 +97,6 @@ async function setup(
         artifacts: [],
         conversations: [],
         events: [],
-        peers: [],
       };
     },
   };
@@ -241,7 +238,7 @@ test("connected local node opens topology and relationship controls only show ac
       exact: true,
     })
     .click();
-  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
+  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(1);
   await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
   expect(errors).toEqual([]);
 });

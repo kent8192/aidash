@@ -48,7 +48,10 @@ const registration = (
 
 /** One Tenant with two Nodes, a Workspace in each, and a Tenant Administrator
  *  who may manage Nodes and their registrations. */
-async function setup(page: Page) {
+async function setup(
+  page: Page,
+  options: { lab?: { request?: boolean } } = {},
+) {
   const nodes = [node("first", "Home", true), node("second", "Lab")];
   const registrations: Record<string, ReturnType<typeof registration>[]> = {
     first: [registration("first", `${deployment}/sibling`)],
@@ -92,7 +95,20 @@ async function setup(page: Page) {
           events: [],
           runs: [],
           conversations: [],
-          human_requests: [],
+          human_requests: options.lab?.request
+            ? [
+                {
+                  id: "ask-lab",
+                  workspace_id: "w-lab",
+                  run_id: "run-lab",
+                  kind: "QUESTION",
+                  prompt: "Which sample goes first?",
+                  response: null,
+                  answered_by: null,
+                  created_at: created,
+                },
+              ]
+            : [],
         },
       });
     if (path === "/api/tenants/alpha/administration")
@@ -384,5 +400,24 @@ test("registrations belong to the selected Node", async ({ page }) => {
     page.getByText("No Node is registered at this Node."),
   ).toBeVisible();
   await expect(page.locator("[data-registration]")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a question waiting in another Node is listed, and answering it goes to that Node", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { lab: { request: true } });
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Decisions/ }).click();
+  const queue = page.getByRole("button", { name: /Which sample goes first\?/ });
+  await expect(queue).toContainText("Lab / Lab notebook");
+  await queue.click();
+  await expect(
+    page.getByRole("dialog").getByText("Which sample goes first?"),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/channel=w-lab/);
+  await page.keyboard.press("Escape");
+  await openAccountMenu(page);
+  await expect(page.getByTestId("node-selector")).toHaveValue("second");
   expect(errors).toEqual([]);
 });

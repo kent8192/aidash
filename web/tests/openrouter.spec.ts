@@ -82,11 +82,8 @@ test.beforeEach(async ({ page }) => {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    } else if (path === "/api/mesh") {
-      await route.fulfill({ json: { nodes: [], errors: [] } });
     } else if (path === "/api/discover") {
       await route.fulfill({ json: { agents: [], errors: [] } });
     } else if (
@@ -98,7 +95,9 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill({ json: [] });
     }
   });
-  await routeTenantActions(page, ["registry.create"]);
+  await routeTenantActions(page, ["registry.create"], {
+    deployment: "aidash://test",
+  });
   await routeRegistryVersions(page, () => []);
   await page.goto("/registry");
   await page

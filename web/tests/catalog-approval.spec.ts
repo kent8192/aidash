@@ -53,8 +53,6 @@ async function dashboard(
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({ json: { access, node_id: "aidash://node" } });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/state")
       return route.fulfill({
         json: {
@@ -79,7 +77,6 @@ async function dashboard(
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
     if (

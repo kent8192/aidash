@@ -9,7 +9,6 @@ export const tenantSubject = {
 /** The Node a Tenant starts with: Catalog Approvals are decided on it. */
 export const defaultNode = {
   name: "default-node",
-  address: "aidash://node/default-node",
   label: "Default",
   default: true,
   created_at: "2026-10-17T09:00:00Z",
@@ -21,10 +20,15 @@ export async function routeTenantActions(
   {
     tenant = "acme",
     assignable,
-  }: { tenant?: string; assignable?: string[] } = {},
+    deployment = "aidash://node",
+  }: { tenant?: string; assignable?: string[]; deployment?: string } = {},
 ) {
+  // The address is the Deployment of the State the spec serves, which names it
+  // in `node.id` once a Node is selected.
   await page.route(`**/api/tenants/${tenant}/nodes`, (route) =>
-    route.fulfill({ json: [defaultNode] }),
+    route.fulfill({
+      json: [{ ...defaultNode, address: `${deployment}/${defaultNode.name}` }],
+    }),
   );
   await page.route(`**/api/tenants/${tenant}/administration`, (route) =>
     route.fulfill({

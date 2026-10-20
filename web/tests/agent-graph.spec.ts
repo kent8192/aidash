@@ -99,7 +99,6 @@ function fixture() {
     conversations: [],
     human_requests: [],
     installations: [],
-    peers: [],
   };
 }
 async function setup(page: Page, locale = "en-US") {
@@ -125,21 +124,19 @@ async function setup(page: Page, locale = "en-US") {
                 versions: data.registry.map((entry) => registryVersion(entry)),
                 next_offset: null,
               }
-            : path === "/api/mesh"
-              ? { nodes: [], errors: [] }
-              : path === "/api/discover"
-                ? { agents: [], errors: [] }
-                : path.startsWith("/api/runs/")
-                  ? { run: data.runs[0], invocations: [], memory: [] }
-                  : path === "/api/workspaces/workspace-1"
-                    ? {
-                        workspace: data.workspaces[0],
-                        tasks: data.tasks,
-                        artifacts: [],
-                        messages: [],
-                        events: [],
-                      }
-                    : [];
+            : path === "/api/discover"
+              ? { agents: [], errors: [] }
+              : path.startsWith("/api/runs/")
+                ? { run: data.runs[0], invocations: [], memory: [] }
+                : path === "/api/workspaces/workspace-1"
+                  ? {
+                      workspace: data.workspaces[0],
+                      tasks: data.tasks,
+                      artifacts: [],
+                      messages: [],
+                      events: [],
+                    }
+                  : [];
     await route.fulfill({ json });
   });
   await page.goto("/agents");
@@ -344,7 +341,6 @@ for (const locale of ["en-US", "ja-JP"]) {
     const backgroundPaths = new Set([
       "/api/state",
       "/api/session",
-      "/api/mesh",
       "/api/discover",
       "/api/events/stream",
     ]);

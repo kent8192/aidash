@@ -259,11 +259,8 @@ async function trust(
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/retention") {
       if (request.method() === "PUT") {
         const body = request.postDataJSON();

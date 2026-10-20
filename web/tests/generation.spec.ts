@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createTenant } from "./tenant-fixture";
+import { createTenant, defaultNode } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -101,6 +101,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       subject: "alice",
     });
     cleanupHeaders.authorization = `Bearer ${credential.token}`;
+    const node = await defaultNode(request, credential.token, tenant);
     await api(
       "/api/registry",
       {
@@ -127,6 +128,7 @@ test("generation dashboard manages policy, approval, completion and retained his
         entry: { id, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );
@@ -168,6 +170,7 @@ test("generation dashboard manages policy, approval, completion and retained his
         entry: { id: decider, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );
@@ -192,6 +195,7 @@ test("generation dashboard manages policy, approval, completion and retained his
         entry: { id: memoryDescriptor, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );
@@ -294,6 +298,7 @@ test("generation dashboard manages policy, approval, completion and retained his
         entry: { id: embedder, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );

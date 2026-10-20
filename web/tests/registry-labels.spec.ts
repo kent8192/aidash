@@ -92,7 +92,6 @@ for (const locale of ["en-US", "ja-JP"]) {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       }),
     );
