@@ -35,6 +35,13 @@ PREVIEW_SIZE = "10Gi"
 PREVIEW_TLS_SECRET = "aidash-preview-tls"
 PREVIEW_HOST = re.compile(r"[a-f0-9]{32}\.preview\.aidash\.run")
 CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
+# Backup for GKE has no per-claim exclusion, so backups select this application:
+# every resource of the namespace except the Home recovery ledger claim, which a
+# restore must never rewind (ADR 0067, #435).
+LEDGER_CLAIM = "memory-recovery"
+BACKUP_LABEL = "aidash.run/backup"
+BACKUP_EXCLUDE = "exclude"
+PROTECTED_APPLICATION = "aidash"
 # The Home ledger lives in a child of its claim. A fresh disk's root belongs to
 # root, so the application UID can create the child (fsGroup grants group write)
 # but could never chmod the root itself as ledger initialization requires.
@@ -282,7 +289,10 @@ def claim(namespace, name, size, volume=None):
     }
     if volume:
         spec["volumeName"] = volume
-    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": name, "namespace": namespace}, "spec": spec}
+    metadata = {"name": name, "namespace": namespace}
+    if name == LEDGER_CLAIM:
+        metadata["labels"] = {BACKUP_LABEL: BACKUP_EXCLUDE}
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": metadata, "spec": spec}
 
 
 def identity_tokens(cluster, namespace):
@@ -426,7 +436,24 @@ def bind_preview_tls(cluster, identity, volume_handle):
         cluster.create(claim(namespace, PREVIEW_CLAIM, PREVIEW_SIZE, PREVIEW_VOLUME))
 
 
-def prepare(cluster, identity, preview_handle=None):
+def protect(cluster, identity):
+    """Select what Backup for GKE backs up. The ProtectedApplication CRD exists only
+    where the backup agent runs, so callers ask only when a backup plan is configured."""
+    namespace = namespace_of(identity)
+    # Label first, so no backup can see the application while the ledger is unlabelled.
+    ledger = cluster.get("persistentvolumeclaim", LEDGER_CLAIM, namespace)
+    if ledger is not None and ledger["metadata"].get("labels", {}).get(BACKUP_LABEL) != BACKUP_EXCLUDE:
+        cluster.patch("persistentvolumeclaim", LEDGER_CLAIM, {"metadata": {"labels": {BACKUP_LABEL: BACKUP_EXCLUDE}}}, namespace)
+    cluster.apply({
+        "apiVersion": "gkebackup.gke.io/v1", "kind": "ProtectedApplication",
+        "metadata": {"name": PROTECTED_APPLICATION, "namespace": namespace},
+        "spec": {"resourceSelection": {"type": "Selector", "selector": {"matchExpressions": [
+            {"key": BACKUP_LABEL, "operator": "NotIn", "values": [BACKUP_EXCLUDE]},
+        ]}}},
+    })
+
+
+def prepare(cluster, identity, preview_handle=None, protected=False):
     namespace = namespace_of(identity)
     desired = storage_class(cluster, identity)
     existing = cluster.get("storageclass", STORAGE_CLASS)
@@ -446,6 +473,8 @@ def prepare(cluster, identity, preview_handle=None):
     for name, size in CLAIMS.items():
         if cluster.get("persistentvolumeclaim", name, namespace) is None:
             cluster.create(claim(namespace, name, size))
+    if protected:
+        protect(cluster, identity)
     if identity.startswith("pr-") and preview_handle is not None:
         bind_preview_tls(cluster, identity, preview_handle)
 

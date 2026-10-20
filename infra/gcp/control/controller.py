@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 from gcip import reconcile_environment, reconcile_mfa, ensure_authorized_domain
+import backup
 import kube
 import delivery
 
@@ -763,6 +764,25 @@ def validate_staging_publication(config, store, terraform):
                  staging_publication_run_id=str(os.environ["GITHUB_RUN_ID"]), staging_verified_at=int(time.time()), staging_publication_pending=True)
 
 
+def pre_update_backup(config, store, terraform, identity, generation, entry):
+    """Back up the sealed Environment before anything changes. Failure parks the
+    update as `failed`; only an explicit retry_failed starts a new generation."""
+    plan = config.get("pre_update_backup_plan")
+    if not plan and not delivery.production(config):
+        return
+    cluster = terraform.cluster()
+    if cluster.get("namespace", kube.namespace_of(identity)) is None:
+        return
+    if not plan:
+        raise Refused("Production updates need a Pre-update Backup plan: enable production_backup_enabled and publish pre_update_backup_plan (release-deployment step 7)")
+    if entry.get("pre_update_backup"):
+        return
+    kube.protect(cluster, identity)
+    name = backup.take(plan, generation, entry["sha"])
+    current_entry(store, identity, generation)
+    update_entry(store, identity, generation, pre_update_backup=name)
+
+
 def reconcile_locked(config, store, terraform, managed):
     state, _ = store.read("lifecycle/state.json")
     if not state:
@@ -1063,6 +1083,9 @@ def reconcile_locked(config, store, terraform, managed):
             # Revalidate source identity at the effect boundary, not just at intake.
             current_entry(store, identity, generation)
             verify_source(config, identity, entry)
+            if sealed and previous and previous["running"]:
+                pre_update_backup(config, store, terraform, identity, generation, entry)
+                entry = current_entry(store, identity, generation)
             if (not previous or not previous["running"]) and not entry.get(
                 "start_pending"
             ):
@@ -1117,6 +1140,7 @@ def reconcile_locked(config, store, terraform, managed):
             kube.prepare(
                 cluster, identity,
                 terraform.shared_outputs()["preview_tls_volume_handle"] if entry["kind"] == "pr" and not entry.get("hostname_token") else None,
+                protected=bool(config.get("pre_update_backup_plan")),
             )
             delivery.install_tls(config, cluster, identity, output)
             ensure_authorized_domain(output)
@@ -1128,6 +1152,9 @@ def reconcile_locked(config, store, terraform, managed):
             reconcile_gcip_mfa(store, identity, generation, output)
             current_entry(store, identity, generation)
             kube.deploy(cluster, identity, output, entry["release"], entry["sha"], settings)
+            if entry.get("pre_update_backup"):
+                # Write ahead: a crash inside start_writers must read as started.
+                update_entry(store, identity, generation, writers_started=True)
             kube.start_writers(cluster, identity)
             if kube.health(cluster, identity) != entry["sha"]:
                 raise Refused("Running source differs from the authorized release")
@@ -1188,6 +1215,8 @@ def reconcile_locked(config, store, terraform, managed):
                     try:
                         current = current_entry(store, identity, snapshot["generation"])
                         if not (current.get("gcip_quiesced") or current.get("gcip_pending")):
+                            if current.get("pre_update_backup"):
+                                update_entry(store, identity, snapshot["generation"], writers_started=True)
                             kube.unseal(terraform.cluster(), identity)
                     except Exception:
                         pass

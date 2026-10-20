@@ -13,7 +13,7 @@ KINDS = {
     "deployment": "deployment", "statefulset": "statefulset", "cronjob": "cronjob",
     "configmap": "configmap", "secret": "secret", "namespace": "namespace",
     "service": "service", "job": "job", "storageclass": "storageclass",
-    "pods": "pod", "volumeattachments": "volumeattachment",
+    "pods": "pod", "volumeattachments": "volumeattachment", "protectedapplication": "protectedapplication",
 }
 SHORT = {
     "app-aidash-server": "server", "app-aidash-worker": "worker", "app-execution-runner": "runner",
@@ -113,10 +113,13 @@ class FakeCluster:
         self.put(obj)
         return obj
 
-    def dynamic_claim(self, namespace, name):
+    def dynamic_claim(self, namespace, name, labels=None):
         disk = f"pvc-{namespace}-{name}"
         self.disks.add(disk)
-        self.put({"kind": "PersistentVolumeClaim", "metadata": {"name": name, "namespace": namespace}, "spec": {"volumeName": disk}})
+        metadata = {"name": name, "namespace": namespace}
+        if labels:
+            metadata["labels"] = deepcopy(labels)
+        self.put({"kind": "PersistentVolumeClaim", "metadata": metadata, "spec": {"volumeName": disk}})
         self.put({
             "kind": "PersistentVolume", "metadata": {"name": disk},
             "spec": {
@@ -162,6 +165,8 @@ class FakeCluster:
         return [deepcopy(obj) for (other, scope, _), obj in self.objects.items() if other == kind and scope == namespace]
 
     def apply(self, manifest):
+        if manifest["kind"] == "ProtectedApplication":
+            self.record("protect", identity(manifest["metadata"]["namespace"]))
         bounded_timeout(1)
         self.put(deepcopy(manifest))
 
@@ -176,7 +181,7 @@ class FakeCluster:
             manifest["status"] = {"succeeded": 1}
         elif manifest["kind"] == "PersistentVolumeClaim" and manifest["spec"]["storageClassName"]:
             bounded_timeout(1)
-            self.dynamic_claim(metadata["namespace"], metadata["name"])
+            self.dynamic_claim(metadata["namespace"], metadata["name"], metadata.get("labels"))
             return
         else:
             bounded_timeout(1)
@@ -248,7 +253,9 @@ class FakeCluster:
                 self.sql[namespace] = sql
             return b""
         self.record("admission", identity(namespace), command[-1].rsplit("/", 1)[1])
-        edge = self.objects.get(self.key("deployment", "env-environment-edge", namespace))
+        edge = self.objects.get(self.key("deployment", "env-environment-edge", namespace)) or self.objects.get(
+            self.key("statefulset", "env-environment-edge", namespace)
+        )
         if not edge or not edge["spec"]["replicas"]:
             raise RuntimeError("kubectl failed (exit 1); no private command output was logged")
         return b""

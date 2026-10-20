@@ -105,6 +105,11 @@ def validate_config(config):
     tier = config.get("deployment_tier", "nonproduction")
     if tier not in {"nonproduction", "production"}:
         raise Refused("Unknown deployment tier")
+    plan = config.get("pre_update_backup_plan")
+    if plan is not None and not (production(config) and re.fullmatch(
+        r"projects/" + re.escape(config["project_id"]) + r"/locations/[a-z0-9-]+/backupPlans/[a-z][a-z0-9-]{0,62}", str(plan)
+    )):
+        raise Refused("Only production names a Pre-update Backup plan, and it belongs to the production project")
     if not production(config):
         return
     for key in ("nonproduction_project_id", "nonproduction_state_bucket", "staging_release_bucket",
@@ -264,6 +269,9 @@ def publish_result(config, store, identity, generation, output, status):
                "source_sha": entry["sha"], "trusted_sha": outcome_trusted, "status": status,
                "hostname": hostname(config, identity, entry), "run_id": run_id,
                "occurred_at": timestamp}
+    for key in ("pre_update_backup", "writers_started"):
+        if entry.get(key):
+            receipt[key] = entry[key]
     if config.get("notification_bucket"):
         immutable_write(Store(config["notification_bucket"]), f"notifications/{event_id}.json", receipt)
     if identity == "develop" and status == "ready" and config.get("release_flow_enabled"):
