@@ -2063,6 +2063,7 @@ async fn each_audience_tenant_reads_its_own_copy_of_the_events_and_no_other_tena
 					"deleted_at",
 					"deleted_by_kind",
 					"purge_after",
+					"purge_failures",
 				]
 				.map(Alias::new),
 			)
@@ -2073,6 +2074,7 @@ async fn each_audience_tenant_reads_its_own_copy_of_the_events_and_no_other_tena
 					.expr(Expr::cust("now()"))
 					.expr(Expr::value("deployment_administrator"))
 					.expr(Expr::cust("now() + interval '30 days'"))
+					.expr(Expr::value(0_i64))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
