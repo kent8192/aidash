@@ -765,8 +765,10 @@ async fn narrowed_candidate_denial_restores_the_chain_and_continues_generation(
 async fn candidate_cancellation_restores_a_borrowed_worker_chain(validation: DefinitionValidation) {
 	let mut scope = Scope::new();
 	scope.ordinary("ordinary", true, SubjectKind::Agent);
-	scope.state.lock().unwrap().pause =
-		Some("decide:task.execute:alice+aidash://local/brave-otter-k3m9q2xa/agents/ordinary@1.0.0".into());
+	scope.state.lock().unwrap().pause = Some(
+		"decide:task.execute:alice+aidash://local/brave-otter-k3m9q2xa/agents/ordinary@1.0.0"
+			.into(),
+	);
 	assert!(
 		tokio::time::timeout(
 			Duration::from_millis(20),
