@@ -3051,14 +3051,7 @@ impl Store {
 			)?;
 		}
 		if saved.phase().is_terminal() {
-			// A Run that fails or expires never reaches the harness's own close. The save does
-			// not wait for servers, and a session closed too early reopens on the next call.
-			let sessions = self.plugin_sessions.clone();
-			let run = saved.id;
-			tokio::spawn(async move {
-				aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run)
-					.await;
-			});
+			self.close_plugin_sessions_soon(saved.id);
 		}
 		self.event(
 			tx,
@@ -3249,7 +3242,18 @@ impl Store {
 		.await?;
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
+		self.close_plugin_sessions_soon(run.id);
 		Ok(())
+	}
+
+	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for
+	/// them. A Run that fails, expires or is cancelled never reaches the harness's own close, and
+	/// a session closed too early reopens on the next call.
+	fn close_plugin_sessions_soon(&self, run: Uuid) {
+		let sessions = self.plugin_sessions.clone();
+		tokio::spawn(async move {
+			aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run).await;
+		});
 	}
 
 	pub async fn control(
