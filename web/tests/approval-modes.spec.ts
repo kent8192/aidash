@@ -44,12 +44,15 @@ async function approvals(
     auto?: "decider_unapproved" | "no_decider";
     /** The versions (`id@version`) that hold a Catalog Approval. */
     approvedDeciders?: string[];
+    /** The stored Answer Deadline in seconds; `null` waits without limit. */
+    answerDeadline?: number | null;
   } = {},
 ) {
   const allowed = options.allowed ?? ["manual", "dont_ask"];
   const state = {
     default_mode: "manual" as Mode,
-    answer_deadline_seconds: 300 as number | null,
+    answer_deadline_seconds:
+      options.answerDeadline === undefined ? 300 : options.answerDeadline,
     bypass_accepted_at: options.bypassAcceptedAt ?? (null as string | null),
     revision: 3,
     rules: options.rules ?? [],
@@ -225,6 +228,157 @@ test("Approvals settings offer the modes the Tenant's policy allows and keep the
     },
   ]);
   expect(errors).toEqual([]);
+});
+
+const deadlinePanel = (page: Page) =>
+  page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: "Answer Deadline" }),
+  });
+
+test("the Answer Deadline is edited as a duration and saved with the preferences", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { subject: true });
+  const { calls } = await approvals(page, { allowed: ["manual", "dont_ask"] });
+  await page.goto("/settings?view=approvals");
+
+  const panel = deadlinePanel(page);
+  await expect(panel).toContainText(
+    "When the Agent asks you a question and you have not answered by then, the Run continues on its own judgment. It never applies to Completion Reviews or other requests.",
+  );
+  await expect(panel.getByRole("radio", { name: "After" })).toBeChecked();
+  const amount = panel.getByRole("spinbutton", { name: "Duration" });
+  const unit = panel.getByRole("combobox", { name: "Unit" });
+  await expect(amount).toHaveValue("5");
+  await expect(unit).toHaveValue("minutes");
+  const save = panel.getByRole("button", { name: "Save Answer Deadline" });
+  await expect(save).toBeDisabled();
+
+  await amount.fill("2");
+  await unit.selectOption("hours");
+  await save.click();
+  await expect(panel.getByRole("status")).toHaveText("Saved");
+  expect(calls.preferences).toEqual([
+    {
+      expected_revision: 3,
+      default_mode: "manual",
+      answer_deadline_seconds: 7200,
+      accept_bypass: false,
+    },
+  ]);
+  await expect(save).toBeDisabled();
+
+  await panel.getByRole("radio", { name: "None" }).click();
+  await expect(amount).toHaveCount(0);
+  await save.click();
+  await expect(panel.getByRole("status")).toHaveText("Saved");
+  expect(calls.preferences.at(-1)).toEqual({
+    expected_revision: 4,
+    default_mode: "manual",
+    answer_deadline_seconds: null,
+    accept_bypass: false,
+  });
+
+  await radio(page, "Don't ask").click();
+  await expect(radio(page, "Don't ask")).toBeChecked();
+  expect(calls.preferences.at(-1)).toEqual({
+    expected_revision: 5,
+    default_mode: "dont_ask",
+    answer_deadline_seconds: null,
+    accept_bypass: false,
+  });
+  expect(errors).toEqual([]);
+});
+
+test("no Answer Deadline is the default, and choosing one starts from five minutes", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  const { calls } = await approvals(page, { answerDeadline: null });
+  await page.goto("/settings?view=approvals");
+
+  const panel = deadlinePanel(page);
+  await expect(panel.getByRole("radio", { name: "None" })).toBeChecked();
+  await expect(panel.getByRole("spinbutton")).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Save Answer Deadline" }),
+  ).toBeDisabled();
+
+  await panel.getByRole("radio", { name: "After" }).click();
+  await expect(panel.getByRole("spinbutton", { name: "Duration" })).toHaveValue(
+    "5",
+  );
+  await panel.getByRole("button", { name: "Save Answer Deadline" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Saved");
+  expect(calls.preferences).toEqual([
+    {
+      expected_revision: 3,
+      default_mode: "manual",
+      answer_deadline_seconds: 300,
+      accept_bypass: false,
+    },
+  ]);
+});
+
+test("an Answer Deadline outside a minute to 30 days is explained and not sent", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  const { calls } = await approvals(page);
+  await page.goto("/settings?view=approvals");
+
+  const panel = deadlinePanel(page);
+  const amount = panel.getByRole("spinbutton", { name: "Duration" });
+  const unit = panel.getByRole("combobox", { name: "Unit" });
+  const save = panel.getByRole("button", { name: "Save Answer Deadline" });
+  const problem = panel.getByRole("alert");
+
+  await amount.fill("0");
+  await save.click();
+  await expect(problem).toHaveText("Enter a number greater than zero.");
+  await amount.fill("0.5");
+  await save.click();
+  await expect(problem).toHaveText("An Answer Deadline is at least 1 minute.");
+  await unit.selectOption("days");
+  await amount.fill("31");
+  await save.click();
+  await expect(problem).toHaveText("An Answer Deadline is at most 30 days.");
+  await amount.fill("30");
+  await expect(problem).toHaveCount(0);
+  await save.click();
+  await expect(panel.getByRole("status")).toHaveText("Saved");
+  expect(calls.preferences).toEqual([
+    {
+      expected_revision: 3,
+      default_mode: "manual",
+      answer_deadline_seconds: 30 * 24 * 60 * 60,
+      accept_bypass: false,
+    },
+  ]);
+});
+
+test("the Answer Deadline settings read in Japanese", async ({ page }) => {
+  await setup(page, { subject: true, locale: "ja-JP" });
+  const { calls } = await approvals(page, { answerDeadline: 7200 });
+  await page.goto("/settings?view=approvals");
+
+  const panel = page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: "Answer Deadline" }),
+  });
+  await expect(panel).toContainText(
+    "Run は自身の判断で続行します。Completion Review やその他のリクエストには適用されません。",
+  );
+  await expect(panel.getByRole("radio", { name: "経過後" })).toBeChecked();
+  await expect(panel.getByRole("spinbutton", { name: "期間" })).toHaveValue(
+    "2",
+  );
+  await expect(panel.getByRole("combobox", { name: "単位" })).toHaveValue(
+    "hours",
+  );
+  await panel.getByRole("radio", { name: "なし" }).click();
+  await panel.getByRole("button", { name: "Answer Deadline を保存" }).click();
+  await expect(panel.getByRole("status")).toHaveText("保存しました");
+  expect(calls.preferences.at(-1)?.answer_deadline_seconds).toBeNull();
 });
 
 test("the server's reason shows when a mode cannot be saved", async ({

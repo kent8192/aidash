@@ -105,6 +105,116 @@ export function preferencesUpdate(
   };
 }
 
+/** The Answer Deadlines the server accepts, in seconds: a minute to 30 days. */
+export const answerDeadlineBounds = {
+  min: 60,
+  max: 30 * 24 * 60 * 60,
+} as const;
+
+export const deadlineUnits = ["minutes", "hours", "days"] as const;
+
+export type DeadlineUnit = (typeof deadlineUnits)[number];
+
+const unitSeconds: Record<DeadlineUnit, number> = {
+  minutes: 60,
+  hours: 60 * 60,
+  days: 24 * 60 * 60,
+};
+
+/** What the Answer Deadline field holds while the person edits it. */
+export type DeadlineDraft =
+  | { none: true }
+  | { none: false; amount: string; unit: DeadlineUnit };
+
+/**
+ * The draft that shows a stored Answer Deadline: the largest unit that holds it
+ * exactly. A value the API stored in seconds, such as 90, shows as minutes with
+ * a fraction rather than rounding.
+ */
+export function deadlineDraft(seconds: number | null): DeadlineDraft {
+  if (seconds === null) return { none: true };
+  const unit =
+    [...deadlineUnits]
+      .reverse()
+      .find((candidate) => seconds % unitSeconds[candidate] === 0) ?? "minutes";
+  return { none: false, amount: String(seconds / unitSeconds[unit]), unit };
+}
+
+export type DeadlineProblem = "amount_required" | "too_short" | "too_long";
+
+export type DeadlineResult =
+  | { ok: true; seconds: number | null }
+  | { ok: false; problem: DeadlineProblem };
+
+/** The seconds a draft asks for, or why the server would refuse it. */
+export function deadlineSeconds(draft: DeadlineDraft): DeadlineResult {
+  if (draft.none) return { ok: true, seconds: null };
+  const text = draft.amount.trim();
+  const amount = Number(text);
+  if (text === "" || !Number.isFinite(amount) || amount <= 0)
+    return { ok: false, problem: "amount_required" };
+  const seconds = Math.round(amount * unitSeconds[draft.unit]);
+  if (seconds < answerDeadlineBounds.min)
+    return { ok: false, problem: "too_short" };
+  if (seconds > answerDeadlineBounds.max)
+    return { ok: false, problem: "too_long" };
+  return { ok: true, seconds };
+}
+
+/**
+ * The body that sets, or with `null` clears, the Answer Deadline. The server
+ * replaces the whole row, so the default mode is echoed back. Acceptance of
+ * Bypass is recorded once, when the person first chooses it, never here.
+ */
+export function deadlineUpdate(
+  preferences: { revision: number; default_mode: ApprovalMode },
+  seconds: number | null,
+): RequestApprovalPreferencesUpdate {
+  return {
+    expected_revision: preferences.revision,
+    default_mode: preferences.default_mode,
+    answer_deadline_seconds: seconds,
+    accept_bypass: false,
+  };
+}
+
+/**
+ * When the Run waiting for `request` continues without an answer, or null: the
+ * request is answered already, or its person set no Answer Deadline. The state
+ * fills the field in only for a model's question.
+ */
+export function continuesAt(request: {
+  response: unknown;
+  answer_by?: string | null;
+}): string | null {
+  return request.response == null ? (request.answer_by ?? null) : null;
+}
+
+/**
+ * Whether `request`, a human request or the payload of its answered event, was
+ * closed by the system because its person's Answer Deadline passed. An approval
+ * that expired is answered by the system too, so the response is read as well;
+ * a person's own answer is never taken for this one.
+ */
+export function answeredAtDeadline(request: unknown): boolean {
+  if (!request || typeof request !== "object") return false;
+  const { response, answered_by } = request as Record<string, unknown>;
+  if (answered_by !== "system") return false;
+  if (!response || typeof response !== "object") return false;
+  const { answered, reason } = response as Record<string, unknown>;
+  return answered === false && reason === "answer_deadline";
+}
+
+/** The moment shown for a deadline, which can be days away. */
+export function deadlineTime(at: string, locale: string): string {
+  return new Date(at).toLocaleString(locale, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export type RuleDraft = {
   kind: ApprovalKind;
   every: boolean;

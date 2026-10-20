@@ -6,6 +6,8 @@ import type {
 } from "./generated/models";
 import type {
   BlockReason,
+  DeadlineProblem,
+  DeadlineUnit,
   GivenBy,
   RefusedBy,
 } from "./approval-settings-model";
@@ -23,6 +25,17 @@ type ApprovalCopy = {
   reviewCatalogApproval: string;
   saved: string;
   saving: string;
+  deadline: {
+    title: string;
+    help: string;
+    none: string;
+    after: string;
+    amount: string;
+    unit: string;
+    units: Record<DeadlineUnit, string>;
+    save: string;
+    problems: Record<DeadlineProblem, string>;
+  };
   rulesTitle: string;
   rulesHelp: string;
   noRules: string;
@@ -158,6 +171,21 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     reviewCatalogApproval: "Review its Catalog Approval",
     saved: "Saved",
     saving: "Saving…",
+    deadline: {
+      title: "Answer Deadline",
+      help: "When the Agent asks you a question and you have not answered by then, the Run continues on its own judgment. It never applies to Completion Reviews or other requests.",
+      none: "None",
+      after: "After",
+      amount: "Duration",
+      unit: "Unit",
+      units: { minutes: "Minutes", hours: "Hours", days: "Days" },
+      save: "Save Answer Deadline",
+      problems: {
+        amount_required: "Enter a number greater than zero.",
+        too_short: "An Answer Deadline is at least 1 minute.",
+        too_long: "An Answer Deadline is at most 30 days.",
+      },
+    },
     rulesTitle: "Approval Rules",
     rulesHelp:
       "An allow, ask or deny decision on one kind of approval. A deny holds in every mode. An ask asks even in Auto and Bypass. An allow is moot in Bypass.",
@@ -324,6 +352,21 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     reviewCatalogApproval: "Catalog Approval を確認する",
     saved: "保存しました",
     saving: "保存しています…",
+    deadline: {
+      title: "Answer Deadline",
+      help: "Agent があなたに質問し、この時間までに回答しなかった場合、Run は自身の判断で続行します。Completion Review やその他のリクエストには適用されません。",
+      none: "なし",
+      after: "経過後",
+      amount: "期間",
+      unit: "単位",
+      units: { minutes: "分", hours: "時間", days: "日" },
+      save: "Answer Deadline を保存",
+      problems: {
+        amount_required: "0 より大きい数を入力してください。",
+        too_short: "Answer Deadline は 1 分以上にしてください。",
+        too_long: "Answer Deadline は 30 日以内にしてください。",
+      },
+    },
     rulesTitle: "Approval Rule",
     rulesHelp:
       "ある種類の承認に対する allow・ask・deny の判断です。deny はどのモードでも守られ、ask は Auto と Bypass でも確認します。Bypass では allow に意味はありません。",

@@ -25,6 +25,7 @@ import type {
   ApprovalKind,
   ApprovalMode,
   ApprovalModeReason,
+  ApprovalPreferences,
   ApprovalRuleView,
   RuleEffect,
 } from "./generated/models";
@@ -40,6 +41,12 @@ import {
   approvalKinds,
   approvalModes,
   bypassNeedsConfirmation,
+  deadlineDraft,
+  deadlineSeconds,
+  deadlineUnits,
+  deadlineUpdate,
+  type DeadlineDraft,
+  type DeadlineUnit,
   modeAllowed,
   modeReason,
   needsApprovalDecider,
@@ -237,6 +244,170 @@ function DefaultMode({ tenant }: { tenant: string }) {
           confirm={() => void save("bypass", true)}
           close={() => setConfirming(false)}
         />
+      )}
+    </Panel>
+  );
+}
+
+function AnswerDeadlineForm({
+  tenant,
+  current,
+}: {
+  tenant: string;
+  current: ApprovalPreferences;
+}) {
+  const { locale } = useI18n();
+  const copy = approvalCopy[locale];
+  const words = copy.deadline;
+  const client = useQueryClient();
+  const id = useId();
+  const [draft, setDraft] = useState<DeadlineDraft>(() =>
+    deadlineDraft(current.answer_deadline_seconds),
+  );
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const result = deadlineSeconds(draft);
+  const unchanged =
+    result.ok && result.seconds === current.answer_deadline_seconds;
+  const change = (next: DeadlineDraft) => {
+    setDraft(next);
+    setSaved(false);
+    setError("");
+  };
+  const save = async () => {
+    if (!result.ok) {
+      setError(words.problems[result.problem]);
+      return;
+    }
+    setBusy(true);
+    setSaved(false);
+    setError("");
+    try {
+      client.setQueryData(
+        approvalPreferencesKey(tenant),
+        await approvalPreferencesUpdate(
+          encodeURIComponent(tenant),
+          deadlineUpdate(current, result.seconds),
+        ),
+      );
+      setSaved(true);
+    } catch (reason) {
+      setError(message(reason));
+      // A stale revision: show what the server holds now.
+      await client.invalidateQueries({
+        queryKey: approvalPreferencesKey(tenant),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const radio =
+    "flex min-w-0 cursor-pointer items-center gap-2 text-[13px] text-foreground has-[:disabled]:cursor-not-allowed";
+  return (
+    <form
+      className="grid min-w-0 gap-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <fieldset className="grid min-w-0 gap-2" aria-label={words.title}>
+        <label className={radio}>
+          <input
+            type="radio"
+            name={`${id}-deadline`}
+            className="size-3.5 shrink-0 cursor-pointer accent-primary"
+            checked={draft.none}
+            disabled={busy}
+            onChange={() => change({ none: true })}
+          />
+          {words.none}
+        </label>
+        <label className={radio}>
+          <input
+            type="radio"
+            name={`${id}-deadline`}
+            className="size-3.5 shrink-0 cursor-pointer accent-primary"
+            checked={!draft.none}
+            disabled={busy}
+            onChange={() =>
+              change(
+                draft.none
+                  ? deadlineDraft(current.answer_deadline_seconds ?? 300)
+                  : draft,
+              )
+            }
+          />
+          {words.after}
+        </label>
+      </fieldset>
+      {!draft.none && (
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+          <Field label={words.amount}>
+            <Input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={draft.amount}
+              disabled={busy}
+              onChange={(event) =>
+                change({ ...draft, amount: event.target.value })
+              }
+            />
+          </Field>
+          <Field label={words.unit}>
+            <NativeSelect
+              value={draft.unit}
+              disabled={busy}
+              onChange={(event) =>
+                change({ ...draft, unit: event.target.value as DeadlineUnit })
+              }
+            >
+              {deadlineUnits.map((unit) => (
+                <option key={unit} value={unit}>
+                  {words.units[unit]}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+        </div>
+      )}
+      <Button
+        type="submit"
+        disabled={busy || unchanged}
+        className="justify-self-start"
+      >
+        {words.save}
+      </Button>
+      {busy && <Loading>{copy.saving}</Loading>}
+      {saved && (
+        <Hint role="status" className="text-success">
+          {copy.saved}
+        </Hint>
+      )}
+      {error && <Alert>{error}</Alert>}
+    </form>
+  );
+}
+
+function AnswerDeadline({ tenant }: { tenant: string }) {
+  const { locale } = useI18n();
+  const copy = approvalCopy[locale];
+  const preferences = useApprovalPreferences(tenant);
+  return (
+    <Panel title={copy.deadline.title}>
+      <Hint>{copy.deadline.help}</Hint>
+      {preferences.isError ? (
+        <Alert retry={() => void preferences.refetch()} retryLabel={copy.retry}>
+          <p>{copy.loadFailed}</p>
+          <p className="text-muted-foreground">{preferences.error.message}</p>
+        </Alert>
+      ) : preferences.data ? (
+        <AnswerDeadlineForm tenant={tenant} current={preferences.data} />
+      ) : (
+        <Loading />
       )}
     </Panel>
   );
@@ -463,6 +634,7 @@ export function ApprovalSettingsPage({ tenant }: { tenant: string }) {
     <div className="grid max-w-3xl min-w-0 gap-6">
       <Notice>{copy.intro}</Notice>
       <DefaultMode tenant={tenant} />
+      <AnswerDeadline tenant={tenant} />
       <Rules tenant={tenant} />
     </div>
   );

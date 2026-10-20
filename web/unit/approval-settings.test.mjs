@@ -1,10 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  answerDeadlineBounds,
+  answeredAtDeadline,
   approvalKinds,
   approvalModes,
   blockReasons,
   bypassNeedsConfirmation,
+  continuesAt,
+  deadlineDraft,
+  deadlineSeconds,
+  deadlineTime,
+  deadlineUpdate,
   decisionScope,
   givenBy,
   modeAllowed,
@@ -333,4 +340,141 @@ test("only Allow for this Run carries a scope", () => {
       targets: null,
       expires_at: null,
     });
+});
+
+test("a stored Answer Deadline shows in the largest unit that holds it exactly", () => {
+  assert.deepEqual(deadlineDraft(null), { none: true });
+  assert.deepEqual(deadlineDraft(300), {
+    none: false,
+    amount: "5",
+    unit: "minutes",
+  });
+  assert.deepEqual(deadlineDraft(7200), {
+    none: false,
+    amount: "2",
+    unit: "hours",
+  });
+  assert.deepEqual(deadlineDraft(2 * 86400), {
+    none: false,
+    amount: "2",
+    unit: "days",
+  });
+  assert.deepEqual(deadlineDraft(90), {
+    none: false,
+    amount: "1.5",
+    unit: "minutes",
+  });
+});
+
+test("an Answer Deadline round-trips through its draft without drifting", () => {
+  for (const seconds of [60, 61, 90, 300, 3600, 5400, 86400, 30 * 86400])
+    assert.deepEqual(deadlineSeconds(deadlineDraft(seconds)), {
+      ok: true,
+      seconds,
+    });
+});
+
+test("no Answer Deadline is none, and a duration is counted in its unit", () => {
+  assert.deepEqual(deadlineSeconds({ none: true }), {
+    ok: true,
+    seconds: null,
+  });
+  const draft = (amount, unit) => ({ none: false, amount, unit });
+  assert.deepEqual(deadlineSeconds(draft("5", "minutes")), {
+    ok: true,
+    seconds: 300,
+  });
+  assert.deepEqual(deadlineSeconds(draft(" 2 ", "hours")), {
+    ok: true,
+    seconds: 7200,
+  });
+  assert.deepEqual(deadlineSeconds(draft("1.5", "days")), {
+    ok: true,
+    seconds: 129600,
+  });
+});
+
+test("an Answer Deadline outside a minute to 30 days is refused before it is sent", () => {
+  const draft = (amount, unit) => ({ none: false, amount, unit });
+  for (const amount of ["", "  ", "0", "-5", "soon", "Infinity"])
+    assert.deepEqual(deadlineSeconds(draft(amount, "minutes")), {
+      ok: false,
+      problem: "amount_required",
+    });
+  assert.equal(deadlineSeconds(draft("0.5", "minutes")).problem, "too_short");
+  assert.equal(deadlineSeconds(draft("1", "minutes")).ok, true);
+  assert.equal(deadlineSeconds(draft("720", "hours")).ok, true);
+  assert.equal(deadlineSeconds(draft("721", "hours")).problem, "too_long");
+  assert.equal(deadlineSeconds(draft("30", "days")).ok, true);
+  assert.equal(deadlineSeconds(draft("30.01", "days")).problem, "too_long");
+  assert.equal(
+    answerDeadlineBounds.max,
+    deadlineSeconds(draft("30", "days")).seconds,
+  );
+});
+
+test("saving the Answer Deadline keeps the default mode and never records Bypass", () => {
+  const stored = { revision: 7, default_mode: "bypass" };
+  assert.deepEqual(deadlineUpdate(stored, 900), {
+    expected_revision: 7,
+    default_mode: "bypass",
+    answer_deadline_seconds: 900,
+    accept_bypass: false,
+  });
+  assert.equal(deadlineUpdate(stored, null).answer_deadline_seconds, null);
+});
+
+test("a waiting question shows when its Run continues, and an answered one shows nothing", () => {
+  const at = "2026-10-21T10:30:00Z";
+  assert.equal(continuesAt({ response: null, answer_by: at }), at);
+  assert.equal(continuesAt({ response: null, answer_by: null }), null);
+  assert.equal(continuesAt({ response: null }), null);
+  assert.equal(
+    continuesAt({ response: { approved: true }, answer_by: at }),
+    null,
+  );
+});
+
+test("only the system's answer at the Answer Deadline reads as no answer", () => {
+  const missed = { answered: false, reason: "answer_deadline" };
+  assert.equal(
+    answeredAtDeadline({ response: missed, answered_by: "system" }),
+    true,
+  );
+  assert.equal(
+    answeredAtDeadline({ response: missed, answered_by: "alice" }),
+    false,
+  );
+  assert.equal(
+    answeredAtDeadline({
+      response: { approved: false, expired: true },
+      answered_by: "system",
+    }),
+    false,
+  );
+  assert.equal(
+    answeredAtDeadline({ response: "tokyo", answered_by: "system" }),
+    false,
+  );
+  for (const other of [null, undefined, "system", { response: null }])
+    assert.equal(answeredAtDeadline(other), false);
+});
+
+test("a deadline shows with its date, since it can be days away", () => {
+  const at = "2026-10-21T10:30:00Z";
+  assert.match(deadlineTime(at, "en-US"), /Oct/);
+  assert.match(deadlineTime(at, "ja-JP"), /10月/);
+});
+
+test("both locales explain the Answer Deadline and its limits", () => {
+  const english = approvalCopy["en-US"].deadline;
+  const japanese = approvalCopy["ja-JP"].deadline;
+  assert.match(english.help, /continues on its own judgment/);
+  assert.match(english.help, /never applies to Completion Reviews/);
+  assert.match(japanese.help, /Completion Review/);
+  assert.deepEqual(
+    Object.keys(english.problems),
+    Object.keys(japanese.problems),
+  );
+  assert.deepEqual(Object.keys(english.units), ["minutes", "hours", "days"]);
 });
