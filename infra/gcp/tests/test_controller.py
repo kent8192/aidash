@@ -2113,7 +2113,7 @@ class BackupTests(unittest.TestCase):
                 }
                 if contains_secrets is None:
                     del succeeded["containsSecrets"]
-                with patch.object(backup, "call", lambda method, resource, body=None: succeeded):
+                with patch.object(backup, "call", lambda method, resource, body=None, succeeded=succeeded: succeeded):
                     with self.assertRaisesRegex(controller.Refused, "no Secrets"):
                         backup.take(PLAN, 2, UPDATE)
 
