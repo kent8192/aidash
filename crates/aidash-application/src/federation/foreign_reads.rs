@@ -9,7 +9,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 	};
 	let d = record.description;
 	if d.source_node != run.home_node
-		|| d.target_node != scope.node()
+		|| d.target_node != format!("{}/{}", scope.node(), run.node)
 		|| d.task.id != run.task_id
 		|| d.task.workspace_id != run.workspace_id
 		|| d.inspection.agent.id != run.agent_id

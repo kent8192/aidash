@@ -80,7 +80,8 @@ pub(super) async fn erase_receiver_body(
 	if description.semantic.native().is_none() {
 		return tx.rollback().await;
 	}
-	if description.source_node != run.home_node || description.target_node != store.deployment {
+	let receiver = store.deployment.node(run.node.clone()).to_string();
+	if description.source_node != run.home_node || description.target_node != receiver {
 		return Err(Error::Forbidden);
 	}
 	native::query(

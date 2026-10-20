@@ -201,7 +201,7 @@ fn scope(run: RunMetadata) -> Scope {
 	let description = Description {
 		grant_id: Uuid::from_u128(4),
 		source_node: run.home_node.clone(),
-		target_node: "aidash://local".into(),
+		target_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		source_tenant: "home-tenant".into(),
 		source_subject: "home-reader".into(),
 		task: Task {
@@ -222,7 +222,7 @@ fn scope(run: RunMetadata) -> Scope {
 			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],
-			node_id: "aidash://local".into(),
+			node_id: "aidash://local/brave-otter-k3m9q2xa".into(),
 			authority_digest: format!("sha256:{}", "a".repeat(64)),
 			agent: entry.clone(),
 			definitions: vec![Definition {

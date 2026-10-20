@@ -150,17 +150,28 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 	) -> Result<Option<Uuid>> {
 		let mapped: Option<Uuid> = {
 			let query_bind_1 = &run.home_node;
-			let query_bind_2 = &d.source_tenant;
+			let query_bind_2 = run.node.as_str();
 			let query_bind_3 = &d.source_subject;
 			let query_bind_4 = &self.0.identity.tenant;
-			crate::database::native::query_scalar(&Query::select()
-				.column(Alias::new("credential_id"))
-				.from(Alias::new("authorization_peer_mappings"))
-				.and_where(SimpleExpr::CustomWithExpr("(source_node=? AND source_tenant=? AND source_subject=? AND tenant=? AND enabled)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder))
-		.scalar_optional(&mut **self.0.tx)
-		.await?
+			crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("credential_id"))
+					.from(Alias::new("authorization_peer_mappings"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(source_node=? AND node=? AND source_subject=? AND tenant=? AND enabled)"
+							.to_owned(),
+						vec![
+							Expr::value(query_bind_1.to_owned()).into(),
+							Expr::value(query_bind_2.to_owned()).into(),
+							Expr::value(query_bind_3.to_owned()).into(),
+							Expr::value(query_bind_4.to_owned()).into(),
+						],
+					))
+					.lock(LockType::Share)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **self.0.tx)
+			.await?
 		};
 
 		Ok(mapped)

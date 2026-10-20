@@ -301,7 +301,7 @@ pub async fn leaf_lease<R: PeerAdmissionRepository>(
 		.ok_or(Error::Forbidden)?;
 	let description: Description = serde_json::from_value(record.description.clone())?;
 	if description.source_node != source
-		|| description.target_node != repository.node_id()
+		|| description.target_node != format!("{}/{receiver}", repository.node_id())
 		|| description.grant_id != grant
 	{
 		return Err(Error::Forbidden);

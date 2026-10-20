@@ -22,6 +22,19 @@ use uuid::Uuid;
 // managed LIMIT/OFFSET values. Keep the entire predicate managed. This is the
 // intended query shape; remove compatibility notes only after the selected
 // revision and cross-tenant Graph/pagination regressions pass the raw-marker probe.
+/// Rows whose `column` names the Node `source` sends from, or any Node of the
+/// Deployment `source` names when it is a Deployment Administrator's.
+fn from_source(column: &str, source: &str) -> SimpleExpr {
+	if aidash_domain::nodes::NodeAddress::parse(source).is_ok() {
+		SimpleExpr::CustomWithExpr(
+			format!("({column} = ?)"),
+			vec![Expr::value(source.to_owned()).into()],
+		)
+	} else {
+		crate::database::scope::in_deployment(column, source)
+	}
+}
+
 fn runs(tenant: &str, workspace: Uuid, source_node: &str) -> SelectStatement {
 	Query::select()
 		.from_as(Alias::new("runs"), Alias::new("r"))
@@ -37,9 +50,7 @@ fn runs(tenant: &str, workspace: Uuid, source_node: &str) -> SelectStatement {
 		.and_where(
 			Expr::col((Alias::new("r"), Alias::new("workspace_id"))).eq(Expr::value(workspace)),
 		)
-		.and_where(
-			Expr::col((Alias::new("r"), Alias::new("home_node"))).eq(Expr::value(source_node)),
-		)
+		.and_where(from_source("r.home_node", source_node))
 		.to_owned()
 }
 
@@ -120,12 +131,13 @@ pub(crate) async fn visible(
 		return Ok(false);
 	};
 	let description: Description = serde_json::from_value(value)?;
+	let receiver = f.config.deployment.node(run.node.clone()).to_string();
 	if description.grant_id != grant
 		|| description.source_node != run.home_node
-		|| description.target_node != f.config.deployment
+		|| description.target_node != receiver
 		|| description.task.id != run.task_id
 		|| description.task.workspace_id != run.workspace_id
-		|| description.inspection.node_id != f.config.deployment
+		|| description.inspection.node_id != receiver
 		|| description.inspection.agent.kind != "agent"
 		|| description.inspection.agent.id != run.agent_id
 		|| description.inspection.agent.version != run.agent_version
@@ -236,7 +248,7 @@ pub(super) async fn activity(
 					.from(Alias::new("authorization_remote_admissions"))
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-					.and_where(Expr::col(Alias::new("source_node")).eq(Expr::value(source_node)))
+					.and_where(from_source("source_node", source_node))
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
