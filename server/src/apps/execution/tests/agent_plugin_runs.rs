@@ -1,0 +1,544 @@
+//! A Run of an Agent that takes in an Agent Plugin lists the plugin's remote MCP server at its
+//! first step, pins the tools it offers, asks for a Tool call approval before it calls a tool the
+//! Agent did not declare Read-only, and ends its sessions when it finishes (ADR 0072, ADR 0073).
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::{TEST_FIXTURE, TenancyScope};
+use aidash_domain::agent_plugin::{
+	self, AgentPluginRef, MCP_SCHEMA, PLUGIN_SCHEMA, PluginFile, PluginName, ServerName,
+	model_alias, schema_digest,
+};
+use aidash_server::{
+	authorization::Authorization, domain::Run, federation::Federation, harness::Harness,
+	registry::EntityRef,
+};
+use common::*;
+use http::Method;
+use reinhardt::test::stub::StubRouter;
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
+#[path = "support/legacy.rs"]
+mod common;
+#[path = "support/mcp.rs"]
+mod mcp;
+
+const PLUGIN: &str = "acme-tools";
+const SERVER: &str = "docs";
+const SOURCE: &str = "https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567";
+
+fn alias(tool: &str) -> String {
+	model_alias(
+		&PluginName::try_from(PLUGIN.to_owned()).unwrap(),
+		&ServerName::try_from(SERVER.to_owned()).unwrap(),
+		tool,
+	)
+}
+
+/// The plugin copy whose `mcp.json` names one remote server at `url`.
+fn plugin_files(url: &str) -> Vec<PluginFile> {
+	let file = |path: &str, value: Value| PluginFile {
+		path: path.to_owned(),
+		bytes: value.to_string().into_bytes(),
+	};
+	vec![
+		file(
+			"plugin.json",
+			json!({"$schema": PLUGIN_SCHEMA, "name": PLUGIN, "version": "1.0.0"}),
+		),
+		file(
+			"mcp.json",
+			json!({"$schema": MCP_SCHEMA, "mcpServers": {SERVER: {"type": "streamable-http", "url": url}}}),
+		),
+	]
+}
+
+/// Keeps the model's view of each request: the tools it was offered.
+#[derive(Default)]
+struct Model {
+	offered: Mutex<Vec<Vec<String>>>,
+}
+
+impl Model {
+	/// Calls every plugin tool the first time it can, the Read-only one first, then finishes.
+	fn reply(&self, request: &reinhardt::Request) -> reinhardt::Response {
+		let body = request.json::<Value>().unwrap();
+		let offered: Vec<String> = body["tools"]
+			.as_array()
+			.into_iter()
+			.flatten()
+			.filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
+			.collect();
+		self.offered.lock().unwrap().push(offered.clone());
+		let context: Value =
+			serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+		let called = context["history"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|event| event["kind"] == "tool")
+			.count();
+		let calls: Vec<Value> = ["lookup", "update"]
+			.into_iter()
+			.map(alias)
+			.filter(|name| offered.contains(name))
+			.enumerate()
+			.map(|(n, name)| {
+				json!({"id":format!("call-{n}"),"type":"function","function":{"name":name,"arguments":json!({"q":format!("call {n}")}).to_string()}})
+			})
+			.collect();
+		let message = if called == 0 && !calls.is_empty() {
+			json!({"role":"assistant","content":null,"tool_calls":calls})
+		} else {
+			json!({"role":"assistant","content":"Completed with the plugin tools"})
+		};
+		reinhardt::Response::ok()
+			.with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+			.unwrap()
+	}
+}
+
+struct World {
+	f: Federation,
+	token: String,
+	app: TestApplication,
+	run: Run,
+	mcp: Arc<mcp::FakeMcp>,
+	model: Arc<Model>,
+	/// Keeps the loopback servers up until the test ends.
+	_servers: Vec<Arc<reinhardt::test::fixtures::server::TestServerGuard>>,
+	url: String,
+	schema: String,
+}
+
+/// An Agent that takes in the plugin, whose `lookup` tool is declared Read-only, claimed by a
+/// member under a policy that grants no direct permission to call a plugin tool. `down` points the
+/// plugin's server at an address nothing listens on.
+async fn world(fixture: ApplicationFixture, down: bool) -> World {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let mcp = mcp::FakeMcp::new(vec![mcp::tool("lookup"), mcp::tool("update")]);
+	let model = Arc::new(Model::default());
+	let router = {
+		let model = model.clone();
+		mcp.routes(StubRouter::new()).route(
+			"/v1/chat/completions",
+			Method::POST,
+			upstream_fixtures::reply(move |request: reinhardt::Request| {
+				let response = model.reply(&request);
+				async move { response }
+			}),
+		)
+	};
+	let server = Arc::new(upstream_fixtures::upstream(Arc::new(router.into_server_router())).await);
+	let endpoint = server.url.clone();
+	f.store.keyless.permit_origin_of(&endpoint).unwrap();
+	let mcp_url = if down {
+		// An address that refused the connection: the listener is gone before the Run starts.
+		let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = closed.local_addr().unwrap();
+		drop(closed);
+		let url = format!("http://{address}/mcp");
+		f.store.keyless.permit_origin_of(&url).unwrap();
+		url
+	} else {
+		format!("{endpoint}{}", mcp::PATH)
+	};
+
+	let mut policy = policy(&f.config.node_id);
+	require_tool_call_approval(&mut policy);
+	tenant_root(&f, "acme").await;
+	let deployment_administrator = &f.config.api_token;
+	let (status, snapshot) = request(
+		&app,
+		deployment_administrator,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":0,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "initial policy: {snapshot}");
+
+	// The copy is stored the way an import stores it; the Agent pins it by digest.
+	let files = plugin_files(&mcp_url);
+	let loaded = agent_plugin::load(&files).unwrap();
+	let reference = AgentPluginRef::of(&loaded, SOURCE);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut tx = f
+		.store
+		.pool
+		.begin(&TenancyScope::Tenant(tenant.clone()))
+		.await
+		.unwrap();
+	aidash_server::apps::registry::repositories::agent_plugins::insert(
+		&mut *tx,
+		SOURCE,
+		&loaded,
+		&files,
+		&[],
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+
+	let lookup_digest = schema_digest(&mcp::schema());
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	for (kind, id, config) in [
+		(
+			"model",
+			"model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"research",
+			json!({
+				"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+				"instructions":"Use the docs server","bindings":[],
+				"remove_default":["file_search","file_read"],
+				"agent_plugins":[reference],
+				"agent_plugin_settings":{PLUGIN:{SERVER:{"read_only":[{"name":"lookup","schema_digest":lookup_digest}]}}}
+			}),
+		),
+	] {
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
+		f.registry
+			.register(&tenant, serde_json::from_value(entry).unwrap())
+			.await
+			.unwrap();
+		authorization
+			.set_catalog(
+				"acme",
+				&EntityRef {
+					id: id.into(),
+					version: "1.0.0".into(),
+				},
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+
+	let (status, credential) = request(
+		&app,
+		deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200);
+	let token = credential["token"].as_str().unwrap().to_owned();
+	let (status, workspace) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Plugin work","goal":"Use the docs server"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Research","description":"Look it up, then update it"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, claimed) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	World {
+		f,
+		token,
+		app,
+		run,
+		mcp,
+		model,
+		_servers: vec![server],
+		url,
+		schema,
+	}
+}
+
+async fn step_until(harness: &Harness, world: &World, mut done: impl FnMut(&Run) -> bool) -> Run {
+	for _ in 0..60 {
+		harness.worker_once().await.unwrap();
+		let current = world
+			.f
+			.store
+			.run(&TEST_FIXTURE, world.run.id)
+			.await
+			.unwrap();
+		if done(&current) {
+			return current;
+		}
+	}
+	let current = world
+		.f
+		.store
+		.run(&TEST_FIXTURE, world.run.id)
+		.await
+		.unwrap();
+	panic!(
+		"the Run did not reach the expected state: phase={} error={:?} state={:?}",
+		current.phase().as_str(),
+		current.error,
+		current.state
+	);
+}
+
+async fn events(world: &World, kind: &str) -> Vec<Value> {
+	world
+		.f
+		.store
+		.events(&TEST_FIXTURE, 0, Some(world.run.workspace_id), 1000)
+		.await
+		.unwrap()
+		.into_iter()
+		.filter(|event| event.kind == kind)
+		.map(|event| event.data)
+		.collect()
+}
+
+fn results(run: &Run) -> Vec<(String, Value)> {
+	run.context
+		.events()
+		.filter_map(|event| match event {
+			aidash_server::context::ContextEvent::Tool { call, result } => {
+				Some((call.name.clone(), result.clone()))
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_and_closes_its_sessions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world(fixture, false).await;
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+
+	// The first step lists the server once and pins what it offers.
+	let waiting = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
+	let pinned = events(&world, "run.plugin_tools_pinned").await;
+	assert_eq!(pinned.len(), 1, "{pinned:?}");
+	assert_eq!(pinned[0]["skipped"], json!([]));
+	assert_eq!(world.mcp.requests("tools/list").len(), 1);
+	let tools = &waiting.context.plugin_tools.as_ref().unwrap().servers[0].tools;
+	assert_eq!(
+		tools
+			.iter()
+			.map(|tool| (tool.name.as_str(), tool.read_only))
+			.collect::<Vec<_>>(),
+		[("lookup", true), ("update", false)]
+	);
+
+	// The Read-only tool reached the server without an approval; the other waits for one.
+	let (approval, call) = awaited_tool_call(&waiting).unwrap();
+	assert_eq!(call.name, alias("update"));
+	assert_eq!(
+		world.mcp.calls(),
+		[("lookup".to_owned(), json!({"q":"call 0"}))],
+		"nothing else ran before the decision"
+	);
+	let (status, inbox) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/capabilities/approvals?state=pending&role=approver",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{inbox}");
+	let card = inbox["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap_or_else(|| panic!("the approval is not pending: {inbox}"));
+	assert_eq!(card["kind"], "tool_call");
+	assert_eq!(
+		card["tool"],
+		format!("agent-plugin:{PLUGIN}/{SERVER}/update")
+	);
+	assert_eq!(
+		card["plugin_tool"],
+		json!({
+			"plugin": PLUGIN,
+			"server": SERVER,
+			"tool": "update",
+			"digest": waiting.context.plugin_tools.as_ref().unwrap().servers[0].digest,
+		})
+	);
+	assert_eq!(card["operation"], "invoke");
+	assert_eq!(card["call"]["name"], alias("update"));
+	assert_eq!(card["call"]["arguments"], json!({"q":"call 1"}));
+	assert_eq!(card["viewer_is_approver"], true);
+
+	// The Designated approver decides through the capability approval API.
+	let (status, decided) =
+		decide_tool_call(&world.app, &world.token, approval, "allow_once").await;
+	assert_eq!(status, 200, "{decided}");
+	let finished = step_until(&harness, &world, |run| run.phase().as_str() == "COMPLETED").await;
+
+	// The approved call reached the server as asked, and both results are recorded.
+	assert_eq!(
+		world.mcp.calls(),
+		[
+			("lookup".to_owned(), json!({"q":"call 0"})),
+			("update".to_owned(), json!({"q":"call 1"})),
+		]
+	);
+	let recorded = results(&finished);
+	assert_eq!(
+		recorded
+			.iter()
+			.map(|(name, _)| name.as_str())
+			.collect::<Vec<_>>(),
+		[alias("lookup"), alias("update")]
+	);
+	for (name, result) in &recorded {
+		assert_eq!(result["isError"], false, "{name}: {result}");
+		assert!(result["error"].is_null(), "{name}: {result}");
+	}
+	// The pin held for the whole Run: the server was listed once, in one session.
+	assert_eq!(world.mcp.requests("tools/list").len(), 1);
+	assert_eq!(world.mcp.sessions_issued(), 1);
+	// The approval was consumed by the one call it allowed.
+	let (_, all) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/capabilities/approvals",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(all["items"][0]["state"], "consumed", "{all}");
+	// The model was offered both tools on every request.
+	for offered in world.model.offered.lock().unwrap().iter() {
+		assert!(offered.contains(&alias("lookup")) && offered.contains(&alias("update")));
+	}
+
+	// The Run's session ended with it.
+	for _ in 0..50 {
+		if world.mcp.ended().len() == 1 {
+			break;
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	assert_eq!(world.mcp.ended(), ["session-1"]);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_event_lists_it(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world(fixture, true).await;
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+
+	let finished = step_until(&harness, &world, |run| run.phase().as_str() == "COMPLETED").await;
+
+	let pinned = events(&world, "run.plugin_tools_pinned").await;
+	assert_eq!(pinned.len(), 1, "{pinned:?}");
+	assert_eq!(
+		pinned[0]["skipped"],
+		json!([{"plugin": PLUGIN, "server": SERVER, "reason": "server_unavailable"}])
+	);
+	// No URL, header, detail or body reaches the event.
+	let text = pinned[0].to_string();
+	assert!(
+		!text.contains("127.0.0.1") && !text.contains("unreachable"),
+		"{text}"
+	);
+	let plugin_tools = finished.context.plugin_tools.as_ref().unwrap();
+	assert!(plugin_tools.servers.is_empty());
+	assert_eq!(plugin_tools.findings[0].finding.detail, "unreachable");
+	// The model was offered no plugin tool, and the Run asked for no approval.
+	for offered in world.model.offered.lock().unwrap().iter() {
+		assert!(
+			!offered.iter().any(|name| name.starts_with(PLUGIN)),
+			"{offered:?}"
+		);
+	}
+	assert!(results(&finished).is_empty());
+	assert_eq!(world.mcp.sessions_issued(), 0);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_cancelled_run_ends_its_sessions_without_the_harness_closing_them(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world(fixture, false).await;
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+	step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
+	assert_eq!(world.mcp.sessions_issued(), 1);
+	assert!(
+		world.mcp.ended().is_empty(),
+		"the session lives while the Run waits"
+	);
+
+	world
+		.f
+		.store
+		.control(
+			&TEST_FIXTURE,
+			world.run.id,
+			aidash_server::domain::RunControlAction::Cancel,
+		)
+		.await
+		.unwrap();
+	step_until(&harness, &world, |run| run.phase().as_str() == "CANCELLED").await;
+
+	for _ in 0..50 {
+		if world.mcp.ended().len() == 1 {
+			break;
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	assert_eq!(world.mcp.ended(), ["session-1"]);
+	assert_eq!(
+		world.mcp.calls(),
+		[("lookup".to_owned(), json!({"q":"call 0"}))],
+		"the call that waited for its approval never ran"
+	);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}

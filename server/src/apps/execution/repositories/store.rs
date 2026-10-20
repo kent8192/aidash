@@ -420,15 +420,18 @@ impl Store {
 			});
 		let provider_clients = crate::semantic::backend::clients()?;
 		let tool_clients = aidash_integrations::tools::ToolClients::new()?;
+		// One access, shared by the sessions and by everything that reads `keyless`, so that
+		// an origin permitted later reaches both.
+		let keyless = aidash_application::provider_access::KeylessAccess::default();
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
 			node_id,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
-			plugin_sessions: plugin_sessions(&Default::default(), &tool_clients),
+			plugin_sessions: plugin_sessions(&keyless, &tool_clients),
 			tool_clients,
-			keyless: Default::default(),
+			keyless,
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
 			recovery_cursors: Default::default(),
