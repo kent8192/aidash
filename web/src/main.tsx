@@ -311,7 +311,13 @@ function Dashboard({
     session.data?.access.kind === "subject"
       ? session.data.access.subject
       : null;
-  const remembered = useNodeSelection(subjectTenant);
+  // The Tenant is known from the selected Mapping before `/api/session`
+  // answers, so the Nodes are read while State is.
+  const mappedTenant =
+    browserSession?.mappings.find(
+      (mapping) => mappingContext(mapping) === context,
+    )?.tenant ?? null;
+  const remembered = useNodeSelection(subjectTenant ?? mappedTenant);
   // State lists every Node of the Tenant; the dashboard works in one: the Node
   // of the open Workspace, whichever way it was reached, and otherwise the
   // Node this browser remembers.

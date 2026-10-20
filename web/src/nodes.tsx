@@ -20,7 +20,7 @@ import {
   nodeStorageKey,
   type TenantNode,
 } from "./node-selection";
-import { apiFetch } from "./transport";
+import { ApiError, apiFetch } from "./transport";
 
 /** The Nodes of the signed-in Tenant and the one this browser works in. */
 export type NodeSelection = {
@@ -49,15 +49,24 @@ function subscribe(listener: () => void) {
   };
 }
 
-/** Reads the Tenant's Nodes and keeps the selection among them. Call it once,
- *  where the Tenant is known, and share the result with `NodeSelectionContext`. */
-export function useNodeSelection(tenant: string | null): NodeSelection {
-  const list = useQuery({
+/** The Nodes of `tenant`, which a Deployment Administrator may read for any
+ *  Tenant it opens. Every reader of one Tenant shares one cache entry. */
+export function useTenantNodes(tenant: string | null) {
+  return useQuery({
     queryKey: ["nodes", tenant],
     queryFn: () => tenantNodes(encodeURIComponent(tenant!)),
     enabled: tenant !== null,
     refetchInterval: 30_000,
+    // A refusal is the answer, and the dashboard waits for it.
+    retry: (count, error) =>
+      count < 1 && !(error instanceof ApiError && error.status < 500),
   });
+}
+
+/** Reads the Tenant's Nodes and keeps the selection among them. Call it once,
+ *  where the Tenant is known, and share the result with `NodeSelectionContext`. */
+export function useNodeSelection(tenant: string | null): NodeSelection {
+  const list = useTenantNodes(tenant);
   const remembered = useSyncExternalStore(
     subscribe,
     () =>

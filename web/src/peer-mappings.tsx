@@ -15,7 +15,7 @@ import type {
 } from "./generated/models";
 import { ApiError } from "./transport";
 import { nodeLabel } from "./node-selection";
-import { registrationsPage, useNodes } from "./nodes";
+import { registrationsPage, useNodes, useTenantNodes } from "./nodes";
 import { Badge, Field, Modal, Panel, useI18n } from "./ui";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -44,11 +44,16 @@ function NodeFields({
   editing: PeerMapping | "new";
 }) {
   const { t } = useI18n();
-  const { nodes, selected } = useNodes();
+  // A Deployment Administrator opens any Tenant and has none of its own, so
+  // the Nodes are those of the Tenant whose mappings these are.
+  const list = useTenantNodes(tenant);
+  const nodes = list.isError ? [] : (list.data ?? []);
+  const own = useNodes();
+  const selected =
+    own.tenant === tenant ? own.selected : nodes.find((value) => value.default);
   const creating = editing === "new";
-  const [node, setNode] = useState(
-    creating ? (selected?.name ?? "") : editing.node,
-  );
+  const [chosen, setChosen] = useState<string>();
+  const node = chosen ?? (creating ? selected?.name : editing.node) ?? "";
   const registrations = useQuery({
     queryKey: ["node-registrations", tenant, node, "choices"],
     queryFn: () => registrationsPage(tenant, node, 0, 200),
@@ -66,7 +71,7 @@ function NodeFields({
             name="node"
             required
             value={node}
-            onChange={(event) => setNode(event.target.value)}
+            onChange={(event) => setChosen(event.target.value)}
           >
             {nodes.map((value) => (
               <option key={value.name} value={value.name}>
@@ -122,7 +127,8 @@ export function PeerMappings({
   editable?: boolean;
 }) {
   const { t, locale } = useI18n();
-  const { nodes } = useNodes();
+  const list = useTenantNodes(tenant);
+  const nodes = list.isError ? [] : (list.data ?? []);
   const credentialLabels = disambiguateLabels(
     credentials,
     (credential) => credential.id,
