@@ -6,6 +6,7 @@ import {
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { acceptanceSubject } from "./tenant-fixture";
 
 test("transaction dashboard survives reload during a partition, aborts safely and displays committed changes", async ({
   page,
@@ -67,10 +68,15 @@ test("transaction dashboard survives reload during a partition, aborts safely an
   let pending: string | undefined;
   try {
     const session = await api("/api/session");
-    const workspace = await api("/api/workspaces", {
-      title: "Atomic dashboard",
-      goal: "Commit or abort together",
+    // Only a Tenant subject creates a Workspace (#371). Its subject may not
+    // submit a cross-node transaction, so the Deployment Administrator does.
+    const subject = acceptanceSubject();
+    const created = await request.post("/api/workspaces", {
+      headers: { authorization: `Bearer ${subject.token}` },
+      data: { title: "Atomic dashboard", goal: "Commit or abort together" },
     });
+    expect(created.status(), await created.text()).toBe(200);
+    const workspace = await created.json();
     await api("/api/peers", {
       node_id: peerId,
       endpoint: `http://${peerAddress}`,

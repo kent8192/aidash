@@ -1,5 +1,5 @@
 //! Agent Plugin tools (ADR 0073): a Run pins them once at its first step, and calls to them
-//! follow the ordinary external tool approval.
+//! wait for a Tool call approval unless the plugin declares them read-only.
 use super::*;
 use aidash_domain::{
 	agent_plugin::{
@@ -222,8 +222,12 @@ fn plugin_call(fixture: &mut Fixture, read_only: bool) -> ToolCall {
 		contract: ToolContract::agent_plugin(identity(), read_only),
 		outputs: Mutex::new([json!({"content": []})].into()),
 		invocations: Mutex::new(0),
+		keys: Mutex::new(vec![]),
 	});
-	state(fixture).custom = BTreeMap::from([(ALIAS.to_owned(), tool)]);
+	let state = state(fixture);
+	state.custom = BTreeMap::from([(ALIAS.to_owned(), tool)]);
+	state.scoped = true;
+	state.permit_tools = true;
 	let call = call("call-1", ALIAS, json!({"q": "rust"}));
 	respond(&mut fixture.run, vec![call.clone()]);
 	call
@@ -233,50 +237,63 @@ fn scripted(fixture: &Fixture) -> Arc<Scripted> {
 	fixture.backend.0.custom[ALIAS].clone()
 }
 
+fn approvals(fixture: &Fixture, answers: impl IntoIterator<Item = ToolCallApproval>) {
+	*fixture.backend.0.tool_call_approvals.lock().unwrap() = answers.into_iter().collect();
+}
+
 #[rstest]
 #[tokio::test]
-async fn a_plugin_call_waits_for_the_ordinary_external_approval(mut fixture: Fixture) {
+async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let call = plugin_call(&mut fixture, false);
+	let approval = Uuid::from_u128(0xa1);
+	approvals(
+		&fixture,
+		[ToolCallApproval::Pending {
+			approval_id: approval,
+			expires_at: "2026-10-30T00:00:00Z".parse().unwrap(),
+		}],
+	);
 
 	advance(&mut fixture).await.unwrap();
 
 	assert_eq!(fixture.backend.events(), ["run.waiting_for_tool_approval"]);
 	assert!(matches!(
 		&fixture.run.state,
-		RunState::Waiting(wait) if matches!(**wait, WaitingState::ExternalApproval { .. })
-	));
-	let request = fixture.backend.0.human.lock().unwrap().clone().unwrap();
-	assert_eq!(request.kind, "APPROVAL_REQUIRED");
-	assert_eq!(
-		request.prompt,
-		format!(
-			"Approve this exact external tool action once? Tool: agent-plugin:acme/docs/search@0123456789ab; call: {}",
-			serde_json::to_string(&call).unwrap()
+		RunState::Waiting(wait) if matches!(
+			&**wait,
+			WaitingState::Approval { approval: ApprovalRef::Capability { approval_id }, .. }
+				if *approval_id == approval
 		)
+	));
+	let requests = fixture.backend.0.tool_call_requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("one approval request");
+	};
+	assert_eq!(
+		request.tool,
+		EntityRef {
+			id: "agent-plugin:acme/docs/search".into(),
+			version: "0123456789ab".into()
+		}
 	);
+	assert_eq!(request.operation, "invoke");
+	assert_eq!(request.call, call);
 	assert_eq!(scripted(&fixture).invocations(), 0);
 }
 
 #[rstest]
 #[tokio::test]
 async fn an_approved_plugin_call_runs_once(mut fixture: Fixture) {
-	let call = plugin_call(&mut fixture, false);
-	let key = format!("{}:{}:0", fixture.run.id, 0);
-	fixture
-		.run
-		.state
-		.tool_mut()
-		.unwrap()
-		.workbench_approval_result = Some(ApprovalDecision {
-		key,
-		call,
-		approved: true,
-		expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
-	});
+	plugin_call(&mut fixture, false);
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
 
 	advance(&mut fixture).await.unwrap();
 
 	assert_eq!(scripted(&fixture).invocations(), 1);
+	assert_eq!(
+		scripted(&fixture).keys(),
+		[format!("{}:{}:0", fixture.run.id, 0)]
+	);
 	assert!(
 		!fixture
 			.backend

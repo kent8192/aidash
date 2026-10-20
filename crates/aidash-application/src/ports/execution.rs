@@ -195,7 +195,6 @@ pub trait ExecutionStore: Send + Sync {
 		key: &str,
 	) -> Result<HumanRequest>;
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest>;
-	async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest>;
 	async fn invocation_start(
 		&self,
 		run: &Run,
@@ -406,6 +405,16 @@ pub trait ExecutionAuthority: Send + Sync {
 		contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()>;
 	async fn human_read(&self, id: Uuid) -> Result<()>;
+	/// Admit one exact call of a Tenant's HTTP or MCP tool, or open the Tool call
+	/// approval the Run then waits for (ADR 0075). Asking again with the same
+	/// request returns the same approval, and an approved one is consumed by the
+	/// call it allows. `request.area` is for the implementation to fill from the
+	/// Run's Working Area. A Run executing for another Node never asks here.
+	async fn tool_call_approval(
+		&self,
+		run: &Run,
+		request: crate::ports::capabilities::approvals::ToolCallRequest,
+	) -> Result<crate::ports::capabilities::approvals::ToolCallApproval>;
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],

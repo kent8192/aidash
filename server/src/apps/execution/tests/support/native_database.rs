@@ -230,11 +230,18 @@ pub fn database(postgres_container: PostgresFuture, temp_dir: TempDir) -> Databa
 		let owner = BackendConnection::connect_postgres_with_pool_size(&logins.owner_url, Some(4))
 			.await
 			.expect("connect Reinhardt to the isolated test database as its owner");
-		let migrations =
-			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-				.all_migrations()
-				.await
-				.expect("load generated migration sources");
+		// Community's migrations, then those of the build the test installed.
+		let community =
+			PathBuf::from(aidash_server::bootstrap::build::Build::COMMUNITY.manifest_dir);
+		let mut migrations = Vec::new();
+		for root in aidash_server::bootstrap::build::current().migration_roots(&community) {
+			migrations.extend(
+				FilesystemSource::new(root)
+					.all_migrations()
+					.await
+					.expect("load generated migration sources"),
+			);
+		}
 		postgres::apply_migrations(owner.clone(), &migrations).await;
 		let repeated =
 			reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(owner.clone())

@@ -548,3 +548,6 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	);
 	d.finish().await;
 }
+
+#[path = "deletion/purge.rs"]
+mod purge;

@@ -53,7 +53,9 @@ BEGIN
             INSERT INTO run_activations (run_id, tenant, run_revision, reason)
             SELECT id, tenant, revision, 'approval' FROM runs
              WHERE id = (NEW.data ->> 'run_id')::UUID
-               AND pending -> 'data' ->> 'reason' = 'core_approval' AND pending -> 'data' ->> 'approval_id' = NEW.id::TEXT;
+               AND pending -> 'data' ->> 'reason' = 'approval'
+               AND pending -> 'data' -> 'approval' ->> 'source' = 'capability'
+               AND pending -> 'data' -> 'approval' ->> 'approval_id' = NEW.id::TEXT;
         END IF;
     ELSIF TG_TABLE_NAME = 'core_runs' THEN
         PERFORM aidash_request_activation(NEW.run_id, 'core_admission');
@@ -323,7 +325,11 @@ END $$;
 CREATE FUNCTION public.marketplace_immutable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-BEGIN RAISE EXCEPTION 'Marketplace content is immutable'; END $$;
+BEGIN
+    -- Only a Tenant purge deletes it, with the Tenant's installation (ADR 0061).
+    IF TG_OP = 'DELETE' AND public.aidash_tenant_purge() THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Marketplace content is immutable';
+END $$;
 CREATE FUNCTION public.marketplace_overlay_fence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

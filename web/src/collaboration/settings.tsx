@@ -26,6 +26,7 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { DeploymentPage } from "../deployment";
+import { UsagePanel } from "@slots/usage";
 import {
   Alert,
   Disclosure,
@@ -546,7 +547,10 @@ export function Configuration({
       ) : (
         <>
           {section === "deployment" && deploymentAdministrator && (
-            <DeploymentPage />
+            <>
+              <DeploymentPage />
+              <UsagePanel />
+            </>
           )}
           {section === "providerCredentials" && (
             <ProviderCredentialsPage access={data.access} />

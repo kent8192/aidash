@@ -156,7 +156,8 @@ pub struct ToolBehavior {
 	pub catch_up: bool,
 	pub media_pending: bool,
 	pub yields_model_media: bool,
-	pub workbench_approval: bool,
+	/// A call waits for a Tool call approval unless policy permits it directly.
+	pub tool_call_approval: bool,
 	/// Omitted while Sequential so contracts pinned before this field keep their digest.
 	#[serde(skip_serializing_if = "Concurrency::is_sequential")]
 	pub concurrency: Concurrency,
@@ -313,10 +314,10 @@ impl ToolContract {
 }
 
 /// The behavior of an ordinary tool that no model media, catch-up or yield attributes touch.
-fn external_behavior(effect: ToolEffect, workbench_approval: bool) -> ToolBehavior {
+fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavior {
 	ToolBehavior {
 		effect,
-		workbench_approval,
+		tool_call_approval,
 		fitting: None,
 		continuation: Continuation::Ordinary,
 		catch_up: false,
@@ -347,7 +348,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			catch_up: false,
 			media_pending: false,
 			yields_model_media: false,
-			workbench_approval: false,
+			tool_call_approval: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
 			yields: vec![],
@@ -694,7 +695,7 @@ mod tests {
 			"catch_up",
 			"media_pending",
 			"yields_model_media",
-			"workbench_approval",
+			"tool_call_approval",
 		];
 		for name in [
 			"task_create",
@@ -761,7 +762,7 @@ mod tests {
 		let contract = builtin_contract("workspace_read").unwrap();
 		assert_eq!(
 			serde_json::to_string(&contract.behavior).unwrap(),
-			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"workbench_approval":false}"#
+			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"tool_call_approval":false}"#
 		);
 		assert_eq!(
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
@@ -769,7 +770,7 @@ mod tests {
 		);
 	}
 	const PINNED_WORKSPACE_READ_DIGEST: &str =
-		"sha256:db828953f52fd78d391555cb3bd65a846349e57dc02e015e2ec032544995c271";
+		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
 	fn plugin_tool() -> AgentPluginTool {
 		AgentPluginTool {
 			plugin: PluginName::try_from("acme-tools".to_owned()).unwrap(),
@@ -785,7 +786,7 @@ mod tests {
 			assert_eq!(contract.identity, ToolIdentity::AgentPlugin(plugin_tool()));
 			assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
 			assert!(!contract.replay_safe());
-			assert_eq!(contract.behavior.workbench_approval, !read_only);
+			assert_eq!(contract.behavior.tool_call_approval, !read_only);
 			assert!(contract.behavior.concurrency.is_sequential());
 			assert_eq!(contract.disclosure, DisclosureBoundary::External);
 			assert!(!contract.remote_exposure);
@@ -798,9 +799,9 @@ mod tests {
 		let mut read_only = ToolContract::agent_plugin(plugin_tool(), true);
 
 		assert_ne!(normal.digest().unwrap(), read_only.digest().unwrap());
-		assert!(normal.behavior.workbench_approval);
-		assert!(!read_only.behavior.workbench_approval);
-		read_only.behavior.workbench_approval = true;
+		assert!(normal.behavior.tool_call_approval);
+		assert!(!read_only.behavior.tool_call_approval);
+		read_only.behavior.tool_call_approval = true;
 		assert_eq!(normal, read_only);
 	}
 	#[test]
@@ -844,7 +845,7 @@ mod tests {
 			);
 			assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
 			assert_eq!(contract.behavior.effect, effect);
-			assert_eq!(contract.behavior.workbench_approval, approval);
+			assert_eq!(contract.behavior.tool_call_approval, approval);
 			assert_eq!(contract.replay_safe(), safe);
 			assert!(contract.remote_exposure);
 		}

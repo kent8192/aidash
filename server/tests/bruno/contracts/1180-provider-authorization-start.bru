@@ -1,5 +1,5 @@
 meta {
-  name: 1180 provider-authorization-start - Wrong JSON media type is rejected
+  name: 1180 provider-authorization-start - Forged bearer cannot start Provider Authorization
   type: http
   seq: 1180
 }
@@ -12,27 +12,15 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
-  Content-Type: text/plain
+  Authorization: Bearer forged
+  Content-Type: application/json
 }
 
 body:text {
   {}
 }
 
-script:pre-request {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
-
-}
-
-script:post-response {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
-
-}
-
 tests {
-  test("Exact HTTP 415", function () { expect(res.getStatus()).to.equal(415); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

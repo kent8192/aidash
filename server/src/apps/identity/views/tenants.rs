@@ -95,3 +95,18 @@ pub async fn restore(
 ) -> ViewResult<Response> {
 	crate::http::json(service.restore(request.headers, tenant).await)
 }
+
+/// Purges a deleted Tenant at once, ending its grace period (ADR 0061).
+#[post(
+	"/api/tenants/{tenant}/purge",
+	name = "tenants-purge",
+	auth = "protected"
+)]
+pub async fn purge(
+	#[inject] service: Depends<TenantDeletions>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::json(service.purge_now(actor, origin, tenant).await)
+}

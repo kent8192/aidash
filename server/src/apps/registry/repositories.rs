@@ -65,7 +65,19 @@ impl Registry {
 		let tenants = self
 			.pool
 			.atomic(&listing, async |tx| {
-				crate::apps::identity::models::Tenant::names(tx).await
+				// A Tenant restored within its grace period keeps working with
+				// current definitions, but a purged one must not be given back
+				// the rows its purge removed.
+				let names = crate::apps::identity::models::Tenant::names(tx).await?;
+				let purged = crate::apps::identity::repositories::tenant_deletions::purged_of(
+					tx,
+					names.iter().map(|name| name.to_string()).collect(),
+				)
+				.await?;
+				Ok(names
+					.into_iter()
+					.filter(|name| !purged.contains(name.as_str()))
+					.collect::<Vec<_>>())
 			})
 			.await?;
 		for tenant in tenants {

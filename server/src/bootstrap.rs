@@ -100,6 +100,7 @@ pub async fn initialize(
 		&settings.provider_credentials,
 		&settings.plan_connections,
 	)?;
+	build::current().extension.install(&mut store)?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
@@ -218,6 +219,12 @@ impl RuntimeTasks {
 				}
 			}));
 		}
+		for service in build::current()
+			.extension
+			.services(&federation, receiver.clone())
+		{
+			tasks.spawn_service(runtime_task(service));
+		}
 		let activation = crate::activation::Runtime::new(
 			worker_runtime.clone(),
 			crate::activation::Settings::from_env()?,
@@ -251,10 +258,11 @@ impl RuntimeTasks {
 		}
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
+		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
-			// orphaned on unscheduled Runs are closed first; hourly workbench
-			// and Research evidence purges keep their cadence on the same loop.
+			// orphaned on unscheduled Runs are closed first; hourly workbench,
+			// Research evidence and Tenant purges keep their cadence on the same loop.
 			let mut ticks = 0_u32;
 			loop {
 				if ticks.is_multiple_of(60) {
@@ -278,6 +286,16 @@ impl RuntimeTasks {
 						.await
 					{
 						tracing::warn!(%error, "research account terms sweep failed");
+					}
+					// Deleted Tenants past their grace period, and the audit
+					// history that outlived an earlier purge (ADR 0061).
+					if let Err(error) = crate::apps::identity::services::tenant_purge::sweep(
+						&retention,
+						audit_retention_days,
+					)
+					.await
+					{
+						tracing::warn!(%error, "Tenant purge sweep failed");
 					}
 					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
 						tracing::warn!(%error, "agent test retention cleanup failed");

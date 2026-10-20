@@ -511,6 +511,12 @@ impl PeerAdmissionScope for Owned {
 			// The receiver executes the Run, so its own Cache Salt Key decides;
 			// the scoped admission's mapped Tenant salts it.
 			self.runtime.store.require_projection(&snapshot)?;
+			aidash_application::usage::require(
+				self.runtime.store.admission.as_ref(),
+				&access.identity.tenant,
+				aidash_application::usage::Work::Run,
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()

@@ -26,6 +26,8 @@ pub trait OperationAdmissionScope<O: Send>: Send {
 		package_files: Vec<MountedFile>,
 	) -> Result<Vec<MountedFile>>;
 	async fn verified_health(&mut self, python: bool) -> Result<()>;
+	/// Whether the build admits another Sandboxed tool in the Run's Tenant.
+	async fn admit_sandboxed_tool(&mut self) -> Result<()>;
 	async fn release_python(&mut self, reason: &str) -> Result<()>;
 	fn operation_id(&self) -> Uuid;
 	async fn set_running(&mut self, epoch: i64) -> Result<()>;

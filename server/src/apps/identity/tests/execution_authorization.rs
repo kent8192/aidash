@@ -148,7 +148,8 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	let server = fixture.server;
 	let endpoint = server.url.clone();
 	let effects = fixture.effects;
-	let (mut policy, token, task_id) = bootstrap(&f, &app, &endpoint).await;
+	let (mut policy, token, task_id) =
+		bootstrap_requiring_tool_call_approval(&f, &app, &endpoint).await;
 	let (status, _) = request(
 		&app,
 		&token,
@@ -272,17 +273,11 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	for _ in 0..12 {
 		restarted.worker_once().await.unwrap();
 		let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-		if let aidash_domain::RunState::Waiting(wait) = &current.state
-			&& let aidash_domain::WaitingState::ExternalApproval {
-				request_id, call, ..
-			} = wait.as_ref()
-		{
+		if let Some((approval, call)) = awaited_tool_call(&current) {
 			assert_eq!(call.name, "plugin_0");
 			assert_eq!(call.id, "call-1");
-			f.store
-				.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
-				.await
-				.unwrap();
+			let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
+			assert_eq!(status, 200, "{decided}");
 		}
 		if current.phase().as_str() == "COMPLETED" {
 			break;
@@ -1111,7 +1106,8 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	let entered = fixture.entered;
 	let release = fixture.release;
 	let worker_federation = fixture.worker_federation;
-	let (mut policy, token, task_id) = bootstrap(&f, &app, &endpoint).await;
+	let (mut policy, token, task_id) =
+		bootstrap_requiring_tool_call_approval(&f, &app, &endpoint).await;
 	assert_eq!(
 		request(
 			&app,
@@ -1161,21 +1157,12 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	// human decision before the serialization boundary is exercised.
 	harness.worker_once().await.unwrap();
 	let waiting = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	let aidash_domain::RunState::Waiting(state) = &waiting.state else {
-		panic!("expected external tool approval, got {:?}", waiting.state);
-	};
-	let aidash_domain::WaitingState::ExternalApproval {
-		request_id, call, ..
-	} = state.as_ref()
-	else {
-		panic!("expected external tool approval, got {state:?}");
-	};
+	let (approval, call) = awaited_tool_call(&waiting)
+		.unwrap_or_else(|| panic!("expected a Tool call approval, got {:?}", waiting.state));
 	assert_eq!(call.name, "plugin_0");
 	assert_eq!(call.id, "effect");
-	f.store
-		.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
-		.await
-		.unwrap();
+	let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
+	assert_eq!(status, 200, "{decided}");
 	harness.worker_once().await.unwrap();
 	assert!(matches!(
 		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().state,
@@ -1936,4 +1923,537 @@ fn effect_worker_runtime(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> BoxFuture<'static, aidash_server::federation::Federation> {
 	async move { runtime.await.federation.for_workers().await.unwrap() }.boxed()
+}
+
+/// A scripted model that calls the Tenant's HTTP tool until it has called it
+/// `script` times, then answers; both its upstream and the tool count their hits.
+struct ToolCallApprovals {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	effects: Arc<AtomicUsize>,
+	inferences: Arc<AtomicUsize>,
+	script: Arc<AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn tool_call_counter() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn tool_call_script() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(1))
+}
+
+#[rstest::fixture]
+fn tool_call_router(
+	#[from(tool_call_counter)] effects: Arc<AtomicUsize>,
+	#[from(tool_call_counter)] inferences: Arc<AtomicUsize>,
+	#[from(tool_call_script)] script: Arc<AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let counter = effects.clone();
+		let server = reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/effect",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let counter = counter.clone();
+					async move {
+						counter.fetch_add(1, Ordering::SeqCst);
+						reinhardt::Response::ok()
+							.with_json(&json!({"saved":true}))
+							.unwrap()
+					}
+				}),
+			)
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let body = request.json::<Value>().unwrap();
+					let inference = inferences.fetch_add(1, Ordering::SeqCst) + 1;
+					let script = script.clone();
+					async move {
+						let context: Value =
+							serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
+								.unwrap();
+						let called = context["history"]
+							.as_array()
+							.unwrap()
+							.iter()
+							.filter(|event| event["kind"] == "tool")
+							.count();
+						let message = if called < script.load(Ordering::SeqCst) {
+							json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("call-{inference}"),"type":"function","function":{"name":"plugin_0","arguments":json!({"call":called + 1}).to_string()}}]})
+						} else {
+							json!({"role":"assistant","content":"Completed authorized work"})
+						};
+						reinhardt::Response::ok()
+							.with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router();
+		Arc::new(server)
+	}
+	.boxed()
+	.shared()
+}
+
+#[rstest::fixture]
+fn tool_call_approvals(
+	#[from(tool_call_counter)] effects: Arc<AtomicUsize>,
+	#[from(tool_call_counter)] inferences: Arc<AtomicUsize>,
+	#[from(tool_call_script)] script: Arc<AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(tool_call_router)]
+	#[with(effects.clone(), inferences.clone(), script.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<'static, ToolCallApprovals> {
+	async move {
+		ToolCallApprovals {
+			application: _application.await,
+			server: _server.await,
+			effects,
+			inferences,
+			script,
+		}
+	}
+	.boxed()
+}
+
+/// Step the worker until `done` holds for the Run, which must happen soon.
+async fn step_until(
+	harness: &Harness,
+	f: &aidash_server::federation::Federation,
+	run: Uuid,
+	mut done: impl FnMut(&aidash_server::domain::Run) -> bool,
+) -> aidash_server::domain::Run {
+	for _ in 0..40 {
+		harness.worker_once().await.unwrap();
+		let current = f.store.run(&TEST_FIXTURE, run).await.unwrap();
+		if done(&current) {
+			return current;
+		}
+	}
+	let current = f.store.run(&TEST_FIXTURE, run).await.unwrap();
+	panic!(
+		"the Run did not reach the expected state: phase={} error={:?} state={:?}",
+		current.phase().as_str(),
+		current.error,
+		current.state
+	);
+}
+
+/// Every approval card the reader sees, whatever its state.
+async fn approval_cards(app: &common::TestApplication, token: &str, query: &str) -> Vec<Value> {
+	let (status, page) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/capabilities/approvals{query}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	page["items"].as_array().unwrap().clone()
+}
+
+/// A member's claimed Run under a policy without direct permission to call tools.
+async fn claimed_run(
+	t: &ToolCallApprovals,
+	f: &aidash_server::federation::Federation,
+	policy: impl FnOnce(&mut Value),
+) -> (String, aidash_server::domain::Run) {
+	let app = &t.application.application;
+	let (mut bundle, token, task_id) =
+		bootstrap_requiring_tool_call_approval(f, app, &t.server.url).await;
+	policy(&mut bundle);
+	let (status, claimed) = request(
+		app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	(token, run)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_approved_tool_call_runs_exactly_once_without_another_model_response(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, call) = awaited_tool_call(&waiting).unwrap();
+	assert_eq!(
+		(call.name.as_str(), call.id.as_str()),
+		("plugin_0", "call-1")
+	);
+	assert_eq!(
+		t.effects.load(Ordering::SeqCst),
+		0,
+		"nothing runs before the decision"
+	);
+	assert_eq!(t.inferences.load(Ordering::SeqCst), 1);
+	let pending = approval_cards(
+		&t.application.application,
+		&token,
+		"?state=pending&role=approver",
+	)
+	.await;
+	assert_eq!(pending.len(), 1, "{pending:?}");
+	let card = &pending[0];
+	assert_eq!(card["id"], json!(approval));
+	assert_eq!(card["kind"], "tool_call");
+	assert_eq!(card["tool"], "http");
+	assert_eq!(card["version"], "1.0.0");
+	assert_eq!(card["operation"], "invoke");
+	assert_eq!(card["call"]["name"], "plugin_0");
+	assert_eq!(card["call"]["arguments"], json!({"call":1}));
+	assert_eq!(card["approver"], "alice");
+	assert_eq!(card["viewer_is_approver"], true);
+	let (status, decided) =
+		decide_tool_call(&t.application.application, &token, approval, "allow_once").await;
+	assert_eq!(status, 200, "{decided}");
+	assert_eq!(decided["state"], "approved");
+	let finished = step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+	assert_eq!(
+		t.inferences.load(Ordering::SeqCst),
+		2,
+		"the approved call runs as asked: the model is never asked to repeat it"
+	);
+	let tools: Vec<_> = finished
+		.context
+		.events()
+		.filter_map(|event| match event {
+			aidash_server::context::ContextEvent::Tool { call, result } => Some((call, result)),
+			_ => None,
+		})
+		.collect();
+	assert_eq!(tools.len(), 1, "{tools:?}");
+	assert_eq!(tools[0].0.id, "call-1");
+	assert!(
+		!tools[0].1.to_string().contains("approval_required"),
+		"{:?}",
+		tools[0].1
+	);
+	let all = approval_cards(&t.application.application, &token, "").await;
+	assert_eq!(all.len(), 1, "{all:?}");
+	assert_eq!(
+		all[0]["state"], "consumed",
+		"the one call consumed the approval"
+	);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn allow_for_this_run_covers_the_next_call_of_the_tool_after_new_user_input(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	t.script.store(2, Ordering::SeqCst);
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let app = &t.application.application;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	let (status, decided) = decide_tool_call(app, &token, approval, "allow_run").await;
+	assert_eq!(status, 200, "{decided}");
+	let grant = decided["grant_id"].clone();
+	assert!(grant.is_string(), "{decided}");
+	let granted = approval_cards(app, &token, "?state=active").await;
+	assert_eq!(granted.len(), 1, "{granted:?}");
+	assert_eq!(granted[0]["id"], grant);
+	assert_eq!(granted[0]["tool"], "http");
+	assert_eq!(granted[0]["operation"], "invoke");
+	step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() != "TOOL_CALL" && awaited_tool_call(run).is_none()
+	})
+	.await;
+	assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+	let (status, message) = request(
+		app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/message", run.id),
+		json!({"content":"Call it once more"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	let mut asked = false;
+	let finished = step_until(&harness, &f, run.id, |run| {
+		asked |= awaited_tool_call(run).is_some();
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert!(
+		!asked,
+		"the Run grant covers the next call: {:?}",
+		finished.state
+	);
+	assert_eq!(t.effects.load(Ordering::SeqCst), 2);
+	let all = approval_cards(app, &token, "").await;
+	let calls: Vec<_> = all
+		.iter()
+		.filter(|card| card["kind"] == "tool_call")
+		.collect();
+	assert_eq!(calls.len(), 2, "{all:?}");
+	assert!(calls.iter().all(|card| card["state"] == "consumed"));
+	assert!(
+		calls
+			.iter()
+			.filter(|card| card["grant_id"] == grant)
+			.count() == 2,
+		"both calls ran under the one grant: {calls:?}"
+	);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_tenant_policy_allowing_unapproved_tool_calls_skips_the_approval(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let app = &t.application.application;
+	// The common policy names `tool.call_unapproved`, which a wildcard never grants.
+	let (_, token, task_id) = bootstrap(&f, app, &t.server.url).await;
+	let (status, claimed) = request(
+		app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let finished = step_until(&harness, &f, run.id, |run| {
+		assert!(
+			awaited_tool_call(run).is_none(),
+			"direct permission asks nobody"
+		);
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert_eq!(finished.phase().as_str(), "COMPLETED");
+	assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+	assert!(
+		approval_cards(app, &token, "?state=pending")
+			.await
+			.is_empty()
+	);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_tool_call_is_refused_and_the_run_continues(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	let (status, decided) =
+		decide_tool_call(&t.application.application, &token, approval, "deny").await;
+	assert_eq!(status, 200, "{decided}");
+	assert_eq!(decided["state"], "denied");
+	let finished = step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert_eq!(
+		t.effects.load(Ordering::SeqCst),
+		0,
+		"a denied call never runs"
+	);
+	let refusals: Vec<_> = finished
+		.context
+		.events()
+		.filter_map(|event| match event {
+			aidash_server::context::ContextEvent::Tool { result, .. } => Some(result.to_string()),
+			_ => None,
+		})
+		.collect();
+	assert_eq!(refusals.len(), 1, "{refusals:?}");
+	assert!(
+		refusals[0].contains("tool call approval was denied"),
+		"{refusals:?}"
+	);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_revoked_tool_call_approval_refuses_the_call(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let app = &t.application.application;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	let card = approval_cards(app, &token, "?state=pending&role=approver")
+		.await
+		.remove(0);
+	let (status, revoked) = request(
+		app,
+		&token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/revoke"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_eq!(revoked["state"], "revoked");
+	let finished = step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert_eq!(
+		t.effects.load(Ordering::SeqCst),
+		0,
+		"a revoked approval allows nothing"
+	);
+	assert!(
+		finished
+			.context
+			.events()
+			.any(|event| matches!(event, aidash_server::context::ContextEvent::Tool { result, .. } if result.to_string().contains("tool call approval was revoked")))
+	);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_expired_tool_call_approval_refuses_the_call(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (_, run) = claimed_run(&t, &f, |_| {}).await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	// The Deployment's `approval_seconds` bound the wait: let it lapse.
+	sqlx::query(
+		&reinhardt::query::Query::update()
+			.table(reinhardt::query::Alias::new("core_records"))
+			.value_expr(
+				reinhardt::query::Alias::new("expires_at"),
+				reinhardt::query::Expr::cust("clock_timestamp() - INTERVAL '1 SECOND'"),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id = ?)".to_owned(),
+				vec![Expr::value(approval.to_owned()).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let finished = step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	assert_eq!(
+		t.effects.load(Ordering::SeqCst),
+		0,
+		"an expired approval allows nothing"
+	);
+	assert!(finished.context.events().any(|event| matches!(
+		event,
+		aidash_server::context::ContextEvent::Tool { result, .. }
+			if result.to_string().contains("tool call approval expired")
+	)));
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_pending_tool_call_approval_closes_when_its_run_ends(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let app = &t.application.application;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	assert_eq!(
+		request(
+			app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/control", run.id),
+			json!({"action":"cancel"})
+		)
+		.await
+		.0,
+		200
+	);
+	assert!(
+		approval_cards(app, &token, "?state=pending&role=approver")
+			.await
+			.is_empty(),
+		"an inbox never offers an approval whose Run has ended"
+	);
+	let all = approval_cards(app, &token, "").await;
+	assert_eq!(all.len(), 1, "{all:?}");
+	assert_eq!(all[0]["id"], json!(approval));
+	assert_eq!(all[0]["state"], "closed");
+	assert_eq!(all[0]["closed_reason"], "run_ended");
+	assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
 }

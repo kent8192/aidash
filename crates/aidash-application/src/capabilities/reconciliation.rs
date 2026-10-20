@@ -13,6 +13,7 @@ use aidash_domain::{
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 pub async fn drive(repository: &dyn OperationReconciliationRepository, id: Uuid) -> Result<()> {
@@ -156,6 +157,9 @@ async fn reconcile(
 				operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false});
 				scope.set_area("active").await?;
 				return scope.persist(&operation).await;
+			}
+			if let Some((started_at, ended_at)) = pod_lifetime(&observed) {
+				scope.pod_time(id, started_at, ended_at).await?;
 			}
 			if operation.kind == VERIFICATION {
 				// A Check never changes the Working Area: nothing is published and
@@ -342,6 +346,19 @@ async fn reconcile(
 		.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
 		.await?;
 	Ok(())
+}
+/// When the runner saw the Pod's command start and stop, as the runner
+/// records them: seconds since the epoch.
+fn pod_lifetime(observed: &Value) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+	let started = observed["started_at"].as_f64()?;
+	let ended = observed["terminated_at"]
+		.as_f64()
+		.or_else(|| observed["finished_at"].as_f64())?;
+	if ended < started {
+		return None;
+	}
+	let instant = |seconds: f64| DateTime::from_timestamp_micros((seconds * 1_000_000.0) as i64);
+	Some((instant(started)?, instant(ended)?))
 }
 async fn upload_inputs(
 	scope: &mut dyn OperationReconciliationScope,
