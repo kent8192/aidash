@@ -565,8 +565,90 @@ class SealAndMigrationTests(unittest.TestCase):
         self.assertEqual(container["env"], [
             {"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]},
             {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "app-migration", "key": "DATABASE_URL"}}},
+            {"name": "AIDASH_DEMO_DATA_ENABLED", "value": "true"},
         ])
         self.assertIn('--directory "$AIDASH_MEMORY_RECOVERY_DIR"', container["args"][0])
+
+    def migration_job(self, identity, people=None, fork=False):
+        """Run the migration Job and return it with every Secret applied meanwhile."""
+        namespace = kube.namespace_of(identity)
+        kind, name = kube.target(identity, kube.SERVER).split("/", 1)
+        self.cluster.put({
+            "kind": kind.capitalize(), "metadata": {"name": name, "namespace": namespace},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
+                "name": "aidash", "args": ["server"], "env": [], "volumeMounts": [],
+            }]}}},
+        })
+        applied = []
+        apply = self.cluster.apply
+        self.cluster.apply = lambda manifest: (applied.append(manifest), apply(manifest))[1]
+        kube.migrate(self.cluster, identity, "a" * 40, people, fork)
+        (key,) = [key for key in self.cluster.objects if key[0] == "job"]
+        job = self.cluster.objects.pop(key)
+        return job["spec"]["template"]["spec"], [item for item in applied if item["kind"] == "Secret"]
+
+    def test_production_migration_loads_no_demo_data(self):
+        spec, applied = self.migration_job("production", people='{"people": []}')
+        (container,) = spec["containers"]
+        self.assertNotIn("demo-data", container["args"][0])
+        self.assertFalse(any(item["name"] == "AIDASH_DEMO_DATA_ENABLED" for item in container["env"]))
+        self.assertNotIn("volumes", spec)
+        self.assertEqual(applied, [])
+        self.assertIsNone(self.cluster.get("secret", kube.DEMO_SECRET, "aidash-production"))
+
+    def test_other_environments_load_the_structure_without_people(self):
+        spec, applied = self.migration_job("test")
+        (container,) = spec["containers"]
+        self.assertTrue(container["args"][0].endswith(" && aidash demo-data --from /app/deploy/demo-data/structure.json"))
+        self.assertIn({"name": "AIDASH_DEMO_DATA_ENABLED", "value": "true"}, container["env"])
+        self.assertNotIn("volumes", spec)
+        self.assertEqual(container["volumeMounts"], [])
+        self.assertEqual(applied, [])
+
+    def test_people_reach_only_the_migration_job_and_are_removed_afterwards(self):
+        people = '{"people": [{"email": "alex@example.test"}]}'
+        spec, applied = self.migration_job("test", people=people)
+        (container,) = spec["containers"]
+        self.assertTrue(container["args"][0].endswith(
+            " && aidash demo-data --from /app/deploy/demo-data/structure.json"
+            " --people /run/aidash/demo-data/people.json"
+        ))
+        self.assertEqual(spec["volumes"], [{"name": "demo-data", "secret": {"secretName": "app-demo-data"}}])
+        self.assertEqual(container["volumeMounts"], [
+            {"name": "demo-data", "mountPath": "/run/aidash/demo-data", "readOnly": True},
+        ])
+        (manifest,) = applied
+        self.assertEqual(manifest["metadata"], {"name": "app-demo-data", "namespace": "aidash-test"})
+        self.assertEqual(base64.b64decode(manifest["data"]["people.json"]).decode(), people)
+        # The server and worker templates are untouched, and the people do not stay behind.
+        server = self.cluster.get("deployment", "app-aidash-server", "aidash-test")["spec"]["template"]["spec"]
+        self.assertNotIn("volumes", server)
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+    def test_fork_never_receives_people_and_loses_a_stale_secret(self):
+        self.cluster.put(kube.secret("aidash-test", "app-demo-data", {"people.json": "{}"}, environment=False))
+        spec, applied = self.migration_job("test", people='{"people": []}', fork=True)
+        (container,) = spec["containers"]
+        self.assertNotIn("--people", container["args"][0])
+        self.assertIn("aidash demo-data --from", container["args"][0])
+        self.assertNotIn("volumes", spec)
+        self.assertEqual(applied, [])
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+    def test_unconfigured_environment_loses_a_stale_secret(self):
+        self.cluster.put(kube.secret("aidash-test", "app-demo-data", {"people.json": "{}"}, environment=False))
+        spec, _ = self.migration_job("test")
+        self.assertNotIn("volumes", spec)
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+    def test_failed_migration_still_removes_the_people(self):
+        self.cluster.put({
+            "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{"name": "aidash"}]}}},
+        })
+        with patch.object(kube, "wait_job", return_value=False), self.assertRaises(RuntimeError):
+            kube.migrate(self.cluster, "test", "a" * 40, '{"people": []}')
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
 
 
 class DatabaseRoleTests(unittest.TestCase):

@@ -215,9 +215,24 @@ configured. The project is never inferred from a developer's `gcloud` default.
 | Secret   | `GCP_DEVELOP_RUNTIME_CONFIG`     | Google/provider configuration JSON for develop                                          |
 | Secret   | `GCP_TEST_RUNTIME_CONFIG`        | Google/provider configuration JSON for test                                             |
 | Secret   | `GCP_PR_RUNTIME_CONFIG`          | Google/provider configuration JSON for PR staging                                       |
+| Secret   | `GCP_DEMO_DATA`                  | People for Demo data (optional, `nonproduction` only)                                   |
 
 The optional `node_count` map in `AIDASH_GCP_CONFIG` (keys `develop`, `test`,
 `pr`) sets the Environment node pool size per kind; omitted kinds use one node.
+
+The optional `GCP_DEMO_DATA` Environment secret of `nonproduction` holds the real
+people for Demo data (ADR 0080) as one JSON object:
+`{"people":[{"email":"a@example.com","tenant":"acme","subject":"alex","role":"administrator"}]}`.
+`tenant` names a `key` in `deploy/demo-data/structure.json`, and `role` is
+`administrator` or `member`. The apply job passes it to the controller as
+`AIDASH_DEMO_DATA`, which stores it as the `app-demo-data` Secret and mounts it
+read-only into the migration Job only, never into a server or worker, then
+deletes it when the Job ends. Every Environment except production runs
+`aidash demo-data` in that Job with `AIDASH_DEMO_DATA_ENABLED=true`; without the
+secret it loads only the structure. An Environment built from a fork never
+receives the people. Production never loads Demo data: its migration Job has
+neither the command nor the setting, and `gcp-production.yml` cannot read the
+`nonproduction` secret.
 
 Without GCIP, each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
 `AIDASH_OIDC_CLIENT_SECRET`, plus required provider credentials named

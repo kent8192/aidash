@@ -40,6 +40,11 @@ CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
 # but could never chmod the root itself as ledger initialization requires.
 RECOVERY_ROOT = "/var/lib/aidash/memory-recovery"
 RECOVERY_HOME = "home"
+# Demo data: the structure ships in the image; the people come from a Secret
+# mounted only into the migration Job (ADR 0080).
+DEMO_STRUCTURE = "/app/deploy/demo-data/structure.json"
+DEMO_PEOPLE_DIR = "/run/aidash/demo-data"
+DEMO_SECRET = "app-demo-data"
 # Deployments outside production; see `target`.
 SERVER = "deployment/app-aidash-server"
 WORKER = "deployment/app-aidash-worker"
@@ -832,7 +837,7 @@ def gate(cluster, identity):
     admission(cluster, identity, "close")
 
 
-def deploy(cluster, identity, output, release, sha, settings):
+def deploy(cluster, identity, output, release, sha, settings, demo_people=None, fork=False):
     """Install both releases with writers stopped, start dependencies, then migrate."""
     namespace = namespace_of(identity)
     # An edge started by this deploy stays closed until readiness opens it, even
@@ -850,14 +855,21 @@ def deploy(cluster, identity, output, release, sha, settings):
     cluster.scale(namespace, target(identity, RUNNER), 1)
     cluster.rollout(namespace, target(identity, RUNNER))
     database_roles(cluster, identity)
-    migrate(cluster, identity, sha)
+    migrate(cluster, identity, sha, demo_people, fork)
     observer_role(cluster, identity)
     cluster.rollout(namespace, target(identity, EDGE))
 
 
-def migrate(cluster, identity, sha):
-    """One-shot Job with the server's exact image, env, mounts and identity."""
+def migrate(cluster, identity, sha, demo_people=None, fork=False):
+    """One-shot Job with the server's exact image, env, mounts and identity.
+
+    Every Environment but production also loads Demo data in the Job (ADR 0080).
+    `demo_people` is the people file's JSON; an Environment built from a fork
+    never receives it, whatever the caller passes.
+    """
     namespace = namespace_of(identity)
+    demo = identity != PRODUCTION
+    people = demo_people if demo and not fork else None
     template = deepcopy(cluster.get(*target(identity, SERVER).split("/", 1), namespace)["spec"]["template"])
     spec = template["spec"]
     container = next(item for item in spec["containers"] if item["name"] == "aidash")
@@ -879,6 +891,16 @@ def migrate(cluster, identity, sha):
         'aidash migrate && aidash memory-recovery init-if-missing --directory "$AIDASH_MEMORY_RECOVERY_DIR"'
         " && aidash activation-provision"
     ]
+    if demo:
+        container["args"][0] += f" && aidash demo-data --from {DEMO_STRUCTURE}"
+        container["env"].append({"name": "AIDASH_DEMO_DATA_ENABLED", "value": "true"})
+        if people is not None:
+            # Mounted into this Job's container only, never into a server or worker.
+            container["args"][0] += f" --people {DEMO_PEOPLE_DIR}/people.json"
+            spec.setdefault("volumes", []).append({"name": "demo-data", "secret": {"secretName": DEMO_SECRET}})
+            container.setdefault("volumeMounts", []).append(
+                {"name": "demo-data", "mountPath": DEMO_PEOPLE_DIR, "readOnly": True},
+            )
     spec["restartPolicy"] = "Never"
     # Never matches the backend Service or the writer drain selector. The copied
     # template keeps the required co-location term for the shared RWO claims;
@@ -899,21 +921,37 @@ def migrate(cluster, identity, sha):
         960,
     )
     name = f"migrate-{sha[:12]}-{secrets.token_hex(3)}"
-    cluster.create({
-        "apiVersion": "batch/v1", "kind": "Job",
-        "metadata": {"name": name, "namespace": namespace, "labels": labels},
-        "spec": {
-            "backoffLimit": 0,
-            "activeDeadlineSeconds": 900,
-            "ttlSecondsAfterFinished": 3600,
-            "template": {
-                "metadata": {"labels": labels},
-                "spec": spec,
+    if demo:
+        # Whatever an earlier deploy left is gone before this Job can mount it,
+        # so a fork or an unconfigured Environment never sees old people.
+        drop_demo_people(cluster, namespace)
+        if people is not None:
+            cluster.apply(secret(namespace, DEMO_SECRET, {"people.json": people}, environment=False))
+    try:
+        cluster.create({
+            "apiVersion": "batch/v1", "kind": "Job",
+            "metadata": {"name": name, "namespace": namespace, "labels": labels},
+            "spec": {
+                "backoffLimit": 0,
+                "activeDeadlineSeconds": 900,
+                "ttlSecondsAfterFinished": 3600,
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": spec,
+                },
             },
-        },
-    })
-    if not wait_job(cluster, namespace, name, 900):
-        raise RuntimeError("Migration Job failed; the retained database was not replaced")
+        })
+        if not wait_job(cluster, namespace, name, 900):
+            raise RuntimeError("Migration Job failed; the retained database was not replaced")
+    finally:
+        if demo:
+            # The finished Job needs the people no longer; do not leave them in the namespace.
+            drop_demo_people(cluster, namespace)
+
+
+def drop_demo_people(cluster, namespace):
+    if cluster.get("secret", DEMO_SECRET, namespace) is not None:
+        cluster.delete("secret", DEMO_SECRET, namespace)
 
 
 # A table owned by another role predates the owner and server roles: the

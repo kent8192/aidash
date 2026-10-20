@@ -356,6 +356,24 @@ def current_entry(store, identity, generation):
     return entry
 
 
+def demo_people():
+    """The Demo data people file from the nonproduction Environment secret, or None.
+
+    Its value holds real people's addresses, so neither it nor any part of
+    it appears in a message.
+    """
+    raw = os.environ.get("AIDASH_DEMO_DATA")
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise Refused("AIDASH_DEMO_DATA must be a JSON object")
+    return json.dumps(value, sort_keys=True)
+
+
 def provision_secret(config, output, kind):
     secret = output["runtime_secret"]
     all_versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
@@ -1127,7 +1145,10 @@ def reconcile_locked(config, store, terraform, managed):
             # GCIP digest fences: enforce it before the edge reopens admission.
             reconcile_gcip_mfa(store, identity, generation, output)
             current_entry(store, identity, generation)
-            kube.deploy(cluster, identity, output, entry["release"], entry["sha"], settings)
+            kube.deploy(
+                cluster, identity, output, entry["release"], entry["sha"], settings,
+                demo_people=demo_people(), fork=bool(entry.get("fork")),
+            )
             kube.start_writers(cluster, identity)
             if kube.health(cluster, identity) != entry["sha"]:
                 raise Refused("Running source differs from the authorized release")

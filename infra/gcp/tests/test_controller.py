@@ -1444,6 +1444,34 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.calls, [("activity", "test")])
         self.assertTrue(self.cloud.managed["test"]["running"])
 
+    def test_deploy_passes_the_validated_demo_people_without_logging_them(self):
+        self.request()
+        people = {"people": [{"email": "alex@example.test", "subject": "alex"}]}
+        output = io.StringIO()
+        with patch.dict(os.environ, {"AIDASH_DEMO_DATA": json.dumps(people, indent=2)}), \
+                patch.object(controller.kube, "deploy", wraps=controller.kube.deploy) as deploy, \
+                redirect_stdout(output):
+            self.reconcile()
+        (call,) = deploy.call_args_list
+        self.assertEqual(json.loads(call.kwargs["demo_people"]), people)
+        self.assertFalse(call.kwargs["fork"])
+        self.assertNotIn("alex@example.test", output.getvalue())
+
+    def test_deploy_without_demo_people_passes_none(self):
+        self.request()
+        with patch.dict(os.environ, {"AIDASH_DEMO_DATA": ""}), \
+                patch.object(controller.kube, "deploy", wraps=controller.kube.deploy) as deploy:
+            self.reconcile()
+        (call,) = deploy.call_args_list
+        self.assertIsNone(call.kwargs["demo_people"])
+
+    def test_demo_people_must_be_a_json_object_and_are_never_echoed(self):
+        for raw in ('["alex@example.test"]', "not json alex@example.test", '"alex@example.test"'):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"AIDASH_DEMO_DATA": raw}):
+                with self.assertRaises(controller.Refused) as raised:
+                    controller.demo_people()
+                self.assertNotIn("alex", str(raised.exception))
+
     def test_failed_deployment_waits_for_explicit_retry_and_keeps_data(self):
         self.request()
         with patch.object(controller.kube, "migrate", side_effect=RuntimeError("fixture migration failure")):
