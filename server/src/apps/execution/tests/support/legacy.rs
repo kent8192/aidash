@@ -231,6 +231,92 @@ pub async fn repoint_node(
 	assert_eq!(status, 200, "{response}");
 }
 
+/// A stand-in Deployment that `tenant`'s default Node of the receiving
+/// Deployment accepts, and the Node of it that sends.
+#[allow(dead_code)]
+pub struct Source {
+	pub remote: peering::Remote,
+	pub node: String,
+	pub receiver: aidash_domain::nodes::NodeAddress,
+}
+
+#[allow(dead_code)]
+impl Source {
+	/// The address of the sending Node.
+	pub fn address(&self) -> String {
+		self.remote.node(&self.node)
+	}
+}
+
+/// Registers a Node of the stand-in Deployment `deployment` at `tenant`'s
+/// default Node, through the registration route.
+#[allow(dead_code)]
+pub async fn register_source(
+	f: &Federation,
+	app: &TestApplication,
+	deployment: &str,
+	tenant: &str,
+) -> Source {
+	let remote = peering::Remote::start(deployment).await;
+	let node = aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender")).to_string();
+	let receiver = default_node(&f.store, tenant).await;
+	peering::permit(f, &remote.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, receiver.node.as_str()),
+		remote.registration(&node),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	Source {
+		remote,
+		node,
+		receiver,
+	}
+}
+
+/// POSTs a Peer Graph View request. A subject viewer is a Node's request as
+/// that subject; a Deployment Administrator viewer has no Node, names the
+/// receiving Deployment and acts under a Peer Graph Grant.
+#[allow(dead_code)]
+pub async fn post_graph(
+	app: &TestApplication,
+	source: &Source,
+	viewer: &Value,
+	payload: &Value,
+) -> (u16, Value) {
+	use peering::Bearer;
+	let (receiver, bearer, subject) = if viewer["kind"] == "deployment_administrator" {
+		let identity = viewer["id"].as_str().unwrap().parse().unwrap();
+		(
+			source.receiver.deployment.to_string(),
+			Bearer::Viewer(&source.remote, identity),
+			String::new(),
+		)
+	} else {
+		(
+			source.receiver.to_string(),
+			Bearer::Signed(&source.remote, source.node.clone()),
+			viewer["subject"].as_str().unwrap().to_owned(),
+		)
+	};
+	let response = peering::post_as(
+		&app.client(),
+		&receiver,
+		bearer,
+		&subject,
+		"/federation/v0.1/scoped/graph",
+		payload,
+	)
+	.await;
+	(
+		response.status_code(),
+		response.json_value().unwrap_or(Value::Null),
+	)
+}
+
 /// Both fixture Deployments register the other's default Node, so each accepts
 /// and addresses the other. Both serve their routes.
 #[allow(dead_code)]

@@ -11,19 +11,7 @@ use uuid::Uuid;
 
 const SOURCE: &str = "aidash://source";
 
-/// A stand-in Deployment that `tenant`'s default Node of the receiving
-/// Deployment accepts, and the Node of it that sends.
-struct Source {
-	remote: common::peering::Remote,
-	node: String,
-	receiver: aidash_domain::nodes::NodeAddress,
-}
-
-impl Source {
-	fn address(&self) -> String {
-		self.remote.node(&self.node)
-	}
-}
+use common::Source;
 
 async fn graph(
 	app: &common::TestApplication,
@@ -41,7 +29,6 @@ async fn graph_custom(
 	viewer: Value,
 	overrides: Value,
 ) -> (u16, Value) {
-	use common::peering::Bearer;
 	let mut payload = json!({
 		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
 		"kinds":["workspace","goal","task","agent","tool","model"],
@@ -53,63 +40,7 @@ async fn graph_custom(
 		.as_object_mut()
 		.unwrap()
 		.extend(overrides.as_object().unwrap().clone());
-	// A subject viewer is a Node's request as that subject; a Deployment
-	// Administrator viewer has no Node and names the receiving Deployment.
-	let (receiver, bearer, subject) = if viewer["kind"] == "deployment_administrator" {
-		let identity = viewer["id"].as_str().unwrap().parse().unwrap();
-		(
-			source.receiver.deployment.to_string(),
-			Bearer::Viewer(&source.remote, identity),
-			String::new(),
-		)
-	} else {
-		(
-			source.receiver.to_string(),
-			Bearer::Signed(&source.remote, source.node.clone()),
-			viewer["subject"].as_str().unwrap().to_owned(),
-		)
-	};
-	let response = common::peering::post_as(
-		&app.client(),
-		&receiver,
-		bearer,
-		&subject,
-		"/federation/v0.1/scoped/graph",
-		&payload,
-	)
-	.await;
-	(
-		response.status_code(),
-		response.json_value().unwrap_or(Value::Null),
-	)
-}
-
-/// Registers a Node of the stand-in Deployment `deployment` at `tenant`'s
-/// default Node, through the registration route.
-async fn add_peer(
-	f: &aidash_server::federation::Federation,
-	app: &common::TestApplication,
-	deployment: &str,
-	tenant: &str,
-) -> Source {
-	let remote = common::peering::Remote::start(deployment).await;
-	let node = aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender")).to_string();
-	let receiver = common::default_node(&f.store, tenant).await;
-	common::peering::permit(f, &remote.endpoint);
-	let (status, body) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&common::peering::registration_path(tenant, receiver.node.as_str()),
-		remote.registration(&node),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-	Source {
-		remote,
-		node,
-		receiver,
-	}
+	common::post_graph(app, source, &viewer, &payload).await
 }
 
 #[rstest::rstest]
@@ -135,7 +66,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let source = add_peer(&f, &app, SOURCE, "acme").await;
+	let source = common::register_source(&f, &app, SOURCE, "acme").await;
 	let (status, visible_peers) = request(
 		&app,
 		&subject_token,
@@ -158,7 +89,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.0,
 		403
 	);
-	let _third = add_peer(&f, &app, "aidash://third", "acme").await;
+	let _third = common::register_source(&f, &app, "aidash://third", "acme").await;
 	let viewer = json!({"kind":"subject","subject":"source-subject"});
 	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
 	let (_, issued) = request(
@@ -832,7 +763,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		]
 	});
 	common::tenant_root(&f, "sparse").await;
-	let source = add_peer(&f, &app, SOURCE, "sparse").await;
+	let source = common::register_source(&f, &app, SOURCE, "sparse").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,
