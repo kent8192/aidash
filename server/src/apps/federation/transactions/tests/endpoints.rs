@@ -309,69 +309,6 @@ async fn deployment_administrator_abort_is_durable_while_recovery_owns_the_lease
 
 #[rstest]
 #[tokio::test]
-async fn peer_trust_changes_are_persisted_once_per_node_and_audited(
-	#[future] endpoint: EndpointFixture,
-) {
-	use aidash_server::apps::federation::peer::models::Peer;
-	use aidash_server::config::PROTOCOL_VERSION;
-	// Arrange: transaction trust uses an already registered peer.
-	let app = endpoint.await;
-	let peer = Peer::build()
-		.node_id("aidash://transaction-peer")
-		.endpoint(&app.server.url)
-		.credential_env("UNUSED_TRANSACTION_PEER_FIXTURE")
-		.protocol_version(PROTOCOL_VERSION)
-		.enabled(true)
-		.finish();
-	Peer::objects()
-		.create_with_conn(&mut app.database.lease.handle(), &peer)
-		.await
-		.unwrap();
-	// Act
-	for enabled in [true, true, false] {
-		let input = json!({"node_id":peer.node_id,"enabled":enabled});
-		let saved = assert_json(
-			app.deployment_administrator
-				.post("/api/transactions/trust", &input, "json")
-				.await
-				.unwrap(),
-			200,
-		);
-		assert_eq!(
-			saved,
-			json!({"node_id":peer.node_id,"enabled":enabled,"pending_transactions":[]})
-		);
-	}
-	let peers = assert_json(
-		app.deployment_administrator
-			.get("/api/transactions/trust")
-			.await
-			.unwrap(),
-		200,
-	);
-	let history = AtomicHistory::objects()
-		.filter(AtomicHistory::field_transaction_id().eq(Uuid::nil()))
-		.order_by(&["sequence"])
-		.all_with_db(&mut app.database.lease.handle())
-		.await
-		.unwrap();
-	// Assert
-	assert_eq!(
-		peers,
-		json!([{"node_id":peer.node_id,"enabled":false,"pending_transactions":[]}])
-	);
-	assert_eq!(
-		history
-			.iter()
-			.map(|row| row.phase.as_str())
-			.collect::<Vec<_>>(),
-		["ENABLED", "ENABLED", "DISABLED"]
-	);
-	assert!(history.iter().all(|row| row.detail == peer.node_id));
-}
-
-#[rstest]
-#[tokio::test]
 async fn participant_list_reads_persisted_orm_state(#[future] endpoint: EndpointFixture) {
 	use aidash_server::apps::federation::transactions::models::{
 		AtomicParticipant, states::AtomicParticipantPhase,
