@@ -229,7 +229,84 @@ pub fn gh_environment_allowed(name: &std::ffi::OsStr) -> bool {
 		)
 }
 
-async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>> {
+/// Why the REST API refused a request that the GitHub CLI then retries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+	RateLimited,
+	Unauthorized,
+}
+
+impl Refusal {
+	/// Whether a 403 body names a rate limit. A secondary refusal may arrive
+	/// with `x-ratelimit-remaining` still describing the primary budget, so the
+	/// body is the only place GitHub says the request was throttled.
+	async fn says_rate_limit(response: &mut reqwest::Response) -> bool {
+		const MAX_BODY: usize = 64 * 1024;
+		let mut body = Vec::new();
+		while body.len() < MAX_BODY {
+			match response.chunk().await {
+				Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+				Ok(None) | Err(_) => break,
+			}
+		}
+		let body = String::from_utf8_lossy(&body).to_ascii_lowercase();
+		body.contains("secondary rate limit")
+			|| body.contains("secondary-rate-limit")
+			|| body.contains("api rate limit exceeded")
+	}
+
+	/// GitHub answers an exhausted rate limit with 403 or 429 and marks it in
+	/// the headers. A secondary limit may omit those optional headers and leave
+	/// `x-ratelimit-remaining` describing the primary limit, so its refusal is
+	/// only named in the response body. Any other 401/403 is an access refusal.
+	pub(crate) async fn of(response: &mut reqwest::Response) -> Option<Self> {
+		let status = response.status();
+		let header = |name: &str| {
+			response
+				.headers()
+				.get(name)
+				.and_then(|value| value.to_str().ok())
+		};
+		let marked = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+			|| (status == reqwest::StatusCode::FORBIDDEN
+				&& (header("x-ratelimit-remaining") == Some("0")
+					|| header("retry-after").is_some()));
+		if marked {
+			return Some(Self::RateLimited);
+		}
+		if status == reqwest::StatusCode::FORBIDDEN && Self::says_rate_limit(response).await {
+			return Some(Self::RateLimited);
+		}
+		match status {
+			reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED => {
+				Some(Self::Unauthorized)
+			}
+			_ => None,
+		}
+	}
+
+	/// The error when the GitHub CLI cannot run on this server to retry.
+	pub(crate) fn without_cli(self) -> Error {
+		Error::Invalid(
+			match self {
+				Self::RateLimited => {
+					"GitHub API rate limit reached and the GitHub CLI is not installed on this server; set GITHUB_TOKEN for the server"
+				}
+				Self::Unauthorized => {
+					"GitHub refused the request and the GitHub CLI is not installed on this server; set GITHUB_TOKEN with access to this repository"
+				}
+			}
+			.into(),
+		)
+	}
+}
+
+async fn gh_api(
+	url: &str,
+	limit: usize,
+	accept: &str,
+	refusal: Refusal,
+) -> Result<Option<Vec<u8>>> {
 	let parsed = Url::parse(url).map_err(|error| Error::Invalid(error.to_string()))?;
 	let endpoint = format!(
 		"{}{}",
@@ -252,7 +329,7 @@ async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>
 		.stderr(std::process::Stdio::null())
 		.kill_on_drop(true)
 		.spawn()
-		.map_err(|_| Error::Invalid("GitHub API rate limit reached; configure GitHub CLI authentication or GITHUB_TOKEN".into()))?;
+		.map_err(|_| refusal.without_cli())?;
 	let mut output = Vec::new();
 	let stdout = child
 		.stdout
@@ -308,7 +385,13 @@ async fn api_get_with_accept(
 	accept: &str,
 ) -> Result<Option<Vec<u8>>> {
 	let mut response = client.get(url).header("accept", accept);
-	if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
+	// Compose passes an unset variable through as empty; GitHub refuses an empty
+	// bearer token, so it must count as no token.
+	if let Some(token) = ["GITHUB_TOKEN", "GH_TOKEN"]
+		.into_iter()
+		.filter_map(|name| std::env::var(name).ok())
+		.find(|token| !token.is_empty())
+	{
 		response = response.bearer_auth(token);
 	}
 	let mut response = response
@@ -321,11 +404,8 @@ async fn api_get_with_accept(
 	) {
 		return Ok(None);
 	}
-	if matches!(
-		response.status(),
-		reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED
-	) {
-		return gh_api(url, limit, accept).await;
+	if let Some(refusal) = Refusal::of(&mut response).await {
+		return gh_api(url, limit, accept, refusal).await;
 	}
 	if !response.status().is_success() {
 		return Err(Error::Invalid(format!(
