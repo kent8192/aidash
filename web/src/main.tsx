@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { DisplayProvider, ReferenceName } from "./record-view";
+import { DisplayProvider } from "./record-view";
 import {
   createRootRoute,
   createRoute,
@@ -70,7 +70,6 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { NotificationProvider } from "./notifications";
 import { useApprovalInbox } from "./capabilities/inbox";
 import type { NoticeTarget } from "./notifications/model";
-import type { Mesh } from "./types";
 import {
   storedThemePreference,
   useTheme,
@@ -79,7 +78,7 @@ import {
 } from "./theme";
 import { AppShell } from "./shell/app-shell";
 import { AuthCard } from "./shell/auth-card";
-import { Alert, Loading, Notice } from "./components/patterns";
+import { Alert, Loading } from "./components/patterns";
 import { authCopy, shellCopy } from "./shell/copy";
 import { signInMethods } from "@slots/sign-in";
 import { BillingNotice } from "@slots/billing";
@@ -762,8 +761,6 @@ function Dashboard({
       </AuthCard>
     );
   const data = state.isError ? undefined : state.data;
-  // Another Node's observations are not a Deployment-wide view any more (#241).
-  const remote = undefined as Mesh | undefined;
   const selectedRef = data
     ? chooseChannel(data.workspaces, route.channel)
     : undefined;
@@ -772,14 +769,7 @@ function Dashboard({
     data?.workspaces.find((value) => value.id === selectedRef.id);
   const currentChannel = workspace?.id ?? route.channel;
   const runs = data
-    ? [
-        ...data.runs.map((run) => ({ run, node: data.node.id })),
-        ...(deploymentAdministrator
-          ? (remote?.nodes.flatMap((node) =>
-              node.runs.map((run) => ({ run, node: node.node_id })),
-            ) ?? [])
-          : []),
-      ]
+    ? data.runs.map((run) => ({ run, node: data.node.id }))
     : [];
   const requests = data
     ? [
@@ -820,7 +810,6 @@ function Dashboard({
       <NotificationProvider
         key={`${browserSessionId}:${context}`}
         data={data}
-        remote={deploymentAdministrator ? remote : undefined}
         approvals={inbox.pending}
         locale={locale}
         theme={theme}

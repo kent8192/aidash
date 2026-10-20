@@ -1,5 +1,4 @@
 import { createContext, useContext, type ReactNode } from "react";
-import { NativeSelect } from "./components/ui/native-select";
 import type { State } from "./types";
 import { JsonView, useEntityLabel, useEntityName, useI18n } from "./ui";
 import { presentRecord } from "./record-presentation";

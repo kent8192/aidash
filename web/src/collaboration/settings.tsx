@@ -17,14 +17,6 @@ import { Badge as Tag } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
 import { DeploymentPage } from "../deployment";
 import { UsagePanel } from "@slots/usage";
 import {
@@ -366,17 +358,13 @@ function EntryList({
 
 function NodeView({
   data,
-  open,
   disconnect,
 }: {
   data: State;
-  open: (selection: Selection) => void;
   disconnect: () => void;
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
-  const deploymentAdministrator =
-    data.access.kind === "deployment_administrator";
   return (
     <div className="grid max-w-4xl min-w-0 gap-6">
       <Panel title={copy.node}>
@@ -549,7 +537,7 @@ export function Configuration({
             <MarketplaceAdministration />
           )}
           {section === "node" && (
-            <NodeView data={data} open={open} disconnect={disconnect} />
+            <NodeView data={data} disconnect={disconnect} />
           )}
         </>
       )}

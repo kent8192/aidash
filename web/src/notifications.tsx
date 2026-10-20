@@ -28,7 +28,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "./components/ui/sheet";
-import type { Mesh, State } from "./types";
+import type { State } from "./types";
 import type { ApprovalCard } from "./generated/models";
 import { approvalNotice } from "./research";
 import type { Locale } from "./ui";
@@ -85,7 +85,6 @@ const iconTone = {
 };
 function frame(
   data: State | undefined,
-  remote: Mesh | undefined,
   approvals: ApprovalCard[] | undefined,
   ja: boolean,
 ): NoticeFrame | null {
@@ -119,25 +118,10 @@ function frame(
       workspace: task.workspace_id,
     },
   }));
-  const requests = [
-    ...data.human_requests.map((request) => ({ request, node: data.node.id })),
-    ...(remote?.nodes.flatMap((node) => {
-      scopes.push(
-        ...node.runs.map((run) =>
-          JSON.stringify([node.node_id, run.workspace_id]),
-        ),
-      );
-      scopes.push(
-        ...node.human_requests.map((request) =>
-          JSON.stringify([node.node_id, request.workspace_id]),
-        ),
-      );
-      return node.human_requests.map((request) => ({
-        request,
-        node: node.node_id,
-      }));
-    }) ?? []),
-  ];
+  const requests = data.human_requests.map((request) => ({
+    request,
+    node: data.node.id,
+  }));
   for (const { request, node } of requests)
     entries.push({
       key: JSON.stringify([node, "human", request.id]),
@@ -222,7 +206,6 @@ export function NotificationBell({ className }: { className?: string }) {
 
 export function NotificationProvider({
   data,
-  remote,
   approvals,
   locale,
   theme,
@@ -230,7 +213,6 @@ export function NotificationProvider({
   children,
 }: {
   data: State | undefined;
-  remote: Mesh | undefined;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
   locale: Locale;
@@ -268,7 +250,7 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, remote, approvals, locale === "ja-JP"));
+    store.observe(frame(data, approvals, locale === "ja-JP"));
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -341,17 +323,7 @@ export function NotificationProvider({
         },
       );
     }, delay);
-  }, [
-    data,
-    remote,
-    approvals,
-    locale,
-    store,
-    toastId,
-    show,
-    visit,
-    centerOpen,
-  ]);
+  }, [data, approvals, locale, store, toastId, show, visit, centerOpen]);
   useEffect(
     () => () => {
       clearTimeout(timer.current);

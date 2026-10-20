@@ -1,4 +1,4 @@
-import type { Discovery, MeshEvent, Run, State } from "../types";
+import type { MeshEvent, Run, State } from "../types";
 import {
   entityKey,
   type EntityReference,
@@ -116,7 +116,6 @@ export function buildMeshGraph(
   data: State,
   options: {
     channel?: string;
-    discovery?: Discovery;
     runs?: readonly { node: string; run: Run }[];
     authorizedPeers?: readonly string[];
     hours?: number;
@@ -234,22 +233,6 @@ export function buildMeshGraph(
   } else if (data.access.kind === "deployment_administrator") {
     const local = resource("remote", nodeId, nodeId);
     nodes.get(local)!.status = "LOCAL";
-    const peers = new Set<string>();
-    for (const { node_id, entity } of options.discovery?.agents ?? []) {
-      if (!peers.has(node_id) || entity.kind !== "agent") continue;
-      const id = add({
-        id: entityKey(node_id, "agent", entity),
-        kind: "agent",
-        name: entity.name,
-        nodeId: node_id,
-        entity: { id: entity.id, version: entity.version },
-        available: true,
-        remote: true,
-        status: "DISCOVERED",
-      });
-      qualified.set(`${node_id}/agents/${entity.id}@${entity.version}`, id);
-      edge(resourceKey(node_id, "remote", node_id), id, "hosts", "federation");
-    }
     for (const e of registry.filter(
       (e) =>
         e.kind === "cluster" ||
@@ -301,13 +284,12 @@ export function buildMeshGraph(
     )
       edge(author, owner, "delegates", "activity");
   }
-  const enabledPeers = new Set(options.authorizedPeers ?? []);
   const activity = (
     options.runs ?? data.runs.map((run) => ({ node: nodeId, run }))
   )
     .filter(
       ({ node, run }) =>
-        (node === nodeId || enabledPeers.has(node)) &&
+        node === nodeId &&
         (!run.home_node || run.home_node === nodeId) &&
         workspaceIds.has(run.workspace_id) &&
         (activeRun(run) || inWindow(run.updated_at, hours, now)),
@@ -340,29 +322,9 @@ export function buildMeshGraph(
       "executes",
       "activity",
     );
-    const identity = `${node}/agents/${run.agent_id}@${run.agent_version}`;
-    let id = qualified.get(identity);
-    if (
-      !id &&
-      node !== nodeId &&
-      options.authorizedPeers === undefined &&
-      enabledPeers.has(node)
-    ) {
-      id = add({
-        id: entityKey(node, "agent", {
-          id: run.agent_id,
-          version: run.agent_version,
-        }),
-        kind: "agent",
-        name: {},
-        nodeId: node,
-        entity: { id: run.agent_id, version: run.agent_version },
-        available: false,
-        remote: true,
-      });
-      qualified.set(identity, id);
-      edge(resourceKey(node, "remote", node), id, "hosts", "federation");
-    }
+    const id = qualified.get(
+      `${node}/agents/${run.agent_id}@${run.agent_version}`,
+    );
     if (!id) continue;
     edge(id, runNode, "executes", "activity");
     if (!statusSet.has(id)) {
@@ -939,18 +901,20 @@ export function nodeEvents(
       )
       .map((r) => r.id),
   );
+  // State carries only the events this Deployment journaled, so only the local
+  // Node's graph nodes have any.
+  const local = node.nodeId === data.node.id;
   return data.events
     .filter((e) => {
       if (
         !inWindow(e.created_at, hours, now) ||
-        (["remote", "workspace", "goal"].includes(node.kind) &&
-          e.node_id !== node.nodeId) ||
+        (["remote", "workspace", "goal"].includes(node.kind) && !local) ||
         (channel && e.workspace_id !== channel)
       )
         return false;
       if (node.kind === "workspace" || node.kind === "goal")
         return e.workspace_id === node.workspaceId;
-      if (node.kind === "remote") return e.node_id === node.nodeId;
+      if (node.kind === "remote") return local;
       const payload = eventReferences(e);
       if (node.kind === "run") return payload.run_id === node.resourceId;
       return (

@@ -1,5 +1,4 @@
 import { Button } from "./components/ui/button";
-import { ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { RecordView } from "./record-view";
 import { useEffect, useState } from "react";
