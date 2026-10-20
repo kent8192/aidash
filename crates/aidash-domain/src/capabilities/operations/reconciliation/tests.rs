@@ -30,6 +30,7 @@ fn run() -> RunMetadata {
 		id: Uuid::from_u128(3),
 		task_id: Uuid::from_u128(9),
 		workspace_id: Uuid::from_u128(10),
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		home_node: "aidash://local".into(),
 		agent_id: "agent".into(),
 		agent_version: "1".into(),

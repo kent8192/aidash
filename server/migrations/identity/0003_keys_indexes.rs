@@ -24,6 +24,7 @@ pub(super) fn migration() -> Migration {
 				name: "authorization_catalog_history_pkey".to_owned(),
 				columns: vec![
 					"tenant".to_owned(),
+					"node".to_owned(),
 					"entry_id".to_owned(),
 					"entry_version".to_owned(),
 					"revision".to_owned(),
@@ -36,6 +37,7 @@ pub(super) fn migration() -> Migration {
 				name: "authorization_catalog_pkey".to_owned(),
 				columns: vec![
 					"tenant".to_owned(),
+					"node".to_owned(),
 					"entry_id".to_owned(),
 					"entry_version".to_owned(),
 				],

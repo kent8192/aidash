@@ -31,7 +31,9 @@ COOKIE = {
 }
 # A built-in every Tenant's Registry holds from its creation (ADR 0033).
 BUILTIN = {"id": "aidash.workspace_read", "version": "1.0.0"}
-APPROVAL = {"entry": BUILTIN, "enabled": True, "expected_revision": 0}
+# A well-formed Node name no Tenant holds.
+NODE = "brave-otter-k3m9q2xa"
+APPROVAL = {"node": NODE, "entry": BUILTIN, "enabled": True, "expected_revision": 0}
 AGENT = {"id": "research", "version": "1.0.0"}
 # Tenant routes: a Deployment Administrator reaches no Tenant's Registry,
 # catalog or work (ADR 0029, ADR 0043). Each body passes its JSON extractor and
@@ -58,7 +60,7 @@ TENANT_ROUTES = {
         "refusal": "Subject without catalog.approve cannot approve a version",
     },
     "POST /api/authorization/{tenant}/catalog/approvals": {
-        "body": {"approvals": [APPROVAL]},
+        "body": {"node": NODE, "approvals": [{**APPROVAL}]},
         "refusal": "Subject without catalog.approve cannot approve a closure",
     },
     "POST /api/marketplace/installations/{id}/activation": {
@@ -110,9 +112,11 @@ SUBJECT_READS = {
         ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT, None, ""),
     ],
     "GET /api/authorization/{tenant}/catalog": [
-        ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT, None,
+        ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT,
+         "/api/authorization/{{tenant}}/catalog?node=" + NODE,
          "expect(res.getBody()).to.eql([]);"),
-        ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT, None, ""),
+        ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT,
+         "/api/authorization/{{tenant}}/catalog?node=" + NODE, ""),
     ],
     "GET /api/registry": [
         ("Subject discovers no definition it may not read", 200, SUBJECT, None,
@@ -828,6 +832,30 @@ def render():
             add(endpoint, "Only a deleted Tenant can be restored", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/nodes.rs":
+            # Creating a Node as a Deployment Administrator would change the shared Tenant.
+            if method == "GET":
+                add(endpoint, "Subject without node.read cannot list the Nodes", 403, headers=SUBJECT)
+                add(endpoint, "Deployment Administrator lists the Tenant's one default Node", 200,
+                    headers=DEPLOYMENT_ADMINISTRATOR,
+                    checks='expect(res.getBody()).to.be.an("array");expect(res.getBody().filter(node => node.default)).to.have.lengthOf(1);')
+            elif method == "POST":
+                add(endpoint, "Subject Credential bearer never creates a Node", 403,
+                    headers=SUBJECT, body=json.dumps({"label": "Bruno node"}), immutable=True)
+                add(endpoint, "Blank Node label is rejected", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"label": "   "}), immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            else:
+                unknown = "/api/tenants/{{tenant}}/nodes/" + NODE
+                body = json.dumps({"label": "Renamed"})
+                add(endpoint, "Subject Credential bearer never relabels a Node", 403,
+                    path=unknown, headers=SUBJECT, body=body, immutable=True)
+                add(endpoint, "An unknown Node cannot be relabelled", 404,
+                    path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
             body = json.dumps(tenant_route["body"])
@@ -1125,6 +1153,8 @@ def render():
             label = "Subject without file transfer permission cannot list recipients"
         if route["name"] in {"marketplace-administration", "workbench-test-profiles"}:
             uri = path + "?tenant={{tenant}}"
+        if route["name"] == "authorization-catalog":
+            uri = path + "?node=" + NODE
         if route["name"] in {
             "generation-history",
             "workbench-list-incidents",

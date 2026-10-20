@@ -5,5 +5,5 @@ use reinhardt::injectable;
 
 #[injectable(scope = "request")]
 pub(crate) async fn provide(#[inject] runtime: Federation) -> PeerRecords {
-	PeerRecords::new(&runtime.store.pool, runtime.config.deployment.as_str())
+	PeerRecords::new(&runtime.store.pool)
 }

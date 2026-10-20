@@ -282,6 +282,9 @@ pub(crate) async fn linked_registry(
 				),
 		)
 		.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
+		.and_where(Expr::cust(
+			"c.node = (SELECT n.name FROM nodes n WHERE n.tenant = c.tenant AND n.is_default)",
+		))
 		.and_where(
 			Expr::col((Alias::new("c"), Alias::new("enabled")))
 				.eq(reinhardt::query::Expr::value(true)),

@@ -173,6 +173,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		a("task_id"),
 		a("workspace_id"),
 		a("home_node"),
+		a("node"),
 		a("agent_id"),
 		a("agent_version"),
 		a("control"),
@@ -182,7 +183,12 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		Uuid::new_v4().into(),
 		Uuid::new_v4().into(),
 		Uuid::new_v4().into(),
-		f.config.deployment.to_string().into(),
+		aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme")
+			.to_string()
+			.into(),
+		aidash_domain::nodes::NodeName::derived("acme")
+			.to_string()
+			.into(),
 		"fixture".into(),
 		"1.0.0".into(),
 		"PAUSED".into(),
@@ -810,6 +816,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -845,6 +852,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),

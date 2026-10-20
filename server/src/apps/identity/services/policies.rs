@@ -64,7 +64,12 @@ impl PolicyAdministration {
 
 	/// The Tenant's Catalog Approvals, under `registry.read`. A Deployment
 	/// Administrator reads none (ADR 0029).
-	pub(crate) async fn catalog(&self, actor: Actor, tenant: String) -> Result<Vec<Binding>> {
+	pub(crate) async fn catalog(
+		&self,
+		actor: Actor,
+		tenant: String,
+		node: aidash_domain::nodes::NodeName,
+	) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
 		let mut access = Access::begin(&f.store, &identity).await?;
@@ -77,6 +82,7 @@ impl PolicyAdministration {
 			access.require(&resource, "registry.read").await?;
 			Ok(AuthorizationCatalog::objects()
 				.filter(AuthorizationCatalog::field_tenant().eq(identity.tenant.clone()))
+				.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
 				.order_by(&["entry_id", "entry_version"])
 				.all_with_executor(&mut **access.tx)
 				.await
@@ -84,6 +90,7 @@ impl PolicyAdministration {
 				.into_iter()
 				.map(|row| Binding {
 					tenant: row.tenant,
+					node: node.clone(),
 					entry_id: row.entry_key,
 					entry_version: row.entry_version,
 					enabled: row.enabled,
@@ -106,22 +113,35 @@ impl PolicyAdministration {
 			expected_revision: input.expected_revision,
 			groups: input.groups,
 		};
-		Ok(self.approve(actor, tenant, vec![approval]).await?.remove(0))
+		Ok(self
+			.approve(actor, tenant, input.node, vec![approval])
+			.await?
+			.remove(0))
 	}
 	/// Approvals of one dependency closure in one transaction.
 	pub(crate) async fn approve(
 		&self,
 		actor: Actor,
 		tenant: String,
+		node: aidash_domain::nodes::NodeName,
 		approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
 	) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
 		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		if let Err(error) = crate::apps::identity::repositories::nodes::get(
+			&mut **access.tx,
+			&tenant,
+			node.as_str(),
+		)
+		.await
+		{
+			return access.finish(Err(error)).await;
+		}
 		let result = aidash_application::authorization::catalog::approvals::approve(
 			&mut TenantCatalog {
 				access: &mut access,
-				node: f.config.deployment.as_str(),
+				node: f.config.deployment.node(node),
 			},
 			&approvals,
 		)

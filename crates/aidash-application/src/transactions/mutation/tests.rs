@@ -29,7 +29,7 @@ fn run() -> RawRun {
 		..Default::default()
 	};
 	RawRun {
-		metadata: serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"home_node":"aidash://home","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap(),
+		metadata: serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap(),
 		context: json!(context),
 		pending: encode(&RunState::ToolCall(Box::default()), &RecoveryState::default()).unwrap(),
 	}
@@ -82,7 +82,7 @@ struct Scope {
 	calls: Vec<&'static str>,
 	keys: Vec<String>,
 	outputs: Vec<(Uuid, Uuid, String, Uuid)>,
-	events: Vec<(String, Option<Uuid>, String, Value)>,
+	events: Vec<(Option<Uuid>, String, Value)>,
 }
 #[fixture]
 fn scope(task: Task, run: RawRun) -> Scope {
@@ -119,6 +119,7 @@ impl MutationScope for Scope {
 	) -> Result<Workspace> {
 		self.call("workspace")?;
 		Ok(Workspace {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			title: "Workspace".into(),
 			goal: "Goal".into(),
@@ -195,14 +196,12 @@ impl MutationScope for Scope {
 	}
 	async fn append_event(
 		&mut self,
-		node: &str,
 		workspace: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
 		self.call("event")?;
-		self.events
-			.push((node.into(), workspace, kind.into(), data));
+		self.events.push((workspace, kind.into(), data));
 		Ok(())
 	}
 }
@@ -302,7 +301,6 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 	assert_eq!(
 		scope.events,
 		[(
-			"aidash://home".into(),
 			Some(scope.task.workspace_id),
 			"task.completed".into(),
 			json!({"task":task,"artifact":{"id":Uuid::from_u128(8),"workspace_id":scope.task.workspace_id,"task_id":scope.task.id,"kind":"text","name":"Answer","content":"Done","created_by":scope.task.owner,"idempotency_key":key,"created_at":scope.task.created_at}})
@@ -426,7 +424,6 @@ async fn execution_event_preserves_raw_usage_and_home_visibility(
 	assert_eq!(
 		scope.events[0],
 		(
-			node.into(),
 			workspace,
 			"run.completed".into(),
 			json!({"run_id":scope.run.id,"task_id":scope.run.task_id,"workspace_id":scope.run.workspace_id,"agent_id":"agent","phase":"COMPLETED","step":7,"error":null,"context_usage":{"input_tokens":11,"output_tokens":4,"context_window":128000,"compactions":2}})

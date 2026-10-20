@@ -67,7 +67,11 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 		chain,
 		vec![
 			"alice".to_owned(),
-			qualified_agent(f.config.deployment.as_str(), "research", "1.0.0")
+			qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				"research",
+				"1.0.0"
+			)
 		]
 	);
 	let sender: String = {
@@ -613,7 +617,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -632,7 +636,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":1,"enabled":false})
 		)
 		.await
 		.0,

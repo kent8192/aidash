@@ -146,7 +146,11 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
+			&qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				"research",
+				"1.0.0",
+			),
 			"resource-test-artifact",
 			&ArtifactInput {
 				kind: "text".into(),
@@ -381,7 +385,11 @@ async fn retained_snapshot_revocation(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
+			&qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				"research",
+				"1.0.0",
+			),
 			"source-revoke",
 			&ArtifactInput {
 				kind: "text".into(),
@@ -401,7 +409,14 @@ async fn retained_snapshot_revocation(
 			.publish_artifact(
 				&TEST_FIXTURE,
 				task,
-				&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
+				&qualified_agent(
+					&aidash_domain::nodes::NodeAddress::derived(
+						f.config.deployment.as_str(),
+						"acme",
+					),
+					"research",
+					"1.0.0",
+				),
 				&format!("unrelated-source-{index}"),
 				&ArtifactInput {
 					kind: "text".into(),
@@ -1077,7 +1092,11 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
+			&qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				"research",
+				"1.0.0",
+			),
 			"hidden-provider-source",
 			&ArtifactInput {
 				kind: "text".into(),
@@ -1399,7 +1418,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -1457,7 +1476,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
 		)
 		.await
 		.0,
@@ -1473,7 +1492,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
 		)
 		.await
 		.0,

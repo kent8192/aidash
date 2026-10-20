@@ -65,7 +65,7 @@ async fn policy(
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"jev","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"jev","version":"1.0.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -207,7 +207,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"large-output-model","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"large-output-model","version":"1.0.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -446,7 +446,7 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 				&token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"jev","version":"1.0.0"},"expected_revision":1,"enabled":false})
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"jev","version":"1.0.0"},"expected_revision":1,"enabled":false})
 			)
 			.await
 			.0,
@@ -460,7 +460,7 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 		.await
 		.unwrap();
 		let mut bundle = json!(snapshot.bundle);
-		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-compaction","effect":"deny","subjects":{"ids":[aidash_server::domain::qualified_agent(f.config.deployment.as_str(),&run.agent_id,&run.agent_version)]},"actions":["decision.invoke"],"resources":{"kinds":["decider"]}}));
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-compaction","effect":"deny","subjects":{"ids":[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),&run.agent_id,&run.agent_version)]},"actions":["decision.invoke"],"resources":{"kinds":["decider"]}}));
 		assert_eq!(
 			request(
 				&app,
@@ -752,7 +752,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	let chain = vec![
 		"alice".to_owned(),
 		aidash_server::domain::qualified_agent(
-			f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 			&parent_run.agent_id,
 			&parent_run.agent_version,
 		),

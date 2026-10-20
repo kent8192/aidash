@@ -46,7 +46,7 @@ async fn working_files_require_explicit_agent_settings(
 		.await
 		.unwrap();
 	policy["subjects"][aidash_server::domain::qualified_agent(
-		f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.0.1",
 	)] = json!({"kind":"agent"});
@@ -56,7 +56,7 @@ async fn working_files_require_explicit_agent_settings(
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -255,7 +255,7 @@ fn capability_fixture(
 	async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let root=storage.path().to_owned();let endpoint=endpoint.await;
 let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	policy["subjects"]
-		[aidash_server::domain::qualified_agent(f.config.deployment.as_str(), "research", "1.1.0")] =
+		[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"), "research", "1.1.0")] =
 		json!({"kind":"agent"});
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	let (status, response) = request(
@@ -304,7 +304,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog/approvals",
-		json!({ "approvals": approvals }),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
@@ -322,7 +322,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
@@ -342,7 +342,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
@@ -1188,13 +1188,13 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(value["enabled"], true, "{value}");
 	let mut policy = c.policy.clone();
 	policy["subjects"][aidash_server::domain::qualified_agent(
-		c.f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"reader",
 		"1.1.0",
 	)] = json!({"kind":"agent"});
@@ -1380,7 +1380,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 	};
 	assert_eq!(ready["extraction_state"], "ready", "{ready}");
 	c.policy["subjects"][aidash_server::domain::qualified_agent(
-		c.f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.2.0",
 	)] = json!({"kind":"agent"});
@@ -1425,7 +1425,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,

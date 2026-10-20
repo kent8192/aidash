@@ -51,8 +51,8 @@ impl RunContext {
 		Event {
 			sequence: 0,
 			id: Uuid::nil(),
-			node_id: node.to_string(),
-			workspace_id: (self.run.home_node == node).then_some(self.run.workspace_id),
+			node: aidash_domain::nodes::NodeName::parse(&self.run.node).ok(),
+			workspace_id: self.run.is_local(node).then_some(self.run.workspace_id),
 			kind: "inference.progress".into(),
 			data: json!({
 				"run_id": self.run.id,

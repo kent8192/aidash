@@ -30,7 +30,9 @@ impl BindingResolver for PinnedResolver {
 			.as_ref()
 			.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
 		snapshot.validate()?;
-		if snapshot.remote != (snapshot.agent.registry_deployment != run.home_node)
+		if snapshot.remote
+			!= (snapshot.agent.registry_deployment
+				!= aidash_domain::nodes::deployment_of(&run.home_node))
 			|| snapshot.agent.id != run.agent_id
 			|| snapshot.agent.version != run.agent_version
 		{

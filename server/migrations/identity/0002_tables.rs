@@ -33,6 +33,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_catalog".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
@@ -50,6 +51,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_catalog_history".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),

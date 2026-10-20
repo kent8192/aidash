@@ -37,8 +37,14 @@ pub fn execution(
 		assert_eq!(app.runtime.config.deployment, node_id);
 		let provider = final_server.await;
 		let node = app.runtime.config.deployment.as_str();
-		let agent = qualified_agent(node, "research", "1.0.0");
-		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
+		let agent = qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(node, "acme"),
+			"research",
+			"1.0.0",
+		);
+		// Peer flows still name the executing Node by its Deployment id (#241).
+		let peer_agent = aidash_domain::agent_subject(node, "research", "1.0.0");
+		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"},peer_agent:{"kind":"agent"}},
 			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 		crate::endpoint::tenant_root(&app.runtime, "acme").await;
 		assert_json(
@@ -89,6 +95,7 @@ pub fn execution(
 			authorization
 				.set_catalog(
 					"acme",
+					&aidash_domain::nodes::NodeName::derived("acme"),
 					&EntityRef {
 						id: id.into(),
 						version: "1.0.0".into(),

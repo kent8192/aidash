@@ -115,7 +115,9 @@ pub async fn authorize(
 	for requirement in &authorization.requirements {
 		match requirement {
 			AuthorizationRequirement::AgentExecution { node_id, agent } => {
-				if configuration.allow_task_delegation == Some(false) || node_id != &run.home_node {
+				if configuration.allow_task_delegation == Some(false)
+					|| !aidash_domain::nodes::names_home(node_id, &run.home_node)
+				{
 					return Err(Error::Forbidden);
 				}
 				scope.catalog(agent, "agent.execute").await?;
@@ -167,7 +169,10 @@ pub async fn authorize(
 					.as_str()
 					.and_then(|s| s.parse::<Uuid>().ok())
 					.ok_or_else(|| Error::Invalid("invalid task id".into()))?;
-				if call.arguments["node_id"] != run.home_node {
+				if !call.arguments["node_id"]
+					.as_str()
+					.is_some_and(|node| aidash_domain::nodes::names_home(node, &run.home_node))
+				{
 					return Err(Error::Forbidden);
 				}
 				let reference: EntityRef = serde_json::from_value(call.arguments["agent"].clone())?;

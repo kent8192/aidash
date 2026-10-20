@@ -402,7 +402,11 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		.await
 		.unwrap();
 
-	let owner = qualified_agent(b.f.config.deployment.as_str(), &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(b.f.config.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	let task =
 		a.f.store
 			.create_task(

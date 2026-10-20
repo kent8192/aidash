@@ -111,7 +111,11 @@ impl Service {
 		// Unknown fields, including a potentially large data body, are skipped.
 		// Neither sequence nor dataref is used to move a cursor or fetch data.
 		match serde_json::from_slice::<Hint>(payload) {
-			Ok(hint) if hint.specversion == "1.0" && hint.source == node && !hint.id.is_nil() => {
+			Ok(hint)
+				if hint.specversion == "1.0"
+					&& aidash_domain::nodes::deployment_of(&hint.source) == node
+					&& !hint.id.is_nil() =>
+			{
 				self.inner
 					.counts
 					.notifications

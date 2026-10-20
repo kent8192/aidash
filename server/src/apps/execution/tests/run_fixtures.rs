@@ -10,6 +10,7 @@ use uuid::Uuid;
 #[fixture]
 pub fn run() -> Run {
 	Run {
+		node: aidash_domain::nodes::NodeName::derived("acme").as_str().parse().unwrap(),
 		id: Uuid::new_v4(),
 		tenant: "acme".into(),
 		task_id: Uuid::new_v4(),

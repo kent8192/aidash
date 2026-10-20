@@ -32,12 +32,14 @@ impl Access {
 		store: &Store,
 		title: &str,
 		goal: &str,
+		node: Option<&aidash_domain::nodes::NodeName>,
 	) -> Result<Workspace> {
 		aidash_application::workspaces::mutations::create(
 			&mut crate::bootstrap::workspace_mutations(self, store),
 			Uuid::new_v4(),
 			title,
 			goal,
+			node,
 		)
 		.await
 		.map_err(Into::into)
@@ -224,9 +226,16 @@ impl Workspaces {
 		access.finish(result).await
 	}
 
-	pub async fn create(&self, title: &str, goal: &str) -> Result<Workspace> {
+	pub async fn create(
+		&self,
+		title: &str,
+		goal: &str,
+		node: Option<&aidash_domain::nodes::NodeName>,
+	) -> Result<Workspace> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
-		let result = access.create_workspace(&self.store, title, goal).await;
+		let result = access
+			.create_workspace(&self.store, title, goal, node)
+			.await;
 		access.finish(result).await
 	}
 

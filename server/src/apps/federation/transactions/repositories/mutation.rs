@@ -91,18 +91,23 @@ impl MutationScope for Scope<'_> {
 		Run::complete(self.0, id).await?;
 		// Completion is validated as Home-local, so the Home node records markers.
 		let run = inference::target(&mut *self.0, id).await?;
-		let closed = inference::close_pending(self.0, &run.home_node, id, None).await?;
+		let closed = inference::close_pending(
+			self.0,
+			aidash_domain::nodes::deployment_of(&run.home_node),
+			id,
+			None,
+		)
+		.await?;
 		self.1.extend(closed);
 		Ok(())
 	}
 	async fn append_event(
 		&mut self,
-		node: &str,
 		workspace: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
-		event_records::append(self.0, node, workspace, kind, data)
+		event_records::append(self.0, workspace, kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

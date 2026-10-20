@@ -22,6 +22,10 @@ pub struct Run {
 	pub task_id: uuid::Uuid,
 	#[field]
 	pub workspace_id: uuid::Uuid,
+	/// The Node that executes the Run.
+	#[field(field_type = "text")]
+	pub node: String,
+	/// The address of the Node that owns the Task.
 	#[field(field_type = "text")]
 	pub home_node: String,
 	#[field(field_type = "text")]

@@ -34,15 +34,17 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_catalog_history".to_owned(),
 			constraint: Constraint::ForeignKey {
-				name: "authorization_catalog_history_tenant_entry_id_entry_versio_fkey".to_owned(),
+				name: "authorization_catalog_history_tenant_node_entry_id_entry_v_fkey".to_owned(),
 				columns: vec![
 					"tenant".to_owned(),
+					"node".to_owned(),
 					"entry_id".to_owned(),
 					"entry_version".to_owned(),
 				],
 				referenced_table: "authorization_catalog".to_owned(),
 				referenced_columns: vec![
 					"tenant".to_owned(),
+					"node".to_owned(),
 					"entry_id".to_owned(),
 					"entry_version".to_owned(),
 				],
@@ -394,6 +396,18 @@ pub(super) fn migration() -> Migration {
 				columns: vec!["created_by_identity".to_owned()],
 				referenced_table: "dashboard_identities".to_owned(),
 				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_catalog".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_catalog_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,

@@ -118,7 +118,7 @@ impl KeyValidator for Validator {
 async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
 	endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
 	assert_json(f.deployment_administrator.post(&format!("/api/authorization/{tenant}"), &json!({
-		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(f.runtime.config.deployment.as_str(),"environment-agent","1.0.0"):{"kind":"agent"}},
+		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(f.runtime.config.deployment.as_str(), tenant),"environment-agent","1.0.0"):{"kind":"agent"}},
 		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}
 	}), "json").await.unwrap(),200);
 }
@@ -2186,7 +2186,7 @@ fn recovery_settings(f: &EndpointFixture, dir: &std::path::Path, current: &str) 
 			r#"[core]
 secret_key = "recovery-fixture-secret-key-not-for-production-at-least-50-bytes-157"
 [deployment]
-id = {:?}
+id = "{}"
 endpoint = "http://127.0.0.1:8080"
 api_token = "recovery-fixture-token-at-least-16"
 [provider_credentials]

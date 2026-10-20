@@ -341,8 +341,8 @@ async fn request_commits_before_rpc_then_revalidates_exclusively(repository: Rep
 	assert_eq!(prepared.request_id, Uuid::from_u128(5));
 	assert_eq!(w.leases, 0);
 	assert_eq!(w.snapshot.revision, 10);
-	let executor =
-		&w.snapshot.bundle.subjects[&qualified_agent("aidash://executor", "agent", "1.0.0")];
+	let executor = &w.snapshot.bundle.subjects
+		[&aidash_domain::agent_subject("aidash://executor", "agent", "1.0.0")];
 	assert_eq!(executor.delegated_by.as_deref(), Some("parent"));
 	assert_eq!(
 		executor.attributes,

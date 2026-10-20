@@ -37,7 +37,6 @@ pub trait MutationScope: Send {
 	async fn complete_run(&mut self, id: Uuid) -> Result<()>;
 	async fn append_event(
 		&mut self,
-		node: &str,
 		workspace: Option<Uuid>,
 		kind: &str,
 		data: Value,

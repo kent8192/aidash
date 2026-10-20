@@ -19,8 +19,9 @@ pub use settings::settings_for;
 use std::sync::Arc;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	admitted_run, approve_agent, local_run, remote_run, remote_run_in, replace_policy, tenant_root,
-	tenant_root_in, tenant_scope, tenant_token,
+	admitted_run, approve_agent, approve_agent_on, default_node, local_run, remote_run,
+	remote_run_in, replace_policy, second_node_in, subject_claim, tenant_root, tenant_root_in,
+	tenant_scope, tenant_token,
 };
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
@@ -264,6 +265,7 @@ pub async fn approve(fixture: &EndpointFixture, tenant: &str, id: &str, version:
 	}
 	.set_catalog(
 		tenant,
+		&aidash_domain::nodes::NodeName::derived(tenant),
 		&aidash_server::registry::EntityRef {
 			id: id.into(),
 			version: version.into(),

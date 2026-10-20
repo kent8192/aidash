@@ -5,12 +5,12 @@ use crate::{
 		EventVisibilityScope, LocalRunVisibilityScope, RunVerdicts, RunVisibilityScope,
 	},
 };
-use aidash_domain::{Event, RunMetadata, qualified_agent};
+use aidash_domain::{Event, RunMetadata};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub fn memory_attributes(run: &RunMetadata, mut attributes: Value) -> Value {
-	attributes["created_by"] = json!(qualified_agent(
+	attributes["created_by"] = json!(aidash_domain::agent_subject(
 		&run.home_node,
 		&run.agent_id,
 		&run.agent_version
@@ -55,7 +55,7 @@ pub async fn local_run_visible(
 }
 
 pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
-	if run.home_node != scope.node_id() {
+	if !run.is_local(scope.node_id()) {
 		if scope.scoped_admission(run.id).await? {
 			return Ok(scope.core_area_visible(run.id).await?
 				&& scope.foreign_base_visible(run).await?

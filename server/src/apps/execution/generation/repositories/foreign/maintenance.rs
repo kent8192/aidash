@@ -102,7 +102,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 	async fn jobs(&self) -> Result<Vec<Request>> {
 		let f = &self.federation;
 		let jobs:Vec<Request>=crate::database::query_as(&Query::select().column(reinhardt::query::ColumnRef::table_asterisk("g")).from_as(Alias::new("generation_requests"),Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("r")), Expr::cust("r.id=g.admission_id AND r.home_node=g.home_node"))
-    .and_where(Expr::cust("g.home_node<>'' AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))
+    .and_where(Expr::cust("g.local_task_id IS NULL AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))
     .order_by((Alias::new("g"),Alias::new("created_at")),reinhardt::query::Order::Asc).limit(16).to_string(PostgresQueryBuilder)).fetch_all(f.store.pool.in_scope(&reconcile())).await?;
 		Ok(jobs)
 	}

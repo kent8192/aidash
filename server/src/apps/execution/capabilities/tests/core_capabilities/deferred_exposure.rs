@@ -167,7 +167,7 @@ async fn deferred_fixture(
 	for (version, deferred) in [(DEFERRED, true), (LEGACY, false)] {
 		register_agent(&c, version, deferred).await;
 		c.policy["subjects"][aidash_server::domain::qualified_agent(
-			c.f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 			"research",
 			version,
 		)] = json!({"kind":"agent"});
@@ -190,7 +190,7 @@ async fn register_approved(c: &CoreFixture, entry: Value) {
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":entry["id"],"version":entry["version"]},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":entry["id"],"version":entry["version"]},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
@@ -701,7 +701,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 			&d.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"http","version":"1.0.0"},"expected_revision":1 + 2 * revision,"enabled":false}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"http","version":"1.0.0"},"expected_revision":1 + 2 * revision,"enabled":false}),
 		)
 		.await;
 		assert_eq!(status, 200, "{result}");
@@ -721,7 +721,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 			&d.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"http","version":"1.0.0"},"expected_revision":2 + 2 * revision,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"http","version":"1.0.0"},"expected_revision":2 + 2 * revision,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{result}");
@@ -782,6 +782,7 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 	}
 	.set_catalog(
 		"globex",
+		&aidash_domain::nodes::NodeName::derived("globex"),
 		&aidash_server::registry::EntityRef {
 			id: "zebra-foreign".into(),
 			version: "1.0.0".into(),

@@ -734,7 +734,7 @@ impl HarnessManagement {
 					.require(&access.resource("run", id, json!({})), "run.message")
 					.await?;
 			}
-			if run.home_node != f.config.deployment {
+			if !run.is_local(f.config.deployment.as_str()) {
 				return Err(Error::Invalid(
 					"media run messages require a local run".into(),
 				));

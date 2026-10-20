@@ -20,7 +20,6 @@ use aidash_domain::{
 	},
 	nodes::DeploymentId,
 	policy::SubjectKind,
-	qualified_agent,
 	registry::{EntityRef, Search},
 	semantic::{Failure, remote::Binding},
 };
@@ -107,7 +106,8 @@ pub async fn agent_inspection<R: GrantRepository>(
 				"execution delegation depth exceeds 32".into(),
 			));
 		}
-		let executor = qualified_agent(&input.node_id, &input.agent.id, &input.agent.version);
+		let executor =
+			aidash_domain::agent_subject(&input.node_id, &input.agent.id, &input.agent.version);
 		if scope
 			.source_bundle()
 			.subjects
@@ -154,7 +154,7 @@ pub async fn prepare<R: GrantRepository>(
   let task=scope.task_read(task_id).await?;
   if task.status!=TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
   if scope.source_subjects().len()>=32 {return Err(Error::Invalid("execution delegation depth exceeds 32".into()));}
-  let executor=qualified_agent(&input.node_id,&input.agent.id,&input.agent.version);
+  let executor=aidash_domain::agent_subject(&input.node_id,&input.agent.id,&input.agent.version);
   if scope.source_bundle().subjects.get(&executor).is_none_or(|subject|subject.kind!=SubjectKind::Agent) {return Err(Error::Forbidden);}
   scope.append_subject(executor);
   let workspace=scope.workspace(task.workspace_id).await?;

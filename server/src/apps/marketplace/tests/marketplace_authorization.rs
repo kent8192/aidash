@@ -97,7 +97,14 @@ async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.set_catalog(tenant, entry, 0, true, "deployment_administrator")
+	.set_catalog(
+		tenant,
+		&aidash_domain::nodes::NodeName::derived(tenant),
+		entry,
+		0,
+		true,
+		"deployment_administrator",
+	)
 	.await
 	.unwrap();
 }
@@ -278,6 +285,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 		}
 		.set_catalog(
 			"b",
+			&aidash_domain::nodes::NodeName::derived("b"),
 			&EntityRef {
 				id: entry.id.clone(),
 				version: entry.version.clone()
@@ -315,6 +323,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			}
 			.set_catalog(
 				"a",
+				&aidash_domain::nodes::NodeName::derived("a"),
 				&EntityRef {
 					id: entry.id.clone(),
 					version: entry.version.clone()
@@ -1341,7 +1350,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	};
 	let mut authority = bundle("a", "user");
 	authority["subjects"][aidash_server::domain::qualified_agent(
-		f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&old_ref.id,
 		&old_ref.version,
 	)] = json!({"kind":"agent","roles":["manager"]});
@@ -1390,7 +1399,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		version: "1.0.0".into(),
 	};
 	authority["subjects"][aidash_server::domain::qualified_agent(
-		f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&new_ref.id,
 		&new_ref.version,
 	)] = json!({"kind":"agent","roles":["manager"]});
@@ -1428,6 +1437,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	authorization
 		.set_catalog(
 			"a",
+			&aidash_domain::nodes::NodeName::derived("a"),
 			&reference("model"),
 			1,
 			false,
@@ -1455,6 +1465,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	authorization
 		.set_catalog(
 			"a",
+			&aidash_domain::nodes::NodeName::derived("a"),
 			&reference("model"),
 			2,
 			true,
@@ -2326,6 +2337,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 				}
 				.set_catalog(
 					"c",
+					&aidash_domain::nodes::NodeName::derived("c"),
 					&reference("race-dependency"),
 					1,
 					false,

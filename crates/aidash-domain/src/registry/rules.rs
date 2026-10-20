@@ -144,9 +144,12 @@ pub fn validate_metadata(e: &Entry, local: bool) -> Result<()> {
 		.map_err(|e| Error::Invalid(e.to_string()))?;
 	semver::Version::parse(&e.version)
 		.map_err(|_| Error::Invalid("version must be semantic versioning".into()))?;
-	// Reserve the largest valid node ID (108 bytes), `/agents/`, and `@`.
-	// Every accepted agent must fit the 256-byte authorization subject limit.
-	if e.kind == "agent" && e.id.len() + e.version.len() > 139 {
+	// Reserve the largest valid Node address, `/agents/`, and `@`. Every accepted
+	// agent must fit the 256-byte authorization subject limit.
+	if e.kind == "agent"
+		&& e.id.len() + e.version.len()
+			> 256 - crate::nodes::NodeAddress::MAX_LEN - "/agents/@".len()
+	{
 		return Err(Error::Invalid(
 			"qualified agent identity exceeds 256 bytes".into(),
 		));
@@ -220,3 +223,6 @@ pub fn validate_path(path: &str) -> Result<()> {
 	}
 	Ok(())
 }
+
+#[cfg(test)]
+mod tests;

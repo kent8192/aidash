@@ -39,4 +39,5 @@ disallowed-methods = [
   { path = "aidash_server::database::native::Pool::driver", reason = "use Pool::begin(scope) or Pool::in_scope(scope) (#263)" },
   { path = "aidash_server::database::native::Pool::fixture_driver", reason = "test fixtures only: its sessions hold a Deployment Scope (#264)" },
   { path = "aidash_server::database::scope::test_fixture_driver", reason = "test fixtures only: its sessions hold a Deployment Scope (#264)" },
+  { path = "aidash_server::database::scope::begin_fixture_deployment", reason = "test fixtures only: its transaction holds a Deployment Scope (#264)" },
 ]

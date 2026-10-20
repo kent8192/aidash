@@ -21,6 +21,7 @@ pub(crate) async fn observe<E: OrmExecutor>(
 			Alias::new("task_id"),
 			Alias::new("workspace_id"),
 			Alias::new("home_node"),
+			Alias::new("node"),
 			Alias::new("agent_id"),
 			Alias::new("agent_version"),
 			Alias::new("phase"),

@@ -689,7 +689,7 @@ impl SemanticSearchScope for Scope {
 	) -> Result<retrieval::PreparedSearch> {
 		assert_eq!(
 			input.agent.as_deref(),
-			Some(qualified_agent("aidash://receiver", "agent", "1.0.0").as_str())
+			Some(aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0").as_str())
 		);
 		assert_eq!(controls.model.id, "model");
 		self.trace.lock().unwrap().push("candidates");

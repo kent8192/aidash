@@ -23,7 +23,7 @@ pub struct Boundary {
 }
 impl Boundary {
 	pub fn validate(&self) -> Result<()> {
-		crate::nodes::DeploymentId::parse(&self.node)?;
+		crate::nodes::validate_node_ref(&self.node)?;
 		validate_digest(&self.input_digest)?;
 		if self.step < 0
 			|| self.run_revision < 0

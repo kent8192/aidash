@@ -85,3 +85,34 @@ fn key_ids_digest_the_raw_public_key() {
 	assert!(DeploymentKeyId::parse("short").is_err());
 	assert!(DeploymentKeyId::parse(&format!("{}=", &id.as_str()[..42])).is_err());
 }
+
+#[rstest]
+#[case::address("aidash://brave-otter/able-oak-abcd1234", "aidash://brave-otter")]
+#[case::bare("aidash://brave-otter", "aidash://brave-otter")]
+fn the_deployment_part_of_a_node_reference(#[case] value: &str, #[case] expected: &str) {
+	assert_eq!(deployment_of(value), expected);
+}
+
+#[rstest]
+#[case::address("aidash://brave-otter/able-oak-abcd1234", true)]
+#[case::bare("aidash://brave-otter", true)]
+#[case::no_scheme("brave-otter", false)]
+#[case::bad_node("aidash://brave-otter/node", false)]
+#[case::deeper("aidash://brave-otter/able-oak-abcd1234/x", false)]
+fn a_peer_may_name_a_node_by_address_or_deployment(#[case] value: &str, #[case] valid: bool) {
+	assert_eq!(validate_node_ref(value).is_ok(), valid, "{value}");
+}
+
+#[test]
+fn a_home_is_local_only_for_its_own_node_in_its_own_deployment() {
+	let node = NodeName::parse("able-oak-abcd1234").unwrap();
+	let home = "aidash://brave-otter/able-oak-abcd1234";
+	assert!(is_home(home, "aidash://brave-otter", node.as_str()));
+	assert!(!is_home(home, "aidash://other", node.as_str()));
+	assert!(!is_home(home, "aidash://brave-otter", "calm-elk-abcd1234"));
+	assert!(!is_home(
+		"aidash://brave-otter",
+		"aidash://brave-otter",
+		node.as_str()
+	));
+}

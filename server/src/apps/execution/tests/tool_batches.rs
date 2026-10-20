@@ -295,12 +295,12 @@ impl Batching {
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":AGENT_VERSION},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":AGENT_VERSION},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
 		policy["subjects"][aidash_server::domain::qualified_agent(
-			f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 			"research",
 			AGENT_VERSION,
 		)] = json!({"kind":"agent"});

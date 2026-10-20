@@ -142,7 +142,7 @@ impl DatabaseFixture {
 			.await
 			.unwrap()
 			.rows_affected();
-		let node = aidash_domain::nodes::NodeName::from_entropy(*uuid::Uuid::new_v4().as_bytes());
+		let node = aidash_domain::nodes::NodeName::derived(name);
 		let claim = Query::insert()
 			.into_table(Alias::new("node_names"))
 			.columns(["name", "tenant", "created_at"].map(Alias::new))

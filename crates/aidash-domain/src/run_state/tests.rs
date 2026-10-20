@@ -324,6 +324,7 @@ fn a_runnable_run_that_needs_capabilities_is_waiting_for_a_capable_worker() {
 		id: Uuid::nil(),
 		task_id: Uuid::nil(),
 		workspace_id: Uuid::nil(),
+		node: crate::nodes::NodeName::parse("brave-otter-k3m9q2xa").unwrap(),
 		home_node: "aidash://home".into(),
 		agent_id: "fixture".into(),
 		agent_version: "1.0.0".into(),

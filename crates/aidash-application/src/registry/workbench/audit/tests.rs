@@ -205,6 +205,7 @@ impl AuditScope for Scope<'_> {
 			.calls
 			.push("catalog_history");
 		Ok(vec![CatalogChange {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			revision: 3,
 			enabled: false,
 			actor: "administrator".into(),

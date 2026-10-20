@@ -2,7 +2,7 @@
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_application::tenancy::TEST_FIXTURE;
-use aidash_server::{domain::qualified_agent, store::Store};
+use aidash_server::store::Store;
 use common::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -51,7 +51,8 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let ba = second.application;
 	let (mut ap, at, task) = bootstrap(&a, &aa, "http://localhost:1").await;
 	let (bp, bt, _) = bootstrap(&b, &ba, "http://localhost:1").await;
-	ap["subjects"][qualified_agent(b.config.deployment.as_str(), "research", "1.0.0")] =
+	ap["subjects"]
+		[aidash_domain::agent_subject(b.config.deployment.as_str(), "research", "1.0.0")] =
 		json!({"kind":"agent"});
 	assert_eq!(
 		request(

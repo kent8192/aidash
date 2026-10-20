@@ -2482,6 +2482,7 @@
           "type": "object",
           "required": [
             "tenant",
+            "node",
             "entry_id",
             "entry_version",
             "enabled",
@@ -2497,6 +2498,10 @@
             "entry_version": {
               "type": "string"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node the approval applies to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -2505,6 +2510,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -2526,6 +2535,7 @@
           "type": "object",
           "required": [
             "tenant",
+            "node",
             "entry_id",
             "entry_version",
             "enabled",
@@ -2541,6 +2551,10 @@
             "entry_version": {
               "type": "string"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node the approval applies to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -2549,6 +2563,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -2573,6 +2591,7 @@
           "type": "object",
           "required": [
             "tenant",
+            "node",
             "entry_id",
             "entry_version",
             "enabled",
@@ -2588,6 +2607,10 @@
             "entry_version": {
               "type": "string"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node the approval applies to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -2596,6 +2619,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -9545,6 +9572,7 @@
           "type": "object",
           "required": [
             "id",
+            "node",
             "title",
             "goal",
             "state",
@@ -9563,6 +9591,10 @@
               "type": "string",
               "format": "uuid"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -9572,6 +9604,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -9677,7 +9713,7 @@
           "required": [
             "sequence",
             "id",
-            "node_id",
+            "node",
             "workspace_id",
             "kind",
             "data",
@@ -9696,8 +9732,16 @@
             "kind": {
               "type": "string"
             },
-            "node_id": {
-              "type": "string"
+            "node": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Node of the Workspace the event concerns; none for a Tenant-level event."
             },
             "sequence": {
               "type": "integer",
@@ -9827,6 +9871,7 @@
           "type": "object",
           "required": [
             "id",
+            "node",
             "title",
             "goal",
             "state",
@@ -9845,6 +9890,10 @@
               "type": "string",
               "format": "uuid"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -9854,6 +9903,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -9875,6 +9928,7 @@
           "type": "object",
           "required": [
             "id",
+            "node",
             "title",
             "goal",
             "state",
@@ -9893,6 +9947,10 @@
               "type": "string",
               "format": "uuid"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -9902,6 +9960,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -10285,6 +10347,7 @@
           "type": "object",
           "required": [
             "id",
+            "node",
             "title",
             "goal",
             "state",
@@ -10303,6 +10366,10 @@
               "type": "string",
               "format": "uuid"
             },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -10312,6 +10379,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -11759,6 +11830,7 @@
             "policy_id",
             "policy_revision",
             "task_id",
+            "node",
             "home_node",
             "prepared",
             "grant_id",
@@ -11808,11 +11880,16 @@
               "format": "uuid"
             },
             "home_node": {
-              "type": "string"
+              "type": "string",
+              "description": "The address of the Node that owns the Task: this request's own Node for\na local request, the requesting Home for a foreign one."
             },
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of the requesting Workspace."
             },
             "policy_id": {
               "type": "string"
@@ -11967,6 +12044,10 @@
             }
           },
           "additionalProperties": false
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -11995,6 +12076,7 @@
             "policy_id",
             "policy_revision",
             "task_id",
+            "node",
             "home_node",
             "prepared",
             "grant_id",
@@ -12044,11 +12126,16 @@
               "format": "uuid"
             },
             "home_node": {
-              "type": "string"
+              "type": "string",
+              "description": "The address of the Node that owns the Task: this request's own Node for\na local request, the requesting Home for a foreign one."
             },
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of the requesting Workspace."
             },
             "policy_id": {
               "type": "string"
@@ -12203,6 +12290,10 @@
             }
           },
           "additionalProperties": false
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -12228,6 +12319,7 @@
             "policy_id",
             "policy_revision",
             "task_id",
+            "node",
             "home_node",
             "prepared",
             "grant_id",
@@ -12277,11 +12369,16 @@
               "format": "uuid"
             },
             "home_node": {
-              "type": "string"
+              "type": "string",
+              "description": "The address of the Node that owns the Task: this request's own Node for\na local request, the requesting Home for a foreign one."
             },
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of the requesting Workspace."
             },
             "policy_id": {
               "type": "string"
@@ -12436,6 +12533,10 @@
             }
           },
           "additionalProperties": false
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -13528,6 +13629,7 @@
             "id",
             "task_id",
             "workspace_id",
+            "node",
             "home_node",
             "agent_id",
             "agent_version",
@@ -13556,7 +13658,7 @@
             "context": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/Context"
+                  "$ref": "#/components/schemas/InspectionContext"
                 },
                 {
                   "type": "null"
@@ -13584,8 +13686,22 @@
               "type": ["string", "null"],
               "format": "date-time"
             },
+            "lease_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LeaseWait"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Set while only a worker with the listed capabilities may claim the Run."
+            },
             "ledger_worker_ready": {
               "type": "boolean"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName"
             },
             "observed_input_seq": {
               "type": "integer",
@@ -15581,6 +15697,10 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -23538,7 +23658,7 @@
           "required": [
             "sequence",
             "id",
-            "node_id",
+            "node",
             "workspace_id",
             "kind",
             "data",
@@ -23557,8 +23677,16 @@
             "kind": {
               "type": "string"
             },
-            "node_id": {
-              "type": "string"
+            "node": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Node of the Workspace the event concerns; none for a Tenant-level event."
             },
             "sequence": {
               "type": "integer",
@@ -23787,6 +23915,7 @@
             "id",
             "task_id",
             "workspace_id",
+            "node",
             "home_node",
             "agent_id",
             "agent_version",
@@ -23815,7 +23944,7 @@
             "context": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/Context"
+                  "$ref": "#/components/schemas/InspectionContext"
                 },
                 {
                   "type": "null"
@@ -23843,8 +23972,22 @@
               "type": ["string", "null"],
               "format": "date-time"
             },
+            "lease_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LeaseWait"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Set while only a worker with the listed capabilities may claim the Run."
+            },
             "ledger_worker_ready": {
               "type": "boolean"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName"
             },
             "observed_input_seq": {
               "type": "integer",
@@ -25081,6 +25224,7 @@
           "type": "object",
           "required": [
             "id",
+            "node",
             "title",
             "goal",
             "state",
@@ -25098,6 +25242,10 @@
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
             },
             "revision": {
               "type": "integer",
@@ -25762,6 +25910,10 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -26096,6 +26248,7 @@
             "id",
             "task_id",
             "workspace_id",
+            "node",
             "home_node",
             "agent_id",
             "agent_version",
@@ -26124,7 +26277,7 @@
             "context": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/Context"
+                  "$ref": "#/components/schemas/InspectionContext"
                 },
                 {
                   "type": "null"
@@ -26152,8 +26305,22 @@
               "type": ["string", "null"],
               "format": "date-time"
             },
+            "lease_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LeaseWait"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Set while only a worker with the listed capabilities may claim the Run."
+            },
             "ledger_worker_ready": {
               "type": "boolean"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName"
             },
             "observed_input_seq": {
               "type": "integer",
@@ -28149,6 +28316,10 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -28172,6 +28343,7 @@
             "id",
             "task_id",
             "workspace_id",
+            "node",
             "home_node",
             "agent_id",
             "agent_version",
@@ -28206,7 +28378,8 @@
               "type": ["string", "null"]
             },
             "home_node": {
-              "type": "string"
+              "type": "string",
+              "description": "The address of the Node that owns the Run's Task; the executing Node's\nown address for a local Run."
             },
             "id": {
               "type": "string",
@@ -28222,6 +28395,10 @@
             },
             "ledger_worker_ready": {
               "type": "boolean"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName",
+              "description": "The Node that executes the Run."
             },
             "observed_input_seq": {
               "type": "integer",
@@ -30186,6 +30363,10 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -30293,7 +30474,7 @@
           "required": [
             "sequence",
             "id",
-            "node_id",
+            "node",
             "workspace_id",
             "kind",
             "data",
@@ -30312,8 +30493,16 @@
             "kind": {
               "type": "string"
             },
-            "node_id": {
-              "type": "string"
+            "node": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Node of the Workspace the event concerns; none for a Tenant-level event."
             },
             "sequence": {
               "type": "integer",
@@ -30324,6 +30513,10 @@
               "format": "uuid"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -31578,6 +31771,102 @@
     "json": false,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/nodes",
+    "name": "tenant-nodes",
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/NodeRecord"
+        }
+      },
+      "definitions": {
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": ["name", "address", "label", "default", "created_at"],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The Node the Tenant started with; Workspaces go there unless another is chosen."
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/nodes",
+    "name": "tenant-nodes-create",
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/tenants/{tenant}/nodes/{node}",
+    "name": "tenant-node-update",
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/NodeRecord"
+      },
+      "definitions": {
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": ["name", "address", "label", "default", "created_at"],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The Node the Tenant started with; Workspaces go there unless another is chosen."
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",

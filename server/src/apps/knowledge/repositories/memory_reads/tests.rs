@@ -23,7 +23,11 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		"a",
+		"1.0.0",
+	);
 	authorization
 		.replace(
 			"acme",
@@ -35,7 +39,14 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 		.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -75,6 +86,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				"task_id",
 				"workspace_id",
 				"home_node",
+				"node",
 				"agent_id",
 				"agent_version",
 				"phase",
@@ -86,7 +98,11 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				Expr::value(run),
 				Expr::value(task.id),
 				Expr::value(bank.workspace),
-				Expr::value(store.deployment.as_str()),
+				Expr::value(
+					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+						.to_string(),
+				),
+				Expr::value(aidash_domain::nodes::NodeName::derived("acme").to_string()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),

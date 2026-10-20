@@ -20,6 +20,12 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 	);
 	access.require(&resource, "registry.read").await?;
 	let tenant = access.identity.tenant.clone();
+	// Approvals and agent subjects are per Node; the Access names the Node.
+	let node_name = access.catalog_node().await?;
+	let address = aidash_domain::nodes::NodeAddress {
+		deployment: aidash_domain::nodes::DeploymentId::parse(node)?,
+		node: node_name.clone(),
+	};
 	let rows = Definition::objects()
 		.filter(Definition::field_tenant().eq(tenant.clone()))
 		.order_by(&["id", "version"])
@@ -38,6 +44,7 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 		}
 		let approval = AuthorizationCatalog::objects()
 			.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+			.filter(AuthorizationCatalog::field_node().eq(node_name.as_str().to_owned()))
 			.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
 			.filter(AuthorizationCatalog::field_entry_version().eq(entry.version.clone()))
 			.all_with_executor(&mut **access.tx)
@@ -50,6 +57,7 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 			});
 		let history = AuthorizationCatalogHistory::objects()
 			.filter(AuthorizationCatalogHistory::field_tenant().eq(tenant.clone()))
+			.filter(AuthorizationCatalogHistory::field_node().eq(node_name.as_str().to_owned()))
 			.filter(AuthorizationCatalogHistory::field_entry_key().eq(entry.id.clone()))
 			.filter(AuthorizationCatalogHistory::field_entry_version().eq(entry.version.clone()))
 			.order_by(&["revision"])
@@ -73,7 +81,7 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 			access.decide(&approval, "catalog.approve").await?
 		};
 		let subject = approver
-			.then(|| aidash_domain::qualified_agent(node, &entry.id, &entry.version))
+			.then(|| aidash_domain::qualified_agent(&address, &entry.id, &entry.version))
 			.and_then(|id| {
 				access
 					.snapshot

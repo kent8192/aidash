@@ -19,10 +19,11 @@ fn now() -> DateTime<Utc> {
 fn raw(now: DateTime<Utc>) -> RawRun {
 	RawRun {
 		metadata: RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(2),
 			workspace_id: Uuid::from_u128(3),
-			home_node: "aidash://home".into(),
+			home_node: "aidash://home/brave-otter-k3m9q2xa".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1.0.0".into(),
 			phase: RunPhase::Ready,

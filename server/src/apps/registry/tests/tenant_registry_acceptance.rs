@@ -98,6 +98,10 @@ fn agent(id: &str, version: &str, model: &str) -> Value {
 	json!({"id":id,"version":version,"kind":"agent","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},
 		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":[]}})
 }
+/// A single-entry catalog request for the default Node of `tenant`.
+fn node_approval(tenant: &str, id: &str, version: &str, enabled: bool) -> Value {
+	json!({"node":aidash_domain::nodes::NodeName::derived(tenant),"entry":{"id":id,"version":version},"enabled":enabled,"expected_revision":0})
+}
 fn approval(id: &str, version: &str, enabled: bool) -> Value {
 	json!({"entry":{"id":id,"version":version},"enabled":enabled,"expected_revision":0})
 }
@@ -113,7 +117,7 @@ async fn approve(client: &APIClient, tenant: &str, approvals: Value) -> (u16, Va
 	let response = client
 		.post(
 			&format!("/api/authorization/{tenant}/catalog/approvals"),
-			&json!({"approvals":approvals}),
+			&json!({"node":aidash_domain::nodes::NodeName::derived(tenant),"approvals":approvals}),
 			"json",
 		)
 		.await
@@ -187,8 +191,10 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		"{message}"
 	);
 	assert_eq!(approved, 200, "{bindings}");
-	let subject = &policy(&fixture, "acme").await["bundle"]["subjects"]
-		[format!("{NODE}/agents/helper@1.1.0")];
+	let subject = &policy(&fixture, "acme").await["bundle"]["subjects"][format!(
+		"{NODE}/{}/agents/helper@1.1.0",
+		aidash_domain::nodes::NodeName::derived("acme")
+	)];
 	assert_eq!(subject["kind"], "agent");
 	assert_eq!(subject["groups"], json!([MEMBERS]));
 	assert!(
@@ -239,7 +245,7 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 	let cross = globex
 		.post(
 			"/api/authorization/acme/catalog",
-			&approval("model", "1.0.0", false),
+			&node_approval("acme", "model", "1.0.0", false),
 			"json",
 		)
 		.await
@@ -462,7 +468,10 @@ async fn agent_groups_need_group_authority_and_approval_never_restores_a_disable
 	// Act
 	let (named, _) = approve(&member, "acme", json!([elevated])).await;
 	let (defaulted, _) = approve(&member, "acme", json!([approval("helper", "1.0.0", true)])).await;
-	let subject = format!("{NODE}/agents/helper@1.0.0");
+	let subject = format!(
+		"{NODE}/{}/agents/helper@1.0.0",
+		aidash_domain::nodes::NodeName::derived("acme")
+	);
 	let mut document = policy(&fixture, "acme").await;
 	let revision = document["revision"].as_i64().unwrap();
 	document["bundle"]["subjects"][&subject]["enabled"] = json!(false);
@@ -481,7 +490,7 @@ async fn agent_groups_need_group_authority_and_approval_never_restores_a_disable
 	let withdrawn = owner
 		.post(
 			"/api/authorization/acme/catalog",
-			&json!({"entry":{"id":"helper","version":"1.0.0"},"enabled":false,"expected_revision":1}),
+			&json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"helper","version":"1.0.0"},"enabled":false,"expected_revision":1}),
 			"json",
 		)
 		.await
@@ -490,7 +499,7 @@ async fn agent_groups_need_group_authority_and_approval_never_restores_a_disable
 	let restored = owner
 		.post(
 			"/api/authorization/acme/catalog",
-			&json!({"entry":{"id":"helper","version":"1.0.0"},"enabled":true,"expected_revision":2}),
+			&json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"helper","version":"1.0.0"},"enabled":true,"expected_revision":2}),
 			"json",
 		)
 		.await

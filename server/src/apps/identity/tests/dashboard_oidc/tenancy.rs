@@ -886,10 +886,13 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		.await;
 	assert_eq!(status, 200, "{overview}");
 	let actions = overview["actions"].as_array().unwrap();
-	// Every Tenant Administrator and Registry action, `tenant.update`,
-	// `tenant.delete` and `credential.create` for its own subject.
-	assert_eq!(actions.len(), 25, "{overview}");
+	// Every Tenant Administrator and Registry action, `node.create`,
+	// `node.update`, `tenant.update`, `tenant.delete` and `credential.create`
+	// for its own subject.
+	assert_eq!(actions.len(), 27, "{overview}");
 	for action in [
+		"node.create",
+		"node.update",
 		"tenant.delete",
 		"registry.create",
 		"catalog.approve",

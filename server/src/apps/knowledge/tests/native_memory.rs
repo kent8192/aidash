@@ -1065,7 +1065,8 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = Bank {
-		home: store.deployment.to_string(),
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,
@@ -2207,7 +2208,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 		let shared = Bank {
-			home: store.deployment.to_string(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -2251,7 +2253,11 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(store.deployment.as_str(), &agent_ref.id, &agent_ref.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent_ref.id,
+		&agent_ref.version,
+	);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -2264,7 +2270,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -2275,7 +2288,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			&reference("other-memory"),
 		] {
 			authorization
-				.set_catalog("acme", reference, 0, true, "deployment_administrator")
+				.set_catalog(
+					"acme",
+					&aidash_domain::nodes::NodeName::derived("acme"),
+					reference,
+					0,
+					true,
+					"deployment_administrator",
+				)
 				.await
 				.unwrap();
 		}
@@ -3089,11 +3109,22 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		"a",
+		"1.0.0",
+	);
 	authorization.replace("acme",1,serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"learning","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(),"deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -3161,6 +3192,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					"task_id",
 					"workspace_id",
 					"home_node",
+					"node",
 					"agent_id",
 					"agent_version",
 					"phase",
@@ -3175,7 +3207,16 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value(id))
 					.expr(Expr::value(task.id))
 					.expr(Expr::value(workspace))
-					.expr(Expr::value(store.deployment.as_str()))
+					.expr(Expr::value(
+						aidash_domain::nodes::NodeAddress::derived(
+							store.deployment.as_str(),
+							"acme",
+						)
+						.to_string(),
+					))
+					.expr(Expr::value(
+						aidash_domain::nodes::NodeName::derived("acme").to_string(),
+					))
 					.expr(Expr::value("a"))
 					.expr(Expr::value("1.0.0"))
 					.expr(Expr::value("COMPLETED"))
@@ -3326,7 +3367,11 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		.root_subject("alice")
 		.subject_chain(vec![
 			"alice".into(),
-			aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0"),
+			aidash_domain::qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+				"a",
+				"1.0.0",
+			),
 		])
 		.finish();
 	// The authorization row holds a row-level policy; seed it in a scope.

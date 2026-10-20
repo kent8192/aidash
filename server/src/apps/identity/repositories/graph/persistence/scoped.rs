@@ -148,7 +148,7 @@ pub(crate) async fn visible(
 		"memory",
 		&run.agent_id,
 		json!({
-			"created_by":crate::domain::qualified_agent(f.config.deployment.as_str(), &run.agent_id, &run.agent_version),
+			"created_by":run.executor_subject(f.config.deployment.as_str()),
 			"version":run.agent_version,
 			"source_workspace_id":description.task.workspace_id,
 			"source_task_id":description.task.id,

@@ -13,10 +13,11 @@ use uuid::Uuid;
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
 		workspace_id: Uuid::from_u128(3),
-		home_node: "aidash://local".into(),
+		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "producer".into(),
 		agent_version: "1.0.0".into(),
 		phase: RunPhase::Ready,
@@ -44,7 +45,8 @@ struct Scope {
 #[fixture]
 fn scope() -> Scope {
 	let node = "aidash://local";
-	let subject = qualified_agent(node, "producer", "1.0.0");
+	let subject =
+		aidash_domain::agent_subject("aidash://local/brave-otter-k3m9q2xa", "producer", "1.0.0");
 	let mut agent = crate::test_support::agent("producer");
 	agent.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
 	agent.config["bindings"] = json!([

@@ -179,7 +179,12 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 		)
 		.await
 		.unwrap();
-	hint(&nats, &fixture.f, rolled_back.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		rolled_back.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	assert!(
 		tokio::time::timeout(Duration::from_millis(150), selected.next())
 			.await
@@ -196,12 +201,33 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 	let first = fixture.emit(ws, 1).await;
 	let second = fixture.emit(ws, 2).await;
 	// Duplicate and reverse order are merely wakeups; only canonical order is emitted.
-	hint(&nats, &fixture.f, second.cloud_event()).await;
-	hint(&nats, &fixture.f, first.cloud_event()).await;
-	hint(&nats, &fixture.f, second.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		second.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
+	hint(
+		&nats,
+		&fixture.f,
+		first.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
+	hint(
+		&nats,
+		&fixture.f,
+		second.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	for stream in [&mut selected, &mut all] {
 		for event in [&first, &second] {
-			assert_eq!(frame(stream).await, (event.sequence, event.cloud_event()));
+			assert_eq!(
+				frame(stream).await,
+				(
+					event.sequence,
+					event.cloud_event(fixture.f.config.deployment.as_str())
+				)
+			);
 		}
 	}
 	assert!(
@@ -265,7 +291,10 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 	for event in &expected {
 		assert_eq!(
 			frame(&mut stream).await,
-			(event.sequence, event.cloud_event())
+			(
+				event.sequence,
+				event.cloud_event(fixture.f.config.deployment.as_str())
+			)
 		);
 	}
 	assert!(
@@ -317,7 +346,12 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
 		.unwrap();
-	hint(&nats, &fixture.f, healthy.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		healthy.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	assert_eq!(
 		frame(&mut idle).await.0,
 		healthy.sequence,
@@ -528,7 +562,13 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		)
 		.await
 		.unwrap();
-	assert_eq!(frame(&mut all).await, (large.sequence, large.cloud_event()));
+	assert_eq!(
+		frame(&mut all).await,
+		(
+			large.sequence,
+			large.cloud_event(fixture.f.config.deployment.as_str())
+		)
+	);
 	drop((all, selected));
 	fixture.finish().await;
 }

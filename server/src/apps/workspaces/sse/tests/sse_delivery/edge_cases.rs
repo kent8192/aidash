@@ -83,7 +83,10 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 	for observer in observers {
 		assert_eq!(
 			observer.await.unwrap(),
-			(event.sequence, event.cloud_event())
+			(
+				event.sequence,
+				event.cloud_event(fixture.f.config.deployment.as_str())
+			)
 		);
 	}
 	let audits: Vec<(i64, String)> = sqlx::query_as(
@@ -176,7 +179,10 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 		let allowed = fixture.emit(ws, 100 + revision).await;
 		assert_eq!(
 			frame(&mut stream).await,
-			(allowed.sequence, allowed.cloud_event())
+			(
+				allowed.sequence,
+				allowed.cloud_event(fixture.f.config.deployment.as_str())
+			)
 		);
 	}
 	drop(stream);
@@ -214,7 +220,9 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 			.as_str()
 			.trim_start_matches("aidash://")
 	);
-	let payload = first.cloud_event().to_string();
+	let payload = first
+		.cloud_event(fixture.f.config.deployment.as_str())
+		.to_string();
 	let (end, mut ending) = tokio::sync::watch::channel(false);
 	let flood = tokio::spawn(async move {
 		let mut ticks = tokio::time::interval(Duration::from_millis(5));
@@ -315,14 +323,22 @@ async fn notification_during_initial_authority_read_is_retained(
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
 		.unwrap();
-	hint(&nats, &fixture.f, event.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		event.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	until(|| fixture.service.snapshot().notifications == 1).await;
 	assert_eq!(fixture.service.snapshot().event_queries, 0);
 	ownership.rollback().await.unwrap();
 	let mut frames = response.take_stream_body().unwrap().boxed();
 	assert_eq!(
 		frame(&mut frames).await,
-		(event.sequence, event.cloud_event())
+		(
+			event.sequence,
+			event.cloud_event(fixture.f.config.deployment.as_str())
+		)
 	);
 	assert_eq!(fixture.service.snapshot().query_causes[3], 0);
 	stop.send_replace(true);

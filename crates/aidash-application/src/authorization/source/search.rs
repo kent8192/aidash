@@ -7,7 +7,6 @@ use crate::{
 };
 use aidash_domain::{
 	generation::{dispatch::Input, remote},
-	qualified_agent,
 	registry::{AgentConfig, rules::digest},
 	semantic::{
 		Failure,
@@ -86,7 +85,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);
 		let input = Search {
 			query,
-			agent: Some(qualified_agent(
+			agent: Some(aidash_domain::agent_subject(
 				node,
 				&description.inspection.agent.id,
 				&description.inspection.agent.version,

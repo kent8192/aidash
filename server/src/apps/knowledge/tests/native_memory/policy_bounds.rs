@@ -243,7 +243,8 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 		.bank
 	} else {
 		Bank {
-			home: store.deployment.to_string(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -406,7 +407,8 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		.bank
 	} else {
 		Bank {
-			home: store.deployment.to_string(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -594,7 +596,8 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 		.bank
 	} else {
 		Bank {
-			home: store.deployment.to_string(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -1146,11 +1149,22 @@ pub(super) async fn recorded_run(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(store.deployment.as_str(), "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		"a",
+		"1.0.0",
+	);
 	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -1193,6 +1207,7 @@ pub(super) async fn recorded_run(
 				"task_id",
 				"workspace_id",
 				"home_node",
+				"node",
 				"agent_id",
 				"agent_version",
 				"phase",
@@ -1204,7 +1219,11 @@ pub(super) async fn recorded_run(
 				Expr::value(run),
 				Expr::value(task.id),
 				Expr::value(bank.workspace),
-				Expr::value(store.deployment.as_str()),
+				Expr::value(
+					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+						.to_string(),
+				),
+				Expr::value(aidash_domain::nodes::NodeName::derived("acme").to_string()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),
@@ -1326,7 +1345,8 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 		.bank
 	} else {
 		Bank {
-			home: store.deployment.to_string(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,

@@ -88,7 +88,7 @@ pub async fn prepare(
 	}
 	let original_subjects = scope.subjects().to_vec();
 	let mut delegated = scope.subjects().to_vec();
-	delegated.push(aidash_domain::qualified_agent(
+	delegated.push(aidash_domain::agent_subject(
 		&input.recipient.node_id,
 		&input.recipient.agent_id,
 		&input.recipient.agent_version,
@@ -164,7 +164,7 @@ pub async fn authority<'a>(
 		if record.expires_at.is_none_or(|t| t <= Utc::now()) {
 			return Err(Error::Conflict("TRANSFER_EXPIRED".into()));
 		}
-        let peer_enabled: Option<bool> = scope.peer_enabled(&description.target.node_id).await?;
+        let peer_enabled: Option<bool> = scope.peer_enabled(aidash_domain::nodes::deployment_of(&description.target.node_id)).await?;
         if peer_enabled != Some(true) { return Err(Error::Forbidden); }
         let run = scope
             .run(serde_json::from_value(record.data["run_id"].clone())?)
@@ -197,7 +197,7 @@ pub async fn authority<'a>(
 		let entry = scope.entry( &description.source_agent, "agent.execute").await?;
 		scope.check_pinned( &entry).await?;
         scope.require_bound_operation(run.id, "file_share").await?;
-		let mut delegated=scope.subjects().to_vec();delegated.push(aidash_domain::qualified_agent(
+		let mut delegated=scope.subjects().to_vec();delegated.push(aidash_domain::agent_subject(
 			&description.target.node_id,
 			&description.target.agent_id,
 			&description.target.agent_version,
@@ -229,7 +229,9 @@ pub async fn describe(
 ) -> Result<Description> {
 	let record = repository.snapshot(input.transfer_id).await?;
 	let description: Description = serde_json::from_value(record.data["description"].clone())?;
-	if description.target.node_id != node || description.input_digest != input.input_digest {
+	if aidash_domain::nodes::deployment_of(&description.target.node_id) != node
+		|| description.input_digest != input.input_digest
+	{
 		return Err(Error::Forbidden);
 	}
 	// A queued policy writer may sit between the sender's shared lease and
@@ -337,7 +339,8 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 			)
 			.await?;
 		if negotiation["protocol"] != "file-transfer/1"
-			|| negotiation["node_id"] != description.target.node_id
+			|| negotiation["node_id"]
+				!= aidash_domain::nodes::deployment_of(&description.target.node_id)
 			|| negotiation["chunk_bytes"] != 4194304
 		{
 			return Err(Error::Conflict("FILE_TRANSFER_UNAVAILABLE".into()));

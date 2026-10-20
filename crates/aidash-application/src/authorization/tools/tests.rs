@@ -225,6 +225,7 @@ fn reference() -> EntityRef {
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
 		workspace_id: id(3),

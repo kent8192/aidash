@@ -1,5 +1,6 @@
 //! Ordered event insertion in a caller-owned native transaction.
 use super::Event;
+use crate::database::scope::workspace_node;
 use crate::{Result, database::scope::event_tenant};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
@@ -12,12 +13,11 @@ use uuid::Uuid;
 
 pub(crate) async fn append(
 	tx: &mut dyn TransactionExecutor,
-	node: &str,
 	workspace: Option<Uuid>,
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	insert(tx, node, workspace, event_tenant(workspace), kind, data).await?;
+	insert(tx, workspace, event_tenant(workspace), kind, data).await?;
 	Ok(())
 }
 
@@ -25,40 +25,34 @@ pub(crate) async fn append(
 /// Deployment Scope names no Tenant of its own.
 pub(crate) async fn append_for_tenant(
 	tx: &mut dyn TransactionExecutor,
-	node: &str,
 	tenant: &str,
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	insert(
-		tx,
-		node,
-		None,
-		Expr::value(tenant.to_owned()).into(),
-		kind,
-		data,
-	)
-	.await?;
+	insert(tx, None, Expr::value(tenant.to_owned()).into(), kind, data).await?;
 	Ok(())
 }
 
 pub(crate) async fn create(
 	tx: &mut AtomicTransaction,
-	node: &str,
 	workspace: Option<Uuid>,
 	kind: &str,
 	data: Value,
 ) -> Result<Event> {
-	let id = insert(tx, node, workspace, event_tenant(workspace), kind, data).await?;
+	let id = insert(tx, workspace, event_tenant(workspace), kind, data).await?;
 	Ok(Event::objects()
 		.filter(Event::field_id().eq(id))
 		.get_with_db(tx)
 		.await?)
 }
 
+/// The Node of the Workspace an event concerns; a Tenant-level event has none.
+pub(crate) fn event_node(workspace: Option<Uuid>) -> SimpleExpr {
+	workspace.map_or_else(|| Expr::cust("NULL::text").into(), workspace_node)
+}
+
 async fn insert(
 	tx: &mut dyn TransactionExecutor,
-	node: &str,
 	workspace: Option<Uuid>,
 	tenant: SimpleExpr,
 	kind: &str,
@@ -78,7 +72,7 @@ async fn insert(
 		.into_table(Alias::new("events"))
 		.columns([
 			Alias::new("id"),
-			Alias::new("node_id"),
+			Alias::new("node"),
 			Alias::new("workspace_id"),
 			Alias::new("kind"),
 			Alias::new("data"),
@@ -86,7 +80,7 @@ async fn insert(
 		])
 		.values_expr(vec![
 			IntoValue::into_value(id).into(),
-			IntoValue::into_value(node).into(),
+			event_node(workspace),
 			IntoValue::into_value(workspace).into(),
 			IntoValue::into_value(kind).into(),
 			IntoValue::into_value(data).into(),

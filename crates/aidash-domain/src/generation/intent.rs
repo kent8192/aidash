@@ -55,7 +55,7 @@ pub struct Reference {
 
 impl Input {
 	pub fn validate(&self, home_node: &str) -> crate::Result<()> {
-		crate::nodes::DeploymentId::parse(&self.node_id)?;
+		crate::nodes::validate_node_ref(&self.node_id)?;
 		if self.id.is_nil()
 			|| self.node_id == home_node
 			|| self.policy_revision < 1

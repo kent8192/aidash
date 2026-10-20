@@ -181,7 +181,10 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 			.column(a("id"))
 			.from(a("runs"))
 			.and_where(Expr::col(a("task_id")).eq(Expr::value(task)))
-			.and_where(Expr::col(a("home_node")).eq(Expr::value(f.config.deployment.as_str())))
+			.and_where(Expr::cust(format!(
+				"starts_with(home_node, '{}/')",
+				f.config.deployment
+			)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(f.store.pool.fixture_driver())
@@ -1202,6 +1205,7 @@ async fn startup_reconciliation_drains_all_batches(
 		a("task_id"),
 		a("workspace_id"),
 		a("home_node"),
+		a("node"),
 		a("agent_id"),
 		a("agent_version"),
 		a("control"),
@@ -1212,7 +1216,12 @@ async fn startup_reconciliation_drains_all_batches(
 			Uuid::new_v4().into(),
 			Uuid::new_v4().into(),
 			Uuid::new_v4().into(),
-			f.config.deployment.to_string().into(),
+			aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme")
+				.to_string()
+				.into(),
+			aidash_domain::nodes::NodeName::derived("acme")
+				.to_string()
+				.into(),
 			"fixture".into(),
 			"1.0.0".into(),
 			"PAUSED".into(),

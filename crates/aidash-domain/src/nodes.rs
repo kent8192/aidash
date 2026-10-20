@@ -134,8 +134,11 @@ impl PartialEq<DeploymentId> for str {
 /// The identifier Aidash assigns to a Node, in the same form as a Tenant name:
 /// `<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,
 /// never changed and never reused.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+	Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct NodeName(String);
 
 impl NodeName {
@@ -145,6 +148,14 @@ impl NodeName {
 	/// UUID, so this crate stays free of a random source.
 	pub fn from_entropy(entropy: [u8; 16]) -> Self {
 		Self(assigned_name(entropy))
+	}
+
+	/// A stable name for `seed`, for fixtures that must name a Node before it
+	/// exists. Production Nodes draw theirs from entropy.
+	pub fn derived(seed: &str) -> Self {
+		use sha2::{Digest, Sha256};
+		let digest = Sha256::digest(seed.as_bytes());
+		Self::from_entropy(digest[..16].try_into().expect("16 bytes"))
 	}
 
 	/// Accepts the assigned form only: three lowercase segments, the last one
@@ -260,6 +271,17 @@ impl NodeAddress {
 	}
 }
 
+impl NodeAddress {
+	/// The address of the Node `NodeName::derived(seed)` names in `deployment`,
+	/// for fixtures.
+	pub fn derived(deployment: &str, seed: &str) -> Self {
+		Self {
+			deployment: DeploymentId::parse(deployment).expect("a Deployment id"),
+			node: NodeName::derived(seed),
+		}
+	}
+}
+
 impl fmt::Display for NodeAddress {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{}/{}", self.deployment, self.node)
@@ -339,6 +361,40 @@ impl From<DeploymentKeyId> for String {
 	fn from(value: DeploymentKeyId) -> Self {
 		value.0
 	}
+}
+
+/// The Deployment part of a Node address. A bare Deployment id, which a peer
+/// that predates Node addresses still sends, is its own Deployment.
+pub fn deployment_of(address: &str) -> &str {
+	let rest = address.strip_prefix(SCHEME).unwrap_or(address);
+	let end = rest.find('/').unwrap_or(rest.len());
+	&address[..address.len() - rest.len() + end]
+}
+
+/// A Node as a peer names it: a Node address, or a bare Deployment id from a
+/// peer that predates Node addresses.
+pub fn validate_node_ref(value: &str) -> Result<()> {
+	if value
+		.strip_prefix(SCHEME)
+		.is_some_and(|rest| rest.contains('/'))
+	{
+		NodeAddress::parse(value).map(drop)
+	} else {
+		DeploymentId::parse(value).map(drop)
+	}
+}
+
+/// Whether `reference` names the Node at `home`: by its address, or by the
+/// bare Deployment id a Tool transport still carries.
+pub fn names_home(reference: &str, home: &str) -> bool {
+	reference == home || reference == deployment_of(home)
+}
+
+/// Whether `home` is the address of `node` in `deployment`, without building it.
+pub fn is_home(home: &str, deployment: &str, node: &str) -> bool {
+	home.strip_prefix(deployment)
+		.and_then(|rest| rest.strip_prefix('/'))
+		== Some(node)
 }
 
 /// A Node as its Tenant sees it. Its name is assigned; its label is free text.

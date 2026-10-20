@@ -113,7 +113,7 @@ impl GenerationProvisioning for NativeProvisioning {
 impl GenerationProvisionRead for Read {
 	async fn jobs(&mut self) -> aidash_application::Result<Vec<Request>> {
 		let f = &self.runtime;
-		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(reinhardt::query::Expr::cust("g.home_node='' AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
+		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(reinhardt::query::Expr::cust("g.local_task_id IS NOT NULL AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
         .fetch_all(f.store.pool.in_scope(&TenancyScope::Deployment(DeploymentScopeReason::GenerationReconcile))).await?;
 		Ok(jobs)
 	}
@@ -305,7 +305,7 @@ impl GenerationTerminalSession for Terminal {
 					))
 					.from(reinhardt::query::Alias::new("runs"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(task_id = ? AND home_node=?)".to_owned(),
+						"(task_id = ? AND home_node = ? || '/' || node)".to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),

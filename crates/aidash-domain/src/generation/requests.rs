@@ -14,6 +14,10 @@ pub struct Request {
 	pub policy_id: String,
 	pub policy_revision: i64,
 	pub task_id: Uuid,
+	/// The Node of the requesting Workspace.
+	pub node: crate::nodes::NodeName,
+	/// The address of the Node that owns the Task: this request's own Node for
+	/// a local request, the requesting Home for a foreign one.
 	pub home_node: String,
 	#[serde(skip_serializing)]
 	pub foreign_intent: Option<Value>,
@@ -37,6 +41,23 @@ pub struct Request {
 	pub quota_released: bool,
 	pub expires_at: DateTime<Utc>,
 	pub created_at: DateTime<Utc>,
+}
+
+impl Request {
+	/// Whether the Task belongs to a Workspace of this Deployment, as opposed to
+	/// a Home that asked for the generation through a peer.
+	pub fn is_local(&self) -> bool {
+		self.foreign_intent.is_none()
+	}
+
+	/// The subject of the requested agent on the requesting Node in `deployment`.
+	pub fn executor_subject(&self, deployment: &str) -> String {
+		crate::entities::agent_subject(
+			&format!("{deployment}/{}", self.node),
+			&self.agent_id,
+			&self.agent_version,
+		)
+	}
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]

@@ -437,12 +437,12 @@ fn sharing_generation_fixture(
 			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{saved}");
 		f.c.policy["subjects"][aidash_server::domain::qualified_agent(
-			f.c.f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
 			"research",
 			"1.2.0",
 		)] = json!({"kind":"agent"});

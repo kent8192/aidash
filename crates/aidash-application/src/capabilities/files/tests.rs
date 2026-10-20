@@ -411,6 +411,7 @@ fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEn
 		vec![tool],
 	));
 	let run = RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),
 		workspace_id: area.workspace_id,

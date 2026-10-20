@@ -121,6 +121,7 @@ fn workspace_policy(tenant: &str) -> Value {
             "resources":{"kinds":["workspace"]},
             "condition":{"op":"eq","left":{"source":"resource","path":"/owner"},
                 "right":{"source":"literal","value":"alice"}}},
+            {"id":"node-use","effect":"allow","subjects":{"ids":["alice"]},"actions":["node.use"],"resources":{"kinds":["node"]}},
             {"id":"workspace-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
 }
 

@@ -63,7 +63,7 @@ pub(crate) async fn retrieve(
 	agent: &AgentConfig,
 	key: Option<&RetrievalKey>,
 ) -> Result<Context> {
-	if run.home_node != store.deployment {
+	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
 	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {

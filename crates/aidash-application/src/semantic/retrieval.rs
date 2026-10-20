@@ -387,7 +387,7 @@ pub async fn workspace_context(
 		run.workspace_id,
 		&Search {
 			query,
-			agent: Some(aidash_domain::qualified_agent(
+			agent: Some(aidash_domain::agent_subject(
 				&run.home_node,
 				&run.agent_id,
 				&run.agent_version,

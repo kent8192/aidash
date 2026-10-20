@@ -17,7 +17,7 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_learning_discovery"))
-			.columns(["home", "cursor_updated", "cursor_id", "cycle_before"].map(Alias::new))
+			.columns(["deployment", "cursor_updated", "cursor_id", "cycle_before"].map(Alias::new))
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(store.deployment.as_str()))
@@ -27,7 +27,7 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 					.to_owned(),
 			)
 			.on_conflict(
-				OnConflict::column(Alias::new("home"))
+				OnConflict::column(Alias::new("deployment"))
 					.do_nothing()
 					.to_owned(),
 			)
@@ -39,7 +39,7 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 		&Query::select()
 			.columns(["cursor_updated", "cursor_id", "cycle_before"].map(Alias::new))
 			.from(Alias::new("memory_learning_discovery"))
-			.and_where(Expr::col("home").eq(store.deployment.as_str()))
+			.and_where(Expr::col("deployment").eq(store.deployment.as_str()))
 			.lock(LockType::Update)
 			.lock_behavior(LockBehavior::SkipLocked)
 			.to_string(PostgresQueryBuilder),
@@ -61,7 +61,10 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 		&Query::select()
 			.columns(["id", "updated_at"].map(Alias::new))
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("home_node").eq(store.deployment.as_str()))
+			.and_where(crate::database::scope::local_home(
+				"runs",
+				store.deployment.as_str(),
+			))
 			.and_where(Expr::col("phase").eq("COMPLETED"))
 			.and_where(Expr::col("id").not_in_subquery(attempted))
 			.and_where(
@@ -92,7 +95,7 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 	let mut update = Query::update();
 	update
 		.table(Alias::new("memory_learning_discovery"))
-		.and_where(Expr::col("home").eq(store.deployment.as_str()));
+		.and_where(Expr::col("deployment").eq(store.deployment.as_str()));
 	if let Some(last) = rows.last() {
 		update
 			.value(

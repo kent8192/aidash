@@ -124,6 +124,7 @@ impl GenerationPublication for NativePublication<'_> {
 				.into_table(reinhardt::query::Alias::new("authorization_catalog"))
 				.columns([
 					reinhardt::query::Alias::new("tenant"),
+					reinhardt::query::Alias::new("node"),
 					reinhardt::query::Alias::new("entry_id"),
 					reinhardt::query::Alias::new("entry_version"),
 					reinhardt::query::Alias::new("enabled"),
@@ -135,6 +136,7 @@ impl GenerationPublication for NativePublication<'_> {
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
+						.expr(Expr::value(job.node.as_str().to_owned()))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
@@ -204,6 +206,7 @@ impl GenerationPublication for NativePublication<'_> {
 				))
 				.columns([
 					reinhardt::query::Alias::new("tenant"),
+					reinhardt::query::Alias::new("node"),
 					reinhardt::query::Alias::new("entry_id"),
 					reinhardt::query::Alias::new("entry_version"),
 					reinhardt::query::Alias::new("revision"),
@@ -216,6 +219,7 @@ impl GenerationPublication for NativePublication<'_> {
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
+						.expr(Expr::value(job.node.as_str().to_owned()))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
@@ -262,7 +266,7 @@ impl GenerationLive for NativeLive<'_> {
 			let query_bind_3 = &access.subjects;
 			let query_bind_4 = &agent.id;
 			let query_bind_5 = &agent.version;
-			crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("generation_requests")).and_where(SimpleExpr::CustomWithExpr("((tenant = ? AND (? || '/agents/' || agent_id || '@' || agent_version) = ANY(?)) OR (agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned()), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()])).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))), reinhardt::query::Order::Asc).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_all(&mut **access.tx).await?
+			crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("generation_requests")).and_where(SimpleExpr::CustomWithExpr("((tenant = ? AND (? || '/' || node || '/agents/' || agent_id || '@' || agent_version) = ANY(?)) OR (agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned()), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()])).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))), reinhardt::query::Order::Asc).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_all(&mut **access.tx).await?
 		};
 		Ok(jobs)
 	}

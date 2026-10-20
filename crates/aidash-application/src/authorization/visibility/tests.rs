@@ -7,10 +7,11 @@ use rstest::{fixture, rstest};
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
 		workspace_id: Uuid::from_u128(3),
-		home_node: "aidash://node".into(),
+		home_node: "aidash://node/brave-otter-k3m9q2xa".into(),
 		agent_id: "agent".into(),
 		agent_version: "1".into(),
 		phase: aidash_domain::RunPhase::Ready,
@@ -200,7 +201,7 @@ async fn local_disclosure_keeps_task_policy_memory_provenance_and_content_gates(
 	assert_eq!(scope.decisions[0].id, run.id.to_string());
 	assert_eq!(
 		scope.decisions[1].attributes,
-		json!({"workspace_id":run.workspace_id,"owner":"root","created_by":qualified_agent(&run.home_node,&run.agent_id,&run.agent_version),"version":"1"})
+		json!({"workspace_id":run.workspace_id,"owner":"root","created_by":aidash_domain::agent_subject(&run.home_node,&run.agent_id,&run.agent_version),"version":"1"})
 	);
 }
 
@@ -398,7 +399,7 @@ fn event(kind: &str, data: Value) -> Event {
 	Event {
 		sequence: 1,
 		id: Uuid::from_u128(8),
-		node_id: "aidash://node".into(),
+		node: None,
 		workspace_id: Some(Uuid::from_u128(3)),
 		kind: kind.into(),
 		data,
@@ -652,6 +653,7 @@ async fn event_read_failures_preserve_their_error_and_stop_following_lookups(
 fn generation(id: u128) -> aidash_domain::generation::requests::Request {
 	let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(1000, 0).unwrap();
 	aidash_domain::generation::requests::Request {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(id),
 		tenant: "tenant".into(),
 		policy_id: "policy".into(),

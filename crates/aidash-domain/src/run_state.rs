@@ -477,11 +477,26 @@ pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryStat
 	Ok((state, pending.recovery))
 }
 impl Run {
+	/// Whether the Run's Home is its own executing Node in `deployment`.
+	pub fn is_local(&self, deployment: &str) -> bool {
+		crate::nodes::is_home(&self.home_node, deployment, self.node.as_str())
+	}
+
+	/// The subject of the Run's agent on its executing Node in `deployment`.
+	pub fn executor_subject(&self, deployment: &str) -> String {
+		crate::entities::agent_subject(
+			&format!("{deployment}/{}", self.node),
+			&self.agent_id,
+			&self.agent_version,
+		)
+	}
+
 	/// Native admission persists this context in the same transaction as Run
 	/// insertion. An existing graph can only be reused byte-for-byte.
 	pub fn bind(&mut self, snapshot: crate::registry::bindings::BindingSnapshot) -> Result<()> {
 		snapshot.validate()?;
-		if snapshot.remote != (snapshot.agent.registry_deployment != self.home_node)
+		if snapshot.remote
+			!= (snapshot.agent.registry_deployment != crate::nodes::deployment_of(&self.home_node))
 			|| snapshot.agent.id != self.agent_id
 			|| snapshot.agent.version != self.agent_version
 		{

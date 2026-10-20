@@ -121,8 +121,9 @@ pub async fn assign_in(
 	}
 	if task.status != TaskStatus::Open {
 		if let Some((id, version, chain)) = scope.existing_run(task_id).await? {
+			let node = scope.workspace_node(task.workspace_id).await?;
 			let mut expected = scope.subjects().to_vec();
-			expected.push(qualified_agent(scope.node_id(), &id, &version));
+			expected.push(qualified_agent(&node, &id, &version));
 			if chain == expected {
 				scope.replace_subjects(chain);
 				scope
@@ -137,7 +138,7 @@ pub async fn assign_in(
 				return Ok(Assignment::Existing {
 					delegation: Delegation {
 						task_id,
-						node_id: scope.node_id().to_owned(),
+						node_id: node.to_string(),
 						agent_id: id,
 						agent_version: version,
 						delivered: true,
@@ -149,11 +150,12 @@ pub async fn assign_in(
 	}
 	let mut search: Search = serde_json::from_value(task.requirements.clone())?;
 	search.kind = Some("agent".into());
+	let node = scope.workspace_node(task.workspace_id).await?;
 	for entry in scope.catalog(&search).await? {
 		if scope.generated(&entry).await? {
 			continue;
 		}
-		let subject = qualified_agent(scope.node_id(), &entry.id, &entry.version);
+		let subject = qualified_agent(&node, &entry.id, &entry.version);
 		if scope
 			.bundle()
 			.subjects
@@ -267,7 +269,6 @@ pub async fn create_in(
 			reason,
 			depth,
 			lifetime_seconds,
-			home_node: foreign.map_or("", |intent| intent.home_node.as_str()),
 			foreign_intent: foreign.map(serde_json::to_value).transpose()?,
 		})
 		.await?;

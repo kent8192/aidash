@@ -406,7 +406,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let catalog = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.catalog("acme")
+	.catalog("acme", &aidash_domain::nodes::NodeName::derived("acme"))
 	.await
 	.unwrap();
 	assert!(catalog.is_empty(), "{catalog:?}");

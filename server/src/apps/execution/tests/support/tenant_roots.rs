@@ -3,9 +3,24 @@
 //! Tenant needs before its first policy, as the API's creation steps would.
 use aidash_server::federation::Federation;
 
+/// The default Node name fixtures give `tenant`. It is derived from the Tenant
+/// name so a test can name the Node's address before the Tenant exists.
+#[allow(dead_code)]
+pub fn fixture_node_name(tenant: &str) -> aidash_domain::nodes::NodeName {
+	aidash_domain::nodes::NodeName::derived(tenant)
+}
+
+/// The address of `tenant`'s fixture default Node in `deployment`.
+#[allow(dead_code)]
+pub fn fixture_node(deployment: &str, tenant: &str) -> aidash_domain::nodes::NodeAddress {
+	format!("{deployment}/{}", fixture_node_name(tenant))
+		.parse()
+		.expect("a Node address")
+}
+
 #[allow(dead_code)]
 pub async fn tenant_root(f: &Federation, name: &str) {
-	tenant_root_in(f.store.pool.driver(), name).await;
+	tenant_root_in(f.store.pool.fixture_driver(), name).await;
 	f.registry
 		.seed(&aidash_domain::tenancy::TenantName::new(name).unwrap())
 		.await
@@ -44,19 +59,51 @@ pub async fn tenant_root_in(pool: &sqlx::PgPool, name: &str) {
 }
 
 /// The Tenant's default Node, created like `tenants::create` does when the
-/// fixture wrote the root record itself.
+/// fixture wrote the root record itself. `nodes` is Tenant-owned, so the rows
+/// are written in the test-fixture Deployment Scope.
 #[allow(dead_code)]
 pub async fn default_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain::nodes::NodeName {
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(pool)
+		.await
+		.expect("the fixture Deployment Scope is entered");
 	let existing: Option<String> =
 		sqlx::query_scalar("SELECT name FROM nodes WHERE tenant = $1 AND is_default")
 			.bind(tenant)
-			.fetch_optional(pool)
+			.fetch_optional(&mut *tx)
 			.await
 			.expect("the default Node is read");
 	if let Some(name) = existing {
 		return aidash_domain::nodes::NodeName::parse(&name).unwrap();
 	}
-	let name = aidash_domain::nodes::NodeName::from_entropy(*uuid::Uuid::new_v4().as_bytes());
+	let name = fixture_node_name(tenant);
+	sqlx::query(
+		"INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp()) \
+		 ON CONFLICT (name) DO NOTHING",
+	)
+	.bind(name.as_str())
+	.bind(tenant)
+	.execute(&mut *tx)
+	.await
+	.expect("the Node name is claimed");
+	sqlx::query(
+		"INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) \
+		 VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator') \
+		 ON CONFLICT DO NOTHING",
+	)
+	.bind(tenant)
+	.bind(name.as_str())
+	.execute(&mut *tx)
+	.await
+	.expect("the default Node is written");
+	tx.commit().await.expect("the default Node commits");
+	name
+}
+
+/// A second Node of `tenant`, which is not its default. `pool` must hold the
+/// test-fixture Deployment Scope.
+#[allow(dead_code)]
+pub async fn second_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain::nodes::NodeName {
+	let name = aidash_domain::nodes::NodeName::derived(&format!("{tenant}-second"));
 	sqlx::query(
 		"INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp())",
 	)
@@ -67,13 +114,13 @@ pub async fn default_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain
 	.expect("the Node name is claimed");
 	sqlx::query(
 		"INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) \
-		 VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator')",
+		 VALUES ($1, $2, 'Second', false, clock_timestamp(), 'deployment_administrator')",
 	)
 	.bind(tenant)
 	.bind(name.as_str())
 	.execute(pool)
 	.await
-	.expect("the default Node is written");
+	.expect("the second Node is written");
 	name
 }
 
@@ -133,7 +180,7 @@ pub async fn local_run(
 	agent: &aidash_server::registry::Entry,
 ) -> aidash_server::domain::Run {
 	let owner = aidash_server::domain::qualified_agent(
-		store.deployment.as_str(),
+		&workspace_node(store, task.workspace_id).await,
 		&agent.id,
 		&agent.version,
 	);
@@ -150,6 +197,22 @@ pub async fn local_run(
 		.into_iter()
 		.find(|run| run.task_id == task.id)
 		.expect("the claim queues a Run")
+}
+
+/// The address of the Node a Workspace belongs to.
+#[allow(dead_code)]
+pub async fn workspace_node(
+	store: &aidash_server::store::Store,
+	workspace: uuid::Uuid,
+) -> aidash_domain::nodes::NodeAddress {
+	let name: String = sqlx::query_scalar("SELECT node FROM workspaces WHERE id = $1")
+		.bind(workspace)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.expect("the Workspace's Node is read");
+	store
+		.deployment
+		.node(aidash_domain::nodes::NodeName::parse(&name).unwrap())
 }
 
 /// An admitted remote Run on `store`, in the Tenant of its Workspace when the
@@ -200,6 +263,7 @@ pub async fn remote_run_in(
 				"task_id",
 				"workspace_id",
 				"home_node",
+				"node",
 				"agent_id",
 				"agent_version",
 				"context",
@@ -213,6 +277,9 @@ pub async fn remote_run_in(
 				.expr(Expr::cust("$2"))
 				.expr(Expr::cust("$3"))
 				.expr(Expr::cust("$4"))
+				.expr(Expr::cust(
+					"(SELECT name FROM nodes WHERE tenant = $8 AND is_default)",
+				))
 				.expr(Expr::cust("$5"))
 				.expr(Expr::cust("$6"))
 				.expr(Expr::cust("$7"))
@@ -252,15 +319,23 @@ pub async fn tenant_token(store: &aidash_server::store::Store, tenant: &str) -> 
 
 #[allow(dead_code)]
 pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::registry::Entry) {
+	let node = default_node(&f.store, tenant).await;
+	approve_agent_on(f, tenant, agent, &node).await;
+}
+
+/// Approves `agent` and its dependency closure on one Node of `tenant`.
+#[allow(dead_code)]
+pub async fn approve_agent_on(
+	f: &Federation,
+	tenant: &str,
+	agent: &aidash_server::registry::Entry,
+	node: &aidash_domain::nodes::NodeAddress,
+) {
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	};
 	let snapshot = authorization.snapshot(tenant).await.unwrap();
-	let subject = aidash_server::domain::qualified_agent(
-		f.config.deployment.as_str(),
-		&agent.id,
-		&agent.version,
-	);
+	let subject = aidash_server::domain::qualified_agent(node, &agent.id, &agent.version);
 	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
 	if bundle["subjects"].get(&subject).is_none() {
 		bundle["subjects"][&subject] = serde_json::json!({"kind":"agent"});
@@ -302,7 +377,7 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 	}
 	for reference in order.into_iter().rev() {
 		let current = authorization
-			.catalog(tenant)
+			.catalog(tenant, &node.node)
 			.await
 			.unwrap()
 			.into_iter()
@@ -315,6 +390,7 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 		authorization
 			.set_catalog(
 				tenant,
+				&node.node,
 				&reference,
 				current.map_or(0, |binding| binding.revision),
 				true,
@@ -333,6 +409,26 @@ pub async fn admitted_run(
 	agent: &aidash_server::registry::Entry,
 ) -> aidash_server::domain::Run {
 	approve_agent(f, tenant, agent).await;
+	subject_claim(f, tenant, task, agent)
+		.await
+		.expect("the subject admits the Run");
+	f.store
+		.runs(&aidash_application::tenancy::TenancyScope::tenant(tenant).unwrap())
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == task.id)
+		.expect("admission queues a Run")
+}
+
+/// The Tenant's subject `alice` claims `task` for `agent`, as the claim route does.
+#[allow(dead_code)]
+pub async fn subject_claim(
+	f: &Federation,
+	tenant: &str,
+	task: &aidash_server::domain::Task,
+	agent: &aidash_server::registry::Entry,
+) -> aidash_server::Result<()> {
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	};
@@ -357,14 +453,7 @@ pub async fn admitted_run(
 		},
 	)
 	.await
-	.expect("the subject admits the Run");
-	f.store
-		.runs(&aidash_application::tenancy::TenancyScope::tenant(tenant).unwrap())
-		.await
-		.unwrap()
-		.into_iter()
-		.find(|run| run.task_id == task.id)
-		.expect("admission queues a Run")
+	.map(|_| ())
 }
 
 #[allow(dead_code)]

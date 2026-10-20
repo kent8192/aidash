@@ -102,7 +102,7 @@ async fn research_fixture(
 ) -> Research {
 	let mut c = core.await;
 	c.policy["subjects"][aidash_server::domain::qualified_agent(
-		c.f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
 		VERSION,
 	)] = json!({"kind":"agent"});
@@ -132,7 +132,7 @@ async fn research_fixture(
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog/approvals",
-		json!({ "approvals": approvals }),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
@@ -155,7 +155,7 @@ async fn research_fixture(
 		(
 			"POST",
 			"/api/authorization/acme/catalog".to_owned(),
-			json!({"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
 		),
 	] {
 		let (status, value) = request(&c.app, &c.token, method, &path, body).await;
@@ -203,8 +203,11 @@ impl Research {
 	}
 	async fn register_search_only_agent(&mut self) {
 		let node = self.c.f.config.deployment.to_string();
-		self.c.policy["subjects"]
-			[aidash_server::domain::qualified_agent(&node, "research", "3.1.0")] = json!({"kind":"agent"});
+		self.c.policy["subjects"][aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(&node, "acme"),
+			"research",
+			"3.1.0",
+		)] = json!({"kind":"agent"});
 		let mut agent = self
 			.c
 			.f
@@ -224,7 +227,7 @@ impl Research {
 			("/api/registry", json!(agent)),
 			(
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
 			),
 		] {
 			let (status, value) = request(&self.c.app, &self.c.token, "POST", path, body).await;

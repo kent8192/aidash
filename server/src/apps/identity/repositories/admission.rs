@@ -111,6 +111,14 @@ impl ExecutionAdmissionSession for Admission<'_> {
 	fn node_id(&self) -> &str {
 		self.f.config.deployment.as_str()
 	}
+	async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.access.workspace_node(workspace).await?;
+		self.access.set_node(node.clone());
+		Ok(self.f.config.deployment.node(node))
+	}
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
@@ -155,15 +163,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 						.from(Alias::new("runs"))
 						.cond_where(
 							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"home_node",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									)),
-								)
+								.add(crate::database::scope::local_home("runs", query_bind_1))
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
 										"task_id",
@@ -372,9 +372,13 @@ impl ExecutionAdmissionSession for Admission<'_> {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_1.to_owned()).into()],
 								))
+								// The delegated Task runs on its Workspace's Node.
 								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
+									"(? || '/' || (SELECT node FROM workspaces WHERE id = (SELECT workspace_id FROM tasks WHERE id = ?)))".to_owned(),
+									vec![
+										Expr::value(query_bind_2.to_owned()).into(),
+										Expr::value(query_bind_1.to_owned()).into(),
+									],
 								))
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),

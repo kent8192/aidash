@@ -211,6 +211,7 @@ pub(super) fn migration() -> Migration {
 				            columns: vec![
 				                ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
 				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				                ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("title", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("goal", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("state", FieldType::Jsonb).with_not_null(true)

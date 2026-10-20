@@ -28,6 +28,7 @@ fn repository() -> Repository {
 	let now = "2026-10-04T00:00:00Z".parse().unwrap();
 	Repository(Arc::new(State {
 		run: Mutex::new(Some(Run {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
 			workspace_id: Uuid::new_v4(),

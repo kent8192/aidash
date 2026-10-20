@@ -11,6 +11,22 @@ use reinhardt::db::orm::{Json, Model};
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
+/// The Tenant's default Node, as `tenants::create` writes it.
+async fn default_node(pool: &sqlx::PgPool, tenant: &str) {
+	let name = aidash_domain::nodes::NodeName::derived(tenant);
+	sqlx::query("INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp()) ON CONFLICT (name) DO NOTHING")
+		.bind(name.as_str())
+		.bind(tenant)
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator') ON CONFLICT DO NOTHING")
+		.bind(tenant)
+		.bind(name.as_str())
+		.execute(pool)
+		.await
+		.unwrap();
+}
 pub(super) fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -153,17 +169,21 @@ pub(super) async fn setup_endpoint_policy(
 		})
 		.await
 		.unwrap();
+	default_node(store.pool.fixture_driver(), "acme").await;
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
 		.await
 		.unwrap();
 	registry.seed_system().await.unwrap();
+	// A Bank's home is a Node address, which lengthens every recalled Unit. The
+	// window leaves the Run's memory budget room for the two Units the
+	// provenance-bound cases read.
 	for (kind, id, config) in [
 		(
 			"model",
 			"m",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":32768,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":34816,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"embedding",

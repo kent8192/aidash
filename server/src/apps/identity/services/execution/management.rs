@@ -81,7 +81,7 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 	}
 	.ok_or(Error::Forbidden)?;
 	let run = raw.inspect();
-	let workspace = if run.home_node == node {
+	let workspace = if run.is_local(node) {
 		access.workspace(run.workspace_id).await?
 	} else {
 		let tenant: Option<String> = {

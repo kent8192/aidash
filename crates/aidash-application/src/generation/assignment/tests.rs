@@ -136,7 +136,7 @@ impl Scope {
 		entry.id = id.into();
 		self.catalog.push(entry);
 		self.bundle.subjects.insert(
-			qualified_agent("aidash://local", id, "1.0.0"),
+			qualified_agent(&node(), id, "1.0.0"),
 			Subject {
 				kind,
 				enabled,
@@ -235,6 +235,9 @@ impl GenerationCreationScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://local"
 	}
+	async fn workspace_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
+		Ok(node())
+	}
 	fn now(&self) -> DateTime<Utc> {
 		self.foreign_clock
 	}
@@ -270,8 +273,10 @@ impl GenerationCreationScope for Scope {
 		job.reason = input.reason.into();
 		job.depth = input.depth;
 		job.token_limit = input.policy.spec.limits.tokens_per_agent;
-		job.home_node = input.home_node.into();
 		job.foreign_intent = input.foreign_intent.clone();
+		if let Some(intent) = &input.foreign_intent {
+			job.home_node = intent["home_node"].as_str().unwrap().into();
+		}
 		job.subject_chain = self.chain.clone();
 		job.expires_at =
 			self.foreign_clock + chrono::Duration::seconds(input.lifetime_seconds as i64);
@@ -669,7 +674,7 @@ async fn assigned_task_requires_the_exact_chain_and_live_agent_authorization(
 	scope.task.status = TaskStatus::Running;
 	let mut chain = vec![
 		"alice".into(),
-		qualified_agent(scope.node_id(), "ordinary", "1.0.0"),
+		qualified_agent(&node(), "ordinary", "1.0.0"),
 	];
 	if !exact {
 		chain[0] = "bob".into();
@@ -738,7 +743,7 @@ async fn narrowed_candidate_denial_restores_the_chain_and_continues_generation(
 	let mut scope = Scope::new();
 	scope.ordinary("ordinary", true, SubjectKind::Agent);
 	scope.state.lock().unwrap().denied.insert(format!(
-		"decide:{action}:alice+aidash://local/agents/ordinary@1.0.0"
+		"decide:{action}:alice+aidash://local/brave-otter-k3m9q2xa/agents/ordinary@1.0.0"
 	));
 	let job = generated(
 		assign_in(
@@ -761,7 +766,7 @@ async fn candidate_cancellation_restores_a_borrowed_worker_chain(validation: Def
 	let mut scope = Scope::new();
 	scope.ordinary("ordinary", true, SubjectKind::Agent);
 	scope.state.lock().unwrap().pause =
-		Some("decide:task.execute:alice+aidash://local/agents/ordinary@1.0.0".into());
+		Some("decide:task.execute:alice+aidash://local/brave-otter-k3m9q2xa/agents/ordinary@1.0.0".into());
 	assert!(
 		tokio::time::timeout(
 			Duration::from_millis(20),
@@ -1023,4 +1028,8 @@ async fn each_quota_limit_is_independent_and_prevents_insert(
 	));
 	assert!(!scope.calls().iter().any(|c| c == "insert"));
 	assert!(scope.effects.is_empty());
+}
+
+fn node() -> aidash_domain::nodes::NodeAddress {
+	"aidash://local/brave-otter-k3m9q2xa".parse().unwrap()
 }

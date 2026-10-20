@@ -34,7 +34,6 @@ pub struct NativeRepository {
 struct NativeScope {
 	tx: Box<dyn TransactionExecutor>,
 	owner: Owner,
-	node: String,
 }
 fn framework(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 	crate::Error::from(error.into()).into()
@@ -170,7 +169,6 @@ impl Repository for NativeRepository {
 		Ok(Box::new(NativeScope {
 			tx,
 			owner: owner.clone(),
-			node: self.node.clone(),
 		}))
 	}
 	async fn owner_of(&self, id: Uuid) -> Result<Option<Owner>> {
@@ -229,7 +227,6 @@ impl NativeScope {
 		// through their own connection's endpoint. Never tokens or the client.
 		crate::apps::execution::models::event_records::append(
 			self.tx.as_mut(),
-			&self.node,
 			None,
 			event,
 			json!({

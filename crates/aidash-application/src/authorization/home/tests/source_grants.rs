@@ -40,7 +40,7 @@ impl Drop for SourceSession {
 }
 impl SourceRepository {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+		let executor = aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0");
 		let mut current = grant(false);
 		current.subject_chain.push(executor.clone());
 		Self {

@@ -8,6 +8,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 fn workspace() -> Workspace {
 	Workspace {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		title: "workspace".into(),
 		goal: "goal".into(),
@@ -47,7 +48,7 @@ fn event(sequence: i64, visible: bool) -> Event {
 	Event {
 		sequence,
 		id: Uuid::from_u128(sequence as u128),
-		node_id: "aidash://local".into(),
+		node: None,
 		workspace_id: Some(Uuid::from_u128(1)),
 		kind: "task.created".into(),
 		data: json!({"visible":visible}),

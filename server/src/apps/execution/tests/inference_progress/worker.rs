@@ -149,7 +149,11 @@ async fn admit_streaming_agent(
 	mut policy: Value,
 ) {
 	let deployment_administrator = &f.config.api_token;
-	let subject = qualified_agent(f.config.deployment.as_str(), "research", "1.0.1");
+	let subject = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	);
 	policy["subjects"][subject] = json!({"kind":"agent"});
 	let (status, body) = request(
 		app,
@@ -191,7 +195,7 @@ async fn admit_streaming_agent(
 			token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":id,"version":"1.0.1"},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.1"},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");

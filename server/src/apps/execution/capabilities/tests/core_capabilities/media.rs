@@ -54,7 +54,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.1.0");
 	c.policy["subjects"][aidash_server::domain::qualified_agent(
-		c.f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.1.1",
 	)] = json!({"kind":"agent"});
@@ -68,7 +68,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");

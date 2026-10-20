@@ -45,8 +45,9 @@ pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, nat
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	admitted_run, approve_agent, local_run, remote_run, remote_run_in, replace_policy, tenant_root,
-	tenant_root_in, tenant_scope, tenant_token,
+	admitted_run, approve_agent, approve_agent_on, default_node, local_run, remote_run,
+	remote_run_in, replace_policy, second_node_in, subject_claim, tenant_root, tenant_root_in,
+	tenant_scope, tenant_token,
 };
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
@@ -121,9 +122,15 @@ pub async fn cleanup_database(_url: &str, database: &str) {
 }
 
 #[allow(dead_code)]
-pub fn policy(node: &str) -> Value {
-	let agent = qualified_agent(node, "research", "1.0.0");
-	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
+pub fn policy(deployment: &str) -> Value {
+	let agent = qualified_agent(
+		&tenant_roots::fixture_node(deployment, "acme"),
+		"research",
+		"1.0.0",
+	);
+	// Peer flows still name the executing Node by its Deployment id (#241).
+	let peer_agent = aidash_domain::agent_subject(deployment, "research", "1.0.0");
+	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"},peer_agent:{"kind":"agent"}},
         "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})
 }
 
@@ -182,6 +189,7 @@ async fn bootstrap_with_resources(
 		authorization
 			.set_catalog(
 				"acme",
+				&tenant_roots::fixture_node_name("acme"),
 				&EntityRef {
 					id: id.into(),
 					version: "1.0.0".into(),

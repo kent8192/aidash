@@ -357,6 +357,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),

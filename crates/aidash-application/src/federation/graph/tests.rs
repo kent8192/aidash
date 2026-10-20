@@ -28,6 +28,7 @@ fn viewer() -> GraphViewer {
 }
 fn workspace(n: u128) -> Candidate {
 	Candidate::Workspace(Workspace {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(n),
 		title: format!("workspace {n}"),
 		goal: String::new(),

@@ -46,7 +46,11 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
 				bank: Bank {
-					home: store.deployment.to_string(),
+					home: aidash_domain::nodes::NodeAddress::derived(
+						store.deployment.as_str(),
+						"acme",
+					)
+					.to_string(),
 					tenant: "acme".into(),
 					workspace,
 					participant: None,
@@ -347,6 +351,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						"task_id",
 						"workspace_id",
 						"home_node",
+						"node",
 						"agent_id",
 						"agent_version",
 						"tenant",
@@ -358,7 +363,16 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						.expr(Expr::value(last_run))
 						.expr(Expr::value(task.id))
 						.expr(Expr::value(workspace))
-						.expr(Expr::value(store.deployment.as_str()))
+						.expr(Expr::value(
+							aidash_domain::nodes::NodeAddress::derived(
+								store.deployment.as_str(),
+								"acme",
+							)
+							.to_string(),
+						))
+						.expr(Expr::value(
+							aidash_domain::nodes::NodeName::derived("acme").to_string(),
+						))
 						.expr(Expr::value("a"))
 						.expr(Expr::value("1.0.0"))
 						.expr(Expr::value("acme"))

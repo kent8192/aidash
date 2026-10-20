@@ -1,0 +1,26 @@
+meta {
+  name: 1204 plan-authorization-complete - Forged bearer cannot reach a Plan Connection
+  type: http
+  seq: 1204
+}
+
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt/authorizations/complete
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
+}
+
+body:text {
+  {"callback_url": "http://127.0.0.1:1457/auth/callback?state=s&code=c"}
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

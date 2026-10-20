@@ -10,7 +10,7 @@ pub trait RunMessages: Send + Sync {
 	fn node(&self) -> &str;
 	fn run(&self) -> &RunMetadata;
 	fn local(&self) -> bool {
-		self.run().home_node == self.node()
+		self.run().is_local(self.node())
 	}
 	async fn inputs(&self) -> Result<Vec<RunInput>>;
 	async fn has_media(&self, message: Uuid) -> Result<bool>;

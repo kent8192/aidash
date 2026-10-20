@@ -36,6 +36,7 @@ impl From<WorkspaceRecord> for Workspace {
 	fn from(record: WorkspaceRecord) -> Self {
 		Self {
 			id: record.id,
+			node: aidash_domain::nodes::NodeName::parse(&record.node).expect("stored Node name"),
 			title: record.title,
 			goal: record.goal,
 			state: record.state.into_inner(),

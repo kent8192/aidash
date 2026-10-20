@@ -1216,6 +1216,7 @@ async fn admitted_run() -> Run {
 async fn bound_run(config: &AgentBindings) -> Run {
 	let saved = snapshot(&mut Catalog::new(), config, false).await.unwrap();
 	let mut run = Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
@@ -1959,6 +1960,7 @@ impl ExecutionTool for SharedReader {
 }
 fn snapshot_run(saved: BindingSnapshot) -> Run {
 	let mut run = Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),

@@ -525,6 +525,7 @@ impl PeerAdmissionScope for Owned {
 							"task_id",
 							"workspace_id",
 							"home_node",
+							"node",
 							"agent_id",
 							"agent_version",
 							"context",
@@ -538,6 +539,11 @@ impl PeerAdmissionScope for Owned {
 							.expr(Expr::cust("$2"))
 							.expr(Expr::cust("$3"))
 							.expr(Expr::cust("$4"))
+							// Until a Node Registration names the receiving Node, a
+							// peer's Run executes on the mapped Tenant's default Node.
+							.expr(Expr::cust(
+								"(SELECT name FROM nodes WHERE tenant = $8 AND is_default)",
+							))
 							.expr(Expr::cust("$5"))
 							.expr(Expr::cust("$6"))
 							.expr(Expr::cust("$7"))

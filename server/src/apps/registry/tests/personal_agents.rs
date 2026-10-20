@@ -161,7 +161,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 		subject
 			.post(
 				"/api/authorization/acme/catalog/approvals",
-				&json!({ "approvals": approvals }),
+				&json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 				"json",
 			)
 			.await

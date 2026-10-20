@@ -9,6 +9,7 @@ impl Authorization {
 	pub async fn set_catalog(
 		&self,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		entry: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
@@ -25,6 +26,7 @@ impl Authorization {
 				aidash_domain::identity::Principal::DeploymentAdministrator,
 			),
 			tenant,
+			node,
 			entry,
 			expected_revision,
 			enabled,
@@ -35,8 +37,13 @@ impl Authorization {
 		Ok(binding)
 	}
 
-	pub async fn catalog(&self, tenant: &str) -> Result<Vec<Binding>> {
-		crate::apps::identity::repositories::catalog_mutation::bindings(&self.pool, tenant).await
+	pub async fn catalog(
+		&self,
+		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
+	) -> Result<Vec<Binding>> {
+		crate::apps::identity::repositories::catalog_mutation::bindings(&self.pool, tenant, node)
+			.await
 	}
 }
 
@@ -119,6 +126,7 @@ pub use crate::apps::identity::serializers::catalog::Binding;
 pub(crate) async fn set_in(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	entry: &EntityRef,
 	expected_revision: i64,
 	enabled: bool,
@@ -127,6 +135,7 @@ pub(crate) async fn set_in(
 	aidash_application::authorization::catalog::set_in(
 		&mut crate::bootstrap::catalog_mutation_scope(tx),
 		tenant,
+		node,
 		entry,
 		expected_revision,
 		enabled,
