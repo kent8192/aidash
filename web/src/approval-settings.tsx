@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge as Tag } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -268,6 +268,17 @@ function AnswerDeadlineForm({
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  // The value this form just saved. A refetch with that value is our own
+  // update, not another session's change, so it must not reset the "Saved" hint.
+  const savedValue = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    if (savedValue.current === current.answer_deadline_seconds) {
+      savedValue.current = undefined;
+      return;
+    }
+    setDraft(deadlineDraft(current.answer_deadline_seconds));
+    setSaved(false);
+  }, [current.answer_deadline_seconds]);
   const result = deadlineSeconds(draft);
   const unchanged =
     result.ok && result.seconds === current.answer_deadline_seconds;
@@ -285,13 +296,12 @@ function AnswerDeadlineForm({
     setSaved(false);
     setError("");
     try {
-      client.setQueryData(
-        approvalPreferencesKey(tenant),
-        await approvalPreferencesUpdate(
-          encodeURIComponent(tenant),
-          deadlineUpdate(current, result.seconds),
-        ),
+      const updated = await approvalPreferencesUpdate(
+        encodeURIComponent(tenant),
+        deadlineUpdate(current, result.seconds),
       );
+      savedValue.current = updated.answer_deadline_seconds;
+      client.setQueryData(approvalPreferencesKey(tenant), updated);
       setSaved(true);
     } catch (reason) {
       setError(message(reason));
@@ -406,11 +416,7 @@ function AnswerDeadline({ tenant }: { tenant: string }) {
           <p className="text-muted-foreground">{preferences.error.message}</p>
         </Alert>
       ) : preferences.data ? (
-        <AnswerDeadlineForm
-          key={preferences.data.answer_deadline_seconds ?? "none"}
-          tenant={tenant}
-          current={preferences.data}
-        />
+        <AnswerDeadlineForm tenant={tenant} current={preferences.data} />
       ) : (
         <Loading />
       )}
