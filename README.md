@@ -1,10 +1,10 @@
 # Aidash
 
-Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across independently operated nodes. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
+Aidash 0.1 is a self-hosted platform for federated agents. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across Nodes, including Nodes of other independently operated Deployments. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
 
-The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
+The current implementation includes Federation between Nodes, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-Node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
 
-New multi-node scoped transactions are temporarily rejected to prevent manifest disclosure after grant revocation. Previously admitted transactions continue durable recovery; see the [transaction contract](docs/transactions.md).
+New multi-Node scoped transactions are temporarily rejected to prevent manifest disclosure after grant revocation. Previously admitted transactions continue durable recovery; see the [transaction contract](docs/transactions.md).
 
 ## Cargo workspace
 
@@ -130,7 +130,7 @@ host ports. Run `docker compose --profile dev logs -f` to follow logs and
 `cargo make dev-down` to stop the services while retaining their data volumes.
 Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
-and an HTTPS endpoint for a deployed node.
+and an HTTPS endpoint for a deployed Deployment.
 
 The backend starts with a PostgreSQL [Provider Credential Store](docs/provider-credentials.md),
 so a Tenant can connect OpenRouter under **Provider connections**. Compose
@@ -253,12 +253,12 @@ Direct OpenAI and Anthropic inference configurations are no longer supported. Re
 **Upgrading past #256 (breaking):** a model or embedding configuration without `provider_credential` now connects only to public addresses. An existing one that points at a private, loopback or in-cluster server, such as a local Ollama, stops with an authority failure until a Deployment Administrator lists its origin in `[keyless_endpoints] permitted_private_origins`, `AIDASH_KEYLESS_PRIVATE_ORIGINS` or the Helm value `keylessEndpoints.permittedPrivateOrigins`.
 
 The Compose Vite service proxies API requests to the backend container. When
-running Vite directly on the host, set `AIDASH_BACKEND` to the node's URL; Vite
+running Vite directly on the host, set `AIDASH_BACKEND` to the backend's URL; Vite
 defaults to `http://127.0.0.1:8080` outside Compose.
 
-## Two nodes
+## Two Deployments
 
-Compose creates `aidash_a`, `aidash_b`, and `aidash_test`. Node B needs its own database, identity and port:
+Compose creates `aidash_a`, `aidash_b`, and `aidash_test`. Deployment B needs its own database, identity and port:
 
 ```sh
 DATABASE_URL=postgres://aidash_server:aidash-server-local@127.0.0.1:54370/aidash_b \
@@ -268,7 +268,7 @@ AIDASH_LISTEN=127.0.0.1:8081 \
 cargo run --locked -- serve
 ```
 
-Nodes of one Tenant reach each other under the Tenant's policy (`node.use`) and need no registration. To let a Node of another Tenant, in this Deployment or another one, exchange work with a Node of yours, a Tenant Administrator registers it on **both** sides with `POST /api/tenants/{tenant}/nodes/{node}/registrations`: the registration of a Node of another Deployment pins its endpoint and Deployment Key by fetching `/.well-known/aidash` and checking the key ID typed from the other side, and a Peer Mapping then binds each sending subject to a local credential. Deployments sign every request with a Federation token from their Deployment Key (`[deployment.key] file`, `manage deployment-key generate`), so no shared secret is configured. `[deployment] federation = false` refuses Federation with other Deployments. Register at least one research agent in a Tenant on each Node. Scoped discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home Node.
+Nodes of one Tenant reach each other under the Tenant's policy (`node.use`) and need no registration. To let a Node of another Tenant, in this Deployment or another one, exchange work with a Node of yours, a Tenant Administrator registers it on **both** sides with `POST /api/tenants/{tenant}/nodes/{node}/registrations`: the registration of a Node of another Deployment pins its endpoint and Deployment Key by fetching `/.well-known/aidash` and checking the key ID typed from the other side, and a Peer Mapping then binds each sending subject to a local credential. Every Federation request carries a token signed with the sending Deployment's Deployment Key, so no shared secret is configured. Set `[deployment.key] file` in each federating Deployment's settings file. Create the key with `manage deployment-key generate`. The environment variables above do not set it. `[deployment] federation = false` refuses Federation with other Deployments. In each Deployment's Tenant, register a research agent and approve it on each Node, because a Catalog Approval applies to one Node. Scoped discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home Node.
 
 `manage server` runs the API, outbox publisher and domain-event consumer. All roles publish durable Run activations, while only `manage worker` and `manage serve` pull from the shared activation consumer. Workers have four execution slots by default (`AIDASH_WORKER_SLOTS`, 1–4) without the management HTTP listener. Set `AIDASH_PROBE_LISTEN` to enable the separate health probe listener. `manage serve` runs both roles. Provision the activation stream once with `aidash activation-provision` using NATS operator credentials and the same Node/namespace settings; runtime credentials do not create it by default. Broker outages retain database recovery. See [worker activation operations](docs/operations/worker-activation.md) for permissions, deadlines, diagnostics and verification. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
 
@@ -360,7 +360,7 @@ keep Compose rebuilds from replacing the image used by isolated ORM fixtures.
 
 `check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and the browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with a deterministic OpenRouter-compatible protocol fixture. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `private/acceptance/report.json`.
 
-Golden Path also requires subject-scoped remote execution on these real Node processes. Separate source and receiver tenants, credentials, catalog approvals and peer mappings authorize the work. It kills the receiver Worker after a Home message or task completion commits but before its response is delivered, checks recovery of the same admission and Run without duplicate effects, and repeats recovery with a peer outage and with a grant revoked while the Worker is stopped. Cross-tenant/workspace access, disabled Agents, unauthorized dependencies and legacy admission are rejected. The `scoped_remote_execution` report records each scenario, the Worker process IDs and persistent execution IDs without credentials. A successful legacy scenario alone cannot pass this gate.
+Golden Path also requires subject-scoped remote execution on these real Node processes. Separate source and receiver tenants, credentials, catalog approvals and Peer Mappings authorize the work. It kills the receiver Worker after a Home message or task completion commits but before its response is delivered, checks recovery of the same admission and Run without duplicate effects, and repeats recovery with a peer outage and with a grant revoked while the Worker is stopped. Cross-tenant/workspace access, disabled Agents, unauthorized dependencies and legacy admission are rejected. The `scoped_remote_execution` report records each scenario, the Worker process IDs and persistent execution IDs without credentials. A successful legacy scenario alone cannot pass this gate.
 
 Use `scripts/test-acceptance.sh` to build the current checkout's binary and frontend before running the full gate. The report includes the Git revision, dirty status, source fingerprint and binary digest; changing the source or binary while the gate runs fails verification. The browser authentication fixture exercises real Bearer-authenticated APIs; it does not establish an OIDC provider login flow.
 

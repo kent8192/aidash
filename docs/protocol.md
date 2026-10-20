@@ -1,14 +1,14 @@
 # Protocol and recovery contracts
 
-This document describes implemented runtime and recovery contracts. Cross-node transaction coordination, semantic vector memory, Kubernetes orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
+This document describes implemented runtime and recovery contracts. Cross-Node transaction coordination, semantic vector memory, Kubernetes orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
 
 ## Trust and identity
 
 A Deployment publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, protocol version and, when it has a Deployment Key, that key's ID and public key (`key` is `null` otherwise). The document names no Node. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
 
-The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043). Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
+The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043). Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each Node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-Node acceptance in #38 remains open.
 
-Federation retains the `/federation/v0.1` path namespace and speaks protocol `0.4` only. A request at any other version, including `0.2` and `0.3`, answers 400 before any token is read. A Node of one Deployment authenticates to a Node of another with a short-lived Federation token, a compact JWS signed with the sending Deployment's Deployment Key (`alg` `EdDSA`, `typ` `aidash-federation+jwt`, `kid` the key ID). Each request carries `Authorization: Bearer <Federation token>` and `X-Aidash-Protocol: 0.4`; `X-Aidash-Node` and per-peer credentials no longer exist. The token's claims are:
+Federation retains the `/federation/v0.1` path namespace and speaks protocol `0.4` only. A request at any other version, including `0.2` and `0.3`, answers 400 before any token is read. A Node of one Deployment authenticates to a Node of another with a short-lived Federation token, a compact JWS signed with the sending Deployment's Deployment Key (`alg` `EdDSA`, `typ` `aidash-federation+jwt`, `kid` the key ID). Each request carries `Authorization: Bearer <Federation token>` and `X-Aidash-Protocol: 0.4`. The token's claims are:
 
 | Claim            | Value                                                                                             |
 | ---------------- | ------------------------------------------------------------------------------------------------- |
@@ -23,28 +23,28 @@ Federation retains the `/federation/v0.1` path namespace and speaks protocol `0.
 | `method`, `path` | the request method and its target under `/federation/v0.1`, with the query                        |
 | `body`           | base64url without padding of SHA-256 over the request body bytes                                  |
 
-A token is bound to one request, so a captured token reaches no other endpoint, and the receiver keeps no `jti` store: a repeat of the same request within the window meets the handlers' own idempotency. The receiving Node decides in this order, and every refusal up to and including the signature answers `401` with `{"error":"unauthorized"}`, so a caller cannot tell a wrong Node name from a wrong key. The request names a Node of this Deployment, whose Tenant is not deleted. A sender in another Deployment needs `[deployment] federation = true`, a Deployment Key of its own at the receiver, and a Node Registration at the receiving Node that pins the sender's key; the signature must verify with that key. A sender in this Deployment is trusted in process and is never accepted over HTTP. A sender of the receiving Node's own Tenant needs no registration and no Peer Mapping: the Tenant's policy must allow `node.use` on the receiving Node for the sender's subject. A sender of another Tenant needs an enabled Node Registration, and a named subject needs an enabled Peer Mapping keyed by `(receiving Node, sending Node, sending subject)`; a missing mapping after a valid signature answers 403. The handler then requires the operation's own action for the acting subject. A token whose `subject` is empty acts as the sending Node itself: it reaches only the callbacks a grant or an atomic transaction authorizes. With the switch off or no key, the receiver refuses every token and the sender answers 503 `federation_disabled` before any network call; exchange between Nodes of one Deployment is unaffected. Register a Node of another Deployment only after both sides run `0.4`; `/.well-known/aidash` must advertise `0.4`. Use HTTPS or a literal loopback address. A Deployment Administrator of another Deployment reads a Tenant's graph under a Peer Graph Grant with a token whose `iss`, `sub` and `aud` are Deployment ids and whose `subject` is `oidc:<identity uuid>`; that is the one inbound caller that is not a Node. This version is not a hostile multi-tenant sandbox.
+A token is bound to one request, so a captured token reaches no other endpoint, and the receiver keeps no `jti` store: a repeat of the same request within the window meets the handlers' own idempotency. The receiving Node decides in this order, and every refusal up to and including the signature answers `401` with `{"error":"unauthorized"}`, so a caller cannot tell a wrong Node name from a wrong key. The request names a Node of this Deployment, whose Tenant is not deleted. For a sender in another Deployment, the receiving Deployment needs `[deployment] federation = true` and a Deployment Key of its own, and the receiving Node needs a Node Registration for the sender that pins the sender's key. The signature must verify with that key. A sender in this Deployment is trusted in process and is never accepted over HTTP. A sender of the receiving Node's own Tenant needs no registration and no Peer Mapping: the Tenant's policy must allow `node.use` on the receiving Node for the sender's subject. A sender of another Tenant needs an enabled Node Registration, and a named subject needs an enabled Peer Mapping keyed by `(receiving Node, sending Node, sending subject)`; a missing mapping after a valid signature answers 403. The handler then requires the operation's own action for the acting subject. A token whose `subject` is empty acts as the sending Node itself, and mapped-subject access refuses it with 403. With the switch off or no key, the receiver refuses every token and the sender answers 503 `federation_disabled` before any network call; exchange between Nodes of one Deployment is unaffected. A Node Registration fetches `/.well-known/aidash` from the other Deployment, which must advertise `0.4`. A public endpoint must use HTTPS. A private address works only when the Deployment permits its origin in `[keyless_endpoints] permitted_private_origins`. A Deployment Administrator of another Deployment reads a Tenant's graph under a Peer Graph Grant with a token whose `iss`, `sub` and `aud` are Deployment ids and whose `subject` is `oidc:<identity uuid>`; that is the one inbound caller that is not a Node. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint             | Purpose                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
 | `POST /discover`     | Search locally registered agent metadata; does not recursively broadcast          |
 | `POST /scoped/graph` | Return a bounded, receiver-authorized Graph View projection for one mapped viewer |
 
-The scoped graph endpoint authenticates the source Peer before resolving its
+The scoped graph endpoint authenticates the source Node before resolving its
 exact Subject mapping or named Deployment Administrator grant. It returns display metadata and
 evidence-backed edges for B-owned resources after B's current read decisions;
 it never returns raw State. Requests bound the mode, kinds, relations, activity
-window, page size and traversal depth. Depth is exactly one direct Peer hop; a
+window, page size and traversal depth. Depth is exactly one direct Node hop; a
 larger value is rejected. Each opaque cursor is tied to that source, viewer, scope
 and projection generation, and the receiver rechecks authority per page. A can
-expand C only through its own separately authorized direct Peer relationship;
+expand C only through its own separately authorized direct Node connection;
 B's connection to C is not included in B's graph projection. See the
 [authorization contract](authorization.md#federated-graph-view-authority) and
 [Graph View controls](agent-relationship-graph.md#workspace-graph-view).
 
-Remote workers retrieve workspace metadata with `snapshot_workspace`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB peer decoder limit. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
+Remote workers retrieve workspace metadata with `snapshot_workspace`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB limit on a Federation response. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
 
-Agent memory is separated by agent ID, version, workspace UUID and workspace home node. Existing local memory retains its local namespace; a remote Run cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
+Agent memory is separated by agent ID, version, workspace UUID and workspace home Node. Existing local memory retains its local namespace; a remote Run cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
 
 ## Persistence and delivery
 
@@ -52,11 +52,11 @@ API startup and PostgreSQL worker recovery do not wait for NATS. The event-bus s
 
 A state mutation and its event are committed together. The event table doubles as an outbox. Its publisher waits for a JetStream acknowledgment, then records publication. A crash in between can replay an event, using its event ID as `Nats-Msg-Id`. Inbox uniqueness and task/run uniqueness remain the permanent deduplication boundary after JetStream's short duplicate window expires.
 
-When a CloudEvent plus its NATS headers exceeds the broker payload limit, the publisher omits `data` and includes a `dataref` URI such as `/api/events?after=123`. Resolve this URI against the source node using an authorized API credential and match the event ID in the returned replay page. All CloudEvent identity and sequence fields remain intact; the full event stays in PostgreSQL. Small events retain their inline `data`.
+When a CloudEvent plus its NATS headers exceeds the broker payload limit, the publisher omits `data` and includes a `dataref` URI such as `/api/events?after=123`. Resolve this URI against the source Node using an authorized API credential and match the event ID in the returned replay page. All CloudEvent identity and sequence fields remain intact; the full event stays in PostgreSQL. Small events retain their inline `data`.
 
 Event sequence allocation is serialized through a transaction advisory lock so commit order agrees with the SSE cursor. `/api/events/stream` honors `Last-Event-ID`; `/api/events?after=N` provides JSON replay. A disconnected or slow client can resume from the PostgreSQL event log. SSE is an observation channel, not the worker's durable queue.
 
-The workspace's home node owns task revisions and artifacts. A remote node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
+The Workspace's home Node owns task revisions and artifacts. A remote Node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-Node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
 
 ### Inference Progress
 
@@ -82,7 +82,7 @@ Controls are cooperative at persisted step boundaries. Pause lets an in-flight c
 
 A call of a Tenant's HTTP or MCP tool that needs approval raises a Tool call approval, a capability approval of kind `tool_call` addressed to a Designated approver. The Run waits for it in `WaitingState::Approval`. The approver lists it with `GET /api/capabilities/approvals` and decides it with `POST /api/capabilities/approvals/{id}/decide` and `allow_once`, `allow_run` or `deny`. It expires after the Deployment's `approval_seconds` (86400 by default). An `allow_run` grant covers one operation of the tool until `grant_seconds` (3600 by default), and new user input does not end it, unlike a Web disclosure's Run grant. Direct permission, the `tool.call_unapproved` action in the Tenant's policy, lets the call proceed without an approval. Every approval kind resumes the exact approved call, so the model never repeats it. A denied, expired, revoked or closed approval refuses the call. The model then sees `{"error": "tool call approval was denied"}`, or the matching text (`tool call approval expired`, `tool call approval was revoked`, `tool call approval was closed`), and the Run continues. A call the Tenant's policy refuses, or that no person may approve, gets `tool call was refused by the Tenant's policy` or `tool call approval was refused: no person is eligible to approve it`. A Run executing for another Node still asks its Home Node through an `APPROVAL_REQUIRED` human request that expires after 15 minutes, because the approver is at that Node (ADR 0075). Pending Tool call approvals close with `closed_reason: run_ended` when their Run ends.
 
-Transient execution errors have a bounded retry budget per persisted operation. A successful operation resets the counter. Exhausted or permanent failures persist a `terminal_transition` intent in a waiting run. The worker retries home-node delivery across outages and restarts and only finalizes its local journal after the home acknowledges that outcome. It does not re-execute the failed tool while delivering this intent.
+Transient execution errors have a bounded retry budget per persisted operation. A successful operation resets the counter. Exhausted or permanent failures persist a `terminal_transition` intent in a waiting run. The worker retries home-Node delivery across outages and restarts and only finalizes its local journal after the home acknowledges that outcome. It does not re-execute the failed tool while delivering this intent.
 
 A coordinator's final response remains gated while a child is unresolved. A Deployment Administrator can call `POST /api/tasks/{id}/abandon` with the current revision and a nonempty reason for a failed, blocked, or cancelled child. Nested children must be completed or abandoned first. The home records `ABANDONED` with the prior status and reason; a resumed parent can finish with remaining artifacts. Dependencies still require actual completion: abandonment does not satisfy a task dependency.
 
@@ -275,7 +275,7 @@ Home discloses it as the binding's `summarizer` provider, and each request is
 admitted with usage purpose `summary` against every owner's `summary` (or
 `remote.summary`) allowance. The Home accepts the request only when the
 executor's own inspected Agent pins that `summary.model`; an executor whose
-Agent schema predates `context_policy` cannot resolve such an Agent, so peers
+Agent schema predates `context_policy` cannot resolve such an Agent, so Nodes
 without the field never receive it. An Agent without Home semantic retrieval
 sends the pin in a `disabled` semantic request; the Home then authorizes the
 remote execution and `semantic.disclose` for the summarizer, never `semantic.search`
@@ -285,7 +285,7 @@ window plus `summary.max_tokens` capped at its output limit.
 Disclosure is checked before every request. A missing approval makes the stage unavailable,
 with no fallback. Every source the candidate depends on is rechecked before
 its reservation, so an already revoked source charges nothing, and again once
-the reservation holds and before the request leaves the node; a revoked source
+the reservation holds and before the request leaves the Node; a revoked source
 settles the attempt as unauthorized without calling the summarizer, and a held
 reservation is released: a local charge is refunded whole, and a dispatch the
 Home already admitted settles with unknown usage. Adoption
@@ -344,7 +344,7 @@ whose request overflowed. Labels never contain Run identifiers or content.
 
 ## Marketplace and localization
 
-The node is a self-hosted package repository. A manifest includes the versioned entity, author, permissions and dependencies. Publication is immutable. Installation verifies the SHA-256 digest, validates dependencies and atomically registers the entity with local installation configuration. This version distributes declarative manifests; it does not execute downloaded code, operate a public SaaS marketplace or handle payments.
+The Deployment is a self-hosted package repository. A manifest includes the versioned entity, author, permissions and dependencies. Publication is immutable. Installation verifies the SHA-256 digest, validates dependencies and atomically registers the entity with local installation configuration. This version distributes declarative manifests; it does not execute downloaded code, operate a public SaaS marketplace or handle payments.
 
 UI strings live in `web/src/locales/en-US.json` and `ja-JP.json`. Entity names and descriptions are localized maps. Agent language capabilities are separate metadata used by local and remote discovery. Message translation is not automatic.
 
@@ -384,29 +384,26 @@ definition over `schema_bytes`, or any Registry or attached Skill block over
 
 ### Remote semantic reuse
 
-The executing peer reserves every remote inference and compaction at the Home
-through `POST /scoped/usage/reserve`; the Home calls back the peer's
+The executing Node reserves every remote inference and compaction at the Home
+through `POST /scoped/usage/reserve`; the Home calls back the executing Node's
 `POST /scoped/usage/verify` before it charges anything. Both carry a `boundary`
-of `{"step":n}`, and the peer's verify requires a READY semantic operation of
+of `{"step":n}`, and the executing Node's verify requires a READY semantic operation of
 its own for that step. An `ordered` Run reuses one retrieval across steps
 (ADR 0020), so a reuse step instead sends `{"step":n,"reuses":"<operation ID>"}`,
 naming the operation whose receipt it reuses. The boundary is bound in the
-peer's durable dispatch record, so the Home cannot substitute it in the
-callback. The two nodes check the citation against their own journals:
+executing Node's durable dispatch record, so the Home cannot substitute it in the
+callback. The two Nodes check the citation against their own journals:
 
-- the executing peer: the operation is READY for this Run and grant, from a
+- the executing Node: the operation is READY for this Run and grant, from a
   step no later than the Run's actual step;
-- the Home: the same against its journal for the step the peer claims, the
+- the Home: the same against its journal for the step the executing Node claims, the
   grant is still live (`403`), no consumed source changed or was revoked
   (`409`, reason `invalidated`, the same conditions under which
   `grants/describe` answers 409), and the Workspace corpus digest equals the
   one it recorded before that retrieval (`409`, reason `stale`).
 
 A `stale` answer makes the Run drop its cached retrieval and retrieve again
-after one second, up to five times in a row. Peers that predate the field
-interoperate: an older executing peer sends no citation, so its reuse steps
-stay pending as before; an older Home ignores the citation, still checks the
-live grant and consumed sources while leasing it, but not the corpus digest.
+after one second, up to five times in a row.
 
 ### Remote run-message recovery
 
