@@ -37,7 +37,7 @@ PREVIEW_HOST = re.compile(r"[a-f0-9]{32}\.preview\.aidash\.run")
 CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
 # Backup for GKE has no per-claim exclusion, so backups select this application:
 # every resource of the namespace except the Home recovery ledger claim, which a
-# restore must never rewind (ADR 0067, #435).
+# restore must never rewind (ADR 0079).
 LEDGER_CLAIM = "memory-recovery"
 BACKUP_LABEL = "aidash.run/backup"
 BACKUP_EXCLUDE = "exclude"

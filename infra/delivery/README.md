@@ -165,6 +165,11 @@ Prepare the backup API with `production_backup_agent_enabled=true`. The composed
 production config forwards `gke_backup_enabled=true` to the actual deployment
 cluster. Only after observing that cluster/agent should a second bootstrap plan
 enable `production_backup_enabled` and `production_monitoring_enabled`.
+The same apply creates the Pre-update Backup plan, its in-place restore plan and
+the deploy identity's grant to create backups on that plan, and publishes
+`pre_update_backup_plan` in the production config. Production updates refuse to
+run without it. The next production deploy applies the ProtectedApplication that
+both backup plans select.
 [Operations inspection](gcp/README.md) checks successful backup freshness and alert
 configuration; it explicitly does not claim restore success or email arrival.
 Keep application provider credentials and external effects disabled during an
