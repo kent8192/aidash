@@ -64,7 +64,7 @@ class OperationalObservationTests(unittest.TestCase):
             pre_update_backup_retain_days=14, pre_update_backup_delete_lock_days=2,
         )
         self.pre_update = {
-            "name": pre_update, "cluster": cluster,
+            "name": pre_update, "cluster": cluster, "state": "READY", "deactivated": False,
             "backupConfig": {"selectedApplications": {"namespacedNames": [APPLICATION]}, "includeVolumeData": True, "includeSecrets": True},
             "retentionPolicy": {"backupRetainDays": 14, "backupDeleteLockDays": 2},
         }
@@ -128,6 +128,19 @@ class OperationalObservationTests(unittest.TestCase):
         self.pre_update = None
         with self.assertRaisesRegex(Refused, "not observed"):
             self.observe()
+
+    def test_the_pre_update_plan_must_be_active_and_ready(self):
+        for mutate in (
+            lambda: self.pre_update.pop("state"),
+            lambda: self.pre_update.update(state="CREATING"),
+            lambda: self.pre_update.update(state="DEACTIVATED"),
+            lambda: self.pre_update.update(deactivated=True),
+        ):
+            with self.subTest(mutate=mutate):
+                self.setUp()
+                mutate()
+                with self.assertRaisesRegex(Refused, "Pre-update Backup plan"):
+                    self.observe()
 
     def test_the_restore_plan_must_leave_cluster_resources_untouched(self):
         for scope in (

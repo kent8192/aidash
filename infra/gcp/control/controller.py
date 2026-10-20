@@ -776,7 +776,11 @@ def pre_update_backup(config, store, terraform, identity, generation, entry):
         return
     cluster = terraform.cluster()
     if cluster.get("namespace", kube.namespace_of(identity)) is None:
-        return
+        # Both callers only reach this for an Environment Terraform records as
+        # previously running, so a missing namespace is drift, not a first deploy.
+        raise Refused(
+            "The running Environment namespace is missing; refusing to update without a restore point"
+        )
     if not plan:
         raise Refused("Production updates need a Pre-update Backup plan: enable production_backup_enabled and publish pre_update_backup_plan (release-deployment step 7)")
     if entry.get("pre_update_backup"):
@@ -839,25 +843,28 @@ def mark_started_writers(store, identities):
 def take_pre_update_backup_before_shared(config, store, terraform, managed, sealed):
     """Take a production update's backup before broker/GCIP changes reach Terraform.
 
-    Returns the seals plus whether this reconciliation has a production update
-    that will deploy. The shared apply reloads a running release and reopens
-    admission, so the backup must be taken first. If production was not already
-    drained by the broker preflight or GCIP quiescence, seal it here. Failure
-    restores the admissions this function drained, records any writers it
-    started as started, and parks the update as failed.
+    Returns the seals, whether a production update will deploy, and whether it is
+    safe to run the shared apply. The shared apply reloads a running release and
+    reopens admission, so the backup must be taken first. If production was not
+    already drained by the broker preflight or GCIP quiescence, seal it here. A
+    seal that cannot be confirmed stops reconciliation before any shared change.
+    Failure restores the admissions this function drained, records any writers it
+    started as started, and parks the update behind the same durable generation
+    fence as a failed deployment.
     """
     entry = pending_production_update(config, store, terraform, managed)
     if entry is None:
-        return sealed, False
+        return sealed, False, True
     if entry.get("pre_update_backup"):
-        return sealed, True
+        return sealed, True, True
     identity = "production"
     generation = entry["generation"]
     try:
         if identity not in sealed:
             if not kube.seal(terraform.cluster(), identity):
                 update_entry(store, identity, generation, status="waiting_for_active_work")
-                return sealed, True
+                restore_broker_admission(terraform, sealed, store)
+                return sealed, True, False
             sealed = sealed | {identity}
         verify_source(config, identity, entry)
         pre_update_backup(config, store, terraform, identity, generation, entry)
@@ -868,11 +875,15 @@ def take_pre_update_backup_before_shared(config, store, terraform, managed, seal
             generation,
             status="failed",
             diagnostic=type(error).__name__,
+            failed_deployment_generation=generation,
+            # No start remains authorized; retry_failed must create a new
+            # generation, which also takes a new backup id.
+            start_pending=False,
         )
         restore_broker_admission(terraform, sealed, store)
         print(f"Deferred/failed: {identity}: {type(error).__name__}")
         raise
-    return sealed | {identity}, True
+    return sealed | {identity}, True, True
 
 
 def reconcile_locked(config, store, terraform, managed):
@@ -918,9 +929,13 @@ def reconcile_locked(config, store, terraform, managed):
     shared_apply = broker_changed or bool(affected)
     deploy_pending = False
     if shared_apply:
-        presealed, deploy_pending = take_pre_update_backup_before_shared(
+        presealed, deploy_pending, backup_ready = take_pre_update_backup_before_shared(
             config, store, terraform, managed, presealed
         )
+        if not backup_ready:
+            # Active work kept production from sealing, so no Pre-update Backup
+            # exists. Do not change shared infrastructure ahead of it.
+            return
         try:
             gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True)
         except (Exception, OperationDeadline):

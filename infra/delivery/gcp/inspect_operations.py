@@ -61,6 +61,7 @@ def inspect_pre_update(operations, expected_cluster, plan, restore):
     backup_config = plan.get("backupConfig", {})
     retention = plan.get("retentionPolicy", {})
     if (plan.get("name") != name or plan.get("cluster") != expected_cluster or not application_scope(backup_config)
+            or plan.get("state") != "READY" or plan.get("deactivated", False)
             or not backup_config.get("includeVolumeData") or not backup_config.get("includeSecrets")
             or backup_config.get("permissiveMode", False) or plan.get("backupSchedule", {}).get("cronSchedule")
             or retention.get("backupRetainDays") != operations.get("pre_update_backup_retain_days")

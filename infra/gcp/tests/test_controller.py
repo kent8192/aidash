@@ -1813,6 +1813,41 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertEqual(actions[-1], ("admission", "production", "close"))
         self.assertEqual(self.entry()["status"], "ready")
 
+    def test_a_blocked_seal_returns_not_ready_and_waits_for_active_work(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        entry = self.entry()
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with patch.object(controller, "pending_production_update", return_value=entry), \
+                patch.object(controller.kube, "seal", return_value=False):
+            sealed, pending, ready = controller.take_pre_update_backup_before_shared(
+                self.config, self.store, terraform, self.cloud.managed, set()
+            )
+        self.assertEqual((sealed, pending, ready), (set(), True, False))
+        self.assertEqual(self.entry()["status"], "waiting_for_active_work")
+
+    def test_a_blocked_pre_update_seal_skips_the_shared_apply(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.production_request(UPDATE)
+        with self.shared_change(), patch.object(
+            controller, "take_pre_update_backup_before_shared", return_value=(set(), True, False)
+        ):
+            self.reconcile()
+        self.assertEqual(len(self.cloud.plans), baseline)
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+
+    def test_an_update_with_a_missing_running_namespace_is_refused(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        entry = self.entry()
+        self.kube.objects.pop(("namespace", None, "aidash-production"))
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with self.assertRaisesRegex(controller.Refused, "namespace is missing"):
+            controller.pre_update_backup(
+                self.config, self.store, terraform, "production", entry["generation"], entry
+            )
+
     def test_a_failed_shared_apply_after_the_backup_records_the_started_writers(self):
         self.running_production()
         self.production_request(UPDATE)
@@ -1843,13 +1878,21 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         with self.shared_change():
             with self.assertRaises(controller.Refused):
                 self.reconcile()
-        entry = self.entry()
-        self.assertEqual((entry["status"], entry["diagnostic"]), ("failed", "Refused"))
-        self.assertNotIn("pre_update_backup", entry)
-        self.assertEqual(len(self.cloud.plans), baseline)
-        self.assertNotIn("helm", [call[0] for call in self.calls])
-        self.assertEqual(self.writers(), 1)
-        self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+            entry = self.entry()
+            self.assertEqual((entry["status"], entry["diagnostic"]), ("failed", "Refused"))
+            self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+            self.assertNotIn("pre_update_backup", entry)
+            self.assertEqual(len(self.cloud.plans), baseline)
+            self.assertNotIn("helm", [call[0] for call in self.calls])
+            self.assertEqual(self.writers(), 1)
+            self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+            with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+                self.retry_request(retry=False)
+            # A direct re-run of the failed apply job is fenced to this generation.
+            self.calls.clear()
+            self.reconcile()
+        self.assertEqual(self.cloud.managed["production"]["release_sha"], SHA)
+        self.assertEqual(self.entry()["status"], "failed")
 
     def test_a_failed_backup_unseals_applies_nothing_and_waits_for_an_explicit_retry(self):
         self.running_production()
