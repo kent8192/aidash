@@ -74,7 +74,8 @@ fn an_unlinked_column_breaks_a_cycle() {
 	)
 	.unwrap();
 
-	assert_eq!(order, ["runs", "human_requests"]);
+	// Only human_requests.run_id still orders them: its rows go first.
+	assert_eq!(order, ["human_requests", "runs"]);
 }
 
 #[test]
