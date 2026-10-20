@@ -6,15 +6,31 @@ import {
   sameQuery,
 } from "../src/mcp-hint.ts";
 
-const asked = { endpoint: "https://example.com/mcp", toolName: "search" };
+const asked = {
+  transport: "mcp",
+  endpoint: "https://example.com/mcp",
+  toolName: "search",
+};
 
-test("a hint answer belongs only to the endpoint and tool it was read for", () => {
-  assert.equal(sameQuery(asked, asked.endpoint, asked.toolName), true);
+test("a hint answer belongs only to the transport, endpoint and tool it was read for", () => {
   assert.equal(
-    sameQuery(asked, "https://other.example/mcp", asked.toolName),
+    sameQuery(asked, asked.transport, asked.endpoint, asked.toolName),
+    true,
+  );
+  assert.equal(sameQuery(asked, "http", asked.endpoint, asked.toolName), false);
+  assert.equal(
+    sameQuery(
+      asked,
+      asked.transport,
+      "https://other.example/mcp",
+      asked.toolName,
+    ),
     false,
   );
-  assert.equal(sameQuery(asked, asked.endpoint, "search-more"), false);
+  assert.equal(
+    sameQuery(asked, asked.transport, asked.endpoint, "search-more"),
+    false,
+  );
 });
 
 test("a read-only hint prefills the choice and a later answer undoes the prefill", () => {

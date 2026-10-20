@@ -187,7 +187,12 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule, id: &str) -> (Resource, &'
 			// the destination a Run chooses.
 			let destination = id;
 			(
-				resource(bundle, "research", destination, json!({"action": DISCLOSE})),
+				resource(
+					bundle,
+					"research",
+					destination,
+					json!({"destination": destination, "action": DISCLOSE}),
+				),
 				"capability.approve",
 			)
 		}

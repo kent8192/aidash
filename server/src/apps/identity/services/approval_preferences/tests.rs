@@ -2,7 +2,7 @@ use super::*;
 use aidash_domain::approval_rules::{APPROVAL_ADVANCE, MODE_BYPASS, RuleEffect};
 use aidash_domain::identity::tenancy::{MEMBER_TOOL_APPROVAL, MEMBERS, OWNER, initial_policy};
 use aidash_domain::policy::{
-	Effect, Policy, ResourceSelector, Subject, SubjectKind, SubjectSelector,
+	Condition, Effect, Operand, Policy, ResourceSelector, Subject, SubjectKind, SubjectSelector,
 };
 use std::collections::BTreeSet;
 
@@ -187,7 +187,15 @@ fn an_exact_search_rule_is_effective_on_a_real_destination_the_policy_names() {
 			kinds: ["research".to_owned()].into(),
 			ids: ["research.example".to_owned()].into(),
 		},
-		condition: None,
+		// Runtime disclosure resources carry the destination attribute too.
+		condition: Some(Condition::Eq {
+			left: Operand::Resource {
+				path: "/destination".into(),
+			},
+			right: Operand::Literal {
+				value: json!("research.example"),
+			},
+		}),
 	});
 	let search = rule(
 		ApprovalKind::WebSearch,

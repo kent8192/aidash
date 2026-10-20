@@ -267,7 +267,7 @@ function Arguments({
 }
 
 /** What an MCP server said about one tool, or why it could not be asked. */
-type ServerHint = { endpoint: string; toolName: string } & (
+type ServerHint = { transport: string; endpoint: string; toolName: string } & (
   | { readOnly: boolean | null }
   | { error: string }
 );
@@ -296,6 +296,7 @@ export function EntityConfiguration({
   // The response arrives after more edits can happen, so the answer and the
   // automatic prefill it may cause are compared with these, not with the
   // values captured when the request started.
+  const transportRef = useRef(transport);
   const endpointRef = useRef(endpoint);
   const toolNameRef = useRef(toolName);
   const replayRef = useRef(replay);
@@ -335,7 +336,8 @@ export function EntityConfiguration({
 
   // The server's word only prefills the choice; it applies to the endpoint and
   // tool it was read for, and to nothing the person edits afterwards.
-  const shownHint = hint && sameQuery(hint, endpoint, toolName) ? hint : null;
+  const shownHint =
+    hint && sameQuery(hint, transport, endpoint, toolName) ? hint : null;
   // A queried field changed: the pending answer is for another tool, and an
   // automatic read-only prefill no longer describes this one.
   const queryChanged = () => {
@@ -354,6 +356,7 @@ export function EntityConfiguration({
   const checkHint = async () => {
     const current = ++hintRequest.current;
     const asked = {
+      transport: transportRef.current,
       endpoint: endpointRef.current,
       toolName: toolNameRef.current,
     };
@@ -365,7 +368,15 @@ export function EntityConfiguration({
         tool_name: asked.toolName,
       });
       if (current !== hintRequest.current) return;
-      if (!sameQuery(asked, endpointRef.current, toolNameRef.current)) return;
+      if (
+        !sameQuery(
+          asked,
+          transportRef.current,
+          endpointRef.current,
+          toolNameRef.current,
+        )
+      )
+        return;
       setHint({ ...asked, readOnly: read_only_hint ?? null });
       const next = replayAfterHint(
         replayRef.current,
@@ -379,7 +390,15 @@ export function EntityConfiguration({
       }
     } catch (cause) {
       if (current !== hintRequest.current) return;
-      if (!sameQuery(asked, endpointRef.current, toolNameRef.current)) return;
+      if (
+        !sameQuery(
+          asked,
+          transportRef.current,
+          endpointRef.current,
+          toolNameRef.current,
+        )
+      )
+        return;
       setHint({
         ...asked,
         error: cause instanceof Error ? cause.message : String(cause),
@@ -631,7 +650,11 @@ export function EntityConfiguration({
           <Field label={t("toolTransport")}>
             <NativeSelect
               value={transport}
-              onChange={(event) => setTransport(event.target.value)}
+              onChange={(event) => {
+                transportRef.current = event.target.value;
+                queryChanged();
+                setTransport(event.target.value);
+              }}
             >
               {["http", "mcp", "agent"].map((value) => (
                 <option key={value} value={value}>
@@ -680,6 +703,9 @@ export function EntityConfiguration({
                 <NativeSelect
                   value={replay}
                   onChange={(event) => {
+                    // A choice made now outranks a hint still in flight.
+                    hintRequest.current += 1;
+                    setCheckingHint(false);
                     replayPrefilled.current = false;
                     replayRef.current = event.target.value;
                     setReplay(event.target.value);

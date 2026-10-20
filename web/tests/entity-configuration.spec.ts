@@ -398,6 +398,38 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
   });
 });
 
+test("a replay choice made while an MCP hint is pending wins over a late answer", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/registry/mcp-tool-hint", async (route) => {
+    await answered;
+    return route.fulfill({ json: { read_only_hint: true } });
+  });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("mcp");
+  await dialog
+    .getByLabel("Endpoint", { exact: true })
+    .fill("https://example.com/mcp");
+  await dialog.getByLabel("MCP tool name").fill("search");
+  const replay = dialog.getByLabel("What a call does");
+  await replay.selectOption("read_only");
+  await dialog
+    .getByRole("button", { name: "Check the server's hint", exact: true })
+    .click();
+  // The person's explicit unsafe choice arrives while the request is pending.
+  await replay.selectOption("unsafe");
+  release();
+  await expect(replay).toHaveValue("unsafe");
+  await expect(
+    dialog.getByText(/The server hints that this tool only reads/),
+  ).toHaveCount(0);
+});
+
 test("an MCP server's read-only hint prefills the choice and never decides it", async ({
   page,
 }) => {
@@ -432,6 +464,12 @@ test("an MCP server's read-only hint prefills the choice and never decides it", 
   expect(asked).toEqual([
     { endpoint: "https://example.com/mcp", tool_name: "search" },
   ]);
+  // Changing Transport also invalidates the automatic prefill: an HTTP
+  // definition must not inherit an MCP server's read-only hint.
+  await dialog.getByLabel("Connection type").selectOption("http");
+  await expect(replay).toHaveValue("unsafe");
+  await dialog.getByLabel("Connection type").selectOption("mcp");
+  await expect(replay).toHaveValue("unsafe");
   // Changing the queried tool undoes the automatic prefill and hides the old
   // answer, so submitting another tool never inherits "read_only".
   await dialog.getByLabel("MCP tool name").fill("search-more");

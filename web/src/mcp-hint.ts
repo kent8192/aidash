@@ -1,13 +1,22 @@
-/** The endpoint and tool an MCP hint was asked about. */
-export type HintQuery = { endpoint: string; toolName: string };
+/** The transport, endpoint and tool an MCP hint was asked about. */
+export type HintQuery = {
+  transport: string;
+  endpoint: string;
+  toolName: string;
+};
 
 /** Whether a hint answer still belongs to the tool currently in the form. */
 export function sameQuery(
   query: HintQuery,
+  transport: string,
   endpoint: string,
   toolName: string,
 ): boolean {
-  return query.endpoint === endpoint && query.toolName === toolName;
+  return (
+    query.transport === transport &&
+    query.endpoint === endpoint &&
+    query.toolName === toolName
+  );
 }
 
 /**
