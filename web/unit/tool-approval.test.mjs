@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  copyLabel,
   isToolCard,
   toolCallView,
   toolGrantScope,
@@ -157,5 +158,33 @@ test("a notification names the tool and the Agent, never the arguments", () => {
   assert.equal(
     approvalNotice(card, true),
     "ツール呼び出し · crm@1.0.0 · researcher@1.0.0 · 依頼者 alice",
+  );
+});
+
+const pluginCard = {
+  ...card,
+  tool: "agent-plugin:acme/docs/search",
+  version: `sha256:${"0123456789abcdef".repeat(4)}`,
+  targets: [],
+  plugin_tool: {
+    plugin: "acme",
+    server: "docs",
+    tool: "search",
+    digest: `sha256:${"0123456789abcdef".repeat(4)}`,
+  },
+};
+
+test("a plugin tool is named by its plugin, server, tool and copy, not by a definition", () => {
+  assert.equal(isToolCard(pluginCard), true);
+  assert.equal(toolLabel(pluginCard), "acme/docs/search@0123456789ab");
+  assert.equal(copyLabel(pluginCard.plugin_tool.digest), "0123456789ab");
+  assert.equal(copyLabel("0123456789abcdef"), "0123456789ab");
+  assert.match(
+    toolGrantScope(pluginCard, false),
+    /acme\/docs\/search@0123456789ab/,
+  );
+  assert.match(
+    toolStateText({ ...pluginCard, state: "blocked" }, true, when),
+    /acme\/docs\/search@0123456789ab/,
   );
 });

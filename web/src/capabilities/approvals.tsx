@@ -17,6 +17,7 @@ import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
 import { requestPrice, runGrantScope } from "../research";
 import {
+  copyLabel,
   isToolCard,
   toolCallView,
   toolGrantScope,
@@ -150,8 +151,18 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
 function ToolFacts({ item, ja }: { item: Approval; ja: boolean }) {
   const none = ja ? "なし" : "None";
   const call = item.kind === "tool_call" ? toolCallView(item.call) : null;
+  const plugin = item.plugin_tool;
   const facts: [string, string][] = [
-    [ja ? "ツール" : "Tool", toolLabel(item)],
+    ...(plugin
+      ? ([
+          [
+            "Agent Plugin",
+            `${plugin.plugin} (${ja ? "コピー" : "copy"} ${copyLabel(plugin.digest)})`,
+          ],
+          [ja ? "MCP サーバー" : "MCP server", plugin.server],
+          [ja ? "ツール" : "Tool", plugin.tool],
+        ] as [string, string][])
+      : ([[ja ? "ツール" : "Tool", toolLabel(item)]] as [string, string][])),
     [ja ? "操作" : "Operation", item.operation ?? none],
     [
       "Agent",

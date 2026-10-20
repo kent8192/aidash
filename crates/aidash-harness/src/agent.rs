@@ -1,7 +1,7 @@
 //! Durable agent execution use case. All effects cross application ports.
 use aidash_application::{
 	Error, Result,
-	capabilities::approvals::{INVOKE, ToolCallApproval, ToolCallRequest},
+	capabilities::approvals::{INVOKE, ToolCallApproval, ToolCallRequest, ToolCallTarget},
 	execution::*,
 	ports::execution::*,
 };
@@ -2572,11 +2572,14 @@ impl<'a> Executor<'a> {
 				};
 				// Approval follows the admitted provider contract for every Agent.
 				if contract.behavior.tool_call_approval {
-					let (reference_id, reference_version) = match &contract.identity {
-						ToolIdentity::Descriptor(reference) => (reference.id.clone(), reference.version.clone()),
-						ToolIdentity::Registry(reference) => (reference.id.clone(), reference.version.clone()),
+					let target = match &contract.identity {
+						ToolIdentity::Descriptor(reference) => ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+							id: reference.id.clone(),
+							version: reference.version.clone(),
+						}),
+						ToolIdentity::Registry(reference) => ToolCallTarget::Registry(reference.clone()),
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
-						ToolIdentity::AgentPlugin(tool) => plugin_approval_reference(tool),
+						ToolIdentity::AgentPlugin(tool) => ToolCallTarget::AgentPlugin(tool.clone()),
 					};
 					if home.local() {
 						let Some(guard) = guard else {
@@ -2586,10 +2589,7 @@ impl<'a> Executor<'a> {
 						};
 						let request = ToolCallRequest {
 							key: call_key.clone(),
-							tool: aidash_domain::registry::EntityRef {
-								id: reference_id.clone(),
-								version: reference_version.clone(),
-							},
+							tool: target.clone(),
 							operation: INVOKE.into(),
 							call: call.clone(),
 							area: None,
@@ -2636,9 +2636,8 @@ impl<'a> Executor<'a> {
 						}
 						// The person who can approve is at the Node the Run executes for.
 						let prompt = format!(
-							"Approve this exact external tool action once? Tool: {}@{}; call: {}",
-							reference_id,
-							reference_version,
+							"Approve this exact external tool action once? Tool: {}; call: {}",
+							target.label(),
 							serde_json::to_string(call)?
 						);
 						let request = home
@@ -3212,16 +3211,6 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 		}
 		error => error,
 	}
-}
-
-/// The `<id>@<version>` an approval prompt names for a plugin tool: its server path, and the first
-/// 12 hex digits of the digest of the plugin copy that declared it.
-fn plugin_approval_reference(tool: &aidash_domain::tool::AgentPluginTool) -> (String, String) {
-	let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
-	(
-		format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool),
-		digest.chars().take(12).collect(),
-	)
 }
 
 /// The pinned snapshot and budgets of a `deferred@1` Run, read from its

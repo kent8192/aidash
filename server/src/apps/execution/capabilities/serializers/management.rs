@@ -46,6 +46,11 @@ pub struct ApprovalCard {
 	pub tool: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub version: Option<String>,
+	/// For a Tool call approval of a tool a Run pinned from an Agent Plugin, or a Run grant
+	/// from one, the plugin, server and tool, and the plugin copy that declared them. `tool` and
+	/// `version` then hold the tool's path and the copy's digest.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub plugin_tool: Option<PluginToolCard>,
 	/// The research operation of a Web disclosure approval, or of the
 	/// approval a Web disclosure Run grant came from; for a Tool call
 	/// approval, the operation of the tool the call invokes.
@@ -71,6 +76,17 @@ pub struct ApprovalCard {
 	/// `evidence_revoked` or `run_ended`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub closed_reason: Option<String>,
+}
+
+/// The Agent Plugin tool a Tool call approval is asked for.
+#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+pub struct PluginToolCard {
+	pub plugin: String,
+	pub server: String,
+	/// The server's own name for the tool.
+	pub tool: String,
+	/// The digest of the plugin copy the Agent version pins.
+	pub digest: String,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

@@ -269,12 +269,11 @@ async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let [request] = requests.as_slice() else {
 		panic!("one approval request");
 	};
+	assert_eq!(request.tool, ToolCallTarget::AgentPlugin(identity()));
+	assert_eq!(request.tool.id(), "agent-plugin:acme/docs/search");
 	assert_eq!(
-		request.tool,
-		EntityRef {
-			id: "agent-plugin:acme/docs/search".into(),
-			version: "0123456789ab".into()
-		}
+		request.tool.label(),
+		"agent-plugin:acme/docs/search@0123456789ab"
 	);
 	assert_eq!(request.operation, "invoke");
 	assert_eq!(request.call, call);

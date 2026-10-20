@@ -815,6 +815,7 @@ pub(crate) async fn approval_list(
 				"agent_version": data["agent_version"],
 				"tool": data["tool"],
 				"version": if data["tool"].is_string() { data["version"].clone() } else { Value::Null },
+				"plugin_tool": data["plugin_tool"],
 				"operation": data["operation"],
 				"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
 				"provider": data["provider"],

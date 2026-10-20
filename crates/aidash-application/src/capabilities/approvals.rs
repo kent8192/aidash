@@ -1,5 +1,7 @@
 //! Approval requests, human decisions and worker authorization retain one live scope.
-pub use crate::ports::capabilities::approvals::{Refusal, ToolCallApproval, ToolCallRequest};
+pub use crate::ports::capabilities::approvals::{
+	Refusal, ToolCallApproval, ToolCallRequest, ToolCallTarget,
+};
 use crate::{
 	Error, Result,
 	ports::capabilities::approvals::{ApprovalScope, Creation},
@@ -54,20 +56,22 @@ fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) 
 }
 /// The target string of an approval record and Run grant for one operation of
 /// a tool. It cannot collide with an outbound origin or a disclosure destination.
-pub fn tool_target(tool: &aidash_domain::registry::EntityRef, operation: &str) -> String {
-	format!("tool:{}@{}#{operation}", tool.id, tool.version)
+pub fn tool_target(tool: &ToolCallTarget, operation: &str) -> String {
+	format!("tool:{}@{}#{operation}", tool.id(), tool.version())
 }
 fn tool_resource(
 	scope: &dyn ApprovalScope,
-	tool: &aidash_domain::registry::EntityRef,
+	tool: &ToolCallTarget,
 	operation: &str,
 	run: Uuid,
 ) -> Resource {
-	scope.resource(
-		"tool",
-		&tool.id,
-		json!({"version":tool.version,"operation":operation,"run_id":run,"action":CALL_UNAPPROVED}),
-	)
+	let mut attributes = json!({"version":tool.version(),"operation":operation,"run_id":run,"action":CALL_UNAPPROVED});
+	if let ToolCallTarget::AgentPlugin(plugin) = tool {
+		attributes["plugin"] = json!(plugin.plugin);
+		attributes["server"] = json!(plugin.server);
+		attributes["plugin_tool"] = json!(plugin.tool);
+	}
+	scope.resource("tool", &tool.id(), attributes)
 }
 /// Whether `record` is a Run grant for `action`.
 fn grants(record: &Record, action: &str) -> bool {
@@ -82,21 +86,20 @@ fn target_of(
 	record: &Record,
 	target: &str,
 	run: Uuid,
-) -> (Resource, &'static str) {
+) -> Result<(Resource, &'static str)> {
 	// A Run grant from an "allow for this Run" decision names the action it
 	// covers; it protects the same resource as the approval it came from.
-	if record.kind == TOOL_CALL || grants(record, CALL_UNAPPROVED) {
-		let tool = aidash_domain::registry::EntityRef {
-			id: record.data["tool"].as_str().unwrap_or_default().into(),
-			version: record.data["version"].as_str().unwrap_or_default().into(),
-		};
-		let operation = record.data["operation"].as_str().unwrap_or_default();
-		(tool_resource(scope, &tool, operation, run), CALL_UNAPPROVED)
-	} else if record.kind == DISCLOSURE || grants(record, DISCLOSE) {
-		(disclosure_resource(scope, target, run), DISCLOSE)
-	} else {
-		(resource(scope, target, run), "network.get")
-	}
+	Ok(
+		if record.kind == TOOL_CALL || grants(record, CALL_UNAPPROVED) {
+			let tool = ToolCallTarget::from_record(&record.data)?;
+			let operation = record.data["operation"].as_str().unwrap_or_default();
+			(tool_resource(scope, &tool, operation, run), CALL_UNAPPROVED)
+		} else if record.kind == DISCLOSURE || grants(record, DISCLOSE) {
+			(disclosure_resource(scope, target, run), DISCLOSE)
+		} else {
+			(resource(scope, target, run), "network.get")
+		},
+	)
 }
 fn ordinary(scope: &dyn ApprovalScope, target: &Resource, action: &str) -> Result<bool> {
 	let mut all = true;
@@ -150,7 +153,7 @@ pub async fn visible(scope: &mut dyn ApprovalScope, record: &Record) -> Result<b
 			scope,
 			scope.principal(),
 			&record.owner,
-			&target_of(scope, record, origin, run).0,
+			&target_of(scope, record, origin, run)?.0,
 		) {
 			return Ok(false);
 		}
@@ -229,7 +232,7 @@ pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> 
 	let mut result = approvals::projection(record, expired);
 	if record.kind == TOOL_CALL {
 		// What the approver is asked to allow: the exact call.
-		for field in ["tool", "version", "operation", "call"] {
+		for field in ["tool", "version", "plugin_tool", "operation", "call"] {
 			result[field] = record.data[field].clone();
 		}
 	}
@@ -274,7 +277,7 @@ pub async fn decide(
 	let run_id: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	let run = scope.run_context(run_id).await?;
 	let origin = record.data["targets"][0].as_str().ok_or(Error::Forbidden)?;
-	let (target, action) = target_of(scope, &record, origin, run_id);
+	let (target, action) = target_of(scope, &record, origin, run_id)?;
 	if record.data["approver"] != scope.principal()
 		|| !eligible(scope, scope.principal(), &record.owner, &target)
 	{
@@ -340,6 +343,7 @@ pub async fn decide(
 			if record.kind == TOOL_CALL {
 				data["tool"] = record.data["tool"].clone();
 				data["version"] = record.data["version"].clone();
+				data["plugin_tool"] = record.data["plugin_tool"].clone();
 			} else {
 				data["context_revision"] = record.data["context_revision"].clone();
 				data["provider"] = record.data["provider"].clone();
@@ -533,7 +537,7 @@ async fn still_approved(scope: &mut dyn ApprovalScope, run: &Run, record: &Recor
 	let Some(destination) = record.data["targets"][0].as_str() else {
 		return Ok(false);
 	};
-	let (target, action) = target_of(scope, record, destination, run.id);
+	let (target, action) = target_of(scope, record, destination, run.id)?;
 	match ordinary(scope, &target, action) {
 		Ok(true) => return Ok(true),
 		Ok(false) => {}
@@ -769,9 +773,12 @@ pub async fn tool_call(
 		.or_else(|| approver(scope, &target));
 	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
 	let id = Uuid::new_v4();
-	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
-		"tool":request.tool.id,"version":request.tool.version,"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,
+	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
+		"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,
 		"digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	if let (Some(data), Some(target)) = (data.as_object_mut(), request.tool.record().as_object()) {
+		data.extend(target.clone());
+	}
 	let record = scope
 		.insert(Creation {
 			id,
