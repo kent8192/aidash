@@ -545,23 +545,42 @@ printf '{"sentinel":"%s","master":"%s","fingerprint":"%s","host":"%s","token":"%
 }
 
 #[rstest::rstest]
-#[case::primary_limit(403, &[("x-ratelimit-remaining", "0")], Some(Refusal::RateLimited))]
-#[case::secondary_limit(403, &[("retry-after", "60")], Some(Refusal::RateLimited))]
-#[case::too_many(429, &[], Some(Refusal::RateLimited))]
-#[case::forbidden(403, &[("x-ratelimit-remaining", "41")], Some(Refusal::Unauthorized))]
-#[case::unauthorized(401, &[], Some(Refusal::Unauthorized))]
-#[case::server_error(500, &[], None)]
-fn github_refusals_name_their_cause(
+#[tokio::test]
+#[case::primary_limit(403, &[("x-ratelimit-remaining", "0")], "", Some(Refusal::RateLimited))]
+#[case::secondary_limit(403, &[("retry-after", "60")], "", Some(Refusal::RateLimited))]
+#[case::too_many(429, &[], "", Some(Refusal::RateLimited))]
+#[case::secondary_limit_without_headers(
+	403,
+	&[("x-ratelimit-remaining", "41")],
+	r#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#,
+	Some(Refusal::RateLimited)
+)]
+#[case::primary_limit_without_headers(
+	403,
+	&[],
+	r#"{"message":"API rate limit exceeded for 192.0.2.1."}"#,
+	Some(Refusal::RateLimited)
+)]
+#[case::forbidden(
+	403,
+	&[("x-ratelimit-remaining", "41")],
+	r#"{"message":"Resource not accessible by integration"}"#,
+	Some(Refusal::Unauthorized)
+)]
+#[case::unauthorized(401, &[], "", Some(Refusal::Unauthorized))]
+#[case::server_error(500, &[], "", None)]
+async fn github_refusals_name_their_cause(
 	#[case] status: u16,
 	#[case] headers: &[(&str, &str)],
+	#[case] body: &str,
 	#[case] expected: Option<Refusal>,
 ) {
 	let mut response = axum::http::Response::builder().status(status);
 	for (name, value) in headers {
 		response = response.header(*name, *value);
 	}
-	let response = reqwest::Response::from(response.body(Vec::<u8>::new()).unwrap());
-	assert_eq!(Refusal::of(&response), expected);
+	let mut response = reqwest::Response::from(response.body(body.as_bytes().to_vec()).unwrap());
+	assert_eq!(Refusal::of(&mut response).await, expected);
 }
 
 #[rstest::rstest]

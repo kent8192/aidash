@@ -237,23 +237,47 @@ pub(crate) enum Refusal {
 }
 
 impl Refusal {
-	/// GitHub answers an exhausted primary or secondary rate limit with 403 or
-	/// 429 and marks it in the headers; any other 401/403 is an access refusal.
-	pub(crate) fn of(response: &reqwest::Response) -> Option<Self> {
+	/// Whether a 403 body names a rate limit. A secondary refusal may arrive
+	/// with `x-ratelimit-remaining` still describing the primary budget, so the
+	/// body is the only place GitHub says the request was throttled.
+	async fn says_rate_limit(response: &mut reqwest::Response) -> bool {
+		const MAX_BODY: usize = 64 * 1024;
+		let mut body = Vec::new();
+		while body.len() < MAX_BODY {
+			match response.chunk().await {
+				Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+				Ok(None) | Err(_) => break,
+			}
+		}
+		let body = String::from_utf8_lossy(&body).to_ascii_lowercase();
+		body.contains("secondary rate limit")
+			|| body.contains("secondary-rate-limit")
+			|| body.contains("api rate limit exceeded")
+	}
+
+	/// GitHub answers an exhausted rate limit with 403 or 429 and marks it in
+	/// the headers. A secondary limit may omit those optional headers and leave
+	/// `x-ratelimit-remaining` describing the primary limit, so its refusal is
+	/// only named in the response body. Any other 401/403 is an access refusal.
+	pub(crate) async fn of(response: &mut reqwest::Response) -> Option<Self> {
+		let status = response.status();
 		let header = |name: &str| {
 			response
 				.headers()
 				.get(name)
 				.and_then(|value| value.to_str().ok())
 		};
-		match response.status() {
-			reqwest::StatusCode::TOO_MANY_REQUESTS => Some(Self::RateLimited),
-			reqwest::StatusCode::FORBIDDEN
-				if header("x-ratelimit-remaining") == Some("0")
-					|| header("retry-after").is_some() =>
-			{
-				Some(Self::RateLimited)
-			}
+		let marked = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+			|| (status == reqwest::StatusCode::FORBIDDEN
+				&& (header("x-ratelimit-remaining") == Some("0")
+					|| header("retry-after").is_some()));
+		if marked {
+			return Some(Self::RateLimited);
+		}
+		if status == reqwest::StatusCode::FORBIDDEN && Self::says_rate_limit(response).await {
+			return Some(Self::RateLimited);
+		}
+		match status {
 			reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED => {
 				Some(Self::Unauthorized)
 			}
@@ -380,7 +404,7 @@ async fn api_get_with_accept(
 	) {
 		return Ok(None);
 	}
-	if let Some(refusal) = Refusal::of(&response) {
+	if let Some(refusal) = Refusal::of(&mut response).await {
 		return gh_api(url, limit, accept, refusal).await;
 	}
 	if !response.status().is_success() {
