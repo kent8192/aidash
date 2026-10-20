@@ -1,6 +1,7 @@
 //! Decision Evidence and the charged attempts behind it. Every row belongs to one
 //! Run and never references a Registry row: the Decider is recorded by its exact pin.
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,8 +19,15 @@ pub struct DecisionAttempt {
 	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "decision_attempt_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub node: String,
 	#[field]
@@ -80,8 +88,15 @@ pub struct DecisionEvidence {
 	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "decision_evidence_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub outcome: String,
 	#[field(field_type = "text")]
@@ -125,8 +140,15 @@ pub struct DecisionOutcome {
 	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "decision_outcome_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text", null = true)]
 	pub next_inference: Option<String>,
 	#[field(field_type = "text")]

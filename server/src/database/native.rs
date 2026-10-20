@@ -660,10 +660,13 @@ impl<T: DeserializeOwned> Query<'_, Scalar<T>> {
 
 #[macro_export]
 macro_rules! native_record {
-	($name:ident { $($field:ident),* $(,)? }) => {
+	($name:ident { $($field:ident),* $(,)? } $(relations { $($relation:ident),* $(,)? })?) => {
 		impl $crate::database::native::Decode for $name {
 			fn decode(row: &$crate::database::native::Row, _: &[&str]) -> $crate::Result<Self> {
-				Ok(Self { $($field: row.try_get(stringify!($field))?,)* })
+				Ok(Self {
+					$($field: row.try_get(stringify!($field))?,)*
+					$($($relation: ::reinhardt::db::associations::ForeignKeyField::new(),)*)?
+				})
 			}
 		}
 	};

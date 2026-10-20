@@ -4,6 +4,7 @@ use crate::Result;
 use aidash_domain::provider::usage::{UsageDispatch, UsageOutcome};
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::model;
@@ -22,8 +23,15 @@ pub struct InferenceUsage {
 	pub attempt_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "inference_usage_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field]
 	pub lease_token: Uuid,
 	#[field]
@@ -102,7 +110,7 @@ impl InferenceUsage {
 		let record = Self::build()
 			.tenant(tenant)
 			.attempt_id(dispatch.attempt)
-			.run_id(run)
+			.run(run)
 			.lease_token(dispatch.lease)
 			.response_epoch(dispatch.response_epoch)
 			.model_id(dispatch.model_id.clone())

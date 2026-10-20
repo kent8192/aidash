@@ -1,6 +1,7 @@
 //! Persistent authorization_run_reads records.
 
 use crate::apps::identity::services::states::AuthorizationRunReadResourceKind;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +12,13 @@ pub struct AuthorizationRunRead {
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "authorization_run_reads_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::identity::models::AuthorizationWorkspace>,
 	#[field(primary_key = true, field_type = "text", max_length = 64)]
 	pub resource_kind: AuthorizationRunReadResourceKind,
 	#[field(primary_key = true, field_type = "uuid")]

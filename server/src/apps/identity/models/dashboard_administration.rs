@@ -168,7 +168,7 @@ impl DashboardRegistrationRequest {
 		}
 		let registration = Self::build()
 			.id(Uuid::new_v4())
-			.identity_id(identity)
+			.identity(identity)
 			.status("pending".to_owned())
 			.created_at(now)
 			.expires_at(now + Duration::days(7))
@@ -252,7 +252,7 @@ impl DashboardRegistrationRequest {
 			}
 			let registration = Self::build()
 				.id(Uuid::new_v4())
-				.identity_id(identity)
+				.identity(identity)
 				.status("pending".to_owned())
 				.created_at(now)
 				.expires_at(now + Duration::days(7))

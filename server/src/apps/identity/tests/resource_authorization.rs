@@ -965,7 +965,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 				let read = AuthorizationRunRead::build()
 					.tenant("acme")
 					.run_id(run)
-					.workspace_id(workspace)
+					.workspace(workspace)
 					.resource_kind(AuthorizationRunReadResourceKind::Run)
 					.resource_id(source)
 					.finish();
