@@ -7,6 +7,9 @@ import unittest
 from inspect_operations import inspect, Refused
 
 
+APPLICATION = {"namespace": "aidash-production", "name": "aidash"}
+
+
 class OperationalObservationTests(unittest.TestCase):
     def setUp(self):
         project = "aidash-production"
@@ -26,13 +29,13 @@ class OperationalObservationTests(unittest.TestCase):
         self.cluster = {"name": "aidash", "location": "us-central1", "addonsConfig": {"gkeBackupAgentConfig": {"enabled": True}}}
         self.plan = {
             "name": plan, "cluster": cluster,
-            "backupConfig": {"selectedNamespaces": {"namespaces": ["aidash-production"]}, "includeVolumeData": True, "includeSecrets": True},
+            "backupConfig": {"selectedApplications": {"namespacedNames": [APPLICATION]}, "includeVolumeData": True, "includeSecrets": True},
             "retentionPolicy": {"backupRetainDays": 30, "backupDeleteLockDays": 7},
             "backupSchedule": {"cronSchedule": "0 19 * * *"},
         }
         self.backup = {
             "name": plan + "/backups/observed", "state": "SUCCEEDED", "createTime": "2026-10-12T19:00:00Z", "completeTime": "2026-10-12T19:15:00Z",
-            "clusterMetadata": {"cluster": cluster}, "selectedNamespaces": {"namespaces": ["aidash-production"]},
+            "clusterMetadata": {"cluster": cluster}, "selectedApplications": {"namespacedNames": [APPLICATION]},
             "containsVolumeData": True, "containsSecrets": True, "volumeCount": 5,
         }
         self.channel = {"name": channel, "type": "email", "labels": {"email_address": "prod.deployment@aidash.run"}, "enabled": True}
@@ -54,9 +57,31 @@ class OperationalObservationTests(unittest.TestCase):
             for index, (name, metric_filter, comparison, threshold, duration, aligner, trigger, period) in enumerate(rows)
         ]
         self.now = datetime(2026, 10, 13, 0, 0, tzinfo=timezone.utc)
+        pre_update = f"projects/{project}/locations/us-central1/backupPlans/aidash-production-pre-update"
+        restore = f"projects/{project}/locations/us-central1/restorePlans/aidash-production-pre-update-in-place"
+        self.operations.update(
+            pre_update_backup_plan=pre_update, pre_update_restore_plan=restore,
+            pre_update_backup_retain_days=14, pre_update_backup_delete_lock_days=2,
+        )
+        self.pre_update = {
+            "name": pre_update, "cluster": cluster,
+            "backupConfig": {"selectedApplications": {"namespacedNames": [APPLICATION]}, "includeVolumeData": True, "includeSecrets": True},
+            "retentionPolicy": {"backupRetainDays": 14, "backupDeleteLockDays": 2},
+        }
+        self.restore = {
+            "name": restore, "backupPlan": pre_update, "cluster": cluster,
+            "restoreConfig": {
+                "selectedApplications": {"namespacedNames": [APPLICATION]},
+                "namespacedResourceRestoreMode": "DELETE_AND_RESTORE", "volumeDataRestorePolicy": "RESTORE_VOLUME_DATA_FROM_BACKUP",
+                "clusterResourceRestoreScope": {"noGroupKinds": True},
+            },
+        }
 
     def observe(self, backups=None):
-        return inspect(self.config, self.operations, self.cluster, self.plan, backups if backups is not None else [self.backup], self.channel, self.uptime, self.policies, self.now)
+        return inspect(
+            self.config, self.operations, self.cluster, self.plan, backups if backups is not None else [self.backup],
+            self.channel, self.uptime, self.policies, self.now, self.pre_update, self.restore,
+        )
 
     def test_successful_snapshot_and_config_never_prove_restore_or_mail_delivery(self):
         observation = self.observe()
@@ -64,6 +89,45 @@ class OperationalObservationTests(unittest.TestCase):
         self.assertFalse(observation["restore_verified"])
         self.assertFalse(observation["notification_delivery_proven"])
         self.assertIn("independent_native_home_ledger", observation["required_next_evidence"])
+
+    def test_pre_update_plans_are_reported_and_may_be_absent_from_older_outputs(self):
+        self.assertTrue(self.observe()["pre_update_plans_verified"])
+        for key in ("pre_update_backup_plan", "pre_update_restore_plan"):
+            del self.operations[key]
+        self.pre_update = self.restore = None
+        self.assertFalse(self.observe()["pre_update_plans_verified"])
+
+    def test_the_daily_plan_and_backup_must_select_exactly_the_protected_application(self):
+        for mutate in (
+            lambda: self.plan["backupConfig"].update(selectedNamespaces={"namespaces": ["aidash-production"]}),
+            lambda: self.plan["backupConfig"].update(selectedApplications={"namespacedNames": [APPLICATION, {"namespace": "other", "name": "x"}]}),
+            lambda: self.backup.pop("selectedApplications"),
+        ):
+            self.setUp()
+            mutate()
+            with self.assertRaises(Refused):
+                self.observe()
+
+    def test_pre_update_plans_must_stay_unscheduled_application_scoped_and_unable_to_delete_the_namespace(self):
+        mutations = [
+            (lambda: self.pre_update.update(backupSchedule={"cronSchedule": "0 19 * * *"}), "Pre-update Backup plan"),
+            (lambda: self.pre_update["backupConfig"].update(selectedNamespaces={"namespaces": ["aidash-production"]}), "Pre-update Backup plan"),
+            (lambda: self.pre_update["retentionPolicy"].update(backupRetainDays=30), "Pre-update Backup plan"),
+            (lambda: self.restore["restoreConfig"].pop("selectedApplications"), "could delete more"),
+            (lambda: self.restore["restoreConfig"].update(selectedNamespaces={"namespaces": ["aidash-production"]}), "could delete more"),
+            (lambda: self.restore["restoreConfig"].update(allNamespaces=True), "could delete more"),
+            (lambda: self.restore.update(backupPlan=self.plan["name"]), "could delete more"),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                self.setUp()
+                mutate()
+                with self.assertRaisesRegex(Refused, message):
+                    self.observe()
+        self.setUp()
+        self.pre_update = None
+        with self.assertRaisesRegex(Refused, "not observed"):
+            self.observe()
 
     def test_recent_completion_cannot_hide_stale_snapshot_or_missing_actual_backup(self):
         stale = deepcopy(self.backup)

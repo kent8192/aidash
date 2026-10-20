@@ -131,6 +131,8 @@ run "production_backup_and_monitoring_are_scoped" {
       google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].member == "serviceAccount:${google_service_account.automation["deploy"].email}" &&
       output.operations_configuration.pre_update_backup_plan == google_gke_backup_backup_plan.pre_update[0].id &&
       output.operations_configuration.pre_update_restore_plan == google_gke_backup_restore_plan.pre_update_in_place[0].id &&
+      output.operations_configuration.pre_update_backup_retain_days == 14 &&
+      output.operations_configuration.pre_update_backup_delete_lock_days == 2 &&
       output.delivery_configuration.pre_update_backup_plan == google_gke_backup_backup_plan.pre_update[0].id
     )
     error_message = "The deploy identity may only create Pre-update Backups on their own plan, and both plans are published."

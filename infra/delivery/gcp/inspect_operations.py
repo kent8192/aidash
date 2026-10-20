@@ -34,7 +34,35 @@ def timestamp(value):
     return result
 
 
-def inspect(config, operations, cluster, plan, backups, channel, uptime, policies, now):
+APPLICATION = [{"namespace": "aidash-production", "name": "aidash"}]
+
+
+def application_scope(scope):
+    return scope.get("selectedApplications", {}).get("namespacedNames") == APPLICATION and "selectedNamespaces" not in scope
+
+
+def inspect_pre_update(operations, expected_cluster, plan, restore):
+    """The Pre-update Backup plan and its in-place restore plan, which must both stay application-scoped
+    so a restore never deletes the Home recovery ledger claim."""
+    name = operations["pre_update_backup_plan"]
+    backup_config = plan.get("backupConfig", {})
+    retention = plan.get("retentionPolicy", {})
+    if (plan.get("name") != name or plan.get("cluster") != expected_cluster or not application_scope(backup_config)
+            or not backup_config.get("includeVolumeData") or not backup_config.get("includeSecrets")
+            or backup_config.get("permissiveMode", False) or plan.get("backupSchedule", {}).get("cronSchedule")
+            or retention.get("backupRetainDays") != operations.get("pre_update_backup_retain_days")
+            or retention.get("backupDeleteLockDays") != operations.get("pre_update_backup_delete_lock_days")):
+        raise Refused("The Pre-update Backup plan differs from configuration")
+    restore_config = restore.get("restoreConfig", {})
+    if (restore.get("name") != operations.get("pre_update_restore_plan") or restore.get("backupPlan") != name
+            or restore.get("cluster") != expected_cluster or not application_scope(restore_config)
+            or restore_config.get("namespacedResourceRestoreMode") != "DELETE_AND_RESTORE"
+            or restore_config.get("volumeDataRestorePolicy") != "RESTORE_VOLUME_DATA_FROM_BACKUP"
+            or "allNamespaces" in restore_config or "noNamespaces" in restore_config):
+        raise Refused("The in-place restore plan could delete more than the protected application")
+
+
+def inspect(config, operations, cluster, plan, backups, channel, uptime, policies, now, pre_update=None, pre_update_restore=None):
     """Check actual API observations against the nonsecret configured contract."""
     if config.get("deployment_tier") != "production":
         raise Refused("Only the isolated production profile can be inspected")
@@ -51,7 +79,7 @@ def inspect(config, operations, cluster, plan, backups, channel, uptime, policie
     if plan.get("name") != operations.get("backup_plan") or plan.get("cluster") != expected_cluster:
         raise Refused("The observed backup plan targets a different cluster")
     backup_config = plan.get("backupConfig", {})
-    if (backup_config.get("selectedNamespaces", {}).get("namespaces") != ["aidash-production"]
+    if (not application_scope(backup_config)
             or not backup_config.get("includeVolumeData") or not backup_config.get("includeSecrets")
             or backup_config.get("permissiveMode", False)):
         raise Refused("The production backup scope or retained volume data is incorrect")
@@ -76,10 +104,15 @@ def inspect(config, operations, cluster, plan, backups, channel, uptime, policie
         raise Refused("The latest successful backup is stale or its timestamps are invalid")
     if (not latest.get("name", "").startswith(plan["name"] + "/backups/")
             or latest.get("clusterMetadata", {}).get("cluster") != expected_cluster
-            or latest.get("selectedNamespaces", {}).get("namespaces") != ["aidash-production"]
+            or not application_scope(latest)
             or not latest.get("containsVolumeData") or not latest.get("containsSecrets")
             or latest.get("volumeCount", 0) < 1):
         raise Refused("The successful backup does not contain the configured production data")
+    configured = bool(operations.get("pre_update_backup_plan"))
+    if configured:
+        if pre_update is None or pre_update_restore is None:
+            raise Refused("The Pre-update Backup plan and restore plan were not observed")
+        inspect_pre_update(operations, expected_cluster, pre_update, pre_update_restore)
     expected_channel = operations.get("notification_channel")
     if (channel.get("name") != expected_channel or channel.get("type") != "email"
             or channel.get("labels", {}).get("email_address") != "prod.deployment@aidash.run"
@@ -136,6 +169,7 @@ def inspect(config, operations, cluster, plan, backups, channel, uptime, policie
         "backup_age_seconds": age,
         "configuration_verified": True,
         "successful_backup_observed": True,
+        "pre_update_plans_verified": configured,
         "notification_delivery_proven": False,
         "restore_verified": False,
         "required_next_evidence": ["isolated_postgresql_restore", "independent_native_home_ledger", "jetstream_and_runner_journal_reconciliation", "mail_delivery", "iam_denial_checks"],
@@ -194,10 +228,12 @@ def main():
             break
     else:
         raise Refused("The backup inventory did not finish; refuse a partial observation")
+    pre_update = get("gkebackup", operations["pre_update_backup_plan"]) if operations.get("pre_update_backup_plan") else None
+    pre_update_restore = get("gkebackup", operations["pre_update_restore_plan"]) if operations.get("pre_update_restore_plan") else None
     channel = get("monitoring", operations["notification_channel"])
     uptime = get("monitoring", operations["uptime_check"])
     policies = [get("monitoring", name) for name in operations["alert_policies"]]
-    evidence = inspect(config, operations, cluster, plan, backups, channel, uptime, policies, datetime.now(timezone.utc))
+    evidence = inspect(config, operations, cluster, plan, backups, channel, uptime, policies, datetime.now(timezone.utc), pre_update, pre_update_restore)
     print(json.dumps(evidence, indent=2))
 
 
