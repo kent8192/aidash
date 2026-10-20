@@ -1,0 +1,152 @@
+use super::*;
+use aidash_domain::approval_rules::{APPROVAL_ADVANCE, MODE_BYPASS, RuleEffect};
+use aidash_domain::identity::tenancy::{MEMBERS, OWNER, initial_policy};
+use aidash_domain::policy::{
+	Effect, Policy, ResourceSelector, Subject, SubjectKind, SubjectSelector,
+};
+use std::collections::BTreeSet;
+
+fn bundle() -> PolicyBundle {
+	let mut bundle = initial_policy("t", true).unwrap();
+	bundle.subjects.insert(
+		"alice".into(),
+		Subject {
+			kind: SubjectKind::User,
+			groups: [MEMBERS.to_owned()].into(),
+			roles: BTreeSet::new(),
+			attributes: json!({}),
+			enabled: true,
+			delegated_by: None,
+		},
+	);
+	bundle
+}
+
+fn rule(kind: ApprovalKind, target: RuleTarget) -> ApprovalRule {
+	ApprovalRule {
+		id: Uuid::new_v4(),
+		kind,
+		target,
+		effect: RuleEffect::Allow,
+	}
+}
+
+fn allowed(modes: &[ModeChoice], mode: ApprovalMode) -> bool {
+	modes
+		.iter()
+		.find(|choice| choice.mode == mode)
+		.unwrap()
+		.allowed
+}
+
+#[test]
+fn a_member_may_use_every_mode_but_bypass_until_the_policy_names_it() {
+	// Arrange
+	let mut bundle = bundle();
+
+	// Act
+	let before = modes(&bundle, "alice");
+	bundle.policies.push(Policy {
+		id: "alice-bypass".into(),
+		effect: Effect::Allow,
+		subjects: SubjectSelector {
+			ids: ["alice".to_owned()].into(),
+			..Default::default()
+		},
+		actions: [MODE_BYPASS.to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: [MODE_RESOURCE.to_owned()].into(),
+			ids: ["bypass".to_owned()].into(),
+		},
+		condition: None,
+	});
+	let after = modes(&bundle, "alice");
+
+	// Assert
+	assert!(allowed(&before, ApprovalMode::Manual));
+	assert!(allowed(&before, ApprovalMode::DontAsk));
+	assert!(allowed(&before, ApprovalMode::Auto));
+	assert!(!allowed(&before, ApprovalMode::Bypass));
+	assert!(allowed(&after, ApprovalMode::Bypass));
+}
+
+#[test]
+fn an_administrator_still_has_to_be_named_for_bypass() {
+	assert!(!allowed(&modes(&bundle(), OWNER), ApprovalMode::Bypass));
+}
+
+#[test]
+fn a_rule_is_effective_where_the_owner_could_approve_in_advance() {
+	// Arrange
+	let bundle = bundle();
+	let tool = rule(
+		ApprovalKind::ToolCall,
+		RuleTarget::Exact("tool:crm#invoke".into()),
+	);
+	let every_tool = rule(ApprovalKind::ToolCall, RuleTarget::Every);
+	let origin = rule(
+		ApprovalKind::Outbound,
+		RuleTarget::Exact("https://example.com".into()),
+	);
+
+	// Act + Assert: members approve tool calls themselves, never outbound reads.
+	assert!(effective(&bundle, "alice", &tool));
+	assert!(effective(&bundle, "alice", &every_tool));
+	assert!(!effective(&bundle, "alice", &origin));
+	assert!(effective(&bundle, OWNER, &origin));
+}
+
+#[test]
+fn a_rule_loses_its_effect_when_the_ceiling_is_lowered() {
+	// Arrange
+	let mut bundle = bundle();
+	let tool = rule(
+		ApprovalKind::ToolCall,
+		RuleTarget::Exact("tool:crm#invoke".into()),
+	);
+	assert!(effective(&bundle, "alice", &tool));
+
+	// Act: a deny of advancing approvals, as a Tenant Administrator would write.
+	bundle.policies.push(Policy {
+		id: "no-advance".into(),
+		effect: Effect::Deny,
+		subjects: SubjectSelector {
+			any: true,
+			..Default::default()
+		},
+		actions: [APPROVAL_ADVANCE.to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: ["*".to_owned()].into(),
+			ids: BTreeSet::new(),
+		},
+		condition: None,
+	});
+
+	// Assert
+	assert!(!effective(&bundle, "alice", &tool));
+}
+
+#[test]
+fn a_deny_or_ask_rule_holds_whatever_the_ceiling() {
+	// Arrange: members cannot approve outbound reads, nor anything for "mallory".
+	let bundle = bundle();
+	let origin = |effect| ApprovalRule {
+		effect,
+		..rule(
+			ApprovalKind::Outbound,
+			RuleTarget::Exact("https://example.com".into()),
+		)
+	};
+
+	// Act + Assert
+	assert!(!effective(&bundle, "alice", &origin(RuleEffect::Allow)));
+	assert!(effective(&bundle, "alice", &origin(RuleEffect::Deny)));
+	assert!(effective(&bundle, "alice", &origin(RuleEffect::Ask)));
+	assert!(effective(&bundle, "mallory", &origin(RuleEffect::Deny)));
+}
+
+#[test]
+fn a_subject_the_policy_does_not_list_has_no_effective_rule() {
+	let tool = rule(ApprovalKind::ToolCall, RuleTarget::Every);
+	assert!(!effective(&bundle(), "mallory", &tool));
+}

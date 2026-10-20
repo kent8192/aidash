@@ -12,7 +12,7 @@ use common::*;
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
-	atomic::{AtomicUsize, Ordering},
+	atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use uuid::Uuid;
 
@@ -1936,6 +1936,8 @@ struct ToolCallApprovals {
 	reads: Arc<AtomicUsize>,
 	inferences: Arc<AtomicUsize>,
 	script: Arc<AtomicUsize>,
+	/// When set, the model's first call is `human_request`, a question for a person.
+	question: Arc<AtomicBool>,
 }
 
 /// How often each route of the scripted upstream was hit.
@@ -1944,6 +1946,7 @@ struct Hits {
 	effects: Arc<AtomicUsize>,
 	inferences: Arc<AtomicUsize>,
 	reads: Arc<AtomicUsize>,
+	question: Arc<AtomicBool>,
 }
 
 #[rstest::fixture]
@@ -1966,6 +1969,7 @@ fn tool_call_router(
 			effects: counter,
 			inferences,
 			reads,
+			question,
 		} = hits;
 		let server = reinhardt::test::stub::StubRouter::new()
 			.route(
@@ -2001,6 +2005,7 @@ fn tool_call_router(
 					let body = request.json::<Value>().unwrap();
 					let inference = inferences.fetch_add(1, Ordering::SeqCst) + 1;
 					let script = script.clone();
+					let question = question.clone();
 					async move {
 						let context: Value =
 							serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
@@ -2017,9 +2022,21 @@ fn tool_call_router(
 									.iter()
 									.any(|tool| tool["function"]["name"] == "plugin_1")
 							});
-						let name = if reads_first { "plugin_1" } else { "plugin_0" };
+						let asks = called == 0 && question.load(Ordering::SeqCst);
+						let name = if asks {
+							"human_request"
+						} else if reads_first {
+							"plugin_1"
+						} else {
+							"plugin_0"
+						};
+						let arguments = if asks {
+							json!({"kind":"QUESTION","prompt":"Which one?"})
+						} else {
+							json!({"call":called + 1})
+						};
 						let message = if called < script.load(Ordering::SeqCst) {
-							json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("call-{inference}"),"type":"function","function":{"name":name,"arguments":json!({"call":called + 1}).to_string()}}]})
+							json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("call-{inference}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]})
 						} else {
 							json!({"role":"assistant","content":"Completed authorized work"})
 						};
@@ -2059,6 +2076,7 @@ fn tool_call_approvals(
 			reads: hits.reads,
 			inferences: hits.inferences,
 			script,
+			question: hits.question,
 		}
 	}
 	.boxed()
@@ -2552,4 +2570,591 @@ async fn a_pending_tool_call_approval_closes_when_its_run_ends(
 	assert_eq!(t.effects.load(Ordering::SeqCst), 0);
 	drop(t.server);
 	cleanup(f, &url, &schema).await;
+}
+
+/// Approval Rules and Approval Modes (#411, ADR 0076): a person's own
+/// approvals, given in advance. The owner's endpoints need a browser session,
+/// so these tests write the rows the endpoints write and drive the Run.
+mod approval_modes {
+	use super::*;
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
+
+	/// What the Tenant's tool is called in a rule's target.
+	const TOOL: &str = "tool:http#invoke";
+
+	async fn execute(f: &aidash_server::federation::Federation, sql: String) {
+		sqlx::query(&sql)
+			.execute(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
+
+	/// Stores alice's default Approval Mode, with or without her acceptance of Bypass.
+	async fn prefer(f: &aidash_server::federation::Federation, mode: &str, accepted_bypass: bool) {
+		let accepted = if accepted_bypass {
+			Expr::cust("clock_timestamp()")
+		} else {
+			Expr::cust("NULL::timestamptz")
+		};
+		execute(
+			f,
+			Query::insert()
+				.into_table(Alias::new("identity_approval_preferences"))
+				.columns(
+					[
+						"tenant",
+						"subject",
+						"default_mode",
+						"bypass_accepted_at",
+						"revision",
+						"updated_at",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::val("acme"))
+						.expr(Expr::val("alice"))
+						.expr(Expr::val(mode))
+						.expr(accepted)
+						.expr(Expr::val(1_i64))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+	}
+
+	/// Stores one of alice's Approval Rules on a tool call and returns its id.
+	async fn rule(f: &aidash_server::federation::Federation, effect: &str, target: Value) -> Uuid {
+		let id = Uuid::new_v4();
+		execute(
+			f,
+			Query::insert()
+				.into_table(Alias::new("identity_approval_rules"))
+				.columns(
+					[
+						"tenant",
+						"id",
+						"subject",
+						"kind",
+						"target",
+						"effect",
+						"created_at",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::val("acme"))
+						.expr(Expr::val(id))
+						.expr(Expr::val("alice"))
+						.expr(Expr::val("tool_call"))
+						.expr(Expr::cust(format!("'{target}'::jsonb")))
+						.expr(Expr::val(effect))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+		id
+	}
+
+	fn exact() -> Value {
+		json!({"exact": TOOL})
+	}
+
+	/// Stores alice's Approval Mode for one Thread.
+	async fn thread_mode(f: &aidash_server::federation::Federation, thread: Uuid, mode: &str) {
+		execute(
+			f,
+			Query::insert()
+				.into_table(Alias::new("identity_thread_approval_modes"))
+				.columns(
+					[
+						"tenant",
+						"thread_id",
+						"subject",
+						"mode",
+						"revision",
+						"updated_at",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::val("acme"))
+						.expr(Expr::val(thread))
+						.expr(Expr::val("alice"))
+						.expr(Expr::val(mode))
+						.expr(Expr::val(1_i64))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+	}
+
+	/// Binds a task to a Thread the way `thread_run` does.
+	async fn bind(f: &aidash_server::federation::Federation, task: Uuid, thread: Uuid) {
+		execute(
+			f,
+			Query::insert()
+				.into_table(Alias::new("core_task_sessions"))
+				.columns(["task_id", "tenant", "thread_id"].map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.expr(Expr::val(task))
+						.expr(Expr::val("acme"))
+						.expr(Expr::val(thread))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+	}
+
+	/// Changes the Tenant's policy the way a Tenant Administrator would.
+	async fn amend(f: &aidash_server::federation::Federation, change: impl FnOnce(&mut Value)) {
+		let authorization = aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		};
+		let current = authorization.snapshot("acme").await.unwrap();
+		let mut bundle = serde_json::to_value(&current.bundle).unwrap();
+		change(&mut bundle);
+		authorization
+			.replace(
+				"acme",
+				current.revision,
+				serde_json::from_value(bundle).unwrap(),
+				"deployment_administrator",
+			)
+			.await
+			.expect("the Tenant policy is amended");
+	}
+
+	/// Lets alice use Bypass: the Tenant's policy names it.
+	async fn allow_bypass(f: &aidash_server::federation::Federation) {
+		amend(f, |bundle| {
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id": "alice-bypass",
+				"effect": "allow",
+				"subjects": {"ids": ["alice"]},
+				"actions": ["approval.mode.bypass"],
+				"resources": {"kinds": ["approval_mode"]}
+			}));
+		})
+		.await;
+	}
+
+	/// The data of every Tool call approval record, in the order of their ids.
+	async fn records(f: &aidash_server::federation::Federation) -> Vec<(Uuid, String, Value)> {
+		let sql = Query::select()
+			.expr_as(Expr::cust("id::text"), Alias::new("id"))
+			.column(Alias::new("state"))
+			.expr_as(Expr::cust("data::text"), Alias::new("data"))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col(Alias::new("kind")).eq("tool_call"))
+			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+			.to_string(PostgresQueryBuilder);
+		sqlx::query_as::<_, (String, String, String)>(&sql)
+			.fetch_all(f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|(id, state, data)| {
+				(
+					id.parse().unwrap(),
+					state,
+					serde_json::from_str(&data).unwrap(),
+				)
+			})
+			.collect()
+	}
+
+	/// Steps the worker to the end of the Run, which must never wait for a person.
+	async fn run_through(
+		f: &aidash_server::federation::Federation,
+		run: Uuid,
+	) -> aidash_server::domain::Run {
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		step_until(&harness, f, run, |run| {
+			assert!(awaited_tool_call(run).is_none(), "nobody is asked");
+			run.phase().as_str() == "COMPLETED"
+		})
+		.await
+	}
+
+	fn tool_results(run: &aidash_server::domain::Run) -> Vec<String> {
+		run.context
+			.events()
+			.filter_map(|event| match event {
+				aidash_server::context::ContextEvent::Tool { result, .. } => {
+					Some(result.to_string())
+				}
+				_ => None,
+			})
+			.collect()
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn an_allow_rule_lets_its_tool_call_run_without_a_wait_and_the_record_names_the_rule(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		let allow = rule(&f, "allow", exact()).await;
+
+		// Act
+		run_through(&f, run.id).await;
+
+		// Assert
+		assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+		assert_eq!(
+			t.inferences.load(Ordering::SeqCst),
+			2,
+			"the call runs as asked"
+		);
+		let cards = approval_cards(&t.application.application, &token, "").await;
+		assert_eq!(cards.len(), 1, "{cards:?}");
+		assert_eq!(cards[0]["state"], "consumed");
+		assert_eq!(cards[0]["given_by"], json!({"rule": allow}));
+		assert_eq!(cards[0]["decided_by"], "alice", "recorded under her name");
+		assert_eq!(cards[0]["allow_always"], false);
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn a_deny_rule_refuses_the_call_and_the_run_continues(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (_, run) = claimed_run(&t, &f, |_| {}).await;
+		let deny = rule(&f, "deny", exact()).await;
+		// An allow rule for every tool cannot overrule it.
+		rule(&f, "allow", json!("every")).await;
+
+		// Act
+		let finished = run_through(&f, run.id).await;
+
+		// Assert
+		assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+		let results = tool_results(&finished);
+		assert_eq!(results.len(), 1, "{results:?}");
+		assert!(
+			results[0].contains("refused by an Approval Rule"),
+			"{results:?}"
+		);
+		let records = records(&f).await;
+		assert_eq!(records.len(), 1, "{records:?}");
+		assert_eq!(records[0].1, "denied");
+		assert_eq!(records[0].2["refused_by"], json!({"rule": deny}));
+		assert_eq!(records[0].2["decided_by"], "alice");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn an_ask_rule_asks_even_in_bypass(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		allow_bypass(&f).await;
+		prefer(&f, "bypass", true).await;
+		rule(&f, "ask", exact()).await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+
+		// Act
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+
+		// Assert
+		let (approval, _) = awaited_tool_call(&waiting).unwrap();
+		let (status, decided) =
+			decide_tool_call(&t.application.application, &token, approval, "allow_once").await;
+		assert_eq!(status, 200, "{decided}");
+		step_until(&harness, &f, run.id, |run| {
+			run.phase().as_str() == "COMPLETED"
+		})
+		.await;
+		assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+		let records = records(&f).await;
+		assert!(records[0].2.get("given_by").is_none(), "{records:?}");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn dont_ask_refuses_the_call_so_the_run_never_waits(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (_, run) = claimed_run(&t, &f, |_| {}).await;
+		prefer(&f, "dont_ask", false).await;
+
+		// Act
+		let finished = run_through(&f, run.id).await;
+
+		// Assert
+		assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+		let results = tool_results(&finished);
+		assert_eq!(results.len(), 1, "{results:?}");
+		assert!(results[0].contains("asked not to be asked"), "{results:?}");
+		let records = records(&f).await;
+		assert_eq!(records[0].1, "denied");
+		assert_eq!(records[0].2["refused_by"], json!({"mode": "dont_ask"}));
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn dont_ask_also_refuses_the_models_question_and_tells_it_to_continue(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		t.question.store(true, Ordering::SeqCst);
+		let (f, url, schema) = t.application.runtime.parts();
+		let (_, run) = claimed_run(&t, &f, |_| {}).await;
+		prefer(&f, "dont_ask", false).await;
+
+		// Act
+		let finished = run_through(&f, run.id).await;
+
+		// Assert
+		let results = tool_results(&finished);
+		assert_eq!(results.len(), 1, "{results:?}");
+		assert!(
+			results[0].contains("continue on your own judgment"),
+			"{results:?}"
+		);
+		assert_eq!(finished.phase().as_str(), "COMPLETED");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn bypass_approves_within_the_ceiling_and_the_record_says_so(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		allow_bypass(&f).await;
+		prefer(&f, "bypass", true).await;
+
+		// Act
+		run_through(&f, run.id).await;
+
+		// Assert
+		assert_eq!(t.effects.load(Ordering::SeqCst), 1);
+		let cards = approval_cards(&t.application.application, &token, "").await;
+		assert_eq!(cards.len(), 1, "{cards:?}");
+		assert_eq!(cards[0]["given_by"], json!({"mode": "bypass"}));
+		assert_eq!(cards[0]["decided_by"], "alice");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn bypass_the_policy_does_not_name_or_the_person_never_accepted_asks_as_manual(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange: Bypass is the default, yet the policy never names it.
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (_, run) = claimed_run(&t, &f, |_| {}).await;
+		prefer(&f, "bypass", true).await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+
+		// Act
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+
+		// Assert
+		assert!(awaited_tool_call(&waiting).is_some());
+		assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn a_rule_beyond_a_lowered_ceiling_has_no_effect(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange: the rule is stored, then the Tenant stops letting members advance approvals.
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (_, run) = claimed_run(&t, &f, |_| {}).await;
+		rule(&f, "allow", exact()).await;
+		amend(&f, |bundle| {
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id": "no-advance",
+				"effect": "deny",
+				"subjects": {"kinds": ["user"]},
+				"actions": ["approval.advance"],
+				"resources": {"kinds": ["*"]}
+			}));
+		})
+		.await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+
+		// Act
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+
+		// Assert
+		assert!(awaited_tool_call(&waiting).is_some());
+		assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn a_thread_mode_applies_to_a_running_run_at_its_next_approval(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange: two calls, the first approved by hand.
+		let t = tool_call_approvals;
+		t.script.store(2, Ordering::SeqCst);
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		let thread = Uuid::new_v4();
+		bind(&f, run.task_id, thread).await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+		let (approval, _) = awaited_tool_call(&waiting).unwrap();
+		let (status, decided) =
+			decide_tool_call(&t.application.application, &token, approval, "allow_once").await;
+		assert_eq!(status, 200, "{decided}");
+
+		// Act: alice asks not to be asked in this Thread, while her Run is running.
+		thread_mode(&f, thread, "dont_ask").await;
+		let finished = run_through(&f, run.id).await;
+
+		// Assert
+		assert_eq!(
+			t.effects.load(Ordering::SeqCst),
+			1,
+			"only the first call ran"
+		);
+		let results = tool_results(&finished);
+		assert_eq!(results.len(), 2, "{results:?}");
+		assert!(results[1].contains("asked not to be asked"), "{results:?}");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn a_thread_mode_wins_over_the_default(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange: the default asks nobody, yet this Thread is Manual again.
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (_, run) = claimed_run(&t, &f, |_| {}).await;
+		let thread = Uuid::new_v4();
+		bind(&f, run.task_id, thread).await;
+		prefer(&f, "dont_ask", false).await;
+		thread_mode(&f, thread, "manual").await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+
+		// Act
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+
+		// Assert
+		assert!(awaited_tool_call(&waiting).is_some());
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn always_allow_approves_once_and_the_next_identical_call_needs_no_approval(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		t.script.store(2, Ordering::SeqCst);
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		let app = &t.application.application;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+		let (approval, _) = awaited_tool_call(&waiting).unwrap();
+		let pending = approval_cards(app, &token, "?state=pending&role=approver").await;
+		assert_eq!(pending[0]["allow_always"], true, "{pending:?}");
+
+		// Act
+		let (status, decided) = decide_tool_call(app, &token, approval, "allow_always").await;
+
+		// Assert
+		assert_eq!(status, 200, "{decided}");
+		assert_eq!(decided["state"], "approved");
+		run_through(&f, run.id).await;
+		assert_eq!(t.effects.load(Ordering::SeqCst), 2);
+		let records = records(&f).await;
+		assert_eq!(records.len(), 2, "{records:?}");
+		// Approval ids are random, so the records are told apart by what they hold.
+		let asked = records
+			.iter()
+			.find(|record| record.2.get("rule_id").is_some())
+			.expect("the decision created a rule");
+		let given = records
+			.iter()
+			.find(|record| record.2.get("given_by").is_some())
+			.expect("the rule gave the next approval");
+		assert_ne!(asked.0, given.0);
+		assert_eq!(given.2["given_by"], json!({"rule": asked.2["rule_id"]}));
+		let cards = approval_cards(app, &token, "").await;
+		assert!(
+			cards.iter().all(|card| card["allow_always"] == false),
+			"nothing is pending: {cards:?}"
+		);
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
 }

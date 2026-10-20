@@ -576,6 +576,19 @@ impl ExecutionAuthority for Authority<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn approval_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.approval_mode(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn model_media(&self, selections: &[ModelMedia]) -> Result<Vec<ContentPart>> {
 		self.guard
 			.model_media(&self.federation.store, selections)

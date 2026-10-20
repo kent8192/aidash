@@ -264,6 +264,27 @@ fn members_may_approve_in_advance_and_use_auto_but_bypass_has_to_be_named() {
 }
 
 #[test]
+fn only_administrators_read_a_members_approval_settings() {
+	// Arrange
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let read = administration::APPROVAL_READ;
+
+	// Act + Assert: the action is judged on the member, and members never hold it.
+	assert_eq!(administration::resource_kind(read), "subject");
+	assert!(allows(&bundle, OWNER, read));
+	assert!(!allows(&bundle, "alice", read));
+	assert!(ACTIONS.contains(&read));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&read));
+}
+
+#[test]
+fn the_mode_actions_are_judged_on_the_approval_mode_resource() {
+	for action in [crate::approval_rules::MODE_AUTO, MODE_BYPASS] {
+		assert_eq!(administration::resource_kind(action), MODE_RESOURCE);
+	}
+}
+
+#[test]
 fn a_wildcard_allow_never_grants_an_explicit_action_but_a_wildcard_deny_covers_it() {
 	let mut bundle = initial_policy("t", true).unwrap();
 	for action in crate::policy::EXPLICIT_ACTIONS {

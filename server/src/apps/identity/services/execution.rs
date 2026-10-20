@@ -308,6 +308,33 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	/// The Approval Mode that covers `run` now, under the worker's current
+	/// authority lease: the one of the person its delegation chain starts at,
+	/// for the Run's Thread. `None` when no person's mode covers the Run
+	/// (ADR 0076).
+	pub async fn approval_mode(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let access = &mut access;
+			crate::apps::identity::repositories::approval_preferences::covering(
+				&mut *access.tx,
+				&access.snapshot.bundle,
+				&store.node_id,
+				access.subjects.first().map(String::as_str),
+				&run.metadata(),
+			)
+			.await
+			.map(|covering| covering.map(|covering| covering.mode))
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
 	/// is reserved.
 	pub async fn consume_web_disclosure(

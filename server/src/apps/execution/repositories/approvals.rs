@@ -13,6 +13,7 @@ use crate::apps::execution::capabilities::{
 		sessions,
 	},
 };
+use crate::apps::identity::repositories::approval_preferences as identity;
 use crate::{Result as NativeResult, authorization::access::Access, domain::Run, store::Store};
 use aidash_application::{
 	Error, Result,
@@ -20,6 +21,7 @@ use aidash_application::{
 };
 use aidash_domain::{
 	RunMetadata,
+	approval_rules::{ApprovalRule, Settings},
 	capabilities::{
 		approvals::{ApprovalChoice, ApprovalDecision, Outbound, Revoke},
 		operations::MountedFile,
@@ -67,6 +69,7 @@ impl From<NativeDecision> for ApprovalDecision {
 			choice: match value.choice {
 				NativeChoice::AllowOnce => ApprovalChoice::AllowOnce,
 				NativeChoice::AllowRun => ApprovalChoice::AllowRun,
+				NativeChoice::AllowAlways => ApprovalChoice::AllowAlways,
 				NativeChoice::Deny => ApprovalChoice::Deny,
 			},
 			targets: value.targets,
@@ -300,5 +303,30 @@ impl ApprovalScope for Scope<'_> {
 			.read(self.access, &FileEntry::from(file.clone()))
 			.await
 			.map_err(Into::into)
+	}
+	async fn approval_settings(&mut self, run: &RunMetadata) -> Result<Option<Settings>> {
+		// Without the Store this scope does not know its Node, so no Run is
+		// known to execute on its home Node.
+		let Some(store) = self.store else {
+			return Ok(None);
+		};
+		let access = &mut *self.access;
+		identity::settings_for_run(
+			&mut *access.tx,
+			&access.snapshot.bundle,
+			&access.identity.tenant,
+			&store.node_id,
+			access.subjects.first().map(String::as_str),
+			run,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()> {
+		let tenant = self.access.identity.tenant.clone();
+		let tx = &mut *self.access.tx;
+		identity::lock_owner(tx, &tenant, owner).await?;
+		identity::add_rule(tx, &tenant, owner, &rule).await?;
+		Ok(())
 	}
 }

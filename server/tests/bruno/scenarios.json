@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 319,
+  "endpoint_count": 327,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -13270,8 +13270,480 @@
       ]
     },
     {
-      "name": "1215 run-evidence - Anonymous request is rejected",
-      "file": "contracts/1215-run-evidence.bru",
+      "name": "1215 approval-preferences - Anonymous request is rejected",
+      "file": "contracts/1215-approval-preferences.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1216 approval-preferences - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1216-approval-preferences.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1217 approval-preferences - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1217-approval-preferences.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1218 approval-preferences - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1218-approval-preferences.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1219 approval-preferences-update - Anonymous request is rejected",
+      "file": "contracts/1219-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1220 approval-preferences-update - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1220-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1221 approval-preferences-update - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1221-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1222 approval-preferences-update - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1222-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1223 approval-preferences-update - Wrong JSON media type is rejected",
+      "file": "contracts/1223-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1224 approval-preferences-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1224-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1225 approval-preferences-update - Unknown approval fields are rejected",
+      "file": "contracts/1225-approval-preferences-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-preferences/mine",
+      "scenario": "Unknown approval fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1226 approval-rules - Anonymous request is rejected",
+      "file": "contracts/1226-approval-rules.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1227 approval-rules - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1227-approval-rules.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1228 approval-rules - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1228-approval-rules.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1229 approval-rules - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1229-approval-rules.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1230 approval-rule-create - Anonymous request is rejected",
+      "file": "contracts/1230-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1231 approval-rule-create - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1231-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1232 approval-rule-create - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1232-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1233 approval-rule-create - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1233-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1234 approval-rule-create - Wrong JSON media type is rejected",
+      "file": "contracts/1234-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1235 approval-rule-create - Malformed JSON cannot reach the use case",
+      "file": "contracts/1235-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1236 approval-rule-create - Unknown approval fields are rejected",
+      "file": "contracts/1236-approval-rule-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/approval-rules/mine",
+      "scenario": "Unknown approval fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1237 approval-rule-delete - Anonymous request is rejected",
+      "file": "contracts/1237-approval-rule-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/approval-rules/mine/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1238 approval-rule-delete - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1238-approval-rule-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/approval-rules/mine/{id}",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1239 approval-rule-delete - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1239-approval-rule-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/approval-rules/mine/{id}",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1240 approval-rule-delete - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1240-approval-rule-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/approval-rules/mine/{id}",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1241 approval-settings - Anonymous request is rejected",
+      "file": "contracts/1241-approval-settings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subjects/{subject}/approval-settings",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1242 approval-settings - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1242-approval-settings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subjects/{subject}/approval-settings",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1243 approval-settings - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1243-approval-settings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subjects/{subject}/approval-settings",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1244 approval-settings - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1244-approval-settings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subjects/{subject}/approval-settings",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1245 thread-approval-mode - Anonymous request is rejected",
+      "file": "contracts/1245-thread-approval-mode.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1246 thread-approval-mode - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1246-thread-approval-mode.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1247 thread-approval-mode - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1247-thread-approval-mode.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1248 thread-approval-mode - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1248-thread-approval-mode.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1249 thread-approval-mode-update - Anonymous request is rejected",
+      "file": "contracts/1249-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1250 thread-approval-mode-update - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1250-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1251 thread-approval-mode-update - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1251-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1252 thread-approval-mode-update - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1252-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1253 thread-approval-mode-update - Wrong JSON media type is rejected",
+      "file": "contracts/1253-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1254 thread-approval-mode-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1254-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1255 thread-approval-mode-update - Unknown approval fields are rejected",
+      "file": "contracts/1255-thread-approval-mode-update.bru",
+      "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
+      "scenario": "Unknown approval fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1256 run-evidence - Anonymous request is rejected",
+      "file": "contracts/1256-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13281,8 +13753,8 @@
       ]
     },
     {
-      "name": "1216 run-evidence - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1216-run-evidence.bru",
+      "name": "1257 run-evidence - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1257-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -13292,8 +13764,8 @@
       ]
     },
     {
-      "name": "1217 run-evidence - Application read preserves the typed response contract",
-      "file": "contracts/1217-run-evidence.bru",
+      "name": "1258 run-evidence - Application read preserves the typed response contract",
+      "file": "contracts/1258-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Application read preserves the typed response contract",
       "status": 404,
@@ -13304,8 +13776,8 @@
       ]
     },
     {
-      "name": "1218 run-research-revocation - Anonymous request is rejected",
-      "file": "contracts/1218-run-research-revocation.bru",
+      "name": "1259 run-research-revocation - Anonymous request is rejected",
+      "file": "contracts/1259-run-research-revocation.bru",
       "endpoint": "POST /api/runs/{id}/research-revocation",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13316,8 +13788,8 @@
       ]
     },
     {
-      "name": "1219 run-research-revocation - Wrong JSON media type is rejected",
-      "file": "contracts/1219-run-research-revocation.bru",
+      "name": "1260 run-research-revocation - Wrong JSON media type is rejected",
+      "file": "contracts/1260-run-research-revocation.bru",
       "endpoint": "POST /api/runs/{id}/research-revocation",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -13328,8 +13800,8 @@
       ]
     },
     {
-      "name": "1220 run-research-revocation - Malformed JSON cannot reach the use case",
-      "file": "contracts/1220-run-research-revocation.bru",
+      "name": "1261 run-research-revocation - Malformed JSON cannot reach the use case",
+      "file": "contracts/1261-run-research-revocation.bru",
       "endpoint": "POST /api/runs/{id}/research-revocation",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -13340,8 +13812,8 @@
       ]
     },
     {
-      "name": "1221 run-research-revocation-read - Anonymous request is rejected",
-      "file": "contracts/1221-run-research-revocation-read.bru",
+      "name": "1262 run-research-revocation-read - Anonymous request is rejected",
+      "file": "contracts/1262-run-research-revocation-read.bru",
       "endpoint": "GET /api/runs/{id}/research-revocation",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13351,8 +13823,8 @@
       ]
     },
     {
-      "name": "1222 run-research-revocation-read - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1222-run-research-revocation-read.bru",
+      "name": "1263 run-research-revocation-read - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1263-run-research-revocation-read.bru",
       "endpoint": "GET /api/runs/{id}/research-revocation",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -13362,8 +13834,8 @@
       ]
     },
     {
-      "name": "1223 run-research-revocation-read - Application read preserves the typed response contract",
-      "file": "contracts/1223-run-research-revocation-read.bru",
+      "name": "1264 run-research-revocation-read - Application read preserves the typed response contract",
+      "file": "contracts/1264-run-research-revocation-read.bru",
       "endpoint": "GET /api/runs/{id}/research-revocation",
       "scenario": "Application read preserves the typed response contract",
       "status": 404,
@@ -13374,8 +13846,8 @@
       ]
     },
     {
-      "name": "1224 research-revocation-list - Anonymous request is rejected",
-      "file": "contracts/1224-research-revocation-list.bru",
+      "name": "1265 research-revocation-list - Anonymous request is rejected",
+      "file": "contracts/1265-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13385,8 +13857,8 @@
       ]
     },
     {
-      "name": "1225 research-revocation-list - Malformed bearer syntax is rejected",
-      "file": "contracts/1225-research-revocation-list.bru",
+      "name": "1266 research-revocation-list - Malformed bearer syntax is rejected",
+      "file": "contracts/1266-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13396,8 +13868,8 @@
       ]
     },
     {
-      "name": "1226 research-revocation-list - Application read preserves the typed response contract",
-      "file": "contracts/1226-research-revocation-list.bru",
+      "name": "1267 research-revocation-list - Application read preserves the typed response contract",
+      "file": "contracts/1267-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13408,8 +13880,8 @@
       ]
     },
     {
-      "name": "1227 research-revocation-list - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1227-research-revocation-list.bru",
+      "name": "1268 research-revocation-list - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1268-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -13419,8 +13891,8 @@
       ]
     },
     {
-      "name": "1228 tenant-retention - Anonymous request is rejected",
-      "file": "contracts/1228-tenant-retention.bru",
+      "name": "1269 tenant-retention - Anonymous request is rejected",
+      "file": "contracts/1269-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13430,8 +13902,8 @@
       ]
     },
     {
-      "name": "1229 tenant-retention - Malformed bearer syntax is rejected",
-      "file": "contracts/1229-tenant-retention.bru",
+      "name": "1270 tenant-retention - Malformed bearer syntax is rejected",
+      "file": "contracts/1270-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13441,8 +13913,8 @@
       ]
     },
     {
-      "name": "1230 tenant-retention - Application read preserves the typed response contract",
-      "file": "contracts/1230-tenant-retention.bru",
+      "name": "1271 tenant-retention - Application read preserves the typed response contract",
+      "file": "contracts/1271-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13453,8 +13925,8 @@
       ]
     },
     {
-      "name": "1231 tenant-retention-update - Anonymous request is rejected",
-      "file": "contracts/1231-tenant-retention-update.bru",
+      "name": "1272 tenant-retention-update - Anonymous request is rejected",
+      "file": "contracts/1272-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13465,8 +13937,8 @@
       ]
     },
     {
-      "name": "1232 tenant-retention-update - Wrong JSON media type is rejected",
-      "file": "contracts/1232-tenant-retention-update.bru",
+      "name": "1273 tenant-retention-update - Wrong JSON media type is rejected",
+      "file": "contracts/1273-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -13477,8 +13949,8 @@
       ]
     },
     {
-      "name": "1233 tenant-retention-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1233-tenant-retention-update.bru",
+      "name": "1274 tenant-retention-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1274-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -13489,8 +13961,8 @@
       ]
     },
     {
-      "name": "1234 tenant-retention-history - Anonymous request is rejected",
-      "file": "contracts/1234-tenant-retention-history.bru",
+      "name": "1275 tenant-retention-history - Anonymous request is rejected",
+      "file": "contracts/1275-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13500,8 +13972,8 @@
       ]
     },
     {
-      "name": "1235 tenant-retention-history - Malformed bearer syntax is rejected",
-      "file": "contracts/1235-tenant-retention-history.bru",
+      "name": "1276 tenant-retention-history - Malformed bearer syntax is rejected",
+      "file": "contracts/1276-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13511,8 +13983,8 @@
       ]
     },
     {
-      "name": "1236 tenant-retention-history - Application read preserves the typed response contract",
-      "file": "contracts/1236-tenant-retention-history.bru",
+      "name": "1277 tenant-retention-history - Application read preserves the typed response contract",
+      "file": "contracts/1277-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13523,8 +13995,8 @@
       ]
     },
     {
-      "name": "1237 tenant-retention-history - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1237-tenant-retention-history.bru",
+      "name": "1278 tenant-retention-history - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1278-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,

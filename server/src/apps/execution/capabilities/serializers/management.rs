@@ -67,6 +67,15 @@ pub struct ApprovalCard {
 	pub query: Option<serde_json::Value>,
 	pub decided_by: Option<String>,
 	pub decided_at: Option<DateTime<Utc>>,
+	/// What gave the approval in advance, under its owner's name: `{"rule": id}`
+	/// for one of their Approval Rules, `{"mode": "bypass"}` for the Bypass
+	/// mode, and none when a person decided it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub given_by: Option<serde_json::Value>,
+	/// Whether the reader may choose "Always allow": they are the person the
+	/// Run's delegation chain starts at, the approval is still pending and its
+	/// kind can have a rule.
+	pub allow_always: bool,
 	/// Why a `closed` approval or Run grant was closed, such as
 	/// `evidence_revoked` or `run_ended`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

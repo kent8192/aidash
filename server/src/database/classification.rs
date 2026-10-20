@@ -172,6 +172,10 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
+	// a person's own Approval Mode and Approval Rules (ADR 0076)
+	table("identity", "identity_approval_preferences", TenantOwned),
+	table("identity", "identity_approval_rules", TenantOwned),
+	table("identity", "identity_thread_approval_modes", TenantOwned),
 	// the identity's one Personal Tenant, read at sign-in
 	table("identity", "personal_tenants", TenantOwned),
 	// pending Sign in with ChatGPT flows bound to a browser, like sign-in state

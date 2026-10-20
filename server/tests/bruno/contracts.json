@@ -7001,7 +7001,8 @@
             "agent_id",
             "agent_version",
             "decided_by",
-            "decided_at"
+            "decided_at",
+            "allow_always"
           ],
           "properties": {
             "action": {
@@ -7012,6 +7013,10 @@
             },
             "agent_version": {
               "type": ["string", "null"]
+            },
+            "allow_always": {
+              "type": "boolean",
+              "description": "Whether the reader may choose \"Always allow\": they are the person the\nRun's delegation chain starts at, the approval is still pending and its\nkind can have a rule."
             },
             "approver": {
               "type": ["string", "null"]
@@ -7046,6 +7051,9 @@
             "expires_at": {
               "type": ["string", "null"],
               "format": "date-time"
+            },
+            "given_by": {
+              "description": "What gave the approval in advance, under its owner's name: `{\"rule\": id}`\nfor one of their Approval Rules, `{\"mode\": \"bypass\"}` for the Bypass\nmode, and none when a person decided it."
             },
             "grant_id": {
               "type": ["string", "null"],
@@ -34758,6 +34766,653 @@
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/PlanModel"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/approval-preferences/mine",
+    "name": "approval-preferences",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalPreferences"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
+          "required": ["mode", "allowed"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            }
+          }
+        },
+        "ApprovalPreferences": {
+          "type": "object",
+          "description": "One person's default Approval Mode, Answer Deadline and acceptance of Bypass.",
+          "required": [
+            "default_mode",
+            "answer_deadline_seconds",
+            "bypass_accepted_at",
+            "revision",
+            "modes"
+          ],
+          "properties": {
+            "answer_deadline_seconds": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "How long the person's Runs wait for an answer to their model's\nquestion; none means unlimited."
+            },
+            "bypass_accepted_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the person accepted the risk of Bypass; none before then."
+            },
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              },
+              "description": "Every mode, with whether the Tenant's policy lets this person use it now."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the person first saves their preferences."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/approval-preferences/mine",
+    "name": "approval-preferences-update",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalPreferences"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
+          "required": ["mode", "allowed"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            }
+          }
+        },
+        "ApprovalPreferences": {
+          "type": "object",
+          "description": "One person's default Approval Mode, Answer Deadline and acceptance of Bypass.",
+          "required": [
+            "default_mode",
+            "answer_deadline_seconds",
+            "bypass_accepted_at",
+            "revision",
+            "modes"
+          ],
+          "properties": {
+            "answer_deadline_seconds": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "How long the person's Runs wait for an answer to their model's\nquestion; none means unlimited."
+            },
+            "bypass_accepted_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the person accepted the risk of Bypass; none before then."
+            },
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              },
+              "description": "Every mode, with whether the Tenant's policy lets this person use it now."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the person first saves their preferences."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/approval-rules/mine",
+    "name": "approval-rules",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalRules"
+      },
+      "definitions": {
+        "ApprovalKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
+              "enum": ["tool_call"]
+            },
+            {
+              "type": "string",
+              "description": "An outbound read. The target is its origin.",
+              "enum": ["outbound"]
+            },
+            {
+              "type": "string",
+              "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
+              "enum": ["web_search"]
+            },
+            {
+              "type": "string",
+              "description": "A Page reading disclosure. The target is the page host.",
+              "enum": ["page_reading"]
+            },
+            {
+              "type": "string",
+              "description": "A generated Agent request. The target is the Generation policy id.",
+              "enum": ["generation"]
+            }
+          ],
+          "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
+        },
+        "ApprovalRuleView": {
+          "type": "object",
+          "description": "A stored Approval Rule, and whether the Tenant's policy still lets its\nowner approve what it names in advance.",
+          "required": [
+            "id",
+            "kind",
+            "target",
+            "effect",
+            "effective",
+            "created_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/RuleEffect"
+            },
+            "effective": {
+              "type": "boolean",
+              "description": "`false` when the ceiling no longer lets the owner approve this kind and\ntarget in advance. An allow rule then has no effect; a deny or ask rule\nstill holds, as it relaxes nothing."
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/ApprovalKind"
+            },
+            "target": {
+              "$ref": "#/components/schemas/RuleTarget"
+            }
+          }
+        },
+        "ApprovalRules": {
+          "type": "object",
+          "required": ["rules"],
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalRuleView"
+              }
+            }
+          }
+        },
+        "RuleEffect": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"]
+        },
+        "RuleTarget": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["every"]
+            },
+            {
+              "type": "object",
+              "required": ["exact"],
+              "properties": {
+                "exact": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The targets of one kind that a rule covers. Serialized as the string\n`\"every\"` or as `{\"exact\": \"<target>\"}`, so no target string can be mistaken\nfor the wildcard."
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/approval-rules/mine",
+    "name": "approval-rule-create",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/approval-rules/mine/{id}",
+    "name": "approval-rule-delete",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/subjects/{subject}/approval-settings",
+    "name": "approval-settings",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalSettings"
+      },
+      "definitions": {
+        "ApprovalKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
+              "enum": ["tool_call"]
+            },
+            {
+              "type": "string",
+              "description": "An outbound read. The target is its origin.",
+              "enum": ["outbound"]
+            },
+            {
+              "type": "string",
+              "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
+              "enum": ["web_search"]
+            },
+            {
+              "type": "string",
+              "description": "A Page reading disclosure. The target is the page host.",
+              "enum": ["page_reading"]
+            },
+            {
+              "type": "string",
+              "description": "A generated Agent request. The target is the Generation policy id.",
+              "enum": ["generation"]
+            }
+          ],
+          "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
+        },
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalRuleView": {
+          "type": "object",
+          "description": "A stored Approval Rule, and whether the Tenant's policy still lets its\nowner approve what it names in advance.",
+          "required": [
+            "id",
+            "kind",
+            "target",
+            "effect",
+            "effective",
+            "created_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/RuleEffect"
+            },
+            "effective": {
+              "type": "boolean",
+              "description": "`false` when the ceiling no longer lets the owner approve this kind and\ntarget in advance. An allow rule then has no effect; a deny or ask rule\nstill holds, as it relaxes nothing."
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/ApprovalKind"
+            },
+            "target": {
+              "$ref": "#/components/schemas/RuleTarget"
+            }
+          }
+        },
+        "ApprovalSettings": {
+          "type": "object",
+          "description": "A member's settings as a Tenant Administrator with `approval.read` sees them.",
+          "required": [
+            "subject",
+            "default_mode",
+            "answer_deadline_seconds",
+            "bypass_accepted_at",
+            "revision",
+            "rules"
+          ],
+          "properties": {
+            "answer_deadline_seconds": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "bypass_accepted_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalRuleView"
+              }
+            },
+            "subject": {
+              "type": "string"
+            }
+          }
+        },
+        "RuleEffect": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"]
+        },
+        "RuleTarget": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["every"]
+            },
+            {
+              "type": "object",
+              "required": ["exact"],
+              "properties": {
+                "exact": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The targets of one kind that a rule covers. Serialized as the string\n`\"every\"` or as `{\"exact\": \"<target>\"}`, so no target string can be mistaken\nfor the wildcard."
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
+    "name": "thread-approval-mode",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": ["workspace", "thread"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ThreadApprovalModeView"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
+          "required": ["mode", "allowed"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            }
+          }
+        },
+        "ThreadApprovalModeView": {
+          "type": "object",
+          "description": "The caller's Approval Mode for one Thread.",
+          "required": ["mode", "default_mode", "modes"],
+          "properties": {
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The mode the caller set for this Thread; none when their default applies."
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
+    "name": "thread-approval-mode-update",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": ["workspace", "thread"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ThreadApprovalModeView"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
+          "required": ["mode", "allowed"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            }
+          }
+        },
+        "ThreadApprovalModeView": {
+          "type": "object",
+          "description": "The caller's Approval Mode for one Thread.",
+          "required": ["mode", "default_mode", "modes"],
+          "properties": {
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The mode the caller set for this Thread; none when their default applies."
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
               }
             }
           }
