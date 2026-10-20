@@ -120,7 +120,6 @@ async function fixture(
     conversations: [],
     human_requests: [],
     installations: [],
-    peers: [],
   };
   const writes: { url: string; body: FixtureBody }[] = [];
   const inspections: { after?: string | null }[] = [];
@@ -134,8 +133,6 @@ async function fixture(
         : null;
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/state") return route.fulfill({ json: state });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/discover")
       return route.fulfill({ json: { agents: [], errors: [] } });
     if (path === "/api/session")

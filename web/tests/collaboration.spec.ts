@@ -1212,41 +1212,6 @@ test("older message pages are prepended without losing the latest messages", asy
   expect(errors).toEqual([]);
 });
 
-test("remote channel participants are displayed without linking to the local graph", async ({
-  page,
-}) => {
-  const { errors } = await setup(page, { remoteParticipant: true });
-  await page.goto("/collaboration?channel=workspace-one");
-  await page
-    .getByRole("button", { name: "Tasks and results", exact: true })
-    .click();
-  const participants = page
-    .getByRole("dialog")
-    .getByRole("list", { name: "Agents working here" });
-  const local = participants.getByRole("listitem").filter({
-    hasText: "Researcher · 1.0.0",
-  });
-  const remote = participants.getByRole("listitem").filter({
-    hasText: "Unavailable item · 1.0.0",
-  });
-  await expect(participants.getByRole("listitem")).toHaveCount(2);
-  await expect(local.getByRole("button")).toHaveCount(1);
-  await expect(remote).toHaveCount(1);
-  await expect(remote.getByRole("button")).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
-
-test("partial mesh responses tell Deployment Administrators which peer was omitted", async ({
-  page,
-}) => {
-  const { errors } = await setup(page, { meshErrors: true });
-  await page.goto("/graph");
-  await expect(
-    page.getByRole("status").filter({ hasText: "Unavailable item" }),
-  ).toContainText("connection refused");
-  expect(errors).toEqual([]);
-});
-
 test("local run details retain execution memory", async ({ page }) => {
   const { errors } = await setup(page, { runMemory: true });
   await page.goto("/collaboration?channel=workspace-one");

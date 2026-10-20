@@ -167,60 +167,6 @@ test("subjects visiting authorization see their own API tokens without Deploymen
   expect(deploymentAdministratorRequests).toEqual([]);
 });
 
-test("peer trust retains pending revocations across refresh and supports checking completion", async ({
-  page,
-}) => {
-  await setup(page);
-  let enabled = true;
-  let pending: string[] = [];
-  let attempts = 0;
-  const changes: boolean[] = [];
-  await page.route("**/api/transactions**", (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/trust")) {
-      if (route.request().method() === "POST") {
-        const input = route.request().postDataJSON();
-        changes.push(input.enabled);
-        enabled = input.enabled;
-        pending = ++attempts === 1 ? ["pending-trust-transaction"] : [];
-        return route.fulfill({
-          status: pending.length ? 202 : 200,
-          json: {
-            node_id: "aidash://peer",
-            enabled,
-            pending_transactions: pending,
-          },
-        });
-      }
-      return route.fulfill({
-        json: [
-          { node_id: "aidash://peer", enabled, pending_transactions: pending },
-        ],
-      });
-    }
-    return route.fulfill({ json: [] });
-  });
-  await page.goto("/transactions");
-  await page.getByRole("button", { name: "Revoke trust", exact: true }).click();
-  const notice = page
-    .getByRole("status")
-    .filter({ hasText: "pending-trust-transaction" });
-  await expect(notice).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Check revocation", exact: true }),
-  ).toBeVisible();
-  await page.reload();
-  await expect(notice).toBeVisible();
-  await page
-    .getByRole("button", { name: "Check revocation", exact: true })
-    .click();
-  await expect(notice).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Check revocation", exact: true }),
-  ).toHaveCount(0);
-  expect(changes).toEqual([false, false]);
-});
-
 test("subjects submit explicit remote participant IDs without peer inventory", async ({
   page,
 }) => {

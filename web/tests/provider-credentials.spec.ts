@@ -104,11 +104,8 @@ async function setup(
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/provider-credentials") {
       expect(request.method()).toBe("GET");
       if (options.disabled)

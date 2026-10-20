@@ -1,5 +1,4 @@
 import { Button } from "./components/ui/button";
-import { ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { RecordView } from "./record-view";
 import { useEffect, useState } from "react";
@@ -15,6 +14,8 @@ import type {
   PeerMappingInput,
 } from "./generated/models";
 import { ApiError } from "./transport";
+import { nodeLabel } from "./node-selection";
+import { registrationsPage, useNodes, useTenantNodes } from "./nodes";
 import { Badge, Field, Modal, Panel, useI18n } from "./ui";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -28,6 +29,93 @@ import {
 } from "./components/patterns";
 
 const PAGE_SIZE = 25;
+
+/**
+ * The receiving Node and the Node whose subject is mapped. A new mapping picks
+ * the receiving Node among the Tenant's and the source among the Nodes
+ * registered at it, because a mapping cannot precede its Node Registration.
+ * Only when the registrations cannot be read is the source typed.
+ */
+function NodeFields({
+  tenant,
+  editing,
+}: {
+  tenant: string;
+  editing: PeerMapping | "new";
+}) {
+  const { t } = useI18n();
+  // A Deployment Administrator opens any Tenant and has none of its own, so
+  // the Nodes are those of the Tenant whose mappings these are.
+  const list = useTenantNodes(tenant);
+  const nodes = list.isError ? [] : (list.data ?? []);
+  const own = useNodes();
+  const selected =
+    own.tenant === tenant ? own.selected : nodes.find((value) => value.default);
+  const creating = editing === "new";
+  const [chosen, setChosen] = useState<string>();
+  const node = chosen ?? (creating ? selected?.name : editing.node) ?? "";
+  const registrations = useQuery({
+    queryKey: ["node-registrations", tenant, node, "choices"],
+    queryFn: () => registrationsPage(tenant, node, 0, 200),
+    enabled: creating && node !== "",
+    retry: false,
+  });
+  const sources = registrations.isError
+    ? undefined
+    : registrations.data?.filter((registration) => registration.enabled);
+  return (
+    <>
+      <Field label={t("authReceivingNode")}>
+        {creating ? (
+          <NativeSelect
+            name="node"
+            required
+            value={node}
+            onChange={(event) => setChosen(event.target.value)}
+          >
+            {nodes.map((value) => (
+              <option key={value.name} value={value.name}>
+                {value.label}
+              </option>
+            ))}
+          </NativeSelect>
+        ) : (
+          <Input
+            readOnly
+            value={nodeLabel(nodes, node)}
+            className="read-only:bg-raised read-only:text-muted-foreground"
+          />
+        )}
+      </Field>
+      {!creating && <input type="hidden" name="node" value={node} />}
+      <Field label={t("authSourceNode")}>
+        {creating && sources ? (
+          <NativeSelect name="source_node" required defaultValue="">
+            <option value="">{t("choose")}</option>
+            {sources.map((registration) => (
+              <option
+                key={registration.source_node}
+                value={registration.source_node}
+              >
+                {registration.source_node}
+              </option>
+            ))}
+          </NativeSelect>
+        ) : (
+          <Input
+            name="source_node"
+            required
+            maxLength={256}
+            readOnly={!creating}
+            className="font-mono read-only:bg-raised read-only:text-muted-foreground"
+            defaultValue={creating ? "" : editing.source_node}
+          />
+        )}
+      </Field>
+    </>
+  );
+}
+
 export function PeerMappings({
   tenant,
   credentials,
@@ -39,6 +127,8 @@ export function PeerMappings({
   editable?: boolean;
 }) {
   const { t, locale } = useI18n();
+  const list = useTenantNodes(tenant);
+  const nodes = list.isError ? [] : (list.data ?? []);
   const credentialLabels = disambiguateLabels(
     credentials,
     (credential) => credential.id,
@@ -141,7 +231,7 @@ export function PeerMappings({
                     {mapping.source_node}
                   </span>
                   <span className="truncate font-mono text-[11px] text-muted-foreground">
-                    {mapping.node} / {mapping.source_subject}
+                    {nodeLabel(nodes, mapping.node)} / {mapping.source_subject}
                   </span>
                   <span className="truncate text-[11px] text-faint">
                     {t("authMappedCredential")}{" "}
@@ -229,7 +319,8 @@ export function PeerMappings({
                     <span className="font-mono">{revision.source_node}</span>
                     <span className="font-mono text-muted-foreground">
                       {" · "}
-                      {revision.node} / {revision.source_subject}
+                      {nodeLabel(nodes, revision.node)} /{" "}
+                      {revision.source_subject}
                     </span>
                   </>
                 }
@@ -294,24 +385,17 @@ export function PeerMappings({
             }}
           >
             <div className="grid gap-3">
-              {(
-                [
-                  ["node", "authReceivingNode"],
-                  ["source_node", "authSourceNode"],
-                  ["source_subject", "authSourceSubject"],
-                ] as const
-              ).map(([name, label]) => (
-                <Field key={name} label={t(label)}>
-                  <Input
-                    name={name}
-                    required
-                    maxLength={256}
-                    readOnly={editing !== "new"}
-                    className="font-mono read-only:bg-raised read-only:text-muted-foreground"
-                    defaultValue={editing === "new" ? "" : editing[name]}
-                  />
-                </Field>
-              ))}
+              <NodeFields tenant={tenant} editing={editing} />
+              <Field label={t("authSourceSubject")}>
+                <Input
+                  name="source_subject"
+                  required
+                  maxLength={256}
+                  readOnly={editing !== "new"}
+                  className="font-mono read-only:bg-raised read-only:text-muted-foreground"
+                  defaultValue={editing === "new" ? "" : editing.source_subject}
+                />
+              </Field>
             </div>
             <Field label={t("authMappedCredential")}>
               <NativeSelect

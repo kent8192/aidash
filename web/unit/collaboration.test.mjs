@@ -95,6 +95,7 @@ test("undocumented views open their existing contextual owner", () => {
   }
   assert.deepEqual(visibleSettingsSections, [
     "node",
+    "nodes",
     "agents",
     "registry",
     "clusters",

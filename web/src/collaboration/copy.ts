@@ -61,7 +61,7 @@ export const collaborationCopy = {
     live: "接続中",
     empty: "該当する情報はありません。",
     settingsHelp: "構成・登録・管理はここから操作します。",
-    node: "ノードと接続",
+    node: "デプロイメントと接続",
     back: "戻る",
     noAgent:
       "閲覧可能なエージェントがありません。設定のRegistryで登録を確認してください。",
@@ -157,7 +157,7 @@ export const collaborationCopy = {
     live: "Live",
     empty: "No matching information.",
     settingsHelp: "Configuration, registration and administration.",
-    node: "Node and connection",
+    node: "Deployment and connection",
     back: "Back",
     noAgent: "No readable agents. Check registrations in Settings / Registry.",
     limitedHistory:

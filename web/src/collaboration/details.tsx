@@ -28,7 +28,6 @@ import type {
   Discovery,
   Entry,
   HumanRequest,
-  Mesh,
   Run,
   State,
   Task,
@@ -80,7 +79,6 @@ export function OperationsDialog({
   selection,
   data,
   discovery,
-  mesh,
   open,
   close,
   submit,
@@ -91,7 +89,6 @@ export function OperationsDialog({
   selection: Selection;
   data: State;
   discovery?: Discovery;
-  mesh?: Mesh;
   open: (selection: Selection) => void;
   close: () => void;
   submit: Submit;
@@ -114,35 +111,20 @@ export function OperationsDialog({
     taskSnapshot.isError || !taskSnapshot.data
       ? undefined
       : taskSnapshot.data.tasks.find((value) => value.id === d.task?.id);
-  const request = (
-    d.node && d.node !== data.node.id
-      ? mesh?.nodes.find((node) => node.node_id === d.node)?.human_requests
-      : data.human_requests
-  )?.find((value) => value.id === d.request?.id);
+  const request = data.human_requests.find(
+    (value) => value.id === d.request?.id,
+  );
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
-  const unavailable = isDeploymentAdministrator
-    ? d.kind === "entity" || d.kind === "cluster"
-    : d.kind === "peer";
+  const unavailable =
+    isDeploymentAdministrator && (d.kind === "entity" || d.kind === "cluster");
   const execution = ["workspace", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
   const taskRuns = task
-    ? [
-        ...data.runs
-          .filter(
-            (run) => run.task_id === task.id && run.home_node === data.node.id,
-          )
-          .map((run) => ({ run, node: data.node.id, remote: false })),
-        ...(mesh?.nodes ?? []).flatMap((node) =>
-          node.runs
-            .filter(
-              (run) =>
-                run.task_id === task.id && run.home_node === data.node.id,
-            )
-            .map((run) => ({ run, node: node.node_id, remote: true })),
-        ),
-      ]
+    ? data.runs.filter(
+        (run) => run.task_id === task.id && run.home_node === data.node.id,
+      )
     : [];
   return (
     <Modal
@@ -162,7 +144,6 @@ export function OperationsDialog({
                   generate: "generationAssign",
                   entity: "register",
                   cluster: "register",
-                  peer: "addPeer",
                 } as Record<string, string>
               )[d.kind] ?? d.kind,
             )
@@ -225,7 +206,6 @@ export function OperationsDialog({
                 id={d.run.id}
                 node={d.node ?? data.node.id}
                 data={data}
-                mesh={mesh}
                 discovery={discovery}
                 submit={submit}
                 visitChannel={visitChannel}
@@ -357,25 +337,21 @@ export function OperationsDialog({
                   {taskRuns.length > 0 && (
                     <Panel title={t("execution")}>
                       <ul className="grid min-w-0 divide-y divide-border border-y border-border">
-                        {taskRuns.map(({ run, node, remote }) => (
-                          <li key={`${remote ? node : "local"}:${run.id}`}>
+                        {taskRuns.map((run) => (
+                          <li key={run.id}>
                             <button
                               type="button"
                               className="flex h-10 w-full min-w-0 items-center gap-2.5 px-2 text-left text-[13px] text-foreground transition-colors duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
-                              onClick={() => open({ kind: "run", run, node })}
+                              onClick={() =>
+                                open({ kind: "run", run, node: data.node.id })
+                              }
                             >
                               <Badge value={run.phase} />
                               <span className="min-w-0 truncate">
-                                {agentLabel(node, {
+                                {agentLabel(data.node.id, {
                                   id: run.agent_id,
                                   version: run.agent_version,
                                 })}
-                                {remote && (
-                                  <>
-                                    {" "}
-                                    · <ReferenceName id={node} />
-                                  </>
-                                )}
                               </span>
                             </button>
                           </li>
@@ -436,7 +412,6 @@ function RunPanel({
   id,
   node,
   data,
-  mesh,
   discovery,
   submit,
   visitChannel,
@@ -444,7 +419,6 @@ function RunPanel({
   id: string;
   node: string;
   data: State;
-  mesh?: Mesh;
   discovery?: Discovery;
   submit: Submit;
   visitChannel: (id: string) => void;
@@ -452,7 +426,6 @@ function RunPanel({
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
   const fileCopy = workspaceCopy[locale];
-  const local = node === data.node.id;
   const agentLabel = useAgentLabel(data, discovery);
   const query = useInfiniteQuery({
     queryKey: ["run", node, id],
@@ -460,16 +433,10 @@ function RunPanel({
     queryFn: ({ pageParam }) => runGet(id, { offset: pageParam }),
     getNextPageParam: (last, pages) =>
       last.invocations.length === 100 ? pages.length * 100 : undefined,
-    enabled: local,
     refetchInterval: 2000,
     retry: false,
   });
-  const remoteNode = mesh?.nodes.find((value) => value.node_id === node);
-  const run = local
-    ? query.isError
-      ? undefined
-      : query.data?.pages[0].run
-    : remoteNode?.runs.find((value) => value.id === id);
+  const run = query.isError ? undefined : query.data?.pages[0].run;
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<
     { key: string; file: File; uploaded?: string }[]
@@ -487,27 +454,24 @@ function RunPanel({
     return (
       <>
         <Hint role="status">
-          {local && query.isPending ? copy.processing : copy.unavailable}
+          {query.isPending ? copy.processing : copy.unavailable}
         </Hint>
-        {local && data.access.kind === "subject" && (
-          <RemoteRunManagement id={id} />
-        )}
+        {data.access.kind === "subject" && <RemoteRunManagement id={id} />}
       </>
     );
   const mediaInputRoutes = query.data?.pages[0].media_input_routes ?? [];
   const mediaAccept = runMediaAccept(mediaInputRoutes);
-  const canAttach = local && run.home_node === data.node.id && !!mediaAccept;
+  const canAttach = run.home_node === data.node.id && !!mediaAccept;
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
   const control = (action: "pause" | "resume" | "cancel") => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
     void submit(() => runControl(id, { action }));
   };
-  const invocations = local
-    ? (query.data?.pages.flatMap((page) => page.invocations) ?? [])
-    : (remoteNode?.invocations.filter((value) => value.run_id === id) ?? []);
+  const invocations =
+    query.data?.pages.flatMap((page) => page.invocations) ?? [];
   const managed =
-    local && run.home_node !== data.node.id && data.access.kind === "subject";
-  const controllable = local && !terminal && !managed;
+    run.home_node !== data.node.id && data.access.kind === "subject";
+  const controllable = !terminal && !managed;
   const home = run.home_node === data.node.id;
   return (
     <>
@@ -565,10 +529,10 @@ function RunPanel({
       )}
       <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
-      {local && !managed && (
+      {!managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
       )}
-      {local && !managed && (
+      {!managed && (
         <RunResearchEvidence
           run={id}
           deploymentAdministrator={
@@ -790,7 +754,7 @@ function RunPanel({
             <JsonView value={call.result} />
           </Disclosure>
         ))}
-        {local && query.hasNextPage && (
+        {query.hasNextPage && (
           <div>
             <Button
               variant="outline"
@@ -806,11 +770,9 @@ function RunPanel({
       <Disclosure summary={t("context")}>
         <JsonView value={run.context} />
       </Disclosure>
-      {local && (
-        <Disclosure summary={t("memory")}>
-          <JsonView value={query.data?.pages[0].memory ?? {}} />
-        </Disclosure>
-      )}
+      <Disclosure summary={t("memory")}>
+        <JsonView value={query.data?.pages[0].memory ?? {}} />
+      </Disclosure>
     </>
   );
 }

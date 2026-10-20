@@ -87,8 +87,6 @@ async function dashboard(page: Page, registry: unknown[]) {
       return route.fulfill({
         json: { access: tenantSubject, node_id: "aidash://node" },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/state")
       return route.fulfill({
         json: {
@@ -109,7 +107,6 @@ async function dashboard(page: Page, registry: unknown[]) {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
     if (path === "/api/registry" && route.request().method() === "POST")

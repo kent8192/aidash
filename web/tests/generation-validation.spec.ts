@@ -98,11 +98,8 @@ for (const context of [
             conversations: [],
             human_requests: [],
             installations: [],
-            peers: [],
           },
         });
-      } else if (path === "/api/mesh") {
-        await route.fulfill({ json: { nodes: [], errors: [] } });
       } else if (path === "/api/discover") {
         await route.fulfill({ json: { agents: [], errors: [] } });
       } else if (path === "/api/generation/fixture-tenant/policies") {

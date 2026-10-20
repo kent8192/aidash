@@ -59,11 +59,8 @@ test("a Tenant Administrator is not offered controls the server marks as its own
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -164,11 +161,8 @@ test("an approval submits only the proposed groups that are still assignable", a
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -272,11 +266,8 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     // A Tenant created by a Deployment Administrator: nobody is in it yet.
     if (path === "/api/authorization/beta")
       return route.fulfill({
@@ -400,11 +391,8 @@ test("deleting the Tenant needs its name typed, and leaving asks to confirm", as
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -520,11 +508,8 @@ test("a Deployment Administrator restores what the server marks restorable and l
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants")
       // The server's clock decides; whatever this device's clock says.
       return route.fulfill({
@@ -614,11 +599,8 @@ test("a member issues its own API token, and a policy reader simulates without r
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -726,11 +708,8 @@ test("a policy reader allowed to issue credentials but not to list them can stil
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {

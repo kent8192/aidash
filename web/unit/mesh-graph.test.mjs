@@ -16,7 +16,6 @@ const scene = () => meshScene(now);
 const project = (s) =>
   buildMeshGraph(s.data, {
     channel: "product-lab",
-    discovery: s.discovery,
     now,
   });
 const node = (g, id) =>
@@ -199,7 +198,7 @@ test("edge budget retains a connection for every displayed connected node", () =
   );
   assert.equal(filtered.omittedEdges, 4);
 });
-test("uses exact versions, preserves remote identities, and does not invent health", () => {
+test("uses exact versions and does not invent health", () => {
   const s = scene();
   s.data.registry[0].config.tools.push({ id: "not-found", version: "1.0.0" });
   s.data.registry.push({
@@ -207,57 +206,15 @@ test("uses exact versions, preserves remote identities, and does not invent heal
     id: "not-found",
     version: "2.0.0",
   });
-  s.discovery.agents.push({
-    node_id: s.data.peers[0].node_id,
-    entity: { ...s.data.registry[0] },
-  });
   const g = project(s);
   const missing = g.nodes.find(
     (n) => n.entity?.id === "not-found" && n.entity.version === "1.0.0",
   );
   assert.equal(missing.available, false);
   assert.deepEqual(missing.name, {});
-  const planners = g.nodes.filter((n) => n.entity?.id === "planner");
-  assert.equal(new Set(planners.map((n) => n.id)).size, 2);
-  assert.equal(planners.find((n) => n.remote).status, "DISCOVERED");
   assert.ok(
     g.nodes.every((n) => n.status !== "HEALTHY" && n.status !== "ONLINE"),
   );
-});
-test("observed remote runs keep their exact agent identity without discovery", () => {
-  const s = scene();
-  const peer = s.data.peers[0].node_id;
-  const run = {
-    ...s.data.runs[0],
-    id: "remote-run",
-    agent_id: "unlisted",
-    agent_version: "2.0.0",
-  };
-  const graph = buildMeshGraph(s.data, {
-    channel: "product-lab",
-    discovery: { agents: [], errors: [] },
-    runs: [{ node: peer, run }],
-    now,
-  });
-  const agent = graph.nodes.find(
-    (n) => n.nodeId === peer && n.entity?.id === "unlisted",
-  );
-  assert.ok(agent);
-  assert.equal(agent.available, false);
-  assert.equal(agent.status, "THINKING");
-  assert.ok(
-    graph.edges.some((e) => e.source === agent.id && e.relation === "executes"),
-  );
-  assert.ok(
-    graph.edges.some((e) => e.target === agent.id && e.relation === "hosts"),
-  );
-  s.data.peers[0].enabled = false;
-  const disabled = buildMeshGraph(s.data, {
-    channel: "product-lab",
-    runs: [{ node: peer, run }],
-    now,
-  });
-  assert.ok(!disabled.nodes.some((n) => n.nodeId === peer));
 });
 test("subject views cannot join discovery or remote runs, and renderers receive no private payload", () => {
   const s = scene();
@@ -271,11 +228,7 @@ test("subject views cannot join discovery or remote runs, and renderers receive 
 });
 test("an unavailable workspace never falls back to another workspace's activity", () => {
   const s = scene();
-  const g = buildMeshGraph(s.data, {
-    channel: "revoked",
-    discovery: s.discovery,
-    now,
-  });
+  const g = buildMeshGraph(s.data, { channel: "revoked", now });
   assert.ok(
     !g.nodes.some((n) =>
       [
@@ -398,34 +351,9 @@ test("inspector events stay within the selected workspace for agents and the loc
     );
   }
 });
-test("remote executing agents show exact home task events", () => {
-  const s = scene();
-  const peer = s.data.peers[0].node_id;
-  const run = {
-    ...s.data.runs[0],
-    id: "remote-run",
-    agent_id: "remote-worker",
-  };
-  const graph = buildMeshGraph(s.data, {
-    channel: "product-lab",
-    runs: [{ node: peer, run }],
-    now,
-  });
-  const agent = node(graph, "remote-worker");
-  assert.ok(agent);
-  s.data.events.push({
-    ...s.data.events[0],
-    id: "unrelated-home-task",
-    data: { task_id: "other-task" },
-  });
-  const events = nodeEvents(agent, graph, s.data, 24, now, "product-lab");
-  assert.ok(events.some((event) => event.id === "event-0"));
-  assert.ok(!events.some((event) => event.id === "unrelated-home-task"));
-});
-test("revoked entities and disabled peers remove cached names and remote status", () => {
+test("revoked entities remove cached names and remote status", () => {
   const s = scene();
   s.data.registry = s.data.registry.filter((e) => e.id !== "builder");
-  s.data.peers[0].enabled = false;
   const g = project(s);
   assert.equal(node(g, "builder"), undefined);
   assert.ok(!g.nodes.some((n) => n.remote));

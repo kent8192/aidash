@@ -69,7 +69,6 @@ async function approvingTenant(page: Page, locale: "en-US" | "ja-JP") {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
     if (path === "/api/marketplace/installations")
@@ -350,7 +349,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             conversations: [],
             human_requests: [],
             installations: [],
-            peers: [],
           },
         });
       if (secondContext && path.startsWith("/api/marketplace/"))
@@ -605,8 +603,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             node_id: "aidash://node",
           },
         });
-      if (url.pathname === "/api/mesh")
-        return route.fulfill({ json: { nodes: [], errors: [] } });
       if (url.pathname === "/api/state")
         return route.fulfill({
           json: {
@@ -627,7 +623,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             conversations: [],
             human_requests: [],
             installations: [],
-            peers: [],
           },
         });
       if (url.pathname === "/api/marketplace/administration") {

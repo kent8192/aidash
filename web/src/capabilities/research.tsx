@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { registryDeployment } from "../node-selection";
 import { Hint, Notice } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import type { ResearchProviders, RunResearch } from "../generated/models";
@@ -31,7 +32,11 @@ export type Readiness = "ready" | "not_set_up" | "not_approved" | "unknown";
  * offered for Page reading.
  */
 export function useResearch(agent: Agent | undefined, data: State) {
-  const bound = researchBindings(agent, data.registry, data.node.id);
+  const bound = researchBindings(
+    agent,
+    data.registry,
+    registryDeployment(data),
+  );
   const providers = useQuery({
     queryKey: ["research-providers"],
     queryFn: ({ signal }) =>

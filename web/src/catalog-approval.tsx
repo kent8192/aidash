@@ -33,6 +33,7 @@ import {
   type ApprovalState,
   type Closure,
 } from "./catalog-approval-model";
+import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
 
 /** Every version in the signed-in subject's Tenant that it may read, approved
@@ -162,6 +163,9 @@ export function CatalogApprovalSection({
   const client = useQueryClient();
   const label = useEntryLabel(versions.map((item) => item.entry));
   const { tenant, can, assignable } = useTenantActions(access);
+  // The versions list reports the default Node's approvals, so that is the
+  // Node a decision here applies to.
+  const { home } = useNodes();
   const [chosen, setChosen] = useState<string[]>();
   const [closure, setClosure] = useState<Closure>();
   const [busy, setBusy] = useState(false);
@@ -174,6 +178,7 @@ export function CatalogApprovalSection({
   const installed = !!entry.installation;
   const decides =
     tenant !== null &&
+    home !== undefined &&
     can("catalog.approve") &&
     version.needs_approval &&
     !installed;
@@ -214,11 +219,17 @@ export function CatalogApprovalSection({
   };
   const approve = () =>
     decide(() =>
-      authorizationSetCatalog(path, approvalRequest(version, true, sentGroups)),
+      authorizationSetCatalog(path, {
+        ...approvalRequest(version, true, sentGroups),
+        node: home!.name,
+      }),
     );
   const withdraw = () =>
     decide(() =>
-      authorizationSetCatalog(path, approvalRequest(version, false)),
+      authorizationSetCatalog(path, {
+        ...approvalRequest(version, false),
+        node: home!.name,
+      }),
     );
   const approveClosure = (needed: Closure) =>
     decide(() =>
@@ -227,6 +238,7 @@ export function CatalogApprovalSection({
           ...needed.dependencies.map((item) => approvalRequest(item, true)),
           approvalRequest(version, true, sentGroups),
         ],
+        node: home!.name,
       }),
     );
   const subheading = "text-xs font-semibold text-foreground";

@@ -107,7 +107,6 @@ function fixture(reference = false) {
     ],
     conversations: [],
     events: [],
-    peers: [],
     artifacts: [] as Artifact[],
     installations: [],
     human_requests: [
@@ -234,8 +233,6 @@ export async function setup(
     subject?: boolean;
     dashboardContext?: string | null;
     olderMessages?: number;
-    remoteParticipant?: boolean;
-    meshErrors?: boolean;
     runMemory?: boolean;
     latestMessageChangesOnPoll?: boolean;
     messageAttachment?: boolean;
@@ -580,39 +577,6 @@ export async function setup(
             },
           ],
           next: null,
-        },
-      });
-    if (path === "/api/mesh")
-      return route.fulfill({
-        json: {
-          nodes: [
-            ...(labRuns.length
-              ? [{ node_id: "aidash://lab", runs: labRuns, human_requests: [] }]
-              : []),
-            ...(options.remoteParticipant
-              ? [
-                  {
-                    node_id: "aidash://peer",
-                    runs: [
-                      {
-                        ...data.runs[0],
-                        id: "remote-run",
-                        task_id: "remote-task",
-                      },
-                    ],
-                    human_requests: [],
-                  },
-                ]
-              : []),
-          ],
-          errors: options.meshErrors
-            ? [
-                {
-                  node_id: "aidash://peer-down",
-                  error: "connection refused",
-                },
-              ]
-            : [],
         },
       });
     if (path.endsWith("/remote-grants/inspect"))
