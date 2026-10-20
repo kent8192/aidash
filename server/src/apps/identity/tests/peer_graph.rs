@@ -947,7 +947,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	assert_eq!(status, 200, "{activity}");
 	let reference = json!([
 		"resource",
-		f.config.deployment,
+		source.receiver.to_string(),
 		"workspace",
 		final_id.to_string()
 	])
