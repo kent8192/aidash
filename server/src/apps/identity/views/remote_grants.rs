@@ -3,10 +3,10 @@ use crate::apps::identity::identity::Actor;
 use crate::apps::identity::remote::RemoteGrants;
 use crate::apps::identity::serializers::remote::PrepareInput;
 use crate::apps::identity::serializers::remote::VerifyInput;
+use crate::apps::identity::services::http_auth::InboundCall;
 use crate::http::json::Json;
 use reinhardt::Depends;
 use reinhardt::Path;
-use reinhardt::Request;
 use reinhardt::Response;
 use reinhardt::http::ViewResult;
 use reinhardt::post;
@@ -46,10 +46,10 @@ pub async fn revoke(
 )]
 pub async fn describe(
 	#[inject] service: Depends<RemoteGrants>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<VerifyInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.describe(request.headers, input).await)
+	crate::http::json(service.describe(peer.0, input).await)
 }
 
 #[post(
@@ -59,10 +59,10 @@ pub async fn describe(
 )]
 pub async fn verify(
 	#[inject] service: Depends<RemoteGrants>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<VerifyInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.verify(request.headers, input).await)
+	crate::http::json(service.verify(peer.0, input).await)
 }
 
 #[post(
@@ -72,10 +72,10 @@ pub async fn verify(
 )]
 pub async fn snapshot(
 	#[inject] service: Depends<RemoteGrants>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<VerifyInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.snapshot(request.headers, input).await)
+	crate::http::json(service.snapshot(peer.0, input).await)
 }
 
 #[post(

@@ -341,6 +341,11 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 	let (signer, id) = key(5);
 	let (other_signer, other_id) = key(6);
 	let endpoint = serve(identity(&signer, &id)).await;
+	d.federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
 	let source = "aidash://calm-heron/able-oak-abcd1234";
 
 	let (status, created) = d
@@ -381,6 +386,7 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 		"key": {"id": other_id.as_str(), "public_key_pem": signer.public_key_pem()},
 	}))
 	.await;
+	d.federation.store.keyless.permit_origin_of(&lying).unwrap();
 	let (status, refused) = d
 		.register(
 			&alice,
@@ -395,11 +401,35 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 	for missing in [
 		json!({"source_node":source,"atomic_transactions":false,"enabled":true,"expected_revision":0}),
 		json!({"source_node":source,"endpoint":endpoint,"atomic_transactions":false,"enabled":true,"expected_revision":0}),
-		json!({"source_node":source,"endpoint":"http://peer.example.com","key_id":id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0}),
 	] {
 		let (status, refused) = d.register(&alice, &context, &tenant, &node, missing).await;
 		assert_eq!(status, 400, "{refused}");
 	}
+	// A loopback endpoint nobody permitted is refused with the one generic reason.
+	let unpermitted = serve(identity(&signer, &id)).await;
+	let (status, refused) = d
+		.register(
+			&alice,
+			&context,
+			&tenant,
+			&node,
+			json!({"source_node":"aidash://calm-heron/calm-heron-e5f6g7h8","endpoint":unpermitted,"key_id":id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 422, "{refused}");
+	let (_, closed) = d
+		.register(
+			&alice,
+			&context,
+			&tenant,
+			&node,
+			json!({"source_node":"aidash://calm-heron/calm-heron-e5f6g7h8","endpoint":"https://127.0.0.1:1","key_id":id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(
+		refused["error"], closed["error"],
+		"a refused host and a closed port answer alike"
+	);
 
 	// Disabling keeps the pinned key and asks the other Deployment nothing.
 	let (status, disabled) = d

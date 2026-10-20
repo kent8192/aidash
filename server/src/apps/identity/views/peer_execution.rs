@@ -1,4 +1,5 @@
 //! HTTP endpoints backed by injected application services.
+use crate::apps::identity::services::http_auth::InboundCall;
 use crate::authorization::peer::admission as api;
 use crate::http::json::Json;
 use api::*;
@@ -13,16 +14,14 @@ use uuid::Uuid;
 )]
 pub async fn activate(
 	#[inject] service: Depends<PeerExecutionManagement>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Path(id): Path<Uuid>,
 	Json(input): Json<Input>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(
-		api::activate(service.runtime.clone(), request.headers.clone(), id, input).await,
-	)
+	crate::http::json(api::activate(service.runtime.clone(), peer.0, id, input).await)
 }
 
 #[post(
@@ -32,16 +31,14 @@ pub async fn activate(
 )]
 pub async fn control(
 	#[inject] service: Depends<PeerExecutionManagement>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Path(id): Path<Uuid>,
 	Json(input): Json<RemoteExecutionControlInput>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(
-		api::control(service.runtime.clone(), request.headers.clone(), id, input).await,
-	)
+	crate::http::json(api::control(service.runtime.clone(), peer.0, id, input).await)
 }
 
 #[post(
@@ -51,16 +48,14 @@ pub async fn control(
 )]
 pub async fn message(
 	#[inject] service: Depends<PeerExecutionManagement>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Path(id): Path<Uuid>,
 	Json(input): Json<MessageInput>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(
-		api::message(service.runtime.clone(), request.headers.clone(), id, input).await,
-	)
+	crate::http::json(api::message(service.runtime.clone(), peer.0, id, input).await)
 }
 
 #[post(
@@ -70,11 +65,11 @@ pub async fn message(
 )]
 pub async fn status(
 	#[inject] service: Depends<PeerExecutionManagement>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Input>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(api::status(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::status(service.runtime.clone(), peer.0, input).await)
 }

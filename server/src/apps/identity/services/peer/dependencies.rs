@@ -17,18 +17,17 @@ pub async fn provide(#[inject] runtime: Federation) -> PeerDependencies {
 }
 
 impl PeerDependencies {
-	pub(crate) async fn verify(&self, headers: HeaderMap, input: Input) -> Result<Checked> {
-		verify(self.runtime.clone(), headers, input).await
+	pub(crate) async fn verify(&self, admitted: Admitted, input: Input) -> Result<Checked> {
+		verify(self.runtime.clone(), admitted, input).await
 	}
 }
 
-pub(crate) async fn verify(f: Federation, headers: HeaderMap, input: Input) -> Result<Checked> {
+pub(crate) async fn verify(f: Federation, admitted: Admitted, input: Input) -> Result<Checked> {
 	aidash_application::federation::dependencies::require_local_target(
 		&input.reference,
 		f.config.deployment.as_str(),
 	)?;
-	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-	let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
+	let mut access = super::access(&f, &admitted).await?;
 	let result = aidash_application::federation::dependencies::verify_peer(
 		&mut crate::bootstrap::dependency_scope(&mut access),
 		&input.reference,
@@ -84,7 +83,6 @@ impl Access {
 		aidash_application::federation::dependencies::verify_all(
 			&mut crate::bootstrap::dependency_scope(self),
 			&transport,
-			crate::config::PROTOCOL_VERSION,
 			pending,
 		)
 		.await
@@ -94,7 +92,7 @@ impl Access {
 
 use reinhardt::query::QueryStatementBuilder as _;
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 use reinhardt::query::SimpleExpr;
 

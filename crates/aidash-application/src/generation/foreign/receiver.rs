@@ -20,9 +20,7 @@ pub async fn prepare(
 	{
 		return Err(Error::Forbidden);
 	}
-	let mut scope = repository
-		.begin(source, &intent.source_tenant, &intent.source_subject)
-		.await?;
+	let mut scope = repository.begin(source, &intent.source_subject).await?;
 	let result = async {
 		scope
 			.require(

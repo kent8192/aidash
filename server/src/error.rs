@@ -24,6 +24,9 @@ pub enum Error {
 	Conflict(String),
 	#[error("{0}")]
 	NotFound(String),
+	/// Federation with other Deployments is off or has no key (503).
+	#[error("federation_disabled")]
+	FederationDisabled,
 	/// The request is well formed and the facts it names do not hold (422).
 	#[error("{0}")]
 	Unprocessable(String),
@@ -104,6 +107,7 @@ impl Error {
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
 			Self::TenantDeleted => (StatusCode::GONE, self.to_string()),
 			Self::NodeLimitReached => (StatusCode::FORBIDDEN, self.to_string()),
+			Self::FederationDisabled => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::TenantCreation(refusal) => (
 				match refusal {
 					CreationRefusal::HourlyLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -314,6 +318,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Conflict(message) => Self::Conflict(message),
 			ApplicationError::NotFound(message) => Self::NotFound(message),
 			ApplicationError::Unprocessable(message) => Self::Unprocessable(message),
+			ApplicationError::FederationDisabled => Self::FederationDisabled,
 			ApplicationError::Refused(code) => Self::Refused(code),
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
@@ -353,6 +358,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::NotFound(message) => Self::NotFound(message),
 			Error::Unprocessable(message) => Self::Unprocessable(message),
+			Error::FederationDisabled => Self::FederationDisabled,
 			// Work stopped by a Tenant Deletion pauses like any refused authority.
 			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
 			Error::Refused(code) => Self::Refused(code),

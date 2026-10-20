@@ -116,7 +116,7 @@ impl Access {
 
 pub(crate) use crate::apps::identity::serializers::peer_reads::VerifyInput;
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 #[derive(Clone)]
 pub struct PeerReads {
@@ -129,11 +129,11 @@ pub async fn provide_reads(#[inject] runtime: Federation) -> PeerReads {
 }
 
 impl PeerReads {
-	pub(crate) async fn verify(&self, headers: HeaderMap, input: VerifyInput) -> Result<bool> {
+	pub(crate) async fn verify(&self, admitted: Admitted, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();
 		aidash_domain::federation::registry_reads::validate(&input.references)?;
-		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-		let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
+		let node = &admitted.sender.to_string();
+		let mut access = super::access(&f, &admitted).await?;
 		let result = aidash_application::federation::registry_reads::verify(
 			&mut crate::bootstrap::registry_verification_scope(
 				&mut access,

@@ -3,7 +3,7 @@
 //! outbound exchange to it. The record pins what the receiving Node needs to
 //! check that Node's tokens.
 use super::{DeploymentId, DeploymentKeyId, NodeAddress, NodeName};
-use crate::configuration::validate_peer_endpoint;
+use crate::configuration::validate_endpoint;
 use crate::tenancy::TenantName;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -139,7 +139,7 @@ impl RegistrationInput {
 				"a Node of another Deployment needs its endpoint and key ID".into(),
 			));
 		};
-		validate_peer_endpoint(endpoint)?;
+		validate_endpoint(endpoint)?;
 		Ok(Requested::OtherDeployment {
 			endpoint: endpoint.trim_end_matches('/').to_owned(),
 			key_id: key_id.clone(),

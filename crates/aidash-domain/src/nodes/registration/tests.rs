@@ -73,10 +73,10 @@ fn a_node_of_another_deployment_needs_both_its_endpoint_and_its_key_id() {
 			.is_err()
 	);
 	assert!(
-		input(source, Some("http://peer.example.com"), Some(KEY))
+		input(source, Some("ftp://peer.example.com"), Some(KEY))
 			.requested(&own(), &owner())
 			.is_err(),
-		"a plaintext endpoint other than loopback"
+		"an endpoint that is not HTTP(S)"
 	);
 }
 

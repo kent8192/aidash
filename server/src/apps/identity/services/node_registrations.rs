@@ -295,10 +295,8 @@ impl NodeRegistrations {
 			}
 			Requested::OtherDeployment { endpoint, key_id } => {
 				let key = aidash_application::federation::registrations::pin(
-					&HttpDirectory {
-						client: f.client.clone(),
-					},
-					&input.source_node,
+					&HttpDirectory::new(f.store.keyless.clone())?,
+					&input.source_node.deployment,
 					endpoint,
 					key_id,
 				)

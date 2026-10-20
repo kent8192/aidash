@@ -87,7 +87,7 @@ mod tests;
 pub(crate) use crate::apps::identity::serializers::remote::{Description, VerifyInput};
 pub use crate::apps::identity::serializers::remote::{PrepareInput, Prepared};
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 #[derive(Clone)]
 pub struct RemoteGrants {
@@ -145,16 +145,12 @@ impl RemoteGrants {
 	/// The pinned Description, plus the Workspace's current corpus digest.
 	pub(crate) async fn describe(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		input: VerifyInput,
 	) -> Result<Described> {
 		let f = self.runtime.clone();
-		let (access, description) = description_lease(
-			&f,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			input.grant_id,
-		)
-		.await?;
+		let (access, description) =
+			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
 		let description = access.finish(Ok(description)).await?;
 		let corpus_digest = corpus_digest(&f.store, &description).await?;
 		Ok(Described {
@@ -162,28 +158,20 @@ impl RemoteGrants {
 			corpus_digest,
 		})
 	}
-	pub(crate) async fn verify(&self, headers: HeaderMap, input: VerifyInput) -> Result<bool> {
+	pub(crate) async fn verify(&self, admitted: Admitted, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();
-		let (access, _) = description_lease(
-			&f,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			input.grant_id,
-		)
-		.await?;
+		let (access, _) =
+			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
 		access.finish(Ok(true)).await
 	}
 	pub(crate) async fn snapshot(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		input: VerifyInput,
 	) -> Result<crate::domain::WorkspaceSnapshot> {
 		let f = self.runtime.clone();
-		let (mut access, description) = description_lease(
-			&f,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			input.grant_id,
-		)
-		.await?;
+		let (mut access, description) =
+			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
 		let result = aidash_application::authorization::source::snapshot::read(
 			&mut crate::bootstrap::source_snapshot_scope(&mut access),
 			description.grant_id,

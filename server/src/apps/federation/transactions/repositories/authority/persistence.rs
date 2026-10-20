@@ -182,17 +182,16 @@ pub(crate) async fn run(access: &mut Access, id: Uuid) -> Result<crate::domain::
 	.ok_or(Error::Forbidden)
 }
 
-pub(crate) async fn mapped(f: &Federation, input: &Preflight) -> Result<Access> {
+pub(crate) async fn mapped(
+	f: &Federation,
+	admitted: Option<&aidash_application::federation::inbound::Admitted>,
+	input: &Preflight,
+) -> Result<Access> {
 	if input.coordinator == f.config.deployment {
 		return access(f, &input.origin).await;
 	}
-	let mut access = crate::authorization::peer::access(
-		&control_federation(f),
-		&input.coordinator,
-		&input.origin.tenant,
-		&input.origin.subject,
-	)
-	.await?;
+	let admitted = admitted.ok_or(Error::Forbidden)?;
+	let mut access = crate::authorization::peer::access(&control_federation(f), admitted).await?;
 	control(&mut access.tx).await?;
 	Ok(access)
 }
@@ -262,27 +261,26 @@ pub(crate) async fn scoped(f: &Federation, id: Uuid) -> Result<bool> {
 	Ok(binding::<Origin>(f, "atomic_subjects", id).await?.is_some())
 }
 
-pub(crate) async fn trusted(access: &mut Access, node: &str) -> Result<()> {
-	let trusted: Option<bool> = {
-		let query_bind_1 = node;
-		crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("enabled"))
-				.from(Alias::new("atomic_peer_trust"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id=?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.lock(reinhardt::query::LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut **access.tx)
-		.await?
+/// The submitting subject's Node registered `node` for atomic transactions,
+/// held until the authority transaction ends.
+pub(crate) async fn trusted(f: &Federation, access: &mut Access, node: &str) -> Result<()> {
+	let sender = aidash_domain::federation::route::Sender {
+		tenant: aidash_domain::tenancy::TenantName::new(access.identity.tenant.clone())?,
+		node: None,
+		subject: None,
 	};
-	if trusted != Some(true) {
-		return Err(Error::Forbidden);
+	let route = crate::apps::federation::remote::repositories::routes::route_to(
+		&mut *access.tx,
+		&f.config.deployment,
+		&sender,
+		node,
+		true,
+	)
+	.await?;
+	if route.is_some_and(|route| route.atomic_transactions) {
+		return Ok(());
 	}
-	Ok(())
+	Err(Error::Forbidden)
 }
 
 pub(crate) async fn pending_peer(f: &Federation, node: &str) -> Result<Vec<Uuid>> {

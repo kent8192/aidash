@@ -323,39 +323,6 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::CreateTable {
-			name: "atomic_peer_trust".to_string(),
-			columns: vec![
-				ColumnDefinition::new("enabled", FieldType::Boolean)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("node_id", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(true)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-			],
-			constraints: vec![],
-			without_rowid: None,
-			interleave_in_parent: None,
-			partition: None,
-		})
-		.add_operation(Operation::CreateTable {
 			name: "atomic_preflights".to_string(),
 			columns: vec![
 				ColumnDefinition::new("binding", FieldType::Jsonb)
@@ -489,6 +456,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("node", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("revision", FieldType::BigInteger)
 					.with_not_null(true)
 					.with_unique(false)
@@ -514,14 +489,6 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("source_subject", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("source_tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -578,6 +545,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("node", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("revision", FieldType::BigInteger)
 					.with_not_null(true)
 					.with_unique(false)
@@ -602,18 +577,10 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
-				ColumnDefinition::new("source_tenant", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(true)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
 				ColumnDefinition::new("tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
-					.with_primary_key(false)
+					.with_primary_key(true)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -675,7 +642,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
-				ColumnDefinition::new("source_node", FieldType::Text)
+				ColumnDefinition::new("node", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -683,7 +650,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
-				ColumnDefinition::new("subject_chain", FieldType::Array(Box::new(FieldType::Text)))
+				ColumnDefinition::new("source_node", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -797,6 +764,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("node", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("node_id", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
@@ -822,14 +797,6 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("semantic", FieldType::Jsonb)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("subject_chain", FieldType::Array(Box::new(FieldType::Text)))
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)
@@ -1153,80 +1120,6 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-			],
-			constraints: vec![],
-			without_rowid: None,
-			interleave_in_parent: None,
-			partition: None,
-		})
-		.add_operation(Operation::CreateTable {
-			name: "peer_events".to_string(),
-			columns: vec![
-				ColumnDefinition::new("event_id", FieldType::Uuid)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(true)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("node_id", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(true)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-			],
-			constraints: vec![],
-			without_rowid: None,
-			interleave_in_parent: None,
-			partition: None,
-		})
-		.add_operation(Operation::CreateTable {
-			name: "peers".to_string(),
-			columns: vec![
-				ColumnDefinition::new("credential_env", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("enabled", FieldType::Boolean)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(Some("true".to_string()))
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("endpoint", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("node_id", FieldType::Text)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(true)
-					.with_auto_increment(false)
-					.with_default(None)
-					.with_generated(None)
-					.with_domain_option(None),
-				ColumnDefinition::new("protocol_version", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)

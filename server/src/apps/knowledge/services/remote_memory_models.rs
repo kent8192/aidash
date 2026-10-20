@@ -76,12 +76,14 @@ pub(crate) async fn reserve(
 		.store
 		.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
 		.await?;
+	let sender = crate::authorization::peer::scope_sender(&scope)?;
 	let dispatch = crate::bootstrap::generation_dispatch_repository(&origin.runtime.store, scope);
 	let settlement = crate::bootstrap::generation_dispatch_settlement(&origin.runtime);
 	aidash_application::generation::dispatch::prepare(&dispatch, &input, &origin.receiver).await?;
 	let result: Result<()> = async {
 		let mut receipts: Vec<Reserved> = crate::authorization::peer::authority_request(
 			&origin.runtime,
+			&sender,
 			&origin.receiver,
 			"/scoped/usage/reserve",
 			&serde_json::to_value(&input)?,

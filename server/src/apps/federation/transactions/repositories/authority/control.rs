@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 pub(crate) struct Repository {
 	pub(crate) runtime: Federation,
+	/// The Node that called, when this serves an inbound request.
+	pub(crate) admitted: Option<aidash_application::federation::inbound::Admitted>,
 }
 
 struct Control {
@@ -40,6 +42,14 @@ struct Submission {
 }
 
 impl Repository {
+	/// A preflight is sent as the source subject, from its Tenant's default Node.
+	fn source_sender(input: &Preflight) -> Result<aidash_domain::federation::route::Sender> {
+		Ok(aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(input.origin.tenant.clone())?,
+			node: None,
+			subject: Some(input.origin.subject.clone()),
+		})
+	}
 	fn scope(&self, access: Access) -> Box<dyn ControlScope> {
 		Box::new(Control {
 			authority: Scope {
@@ -76,11 +86,12 @@ impl AuthorityRepository for Repository {
 	}
 	async fn mapped(&self, input: &Preflight) -> Result<Box<dyn ControlScope>> {
 		let input = dto::Preflight::from(input.clone());
-		Ok(self.scope(persistence::mapped(&self.runtime, &input).await?))
+		Ok(self.scope(persistence::mapped(&self.runtime, self.admitted.as_ref(), &input).await?))
 	}
 	async fn remote_preflight(&self, node: &str, input: &Preflight) -> Result<()> {
 		let _: Value = transport::remote(
 			&self.runtime,
+			Self::source_sender(input)?,
 			node,
 			"POST",
 			"/transactions/preflight",
@@ -92,6 +103,7 @@ impl AuthorityRepository for Repository {
 	async fn remote_access(&self, node: &str, input: &Preflight) -> Result<()> {
 		let _: Value = transport::remote(
 			&self.runtime,
+			Self::source_sender(input)?,
 			node,
 			"POST",
 			"/transactions/access",
@@ -101,8 +113,17 @@ impl AuthorityRepository for Repository {
 		Ok(())
 	}
 	async fn remote_ticket(&self, node: &str, id: Uuid) -> Result<Preflight> {
+		let admitted = self
+			.admitted
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
 		let input: dto::Preflight = transport::remote(
 			&self.runtime,
+			aidash_domain::federation::route::Sender {
+				tenant: admitted.tenant.clone(),
+				node: Some(admitted.receiver.node.clone()),
+				subject: None,
+			},
 			node,
 			"GET",
 			&format!("/transactions/{id}/authority"),
@@ -159,7 +180,7 @@ impl ControlScope for Control {
 		.map_err(Into::into)
 	}
 	async fn trusted(&mut self, node: &str) -> Result<()> {
-		persistence::trusted(&mut self.authority.access, node)
+		persistence::trusted(&self.runtime, &mut self.authority.access, node)
 			.await
 			.map_err(Into::into)
 	}

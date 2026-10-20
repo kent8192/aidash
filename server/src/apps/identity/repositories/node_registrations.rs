@@ -145,20 +145,36 @@ pub(crate) async fn history(
 		.collect()
 }
 
-/// The enabled registration at `node` for `source`, if there is one.
+/// The registration at `node` for `source`, if there is one.
 pub(crate) async fn get(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	node: &str,
 	source: &NodeAddress,
 ) -> Result<Option<NodeRegistration>> {
-	let (sql, values) = Query::select()
+	get_locked(tx, tenant, node, source, false).await
+}
+
+/// [`get`], holding a shared lock until the transaction ends when `lock` is set,
+/// so a read that depends on the registration finishes before it is changed.
+pub(crate) async fn get_locked(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	node: &str,
+	source: &NodeAddress,
+	lock: bool,
+) -> Result<Option<NodeRegistration>> {
+	let mut query = Query::select();
+	query
 		.columns(COLUMNS.map(Alias::new))
 		.from(Alias::new("node_registrations"))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.and_where(Expr::col("node").eq(Expr::value(node)))
-		.and_where(Expr::col("source_node").eq(Expr::value(source.to_string())))
-		.build(PostgresQueryBuilder);
+		.and_where(Expr::col("source_node").eq(Expr::value(source.to_string())));
+	if lock {
+		query.lock(reinhardt::query::LockType::Share);
+	}
+	let (sql, values) = query.build(PostgresQueryBuilder);
 	tx.fetch_optional(&sql, convert_values(values))
 		.await?
 		.as_ref()
@@ -283,4 +299,25 @@ pub(crate) async fn append_history(
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())
+}
+
+/// The enabled registrations at `node`: the Nodes it addresses.
+pub(crate) async fn enabled_of(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	node: &str,
+) -> Result<Vec<NodeRegistration>> {
+	let (sql, values) = Query::select()
+		.columns(COLUMNS.map(Alias::new))
+		.from(Alias::new("node_registrations"))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("node").eq(Expr::value(node)))
+		.and_where(Expr::col("enabled").eq(Expr::value(true)))
+		.order_by(Alias::new("source_node"), Order::Asc)
+		.build(PostgresQueryBuilder);
+	tx.fetch_all(&sql, convert_values(values))
+		.await?
+		.iter()
+		.map(registration_of)
+		.collect()
 }

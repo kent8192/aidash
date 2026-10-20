@@ -66,6 +66,10 @@ pub struct Store {
 	pub provider_clients: aidash_integrations::keyless::Clients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
+	/// The Deployment Key and the switch Federation requests to other
+	/// Deployments are signed and gated by, for callers that hold a Store and
+	/// no Federation runtime (ADR 0064).
+	pub egress: aidash_integrations::federation::Egress,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
 	/// The Deployment's ceilings on Tenants' Test Limits from
@@ -411,6 +415,7 @@ impl Store {
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			keyless: Default::default(),
+			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
 			recovery_cursors: Default::default(),
@@ -459,6 +464,10 @@ impl Store {
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
 	) -> Self {
 		self.test_limit_ceilings = ceilings;
+		self
+	}
+	pub fn with_egress(mut self, egress: aidash_integrations::federation::Egress) -> Self {
+		self.egress = egress;
 		self
 	}
 	pub fn with_keyless_origins(
@@ -516,6 +525,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -565,6 +575,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),

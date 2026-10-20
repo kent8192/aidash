@@ -1,16 +1,16 @@
 //! Decode bounded authority payloads and protocol headers while application classifies their meaning.
-use super::PeerHttp;
+use super::HttpTransport;
 use aidash_application::{
 	Result,
 	ports::federation::authority::{Reply, Transport},
 };
-use aidash_domain::federation::Peer;
+use aidash_domain::federation::route::Route;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 #[async_trait]
-impl Transport for PeerHttp {
-	async fn request(&self, peer: &Peer, path: &str, body: &Value) -> Result<Reply> {
-		let response = self.send(peer, "POST", path, Some(body)).await?;
+impl Transport for HttpTransport {
+	async fn request(&self, route: &Route, path: &str, body: &Value) -> Result<Reply> {
+		let response = self.send(route, "POST", path, Some(body)).await?;
 		let status = response.status();
 		let semantic_reason = response
 			.headers()

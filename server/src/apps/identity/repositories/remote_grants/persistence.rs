@@ -2,9 +2,11 @@
 use super::Grant as GrantRow;
 use crate::apps::identity::repositories::home_execution::{Repository, Scope};
 use crate::{
-	Result as NativeResult,
-	authorization::{access::Access, identity::SubjectIdentity},
-	federation::Peer,
+	Error as NativeError, Result as NativeResult,
+	authorization::{
+		access::Access,
+		identity::{Actor, SubjectIdentity},
+	},
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
@@ -397,9 +399,6 @@ impl GrantRepository for Repository {
 	fn source_identity(&self) -> Option<ExecutionPrincipal> {
 		HomeRepository::identity(self)
 	}
-	fn protocol_version(&self) -> &str {
-		crate::config::PROTOCOL_VERSION
-	}
 	fn validation(&self) -> aidash_application::registry::DefinitionValidation {
 		crate::bootstrap::registry_validation_for(&self.runtime.store)
 	}
@@ -454,33 +453,27 @@ impl GrantRepository for Repository {
 		node: &str,
 		path: &str,
 		input: &Value,
+		subject: &str,
 	) -> Result<T> {
-		HomeRepository::request(self, node, path, input).await
+		let Some(Actor::Subject(identity)) = &self.actor else {
+			return Err(NativeError::Forbidden.into());
+		};
+		let sender = aidash_domain::federation::route::Sender {
+			subject: Some(subject.to_owned()),
+			..crate::authorization::peer::node_sender(&identity.tenant)?
+		};
+		crate::authorization::peer::authority_request(&self.runtime, &sender, node, path, input)
+			.await
+			.map_err(Into::into)
 	}
 }
 
 #[async_trait]
 impl aidash_application::ports::authorization::source::SourcePeerScope for Scope {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		peer(&mut self.access, node).await.map_err(Into::into)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.access.route_to(node).await.map_err(Into::into)
 	}
-}
-
-pub(crate) async fn peer(access: &mut Access, node: &str) -> NativeResult<Option<Peer>> {
-	Ok({
-		let query_bind_1 = node;
-		crate::database::query_as(
-			&Query::select()
-				.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-				.from(Alias::new("peers"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ? AND enabled)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **access.tx)
-		.await?
-	})
 }

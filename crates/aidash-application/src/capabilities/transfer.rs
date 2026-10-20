@@ -269,6 +269,7 @@ pub async fn reconcile(repository: &dyn TransferRepository, id: Uuid) -> Result<
 	let description: Description = serde_json::from_value(record.data["description"].clone())?;
 	let response: Value = repository
 		.request(
+			&description.source_tenant,
 			&description.target.node_id,
 			"/scoped/files/status",
 			&json!(Identity {
@@ -313,6 +314,7 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 	if snapshot.data["prepared"] == true {
 		let status: Value = repository
 			.request(
+				&description.source_tenant,
 				&description.target.node_id,
 				"/scoped/files/status",
 				&json!(identity),
@@ -327,6 +329,7 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 		finish(scope, Ok(())).await?;
 		let negotiation: Value = repository
 			.request(
+				&description.source_tenant,
 				&description.target.node_id,
 				"/scoped/files/negotiate",
 				&json!(Requester {
@@ -344,6 +347,7 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 		}
 		let accepted: Value = repository
 			.request(
+				&description.source_tenant,
 				&description.target.node_id,
 				"/scoped/files/prepare",
 				&json!(identity),
@@ -379,6 +383,7 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 				}
 				let accepted: Value = repository
 					.request(
+						&description.source_tenant,
 						&description.target.node_id,
 						"/scoped/files/chunk",
 						&json!(Chunk {
@@ -408,6 +413,7 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 		// check their original identities; model input never supplies a token.
 		let receipt: Value = repository
 			.request(
+				&description.source_tenant,
 				&description.target.node_id,
 				"/scoped/files/commit",
 				&json!(identity),

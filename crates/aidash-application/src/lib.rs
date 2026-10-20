@@ -38,6 +38,10 @@ pub enum Error {
 	/// Deployment that does not publish the key it was registered with.
 	#[error("{0}")]
 	Unprocessable(String),
+	/// `[deployment] federation` is off, or this Deployment holds no Deployment
+	/// Key, so nothing is sent to another Deployment.
+	#[error("federation_disabled")]
+	FederationDisabled,
 	/// The build's admission gate refused new work; the code is shown to the caller.
 	#[error("{0}")]
 	Refused(String),

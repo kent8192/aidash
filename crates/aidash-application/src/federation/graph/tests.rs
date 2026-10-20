@@ -22,7 +22,6 @@ fn options() -> GraphOptions {
 }
 fn viewer() -> GraphViewer {
 	GraphViewer::Subject {
-		tenant: "tenant".into(),
 		subject: "root".into(),
 	}
 }

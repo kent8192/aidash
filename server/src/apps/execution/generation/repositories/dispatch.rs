@@ -333,8 +333,15 @@ impl GenerationDispatchSettlement for NativeSettlement {
 			.map_err(Into::into)
 	}
 	async fn peer(&self, node: &str, input: &FinalizeInput) -> Result<bool> {
+		let sender = crate::authorization::peer::usage_sender(
+			&self.runtime,
+			input.usage.admission_id,
+			input.usage.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			&self.runtime,
+			&sender,
 			node,
 			"/scoped/usage/finalize",
 			&json!(input),

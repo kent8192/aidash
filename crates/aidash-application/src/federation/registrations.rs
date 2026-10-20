@@ -2,24 +2,25 @@
 use crate::{Error, Result, ports::federation::registrations::DeploymentDirectory};
 use aidash_domain::{
 	federation::protocol::CURRENT,
-	nodes::{DeploymentKeyId, NodeAddress, registration::PinnedKey},
+	nodes::{DeploymentId, DeploymentKeyId, registration::PinnedKey},
 };
 use serde_json::Value;
 
-/// Fetches the well-known document at `endpoint` and pins the key it names.
+/// Fetches the well-known document at `endpoint` and pins the key it names for
+/// `deployment`.
 /// The typed `key_id` is the trust anchor: a document whose key does not hash
 /// to it is refused, so a stranger answering at `endpoint` pins nothing.
 pub async fn pin(
 	directory: &dyn DeploymentDirectory,
-	registered: &NodeAddress,
+	deployment: &DeploymentId,
 	endpoint: &str,
 	key_id: &DeploymentKeyId,
 ) -> Result<PinnedKey> {
 	let document = directory.identity(endpoint).await?;
 	let mismatch =
 		|what: &str| Error::Unprocessable(format!("the Deployment at {endpoint}: {what}"));
-	if document["id"] != registered.deployment.as_str() {
-		return Err(mismatch("its id is not the Node's Deployment"));
+	if document["id"] != deployment.as_str() {
+		return Err(mismatch("its id is not the Deployment named"));
 	}
 	if document["protocol_version"] != CURRENT {
 		return Err(mismatch(&format!("it does not speak protocol {CURRENT}")));

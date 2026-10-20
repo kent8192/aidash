@@ -586,9 +586,19 @@ impl HomeRepository for Repository {
 		path: &str,
 		input: &Value,
 	) -> Result<T> {
-		crate::authorization::peer::authority_request(&self.runtime, node, path, input)
-			.await
-			.map_err(Into::into)
+		// Home calls as its own Node for the Tenant of the subject that acts.
+		let Some(Actor::Subject(identity)) = &self.actor else {
+			return Err(NativeError::Forbidden.into());
+		};
+		crate::authorization::peer::authority_request(
+			&self.runtime,
+			&crate::authorization::peer::node_sender(&identity.tenant)?,
+			node,
+			path,
+			input,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn prepare(&self, task: Uuid, input: PrepareInput) -> Result<Prepared> {
 		let Some(actor) = self.actor.clone() else {

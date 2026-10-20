@@ -196,7 +196,7 @@ pub(super) fn migration() -> Migration {
 			name: "events".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true),
-				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(false),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid),

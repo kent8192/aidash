@@ -127,13 +127,14 @@ async fn inspect_in(
 		)
 		.await?;
 	}
+	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
 		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,
 		node_id: access.node_id().to_owned(),
 		authority_digest: digest(
-			&json!({"source_node":node,"source_tenant":input.tenant,"source_subject":input.subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
+			&json!({"source_node":node,"source_subject":source_subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
 		),
 		agent: entry,
 		definitions: definitions.into_values().collect(),

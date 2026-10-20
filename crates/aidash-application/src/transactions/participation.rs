@@ -128,9 +128,6 @@ impl Participant {
 				"new participant deadline must be within the next hour".into(),
 			));
 		}
-		if caller != self.repository.node_id() && !scope.trusted(caller).await? {
-			return Err(Error::Forbidden);
-		}
 		if scope.gate_exclusive().await?.is_some() {
 			return Err(Error::TransactionPending);
 		}

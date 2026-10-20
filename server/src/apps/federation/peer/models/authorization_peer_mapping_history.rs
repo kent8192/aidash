@@ -15,9 +15,9 @@ pub struct AuthorizationPeerMappingHistory {
 	#[field(primary_key = true)]
 	pub sequence: i64,
 	#[field(field_type = "text")]
-	pub source_node: String,
+	pub node: String,
 	#[field(field_type = "text")]
-	pub source_tenant: String,
+	pub source_node: String,
 	#[field(field_type = "text")]
 	pub source_subject: String,
 	#[field(field_type = "text")]

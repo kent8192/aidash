@@ -521,7 +521,7 @@ impl WorkerAuthority {
 	}
 	pub async fn discover(&self, f: &Federation, search: &Search) -> Result<Discovery> {
 		let mut access = self.access.write().await;
-		super::peer::discovery::discover_in(f, &mut access, search).await
+		super::peer::discovery::discover_in(f, &mut access, None, search).await
 	}
 }
 
@@ -1302,9 +1302,10 @@ pub async fn details_page(
 pub async fn discover(
 	f: &Federation,
 	identity: &SubjectIdentity,
+	node: Option<aidash_domain::nodes::NodeName>,
 	search: &Search,
 ) -> Result<Discovery> {
-	super::peer::discovery::discover(f, identity, search).await
+	super::peer::discovery::discover(f, identity, node, search).await
 }
 
 pub(crate) async fn cancel_if_scoped(store: &Store, run: &Run, token: Uuid) -> Result<bool> {

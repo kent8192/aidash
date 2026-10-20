@@ -1,4 +1,5 @@
 //! HTTP endpoints backed by injected application services.
+use crate::apps::identity::services::http_auth::GraphCaller;
 use crate::authorization::peer::graph as api;
 use crate::http::json::Json;
 use api::*;
@@ -14,8 +15,9 @@ pub async fn peers(
 	#[inject] service: Depends<GraphManagement>,
 	#[inject] actor: Actor,
 	#[inject] origin: Option<crate::dashboard_auth::BrowserOrigin>,
+	Query(sender): Query<crate::apps::federation::peer::views::management::SendingNode>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::peers(service.runtime.clone(), actor, origin).await)
+	crate::http::json(api::peers(service.runtime.clone(), actor, origin, sender.node).await)
 }
 
 #[post(
@@ -71,13 +73,13 @@ pub async fn set_grant(
 )]
 pub async fn project(
 	#[inject] service: Depends<GraphManagement>,
-	request: Request,
+	#[inject] caller: GraphCaller,
 	Json(input): Json<GraphRequest>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(api::project(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::project(service.runtime.clone(), caller, input).await)
 }
 
 use crate::authorization::identity::Actor;

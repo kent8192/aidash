@@ -30,10 +30,10 @@ pub(crate) async fn request(
 }
 pub(crate) async fn describe(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Reference,
 ) -> Result<Intent> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = &admitted.sender.to_string();
 	aidash_application::generation::foreign::home::describe(
 		&crate::bootstrap::peer_generation_home_repository(&f),
 		source,
@@ -44,15 +44,20 @@ pub(crate) async fn describe(
 }
 pub(crate) async fn prepare(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Reference,
 ) -> Result<Prepared> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-	prepare_at(&f, source, input.intent_id).await
+	let source = &admitted.sender.to_string();
+	prepare_at(&f, admitted.receiver.node.clone(), source, input.intent_id).await
 }
-async fn prepare_at(f: &Federation, source: &str, id: Uuid) -> Result<Prepared> {
+async fn prepare_at(
+	f: &Federation,
+	receiver: aidash_domain::nodes::NodeName,
+	source: &str,
+	id: Uuid,
+) -> Result<Prepared> {
 	aidash_application::generation::foreign::receiver::prepare(
-		&crate::bootstrap::generation_receiver_repository(f),
+		&crate::bootstrap::generation_receiver_repository(f, receiver),
 		source,
 		id,
 	)
@@ -122,7 +127,7 @@ pub(crate) async fn require_active(
 	.map_err(Into::into)
 }
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 pub(crate) async fn cancel(f: Federation, actor: Actor, (task, id): (Uuid, Uuid)) -> Result<bool> {
 	aidash_application::generation::foreign::home::cancel(
 		&crate::bootstrap::generation_home_repository(&f, actor),
@@ -133,8 +138,8 @@ pub(crate) async fn cancel(f: Federation, actor: Actor, (task, id): (Uuid, Uuid)
 	.await
 	.map_err(Into::into)
 }
-pub(crate) async fn cancel_at(f: Federation, headers: HeaderMap, input: Reference) -> Result<bool> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+pub(crate) async fn cancel_at(f: Federation, admitted: Admitted, input: Reference) -> Result<bool> {
+	let source = &admitted.sender.to_string();
 	aidash_application::generation::foreign::maintenance::cancel_at(
 		&crate::bootstrap::generation_foreign_maintenance(&f),
 		source,

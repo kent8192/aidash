@@ -300,7 +300,6 @@ impl Workspaces {
 			human_requests: state.human_requests,
 			conversations: state.conversations,
 			events: state.events,
-			peers: vec![],
 		})
 		.map_err(Into::into);
 		access.finish(result).await

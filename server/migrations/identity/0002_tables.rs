@@ -141,8 +141,10 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "authorization_peer_graph_grants".to_owned(),
 			columns: vec![
-				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_deployment", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_identity", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("source_key_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),

@@ -97,6 +97,10 @@ pub async fn initialize(
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		.with_egress(aidash_integrations::federation::Egress {
+			enabled: config.federation,
+			key: config.deployment_key.clone(),
+		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
@@ -537,29 +541,24 @@ pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::to
 	aidash_integrations::tools::HttpTools { client }
 }
 
-/// Discovery and worker retries share the native repository and rotating keys.
-pub(crate) fn federation(f: &Federation) -> aidash_application::federation::Federation {
+/// Discovery and worker retries share the native repository and the Deployment Key.
+pub(crate) fn federation(
+	f: &Federation,
+	sender: &aidash_domain::federation::route::Sender,
+) -> aidash_application::federation::Federation {
 	aidash_application::federation::Federation::new(
 		Arc::new(crate::apps::federation::remote::repositories::Repository {
 			federation: f.clone(),
+			sender: sender.clone(),
 		}),
 		Arc::new(peer_transport(f)),
 	)
 }
 
-pub(crate) fn peer_transport(f: &Federation) -> aidash_integrations::federation::PeerHttp {
-	aidash_integrations::federation::PeerHttp {
-		client: f.client.clone(),
-		node_id: f.config.deployment.to_string(),
-		credentials: Arc::new(PeerCredentials),
-	}
-}
-
-struct PeerCredentials;
-impl aidash_application::ports::Credentials for PeerCredentials {
-	fn resolve(&self, reference: &str) -> aidash_application::Result<String> {
-		crate::config::peer_secret(reference).map_err(Into::into)
-	}
+pub(crate) fn peer_transport(
+	f: &Federation,
+) -> crate::apps::federation::remote::services::wire::Wire {
+	crate::apps::federation::remote::services::wire::Wire::of(f)
 }
 
 /// Assemble definition admission for both management and worker paths.
@@ -751,12 +750,8 @@ pub(crate) fn dependency_scope(
 
 pub(crate) fn dependency_transport(
 	access: &crate::authorization::access::Access,
-) -> aidash_integrations::federation::PeerHttp {
-	aidash_integrations::federation::PeerHttp {
-		client: access.peer_client.clone(),
-		node_id: access.node_id.clone(),
-		credentials: Arc::new(PeerCredentials),
-	}
+) -> crate::apps::federation::remote::services::wire::Reach {
+	crate::apps::federation::remote::services::wire::Reach(access.wire.clone())
 }
 
 pub(crate) fn foreign_run_read_scope(
@@ -995,6 +990,17 @@ pub(crate) fn generation_protocol_authority(
 ) -> crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
 	crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
 		federation: federation.clone(),
+		receiver: None,
+	}
+}
+/// The authority of an inbound request that arrived at the Node `receiver`.
+pub(crate) fn generation_protocol_receiver(
+	federation: &crate::federation::Federation,
+	receiver: aidash_domain::nodes::NodeName,
+) -> crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
+	crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
+		federation: federation.clone(),
+		receiver: Some(receiver),
 	}
 }
 pub(crate) fn generation_protocol_repository(
@@ -1063,9 +1069,12 @@ pub(crate) fn peer_generation_home_repository(
 
 pub(crate) fn generation_receiver_repository(
 	f: &Federation,
+	receiver: aidash_domain::nodes::NodeName,
 ) -> crate::apps::execution::generation::repositories::foreign::receiver::NativeReceiver {
 	crate::apps::execution::generation::repositories::foreign::receiver::NativeReceiver {
+		address: f.config.deployment.node(receiver.clone()).to_string(),
 		federation: f.clone(),
+		receiver,
 	}
 }
 
@@ -1194,13 +1203,8 @@ pub(crate) fn semantic_disclosure_scope<'a, 'scope>(
 
 pub(crate) fn native_registry_transport(
 	access: &crate::authorization::access::NativeAccess,
-) -> aidash_integrations::federation::PeerHttp {
-	let (client, node) = access.remote_transport_parts();
-	aidash_integrations::federation::PeerHttp {
-		client: client.clone(),
-		node_id: node.into(),
-		credentials: Arc::new(PeerCredentials),
-	}
+) -> crate::apps::federation::remote::services::wire::Reach {
+	crate::apps::federation::remote::services::wire::Reach(access.remote_transport())
 }
 pub(crate) fn registry_verification_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
@@ -1425,6 +1429,18 @@ pub(crate) fn transaction_authority_repository(
 ) -> crate::apps::federation::transactions::repositories::authority::control::Repository {
 	crate::apps::federation::transactions::repositories::authority::control::Repository {
 		runtime: runtime.clone(),
+		admitted: None,
+	}
+}
+
+/// The participant's side of a request an inbound Node made.
+pub(crate) fn transaction_authority_repository_as(
+	runtime: &Federation,
+	admitted: &aidash_application::federation::inbound::Admitted,
+) -> crate::apps::federation::transactions::repositories::authority::control::Repository {
+	crate::apps::federation::transactions::repositories::authority::control::Repository {
+		runtime: runtime.clone(),
+		admitted: Some(admitted.clone()),
 	}
 }
 
@@ -1484,6 +1500,23 @@ pub(crate) fn transaction_participant(
 		Arc::new(
 			crate::apps::federation::transactions::repositories::participation::Repository {
 				runtime: runtime.clone(),
+				admitted: None,
+			},
+		),
+		transaction_coordinator(runtime),
+	)
+}
+
+/// The participant's side of a request an inbound Node made.
+pub(crate) fn transaction_participant_as(
+	runtime: &Federation,
+	admitted: &aidash_application::federation::inbound::Admitted,
+) -> aidash_application::transactions::participation::Participant {
+	aidash_application::transactions::participation::Participant::new(
+		Arc::new(
+			crate::apps::federation::transactions::repositories::participation::Repository {
+				runtime: runtime.clone(),
+				admitted: Some(admitted.clone()),
 			},
 		),
 		transaction_coordinator(runtime),
@@ -1738,7 +1771,27 @@ pub(crate) fn skill_headroom(
 pub(crate) fn transfer_repository(
 	federation: &crate::federation::Federation,
 ) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	crate::apps::execution::repositories::transfer::Repository { federation }
+	crate::apps::execution::repositories::transfer::Repository {
+		federation,
+		receiver: None,
+	}
+}
+/// A transfer arriving at the Node `receiver`.
+pub(crate) fn transfer_receiver_repository(
+	federation: &crate::federation::Federation,
+	receiver: aidash_domain::nodes::NodeName,
+) -> crate::apps::execution::repositories::transfer::Repository<'_> {
+	crate::apps::execution::repositories::transfer::Repository {
+		federation,
+		receiver: Some(crate::apps::execution::repositories::transfer::Receiver {
+			address: federation
+				.config
+				.deployment
+				.node(receiver.clone())
+				.to_string(),
+			node: receiver,
+		}),
+	}
 }
 pub(crate) fn transfer_scope<'a>(
 	store: Option<&'a Store>,
@@ -1783,8 +1836,13 @@ pub(crate) fn peer_admission_records(
 pub(crate) fn peer_inspection_scope<'a>(
 	f: &'a crate::federation::Federation,
 	access: &'a mut crate::authorization::access::Access,
+	receiver: aidash_domain::nodes::NodeName,
 ) -> crate::apps::identity::repositories::peer_admission::Borrowed<'a> {
-	crate::apps::identity::repositories::peer_admission::Scope { runtime: f, access }
+	crate::apps::identity::repositories::peer_admission::Scope {
+		runtime: f,
+		access,
+		receiver,
+	}
 }
 
 pub(crate) fn semantic_status_scope<'a>(
@@ -1836,10 +1894,12 @@ pub(crate) fn draft_repository(
 /// Source and receiver authority RPCs share fresh peer trust and bounded integration transport.
 pub(crate) fn authority_peer_client(
 	runtime: &crate::federation::Federation,
+	sender: &aidash_domain::federation::route::Sender,
 ) -> aidash_application::federation::authority::Client {
 	aidash_application::federation::authority::Client::new(
 		Arc::new(crate::apps::federation::remote::repositories::Repository {
 			federation: runtime.clone(),
+			sender: sender.clone(),
 		}),
 		Arc::new(peer_transport(runtime)),
 	)
@@ -2221,24 +2281,6 @@ pub(crate) fn graph_visibility<'a, 'scope>(
 	>,
 ) -> crate::apps::identity::repositories::graph::Visibility<'a, 'scope> {
 	crate::apps::identity::repositories::graph::Visibility(authority)
-}
-
-pub(crate) fn peer_authority(
-	federation: &Federation,
-) -> aidash_application::federation::peers::PeerAuthority {
-	aidash_application::federation::peers::PeerAuthority {
-		node: federation.config.deployment.to_string(),
-		protocol: crate::config::PROTOCOL_VERSION.into(),
-		configuration: Arc::new(crate::apps::federation::peer::repositories::Configuration(
-			federation.clone(),
-		)),
-		credentials: Arc::new(PeerCredentials),
-		identity: Arc::new(peer_transport(federation)),
-	}
-}
-
-pub(crate) fn peer_credentials() -> impl aidash_application::ports::Credentials {
-	PeerCredentials
 }
 
 /// Assemble the desktop broker's native persistence behind its application port.

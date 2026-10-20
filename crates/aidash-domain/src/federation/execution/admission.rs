@@ -74,8 +74,6 @@ impl RemoteExecutionControl {
 pub struct InspectInput {
 	#[serde(default)]
 	pub task_id: Option<Uuid>,
-	pub tenant: String,
-	pub subject: String,
 	pub agent: EntityRef,
 	pub requirements: Search,
 	#[serde(default)]
@@ -84,6 +82,8 @@ pub struct InspectInput {
 #[derive(Clone)]
 pub struct Record {
 	pub id: Uuid,
+	/// The receiving Node.
+	pub node: crate::nodes::NodeName,
 	pub source_node: String,
 	pub grant_id: Uuid,
 	pub task_id: Uuid,

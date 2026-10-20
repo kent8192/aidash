@@ -6,11 +6,18 @@ use crate::{
 };
 use http::{HeaderMap, Method};
 
-pub(crate) fn peer_node(headers: &HeaderMap) -> Result<&str> {
-	headers
-		.get("x-aidash-node")
-		.and_then(|h| h.to_str().ok())
-		.ok_or(Error::Unauthorized)
+/// The verified Federation caller of a request, set by the peer boundary and
+/// injected into the routes that serve other Nodes.
+#[derive(Clone)]
+pub(crate) struct InboundCall(pub aidash_application::federation::inbound::Admitted);
+
+#[async_trait::async_trait]
+impl reinhardt::Injectable for InboundCall {
+	async fn inject(ctx: &reinhardt::InjectionContext) -> reinhardt::DiResult<Self> {
+		ctx.get_http_request()
+			.and_then(|request| request.extensions.get::<Self>())
+			.ok_or_else(|| reinhardt::DiError::NotFound("admitted Federation caller".into()))
+	}
 }
 pub(crate) fn scoped(f: &Federation, actor: Actor) -> Option<Workspaces> {
 	match actor {
@@ -101,3 +108,32 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 #[cfg(test)]
 #[path = "../tests/http_auth.rs"]
 mod tests;
+
+/// The viewer a Peer Graph Grant admitted: a Deployment Administrator of
+/// another Deployment, which has no Node.
+#[derive(Clone)]
+pub(crate) struct ViewerCall(pub aidash_application::federation::inbound::AdmittedViewer);
+
+/// Who called the one route that serves both a Node and a grant's viewer.
+#[derive(Clone)]
+pub(crate) enum GraphCaller {
+	Node(aidash_application::federation::inbound::Admitted),
+	Viewer(aidash_application::federation::inbound::AdmittedViewer),
+}
+
+#[async_trait::async_trait]
+impl reinhardt::Injectable for GraphCaller {
+	async fn inject(ctx: &reinhardt::InjectionContext) -> reinhardt::DiResult<Self> {
+		let request = ctx
+			.get_http_request()
+			.ok_or_else(|| reinhardt::DiError::NotFound("admitted Federation caller".into()))?;
+		if let Some(call) = request.extensions.get::<InboundCall>() {
+			return Ok(Self::Node(call.0));
+		}
+		request
+			.extensions
+			.get::<ViewerCall>()
+			.map(|call| Self::Viewer(call.0))
+			.ok_or_else(|| reinhardt::DiError::NotFound("admitted Federation caller".into()))
+	}
+}

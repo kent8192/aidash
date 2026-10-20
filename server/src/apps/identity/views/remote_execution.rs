@@ -1,4 +1,5 @@
 //! HTTP endpoints backed by injected application services.
+use crate::apps::identity::services::http_auth::InboundCall;
 use crate::authorization::remote::execution as api;
 use crate::http::json::Json;
 use api::*;
@@ -73,12 +74,10 @@ pub async fn activate(
 )]
 pub async fn activation_binding(
 	#[inject] service: Depends<RemoteExecutionManagement>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<VerifyInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		api::activation_binding(service.runtime.clone(), request.headers.clone(), input).await,
-	)
+	crate::http::json(api::activation_binding(service.runtime.clone(), peer.0, input).await)
 }
 
 use crate::authorization::identity::Actor;

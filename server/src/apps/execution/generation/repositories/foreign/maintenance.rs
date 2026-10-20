@@ -55,8 +55,21 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 		Ok(reserved)
 	}
 	async fn send_cancel(&self, target: &str, id: Uuid) -> Result<bool> {
+		let tenant: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("generation_remote_intents"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(id.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(self.federation.store.pool.in_scope(&reconcile()))
+		.await?;
 		crate::authorization::peer::authority_request(
 			&self.federation,
+			&crate::authorization::peer::node_sender(&tenant)?,
 			target,
 			"/scoped/generation/cancel",
 			&json!({"intent_id":id}),

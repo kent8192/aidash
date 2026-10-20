@@ -60,8 +60,7 @@ pub async fn submit_in(
 	}
 	for node in &manifest.participants {
 		if node.node_id != scope.node_id() {
-			scope.resolve_peer(&node.node_id).await?;
-			if !scope.trusted(&node.node_id).await? {
+			if !scope.trusted(&node.node_id, origin).await? {
 				return Err(Error::Forbidden);
 			}
 		}

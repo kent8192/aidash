@@ -251,7 +251,6 @@ impl HarnessManagement {
 			.collect(),
 			human_requests: human,
 			conversations,
-			peers: f.peers().await?,
 			events,
 			artifacts,
 		};

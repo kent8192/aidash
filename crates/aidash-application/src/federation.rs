@@ -28,8 +28,8 @@ impl Federation {
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<T> {
-		let peer = self.repository.peer(node).await?;
-		let reply = self.transport.request(&peer, method, path, body).await?;
+		let route = self.repository.route(node).await?;
+		let reply = self.transport.request(&route, method, path, body).await?;
 		match reply.status {
 			200..=299 => serde_json::from_value(reply.body)
 				.map_err(|error| Error::External(format!("invalid response JSON: {error}"))),
@@ -62,6 +62,6 @@ pub mod authority;
 
 pub mod run_messages;
 
-pub mod peers;
+pub mod inbound;
 
 pub mod registrations;

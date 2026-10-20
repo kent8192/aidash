@@ -234,8 +234,7 @@ workspaces:
   `aidash.scope` and `aidash.tenant`; a test rejects any other writer, in Rust
   or in migration SQL.
 - Every table is classified in `server/src/database/classification.rs` as
-  Tenant-owned (enforced, or pending the Issue that enforces it) or
-  Deployment-wide. The `startup` test target compares the list with the
+  Tenant-owned (enforced) or Deployment-wide. The `startup` test target compares the list with the
   migrated database, so a migration that adds a table classifies it in the same
   change.
 - The Enterprise workspace classifies its own tables in
@@ -322,9 +321,8 @@ login and the activity observer all need a scope.
 
 Every Tenant-owned table carries `tenant text NOT NULL` (#265), except
 `research_revocations` and `dashboard_administration_history`, whose rows may
-address no Tenant, and `events`, whose Deployment-level rows (a peer
-registration) concern none until #241 gives peers a Tenant. A row without a
-Tenant is visible only in a Deployment Scope. The definitions are edited in the
+address no Tenant. A row without a Tenant is visible only in a Deployment
+Scope. The definitions are edited in the
 migration that creates each table, because Aidash is undeployed:
 
 - `tenant` references the Tenant root record, `tenants(name)`, through

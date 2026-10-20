@@ -34,7 +34,9 @@ fn document(signer: &InMemorySigner) -> Value {
 async fn pinned(document: Value, typed: &DeploymentKeyId) -> Result<PinnedKey> {
 	pin(
 		&Answers(document),
-		&NodeAddress::parse(SOURCE).unwrap(),
+		&aidash_domain::nodes::NodeAddress::parse(SOURCE)
+			.unwrap()
+			.deployment,
 		"https://calm.example.com",
 		typed,
 	)

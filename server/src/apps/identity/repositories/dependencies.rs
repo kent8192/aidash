@@ -106,23 +106,10 @@ impl DependencyScope for NativeDependencies<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		let peer: Option<Peer> = {
-			let query_bind_1 = node;
-			crate::database::query_as(
-				&Query::select()
-					.column(Asterisk)
-					.from(Alias::new("peers"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(node_id=? AND enabled)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(LockType::Share)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **self.0.tx)
-			.await?
-		};
-		Ok(peer)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.0.route_to(node).await.map_err(Into::into)
 	}
 }
