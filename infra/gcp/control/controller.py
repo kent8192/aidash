@@ -681,7 +681,7 @@ def refresh_gcip_environments(config, store, terraform, managed, revision, affec
     return failures
 
 
-def restore_broker_admission(terraform, sealed):
+def restore_broker_admission(terraform, sealed, store=None):
     # Restore every successful preflight seal when reconciliation cannot reach
     # cleanup, even if an earlier unseal fails. Keep failures explicit.
     failed = False
@@ -690,6 +690,10 @@ def restore_broker_admission(terraform, sealed):
     with operation_budget(180):
         for identity in sorted(sealed):
             try:
+                if store is not None:
+                    # Admission restoration starts writers: a backup taken before
+                    # this point no longer describes the pre-write state.
+                    mark_started_writers(store, {identity})
                 kube.unseal(terraform.cluster(), identity)
             except (Exception, OperationDeadline):
                 failed = True
@@ -697,12 +701,12 @@ def restore_broker_admission(terraform, sealed):
         raise RuntimeError("Broker drain admission restoration failed")
 
 
-def restore_presealed_running_host(terraform, identity, presealed, managed):
+def restore_presealed_running_host(terraform, store, identity, presealed, managed):
     previous = managed.get(identity, {})
     if identity in presealed and previous.get("running") and previous.get("published"):
         # Early exits keep the prior healthy release serving. Deliberately
         # gated failed deployments and stopped/retired Environments stay gated.
-        restore_broker_admission(terraform, {identity})
+        restore_broker_admission(terraform, {identity}, store)
 
 
 def stop_environment(store, terraform, managed, identity, generation):
@@ -783,6 +787,91 @@ def pre_update_backup(config, store, terraform, identity, generation, entry):
     update_entry(store, identity, generation, pre_update_backup=name)
 
 
+def deployment_changed(entry, previous, output):
+    """Whether the applied Environment differs from the accepted running intent."""
+    return (
+        not previous
+        or not previous["running"]
+        or previous.get("release_sha") != entry["sha"]
+        or previous["spot"] != entry["spot"]
+        or not entry.get("applied")
+        or entry["applied"].get("release_sha") != entry["sha"]
+        or previous.get("hostname_token") != entry.get("hostname_token")
+        or (entry.get("force") and entry.get("start_pending"))
+        or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
+    )
+
+
+def pending_production_update(config, store, terraform, managed):
+    """The production update this reconciliation would deploy, if any.
+
+    This is the loop's deploy decision, taken before a shared apply so its
+    Pre-update Backup can precede Terraform. Only a trusted release that would
+    actually deploy qualifies: recording a backup for an update that then waits
+    for a build would claim a restore point the running writers have invalidated.
+    """
+    if not delivery.production(config):
+        return None
+    state, _ = store.read("lifecycle/state.json")
+    entry = ((state or {}).get("environments") or {}).get("production")
+    if not entry or entry.get("desired") != "running":
+        return None
+    previous = managed.get("production")
+    if not previous or not previous.get("running"):
+        return None
+    if entry.get("failed_deployment_generation") == entry["generation"] and not entry.get("start_pending"):
+        return None
+    if not current_release(entry, trusted_revision()):
+        return None
+    output = terraform.outputs().get("production") if managed else None
+    return entry if deployment_changed(entry, previous, output) else None
+
+
+def mark_started_writers(store, identities):
+    """Admission restoration starts writers; that invalidates a recorded restore point."""
+    for identity in sorted(identities):
+        state, _ = store.read("lifecycle/state.json")
+        entry = ((state or {}).get("environments") or {}).get(identity)
+        if entry and entry.get("pre_update_backup") and not entry.get("writers_started"):
+            update_entry(store, identity, entry["generation"], writers_started=True)
+
+
+def take_pre_update_backup_before_shared(config, store, terraform, managed, sealed):
+    """Take a production update's backup before broker/GCIP changes reach Terraform.
+
+    The shared apply reloads a running release and reopens admission, so the
+    backup must be taken first. If production was not already drained by the
+    broker preflight or GCIP quiescence, seal it here. Failure restores the
+    admissions this function drained, records any writers it started as started,
+    and parks the update as failed.
+    """
+    entry = pending_production_update(config, store, terraform, managed)
+    if entry is None or entry.get("pre_update_backup"):
+        return sealed
+    identity = "production"
+    generation = entry["generation"]
+    try:
+        if identity not in sealed:
+            if not kube.seal(terraform.cluster(), identity):
+                update_entry(store, identity, generation, status="waiting_for_active_work")
+                return sealed
+            sealed = sealed | {identity}
+        verify_source(config, identity, entry)
+        pre_update_backup(config, store, terraform, identity, generation, entry)
+    except (Exception, OperationDeadline) as error:
+        update_entry(
+            store,
+            identity,
+            generation,
+            status="failed",
+            diagnostic=type(error).__name__,
+        )
+        restore_broker_admission(terraform, sealed, store)
+        print(f"Deferred/failed: {identity}: {type(error).__name__}")
+        raise
+    return sealed | {identity}
+
+
 def reconcile_locked(config, store, terraform, managed):
     state, _ = store.read("lifecycle/state.json")
     if not state:
@@ -815,22 +904,33 @@ def reconcile_locked(config, store, terraform, managed):
                     update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
                     blocked = True
         except (Exception, OperationDeadline):
-            restore_broker_admission(terraform, presealed)
+            restore_broker_admission(terraform, presealed, store)
             raise
         if blocked:
-            restore_broker_admission(terraform, presealed)
+            restore_broker_admission(terraform, presealed, store)
             return
     # One apply serves broker intent and GCIP fencing, after brokers are
     # drained so no plan can replace a live broker first.
     gcip_failures = []
-    if broker_changed or affected:
+    shared_apply = broker_changed or bool(affected)
+    if shared_apply:
+        presealed = take_pre_update_backup_before_shared(
+            config, store, terraform, managed, presealed
+        )
         try:
             gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True)
         except (Exception, OperationDeadline):
             if presealed:
-                restore_broker_admission(terraform, presealed)
+                restore_broker_admission(terraform, presealed, store)
             raise
     state, _ = store.read("lifecycle/state.json")
+    if shared_apply:
+        entry = state["environments"].get("production")
+        if entry and entry.get("pre_update_backup"):
+            # The shared apply's GCIP refresh reloads the release and reopens
+            # admission. Re-seal before the deployment rather than trusting the
+            # pre-apply seal.
+            presealed.discard("production")
     failures = list(gcip_failures)
     trusted = trusted_revision()
     for identity, snapshot in sorted(
@@ -838,6 +938,7 @@ def reconcile_locked(config, store, terraform, managed):
         key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
     ):
         deployment_started = False
+        reloaded = False
         sealed = identity in presealed
         try:
             generation = snapshot["generation"]
@@ -935,7 +1036,7 @@ def reconcile_locked(config, store, terraform, managed):
                 update_entry(
                     store, identity, generation, status="waiting_for_pr_slot"
                 )
-                restore_presealed_running_host(terraform, identity, presealed, managed)
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
                 continue
             previous = managed.get(identity)
             # A retained release from another trusted commit is never deployed
@@ -973,22 +1074,15 @@ def reconcile_locked(config, store, terraform, managed):
                 )
                 entry = current_entry(store, identity, generation)
                 deployment_started = False
+                # reload() restarts the writers. Re-establish the seal before
+                # taking a backup rather than trusting the earlier drain.
+                reloaded = True
             if entry.get(
                 "failed_deployment_generation"
             ) == generation and not entry.get("start_pending"):
-                restore_presealed_running_host(terraform, identity, presealed, managed)
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
                 continue
-            changed = (
-                not previous
-                or not previous["running"]
-                or previous.get("release_sha") != entry["sha"]
-                or previous["spot"] != entry["spot"]
-                or not entry.get("applied")
-                or entry["applied"].get("release_sha") != entry["sha"]
-                or previous.get("hostname_token") != entry.get("hostname_token")
-                or (entry.get("force") and entry.get("start_pending"))
-                or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
-            )
+            changed = deployment_changed(entry, previous, output)
             needs_deploy = bool(release) and changed
             if previous and previous["running"]:
                 if entry.get("gcip_quiesced") and not (needs_deploy and entry.get("force")):
@@ -1046,7 +1140,7 @@ def reconcile_locked(config, store, terraform, managed):
                                 published=False,
                                 status="stopped",
                             )
-                        restore_presealed_running_host(terraform, identity, presealed, managed)
+                        restore_presealed_running_host(terraform, store, identity, presealed, managed)
                         continue
                     # Renewal also reaches quiet, already-running previews.
                     # This touches only the trusted edge certificate and never
@@ -1060,7 +1154,7 @@ def reconcile_locked(config, store, terraform, managed):
                         update_entry(
                             store, identity, generation, status="awaiting_build"
                         )
-                        restore_presealed_running_host(terraform, identity, presealed, managed)
+                        restore_presealed_running_host(terraform, store, identity, presealed, managed)
                         continue
                     if sealed or entry.get("status") != "ready":
                         current_entry(store, identity, generation)
@@ -1078,12 +1172,19 @@ def reconcile_locked(config, store, terraform, managed):
                     continue
             if not release:
                 update_entry(store, identity, generation, status="awaiting_build")
-                restore_presealed_running_host(terraform, identity, presealed, managed)
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
                 continue
             # Revalidate source identity at the effect boundary, not just at intake.
             current_entry(store, identity, generation)
             verify_source(config, identity, entry)
             if sealed and previous and previous["running"]:
+                if reloaded and not kube.seal(terraform.cluster(), identity):
+                    # seal() restored service; a recorded backup is no longer
+                    # the pre-write state.
+                    if entry.get("pre_update_backup"):
+                        update_entry(store, identity, generation, writers_started=True)
+                    update_entry(store, identity, generation, status="waiting_for_active_work")
+                    continue
                 pre_update_backup(config, store, terraform, identity, generation, entry)
                 entry = current_entry(store, identity, generation)
             if (not previous or not previous["running"]) and not entry.get(
@@ -1096,7 +1197,7 @@ def reconcile_locked(config, store, terraform, managed):
                     desired="stopped",
                     status="interrupted",
                 )
-                restore_presealed_running_host(terraform, identity, presealed, managed)
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
                 continue
             if entry["kind"] == "pr" and not entry.get("hostname_token") and (not previous or not previous["running"]):
                 # The shared preview disk moves only after the previous

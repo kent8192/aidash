@@ -385,9 +385,9 @@ gcloud beta container backup-restore restores create "restore-g<generation>" \
   --backup "<pre_update_backup>" --wait-for-completion
 ```
 
-The restore plan selects the application `aidash`, so `DELETE_AND_RESTORE`
-replaces only what that application selects. The ledger claim stays in place
-with its current contents. Then dispatch `gcp-production.yml` on `main` with the
+The restore plan selects the application `aidash` and excludes cluster resources,
+so `DELETE_AND_RESTORE` replaces only what that application selects. The ledger
+claim stays in place with its current contents. Then dispatch `gcp-production.yml` on `main` with the
 revert release's `main_sha` and `retry_failed=true`. That update takes its own
 Pre-update Backup of the restored state before it deploys. Confirm health and
 admission as for a normal update.

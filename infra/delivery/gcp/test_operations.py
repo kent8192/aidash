@@ -129,6 +129,23 @@ class OperationalObservationTests(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "not observed"):
             self.observe()
 
+    def test_the_restore_plan_must_leave_cluster_resources_untouched(self):
+        for scope in (
+            None,
+            {"noGroupKinds": False},
+            {"allGroupKinds": True},
+            {"noGroupKinds": True, "selectedGroupKinds": [{"group": "rbac.authorization.k8s.io", "kind": "ClusterRole"}]},
+            {"noGroupKinds": True, "excludedGroupKinds": [{"group": "", "kind": "Namespace"}]},
+        ):
+            with self.subTest(scope=scope):
+                self.setUp()
+                if scope is None:
+                    self.restore["restoreConfig"].pop("clusterResourceRestoreScope")
+                else:
+                    self.restore["restoreConfig"]["clusterResourceRestoreScope"] = scope
+                with self.assertRaisesRegex(Refused, "could delete more"):
+                    self.observe()
+
     def test_recent_completion_cannot_hide_stale_snapshot_or_missing_actual_backup(self):
         stale = deepcopy(self.backup)
         stale["createTime"] = "2026-10-10T19:00:00Z"

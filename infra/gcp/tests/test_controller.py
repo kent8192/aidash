@@ -1760,6 +1760,81 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertGreater(len(self.cloud.plans), baseline)
         self.assertFalse(backup.restorable(entry))
 
+    def shared_change(self):
+        # Both a broker rotation and a GCIP change reach the shared apply; its
+        # refresh reloads the running release and reopens admission.
+        self.config["credential_brokers"] = {"production": {"enabled": True}}
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        self.cloud.gcip = {"tenant_ids": ["pool"], "tenant_bindings": {"pool": "acme"}}
+        return patch.object(controller, "reconcile_environment", lambda *args: None)
+
+    def test_a_shared_apply_takes_the_backup_before_terraform_and_reseals_before_the_deploy(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.production_request(UPDATE)
+        writers_at_backup = []
+        take = backup.take
+
+        def observe_writers(*args):
+            writers_at_backup.append(self.writers())
+            return take(*args)
+
+        with self.shared_change(), patch.object(backup, "take", observe_writers):
+            self.reconcile()
+        entry = self.entry()
+        name = f"{PLAN}/backups/pre-update-g2-{'b' * 12}"
+        self.assertEqual(entry["pre_update_backup"], name)
+        created = self.calls[self.event("backup_create")]
+        self.assertEqual(created, ("backup_create", name, baseline))
+        self.assertEqual(writers_at_backup, [0])
+        # The refresh does start writers and reopen admission; the deployment
+        # must re-seal them instead of trusting the pre-apply seal.
+        after = self.event("backup_create") + 1
+        helms = [index for index, call in enumerate(self.calls[after:], start=after) if call == ("helm", "production", "app")]
+        self.assertGreaterEqual(len(helms), 2)
+        self.assertIn(("admission", "production", "open"), self.calls[after:helms[1]])
+        actions = [call for call in self.calls[:helms[1]] if call[0] == "admission" and call[1] == "production"]
+        self.assertEqual(actions[-1], ("admission", "production", "close"))
+        self.assertEqual(self.entry()["status"], "ready")
+
+    def test_a_failed_shared_apply_after_the_backup_records_the_started_writers(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        with patch.object(self.cloud, "apply", side_effect=RuntimeError("apply unavailable")), self.shared_change():
+            with self.assertRaisesRegex(RuntimeError, "apply unavailable"):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(entry.get("pre_update_backup"))
+        self.assertTrue(entry.get("writers_started"))
+        self.assertFalse(backup.restorable(entry))
+        self.assertEqual(self.writers(), 1)
+
+    def test_restoring_admission_after_a_backup_records_the_started_writers(self):
+        self.running_production()
+        self.entry()["pre_update_backup"] = "recorded"
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with patch.object(controller.kube, "unseal") as unseal:
+            controller.restore_broker_admission(terraform, {"production"}, self.store)
+        self.assertTrue(unseal.called)
+        self.assertTrue(self.entry().get("writers_started"))
+        self.assertFalse(backup.restorable(self.entry()))
+
+    def test_a_backup_failure_before_a_shared_apply_unseals_and_applies_nothing(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.api.states = ["FAILED"]
+        self.production_request(UPDATE)
+        with self.shared_change():
+            with self.assertRaises(controller.Refused):
+                self.reconcile()
+        entry = self.entry()
+        self.assertEqual((entry["status"], entry["diagnostic"]), ("failed", "Refused"))
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(len(self.cloud.plans), baseline)
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+
     def test_a_failed_backup_unseals_applies_nothing_and_waits_for_an_explicit_retry(self):
         self.running_production()
         baseline = len(self.cloud.plans)
@@ -1965,10 +2040,23 @@ class BackupTests(unittest.TestCase):
             backup.wait_window()
 
     def test_a_backup_that_selected_nothing_is_no_backup(self):
-        empty = {"state": "SUCCEEDED", "containsVolumeData": True, "resourceCount": 3, "volumeCount": 0}
+        empty = {"state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True, "resourceCount": 3, "volumeCount": 0}
         with patch.object(backup, "call", lambda method, resource, body=None: empty):
             with self.assertRaisesRegex(controller.Refused, "no volume data"):
                 backup.take(PLAN, 2, UPDATE)
+
+    def test_a_successful_backup_without_secrets_is_not_a_restore_point(self):
+        for contains_secrets in (False, None):
+            with self.subTest(containsSecrets=contains_secrets):
+                succeeded = {
+                    "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": contains_secrets,
+                    "resourceCount": 12, "volumeCount": 4,
+                }
+                if contains_secrets is None:
+                    del succeeded["containsSecrets"]
+                with patch.object(backup, "call", lambda method, resource, body=None: succeeded):
+                    with self.assertRaisesRegex(controller.Refused, "no Secrets"):
+                        backup.take(PLAN, 2, UPDATE)
 
     def test_an_invalid_plan_name_is_refused_before_any_request(self):
         with patch.object(backup, "call", side_effect=AssertionError("no request")):

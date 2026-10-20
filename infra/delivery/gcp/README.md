@@ -30,7 +30,9 @@ A second, unscheduled plan (14-day retention, 2-day delete lock) holds the
 Pre-update Backup that the production update controller takes after sealing
 writers. The deploy identity may only create backups on that plan. An in-place
 restore plan scoped to the same application is for a person to run; its
-`DELETE_AND_RESTORE` mode then cannot delete the ledger claim. Daily backups
+`DELETE_AND_RESTORE` mode then cannot delete the ledger claim or any
+cluster-scoped resource. The restore plan is created in the cluster's region even
+when the backup plan uses a cross-region backup location. Daily backups
 default to 19:00 UTC (04:00 Asia/Tokyo), 30-day retention and a 7-day delete
 lock. The plan is protected
 against deletion; its retention policy remains adjustable. These settings are

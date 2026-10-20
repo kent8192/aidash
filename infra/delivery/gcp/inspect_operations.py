@@ -41,9 +41,22 @@ def application_scope(scope):
     return scope.get("selectedApplications", {}).get("namespacedNames") == APPLICATION and "selectedNamespaces" not in scope
 
 
+CLUSTER_SCOPES = ("allGroupKinds", "selectedGroupKinds", "excludedGroupKinds")
+
+
+def excludes_cluster_resources(restore_config):
+    """An in-place restore must leave every cluster-scoped resource untouched."""
+    scope = restore_config.get("clusterResourceRestoreScope")
+    return (
+        isinstance(scope, dict)
+        and scope.get("noGroupKinds") is True
+        and not any(scope.get(field) for field in CLUSTER_SCOPES)
+    )
+
+
 def inspect_pre_update(operations, expected_cluster, plan, restore):
     """The Pre-update Backup plan and its in-place restore plan, which must both stay application-scoped
-    so a restore never deletes the Home recovery ledger claim."""
+    so a restore never deletes the Home recovery ledger claim or cluster resources."""
     name = operations["pre_update_backup_plan"]
     backup_config = plan.get("backupConfig", {})
     retention = plan.get("retentionPolicy", {})
@@ -56,6 +69,7 @@ def inspect_pre_update(operations, expected_cluster, plan, restore):
     restore_config = restore.get("restoreConfig", {})
     if (restore.get("name") != operations.get("pre_update_restore_plan") or restore.get("backupPlan") != name
             or restore.get("cluster") != expected_cluster or not application_scope(restore_config)
+            or not excludes_cluster_resources(restore_config)
             or restore_config.get("namespacedResourceRestoreMode") != "DELETE_AND_RESTORE"
             or restore_config.get("volumeDataRestorePolicy") != "RESTORE_VOLUME_DATA_FROM_BACKUP"
             or "allNamespaces" in restore_config or "noNamespaces" in restore_config):

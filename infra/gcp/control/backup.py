@@ -81,6 +81,10 @@ def take(plan, generation, sha):
             # A scope that selected nothing also succeeds; that is no backup.
             if not backup.get("containsVolumeData") or not backup.get("resourceCount") or not backup.get("volumeCount"):
                 raise Refused("The Pre-update Backup contains no volume data")
+            # Without Secrets the restore cannot recreate the runtime
+            # configuration the application needs, so it is not a restore point.
+            if not backup.get("containsSecrets"):
+                raise Refused("The Pre-update Backup contains no Secrets")
             return name
         if state in {"FAILED", "DELETING"}:
             raise Refused(f"The Pre-update Backup ended {state}")

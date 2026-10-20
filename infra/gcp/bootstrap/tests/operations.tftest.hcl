@@ -162,6 +162,25 @@ run "production_backup_and_monitoring_are_scoped" {
     error_message = "Capacity/restart/backup failure policies must use the real metric kinds and only production resources."
   }
 }
+run "restore_plan_stays_in_the_target_cluster_region" {
+  command = plan
+  variables {
+    deployment_tier            = "production"
+    nonproduction_project_id   = "aidash-nonproduction-fixture"
+    nonproduction_state_bucket = "aidash-nonproduction-state"
+    staging_release_bucket     = "aidash-nonproduction-releases"
+    production_backup_enabled  = true
+    production_backup_location = "us-east1"
+  }
+  assert {
+    condition = (
+      google_gke_backup_backup_plan.pre_update[0].location == "us-east1" &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].location == "us-central1" &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].cluster == "projects/aidash-fixture/locations/us-central1/clusters/aidash"
+    )
+    error_message = "The restore plan must live in the target cluster's region while the backup plan stays in the cross-region backup location."
+  }
+}
 run "backup_requires_existing_enabled_agent" {
   command = plan
   variables {

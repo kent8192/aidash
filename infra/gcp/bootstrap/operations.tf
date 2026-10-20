@@ -111,12 +111,14 @@ resource "google_gke_backup_backup_plan" "pre_update" {
   depends_on = [google_project_service.production_operations]
 }
 // DELETE_AND_RESTORE removes the resources a ProtectedApplication selects. A
-// namespace scope would also delete the Home recovery ledger claim.
+// namespace scope would also delete the Home recovery ledger claim. Backup for
+// GKE requires the restore plan in the target cluster's region, while the
+// backup plan may live in a cross-region backup location.
 resource "google_gke_backup_restore_plan" "pre_update_in_place" {
   count           = var.production_backup_enabled ? 1 : 0
   project         = var.project_id
   name            = "aidash-production-pre-update-in-place"
-  location        = var.production_backup_location
+  location        = var.production_cluster_location
   backup_plan     = google_gke_backup_backup_plan.pre_update[0].id
   cluster         = local.production_cluster_id
   deletion_policy = "PREVENT"
