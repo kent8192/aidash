@@ -4,7 +4,7 @@
 #![allow(dead_code)] // Each integration target consumes a different part of this fixture.
 use crate::common::upstream_fixtures::reply;
 use http::{Method, StatusCode};
-use reinhardt::{Request, Response, ServerRouter, test::stub::StubRouter};
+use reinhardt::{Request, Response, test::stub::StubRouter};
 use serde_json::{Value, json};
 use std::{
 	collections::HashSet,
@@ -166,6 +166,3 @@ impl FakeMcp {
 			)
 	}
 }
-
-/// Only for readers of this module: the router type the fixtures serve.
-pub type Router = Arc<ServerRouter>;

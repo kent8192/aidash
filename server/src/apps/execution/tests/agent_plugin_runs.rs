@@ -339,7 +339,6 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 		federation: world.f.clone(),
 	};
 
-	// The first step lists the server once and pins what it offers.
 	let waiting = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
 	let pinned = events(&world, "run.plugin_tools_pinned").await;
 	assert_eq!(pinned.len(), 1, "{pinned:?}");
@@ -354,7 +353,6 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 		[("lookup", true), ("update", false)]
 	);
 
-	// The Read-only tool reached the server without an approval; the other waits for one.
 	let (approval, call) = awaited_tool_call(&waiting).unwrap();
 	assert_eq!(call.name, alias("update"));
 	assert_eq!(
@@ -396,13 +394,11 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 	assert_eq!(card["call"]["arguments"], json!({"q":"call 1"}));
 	assert_eq!(card["viewer_is_approver"], true);
 
-	// The Designated approver decides through the capability approval API.
 	let (status, decided) =
 		decide_tool_call(&world.app, &world.token, approval, "allow_once").await;
 	assert_eq!(status, 200, "{decided}");
 	let finished = step_until(&harness, &world, |run| run.phase().as_str() == "COMPLETED").await;
 
-	// The approved call reached the server as asked, and both results are recorded.
 	assert_eq!(
 		world.mcp.calls(),
 		[
@@ -422,10 +418,8 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 		assert_eq!(result["isError"], false, "{name}: {result}");
 		assert!(result["error"].is_null(), "{name}: {result}");
 	}
-	// The pin held for the whole Run: the server was listed once, in one session.
 	assert_eq!(world.mcp.requests("tools/list").len(), 1);
 	assert_eq!(world.mcp.sessions_issued(), 1);
-	// The approval was consumed by the one call it allowed.
 	let (_, all) = request(
 		&world.app,
 		&world.token,
@@ -435,12 +429,10 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 	)
 	.await;
 	assert_eq!(all["items"][0]["state"], "consumed", "{all}");
-	// The model was offered both tools on every request.
 	for offered in world.model.offered.lock().unwrap().iter() {
 		assert!(offered.contains(&alias("lookup")) && offered.contains(&alias("update")));
 	}
 
-	// The Run's session ended with it.
 	for _ in 0..50 {
 		if world.mcp.ended().len() == 1 {
 			break;
@@ -482,7 +474,6 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 	let plugin_tools = finished.context.plugin_tools.as_ref().unwrap();
 	assert!(plugin_tools.servers.is_empty());
 	assert_eq!(plugin_tools.findings[0].finding.detail, "unreachable");
-	// The model was offered no plugin tool, and the Run asked for no approval.
 	for offered in world.model.offered.lock().unwrap().iter() {
 		assert!(
 			!offered.iter().any(|name| name.starts_with(PLUGIN)),
