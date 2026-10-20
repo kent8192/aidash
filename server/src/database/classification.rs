@@ -4,7 +4,10 @@
 //! Deployment-wide table holds data that belongs to no Tenant. A test compares
 //! this list with the migrated database and fails on any table that is missing
 //! from it or classified differently from its policies, so a migration that
-//! adds a table classifies it here in the same change.
+//! adds a table classifies it here in the same change. A build that adds
+//! tables lists them itself and hands its list over through
+//! [`Extension::tables`](crate::bootstrap::build::Extension::tables); the same
+//! comparison (`classification/comparison.rs`) checks the combined list.
 
 /// How row-level security treats a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,19 +23,111 @@ pub enum Classification {
 	DeploymentWide,
 }
 
+/// Why purging a Tenant leaves a Tenant-owned table's rows in place (ADR 0061).
+/// Every Tenant-owned table without this marker is purged, so a new table is
+/// purged unless it declares otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retained {
+	/// The Tenant's administration history, authorization decisions, policy
+	/// revisions, catalog history, and the Evidence Revocation and Retention
+	/// Rule history. It is kept for the Deployment's audit retention period
+	/// after the purge and then deleted. Nothing purged may be referenced from
+	/// it, so no purged row blocks it and it blocks no purge.
+	AuditHistory,
+	/// A pointer to the Tenant's tombstone that the Deployment still needs:
+	/// the identity's Personal Tenant link, which keeps sign-in from
+	/// provisioning another Personal Tenant for an identity that deleted its own.
+	Tombstone,
+}
+
 /// One table of the Community workspace's migrations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Table {
 	pub app: &'static str,
 	pub name: &'static str,
 	pub classification: Classification,
+	/// Set only on a Tenant-owned table that purge keeps.
+	pub retained: Option<Retained>,
+	/// Set only on a Deployment-wide table whose rows name a Tenant in a
+	/// `tenant` column and that purge deletes, such as a pending authorization
+	/// flow that holds a secret of the Tenant's.
+	pub names_tenant: bool,
 }
 
-const fn table(app: &'static str, name: &'static str, classification: Classification) -> Table {
+impl Table {
+	/// Whether purging a Tenant deletes its rows of this table.
+	pub const fn purged(&self) -> bool {
+		(matches!(self.classification, Classification::TenantOwned) && self.retained.is_none())
+			|| self.names_tenant
+	}
+
+	/// Whether the table is audit history, kept after the purge for a period.
+	pub const fn audit_history(&self) -> bool {
+		matches!(self.retained, Some(Retained::AuditHistory))
+	}
+}
+
+/// The tables whose rows purge deletes, Community's and the build's own (#266),
+/// in list order.
+pub fn purged() -> impl Iterator<Item = &'static str> {
+	crate::bootstrap::build::current()
+		.tables()
+		.filter(|table| table.purged())
+		.map(|table| table.name)
+}
+
+/// The audit history tables, Community's and the build's own, in list order.
+pub fn audit_history() -> impl Iterator<Item = &'static str> {
+	crate::bootstrap::build::current()
+		.tables()
+		.filter(|table| table.audit_history())
+		.map(|table| table.name)
+}
+
+/// Nullable references that purge clears before it deletes a Tenant's rows. A
+/// Registration Request is Deployment-wide and expires on its own, so it
+/// outlives the Invitation it was made with, which goes with the Tenant.
+pub const UNLINKED: &[crate::database::purge::Unlink] =
+	&[("dashboard_registration_requests", "invitation_id")];
+
+pub const fn table(app: &'static str, name: &'static str, classification: Classification) -> Table {
 	Table {
 		app,
 		name,
 		classification,
+		retained: None,
+		names_tenant: false,
+	}
+}
+
+/// A Deployment-wide table whose rows name a Tenant and that purge deletes.
+const fn named(app: &'static str, name: &'static str) -> Table {
+	Table {
+		app,
+		name,
+		classification: Classification::DeploymentWide,
+		retained: None,
+		names_tenant: true,
+	}
+}
+
+const fn audit(app: &'static str, name: &'static str) -> Table {
+	Table {
+		app,
+		name,
+		classification: Classification::TenantOwned,
+		retained: Some(Retained::AuditHistory),
+		names_tenant: false,
+	}
+}
+
+const fn tombstone(app: &'static str, name: &'static str) -> Table {
+	Table {
+		app,
+		name,
+		classification: Classification::TenantOwned,
+		retained: Some(Retained::Tombstone),
+		names_tenant: false,
 	}
 }
 
@@ -86,7 +181,7 @@ pub const TABLES: &[Table] = &[
 	table("execution", "research_fragments", TenantOwned),
 	table("execution", "research_originals", TenantOwned),
 	table("execution", "research_page_images", TenantOwned),
-	table("execution", "research_revocations", TenantOwned),
+	audit("execution", "research_revocations"),
 	table("execution", "research_snapshots", TenantOwned),
 	table("execution", "research_sources", TenantOwned),
 	table("execution", "run_activations", TenantOwned),
@@ -126,15 +221,15 @@ pub const TABLES: &[Table] = &[
 	// identity
 	table("identity", "authorization_bundles", TenantOwned),
 	table("identity", "authorization_catalog", TenantOwned),
-	table("identity", "authorization_catalog_history", TenantOwned),
+	audit("identity", "authorization_catalog_history"),
 	table("identity", "authorization_credentials", TenantOwned),
-	table("identity", "authorization_decisions", TenantOwned),
+	audit("identity", "authorization_decisions"),
 	table("identity", "authorization_execution", TenantOwned),
 	table("identity", "authorization_peer_graph_grants", TenantOwned),
 	table("identity", "authorization_remote_commands", TenantOwned),
 	table("identity", "authorization_remote_execution", TenantOwned),
 	table("identity", "authorization_remote_outputs", TenantOwned),
-	table("identity", "authorization_revisions", TenantOwned),
+	audit("identity", "authorization_revisions"),
 	table("identity", "authorization_run_outputs", TenantOwned),
 	table("identity", "authorization_run_reads", TenantOwned),
 	table("identity", "authorization_run_registry_reads", TenantOwned),
@@ -145,7 +240,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "credential_store_keys", DeploymentWide),
 	table("identity", "credential_store_resources", TenantOwned),
 	table("identity", "credential_store_versions", TenantOwned),
-	table("identity", "dashboard_administration_history", TenantOwned),
+	audit("identity", "dashboard_administration_history"),
 	table("identity", "dashboard_execution_origins", TenantOwned),
 	// External Identities
 	table("identity", "dashboard_identities", DeploymentWide),
@@ -176,21 +271,22 @@ pub const TABLES: &[Table] = &[
 	table("identity", "identity_approval_preferences", TenantOwned),
 	table("identity", "identity_approval_rules", TenantOwned),
 	table("identity", "identity_thread_approval_modes", TenantOwned),
-	// the identity's one Personal Tenant, read at sign-in
-	table("identity", "personal_tenants", TenantOwned),
+	// the identity's one Personal Tenant, read at sign-in; purge keeps it, or
+	// signing in would provision a new Personal Tenant for an identity that deleted its own
+	tombstone("identity", "personal_tenants"),
 	// pending Sign in with ChatGPT flows bound to a browser, like sign-in state
-	table("identity", "plan_authorizations", DeploymentWide),
+	named("identity", "plan_authorizations"),
 	// this Deployment's Plan Connection host ID
 	table("identity", "plan_connection_hosts", DeploymentWide),
 	table("identity", "plan_connections", TenantOwned),
 	// pending OAuth flows bound to a browser, like sign-in state
-	table("identity", "provider_authorizations", DeploymentWide),
+	named("identity", "provider_authorizations"),
 	table("identity", "provider_credential_bindings", TenantOwned),
 	table("identity", "provider_credentials", TenantOwned),
 	table("identity", "run_plan_connections", TenantOwned),
 	table("identity", "run_provider_credentials", TenantOwned),
 	table("identity", "tenant_invitations", TenantOwned),
-	table("identity", "tenant_retention_rule_history", TenantOwned),
+	audit("identity", "tenant_retention_rule_history"),
 	table("identity", "tenant_retention_rules", TenantOwned),
 	// Tenant Deletions outlive purge and are read while the Tenant refuses everyone (ADR 0060)
 	table("identity", "tenant_deletions", DeploymentWide),
@@ -254,6 +350,7 @@ pub const TABLES: &[Table] = &[
 	table("registry", "agent_incident_events", TenantOwned),
 	table("registry", "agent_incidents", TenantOwned),
 	table("registry", "agent_knowledge", TenantOwned),
+	table("registry", "agent_plugin_copies", TenantOwned),
 	table("registry", "agent_test_limits", TenantOwned),
 	table("registry", "agent_test_profiles", TenantOwned),
 	table("registry", "agent_test_sessions", TenantOwned),

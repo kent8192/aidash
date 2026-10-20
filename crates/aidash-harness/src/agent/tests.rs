@@ -153,6 +153,12 @@ struct State {
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
 	/// URL intents recorded beside the Run's Task and inputs.
 	url_intents: Vec<aidash_domain::research::intent::UrlIntent>,
+	/// What the environment lists for a Run's Agent Plugins; `None` means it has no plugin support.
+	plugin_listing: Option<aidash_domain::agent_plugin::PluginTools>,
+	plugin_listings: std::sync::atomic::AtomicUsize,
+	closed_sessions: Mutex<Vec<Uuid>>,
+	/// The next save of this event kind fails once, as when the worker crashes before it commits.
+	failing_save: Mutex<Option<&'static str>>,
 	/// The authority's tool checks pass instead of being unexpected.
 	permit_tools: bool,
 	/// Answers of `tool_call_approval` in call order.
@@ -280,6 +286,16 @@ fn unexpected(operation: &str) -> ! {
 impl ExecutionStore for Backend {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
+		if self
+			.0
+			.failing_save
+			.lock()
+			.unwrap()
+			.take_if(|kind| *kind == event)
+			.is_some()
+		{
+			return Err(Error::External("save failed".into()));
+		}
 		if event == "model.completed" {
 			// The store closes the pending attempt as accepted in the same transaction.
 			let mut attempts = self.0.attempts.lock().unwrap();
@@ -946,6 +962,20 @@ impl ExecutionEnvironment for Backend {
 			checks as &dyn aidash_application::ports::execution::completion::CompletionChecks
 		})
 	}
+	async fn pin_plugin_tools(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		let _ = run;
+		self.record("plugins.list");
+		self.0
+			.plugin_listings
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(self.0.plugin_listing.clone())
+	}
+	async fn close_plugin_sessions(&self, run: Uuid) {
+		self.0.closed_sessions.lock().unwrap().push(run);
+	}
 	async fn documents(&self, entry: &Entry) -> Result<Value> {
 		let _ = entry;
 		Ok(json!([]))
@@ -1408,6 +1438,10 @@ fn fixture() -> Fixture {
 		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
 		url_intents: vec![],
+		plugin_listing: None,
+		plugin_listings: Default::default(),
+		closed_sessions: Mutex::new(vec![]),
+		failing_save: Mutex::new(None),
 		permit_tools: false,
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
@@ -3847,6 +3881,7 @@ impl DeferredSnapshot {
 			bindings: self.bindings,
 			definitions: self.definitions,
 			foreign_agents: vec![],
+			agent_plugins: vec![],
 		}
 	}
 }
@@ -4581,6 +4616,7 @@ mod decider;
 mod degraded;
 mod estimate;
 mod native;
+mod plugins;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {

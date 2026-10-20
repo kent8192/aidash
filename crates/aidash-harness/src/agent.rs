@@ -925,6 +925,53 @@ impl<'a> Executor<'a> {
 		token: Uuid,
 		visibility: &mut dyn ExecutionVisibility,
 	) -> Result<()> {
+		self.advance_step(run, token, visibility).await?;
+		if run.phase().is_terminal() {
+			self.environment.close_plugin_sessions(run.id).await;
+		}
+		Ok(())
+	}
+	/// Lists the remote servers of the Run's Agent Plugins once, at its first step, and pins the
+	/// tools they offer (ADR 0073). A recovered Run that pinned them never lists again, and a
+	/// crash before the save lists again.
+	async fn pin_plugin_tools(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&dyn ExecutionAuthority>,
+		visibility: &mut dyn ExecutionVisibility,
+	) -> Result<()> {
+		let declares_plugins = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.is_some_and(|snapshot| !snapshot.agent_plugins.is_empty());
+		if !declares_plugins || run.context.plugin_tools.is_some() {
+			return Ok(());
+		}
+		// Like inference, release visibility and authorization locks during I/O.
+		if let Some(guard) = guard {
+			guard.suspend().await?;
+		}
+		visibility.suspend().await?;
+		let pinned = self.environment.pin_plugin_tools(run).await;
+		let resumed = visibility.resume().await;
+		if let Some(guard) = guard {
+			guard.resume().await?;
+		}
+		resumed?;
+		let Some(pinned) = pinned? else {
+			return Ok(());
+		};
+		run.context.plugin_tools = Some(pinned);
+		self.environment.store().pin_plugin_tools(run, token).await
+	}
+	async fn advance_step(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		visibility: &mut dyn ExecutionVisibility,
+	) -> Result<()> {
 		let store = self.environment.store();
 		let guard = self.environment.authority();
 		let home = self.environment.home(run);
@@ -1045,6 +1092,7 @@ impl<'a> Executor<'a> {
 				home.claim(&task, &entry).await?;
 				home.transition(aidash_domain::TaskStatus::Running).await?;
 				self.record_start_content(run, &agent).await?;
+				self.pin_plugin_tools(run, token, guard, visibility).await?;
 				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
 			}
@@ -2538,9 +2586,10 @@ impl<'a> Executor<'a> {
 					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
 				{
 					let (reference_id, reference_version) = match &contract.identity {
-						ToolIdentity::Descriptor(reference) => (&reference.id, &reference.version),
-						ToolIdentity::Registry(reference) => (&reference.id, &reference.version),
+						ToolIdentity::Descriptor(reference) => (reference.id.clone(), reference.version.clone()),
+						ToolIdentity::Registry(reference) => (reference.id.clone(), reference.version.clone()),
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
+						ToolIdentity::AgentPlugin(tool) => plugin_approval_reference(tool),
 					};
 					if home.local() {
 						let Some(guard) = guard else {
@@ -3179,6 +3228,16 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 	}
 }
 
+/// The `<id>@<version>` an approval prompt names for a plugin tool: its server path, and the first
+/// 12 hex digits of the digest of the plugin copy that declared it.
+fn plugin_approval_reference(tool: &aidash_domain::tool::AgentPluginTool) -> (String, String) {
+	let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
+	(
+		format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool),
+		digest.chars().take(12).collect(),
+	)
+}
+
 /// The pinned snapshot and budgets of a `deferred@1` Run, read from its
 /// Agent definition; `None` under `legacy@1` or without a Binding snapshot.
 fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::DeferredBudgets)>> {
@@ -3206,7 +3265,12 @@ async fn exposure_catalog(
 		.map(|(alias, tool)| (alias.clone(), tool.specification()))
 		.collect();
 	let direct = environment.direct_skills(run).await?;
-	Ok(exposure::catalog(snapshot, &specs, &direct)?)
+	Ok(exposure::catalog(
+		snapshot,
+		&specs,
+		&direct,
+		run.context.plugin_tools.as_ref(),
+	)?)
 }
 /// Resident blocks of the selected Skills: Registry bodies from the pinned
 /// snapshot, direct bodies from the Run's pinned Skill files.
@@ -3233,6 +3297,9 @@ async fn resident_skills(
 				environment
 					.direct_skill_body(run, *skill_id, &capability.digest)
 					.await?
+			}
+			exposure::CapabilityIdentity::AgentPluginTool { .. } => {
+				return Err(Error::Invalid(format!("selected {alias} is not a Skill")));
 			}
 		};
 		text.push_str(&exposure::resident_block(capability, &body));

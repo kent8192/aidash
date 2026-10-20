@@ -503,3 +503,82 @@ async fn direct_skill_assets_read_through_the_pinned_record(fixture: Fixture) {
 		Err(error) if code(&error) == ("invalid", "CAPABILITY_CHANGED")
 	));
 }
+
+#[tokio::test]
+async fn the_capability_tools_describe_and_load_a_tool_the_run_pinned_from_a_plugin() {
+	use crate::{
+		plugin_tools::pin_for_run,
+		test_support::{FakeSessions, Listed, listed_tool, plugin_snapshot_with, stored_plugin},
+	};
+	let policy = ExposurePolicy::Deferred(Default::default());
+	let snapshot = plugin_snapshot_with(
+		vec![stored_plugin("acme", &[])],
+		Value::Null,
+		vec![],
+		|root| {
+			root.config["exposure"] = json!(policy);
+			root.config["remove_default"] = json!(
+				policy
+					.default_tools()
+					.into_iter()
+					.filter(|name| *name != SKILL_ASSET_READ)
+					.collect::<Vec<_>>()
+			);
+		},
+	);
+	let sessions = FakeSessions::default();
+	sessions.script("docs", Listed::Tools(vec![listed_tool("search")]));
+	let mut run = run(snapshot);
+	run.context.plugin_tools = Some(
+		pin_for_run(
+			&sessions,
+			run.id,
+			run.context.binding_snapshot.as_deref().unwrap(),
+		)
+		.await
+		.unwrap(),
+	);
+	let mut fixture = Fixture {
+		operations: Operations {
+			specifications: BTreeMap::new(),
+			direct: vec![],
+			files: BTreeMap::new(),
+			read_bytes: 4,
+		},
+		run,
+	};
+
+	let found = fixture.capability("acme__docs__search").await;
+	assert_eq!(found["loaded"], false);
+	let described = fixture
+		.call("capability_describe", json!({"alias":"acme__docs__search"}))
+		.await
+		.unwrap();
+	assert_eq!(described["kind"], "tool");
+	assert_eq!(
+		described["detail"],
+		json!(super::super::agent_plugin::pinned_specification(
+			&fixture.run.context.plugin_tools.as_ref().unwrap().servers[0].tools[0]
+		))
+	);
+	assert!(matches!(
+		fixture
+			.call("capability_load", json!({"alias":"acme__docs__search","digest":"stale"}))
+			.await,
+		Err(error) if code(&error) == ("invalid", "CAPABILITY_CHANGED")
+	));
+	let loaded = fixture
+		.call(
+			"capability_load",
+			json!({"alias":"acme__docs__search","digest":found["digest"]}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(loaded["status"], "loaded");
+	assert_eq!(loaded["identity"]["agent_plugin_tool"]["tool"], "search");
+	fixture.apply(&loaded);
+	assert_eq!(
+		fixture.capability("acme__docs__search").await["loaded"],
+		true
+	);
+}

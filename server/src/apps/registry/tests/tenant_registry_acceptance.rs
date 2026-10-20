@@ -6,14 +6,22 @@ mod support;
 #[path = "../../execution/tests/support/upstream.rs"]
 mod upstream;
 
+use aidash_application::{
+	ports::registry::{AgentPluginSource, FetchedPlugin, PluginFetch, PluginImportRequest},
+	registry::agent_plugin_import::AgentPluginImport,
+	tenancy::TenancyScope,
+};
+use aidash_domain::agent_plugin::{self, AgentPluginRef, PLUGIN_SCHEMA, PluginFile};
 use aidash_domain::identity::tenancy::{ADMINISTRATORS, MEMBERS, initial_policy};
 use aidash_domain::policy::{Policy, ResourceSelector, Subject, SubjectKind, SubjectSelector};
+use aidash_domain::tenancy::TenantName;
 use reinhardt::test::APIClient;
 use reinhardt::test::fixtures::api_client_from_url;
 use rstest::rstest;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use support::{EndpointFixture, assert_json, endpoint, tenant_root};
 use uuid::Uuid;
 
@@ -785,4 +793,328 @@ async fn a_changed_read_only_declaration_needs_a_new_version(#[future] endpoint:
 	);
 	assert_eq!(next, 200, "{next_body}");
 	assert_eq!(repeated, 200, "the unchanged version still registers again");
+}
+
+const PLUGIN_SOURCE: &str =
+	"https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567";
+
+fn plugin_files() -> Vec<PluginFile> {
+	let file = |path: &str, text: &str| PluginFile {
+		path: path.to_owned(),
+		bytes: text.as_bytes().to_vec(),
+	};
+	vec![
+		file(
+			"plugin.json",
+			&json!({"$schema":PLUGIN_SCHEMA,"name":"tools","version":"1.0.0"}).to_string(),
+		),
+		file(
+			"skills/review/SKILL.md",
+			"---\nname: review\ndescription: Reviews a diff.\n---\n\nRead the diff first.\n",
+		),
+		file("skills/review/references/guide.md", "Guide."),
+		file("assets/logo.bin", "\u{0}binary"),
+	]
+}
+
+/// A source that serves one fixed answer and counts how often it is asked.
+struct FixedSource {
+	answer: PluginFetch,
+	calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl AgentPluginSource for FixedSource {
+	async fn fetch(&self, _: PluginImportRequest) -> aidash_application::Result<PluginFetch> {
+		self.calls.fetch_add(1, Ordering::SeqCst);
+		Ok(self.answer.clone())
+	}
+}
+
+fn fetched(files: Vec<PluginFile>, source: &str, denied: &[&str]) -> PluginFetch {
+	PluginFetch::Fetched(FetchedPlugin {
+		root: "plugins/tools".into(),
+		source: source.to_owned(),
+		files,
+		denied: denied.iter().map(|path| (*path).to_owned()).collect(),
+	})
+}
+
+fn import_request() -> PluginImportRequest {
+	PluginImportRequest {
+		url: "https://github.com/acme/tools".into(),
+		plugin_path: None,
+	}
+}
+
+async fn actor(
+	fixture: &EndpointFixture,
+	tenant: &str,
+	subject: &str,
+) -> aidash_server::authorization::identity::Actor {
+	let issued = assert_json(
+		fixture
+			.deployment_administrator
+			.post(
+				&format!("/api/authorization/{tenant}/credentials"),
+				&json!({"subject":subject}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	aidash_server::authorization::Authorization {
+		pool: fixture.runtime.store.pool.clone(),
+	}
+	.authenticate(issued["token"].as_str().unwrap())
+	.await
+	.unwrap()
+}
+
+async fn import_plugin(
+	fixture: &EndpointFixture,
+	tenant: &str,
+	subject: &str,
+	answer: PluginFetch,
+) -> (
+	aidash_server::Result<
+		aidash_server::apps::registry::serializers::agent_plugin_import::AgentPluginImportResult,
+	>,
+	usize,
+) {
+	let calls = Arc::new(AtomicUsize::new(0));
+	let source = AgentPluginImport::new(Arc::new(FixedSource {
+		answer,
+		calls: calls.clone(),
+	}));
+	let result = aidash_server::apps::registry::services::agent_plugin_import::import(
+		&fixture.runtime,
+		&source,
+		actor(fixture, tenant, subject).await,
+		import_request(),
+	)
+	.await;
+	(result, calls.load(Ordering::SeqCst))
+}
+
+fn plugin_agent(id: &str, instructions: &str, plugins: &[AgentPluginRef]) -> Value {
+	let mut entry = agent(id, "1.0.0", "model");
+	entry["config"]["instructions"] = json!(instructions);
+	entry["config"]["agent_plugins"] = json!(plugins);
+	entry
+}
+
+async fn copies(fixture: &EndpointFixture, tenant: &str) -> i64 {
+	count(
+		fixture,
+		"SELECT count(*) FROM agent_plugin_copies WHERE tenant = $1",
+		tenant,
+	)
+	.await
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_import_keeps_one_immutable_copy_per_digest_and_only_for_a_caller_who_may_register(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	tenant(&fixture, "globex").await;
+	let files = plugin_files();
+	let loaded = agent_plugin::load(&files).unwrap();
+	let later_commit =
+		"https://github.com/acme/tools/tree/89abcdef0123456789abcdef0123456789abcdef";
+	// Act
+	let (denied, denied_calls) = import_plugin(
+		&fixture,
+		"acme",
+		"reader",
+		fetched(files.clone(), PLUGIN_SOURCE, &[]),
+	)
+	.await;
+	let (first, _) = import_plugin(
+		&fixture,
+		"acme",
+		"owner",
+		fetched(files.clone(), PLUGIN_SOURCE, &["hooks/run.sh"]),
+	)
+	.await;
+	let (again, _) = import_plugin(
+		&fixture,
+		"acme",
+		"owner",
+		fetched(files.clone(), later_commit, &[]),
+	)
+	.await;
+	let (chosen, _) = import_plugin(
+		&fixture,
+		"acme",
+		"owner",
+		PluginFetch::Choose(vec!["plugins/a".into(), "plugins/b".into()]),
+	)
+	.await;
+	let (elsewhere, _) = import_plugin(
+		&fixture,
+		"globex",
+		"owner",
+		fetched(files.clone(), later_commit, &[]),
+	)
+	.await;
+	// Assert: a subject without registry.create causes no fetch and stores nothing.
+	assert!(matches!(denied, Err(aidash_server::Error::Forbidden)));
+	assert_eq!(denied_calls, 0);
+	// The import returns the reference the Agent definition pins.
+	let first = first.unwrap();
+	assert_eq!(first.plugins, vec!["plugins/tools"]);
+	let selected = first.selected.unwrap();
+	assert_eq!(
+		selected.reference,
+		AgentPluginRef::of(&loaded, PLUGIN_SOURCE)
+	);
+	assert_eq!(selected.denied, vec!["hooks/run.sh"]);
+	// A second import of the same files keeps the stored copy and its source.
+	let again = again.unwrap().selected.unwrap();
+	assert_eq!(again.reference, selected.reference);
+	assert_eq!(copies(&fixture, "acme").await, 1);
+	// A repository with several plugins stores nothing.
+	let chosen = chosen.unwrap();
+	assert_eq!(chosen.plugins, vec!["plugins/a", "plugins/b"]);
+	assert!(chosen.selected.is_none());
+	assert_eq!(copies(&fixture, "acme").await, 1);
+	// Another Tenant keeps its own copy, under its own source.
+	let elsewhere = elsewhere.unwrap().selected.unwrap();
+	assert_eq!(elsewhere.reference.digest, selected.reference.digest);
+	assert_eq!(elsewhere.reference.source, later_commit);
+	assert_eq!(copies(&fixture, "globex").await, 1);
+	// The row keeps the plugin, every fetched file (text or base64, in path order) and the
+	// denied paths of the import that stored it.
+	let stored: (Value, Value, Value) = sqlx::query_as(
+		"SELECT plugin, files, denied FROM agent_plugin_copies WHERE tenant = 'acme'",
+	)
+	.fetch_one(fixture.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(stored.0, serde_json::to_value(&loaded).unwrap());
+	assert_eq!(
+		stored.1,
+		json!([
+			{"path":"assets/logo.bin","encoding":"base64","content":"AGJpbmFyeQ=="},
+			{"path":"plugin.json","encoding":"utf8","content":String::from_utf8(files[0].bytes.clone()).unwrap()},
+			{"path":"skills/review/SKILL.md","encoding":"utf8","content":String::from_utf8(files[1].bytes.clone()).unwrap()},
+			{"path":"skills/review/references/guide.md","encoding":"utf8","content":"Guide."}
+		])
+	);
+	assert_eq!(stored.2, json!(["hooks/run.sh"]));
+}
+
+#[rstest]
+#[tokio::test]
+async fn registration_reads_the_stored_copy_and_another_tenant_cannot(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	tenant(&fixture, "globex").await;
+	let acme = credential(&fixture, "acme", "owner").await;
+	let globex = credential(&fixture, "globex", "owner").await;
+	for client in [&acme, &globex] {
+		assert_eq!(register(client, &model("model")).await.0, 200);
+	}
+	let (imported, _) = import_plugin(
+		&fixture,
+		"acme",
+		"owner",
+		fetched(plugin_files(), PLUGIN_SOURCE, &[]),
+	)
+	.await;
+	let reference = imported.unwrap().selected.unwrap().reference;
+	let mut changed = reference.clone();
+	changed.skills.push("deploy".into());
+	let mut missing = reference.clone();
+	missing.digest = format!("sha256:{}", "0".repeat(64));
+	// Act
+	let (registered, body) = register(
+		&acme,
+		&plugin_agent("tooled", "Help", std::slice::from_ref(&reference)),
+	)
+	.await;
+	let (without_instructions, skills_only) = register(
+		&acme,
+		&plugin_agent("skills-only", "", std::slice::from_ref(&reference)),
+	)
+	.await;
+	let (changed_status, changed_body) =
+		register(&acme, &plugin_agent("changed", "Help", &[changed])).await;
+	let (missing_status, missing_body) =
+		register(&acme, &plugin_agent("missing", "Help", &[missing])).await;
+	let (foreign_status, foreign_body) = register(
+		&globex,
+		&plugin_agent("foreign", "Help", std::slice::from_ref(&reference)),
+	)
+	.await;
+	let digest = reference.digest.clone();
+	let read = |tenant: &'static str| {
+		let pool = fixture.runtime.store.pool.clone();
+		let digest = digest.clone();
+		async move {
+			let mut tx = pool
+				.begin(&TenancyScope::Tenant(TenantName::new(tenant).unwrap()))
+				.await
+				.unwrap();
+			let stored =
+				aidash_server::apps::registry::repositories::agent_plugins::get(&mut *tx, &digest)
+					.await
+					.unwrap();
+			tx.rollback().await.unwrap();
+			stored
+		}
+	};
+	let (owned, foreign) = (read("acme").await, read("globex").await);
+	// The Registry's own scope (the ORM path) decides the same way.
+	let entry: aidash_server::registry::Entry = serde_json::from_value(plugin_agent(
+		"orm",
+		"Help",
+		std::slice::from_ref(&reference),
+	))
+	.unwrap();
+	let orm_owned = fixture
+		.runtime
+		.registry
+		.validate_references(&TenantName::new("acme").unwrap(), &entry)
+		.await;
+	let orm_foreign = fixture
+		.runtime
+		.registry
+		.validate_references(&TenantName::new("globex").unwrap(), &entry)
+		.await;
+	// Assert
+	assert_eq!(registered, 200, "{body}");
+	assert_eq!(
+		body["config"]["agent_plugins"][0]["digest"],
+		json!(reference.digest)
+	);
+	assert_eq!(without_instructions, 200, "{skills_only}");
+	assert_eq!(changed_status, 409, "{changed_body}");
+	assert!(
+		changed_body.to_string().contains("AGENT_PLUGIN_CHANGED"),
+		"{changed_body}"
+	);
+	assert_eq!(missing_status, 400, "{missing_body}");
+	assert!(
+		missing_body.to_string().contains("AGENT_PLUGIN_MISSING"),
+		"{missing_body}"
+	);
+	assert_eq!(foreign_status, 400, "{foreign_body}");
+	assert!(
+		foreign_body.to_string().contains("AGENT_PLUGIN_MISSING"),
+		"{foreign_body}"
+	);
+	assert_eq!(owned.unwrap().plugin.digest, reference.digest);
+	assert!(foreign.is_none());
+	orm_owned.unwrap();
+	assert!(orm_foreign.is_err());
 }

@@ -7,6 +7,7 @@ use crate::ports::{
 		dispatch::{RealDispatchRepository, RealDispatchScope},
 		execution::{ExecutionRepository, ExecutionScope},
 	},
+	tools::PluginSessions,
 };
 use aidash_domain::{
 	identity::Principal,
@@ -40,6 +41,12 @@ struct Repository {
 	pause: bool,
 	skill_source: Option<Value>,
 	deferred: bool,
+	plugins: Vec<crate::ports::bindings::StoredAgentPlugin>,
+	/// The server settings choose eager exposure under `deferred@1`.
+	eager: bool,
+	/// What the previous session of a continuation stored in its scenario.
+	previous_tools: Option<Value>,
+	sessions: Option<Arc<dyn PluginSessions>>,
 }
 impl Repository {
 	fn new() -> Self {
@@ -49,10 +56,26 @@ impl Repository {
 			pause: false,
 			skill_source: None,
 			deferred: false,
+			plugins: vec![],
+			eager: false,
+			previous_tools: None,
+			sessions: None,
 		}
 	}
 	fn agent(&self) -> Entry {
 		let mut entry = agent();
+		if !self.plugins.is_empty() {
+			entry.config["agent_plugins"] = json!(
+				self.plugins
+					.iter()
+					.map(crate::test_support::plugin_reference)
+					.collect::<Vec<_>>()
+			);
+			if self.eager {
+				entry.config["agent_plugin_settings"] =
+					json!({"acme":{"docs":{"exposure":"eager"}}});
+			}
+		}
 		if self.skill_source.is_some() {
 			entry.config["instructions"] = json!("");
 			entry.config["bindings"] = json!([crate::test_support::binding(
@@ -89,6 +112,7 @@ impl Repository {
 		Admission {
 			repository: self,
 			models: self,
+			plugin_sessions: self.sessions.clone(),
 		}
 	}
 }
@@ -315,6 +339,9 @@ impl SandboxScope for Scope<'_> {
 		previous.id = id;
 		previous.status = "completed".into();
 		previous.scenario = json!({"mode":"simulated","profile_id":null,"profile_revision":null});
+		if let Some(tools) = &self.repository.previous_tools {
+			previous.scenario["plugin_tools"] = tools.clone();
+		}
 		previous.conversation = Some(
 			json!([{"role":"user","content":"prior"},{"role":"assistant","content":"prior answer"}]),
 		);
@@ -412,7 +439,7 @@ impl ExecutionScope for Scope<'_> {
 		_: &Draft,
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		Ok(crate::test_support::resolve(
+		Ok(crate::test_support::resolve_with_plugins(
 			"aidash://fixture",
 			entry,
 			false,
@@ -428,6 +455,7 @@ impl ExecutionScope for Scope<'_> {
 					crate::test_support::entry("mounted-source", "source", source.clone())
 				}))
 				.collect(),
+			self.repository.plugins.clone(),
 		))
 	}
 
@@ -556,7 +584,7 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 	);
 	assert_eq!(
 		admitted.session.scenario,
-		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect())})
+		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect()),"plugin_tools":{"servers":[],"findings":[]}})
 	);
 	let aidash_domain::provider::ModelContext::Legacy(context) = &admitted.job.request.context
 	else {
@@ -864,4 +892,203 @@ async fn deferred_agents_simulate_the_selected_first_request(#[case] attachment:
 		assert!(request.instructions.contains("plugin_1 [tool]"));
 	}
 	assert!(repository.state.lock().unwrap().committed);
+}
+
+const PLUGIN_TOOL: &str = "acme__docs__search";
+
+fn servers(names: &[&str]) -> Value {
+	names
+		.iter()
+		.map(|name| {
+			(
+				(*name).to_owned(),
+				json!({"type":"streamable-http","url":format!("https://{name}.example.com/mcp")}),
+			)
+		})
+		.collect::<serde_json::Map<_, _>>()
+		.into()
+}
+
+/// A repository whose Agent takes in the plugin `acme` with the remote servers `names`, listed
+/// over `sessions`.
+fn plugin_repository(
+	names: &[&str],
+	sessions: &Arc<crate::test_support::FakeSessions>,
+) -> Repository {
+	let mut repository = Repository::new();
+	repository.plugins = vec![crate::test_support::stored_plugin_with_servers(
+		"acme",
+		servers(names),
+		&[],
+	)];
+	let sessions: Arc<dyn PluginSessions> = sessions.clone();
+	repository.sessions = Some(sessions);
+	repository
+}
+
+fn serving(tool: &str) -> Arc<crate::test_support::FakeSessions> {
+	let sessions = Arc::new(crate::test_support::FakeSessions::default());
+	sessions.script(
+		"docs",
+		crate::test_support::Listed::Tools(vec![crate::test_support::listed_tool(tool)]),
+	);
+	sessions
+}
+
+fn offered(request: &ModelRequest, alias: &str) -> bool {
+	request.tools.iter().any(|tool| tool.name == alias)
+}
+
+#[rstest]
+#[case::legacy(false, false)]
+#[case::deferred_eager(true, true)]
+#[case::deferred_discoverable(true, false)]
+#[tokio::test]
+async fn a_remote_plugin_server_is_listed_once_and_its_tools_are_offered(
+	#[case] deferred: bool,
+	#[case] eager: bool,
+) {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.deferred = deferred;
+	repository.eager = eager;
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	let listings = sessions.listings();
+	assert_eq!(listings.len(), 1);
+	assert_eq!(listings[0].1.plugin.as_str(), "acme");
+	assert_eq!(listings[0].1.server.as_str(), "docs");
+	assert_eq!(sessions.closed(), [listings[0].0]);
+	let request = &admitted.job.request;
+	if deferred && !eager {
+		assert!(!offered(request, PLUGIN_TOOL));
+		assert!(
+			request
+				.instructions
+				.contains(&format!("{PLUGIN_TOOL} [tool]"))
+		);
+	} else {
+		assert!(offered(request, PLUGIN_TOOL));
+	}
+	assert!(!request.instructions.contains("unavailable in this test"));
+	let stored = &admitted.session.scenario["plugin_tools"];
+	assert_eq!(stored, &json!(admitted.job.plugin_tools));
+	assert_eq!(stored["servers"][0]["tools"][0]["alias"], PLUGIN_TOOL);
+	assert_eq!(stored["findings"], json!([]));
+	assert!(repository.state.lock().unwrap().committed);
+}
+
+#[tokio::test]
+async fn a_continued_session_reuses_the_pinned_tools_and_never_lists_again() {
+	let sessions = serving("search");
+	let first = plugin_repository(&["docs"], &sessions);
+	let first = admit(&first.admission(), draft().id, input())
+		.await
+		.unwrap();
+	// The server now lists a different tool, so a second listing would show.
+	sessions.script(
+		"docs",
+		crate::test_support::Listed::Tools(vec![crate::test_support::listed_tool("other")]),
+	);
+	let mut second = plugin_repository(&["docs"], &sessions);
+	second.previous_tools = Some(first.session.scenario["plugin_tools"].clone());
+	let mut request = input();
+	request.continue_from = Some(Uuid::from_u128(8));
+	let continued = admit(&second.admission(), draft().id, request)
+		.await
+		.unwrap();
+	assert_eq!(sessions.listings().len(), 1);
+	assert_eq!(sessions.closed().len(), 1);
+	assert!(offered(&continued.job.request, PLUGIN_TOOL));
+	assert!(!offered(&continued.job.request, "acme__docs__other"));
+	assert_eq!(
+		continued.session.scenario["plugin_tools"],
+		first.session.scenario["plugin_tools"]
+	);
+	assert_eq!(continued.job.plugin_tools, first.job.plugin_tools);
+}
+
+#[tokio::test]
+async fn a_real_tool_test_offers_plugin_tools_without_referencing_them() {
+	let sessions = serving("search");
+	let repository = plugin_repository(&["docs"], &sessions);
+	let mut request = input();
+	request.mode = "real".into();
+	request.profile_id = Some("profile".into());
+	let admitted = admit(&repository.admission(), draft().id, request)
+		.await
+		.unwrap();
+	assert!(offered(&admitted.job.request, PLUGIN_TOOL));
+	assert!(!admitted.job.tool_references.contains_key(PLUGIN_TOOL));
+	assert!(admitted.job.profile.is_some());
+}
+
+#[tokio::test]
+async fn without_a_session_port_every_server_is_skipped_and_the_test_says_so() {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs", "wiki"], &sessions);
+	repository.sessions = None;
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	assert!(sessions.listings().is_empty());
+	assert!(!offered(&admitted.job.request, PLUGIN_TOOL));
+	assert!(admitted.job.plugin_tools.servers.is_empty());
+	assert!(admitted.job.request.instructions.contains(
+		"the tools of the plugin servers acme/docs, acme/wiki are unavailable in this test"
+	));
+	assert_eq!(
+		skipped(&admitted.session.scenario["plugin_tools"]),
+		["acme/docs", "acme/wiki"]
+	);
+}
+
+#[rstest]
+#[case::refused(None)]
+#[case::unreachable(Some(crate::ports::tools::ListFailure::Unreachable))]
+#[tokio::test]
+async fn an_unavailable_server_is_skipped_while_the_others_are_offered(
+	#[case] failure: Option<crate::ports::tools::ListFailure>,
+) {
+	let sessions = serving("search");
+	if let Some(failure) = failure {
+		sessions.script("wiki", crate::test_support::Listed::Failed(failure));
+	}
+	let repository = plugin_repository(&["docs", "wiki"], &sessions);
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	assert_eq!(sessions.listings().len(), 2);
+	assert_eq!(sessions.closed().len(), 1);
+	let request = &admitted.job.request;
+	assert!(offered(request, PLUGIN_TOOL));
+	assert!(
+		request
+			.instructions
+			.contains("the tools of the plugin servers acme/wiki are unavailable in this test")
+	);
+	assert!(!request.instructions.contains("acme/docs"));
+	assert_eq!(
+		skipped(&admitted.session.scenario["plugin_tools"]),
+		["acme/wiki"]
+	);
+}
+
+/// The `plugin/server` pairs a stored pin reports as unavailable.
+fn skipped(stored: &Value) -> Vec<String> {
+	stored["findings"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|entry| entry["finding"]["reason"] == "server_unavailable")
+		.map(|entry| {
+			assert_eq!(entry["finding"]["outcome"], "skipped");
+			format!(
+				"{}/{}",
+				entry["plugin"].as_str().unwrap(),
+				entry["finding"]["component"]["server"].as_str().unwrap()
+			)
+		})
+		.collect()
 }

@@ -1362,3 +1362,35 @@ for (const [width, locale] of [
     });
   }
 }
+
+test("a draft keeps the Agent Plugins it carries through an edit and save", async ({
+  page,
+}) => {
+  const { saves, drafts } = await editableDrafts(page);
+  const agent_plugins = [
+    {
+      digest: `sha256:${"c".repeat(64)}`,
+      name: "review-kit",
+      source: "https://github.com/acme/kits/tree/0123456789abcdef",
+      skills: ["code-review"],
+      servers: { index: { stdio: { command: { bare: "node" } } } },
+      findings: [],
+    },
+  ];
+  drafts[0].entry.config = {
+    ...drafts[0].entry.config,
+    agent_plugins,
+  } as never;
+  await page.reload();
+  const instructions = page.getByLabel("Additional instructions");
+  await expect(instructions).toHaveValue("First draft");
+  await instructions.fill("Edited with plugins");
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0]).toMatchObject({
+    entry: { config: { instructions: "Edited with plugins", agent_plugins } },
+  });
+});

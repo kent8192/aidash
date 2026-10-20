@@ -72,6 +72,7 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
 | `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
 | `approval.read`                 | `subject`      | Read a member's default Approval Mode and Approval Rules. Only the member writes them.                         |
+| `billing.attach`                | `tenant`       | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 
@@ -108,14 +109,15 @@ Every Tenant has a root record keyed by its Tenant name, `<adjective>-<noun>-<8 
 
 The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's policy decides them. The `[deployment] offering` supplies each rule the settings leave out, and an explicit value overrides it. Identities of a GCIP Tenant with a Tenant Binding are never covered: they hold no Personal Tenant, create no Tenants and redeem no other Tenant's Invitation.
 
-| Setting               | Self-hosted | Cloud  | Dedicated | Meaning                                                                    |
-| --------------------- | ----------- | ------ | --------- | -------------------------------------------------------------------------- |
-| `personal_tenants`    | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                 |
-| `tenant_creation`     | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                           |
-| `creation_per_hour`   | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                      |
-| `creation_total`      | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged               |
-| `invitations`         | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations  |
-| `deletion_grace_days` | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
+| Setting                | Self-hosted | Cloud  | Dedicated | Meaning                                                                       |
+| ---------------------- | ----------- | ------ | --------- | ----------------------------------------------------------------------------- |
+| `personal_tenants`     | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                    |
+| `tenant_creation`      | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                              |
+| `creation_per_hour`    | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                         |
+| `creation_total`       | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged                  |
+| `invitations`          | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations     |
+| `deletion_grace_days`  | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90)    |
+| `audit_retention_days` | `365`       | `365`  | `365`     | Days a purged Tenant's audit history is kept before it is deleted (1 to 3650) |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 
@@ -140,7 +142,20 @@ A Tenant Deletion is a recorded decision (ADR 0060). `POST /api/tenants/{tenant}
 
 The Tenant stays restorable for `deletion_grace_days`. `POST /api/tenants/{tenant}/restore` restores it before then, as a Deployment Administrator or through a browser session that names its own Mapping in the deleted Tenant in `x-aidash-context`. That Mapping's subject must be allowed `tenant.delete` by the policy the Tenant was deleted with, and the Mapping, its External Identity and its credential must still be usable. The usual authentication refuses a deleted Tenant, so this route authenticates the caller itself and uses only that Mapping and that Tenant's policy. A Tenant a Deployment Administrator deleted is restored only by a Deployment Administrator (409 otherwise). Deleting a restored Tenant again starts a new grace period. Deletions are kept in `tenant_deletions`, one Deployment-wide row per deletion, which outlives purge.
 
-Purging a deleted Tenant's data after its grace period is not implemented yet (ADR 0061, #239). Tenant-creation limits already count a deleted Tenant until it is purged.
+#### Purge
+
+After the grace period, Aidash purges the Tenant's data (ADR 0061). The purge is a resumable, idempotent job on the hourly retention loop, so a purge may lag its deadline by up to an hour. It runs in the `tenant-purge` Deployment Scope and works through four steps in order. Each step is idempotent, and a purge that fails resumes from the failed step at the next sweep. Each step first locks the deletion row and checks, under that lock, that it is still unrestored, unpurged and leased to this purge, and keeps the lock while it works, so a restore never interleaves with a destructive step. A restore is refused once a purge owns the Tenant or the grace period has ended.
+
+1. **Provider Credentials.** Plan Connections that deletion could not end are ended, then every Provider Credential, bound or not, is revoked and deleted, and its stored Key Material with it. On Cloud this deletes the Secret Manager secrets before the rows that name them.
+2. **Capability object files.** The files that only `core_objects` names are erased before their rows.
+3. **Rows.** Every row the Tenant owns in a Tenant-owned table of `server/src/database/classification.rs` is deleted, children before parents. The order comes from the foreign keys of the migrated database, so a table added to the classification is purged without a second list. Marketplace consents, audiences, versions and provenance are Deployment-wide and stay, and so do events without a Tenant.
+4. **Finish.** The root record's label is cleared and the deletion record is marked purged. The Tenant name, creation time and creating principal stay as a tombstone, so the name is never reused, and a restore is refused with 409 `tenant_purged`. Tenant-creation limits stop counting the Tenant.
+
+The classification is the single source of what purge keeps. A Tenant-owned table is purged unless it is marked audit history or a tombstone pointer. **Audit history** is the administration history, authorization decisions, policy revisions, catalog history, and Evidence Revocation and Retention Rule history. It is kept for `audit_retention_days` after the purge and then deleted by the same loop. Who may read it after the purge is not decided yet (#301). The identity's Personal Tenant link is kept too, so signing in never provisions a second Personal Tenant for an identity that deleted its own. A test fails when a table with a `tenant` column is neither purged, kept, nor a declared Deployment-wide reference, and when anything purge keeps references a table it deletes.
+
+`POST /api/tenants/{tenant}/purge` purges a deleted Tenant at once, ending its grace period (`tenant.purge` in the administration history). Only a Deployment Administrator may; a Tenant Administrator cannot (401 or 403), and a Tenant that is not deleted answers 409. `GET /api/tenants` lists, for each Tenant, whether it is `purgeable` and, once a purge started or failed, its `purge` progress: the `step` that runs next or keeps failing, the number of `failures`, the last `error`, and `stalled` after three failures in a row. The dashboard's Tenant list for Deployment Administrators offers Purge now and shows a stalled purge with its step and error.
+
+**What purge cannot reach.** The runner journal has no Tenant key, and acknowledging a message blanks it. Platform and broker logs, provider-side prompt caches, and OpenRouter keys are outside Aidash, so people delete their OpenRouter keys at OpenRouter; the deletion dialog says so. Memory recovery archives follow at their next prune. Billing records are Deployment-wide and are not purged (#242).
 
 `POST /api/tenants/{tenant}/leave` disables the caller's own Mapping and retires its Plan Connection. It answers 409 when the Tenant would be left without a Tenant Administrator, and for a member mapped through the Tenant's Tenant Binding, whom signing in would map again. A member who left returns only through a new Invitation, as the same user subject.
 

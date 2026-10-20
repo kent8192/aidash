@@ -71,6 +71,8 @@ async fn interruption_store(
 		tenancies: Default::default(),
 		tool_slots: aidash_application::ports::execution::ToolSlots::new(1),
 		cache_salt: None,
+		usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
+		admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 		provider_credentials: None,
 		plan_connections: None,
 		plan_connections_enabled: false,

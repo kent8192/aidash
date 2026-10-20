@@ -4,6 +4,7 @@ use crate::{
 	ports::bindings::{BindingCatalog, ProviderCatalog},
 };
 use aidash_domain::{
+	agent_plugin::{AgentPluginRef, PinnedAgentPlugin},
 	registry::{Entry, bindings::*},
 	tool::providers::{
 		ToolDescriptor, remote_exclusion, reserved_aliases, validate_concurrency,
@@ -13,6 +14,45 @@ use aidash_domain::{
 use std::collections::{BTreeMap, BTreeSet};
 pub mod catalog;
 pub mod private;
+
+/// Pins the Skills of each plugin copy the Agent takes in. A copy that is missing, or that no
+/// longer matches what the definition recorded, refuses the Run; nothing is refetched.
+async fn pin_agent_plugins(
+	catalog: &mut dyn BindingCatalog,
+	config: &AgentBindings,
+	remote: bool,
+) -> Result<Vec<PinnedAgentPlugin>> {
+	if remote && !config.agent_plugins.is_empty() {
+		return Err(Error::Invalid(
+			"Agent Plugins are unavailable remotely".into(),
+		));
+	}
+	let mut pinned = Vec::with_capacity(config.agent_plugins.len());
+	for reference in &config.agent_plugins {
+		let stored = catalog
+			.agent_plugin(&reference.digest)
+			.await?
+			.ok_or_else(|| Error::Invalid(format!("AGENT_PLUGIN_MISSING: {}", reference.name)))?;
+		if stored.plugin.digest != reference.digest
+			|| AgentPluginRef::of(&stored.plugin, &stored.source) != *reference
+		{
+			return Err(Error::Conflict(format!(
+				"AGENT_PLUGIN_CHANGED: {}",
+				reference.name
+			)));
+		}
+		pinned.push(PinnedAgentPlugin {
+			digest: reference.digest.clone(),
+			skills: stored
+				.plugin
+				.skills
+				.iter()
+				.map(|skill| skill.attachment(&reference.digest, &stored.source))
+				.collect(),
+		});
+	}
+	Ok(pinned)
+}
 
 struct Pending {
 	normalized: NormalizedBinding,
@@ -35,6 +75,7 @@ pub async fn resolve(
 		));
 	}
 	let config: AgentBindings = serde_json::from_value(agent_definition.config.clone())?;
+	let agent_plugins = pin_agent_plugins(catalog, &config, remote).await?;
 	if let Some(installation) = &agent_definition.installation {
 		catalog.installation(installation).await?;
 	}
@@ -57,7 +98,7 @@ pub async fn resolve(
 	let mut resolved: BTreeMap<QualifiedRef, ResolvedBinding> = BTreeMap::new();
 	let mut aliases = BTreeSet::new();
 	let mut operations = BTreeSet::new();
-	let mut source_skill_support = false;
+	let mut source_skill_support = agent_plugins.iter().any(|plugin| !plugin.skills.is_empty());
 	let mut decision_hooks = BTreeSet::new();
 	for (reference, kind) in std::iter::once((&config.model, "model"))
 		.chain(config.cluster.iter().map(|r| (r, "cluster")))
@@ -543,6 +584,7 @@ pub async fn resolve(
 		bindings: resolved.into_values().collect(),
 		definitions,
 		foreign_agents: foreign_agents.into_values().collect(),
+		agent_plugins,
 	};
 	snapshot.validate()?;
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;

@@ -57,3 +57,17 @@ BEGIN
     END IF;
 END
 $aidash_scope$;
+
+-- Whether the transaction is the Tenant purge job's (ADR 0061). The purge
+-- deletes rows that triggers otherwise keep from direct changes, such as the
+-- rows maintained by their parents and the immutable Marketplace revisions.
+-- The scope is written only by server/src/database/scope.rs, so only a
+-- transaction opened in the `tenant-purge` Deployment Scope passes. The
+-- function stays valid in every scope, like the two above.
+CREATE FUNCTION public.aidash_tenant_purge() RETURNS boolean
+    LANGUAGE sql STABLE PARALLEL SAFE
+    SET search_path = pg_catalog
+AS $aidash_scope$
+    SELECT coalesce(current_setting('aidash.scope', true), '') = 'deployment'
+       AND coalesce(current_setting('application_name', true), '') = 'deployment:tenant-purge'
+$aidash_scope$;

@@ -76,6 +76,21 @@ pub async fn mcp_tool_hint(
 	crate::http::json(service.mcp_tool_hint(actor, request).await)
 }
 
+#[post(
+	"/api/agent-plugins/import",
+	name = "agent-plugin-import",
+	auth = "protected"
+)]
+pub async fn agent_plugin_import(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Json(request): Json<
+		crate::apps::registry::serializers::agent_plugin_import::PluginImportRequest,
+	>,
+) -> ViewResult<Response> {
+	crate::http::json(service.agent_plugin_import(actor, request).await)
+}
+
 #[post("/api/skills/import", name = "skill-import", auth = "protected")]
 pub async fn skill_import(
 	#[inject] service: Depends<RegistryManagement>,

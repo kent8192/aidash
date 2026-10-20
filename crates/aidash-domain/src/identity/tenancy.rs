@@ -27,6 +27,8 @@ pub const MEMBERS: &str = "members";
 pub const TENANT_UPDATE: &str = "tenant.update";
 /// Deleting the Tenant, and restoring it within its grace period (ADR 0060).
 pub const TENANT_DELETE: &str = "tenant.delete";
+/// Consenting, for the Tenant, to its attachment to a Billing Account.
+pub const BILLING_ATTACH: &str = "billing.attach";
 
 /// The policy that lets members approve the Tool call approvals of their own
 /// Runs, and nothing else they could be asked to approve.
@@ -197,6 +199,8 @@ pub struct TenancyRules {
 	pub invitations: bool,
 	/// How long a deleted Tenant stays restorable before it is purged.
 	pub deletion_grace_days: u32,
+	/// How long audit history outlives a Tenant's purge before it is deleted.
+	pub audit_retention_days: u32,
 }
 
 impl TenancyRules {
@@ -211,6 +215,7 @@ impl TenancyRules {
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
+			audit_retention_days: deletion::DEFAULT_AUDIT_RETENTION_DAYS,
 		};
 		match offering {
 			Offering::Cloud => Self {

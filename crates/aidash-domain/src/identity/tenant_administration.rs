@@ -109,9 +109,9 @@ pub fn resource_kind(action: &str) -> &'static str {
 		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {
 			crate::approval_rules::MODE_RESOURCE
 		}
-		crate::identity::tenancy::TENANT_UPDATE | crate::identity::tenancy::TENANT_DELETE => {
-			"tenant"
-		}
+		crate::identity::tenancy::TENANT_UPDATE
+		| crate::identity::tenancy::TENANT_DELETE
+		| crate::identity::tenancy::BILLING_ATTACH => "tenant",
 		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
 		MARKETPLACE_INSTALL => "package",
 		_ => "subject",

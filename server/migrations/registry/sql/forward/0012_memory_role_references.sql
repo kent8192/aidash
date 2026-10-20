@@ -2,8 +2,10 @@
 CREATE FUNCTION public.guard_registry_memory_role_refs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF pg_trigger_depth() < 2 THEN
-  RAISE EXCEPTION 'memory role references are maintained by registry'
-   USING ERRCODE = '23514', CONSTRAINT = 'registry_memory_role_reference';
+  IF NOT public.aidash_tenant_purge() THEN
+   RAISE EXCEPTION 'memory role references are maintained by registry'
+    USING ERRCODE = '23514', CONSTRAINT = 'registry_memory_role_reference';
+  END IF;
  END IF;
  RETURN NULL;
 END $$;

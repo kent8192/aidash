@@ -9,7 +9,9 @@ use aidash_domain::{
 		SkillAttachment,
 		operations::{FileScope, MountedFile as FileEntry},
 		sessions::Area,
-		skills::{Pinned, SkillList, SkillLoad, SkillRead, content_digest, validate},
+		skills::{
+			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillRead, content_digest, validate,
+		},
 	},
 	exposure::{DirectSkill, SkillOriginKind},
 	registry::{AgentConfig, SkillFile, bindings::SKILL_ASSET_READ},
@@ -119,7 +121,7 @@ pub async fn pin(
 			attachments.push(a);
 		}
 	}
-	if attachments.len() > 32 {
+	if attachments.len() > MAX_RUN_SKILLS {
 		return Err(Error::Invalid("SKILL_BINDING_LIMIT".into()));
 	}
 	let mut pinned = vec![];

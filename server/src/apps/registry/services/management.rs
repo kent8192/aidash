@@ -1,5 +1,9 @@
 //! Management use cases.
+use crate::apps::registry::serializers::agent_plugin_import::{
+	AgentPluginImportResult, PluginImportRequest,
+};
 use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
+use crate::apps::registry::services::agent_plugin_import;
 use crate::{
 	Error, Result,
 	apps::registry::repositories::requests::TenantRegistration,
@@ -168,6 +172,21 @@ impl RegistryManagement {
 		let result = access.require(&resource, "registry.create").await;
 		access.finish(result).await?;
 		crate::skill_import::import(request).await
+	}
+
+	/// See [`crate::apps::registry::services::agent_plugin_import::import`].
+	pub(crate) async fn agent_plugin_import(
+		&self,
+		actor: Actor,
+		request: PluginImportRequest,
+	) -> Result<AgentPluginImportResult> {
+		agent_plugin_import::import(
+			&self.runtime,
+			&crate::bootstrap::agent_plugin_import(),
+			actor,
+			request,
+		)
+		.await
 	}
 }
 

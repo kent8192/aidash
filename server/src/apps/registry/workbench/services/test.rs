@@ -103,6 +103,7 @@ impl BehavioralTests {
 			&aidash_application::registry::workbench::sandbox::admission::Admission {
 				repository: &repository,
 				models: &models,
+				plugin_sessions: None,
 			},
 			id,
 			input,

@@ -127,6 +127,12 @@ impl TenantAdministrations {
 	) -> Result<ApprovedMapping> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
+		aidash_application::usage::require(
+			self.runtime.store.admission.as_ref(),
+			&tenant,
+			aidash_application::usage::Work::Member,
+		)
+		.await?;
 		let policy = Some(administrator.policy().clone());
 		let actor = AdministrationActor::TenantAdministrator(administrator.clone());
 		let approve = || {
