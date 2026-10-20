@@ -15,6 +15,8 @@ PENDING = "/api/capabilities/approvals?state=pending&role=approver"
 # Node cases in crates/aidash-harness/src/agent.rs. test_fixed_task_evaluation.py checks them.
 REFUSALS = (
     "tool call was refused by the Tenant's policy",
+    "tool call was refused by an Approval Rule",
+    "tool call was refused: the person asked not to be asked",
     "tool call approval was refused: no person is eligible to approve it",
     "tool call approval was denied",
     "tool call approval expired",
