@@ -166,11 +166,16 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     const blocked = manifest(true);
     pending = blocked.id;
     await submit(blocked);
+    // The coordinator reserves the visibility gate only after every read
+    // lease is released, and a Tenant subject's /api/state held one for 7 s
+    // in CI (#404).
     await expect
-      .poll(async () =>
-        (
-          await request.get(`/api/workspaces/${workspace.id}`, { headers })
-        ).status(),
+      .poll(
+        async () =>
+          (
+            await request.get(`/api/workspaces/${workspace.id}`, { headers })
+          ).status(),
+        { timeout: 30000 },
       )
       .toBe(503);
     await page.reload();
