@@ -6,8 +6,6 @@ mod endpoint;
 mod fixtures;
 #[path = "support/native_database.rs"]
 mod native_database;
-#[path = "support/tenant_roots.rs"]
-mod tenant_roots;
 
 use aidash_application::tenancy::TenancyScope;
 use aidash_server::apps::execution::models::{Event, Inbox};
@@ -21,7 +19,7 @@ use std::time::Duration;
 
 /// The scope of a Tenant whose root record exists, since every event names its Tenant.
 async fn acme(fixture: &BusFixture) -> TenancyScope {
-	tenant_roots::tenant_root_in(fixture.app.runtime.store.pool.fixture_driver(), "acme").await;
+	endpoint::tenant_root_in(fixture.app.runtime.store.pool.fixture_driver(), "acme").await;
 	TenancyScope::tenant("acme").unwrap()
 }
 
