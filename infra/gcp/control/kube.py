@@ -138,6 +138,25 @@ class Cluster:
         selection = ("--selector", selector) if selector else ()
         return json.loads(self.kubectl("get", kind, *self.scope(namespace), *selection, "-o", "json"))["items"]
 
+    def excluded(self, namespace, label, match):
+        """Every listable namespaced resource carrying an exclusion label."""
+        try:
+            kinds = run(
+                "kubectl", "--kubeconfig", self.kubeconfig,
+                "api-resources", "--namespaced=true", "--verbs=list", "-o", "name",
+                timeout=60,
+            ).decode().split()
+            if not kinds:
+                raise Refused("Cannot enumerate namespaced resources for backup exclusions")
+            return json.loads(self.kubectl(
+                "get", ",".join(kinds), *self.scope(namespace),
+                "--selector", f"{label}={match}", "-o", "json", timeout=120,
+            ))["items"]
+        except Refused:
+            raise
+        except Exception as error:
+            raise Refused("Cannot verify every namespaced resource for backup exclusions") from error
+
     def apply(self, manifest):
         # Server-side apply keeps no last-applied annotation copy of Secret data.
         self.kubectl(

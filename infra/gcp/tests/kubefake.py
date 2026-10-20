@@ -164,6 +164,15 @@ class FakeCluster:
             return result
         return [deepcopy(obj) for (other, scope, _), obj in self.objects.items() if other == kind and scope == namespace]
 
+    def excluded(self, namespace, label, match):
+        bounded_timeout(1)
+        return [
+            deepcopy(obj)
+            for (_, scope, _), obj in self.objects.items()
+            if scope == namespace
+            and obj.get("metadata", {}).get("labels", {}).get(label) == match
+        ]
+
     def apply(self, manifest):
         if manifest["kind"] == "ProtectedApplication":
             self.record("protect", identity(manifest["metadata"]["namespace"]))

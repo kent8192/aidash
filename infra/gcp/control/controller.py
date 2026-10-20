@@ -776,7 +776,7 @@ def validate_staging_publication(config, store, terraform):
 
 
 def require_backup_covers_retained_volumes(cluster, identity):
-    """Every required claim exists, and the ledger is the only excluded one."""
+    """Every required claim exists, and only the ledger is excluded."""
     namespace = kube.namespace_of(identity)
     claims = cluster.items("persistentvolumeclaim", namespace)
     observed = {claim["metadata"]["name"] for claim in claims}
@@ -786,14 +786,16 @@ def require_backup_covers_retained_volumes(cluster, identity):
             "Retained volumes are missing before the Pre-update Backup: " + ", ".join(missing)
         )
     unexpected = sorted(
-        claim["metadata"]["name"]
-        for claim in claims
-        if claim.get("metadata", {}).get("labels", {}).get(kube.BACKUP_LABEL) == kube.BACKUP_EXCLUDE
-        and claim["metadata"]["name"] != kube.LEDGER_CLAIM
+        f"{item.get('kind', 'Resource')}/{item['metadata']['name']}"
+        for item in cluster.excluded(namespace, kube.BACKUP_LABEL, kube.BACKUP_EXCLUDE)
+        if not (
+            item.get("kind") == "PersistentVolumeClaim"
+            and item["metadata"]["name"] == kube.LEDGER_CLAIM
+        )
     )
     if unexpected:
         raise Refused(
-            "Retained volumes are excluded from the Pre-update Backup: " + ", ".join(unexpected)
+            "Resources are excluded from the Pre-update Backup: " + ", ".join(unexpected)
         )
 
 

@@ -1958,6 +1958,22 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertEqual(self.api.requests, [])
         self.assertEqual(len(self.cloud.plans), baseline)
 
+    def test_an_unexpected_excluded_secret_refuses_the_update(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.kube.patch(
+            "secret", "app-runtime",
+            {"metadata": {"labels": {"aidash.run/backup": "exclude"}}}, "aidash-production",
+        )
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+
     def test_a_failed_shared_apply_after_the_backup_records_the_started_writers(self):
         self.running_production()
         self.production_request(UPDATE)
