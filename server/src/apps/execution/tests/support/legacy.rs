@@ -141,6 +141,33 @@ pub async fn register_local_node(
 	source
 }
 
+/// Registers `other`'s default Node at `local`'s although `other` serves
+/// nothing, so the registration only lets `local` accept it: its endpoint is
+/// a stand-in that answers the identity request and nothing else.
+#[allow(dead_code)]
+pub async fn register_sender_only(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let stand_in =
+		peering::Remote::standing_in(other.config.deployment.as_str(), peering::key_of(other))
+			.await;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	peering::permit(f, &stand_in.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		stand_in.registration(other_node.node.as_str()),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
 /// Both fixture Deployments register the other's default Node, so each accepts
 /// and addresses the other. Both serve their routes.
 #[allow(dead_code)]
@@ -719,7 +746,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			)
 			.await
 			.unwrap();
-		let federation = Federation {
+		let mut federation = Federation {
 			sandbox: Default::default(),
 			store,
 			registry: Registry::new(
@@ -748,6 +775,8 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
 		};
+		// Every fixture Deployment holds its own Deployment Key (#241).
+		peering::give_key(&mut federation);
 		RuntimeFixture {
 			federation,
 			url: database.url.clone(),

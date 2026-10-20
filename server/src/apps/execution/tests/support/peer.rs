@@ -46,9 +46,6 @@ fn peer_runtime(
 		f.registry =
 			aidash_server::registry::Registry::new(f.store.pool.clone(), &f.config.deployment)
 				.unwrap();
-		// A fixture Deployment signs with its own key, and reaches the other
-		// fixture Deployments on loopback.
-		super::peering::give_key(f);
 		owner
 	}
 	.boxed()

@@ -98,6 +98,17 @@ pub fn enable(f: &Federation, context: &reinhardt::InjectionContext) -> Federati
 	keyed
 }
 
+/// The Deployment Key file of `f`.
+pub fn key_of(f: &Federation) -> Arc<KeyFile> {
+	let id = key_id(f);
+	FILES
+		.lock()
+		.unwrap()
+		.get(&id)
+		.and_then(Weak::upgrade)
+		.expect("the fixture Deployment's key file is alive")
+}
+
 /// The file behind `f`'s Deployment Key, for a process started from the fixture.
 pub fn key_file(f: &Federation) -> Option<PathBuf> {
 	let id = f.config.deployment_key.as_ref()?.key_id().to_string();
@@ -290,7 +301,12 @@ pub struct Remote {
 
 impl Remote {
 	pub async fn start(id: &str) -> Self {
-		let key = KeyFile::generate();
+		Self::standing_in(id, KeyFile::generate()).await
+	}
+
+	/// Answers for a Deployment that holds `key` but serves nothing itself,
+	/// such as a fixture that only sends.
+	pub async fn standing_in(id: &str, key: Arc<KeyFile>) -> Self {
 		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let endpoint = format!("http://{}", listener.local_addr().unwrap());
 		let identity = json!({
