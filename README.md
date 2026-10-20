@@ -157,6 +157,16 @@ namespace, so the browser and backend use the same issuer. Both use the
 official Node.js image independently of the frontend build, including on the
 first start or with a custom `COMPOSE_PROJECT_NAME`.
 
+Demo data (fictional Tenants, subjects, Registry entries and Catalog Approvals) loads by hand into the running backend. The command refuses unless `[demo_data] enabled` is set, which the Compose `local-settings` config does:
+
+```sh
+docker compose --profile dev exec backend aidash demo-data \
+  --from /app/deploy/demo-data/structure.json \
+  --people /app/deploy/demo-data/local-people.json
+```
+
+Each input digest loads once; a rerun with unchanged inputs prints `Demo data unchanged`. The local people file reserves `alex@example.test` for the `acme` administrator and `globex` member Demo Tenants, and `taylor@example.test` for a member of `acme`. Sign in with the local issuer above as subject `alex` to land in them. Demo data holds no Provider Credentials, so a Demo agent runs only after a Tenant Administrator connects OpenRouter with **Connect OpenRouter** and binds the resulting Provider Credential. Environments (develop, `pr-N` and test) load Demo data automatically; see [infra/gcp/README.md](infra/gcp/README.md).
+
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. Where the Tenancy Rules turn Personal Tenants on, Google sign-in creates personal Tenant authority; otherwise a new identity files a registration request. Shared Tenant membership requires approval and Deployment Administrator access requires a separate explicit grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Deployment Administrators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and Deployment Administrator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
 ### Aidash Cloud GCIP sign-in
