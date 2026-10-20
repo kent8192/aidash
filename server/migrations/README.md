@@ -238,6 +238,13 @@ workspaces:
   Deployment-wide. The `startup` test target compares the list with the
   migrated database, so a migration that adds a table classifies it in the same
   change.
+- The Enterprise workspace classifies its own tables in
+  `enterprise/server/src/classification.rs`, one `table(...)` line each. The
+  Enterprise build hands that list to Community through `Extension::tables`, so
+  `Build::tables` returns the combined list that purge reads.
+  `enterprise/server/tests/classification.rs` runs the same comparison
+  (`server/src/database/classification/comparison.rs`) on a database migrated
+  with both workspaces' roots, and its failure names the Enterprise file.
 
 ## Row-level policies
 
@@ -267,6 +274,17 @@ login and the activity observer all need a scope.
   Tenant. The server reports it, like a failed `WITH CHECK`, as an internal
   error, because it means a server bug rather than a refused permission.
 
+- `identity/0028_tenancy_policy_functions` also creates `aidash_tenant_purge()`,
+  true only in the `tenant-purge` Deployment Scope (`aidash.scope` is
+  `deployment` and `application_name` is `deployment:tenant-purge`), which only
+  `server/src/database/scope.rs` can write. Purge deletes rows that triggers
+  keep from direct changes, so these `RunSQL` functions let that scope through
+  and nothing else: `guard_task_dependencies`, `guard_registry_agent_model_refs`,
+  `guard_registry_agent_resource_refs` and `guard_registry_memory_role_refs`
+  (rows their parents maintain) and `marketplace_immutable`, for `DELETE` only
+  (a Tenant's Marketplace revisions go with the Tenant). Each function calls it
+  only after its own check, so it never runs where the function is absent.
+  Reinhardt cannot express trigger function bodies (ADR 0061).
 - A row whose `tenant` is NULL or empty is visible only in a Deployment Scope.
 - Each app's `*_row_level_security` migration enables and forces the policy on
   its own tables and depends on the functions migration: `execution/0036`,
@@ -289,6 +307,12 @@ login and the activity observer all need a scope.
   test scans every migration source, outside function bodies, for such writes.
   Seed Tenant-owned rows from the server inside a scope, or change the table's
   baseline definition.
+- A Tenant-owned Enterprise table gets the same policy from an
+  `NNNN_row_level_security` migration of its own app. The policy checks
+  (`server/src/database/policy/checks.rs`) run on Community's migrations in the
+  unit tests and on the Enterprise root in
+  `enterprise/server/tests/classification.rs`, where they also refuse a write
+  to any Tenant-owned row of either workspace.
 - Test fixtures that seed or inspect Tenant-owned rows with plain SQLx use
   `Pool::fixture_driver()`. Its sessions hold the `test-fixture` Deployment
   Scope, and scoped transactions still override it. Only debug builds have it,
@@ -467,4 +491,4 @@ pruning or summary, journals those events as `imported`.
 
 `identity/0028_tenancy_policy_functions` (after `identity/0027_plan_connection_identity_reference`) creates the row-level policy functions `aidash_deployment_scope()` and `aidash_scope_tenant()` (#264). `execution/0036_row_level_security` (after `execution/0035_run_semantic_retry_cycle`), `federation/0010_row_level_security` (after `federation/0009_pinned_delegations_state`), `identity/0029_row_level_security`, `knowledge/0033_row_level_security` (after `knowledge/0032_memory_attempt_retry_cycle`), `marketplace/0010_row_level_security` (after `marketplace/0009_remove_compatibility_gate_state`) and `registry/0033_row_level_security` (after `registry/0032_degraded_context`) each also depend on it and enforce the forced policy on their app's Tenant-owned tables; see Row-level policies above. All seven are database-only `RunSQL` migrations with reversible SQL assets.
 
-`identity/0030_tenant_deletions` (after `identity/0029_row_level_security`) creates `tenant_deletions`, one Deployment-wide row per recorded Tenant Deletion (ADR 0060), referencing the Tenant's root record and the acting External Identities. A check ties each actor kind to its identity and forbids a purged deletion from being restored. A partial unique index keeps at most one unrestored deletion per Tenant, which every authenticated boundary checks, and a second partial index orders the deletions awaiting purge by their deadline. The generated state-only checkpoint `identity/0031_tenant_deletions_state` records the model without the checks and indexes.
+`identity/0030_tenant_deletions` (after `identity/0029_row_level_security`) creates `tenant_deletions`, one Deployment-wide row per recorded Tenant Deletion (ADR 0060), referencing the Tenant's root record and the acting External Identities. A check ties each actor kind to its identity and forbids a purged deletion from being restored. A partial unique index keeps at most one unrestored deletion per Tenant, which every authenticated boundary checks, and a second partial index orders the deletions awaiting purge by their deadline. The generated state-only checkpoint `identity/0031_tenant_deletions_state` records the model without the checks and indexes. The same migration holds the purge state (ADR 0061): `purge_step` (the step that runs next or keeps failing), `purge_failures` and `purge_error` with `purge_failed_at` (what the failed step reported), `purge_lease` and `purge_leased_until` (the worker that owns the purge, and until when; every destructive step locks the row and checks it still holds the lease, and a restore is refused while one does) and `audit_erased_at` (when the audit history that outlived the purge was deleted). The checks keep the step a known one, the error set whenever failures are counted, and a purged deletion free of progress, and a third partial index serves the sweep that deletes audit history. `identity/0004_references` creates neither `authorization_revisions_tenant_fkey` nor the foreign key from `authorization_catalog_history` to `authorization_catalog`: audit history is kept after purge and must not reference data purge deletes, so both reference only their Tenant's root record.

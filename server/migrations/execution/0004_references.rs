@@ -1,6 +1,8 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
 // Schema operations use Reinhardt; unsupported migration operations live in sql/.
+// A Human Request goes with its Run: a Run points back at the Request it waits
+// for, so only the cascade lets a purge delete both (ADR 0061).
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
@@ -286,7 +288,7 @@ pub(super) fn migration() -> Migration {
 				columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 				referenced_table: "runs".to_owned(),
 				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
+				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
 			},
@@ -306,7 +308,7 @@ pub(super) fn migration() -> Migration {
 					"id".to_owned(),
 					"workspace_id".to_owned(),
 				],
-				on_delete: ForeignKeyAction::NoAction,
+				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
 			},

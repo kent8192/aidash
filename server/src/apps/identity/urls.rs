@@ -62,6 +62,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::tenants::restore)
 			.with_route_middleware(AccessBoundary::public())
+			.endpoint(super::views::tenants::purge)
+			.with_route_middleware(AccessBoundary::deployment_administrator())
 			.endpoint(super::views::tenant_administration::leave)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::invitations::issue)

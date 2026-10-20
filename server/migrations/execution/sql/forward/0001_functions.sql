@@ -325,7 +325,11 @@ END $$;
 CREATE FUNCTION public.marketplace_immutable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-BEGIN RAISE EXCEPTION 'Marketplace content is immutable'; END $$;
+BEGIN
+    -- Only a Tenant purge deletes it, with the Tenant's installation (ADR 0061).
+    IF TG_OP = 'DELETE' AND public.aidash_tenant_purge() THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Marketplace content is immutable';
+END $$;
 CREATE FUNCTION public.marketplace_overlay_fence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

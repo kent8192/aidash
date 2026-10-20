@@ -105,6 +105,7 @@ fn each_offering_supplies_its_column_of_defaults(
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: 30,
+			audit_retention_days: 365,
 		}
 	);
 }
@@ -155,10 +156,15 @@ fn a_zero_hourly_limit_allows_nothing() {
 #[test]
 fn the_creator_administers_and_members_use() {
 	let mut bundle = initial_policy("brave-otter-k3m9q2xa", true).unwrap();
-	for action in ACTIONS
-		.iter()
-		.chain([TENANT_UPDATE, TENANT_DELETE, "catalog.approve"].iter())
-	{
+	for action in ACTIONS.iter().chain(
+		[
+			TENANT_UPDATE,
+			TENANT_DELETE,
+			BILLING_ATTACH,
+			"catalog.approve",
+		]
+		.iter(),
+	) {
 		assert!(allows(&bundle, OWNER, action), "{action}");
 	}
 	assert!(bundle.groups[ADMINISTRATORS].assignable);
@@ -190,6 +196,7 @@ fn the_creator_administers_and_members_use() {
 		[
 			TENANT_UPDATE,
 			TENANT_DELETE,
+			BILLING_ATTACH,
 			"catalog.approve",
 			"provider_credential.create",
 			"research.disclose",

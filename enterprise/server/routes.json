@@ -8,5 +8,45 @@
     "method": "POST",
     "path": "/auth/gcip/exchange",
     "offerings": ["cloud", "dedicated"]
+  },
+  {
+    "method": "GET",
+    "path": "/api/billing/tiers",
+    "offerings": ["cloud"]
+  },
+  {
+    "method": "POST",
+    "path": "/api/billing/accounts",
+    "offerings": ["cloud"]
+  },
+  {
+    "method": "GET",
+    "path": "/api/billing/accounts",
+    "offerings": ["cloud"]
+  },
+  {
+    "method": "POST",
+    "path": "/api/billing/accounts/{account}/tier",
+    "offerings": ["cloud"]
+  },
+  {
+    "method": "POST",
+    "path": "/api/billing/accounts/{account}/attachments",
+    "offerings": ["cloud"]
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/billing/attachment",
+    "offerings": ["cloud"]
+  },
+  {
+    "method": "GET",
+    "path": "/api/usage",
+    "offerings": ["cloud", "dedicated"]
+  },
+  {
+    "method": "GET",
+    "path": "/api/usage.csv",
+    "offerings": ["cloud", "dedicated"]
   }
 ]

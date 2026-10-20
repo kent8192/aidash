@@ -3451,7 +3451,7 @@ async fn startup_refuses_a_binding_to_a_missing_or_personal_tenant_and_keeps_a_d
 	// A deleted bound Tenant keeps its root record: startup proceeds, and
 	// sign-in through its GCIP Tenant gets the deleted Tenant's answer.
 	sqlx::query(
-		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after) VALUES (gen_random_uuid(), 'other', clock_timestamp(), 'deployment_administrator', clock_timestamp() + interval '30 days')",
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) VALUES (gen_random_uuid(), 'other', clock_timestamp(), 'deployment_administrator', clock_timestamp() + interval '30 days', 0)",
 	)
 	.execute(f.store.pool.fixture_driver())
 	.await

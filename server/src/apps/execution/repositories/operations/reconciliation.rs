@@ -359,6 +359,22 @@ impl OperationReconciliationScope for Scope<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn pod_time(
+		&mut self,
+		operation: Uuid,
+		started_at: chrono::DateTime<chrono::Utc>,
+		ended_at: chrono::DateTime<chrono::Utc>,
+	) -> Result<()> {
+		self.store
+			.usage
+			.pod_time(aidash_application::usage::PodTime {
+				operation,
+				tenant: self.access.identity.tenant.clone(),
+				started_at,
+				ended_at,
+			})
+			.await
+	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
 		let Scope { access, .. } = *self;
 		access

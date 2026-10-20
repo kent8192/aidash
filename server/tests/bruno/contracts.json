@@ -34275,6 +34275,15 @@
   },
   {
     "method": "POST",
+    "path": "/api/tenants/{tenant}/purge",
+    "name": "tenants-purge",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
     "path": "/api/tenants/{tenant}/invitations",
     "name": "tenant-invitations-issue",
     "source": "server/src/apps/identity/views/invitations.rs",

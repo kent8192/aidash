@@ -37,6 +37,26 @@ pub(crate) struct TenantRecord {
 	/// Whether a Deployment Administrator may restore the Tenant now, decided
 	/// by the database clock rather than the reader's.
 	pub(crate) restorable: bool,
+	/// Whether a Deployment Administrator may purge the Tenant now: it is
+	/// deleted and its data is not purged yet.
+	pub(crate) purgeable: bool,
+	/// How far the Tenant's purge got, once it started or failed.
+	pub(crate) purge: Option<PurgeProgress>,
+}
+
+/// A purge that started, for Deployment Administrators (ADR 0061).
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct PurgeProgress {
+	/// The step that runs next, or that keeps failing: `provider_credentials`,
+	/// `capability_objects`, `rows` or `finish`.
+	pub(crate) step: Option<String>,
+	/// Consecutive failures of that step.
+	pub(crate) failures: u32,
+	/// Why the step last failed.
+	pub(crate) error: Option<String>,
+	pub(crate) failed_at: Option<DateTime<Utc>>,
+	/// The purge failed several times in a row and needs attention.
+	pub(crate) stalled: bool,
 }
 
 #[derive(Deserialize, JsonSchema, Validate)]
