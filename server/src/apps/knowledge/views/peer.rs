@@ -1,7 +1,7 @@
 //! Existing Home query and leaf verification protocol boundaries.
 use crate::apps::identity::services::http_auth::InboundCall;
 use crate::{federation::Federation, http::json::Json, semantic::remote::Operation};
-use reinhardt::{Request, Response, http::ViewResult, post};
+use reinhardt::{Response, http::ViewResult, post};
 
 #[post(
 	"/federation/v0.1/scoped/semantic/query",

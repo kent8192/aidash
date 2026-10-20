@@ -53,8 +53,6 @@ export function useRecordLabels() {
     }
   };
   if (data) labels.set(data.node.id, endpointLabel(data.node.endpoint));
-  for (const peer of data?.peers ?? [])
-    labels.set(peer.node_id, endpointLabel(peer.endpoint));
   return labels;
 }
 export function useNodeLabel() {
@@ -81,38 +79,4 @@ export function ReferenceName({ id }: { id: string }) {
   const labels = useRecordLabels();
   const { t } = useI18n();
   return <>{labels.get(id) ?? t("unavailableEntity")}</>;
-}
-
-export function PeerSelect({
-  id,
-  name,
-  initial = "",
-  disabled = false,
-}: {
-  id?: string;
-  name: string;
-  initial?: string;
-  disabled?: boolean;
-}) {
-  const data = useContext(DisplayState);
-  const { t } = useI18n();
-  return (
-    <NativeSelect
-      id={id}
-      name={name}
-      required
-      defaultValue={initial}
-      disabled={disabled}
-    >
-      <option value="">{t("choose")}</option>
-      {data?.peers.map((peer) => (
-        <option key={peer.node_id} value={peer.node_id}>
-          <ReferenceName id={peer.node_id} />
-        </option>
-      ))}
-      {initial && !data?.peers.some((peer) => peer.node_id === initial) && (
-        <option value={initial}>{t("unavailableEntity")}</option>
-      )}
-    </NativeSelect>
-  );
 }

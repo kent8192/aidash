@@ -8,15 +8,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Peer {
-	pub node_id: String,
-	pub endpoint: String,
-	pub credential_env: String,
-	pub protocol_version: String,
-	pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Delegation {
 	pub task_id: Uuid,
 	pub node_id: String,

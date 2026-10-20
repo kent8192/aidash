@@ -1,17 +1,23 @@
 meta {
-  name: 0198 authorization-approve-catalog - Anonymous request is rejected
+  name: 0198 authorization-approve-catalog - Subject without catalog.approve cannot approve a closure
   type: http
   seq: 198
 }
 
 post {
   url: {{base_url}}/api/authorization/{{tenant}}/catalog/approvals
-  body: none
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{contract_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"approvals": [{"entry": {"id": "aidash.workspace_read", "version": "1.0.0"}, "enabled": true, "expected_revision": 0}]}
 }
 
 script:pre-request {
@@ -27,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

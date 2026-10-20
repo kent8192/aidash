@@ -4,7 +4,7 @@ use crate::authorization::peer::admission as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Path, Request, Response, post};
+use reinhardt::{Depends, Path, Response, post};
 use uuid::Uuid;
 
 #[post(

@@ -1,5 +1,5 @@
 meta {
-  name: 0278 execution-inspect - Require the peer node identity
+  name: 0278 execution-inspect - Refuse a token that does not verify
   type: http
   seq: 278
 }
@@ -12,8 +12,8 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{peer_token}}
-  X-Aidash-Protocol: 0.2
+  Authorization: Bearer not-a-federation-token
+  X-Aidash-Protocol: 0.4
 }
 
 script:pre-request {

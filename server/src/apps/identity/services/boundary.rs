@@ -255,7 +255,7 @@ async fn admit_peer(runtime: &Federation, request: &Request) -> Result<()> {
 	let digest = RequestDigest {
 		method: request.method.as_str(),
 		path: &signed_path,
-		body: &body,
+		body,
 	};
 	let receiver = NodeAddress::parse(&claims.aud);
 	if let (Ok(sender), Ok(receiver)) = (NodeAddress::parse(&claims.sub), &receiver) {
@@ -286,7 +286,7 @@ async fn admit_peer(runtime: &Federation, request: &Request) -> Result<()> {
 		.strip_prefix("oidc:")
 		.and_then(|id| uuid::Uuid::parse_str(id).ok())
 		.ok_or(Error::Unauthorized)?;
-	let tenant = serde_json::from_slice::<serde_json::Value>(&body)
+	let tenant = serde_json::from_slice::<serde_json::Value>(body)
 		.ok()
 		.and_then(|body| body.get("target_tenant")?.as_str().map(str::to_owned))
 		.and_then(|tenant| TenantName::new(tenant).ok())

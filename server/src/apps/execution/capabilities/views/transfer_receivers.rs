@@ -4,7 +4,7 @@ use crate::capabilities::transfer::receiver as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Request, Response, post};
+use reinhardt::{Depends, Response, post};
 
 #[post(
 	"/federation/v0.1/scoped/files/negotiate",

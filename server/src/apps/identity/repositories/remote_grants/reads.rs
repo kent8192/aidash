@@ -14,7 +14,6 @@ use aidash_application::{
 use aidash_domain::{
 	Task,
 	federation::{
-		Peer,
 		dependencies::Reference,
 		execution::home::{Grant, HomeBinding},
 	},

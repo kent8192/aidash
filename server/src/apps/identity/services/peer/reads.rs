@@ -132,7 +132,6 @@ impl PeerReads {
 	pub(crate) async fn verify(&self, admitted: Admitted, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();
 		aidash_domain::federation::registry_reads::validate(&input.references)?;
-		let node = &admitted.sender.to_string();
 		let mut access = super::access(&f, &admitted).await?;
 		let result = aidash_application::federation::registry_reads::verify(
 			&mut crate::bootstrap::registry_verification_scope(

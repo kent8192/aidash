@@ -110,7 +110,7 @@ impl Participant {
 	async fn reserve_in(
 		&self,
 		scope: &mut dyn ParticipantScope,
-		caller: &str,
+		_caller: &str,
 		manifest: &Manifest,
 	) -> Result<LocalStatus> {
 		if let Some(existing) = scope.lock(manifest.id).await? {

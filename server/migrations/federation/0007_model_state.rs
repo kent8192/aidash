@@ -658,6 +658,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("subject_chain", FieldType::Array(Box::new(FieldType::Text)))
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("task_id", FieldType::Uuid)
 					.with_not_null(true)
 					.with_unique(false)
@@ -797,6 +805,14 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("semantic", FieldType::Jsonb)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("subject_chain", FieldType::Array(Box::new(FieldType::Text)))
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(false)

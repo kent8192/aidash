@@ -1,5 +1,4 @@
 //! Native adapters that resolve and use the Nodes a sender addresses.
-use crate::apps::federation::remote::services::wire::Wire;
 use aidash_application::{Result, ports::federation::FederationRepository};
 use aidash_domain::federation::route::{Route, Sender};
 use async_trait::async_trait;
@@ -9,12 +8,6 @@ use async_trait::async_trait;
 pub(crate) struct Repository {
 	pub federation: crate::federation::Federation,
 	pub sender: Sender,
-}
-
-impl Repository {
-	pub(crate) fn wire(&self) -> Wire {
-		Wire::of(&self.federation)
-	}
 }
 
 #[async_trait]

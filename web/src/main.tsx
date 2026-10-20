@@ -19,7 +19,6 @@ import {
 import {
   state as getState,
   session as getSession,
-  mesh as getMesh,
   discover,
 } from "./generated/aidash";
 import { subscribe } from "./event-stream";
@@ -71,6 +70,7 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { NotificationProvider } from "./notifications";
 import { useApprovalInbox } from "./capabilities/inbox";
 import type { NoticeTarget } from "./notifications/model";
+import type { Mesh } from "./types";
 import {
   storedThemePreference,
   useTheme,
@@ -313,12 +313,6 @@ function Dashboard({
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   const [queueOpen, setQueueOpen] = useState(false);
-  const mesh = useQuery({
-    queryKey: ["mesh"],
-    queryFn: () => getMesh(),
-    enabled: connected && deploymentAdministrator,
-    refetchInterval: 3000,
-  });
   const discovery = useQuery({
     queryKey: ["discovery"],
     queryFn: () => discover({}),
@@ -544,7 +538,6 @@ function Dashboard({
             "workspace",
             "channel-history",
             "run",
-            "mesh",
             "marketplace",
             "generation",
             "provider-credentials",
@@ -769,7 +762,8 @@ function Dashboard({
       </AuthCard>
     );
   const data = state.isError ? undefined : state.data;
-  const remote = mesh.isError ? undefined : mesh.data;
+  // Another Node's observations are not a Deployment-wide view any more (#241).
+  const remote = undefined as Mesh | undefined;
   const selectedRef = data
     ? chooseChannel(data.workspaces, route.channel)
     : undefined;
@@ -889,11 +883,7 @@ function Dashboard({
           }}
         >
           <BillingNotice />
-          {((error && !selection) ||
-            state.isError ||
-            (data &&
-              deploymentAdministrator &&
-              (mesh.isError || (remote?.errors.length ?? 0) > 0))) && (
+          {((error && !selection) || state.isError) && (
             <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
               {error && !selection && <Alert>{error}</Alert>}
               {state.isError && (
@@ -923,21 +913,6 @@ function Dashboard({
                   )}
                 </Alert>
               )}
-              {data &&
-                deploymentAdministrator &&
-                (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
-                  <Notice tone="warning" role="status">
-                    <p>{t("remoteUnavailable")}</p>
-                    {remote?.errors.map((peer) => (
-                      <p
-                        key={peer.node_id}
-                        className="font-mono text-[11px] text-muted-foreground"
-                      >
-                        <ReferenceName id={peer.node_id} />: {peer.error}
-                      </p>
-                    ))}
-                  </Notice>
-                )}
             </div>
           )}
           {!data && !state.isError && (
@@ -1072,7 +1047,6 @@ function Dashboard({
               selection={selection}
               data={data}
               discovery={discovery.isError ? undefined : discovery.data}
-              mesh={remote}
               open={open}
               close={() => setSelection(null)}
               submit={submit}

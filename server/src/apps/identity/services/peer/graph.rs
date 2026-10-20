@@ -9,7 +9,6 @@ use crate::{
 	authorization::{access::Access, identity::Actor},
 	federation::Federation,
 };
-use aidash_application::federation::inbound::Admitted;
 use aidash_domain::federation::route::Sender;
 use serde_json::json;
 

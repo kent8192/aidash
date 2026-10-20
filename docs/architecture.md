@@ -38,7 +38,7 @@ Runtime schedules active and aborted recovery independently; bootstrap supplies
 their separate connection capacity before the supervisor starts the loops.
 Manifest admission uses a borrowed application scope over the caller's existing
 transaction. Immutable replay checks the bound origin before accepting the
-manifest; new admission checks the deadline and peer trust before persisting
+manifest; new admission checks the deadline and each participant's registration for atomic transactions before persisting
 the coordinator, votes, history and origin binding.
 Participant reserve, prepare, finish and recovery also use application scopes.
 Durable reservations precede live authorization rechecks. Native scopes retain
@@ -54,7 +54,7 @@ Domain rules check task and Run preconditions before execution-state decoding.
 Native mutation ports retain row locks, database-clock lease checks, selective
 updates and event persistence inside the participant's existing transaction;
 speculative preparation runs this same workflow under its rollback-only savepoint.
-Transaction HTTP replies are decoded in integrations. Current peer lookup,
+Transaction HTTP replies are decoded in integrations. Current route lookup,
 response headers and the complete body share the original ten-second deadline;
 the four-MiB limit, rotating credentials and recovery error classification remain
 unchanged for coordinator and authority RPCs.
@@ -102,10 +102,9 @@ not extend validity: successful checks record their start time. Backchannel
 logout verifies its signed envelope before applying domain lifetime and replay
 identity rules and atomically consuming the logout identity with revocation.
 
-Peer identity registration, bearer rotation checks and delegation authorization
-use shared application rules. Native registration and trust restoration recheck
-distinct credentials while retaining the same advisory lock, row locks and audit
-transaction. Graph repositories retain projection queries and current viewer
+Node registration, Federation acceptance and delegation authorization use
+shared application rules. Native registration pins the other Deployment's key
+while retaining the same advisory lock, row locks and audit transaction. Graph repositories retain projection queries and current viewer
 leases; application checks workspace permission before record disclosure.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
@@ -155,7 +154,7 @@ The [migration runbook](../server/migrations/README.md) describes the supported
 empty-database boundary and maintenance cutover. Runtime queries are tested with
 real PostgreSQL; builds do not require a live database.
 
-The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Peer trust is explicitly configured on both nodes with environment-based credential references. Public identity contains no secrets. Registry versions are immutable and model selection is explicit.
+The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Trust between Nodes of different Tenants is explicit: each side registers the other Node, and Deployments sign requests with their own Deployment Key, so no shared secret is configured. Public identity contains only the Deployment's public key. Registry versions are immutable and model selection is explicit.
 
 Every execution step is persisted before advancing. A leased worker processes one step at a time, renews the lease during inference/tool work and fences journal writes against stale owners. Tool calls are journaled before invocation. Read-only and idempotent adapters may replay with the original key. An unsafe invocation whose outcome was not committed is blocked for human reconciliation, never silently repeated. An arbitrary external service cannot offer exactly-once effects without cooperating with the idempotency contract.
 

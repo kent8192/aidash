@@ -155,14 +155,7 @@ impl Record for Run {
 	}
 }
 
-use aidash_domain::federation::{Delegation, Peer};
-record!(Peer {
-	node_id,
-	endpoint,
-	credential_env,
-	protocol_version,
-	enabled
-});
+use aidash_domain::federation::Delegation;
 record!(Delegation {
 	task_id,
 	node_id,

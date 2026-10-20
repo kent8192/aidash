@@ -3,7 +3,7 @@ use crate::apps::execution::models::{
 	Event as EventRecord, HumanRequest as HumanRequestRecord, InferenceUsage,
 	Invocation as InvocationRecord, Run as RunRecord, RunInput as InputRecord, event_records,
 };
-use crate::apps::execution::serializers::runs::{PeerObservation, RunDetails};
+use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::services::human_interaction;
 use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
@@ -3887,24 +3887,6 @@ impl Store {
 					tx,
 					upstream_model,
 					i32::from(projection_version),
-				)
-				.await
-			})
-			.await
-	}
-	// The empty namespace preserves pre-federation local memory. Peer node IDs
-	// are validated nonempty, so no remote home can address this namespace.
-	pub(crate) async fn peer_observation(
-		&self,
-		scope: &TenancyScope,
-		home: &str,
-	) -> Result<PeerObservation> {
-		self.pool
-			.atomic(scope, async |tx| {
-				crate::apps::execution::models::journals::observe(
-					tx,
-					self.deployment.as_str(),
-					home,
 				)
 				.await
 			})

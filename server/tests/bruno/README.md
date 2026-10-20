@@ -10,9 +10,9 @@ content types, credential revocation, browser registration, Deployment Administr
 opaque cookies, origin and CSRF enforcement, and server-side logout.
 
 The harness starts the compiled `manage server` custom command with isolated settings and
-a unique empty PostgreSQL database. A second real Aidash peer has its own database
-and reciprocally registered identity. Both use the normal Reinhardt bootstrap and
-migrations. NATS and PostgreSQL are real services. A local RS256 OIDC issuer is
+a unique empty PostgreSQL database. It uses the normal Reinhardt bootstrap and
+migrations. Federation routes only prove that the boundary refuses what it cannot
+verify, because a Federation token is signed for its exact request. NATS and PostgreSQL are real services. A local RS256 OIDC issuer is
 the external protocol fixture; it validates the authorization code, redirect
 URI and S256 PKCE verifier. No application endpoint or repository is mocked.
 

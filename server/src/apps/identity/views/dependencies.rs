@@ -2,7 +2,7 @@
 use crate::apps::identity::services::http_auth::InboundCall;
 use crate::apps::identity::services::peer::dependencies::{Input, PeerDependencies};
 use crate::http::json::Json;
-use reinhardt::{Depends, Request, Response, http::ViewResult, post};
+use reinhardt::{Depends, Response, http::ViewResult, post};
 
 #[post(
 	"/federation/v0.1/scoped/dependencies/verify",

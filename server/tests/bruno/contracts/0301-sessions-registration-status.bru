@@ -1,5 +1,5 @@
 meta {
-  name: 0301 sessions-registration-status - No opaque session
+  name: 0301 sessions-registration-status - Revoked browser session
   type: http
   seq: 301
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Cookie: {{session_cookie}}
 }
 
 tests {

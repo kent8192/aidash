@@ -283,24 +283,6 @@ pub(crate) async fn trusted(f: &Federation, access: &mut Access, node: &str) -> 
 	Err(Error::Forbidden)
 }
 
-pub(crate) async fn pending_peer(f: &Federation, node: &str) -> Result<Vec<Uuid>> {
-	Ok({
-		let query_bind_1 = node;
-		crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("transaction_id"))
-				.from(Alias::new("atomic_authority_attempts"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id=? AND outcome IS NULL)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_all(f.store.control_pool.in_scope(&TenancyScope::NoTenant))
-		.await?
-	})
-}
-
 pub(crate) async fn bind_native(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	table: &str,

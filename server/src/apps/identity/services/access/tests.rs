@@ -2,9 +2,7 @@ use super::*;
 
 #[rstest::rstest]
 #[tokio::test]
-async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environment(
-	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
-) {
+async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environment() {
 	let identity = SubjectIdentity {
 		http_session: None,
 		credential_id: Uuid::new_v4(),

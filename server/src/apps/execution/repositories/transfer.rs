@@ -322,30 +322,8 @@ impl TransferScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn peer_enabled(&mut self, node: &str) -> Result<Option<bool>> {
-		let result: NativeResult<Option<bool>> = async {
-			let access = self.authority.get_mut();
-			Ok({
-				let query_bind_1 = node;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("enabled"))
-						.from(Alias::new("peers"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("node_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								)),
-						)
-						.lock(reinhardt::query::LockType::Share)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
+		// The sender addresses the Node when it holds an enabled route to it.
+		Ok(self.authority.get_mut().route_to(node).await?.map(|_| true))
 	}
 	async fn record(&mut self, id: Uuid, kind: &str) -> Result<Record> {
 		records::get(self.authority.get_mut(), id, kind)

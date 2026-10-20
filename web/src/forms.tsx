@@ -39,7 +39,6 @@ import {
   taskCreate,
   registryCreate,
   personalAgentCreate,
-  peerCreate,
   taskDelegate,
 } from "./generated/aidash";
 export type Submit = (request: () => Promise<unknown>) => Promise<boolean>;
@@ -721,53 +720,6 @@ export function EntityForm({
       <Button className="justify-self-end" disabled={readingDocuments}>
         {t("register")}
       </Button>
-    </form>
-  );
-}
-export function PeerForm({ submit }: { submit: Submit }) {
-  const { t } = useI18n();
-  return (
-    <form
-      className={formClass}
-      onSubmit={(e) => {
-        e.preventDefault();
-        const d = new FormData(e.currentTarget);
-        void submit(() =>
-          peerCreate({
-            node_id: String(d.get("node_id")),
-            endpoint: String(d.get("endpoint")),
-            credential_env: String(d.get("credential_env")),
-            protocol_version: "0.2",
-            enabled: true,
-          }),
-        );
-      }}
-    >
-      <Field label={t("node")}>
-        <Input
-          name="node_id"
-          placeholder="aidash://node-b"
-          required
-          className="font-mono text-xs"
-        />
-      </Field>
-      <Field label={t("endpoint")}>
-        <Input
-          name="endpoint"
-          type="url"
-          placeholder="http://127.0.0.1:8081"
-          required
-        />
-      </Field>
-      <Field label={t("peerCredential")}>
-        <Input
-          name="credential_env"
-          placeholder="AIDASH_SECRET_NODE_B"
-          required
-          className="font-mono text-xs"
-        />
-      </Field>
-      <Button className="justify-self-end">{t("addPeer")}</Button>
     </form>
   );
 }

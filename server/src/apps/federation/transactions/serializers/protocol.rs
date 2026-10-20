@@ -3,7 +3,7 @@ use crate::apps::federation::transactions::{Status, Vote};
 use schemars::JsonSchema;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 #[derive(Serialize, JsonSchema)]
 pub struct TransactionHistory {

@@ -8,7 +8,7 @@ use aidash_application::{
 	},
 };
 use aidash_domain::{
-	federation::{Peer, dependencies::Reference as Dependency},
+	federation::dependencies::Reference as Dependency,
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };

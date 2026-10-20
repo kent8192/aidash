@@ -59,14 +59,7 @@ export function TransactionComposer({
         i === index ? participant : old,
       ),
     });
-  const nodes = [
-    ...new Set([
-      value.coordinator,
-      ...(data?.peers
-        .filter((peer) => peer.enabled)
-        .map((peer) => peer.node_id) ?? []),
-    ]),
-  ];
+  const nodes = [value.coordinator];
   return (
     <>
       <Field label={t("transactionDeadline")}>

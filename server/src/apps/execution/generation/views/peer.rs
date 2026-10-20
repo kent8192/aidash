@@ -5,7 +5,7 @@ use crate::generation::{
 	remote::{dispatch, protocol},
 };
 use crate::{federation::Federation, http::json::Json};
-use reinhardt::{Request, Response, http::ViewResult, post};
+use reinhardt::{Response, http::ViewResult, post};
 
 #[post(
 	"/federation/v0.1/scoped/generation/cancel",

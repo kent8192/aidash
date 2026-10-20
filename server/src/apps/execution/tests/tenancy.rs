@@ -287,6 +287,10 @@ const DEPLOYMENT_WIDE_TENANT_REFERENCES: &[(&str, &str)] = &[
 		"tenant_deletions",
 		"the deletion record outlives purge (ADR 0060)",
 	),
+	(
+		"node_names",
+		"a Node name is never reused, so its record outlives purge (ADR 0064)",
+	),
 ];
 
 async fn tables_with_a_tenant_column(pool: &sqlx::PgPool) -> BTreeSet<String> {

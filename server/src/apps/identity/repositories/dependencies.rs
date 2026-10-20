@@ -4,15 +4,11 @@ use crate::{
 	registry::{EntityRef, Entry},
 };
 use aidash_application::{Result, ports::federation::dependencies::DependencyScope};
-use aidash_domain::{
-	Run,
-	federation::{Peer, dependencies::Reference},
-	policy::Resource,
-};
+use aidash_domain::{Run, federation::dependencies::Reference, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::ColumnRef::Asterisk;
 use reinhardt::query::{
-	Alias, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;

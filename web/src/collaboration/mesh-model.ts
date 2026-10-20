@@ -234,22 +234,7 @@ export function buildMeshGraph(
   } else if (data.access.kind === "deployment_administrator") {
     const local = resource("remote", nodeId, nodeId);
     nodes.get(local)!.status = "LOCAL";
-    for (const peer of data.peers.filter((p) => p.enabled)) {
-      const id = add({
-        id: resourceKey(peer.node_id, "remote", peer.node_id),
-        kind: "remote",
-        name: { en: peer.node_id },
-        nodeId: peer.node_id,
-        resourceId: peer.node_id,
-        available: true,
-        remote: true,
-        status: "CONFIGURED",
-      });
-      edge(local, id, "federation", "federation");
-    }
-    const peers = new Set(
-      data.peers.filter((p) => p.enabled).map((p) => p.node_id),
-    );
+    const peers = new Set<string>();
     for (const { node_id, entity } of options.discovery?.agents ?? []) {
       if (!peers.has(node_id) || entity.kind !== "agent") continue;
       const id = add({
@@ -316,10 +301,7 @@ export function buildMeshGraph(
     )
       edge(author, owner, "delegates", "activity");
   }
-  const enabledPeers = new Set(
-    options.authorizedPeers ??
-      data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
-  );
+  const enabledPeers = new Set(options.authorizedPeers ?? []);
   const activity = (
     options.runs ?? data.runs.map((run) => ({ node: nodeId, run }))
   )

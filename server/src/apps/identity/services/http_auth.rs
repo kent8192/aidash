@@ -1,6 +1,5 @@
 //! Request authorization helpers.
 use crate::{
-	Error, Result,
 	authorization::{identity::Actor, workspace::Workspaces},
 	federation::Federation,
 };

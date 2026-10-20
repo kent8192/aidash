@@ -4,7 +4,7 @@ use crate::authorization::remote::execution as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Path, Request, Response, get, post};
+use reinhardt::{Depends, Path, Response, get, post};
 use uuid::Uuid;
 
 #[post(

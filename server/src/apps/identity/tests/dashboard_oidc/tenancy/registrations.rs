@@ -46,21 +46,26 @@ fn identity(signer: &InMemorySigner, id: &DeploymentKeyId) -> Value {
 }
 
 impl Deployment {
-	async fn default_node(&self, person: &Person, context: &str, tenant: &str) -> String {
+	pub(super) async fn default_node(
+		&self,
+		person: &Person,
+		context: &str,
+		tenant: &str,
+	) -> String {
 		self.nodes_of(person, context, tenant).await[0]["name"]
 			.as_str()
 			.unwrap()
 			.to_owned()
 	}
 
-	async fn address_of(&self, person: &Person, context: &str, tenant: &str) -> String {
+	pub(super) async fn address_of(&self, person: &Person, context: &str, tenant: &str) -> String {
 		self.nodes_of(person, context, tenant).await[0]["address"]
 			.as_str()
 			.unwrap()
 			.to_owned()
 	}
 
-	async fn register(
+	pub(super) async fn register(
 		&self,
 		person: &Person,
 		context: &str,

@@ -80,8 +80,6 @@ pub use authorization_remote_outputs::AuthorizationRemoteOutputs;
 mod authorization_peer_graph_grants;
 pub use authorization_peer_graph_grants::AuthorizationPeerGraphGrants;
 
-pub(crate) use authority::authority_control;
-
 pub mod byte_key;
 
 mod desktop_handoffs;

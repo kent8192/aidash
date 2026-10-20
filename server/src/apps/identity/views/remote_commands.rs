@@ -4,7 +4,7 @@ use crate::authorization::remote::execution::commands as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Request, Response, post};
+use reinhardt::{Depends, Response, post};
 
 #[post(
 	"/federation/v0.1/scoped/execution/commands",

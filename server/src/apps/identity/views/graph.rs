@@ -4,7 +4,7 @@ use crate::authorization::peer::graph as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Path, Query, Request, Response, get, post};
+use reinhardt::{Depends, Path, Query, Response, get, post};
 
 #[get(
 	"/api/federation/graph/peers",
