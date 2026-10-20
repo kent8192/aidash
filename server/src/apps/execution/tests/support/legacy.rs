@@ -367,7 +367,10 @@ pub async fn peer_request(
 		request = request.header(name, value);
 	}
 	let response = request.send().await.unwrap();
-	json_response("POST", path, response.status_code(), response.body())
+	(
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+	)
 }
 
 fn json_response(method: &str, path: &str, status: u16, body: &[u8]) -> (u16, Value) {
