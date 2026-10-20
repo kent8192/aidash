@@ -13,11 +13,11 @@ use rmcp::{
 	},
 };
 use serde_json::{Value, json};
-mod mcp;
+pub(crate) mod mcp;
 
 /// Total budget for a native `http_get`, covering DNS resolution and the request.
 const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(crate) const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const TOOL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn resolve_within<I>(
@@ -57,6 +57,21 @@ impl ToolClients {
 			public: crate::keyless::public_client(TOOL_TIMEOUT, TOOL_CONNECT_TIMEOUT)?,
 		})
 	}
+	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
+	pub(crate) fn select(
+		&self,
+		origins: &KeylessAccess,
+		endpoint: &str,
+	) -> Result<&reqwest::Client> {
+		match origins.destination(endpoint)? {
+			Destination::Permitted => Ok(&self.permitted),
+			Destination::PublicOnly => Ok(&self.public),
+			Destination::Forbidden => {
+				tracing::warn!("tool endpoint refused: its host is a non-public address");
+				Err(Error::Forbidden)
+			}
+		}
+	}
 }
 
 /// A Tenant chooses a tool's endpoint, so the Keyless endpoint rule decides
@@ -70,16 +85,8 @@ impl HttpTools {
 	pub fn new(origins: KeylessAccess, clients: ToolClients) -> Self {
 		Self { origins, clients }
 	}
-	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
 	fn client(&self, endpoint: &str) -> Result<&reqwest::Client> {
-		match self.origins.destination(endpoint)? {
-			Destination::Permitted => Ok(&self.clients.permitted),
-			Destination::PublicOnly => Ok(&self.clients.public),
-			Destination::Forbidden => {
-				tracing::warn!("tool endpoint refused: its host is a non-public address");
-				Err(Error::Forbidden)
-			}
-		}
+		self.clients.select(&self.origins, endpoint)
 	}
 }
 #[async_trait]
@@ -162,11 +169,7 @@ impl ToolTransport for HttpTools {
 					.await
 					.map_err(|e| mcp::call_error(&e));
 				let _ = service.cancel().await;
-				let result = result?;
-				if result.is_error == Some(true) {
-					return Ok(json!({"is_error":true,"content":result.content}));
-				}
-				Ok(serde_json::to_value(result)?)
+				mcp::result_value(result?)
 			}
 			_ => Err(Error::Invalid(
 				"tool configuration has no external transport".into(),
