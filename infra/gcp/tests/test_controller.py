@@ -1837,6 +1837,46 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertNotIn(("scale", "production", "server", 1), after)
         self.assertNotIn(("admission", "production", "open"), after)
 
+    def test_a_failure_after_the_backup_fences_the_generation_before_unsealing(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        update = controller.update_entry
+
+        def fail_before_deploy(store, identity, generation, **fields):
+            if (
+                fields.get("start_pending") is False
+                and "writers_started" not in fields
+                and "pre_update_backup" not in fields
+            ):
+                raise RuntimeError("failure after the backup")
+            return update(store, identity, generation, **fields)
+
+        with patch.object(controller, "update_entry", side_effect=fail_before_deploy):
+            with self.assertRaises(RuntimeError):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(entry.get("pre_update_backup"))
+        self.assertTrue(entry.get("writers_started"))
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(entry["start_pending"])
+        self.assertFalse(backup.restorable(entry))
+        self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+        self.assertIsNone(controller.pending_production_update(
+            self.config, self.store, self.cloud, self.cloud.managed
+        ))
+
+    def test_a_recorded_backup_is_not_reused_after_writers_started(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.entry()["pre_update_backup"] = "recorded"
+        self.entry()["writers_started"] = True
+        with self.shared_change():
+            with self.assertRaises(controller.Refused):
+                self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(backup.restorable(entry))
+
     def test_a_blocked_seal_returns_not_ready_and_waits_for_active_work(self):
         self.running_production()
         self.production_request(UPDATE)

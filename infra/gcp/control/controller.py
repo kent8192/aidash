@@ -806,6 +806,10 @@ def pre_update_backup(config, store, terraform, identity, generation, entry):
     if not plan:
         raise Refused("Production updates need a Pre-update Backup plan: enable production_backup_enabled and publish pre_update_backup_plan (release-deployment step 7)")
     if entry.get("pre_update_backup"):
+        if not backup.restorable(entry):
+            raise Refused(
+                "The recorded Pre-update Backup is no longer restorable; retry_failed starts a new generation and backup"
+            )
         return
     kube.protect(cluster, identity)
     require_backup_covers_retained_volumes(cluster, identity)
@@ -892,6 +896,10 @@ def take_pre_update_backup_before_shared(config, store, terraform, managed, seal
         # before the shared apply may change Terraform.
         verify_source(config, identity, entry)
         if entry.get("pre_update_backup"):
+            if not backup.restorable(entry):
+                raise Refused(
+                    "The recorded Pre-update Backup is no longer restorable; retry_failed starts a new generation and backup"
+                )
             return sealed, True, True
         if identity not in sealed:
             if not kube.seal(terraform.cluster(), identity):
@@ -1412,7 +1420,18 @@ def reconcile_locked(config, store, terraform, managed):
                         current = current_entry(store, identity, snapshot["generation"])
                         if not (current.get("gcip_quiesced") or current.get("gcip_pending")):
                             if current.get("pre_update_backup"):
-                                update_entry(store, identity, snapshot["generation"], writers_started=True)
+                                # Restoring admission starts writers, so this
+                                # generation's backup is no longer a restore
+                                # point. Fence it: only retry_failed may create
+                                # the next generation and backup.
+                                update_entry(
+                                    store,
+                                    identity,
+                                    snapshot["generation"],
+                                    writers_started=True,
+                                    failed_deployment_generation=snapshot["generation"],
+                                    start_pending=False,
+                                )
                             kube.unseal(terraform.cluster(), identity)
                     except Exception:
                         pass
