@@ -46,6 +46,8 @@ mod dashboard_registration_requests;
 pub use dashboard_registration_requests::DashboardRegistrationRequest;
 mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
+mod demo_data;
+pub use demo_data::{DemoDataLoad, DemoReservation, DemoTenant};
 mod personal_tenants;
 pub use personal_tenants::PersonalTenantLink;
 mod tenant_invitations;

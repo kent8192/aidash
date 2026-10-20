@@ -49,6 +49,9 @@ pub struct AccountPolicy {
 	pub issuers: Arc<dyn Issuers>,
 	/// The Tenancy Rule that creates a Personal Tenant at sign-in.
 	pub personal_tenants: bool,
+	/// The Deployment loads Demo data (`[demo_data] enabled`), so a sign-in
+	/// fulfils the Demo Reservations held for the identity's verified email.
+	pub demo_data: bool,
 }
 
 impl AccountPolicy {

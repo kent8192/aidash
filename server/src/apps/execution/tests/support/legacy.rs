@@ -603,6 +603,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 					aidash_domain::offering::Offering::SelfHosted,
 				),
+				demo_data: false,
 				oidc: None,
 				sign_in: None,
 			},

@@ -121,6 +121,7 @@ impl Accounts for Scope {
 				None => Arc::new(Issuer("issuer".into())),
 			},
 			personal_tenants: self.personal_tenants,
+			demo_data: false,
 		})
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -689,12 +690,14 @@ fn mapping_requires_the_exact_bound_tenant(
 	let policy = AccountPolicy {
 		issuers: Arc::new(Restricted([("pool-a".into(), "acme".into())].into())),
 		personal_tenants: true,
+		demo_data: false,
 	};
 	assert_eq!(policy.require_mapping(pool, tenant).is_ok(), allowed);
 	assert!(policy.require_mapping("old-issuer", tenant).is_err());
 	let unrestricted = AccountPolicy {
 		issuers: Arc::new(Issuer("issuer".into())),
 		personal_tenants: true,
+		demo_data: false,
 	};
 	assert!(unrestricted.require_mapping("issuer", tenant).is_ok());
 	assert!(unrestricted.require_mapping(pool, tenant).is_err());
