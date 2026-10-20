@@ -16,10 +16,11 @@ fn id(value: u128) -> Uuid {
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
 		workspace_id: id(3),
-		home_node: "aidash://local".into(),
+		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
 		phase: RunPhase::Ready,
@@ -52,7 +53,7 @@ fn agent() -> EntityRef {
 fn delegated() -> Delegation {
 	Delegation {
 		task_id: id(4),
-		node_id: "aidash://local".into(),
+		node_id: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "coordinator".into(),
 		agent_version: "1".into(),
 		delivered: false,
@@ -60,12 +61,13 @@ fn delegated() -> Delegation {
 }
 fn generated() -> Request {
 	Request {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(9),
 		tenant: "tenant".into(),
 		policy_id: "policy".into(),
 		policy_revision: 3,
 		task_id: id(4),
-		home_node: "aidash://local".into(),
+		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		foreign_intent: None,
 		prepared: false,
 		grant_id: None,
@@ -179,7 +181,11 @@ impl Scope {
 			subject_chain: vec![
 				"root".into(),
 				"producer".into(),
-				qualified_agent(&self.node, "coordinator", "1"),
+				aidash_domain::agent_subject(
+					"aidash://local/brave-otter-k3m9q2xa",
+					"coordinator",
+					"1",
+				),
 			],
 		}
 	}
@@ -337,7 +343,7 @@ async fn worker_effects_cannot_target_tasks_outside_the_source_workspace(
 	scope.workspace = workspace;
 	let denied = if delegation {
 		matches!(
-			delegate(&mut scope, &run, id(4), "aidash://local", &agent()).await,
+			delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await,
 			Err(Error::Forbidden)
 		)
 	} else {
@@ -529,13 +535,13 @@ async fn a_matching_existing_grant_returns_the_original_delivered_reply_without_
 	run: RunMetadata,
 ) {
 	scope.grant = Some(scope.grant());
-	let result = delegate(&mut scope, &run, id(4), "aidash://local", &agent())
+	let result = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.unwrap();
 	assert_eq!(result.task_id, id(4));
 	assert_eq!(result.agent_id, "coordinator");
 	assert_eq!(result.agent_version, "1");
-	assert_eq!(result.node_id, "aidash://local");
+	assert_eq!(result.node_id, "aidash://local/brave-otter-k3m9q2xa");
 	assert!(result.delivered);
 	assert!(!scope.calls.contains(&"delegate"));
 	assert_eq!(
@@ -565,7 +571,7 @@ async fn an_existing_grant_cannot_hide_changed_delegation_authority(
 		grant.credential_id = id(99);
 	}
 	scope.grant = Some(grant);
-	let Error::Conflict(message) = delegate(&mut scope, &run, id(4), "aidash://local", &agent())
+	let Error::Conflict(message) = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.err()
 		.unwrap()
@@ -582,7 +588,7 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 	mut scope: Scope,
 	run: RunMetadata,
 ) {
-	let result = delegate(&mut scope, &run, id(4), "aidash://local", &agent())
+	let result = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.unwrap();
 	assert!(!result.delivered);
@@ -608,7 +614,7 @@ async fn delegation_denial_precedes_grant_presence_or_any_external_effect(
 	scope.grant = Some(scope.grant());
 	scope.denied = Some("task.delegate");
 	assert!(matches!(
-		delegate(&mut scope, &run, id(4), "aidash://local", &agent()).await,
+		delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -636,7 +642,7 @@ async fn delegation_faults_do_not_become_successful_retry_replies(
 	#[case] fail: &'static str,
 ) {
 	scope.fail = Some(fail);
-	let Error::Port(error) = delegate(&mut scope, &run, id(4), "aidash://local", &agent())
+	let Error::Port(error) = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.err()
 		.unwrap()

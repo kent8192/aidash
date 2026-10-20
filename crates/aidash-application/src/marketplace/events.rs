@@ -125,7 +125,7 @@ pub async fn frame(
 	if !visible(scope, event, node).await? {
 		return Ok(None);
 	}
-	let payload = recipient_event(event.clone()).cloud_event().to_string();
+	let payload = recipient_event(event.clone()).cloud_event(node).to_string();
 	if payload.len() > 65_536 {
 		return Err(Error::Forbidden);
 	}

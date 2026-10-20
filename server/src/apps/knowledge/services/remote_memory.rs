@@ -82,9 +82,13 @@ pub(crate) async fn bind(
 		version: row.try_get("agent_version")?,
 	};
 	let agent = memory::definition(lease, &bank.tenant, &reference, "agent").await?;
-	let config =
-		super::super::repositories::bindings::configuration(lease, &bank.tenant, &agent, home)
-			.await?;
+	let config = super::super::repositories::bindings::configuration(
+		lease,
+		&bank.tenant,
+		&agent,
+		aidash_domain::nodes::deployment_of(home),
+	)
+	.await?;
 	if config.memory.as_ref() != Some(&selection.provider)
 		|| config.allow_cross_conversation_memory == Some(false)
 	{

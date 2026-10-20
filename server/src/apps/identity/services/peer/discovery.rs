@@ -3,7 +3,6 @@ use super::super::{access::Access, catalog, identity::SubjectIdentity};
 use crate::{
 	Result,
 	apps::federation::peer::serializers::mesh::PeerError,
-	domain::qualified_agent,
 	federation::{DiscoveredAgent, Discovery, Federation, Peer},
 	registry::{Entry, Search},
 };
@@ -124,7 +123,7 @@ pub(crate) async fn discover_in(
 		}
 		for entity in entries.into_iter().filter(|entry| query.matches(entry)) {
 			let mut resource = catalog::resource(access, &entity);
-			resource.id = qualified_agent(&node, &entity.id, &entity.version);
+			resource.id = crate::domain::agent_subject(&node, &entity.id, &entity.version);
 			resource.attributes["remote_node"] = json!(node);
 			if access.decide(&resource, "registry.read").await?
 				&& access.decide(&resource, "agent.execute").await?

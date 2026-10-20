@@ -14,7 +14,7 @@ mod discovery_fixtures;
 #[path = "../../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
 
-use aidash_server::{apps::identity::models::AuthorizationCredential, domain::qualified_agent};
+use aidash_server::apps::identity::models::AuthorizationCredential;
 use discovery_fixtures::{
 	DiscoveryPair, MockDiscovery, PEER_ENV, PEER_SECRET, discovery_pair, mock_discovery,
 };
@@ -85,7 +85,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	// Identical local IDs must still be authorized within the remote namespace.
 	policy["policies"].as_array_mut().unwrap().push(json!({
         "id":"hide-remote","effect":"deny","subjects":{"any":true},"actions":["registry.read"],
-        "resources":{"kinds":["agent"],"ids":[qualified_agent(b.runtime.config.deployment.as_str(),"research","1.0.0")]},
+        "resources":{"kinds":["agent"],"ids":[aidash_domain::agent_subject(b.runtime.config.deployment.as_str(),"research","1.0.0")]},
     }));
 	deployment_administrator(
 		a,
@@ -151,6 +151,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),

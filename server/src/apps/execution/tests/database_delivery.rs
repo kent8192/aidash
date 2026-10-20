@@ -92,7 +92,7 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 		let run = Run {
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			home_node: home.into(),
+			home_node: format!("{home}/{}", terminal_run.node),
 			phase,
 			updated_at: Utc::now() + Duration::seconds(index as i64),
 			..terminal_run.clone()

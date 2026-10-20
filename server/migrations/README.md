@@ -351,6 +351,25 @@ migration that creates each table, because Aidash is undeployed:
   stays Deployment-wide: a source's owner writes a consent for the redistributor
   that reads it, so it belongs to neither Tenant's scope, as
   `marketplace_audiences` and `marketplace_versions` do not.
+- A Node is a Tenant-owned row in `nodes`, keyed by `(tenant, name)`, and the
+  Node-owned tables reference `nodes(tenant, name)` with `(tenant, node)`
+  (#241). `node_names` is Deployment-wide and its rows are never deleted: it
+  keeps a Node name taken after a purge, and it names the Tenant of a receiving
+  Node before any Tenant scope opens. `nodes` references it with
+  `(name, tenant)`. Both are created in `identity/0002_tables` after `tenants`.
+- Node-owned data carries `node` (#241), edited into the migration that creates
+  each table: `workspaces.node`, `runs.node`, `generation_requests.node` and
+  `authorization_catalog` plus its history, each with `(tenant, node)`
+  referencing `nodes(tenant, name)`. `events.node` is the Workspace's Node and
+  stays NULL for an event that concerns no Workspace. `authorization_catalog`
+  and its history key on `(tenant, node, entry_id, entry_version[, revision])`,
+  so one Node's approval never stands for another's. `runs.home_node` and
+  `generation_requests.home_node` hold the address of the Home Node; a local
+  Run's is its own Node's. `generation_requests.local_task_id` and
+  `local_workspace_id` are ordinary columns the application writes for a
+  local request and leaves NULL for a foreign one; the `''` sentinel and the
+  generated columns are gone. `memory_learning_discovery` is keyed by
+  `deployment`, because the learning pass runs once per Deployment.
 - Inserts name `tenant`. Statements built for a Tenant scope write the scope's
   Tenant with `crate::database::scope::tenant()`, a child of a row reads its
   parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant

@@ -113,11 +113,16 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		} else {
 			&f.config.api_token
 		};
+		let query = if path == "catalog" {
+			format!("?node={}", aidash_domain::nodes::NodeName::derived("acme"))
+		} else {
+			String::new()
+		};
 		let (status, body) = request(
 			&app,
 			reader,
 			"GET",
-			&format!("/api/authorization/acme/{path}"),
+			&format!("/api/authorization/acme/{path}{query}"),
 			Value::Null,
 		)
 		.await;

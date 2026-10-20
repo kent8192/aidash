@@ -276,7 +276,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 		200
 	);
 	f.c.policy["subjects"][aidash_server::domain::qualified_agent(
-		f.c.f.config.deployment.as_str(),
+		&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
 		"reviewer",
 		"1.1.0",
 	)] = json!({"kind":"agent"});
@@ -298,7 +298,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,

@@ -12,6 +12,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str, tenant: &str) -> U
 					"task_id",
 					"workspace_id",
 					"home_node",
+					"node",
 					"agent_id",
 					"agent_version",
 					"control",
@@ -23,7 +24,12 @@ pub(super) async fn insert_run(f: &Federation, control: &str, tenant: &str) -> U
 				id.into(),
 				Uuid::new_v4().into(),
 				Uuid::new_v4().into(),
-				f.config.deployment.to_string().into(),
+				aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), tenant)
+					.to_string()
+					.into(),
+				aidash_domain::nodes::NodeName::derived(tenant)
+					.to_string()
+					.into(),
 				"fixture".into(),
 				"1.0.0".into(),
 				control.into(),

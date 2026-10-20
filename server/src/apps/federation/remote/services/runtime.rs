@@ -165,14 +165,10 @@ impl Federation {
 	}
 
 	pub async fn peers(&self) -> Result<Vec<Peer>> {
-		PeerRecords::new(&self.store.pool, self.config.deployment.as_str())
-			.list()
-			.await
+		PeerRecords::new(&self.store.pool).list().await
 	}
 	pub async fn peer(&self, node: &str) -> Result<Peer> {
-		PeerRecords::new(&self.store.pool, self.config.deployment.as_str())
-			.enabled(node)
-			.await
+		PeerRecords::new(&self.store.pool).enabled(node).await
 	}
 
 	pub async fn register_peer(&self, peer: Peer) -> Result<Peer> {
@@ -328,14 +324,12 @@ impl Home {
 		authority.discover(&self.federation, search).await
 	}
 	pub fn owner(&self) -> String {
-		qualified_agent(
-			self.federation.config.deployment.as_str(),
-			&self.run.agent_id,
-			&self.run.agent_version,
-		)
+		self.run
+			.executor_subject(self.federation.config.deployment.as_str())
 	}
 	pub fn local(&self) -> bool {
-		self.run.home_node == self.federation.config.deployment
+		self.run
+			.is_local(self.federation.config.deployment.as_str())
 	}
 	pub(crate) async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
 		if let Some(grant) =

@@ -138,6 +138,8 @@ impl TaskStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Workspace {
 	pub id: Uuid,
+	/// The Node of its Tenant that the Workspace, its Tasks and its Runs belong to.
+	pub node: crate::nodes::NodeName,
 	pub title: String,
 	pub goal: String,
 
@@ -238,7 +240,8 @@ impl ArtifactInput {
 pub struct Event {
 	pub sequence: i64,
 	pub id: Uuid,
-	pub node_id: String,
+	/// The Node of the Workspace the event concerns; none for a Tenant-level event.
+	pub node: Option<crate::nodes::NodeName>,
 	pub workspace_id: Option<Uuid>,
 	pub kind: String,
 	pub data: Value,
@@ -246,8 +249,17 @@ pub struct Event {
 }
 
 impl Event {
-	pub fn cloud_event(&self) -> Value {
-		json!({"specversion":"1.0", "id":self.id, "source":self.node_id, "type":self.kind,
+	/// The CloudEvent `source` is the Node address, or the Deployment for a
+	/// Tenant-level event that belongs to no Node.
+	pub fn source(&self, deployment: &str) -> String {
+		self.node.as_ref().map_or_else(
+			|| deployment.to_owned(),
+			|node| format!("{deployment}/{node}"),
+		)
+	}
+
+	pub fn cloud_event(&self, deployment: &str) -> Value {
+		json!({"specversion":"1.0", "id":self.id, "source":self.source(deployment), "type":self.kind,
             "subject":self.workspace_id, "time":self.created_at, "datacontenttype":"application/json", "data":self.data, "sequence":self.sequence})
 	}
 }
@@ -280,6 +292,10 @@ pub struct Run {
 	pub id: Uuid,
 	pub task_id: Uuid,
 	pub workspace_id: Uuid,
+	/// The Node that executes the Run.
+	pub node: crate::nodes::NodeName,
+	/// The address of the Node that owns the Run's Task; the executing Node's
+	/// own address for a local Run.
 	pub home_node: String,
 	pub agent_id: String,
 	pub agent_version: String,
@@ -327,7 +343,13 @@ pub fn nonempty(s: &str, name: &str) -> Result<()> {
 		Ok(())
 	}
 }
-pub fn qualified_agent(node: &str, id: &str, version: &str) -> String {
+/// The subject of an agent version approved on `node`.
+pub fn qualified_agent(node: &crate::nodes::NodeAddress, id: &str, version: &str) -> String {
+	agent_subject(&node.to_string(), id, version)
+}
+
+/// `qualified_agent` for a Node address that is held as text.
+pub fn agent_subject(node: &str, id: &str, version: &str) -> String {
 	format!("{node}/agents/{id}@{version}")
 }
 

@@ -74,7 +74,7 @@ fn outbox() -> Outbox {
 			.map(|sequence| Event {
 				sequence,
 				id: Uuid::new_v4(),
-				node_id: "aidash://fixture".into(),
+				node: None,
 				workspace_id: None,
 				kind: "fixture".into(),
 				data: json!({"sequence":sequence}),

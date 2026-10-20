@@ -62,7 +62,9 @@ impl CollaborationManagement {
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		scope.create(&input.title, &input.goal).await
+		scope
+			.create(&input.title, &input.goal, input.node.as_ref())
+			.await
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let f = self.runtime.clone();
@@ -171,6 +173,7 @@ impl CollaborationManagement {
 			&input.goal,
 			&input.target,
 			&input.target_kind,
+			input.node.as_ref(),
 		)
 		.await
 	}

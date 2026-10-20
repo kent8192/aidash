@@ -9,7 +9,6 @@ use aidash_domain::{
 	generation::intent::{Input, Intent, Prepared},
 	identity::Principal,
 	policy::{Subject, SubjectKind},
-	qualified_agent,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -118,8 +117,11 @@ pub async fn request(
 	if prepared.prepared {
 		let (mut scope, intent) = lease(repository, &input.node_id, input.id, true).await?;
 		let result = async {
-			let subject =
-				qualified_agent(&input.node_id, &prepared.agent.id, &prepared.agent.version);
+			let subject = aidash_domain::agent_subject(
+				&input.node_id,
+				&prepared.agent.id,
+				&prepared.agent.version,
+			);
 			let value = Subject {
 				kind: SubjectKind::Agent,
 				roles: Default::default(),

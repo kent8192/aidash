@@ -140,8 +140,8 @@ async fn consumer_commits_one_receipt_per_event_and_acknowledges_duplicates_and_
 		.await
 		.expect("durable receipt wakes workers");
 	for payload in [
-		event.cloud_event().to_string(),
-		event.cloud_event().to_string(),
+		event.cloud_event("aidash://fixture").to_string(),
+		event.cloud_event("aidash://fixture").to_string(),
 		"not JSON".into(),
 	] {
 		fixture

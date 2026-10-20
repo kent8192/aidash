@@ -27,6 +27,7 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 	};
 	let environment = json!({"node_id":"aidash://home", "transport":"federation", "source_node":"aidash://reader-peer", "request_id":"reader-request"});
 	let mut access = Access {
+		node: None,
 		marketplace_audit: None,
 		core_gc_complete: false,
 		remote_read_cache: Default::default(),

@@ -115,7 +115,7 @@ pub async fn delegate(
 	node: &str,
 	agent: &EntityRef,
 ) -> Result<Delegation> {
-	if node != f.config.deployment {
+	if aidash_domain::nodes::deployment_of(node) != f.config.deployment.as_str() {
 		return super::remote::execution::delegate(f, identity, task, node, agent).await;
 	}
 	let mut access = Access::begin(&f.store, identity).await?;

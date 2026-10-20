@@ -135,6 +135,7 @@ fn fixture() -> Fixture {
 	let workspace = Uuid::new_v4();
 	let task = Uuid::new_v4();
 	let run = Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: task,
 		workspace_id: workspace,

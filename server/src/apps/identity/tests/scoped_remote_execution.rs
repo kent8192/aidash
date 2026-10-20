@@ -393,14 +393,15 @@ mod scoped_pair_composition {
 				&receiver_token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":0,"enabled":true})
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":0,"enabled":true})
 			)
 			.await
 			.0,
 			200
 		);
 		source_policy["subjects"]
-			[qualified_agent(b.config.deployment.as_str(), "research", "1.0.0")] = json!({"kind":"agent"});
+			[aidash_domain::agent_subject(b.config.deployment.as_str(), "research", "1.0.0")] =
+			json!({"kind":"agent"});
 		assert_eq!(
 			request(
 				&aa,
@@ -520,9 +521,11 @@ mod scoped_pair_composition {
 				),
 			)
 			.await;
-			source_policy["subjects"]
-				[qualified_agent(b.config.deployment.as_str(), "research-native", "1.0.0")] =
-				json!({"kind":"agent"});
+			source_policy["subjects"][aidash_domain::agent_subject(
+				b.config.deployment.as_str(),
+				"research-native",
+				"1.0.0",
+			)] = json!({"kind":"agent"});
 			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
 			Some(data)
 		} else {
@@ -665,12 +668,13 @@ async fn ordered_receiver_agent(
 			&receiver_token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(&id),"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let subject = qualified_agent(b.config.deployment.as_str(), "research-ordered", "1.0.0");
+	let subject =
+		aidash_domain::agent_subject(b.config.deployment.as_str(), "research-ordered", "1.0.0");
 	for (runtime, app) in [(b, ba), (a, aa)] {
 		let (_, mut policy) = request(
 			app,
@@ -767,7 +771,7 @@ async fn native_remote_fixture(
 				&common::tenant_token(&runtime.store, "acme").await,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":reference(id),"expected_revision":0,"enabled":true}),
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":0,"enabled":true}),
 			)
 			.await;
 			assert_eq!(status, 200, "{body}");
@@ -810,7 +814,7 @@ async fn native_remote_fixture(
 			&common::tenant_token(&runtime.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(&id),"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -824,9 +828,11 @@ async fn native_remote_fixture(
 			)
 			.await;
 			let revision = policy["revision"].clone();
-			policy["bundle"]["subjects"]
-				[qualified_agent(b.config.deployment.as_str(), "research-native", "1.0.0")] =
-				json!({"kind":"agent"});
+			policy["bundle"]["subjects"][aidash_domain::agent_subject(
+				b.config.deployment.as_str(),
+				"research-native",
+				"1.0.0",
+			)] = json!({"kind":"agent"});
 			let (status, body) = request(
 				app,
 				&runtime.config.api_token,
@@ -857,7 +863,7 @@ async fn native_remote_fixture(
 		),
 		(
 			shared,
-			json!({"home":a.config.deployment,"tenant":"acme","workspace":workspace,"participant":null}),
+			json!({"home":aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":workspace,"participant":null}),
 			"Native shared claim: 自転車の設計 uses reciprocal rank fusion.",
 		),
 	] {
@@ -1023,7 +1029,7 @@ async fn configure_semantic(
 		token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -1040,13 +1046,16 @@ async fn configure_semantic(
 			("shared", None, "Iridium archive marker: ochre falcon."),
 			(
 				"exact",
-				Some(qualified_agent(executor, "research", "1.0.0")),
+				Some(aidash_domain::agent_subject(executor, "research", "1.0.0")),
 				"Exact executor marker: silver fern.",
 			),
 			(
 				"other-node",
 				Some(qualified_agent(
-					a.config.deployment.as_str(),
+					&aidash_domain::nodes::NodeAddress::derived(
+						a.config.deployment.as_str(),
+						"acme",
+					),
 					"research",
 					"1.0.0",
 				)),
@@ -1054,7 +1063,7 @@ async fn configure_semantic(
 			),
 			(
 				"other-version",
-				Some(qualified_agent(executor, "research", "1.0.1")),
+				Some(aidash_domain::agent_subject(executor, "research", "1.0.1")),
 				"DO NOT DISCLOSE: other definition version.",
 			),
 		] {
@@ -1162,7 +1171,7 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	assert_eq!(semantic["home_node"], p.a.config.deployment, "{context}");
 	assert_eq!(
 		semantic["executor"],
-		qualified_agent(p.b.config.deployment.as_str(), "research", "1.0.0")
+		aidash_domain::agent_subject(p.b.config.deployment.as_str(), "research", "1.0.0")
 	);
 	assert_eq!(semantic["grant_id"], p.grant.to_string());
 	let encoded = serde_json::to_string(semantic).unwrap();
@@ -1385,7 +1394,7 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 		&p,
 		"other-node",
 		Some(qualified_agent(
-			p.a.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(p.a.config.deployment.as_str(), "acme"),
 			"research",
 			"1.0.0",
 		)),
@@ -1985,7 +1994,8 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 			.workspace_id;
 	let ids: Vec<Uuid> = {
 		let query_bind_1 = workspace;
-		let query_bind_2 = qualified_agent(p.b.config.deployment.as_str(), "research", "1.0.0");
+		let query_bind_2 =
+			aidash_domain::agent_subject(p.b.config.deployment.as_str(), "research", "1.0.0");
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
@@ -2745,6 +2755,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 			}
 			.set_catalog(
 				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
 				&aidash_server::registry::EntityRef {
 					id: "research".into(),
 					version: "1.0.0".into(),
@@ -3194,7 +3205,7 @@ async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication,
 		&common::tenant_token(&b.store, "acme").await,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":agent,"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":agent,"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -3328,7 +3339,7 @@ async fn prepare_generated_pair(
 	let chain = vec![
 		"alice".to_owned(),
 		qualified_agent(
-			a.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(), "acme"),
 			&parent_run.agent_id,
 			&parent_run.agent_version,
 		),
@@ -3573,6 +3584,17 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	}
 	.unwrap();
 	assert_eq!(rows, (1, 1));
+	let foreign_with_local_ids: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM generation_requests WHERE foreign_intent IS NOT NULL \
+		 AND (local_task_id IS NOT NULL OR local_workspace_id IS NOT NULL)",
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		foreign_with_local_ids, 0,
+		"a foreign request leaves both local columns null"
+	);
 	p.close().await;
 }
 
@@ -4495,7 +4517,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false}),
 	)
 	.await;
 	assert_eq!(status, 200, "{revoked}");
@@ -4510,7 +4532,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.0"},"expected_revision":2,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{restored}");
@@ -4523,7 +4545,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	let mut denied = serde_json::to_value(&snapshot.bundle).unwrap();
 	denied["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-retired-agent-model", "effect":"deny",
-		"subjects":{"ids":[aidash_server::domain::qualified_agent(p.b.config.deployment.as_str(),&run.agent_id,&run.agent_version)]},
+		"subjects":{"ids":[aidash_domain::agent_subject(p.b.config.deployment.as_str(), &run.agent_id,&run.agent_version)]},
 		"actions":["model.infer"], "resources":{"kinds":["model"]}
 	}));
 	let (status, policy) = request(
@@ -4562,7 +4584,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":run.agent_id,"version":run.agent_version},"expected_revision":catalog.1,"enabled":false}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":run.agent_id,"version":run.agent_version},"expected_revision":catalog.1,"enabled":false}),
 	)
 	.await;
 	assert_eq!(status, 200, "{revoked}");
@@ -5082,7 +5104,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 					Alias::new("expires_at"),
 					Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
 				)
-				.and_where(Expr::cust("home_node='' AND status='ACTIVE'"))
+				.and_where(Expr::cust("local_task_id IS NOT NULL AND status='ACTIVE'"))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(p.a.store.pool.fixture_driver())
@@ -5112,7 +5134,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 	}
 	let still_enabled: bool = sqlx::query_scalar(&Query::select().expr(Expr::cust("COUNT(*)=1"))
 		.from(Alias::new("authorization_catalog"))
-		.and_where(Expr::cust("tenant='acme' AND entry_id IN (SELECT agent_id FROM generation_requests WHERE home_node='') AND enabled"))
+		.and_where(Expr::cust("tenant='acme' AND entry_id IN (SELECT agent_id FROM generation_requests WHERE local_task_id IS NOT NULL) AND enabled"))
 		.to_string(PostgresQueryBuilder)).fetch_one(p.a.store.pool.fixture_driver()).await.unwrap();
 	assert!(still_enabled, "this cut must precede lifecycle retirement");
 	p.step().await;
@@ -5400,7 +5422,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 				&p.receiver_token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":1,"enabled":false})
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":1,"enabled":false})
 			)
 			.await
 			.0,
@@ -6113,7 +6135,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 			.unwrap();
 		}
 		"home_catalog" => {
-			assert_eq!(request(&p.aa, &p.token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
+			assert_eq!(request(&p.aa, &p.token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
 		}
 		"receiver_expiry" => {
 			sqlx::query(

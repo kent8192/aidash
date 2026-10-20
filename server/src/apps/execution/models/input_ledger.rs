@@ -182,9 +182,9 @@ impl RunInput {
 			.expect("one value per column")
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
-		if run.home_node == node {
+		if run.is_local(node) {
 			let message =
-				Message::append_in(tx, node, run.workspace_id, sender, content, key, None).await?;
+				Message::append_in(tx, run.workspace_id, sender, content, key, None).await?;
 			Self::bind_message(tx, run_id, key, message.id).await?;
 		}
 		Ok(false)

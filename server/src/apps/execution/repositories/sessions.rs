@@ -438,6 +438,10 @@ impl SessionScope for Scope<'_> {
 				.store
 				.ok_or_else(|| NativeError::Invalid("session repository scope invariant".into()))?;
 			let access = &mut *self.access;
+			let home = store
+				.deployment
+				.node(access.workspace_node(task.workspace_id).await?)
+				.to_string();
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_areas"))
@@ -479,7 +483,7 @@ impl SessionScope for Scope<'_> {
 			)
 			.bind(Uuid::new_v4())
 			.bind(&access.identity.tenant)
-			.bind(store.deployment.as_str())
+			.bind(&home)
 			.bind(task.workspace_id)
 			.bind(thread)
 			.bind(agent_id)
@@ -491,7 +495,7 @@ impl SessionScope for Scope<'_> {
 				let query_bind_2 = task.workspace_id;
 				let query_bind_3 = thread;
 				let query_bind_4 = agent_id;
-				let query_bind_5 = store.deployment.as_str();
+				let query_bind_5 = home.as_str();
 				let query_bind_6 = &access.identity.subject;
 				crate::database::native::query_as(
 					&select("core_areas")

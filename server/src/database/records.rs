@@ -36,6 +36,7 @@ macro_rules! record {
 }
 record!(Workspace {
 	id,
+	node,
 	title,
 	goal,
 	state,
@@ -73,7 +74,7 @@ record!(Artifact {
 record!(Event {
 	sequence,
 	id,
-	node_id,
+	node,
 	workspace_id,
 	kind,
 	data,
@@ -111,6 +112,7 @@ record!(
 		id,
 		task_id,
 		workspace_id,
+		node,
 		home_node,
 		agent_id,
 		agent_version,

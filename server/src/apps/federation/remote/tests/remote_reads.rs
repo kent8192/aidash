@@ -68,7 +68,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -235,11 +235,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		(
 			&a,
 			&a_policy,
-			aidash_server::domain::qualified_agent(
-				b.config.deployment.as_str(),
-				"remote-only",
-				"1.0.0",
-			),
+			aidash_domain::agent_subject(b.config.deployment.as_str(), "remote-only", "1.0.0"),
 		),
 		(&b, &b_policy, "remote-only".to_owned()),
 	] {
@@ -263,7 +259,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
 		)
 		.await
 		.0,
@@ -298,7 +294,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
 		)
 		.await
 		.0,

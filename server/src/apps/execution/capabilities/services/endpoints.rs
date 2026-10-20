@@ -352,6 +352,9 @@ pub(crate) async fn research_providers(
 			)
 			.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
 			.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(Expr::value(true)))
+			.and_where(Expr::cust(
+				"c.node = (SELECT n.name FROM nodes n WHERE n.tenant = c.tenant AND n.is_default)",
+			))
 			.and_where(Expr::col((Alias::new("r"), Alias::new("kind"))).eq(Expr::value("tool")))
 			.and_where(Expr::cust(
 				"r.metadata->'config'->>'provider' LIKE 'research.%'",

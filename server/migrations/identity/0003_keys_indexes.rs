@@ -24,6 +24,7 @@ pub(super) fn migration() -> Migration {
 				name: "authorization_catalog_history_pkey".to_owned(),
 				columns: vec![
 					"tenant".to_owned(),
+					"node".to_owned(),
 					"entry_id".to_owned(),
 					"entry_version".to_owned(),
 					"revision".to_owned(),
@@ -36,6 +37,7 @@ pub(super) fn migration() -> Migration {
 				name: "authorization_catalog_pkey".to_owned(),
 				columns: vec![
 					"tenant".to_owned(),
+					"node".to_owned(),
 					"entry_id".to_owned(),
 					"entry_version".to_owned(),
 				],
@@ -451,6 +453,26 @@ pub(super) fn migration() -> Migration {
 			unique: false,
 			index_type: Some(IndexType::BTree),
 			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "nodes".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "nodes_pkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "name".to_owned()],
+			},
+		})
+		// Exactly one default Node per Tenant.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "nodes".into(),
+			name: "nodes_one_default".into(),
+			columns: vec!["tenant".into()],
+			unique: true,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some("is_default".into()),
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

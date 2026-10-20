@@ -22,14 +22,7 @@ async fn queued_events(
 	for sequence in 1..=count {
 		events.push(
 			pool.atomic(&scope, async |tx| {
-				event_records::create(
-					tx,
-					"aidash://outbox-records",
-					None,
-					"fixture",
-					json!({"sequence":sequence}),
-				)
-				.await
+				event_records::create(tx, None, "fixture", json!({"sequence":sequence})).await
 			})
 			.await
 			.unwrap(),

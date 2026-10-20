@@ -87,6 +87,7 @@ fn repository() -> Repository {
 	let mut job = test_support::request(9);
 	job.task_id = intent.task.id;
 	job.home_node = intent.home_node.clone();
+	job.foreign_intent = Some(serde_json::json!({}));
 	job.status = "QUEUED".into();
 	job.prepared = false;
 	job.foreign_intent = Some(json!(intent));

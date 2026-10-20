@@ -29,7 +29,8 @@ pub async fn admit(
 		scope.require(&task_resource, "task.delegate").await?;
 	}
 	scope.require_live_agent(task_id, agent).await?;
-	let subject = qualified_agent(scope.node_id(), &agent.id, &agent.version);
+	let node = scope.workspace_node(task.workspace_id).await?;
+	let subject = qualified_agent(&node, &agent.id, &agent.version);
 	super::require_agent(scope.bundle(), &subject)?;
 	if scope.subjects().len() >= 32 {
 		return Err(Error::Invalid(

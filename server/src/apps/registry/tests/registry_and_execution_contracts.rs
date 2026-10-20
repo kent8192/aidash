@@ -434,10 +434,12 @@ async fn scoped_run_details_keep_memory_home_namespace(
 
 #[rstest::rstest]
 fn agent_versions_fit_the_authorization_identity_limit() {
+	// The qualified identity reserves the largest Node address.
+	let room = 256 - aidash_domain::nodes::NodeAddress::MAX_LEN - "/agents/@".len();
 	let mut entry = tool(&"a".repeat(100));
 	entry.kind = "agent".into();
 	entry.config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"test","schema_version":1,"bindings":[],"remove_default":[]});
-	entry.version = format!("1.0.0+{}", "x".repeat(33));
+	entry.version = format!("1.0.0+{}", "x".repeat(room - 100 - "1.0.0+".len()));
 	aidash_server::registry::validate(&entry).unwrap();
 	entry.version.push('x');
 	assert!(aidash_server::registry::validate(&entry).is_err());

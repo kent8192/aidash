@@ -466,6 +466,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -497,6 +498,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -546,6 +548,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -570,6 +573,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),

@@ -74,6 +74,27 @@ fn bypass(store: &Store) -> Store {
 	internal
 }
 
+/// The address of the Node a Workspace belongs to, which is the home of its banks.
+async fn workspace_home(store: &Store, workspace: Uuid) -> Result<String> {
+	let internal = bypass(store);
+	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
+	let result = async {
+		let node: Option<String> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **lease.tx())
+		.await?;
+		let node = node.ok_or_else(|| Error::NotFound("workspace".into()))?;
+		Ok(format!("{}/{node}", store.deployment))
+	}
+	.await;
+	lease.finish(result).await
+}
+
 /// Explicit first initialization of the new relational format, never a JSON import.
 pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let recovery = external(store, &directory)?;
@@ -82,7 +103,7 @@ pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let result = async {
 		for table in ["memory_banks","memory_participants"] {
 			if native::query(&Query::select().column(Alias::new("id")).from(Alias::new(table))
-				.and_where(Expr::col("home").eq(store.deployment.as_str())).limit(1).to_string(PostgresQueryBuilder))
+				.and_where(crate::database::scope::in_deployment("home", store.deployment.as_str())).limit(1).to_string(PostgresQueryBuilder))
 				.fetch_optional(&mut **lease.tx()).await?.is_some() {
 				return Err(Error::Conflict("a new recovery epoch requires empty new-format memory; restore the existing external ledger".into()));
 			}
@@ -278,7 +299,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 	let ledger = recovery.load()?;
 	if archive.format != 1
 		|| archive.home != store.deployment
-		|| archive.bank.home != store.deployment
+		|| aidash_domain::nodes::deployment_of(&archive.bank.home) != store.deployment
 		|| archive.epoch != ledger.epoch
 		|| archive.created_at > Utc::now()
 		|| archive.expires_at <= Utc::now()
@@ -465,7 +486,9 @@ async fn finish(
 			let ttl = policy.retention.unit_expired(unit.learned_at, Utc::now());
 			// The pass snapshot is already validated. Check only this fence so
 			// Ledger validation does not rescan every Home identity per unit.
-			let mut selected = aidash_domain::memory::recovery::Ledger::new(bank.home.clone());
+			let mut selected = aidash_domain::memory::recovery::Ledger::new(
+				aidash_domain::nodes::deployment_of(&bank.home).to_owned(),
+			);
 			if let Some(fence) = ledger.units.get(&unit.id) {
 				selected.units.insert(unit.id, fence.clone());
 			}
@@ -831,15 +854,16 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					println!("verified new-format memory ledger");
 				}
 				Some("backup") => {
+					let workspace = *matches
+						.get_one::<Uuid>("workspace")
+						.ok_or_else(|| Error::Invalid("backup requires --workspace".into()))?;
 					let bank = Bank {
-						home: store.deployment.to_string(),
+						home: workspace_home(&store, workspace).await?,
 						tenant: matches
 							.get_one::<String>("tenant")
 							.ok_or_else(|| Error::Invalid("backup requires --tenant".into()))?
 							.clone(),
-						workspace: *matches
-							.get_one::<Uuid>("workspace")
-							.ok_or_else(|| Error::Invalid("backup requires --workspace".into()))?,
+						workspace,
 						participant: matches.get_one::<Uuid>("participant").copied(),
 					};
 					println!("{}", backup(&store, directory, bank).await?.display());

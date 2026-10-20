@@ -6,7 +6,6 @@ use crate::{
 use aidash_domain::{
 	generation::{policy::Spec, requests::Request},
 	policy::{Subject, SubjectKind},
-	qualified_agent,
 	registry::{EntityRef, Entry},
 };
 use uuid::Uuid;
@@ -16,7 +15,11 @@ pub async fn publish(
 	spec: &Spec,
 ) -> Result<()> {
 	let entry: Entry = serde_json::from_value(job.definition.clone())?;
-	let subject = qualified_agent(scope.node_id(), &entry.id, &entry.version);
+	let subject = aidash_domain::agent_subject(
+		&format!("{}/{}", scope.node_id(), job.node),
+		&entry.id,
+		&entry.version,
+	);
 	let mut snapshot = scope.snapshot().clone();
 	if snapshot.bundle.subjects.contains_key(&subject) {
 		return Err(Error::Conflict("generated subject already exists".into()));
@@ -40,7 +43,7 @@ pub async fn publish(
 	scope.replace_snapshot(snapshot);
 	scope.save_authority(job).await?;
 	scope.register(&entry).await?;
-	if !job.home_node.is_empty() {
+	if !job.is_local() {
 		return Ok(());
 	}
 	// An unapproved generated version could never run, so a lost
@@ -70,7 +73,7 @@ pub async fn require_live(
 			|| !enabled
 			|| (job.agent_id == agent.id
 				&& job.agent_version == agent.version
-				&& (job.task_id != task || !job.home_node.is_empty()))
+				&& (job.task_id != task || !job.is_local()))
 		{
 			return Err(Error::Forbidden);
 		}

@@ -124,7 +124,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	}
 	.unwrap();
 	tx.commit().await.unwrap();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":c.b.f.config.deployment,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
 		&c.a.token,
@@ -495,7 +495,7 @@ pub(super) fn connected_nodes(
 a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 	b.f.config.endpoint = format!("http://{}", bl.local_addr().unwrap());
 	a.policy["subjects"]
-		[aidash_server::domain::qualified_agent(b.f.config.deployment.as_str(), "research", "1.1.0")] =
+		[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(b.f.config.deployment.as_str(), "acme"), "research", "1.1.0")] =
 		json!({"kind":"agent"});
 	let (status, result) = request(
 		&a.app,
@@ -610,7 +610,7 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 	)
 	.await;
 	let file = area["manifest"][0].clone();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.b.f.config.deployment,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
 		&c.a.token,
@@ -870,7 +870,7 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	let mut snapshot = auth.snapshot("acme").await.unwrap();
 	snapshot.bundle.subjects.insert(
 		aidash_server::domain::qualified_agent(
-			c.f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 			&entry.id,
 			&entry.version,
 		),
@@ -926,7 +926,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 	let mut snapshot = auth.snapshot("acme").await.unwrap();
 	snapshot.bundle.subjects.insert(
 		aidash_server::domain::qualified_agent(
-			b.f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(b.f.config.deployment.as_str(), "acme"),
 			&receiver.agent_id,
 			&receiver.agent_version,
 		),
@@ -980,6 +980,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 	};
 	auth.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "model".into(),
 			version: "1.0.0".into(),

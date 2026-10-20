@@ -58,7 +58,7 @@ pub async fn message_limit(scope: &dyn Definitions, run: &RunMetadata) -> Result
 }
 
 pub async fn media_routes(scope: &dyn Definitions, run: &RunMetadata) -> Result<Vec<Vec<String>>> {
-	if run.home_node != scope.node() {
+	if !run.is_local(scope.node()) {
 		return Ok(vec![]);
 	}
 	let snapshot = scope.snapshot(run).await?;

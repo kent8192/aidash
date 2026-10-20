@@ -580,7 +580,10 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			)
 			.and_where(Expr::col("activated_at").is_not_null())
 			.and_where(Expr::col("next_job").lte(Expr::value(Utc::now())))
-			.and_where(Expr::col("home").eq(store.deployment.as_str()))
+			.and_where(crate::database::scope::in_deployment(
+				"home",
+				store.deployment.as_str(),
+			))
 			.order_by(Alias::new("next_job"), Order::Asc)
 			.order_by(("memory_banks", "id"), Order::Asc)
 			.limit(32)

@@ -170,13 +170,7 @@ impl ReceiverScope for Scope<'_> {
 									vec![Expr::value(query_bind_4.to_owned()).into()],
 								)),
 						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("home_node")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								)),
-						)
+						.and_where(Expr::col(Alias::new("home_node")).eq(query_bind_5))
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)

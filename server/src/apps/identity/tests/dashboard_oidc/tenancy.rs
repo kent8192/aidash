@@ -17,6 +17,14 @@ struct Deployment {
 
 impl Deployment {
 	async fn new(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
+		Self::with_tier_limits(runtime, rules, None).await
+	}
+
+	async fn with_tier_limits(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
+	) -> Self {
 		let runtime = runtime.await;
 		let (mut federation, url, database) = runtime.parts();
 		federation.config.oidc = Some(OidcConfig {
@@ -28,6 +36,9 @@ impl Deployment {
 			session_idle_seconds: 1_800,
 		});
 		federation.config.tenancy = rules;
+		if let Some(tier_limits) = tier_limits {
+			federation.config.tier_limits = tier_limits;
+		}
 		let app = common::application(federation.clone()).await;
 		Self {
 			federation,
@@ -875,10 +886,13 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		.await;
 	assert_eq!(status, 200, "{overview}");
 	let actions = overview["actions"].as_array().unwrap();
-	// Every Tenant Administrator and Registry action, `tenant.update`,
-	// `tenant.delete` and `credential.create` for its own subject.
-	assert_eq!(actions.len(), 25, "{overview}");
+	// Every Tenant Administrator and Registry action, `node.create`,
+	// `node.update`, `tenant.update`, `tenant.delete` and `credential.create`
+	// for its own subject.
+	assert_eq!(actions.len(), 27, "{overview}");
 	for action in [
+		"node.create",
+		"node.update",
 		"tenant.delete",
 		"registry.create",
 		"catalog.approve",
@@ -1299,5 +1313,7 @@ async fn display_retention_follows_the_request_that_ended_last(
 
 #[path = "tenancy/deletion.rs"]
 mod deletion;
+#[path = "tenancy/nodes.rs"]
+mod nodes;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;

@@ -538,6 +538,59 @@ impl MigrationFixture {
 			)
 			.to_string(PostgresQueryBuilder);
 		self.connection.execute(&insert, vec![]).await.unwrap();
+		let node = aidash_domain::nodes::NodeName::derived(name);
+		for sql in [
+			Query::insert()
+				.into_table(Alias::new("node_names"))
+				.columns(["name", "tenant", "created_at"].map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(node.as_str()))
+						.expr(Expr::value(name))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.on_conflict(
+					reinhardt::query::OnConflict::column(Alias::new("name"))
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+			Query::insert()
+				.into_table(Alias::new("nodes"))
+				.columns(
+					[
+						"tenant",
+						"name",
+						"label",
+						"is_default",
+						"created_at",
+						"created_by_kind",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(name))
+						.expr(Expr::value(node.as_str()))
+						.expr(Expr::value("Default"))
+						.expr(Expr::value(true))
+						.expr(Expr::cust("clock_timestamp()"))
+						.expr(Expr::value("deployment_administrator"))
+						.to_owned(),
+				)
+				.on_conflict(
+					reinhardt::query::OnConflict::columns([
+						Alias::new("tenant"),
+						Alias::new("name"),
+					])
+					.do_nothing()
+					.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		] {
+			self.connection.execute(&sql, vec![]).await.unwrap();
+		}
 	}
 
 	/// Applies the history as it was before Issue #243's migrations.
@@ -673,6 +726,7 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 	let workspace = Workspace::build()
 		.id(Uuid::new_v4())
 		.tenant("acme")
+		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title("After native migration")
 		.goal("Preserve on replay")
 		.state(json!({"keep":true}).into())
@@ -995,6 +1049,7 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 	let workspace = Workspace::build()
 		.id(Uuid::new_v4())
 		.tenant("acme")
+		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title("Retained")
 		.goal("Refuse unsafe reversal")
 		.state(json!({"keep": true}).into())
@@ -1179,6 +1234,7 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 	let workspace = Workspace::build()
 		.id(Uuid::new_v4())
 		.tenant("acme")
+		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title(whitespace)
 		.goal("Valid goal")
 		.state(json!({}).into())

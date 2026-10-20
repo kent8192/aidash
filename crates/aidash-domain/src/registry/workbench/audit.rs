@@ -48,6 +48,8 @@ pub struct TestRecord {
 }
 #[derive(Debug, Clone)]
 pub struct CatalogChange {
+	/// The Node whose approval changed.
+	pub node: crate::nodes::NodeName,
 	pub revision: i64,
 	pub enabled: bool,
 	pub actor: String,

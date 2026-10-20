@@ -14,7 +14,6 @@ mod native_database;
 mod provider_fixtures;
 use aidash_server::{
 	apps::{execution::models::Run, federation::peer::models::Peer},
-	domain::qualified_agent,
 	registry::digest,
 };
 use endpoint::EndpointFixture;
@@ -57,6 +56,7 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Valu
 		}
 		.set_catalog(
 			tenant,
+			&aidash_domain::nodes::NodeName::derived(tenant),
 			&serde_json::from_value(input["entry"].clone()).unwrap(),
 			input["expected_revision"].as_i64().unwrap(),
 			input["enabled"].as_bool().unwrap(),
@@ -168,7 +168,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let mut mismatch = input.clone();
 	mismatch["requirements"] = json!({"capability":"missing-capability"});
 	assert_eq!(inspect(app, PEER_SECRET, mismatch).await.0, 400);
-	let executor = qualified_agent(f.config.deployment.as_str(), "research", "1.0.0");
+	let executor = aidash_domain::agent_subject(f.config.deployment.as_str(), "research", "1.0.0");
 	// Every denied action is tested for both the mapped root and the receiver's
 	// executor. An allow on one must never override the other's explicit deny.
 	let mut revision = 1;
@@ -216,7 +216,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			deployment_administrator(
 				app,
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":1,"enabled":false})
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":1,"enabled":false})
 			)
 			.await
 			.0,
@@ -227,7 +227,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			deployment_administrator(
 				app,
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":2,"enabled":true})
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":2,"enabled":true})
 			)
 			.await
 			.0,

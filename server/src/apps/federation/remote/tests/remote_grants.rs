@@ -1,7 +1,7 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
-use aidash_server::{domain::qualified_agent, federation::Peer};
+use aidash_server::federation::Peer;
 use common::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -62,7 +62,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let ba = second.application;
 	let (mut policy, token, task) = bootstrap(&a, &aa, "http://localhost:1").await;
 	bootstrap(&b, &ba, "http://localhost:1").await;
-	let executor = qualified_agent(b.config.deployment.as_str(), "research", "1.0.0");
+	let executor = aidash_domain::agent_subject(b.config.deployment.as_str(), "research", "1.0.0");
 	policy["subjects"][&executor] = json!({"kind":"agent"});
 	assert_eq!(
 		request(

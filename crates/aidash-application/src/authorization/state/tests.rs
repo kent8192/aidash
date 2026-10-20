@@ -14,6 +14,7 @@ fn id(value: u128) -> Uuid {
 }
 fn workspace() -> Workspace {
 	Workspace {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		title: "saved workspace".into(),
 		goal: "goal".into(),
@@ -55,6 +56,7 @@ fn artifact(value: u128, visible: bool) -> Artifact {
 fn run(value: u128, visible: bool) -> RawRun {
 	RawRun {
 		metadata: RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: id(value),
 			task_id: id(2),
 			workspace_id: id(1),
@@ -254,7 +256,7 @@ impl WorkspaceStateScope for Scope {
 		Ok(vec![Event {
 			id: id(7),
 			sequence: 9,
-			node_id: "aidash://home".into(),
+			node: None,
 			workspace_id: None,
 			kind: "marketplace.installed".into(),
 			data: json!({"saved":true}),

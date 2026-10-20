@@ -128,7 +128,11 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 			.await
 			.is_err()
 	);
-	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	let (a, b) = tokio::join!(
 		store.claim(&ACME, task.id, 0, &owner, &agent),
 		store.claim(&ACME, task.id, 0, &owner, &agent)
@@ -249,7 +253,11 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	// Act: claiming would create the Run.
 	let rejected = store.claim(&ACME, task.id, 0, &owner, &agent).await;
 	// Assert: no Run and no claim without a key.
@@ -278,7 +286,11 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		.await
 		.unwrap();
 	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
-	let legacy_owner = qualified_agent(store.deployment.as_str(), &legacy.id, &legacy.version);
+	let legacy_owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&legacy.id,
+		&legacy.version,
+	);
 	let claimed = store
 		.claim(&ACME, other.id, 0, &legacy_owner, &legacy)
 		.await
@@ -740,6 +752,7 @@ fn federation(
 				sign_in: None,
 				federation: true,
 				deployment_key: None,
+				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
@@ -765,7 +778,11 @@ async fn running_task(
 		.create_task(&ACME, workspace, &input, "alice", None)
 		.await
 		.unwrap();
-	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	if parent.is_some() {
 		store
 			.claim(&ACME, task.id, task.revision, &owner, agent)
@@ -1595,6 +1612,71 @@ async fn peer_disable_does_not_require_a_live_peer(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn an_agent_runs_only_on_a_node_that_approved_it(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+) {
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+	let agent = seed(&f.registry).await;
+	common::approve_agent(&f, "acme", &agent).await;
+	let first = common::default_node(&f.store, "acme").await;
+	let second_name = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	let second = f.store.deployment.node(second_name.clone());
+	assert_ne!(first, second);
+	let workspace = f
+		.store
+		.create_workspace(&ACME, "alice", "Build", "Run on another Node")
+		.await
+		.unwrap();
+	sqlx::query("UPDATE workspaces SET node = $1 WHERE id = $2")
+		.bind(second_name.as_str())
+		.bind(workspace.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let task = f
+		.store
+		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.await
+		.unwrap();
+
+	assert!(
+		common::subject_claim(&f, "acme", &task, &agent)
+			.await
+			.is_err(),
+		"an approval on the first Node does not stand for the second"
+	);
+	assert!(
+		f.store
+			.runs(&ACME)
+			.await
+			.unwrap()
+			.iter()
+			.all(|run| run.task_id != task.id)
+	);
+
+	common::approve_agent_on(&f, "acme", &agent, &second).await;
+	common::subject_claim(&f, "acme", &task, &agent)
+		.await
+		.expect("the second Node approved the agent");
+	let run = f
+		.store
+		.runs(&ACME)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == task.id)
+		.expect("the claim queues a Run");
+	assert_eq!(run.node, second_name);
+	assert_eq!(run.home_node, second.to_string());
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn registry_event_and_conversation_creation_roll_back_as_units(
 	#[from(store)] _store_fixture: StoreFuture,
 	#[from(federation)]
@@ -2224,6 +2306,7 @@ fn authenticated_runtime(
 			sign_in: None,
 			federation: true,
 			deployment_key: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		};
 		runtime.federation.client = http_client;
 		runtime

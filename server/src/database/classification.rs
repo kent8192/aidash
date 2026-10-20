@@ -267,6 +267,10 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
+	// Node names are never reused and name the receiving Node's Tenant before
+	// any scope opens (#241)
+	table("identity", "node_names", DeploymentWide),
+	table("identity", "nodes", TenantOwned),
 	// the identity's one Personal Tenant, read at sign-in; purge keeps it, or
 	// signing in would provision a new Personal Tenant for an identity that deleted its own
 	tombstone("identity", "personal_tenants"),

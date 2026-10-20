@@ -106,7 +106,11 @@ impl PermissionScope for Scope {
 			.await?;
 			return Ok(Some(true));
 		}
-		AuthorizationCatalog::enabled_in(self.tx.as_mut(), tenant, entry, true)
+		// Workbench permissions are the Tenant's; they read the default Node's approvals.
+		let node = crate::apps::identity::repositories::nodes::default_of(self.tx.as_mut(), tenant)
+			.await?
+			.name;
+		AuthorizationCatalog::enabled_in(self.tx.as_mut(), tenant, node.as_str(), entry, true)
 			.await
 			.map_err(Into::into)
 	}

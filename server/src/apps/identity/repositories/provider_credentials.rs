@@ -25,7 +25,6 @@ pub struct NativeRepository {
 struct NativeScope {
 	tx: Box<dyn TransactionExecutor>,
 	tenant: String,
-	node: String,
 }
 fn contract(row: Record) -> Result<ProviderCredential> {
 	Ok(serde_json::from_value(serde_json::to_value(row)?)?)
@@ -53,7 +52,6 @@ impl Repository for NativeRepository {
 		Ok(Box::new(NativeScope {
 			tx,
 			tenant: tenant.into(),
-			node: self.node.clone(),
 		}))
 	}
 	async fn reconciliation_candidates(
@@ -144,7 +142,7 @@ impl Scope for NativeScope {
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(crate::Error::from)?;
-		crate::apps::execution::models::event_records::append(self.tx.as_mut(),&self.node,None,event,json!({"tenant":value.tenant,"id":value.id,"provider":value.provider,"state":value.state,"revision":value.revision,"actor":actor})).await?;
+		crate::apps::execution::models::event_records::append(self.tx.as_mut(),None,event,json!({"tenant":value.tenant,"id":value.id,"provider":value.provider,"state":value.state,"revision":value.revision,"actor":actor})).await?;
 		Ok(())
 	}
 	async fn bindings(&mut self) -> Result<Vec<Binding>> {
@@ -180,7 +178,7 @@ impl Scope for NativeScope {
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
 		}
-		crate::apps::execution::models::event_records::append(self.tx.as_mut(),&self.node,None,"provider_credential_binding.updated",json!({"tenant":value.tenant,"id":value.provider.id(),"provider":value.provider,"provider_credential_id":value.provider_credential_id,"state":if value.provider_credential_id.is_some(){"bound"}else{"unbound"},"revision":value.revision,"actor":actor})).await?;
+		crate::apps::execution::models::event_records::append(self.tx.as_mut(),None,"provider_credential_binding.updated",json!({"tenant":value.tenant,"id":value.provider.id(),"provider":value.provider,"provider_credential_id":value.provider_credential_id,"state":if value.provider_credential_id.is_some(){"bound"}else{"unbound"},"revision":value.revision,"actor":actor})).await?;
 		Ok(())
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {

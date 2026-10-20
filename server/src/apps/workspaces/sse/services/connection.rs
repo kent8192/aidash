@@ -266,7 +266,11 @@ impl Watch<Event> for Context {
 							.can_emit(event)
 							.await
 							.map_err(|_| Closed::Authority)?
-							.then(|| event.cloud_event().to_string()),
+							.then(|| {
+								event
+									.cloud_event(self.f.store.deployment.as_str())
+									.to_string()
+							}),
 						None => {
 							// The Deployment Administrator's stream observes every Tenant's events.
 							let scope = aidash_application::tenancy::TenancyScope::Deployment(
@@ -285,7 +289,11 @@ impl Watch<Event> for Context {
 							)
 							.await
 							.map_err(|_| Closed::Authority)?
-							.then(|| event.cloud_event().to_string())
+							.then(|| {
+								event
+									.cloud_event(self.f.store.deployment.as_str())
+									.to_string()
+							})
 						}
 					};
 					drop(visibility);

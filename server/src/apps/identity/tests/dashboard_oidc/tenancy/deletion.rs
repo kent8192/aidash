@@ -500,8 +500,8 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO runs (id, task_id, workspace_id, home_node, agent_id, agent_version, phase, control, context, pending, tenant) \
-		 VALUES ($1, $2, $3, $4, 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM workspaces WHERE id = $3))",
+		"INSERT INTO runs (id, task_id, workspace_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
+		 VALUES ($1, $2, $3, $4 || '/' || (SELECT node FROM workspaces WHERE id = $3), (SELECT node FROM workspaces WHERE id = $3), 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM workspaces WHERE id = $3))",
 	)
 	.bind(run)
 	.bind(task)

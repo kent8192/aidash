@@ -47,7 +47,7 @@ impl Reader {
 		let inspection = inspection("model");
 		let subjects = vec![
 			"requester".into(),
-			qualified_agent("aidash://receiver", "agent", "1.0.0"),
+			aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0"),
 		];
 		let grant = Grant {
 			id: Uuid::from_u128(3),

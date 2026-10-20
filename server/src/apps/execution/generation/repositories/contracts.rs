@@ -20,6 +20,7 @@ impl Record for Request {
 			policy_id: row.try_get("policy_id")?,
 			policy_revision: row.try_get("policy_revision")?,
 			task_id: row.try_get("task_id")?,
+			node: row.try_get("node")?,
 			home_node: row.try_get("home_node")?,
 			foreign_intent: row.try_get("foreign_intent")?,
 			prepared: row.try_get("prepared")?,

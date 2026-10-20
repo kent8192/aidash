@@ -17,24 +17,25 @@ fn administering() -> TenancyScope {
 #[derive(Clone)]
 pub(crate) struct PeerRecords {
 	db: Pool,
-	node: String,
 }
 
 impl PeerRecords {
-	pub(crate) fn new(db: &Pool, node: &str) -> Self {
-		Self {
-			db: db.clone(),
-			node: node.to_owned(),
-		}
+	pub(crate) fn new(db: &Pool) -> Self {
+		Self { db: db.clone() }
 	}
 	pub(crate) async fn list(&self) -> Result<Vec<Peer>> {
 		self.db
 			.atomic(&reading(), async |tx| records::list(tx).await)
 			.await
 	}
+	/// Peers are registered per Deployment until Node Registrations replace them,
+	/// so `node` may be the address of a Node of that Deployment.
 	pub(crate) async fn enabled(&self, node: &str) -> Result<Peer> {
+		let deployment = aidash_domain::nodes::deployment_of(node);
 		self.db
-			.atomic(&reading(), async |tx| records::enabled(tx, node).await)
+			.atomic(&reading(), async |tx| {
+				records::enabled(tx, deployment).await
+			})
 			.await
 	}
 	pub(crate) async fn disable(&self, node: &str) -> Result<Peer> {
@@ -43,7 +44,6 @@ impl PeerRecords {
 				let stored = records::disable(tx, node).await?;
 				event_records::append(
 					tx,
-					&self.node,
 					None,
 					"peer.registered",
 					json!({"node_id":stored.node_id,"endpoint":stored.endpoint,"enabled":false}),
@@ -66,7 +66,6 @@ impl PeerRecords {
 				records::save(tx, &peer).await?;
 				event_records::append(
 					tx,
-					&self.node,
 					None,
 					"peer.registered",
 					json!({"node_id":peer.node_id,"endpoint":peer.endpoint,"enabled":peer.enabled}),

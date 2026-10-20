@@ -448,6 +448,7 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 	let id = Uuid::from_u128(10000);
 	if present {
 		scope.admission = Some(Run {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			task_id: Uuid::from_u128(10),
 			workspace_id: Uuid::from_u128(11),

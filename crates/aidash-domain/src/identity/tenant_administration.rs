@@ -30,13 +30,22 @@ pub const CREDENTIAL_READ: &str = "credential.read";
 pub const CREDENTIAL_REVOKE: &str = "credential.revoke";
 pub const PEER_MAPPING_READ: &str = "peer_mapping.read";
 pub const PEER_MAPPING_UPDATE: &str = "peer_mapping.update";
+/// Listing the Tenant's Nodes. Members hold it.
+pub const NODE_READ: &str = "node.read";
+/// Working in a Node: creating a Workspace there, or reaching it from another
+/// Node of the same Tenant. Members hold it; the receiving Node checks it.
+pub const NODE_USE: &str = "node.use";
+/// Creating a Node, within "Nodes per Tenant".
+pub const NODE_CREATE: &str = "node.create";
+/// Changing a Node's label.
+pub const NODE_UPDATE: &str = "node.update";
 /// Setting the Tenant's Workbench Test Limits within the Deployment's ceilings.
 pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
 /// Writing the Tenant's Workbench Test Profiles.
 pub const TEST_PROFILE_UPDATE: &str = "workbench.test_profile.update";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 19] = [
+pub const ACTIONS: [&str; 21] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -54,6 +63,8 @@ pub const ACTIONS: [&str; 19] = [
 	CREDENTIAL_REVOKE,
 	PEER_MAPPING_READ,
 	PEER_MAPPING_UPDATE,
+	NODE_CREATE,
+	NODE_UPDATE,
 	TEST_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
 ];
@@ -99,11 +110,13 @@ pub fn resource_kind(action: &str) -> &'static str {
 		DECISION_READ => "decision",
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
+		NODE_READ | NODE_USE | NODE_UPDATE => "node",
 		TEST_LIMITS_UPDATE => "test_limits",
 		TEST_PROFILE_UPDATE => "test_profile",
 		crate::identity::tenancy::TENANT_UPDATE
 		| crate::identity::tenancy::TENANT_DELETE
-		| crate::identity::tenancy::BILLING_ATTACH => "tenant",
+		| crate::identity::tenancy::BILLING_ATTACH
+		| NODE_CREATE => "tenant",
 		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
 		MARKETPLACE_INSTALL => "package",
 		_ => "subject",

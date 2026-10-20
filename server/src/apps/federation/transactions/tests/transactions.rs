@@ -56,7 +56,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		.execute(f.store.pool.fixture_driver()).await }.unwrap();
 	if denied {
 		let agent = aidash_server::domain::qualified_agent(
-			f.config.deployment.as_str(),
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 			"research",
 			"1.0.0",
 		);

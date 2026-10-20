@@ -565,7 +565,7 @@ pub(crate) async fn run_mutate(
 	key: &str,
 	changes: &[Change],
 ) -> Result<Vec<Unit>> {
-	if run.home_node != store.deployment {
+	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
@@ -612,7 +612,7 @@ pub(crate) async fn run_recall(
 	query: RecallQuery,
 	reflect: bool,
 ) -> Result<Outcome> {
-	if run.home_node != store.deployment {
+	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
@@ -689,7 +689,7 @@ pub(crate) async fn scope(
 	action: &str,
 ) -> Result<()> {
 	bank.validate()?;
-	if bank.home != store.deployment {
+	if aidash_domain::nodes::deployment_of(&bank.home) != store.deployment {
 		return Err(Error::Forbidden);
 	}
 	let tenant: Option<String> = native::query_scalar(
@@ -732,9 +732,13 @@ pub(crate) async fn bank_provider(
 			"agent",
 		)
 		.await?;
-		let config =
-			super::super::repositories::bindings::configuration(lease, &tenant, &agent, &bank.home)
-				.await?;
+		let config = super::super::repositories::bindings::configuration(
+			lease,
+			&tenant,
+			&agent,
+			aidash_domain::nodes::deployment_of(&bank.home),
+		)
+		.await?;
 		if config.memory.as_ref() != Some(provider) {
 			return Err(Error::Conflict(
 				"memory provider differs from the participant's accepted Agent version".into(),
@@ -924,6 +928,15 @@ pub async fn create_participant(
 		)
 		.scalar_one(&mut **lease.tx())
 		.await?;
+		let node: String = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **lease.tx())
+		.await?;
 		let accepted = definition(&mut lease, &tenant, &input.agent, "agent").await?;
 		let configuration = super::super::repositories::bindings::configuration(
 			&mut lease,
@@ -938,7 +951,7 @@ pub async fn create_participant(
 			.to_owned();
 		let id = Uuid::now_v7();
 		let bank = Bank {
-			home: store.deployment.to_string(),
+			home: format!("{}/{node}", store.deployment),
 			tenant,
 			workspace,
 			participant: Some(id),
@@ -1188,7 +1201,10 @@ pub async fn participants(
 		query
 			.column(reinhardt::query::ColumnRef::Asterisk)
 			.from(Alias::new("memory_participants"))
-			.and_where(Expr::col("home").eq(store.deployment.as_str()))
+			.and_where(crate::database::scope::in_deployment(
+				"home",
+				store.deployment.as_str(),
+			))
 			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 			.and_where(Expr::col("deleted").eq(false))
 			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)

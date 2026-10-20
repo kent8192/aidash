@@ -21,7 +21,10 @@ pub(crate) async fn claimed(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("home_node").eq(store.deployment.as_str()))
+			.and_where(crate::database::scope::local_home(
+				"runs",
+				store.deployment.as_str(),
+			))
 			.and_where(Expr::col("task_id").eq(Expr::value(task)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),
@@ -114,7 +117,7 @@ pub(crate) async fn admit(
 	let Some(provider) = config.memory else {
 		return Ok(None);
 	};
-	if run.home_node != store.deployment
+	if !run.is_local(store.deployment.as_str())
 		|| agent.id != run.agent_id
 		|| agent.version != run.agent_version
 	{
@@ -141,7 +144,7 @@ pub(crate) async fn admit(
 		let id: Uuid = assignment.try_get("participant_id")?;
 		let observed: i64 = assignment.try_get("participant_revision")?;
 		let bank = Bank {
-			home: store.deployment.to_string(),
+			home: run.home_node.clone(),
 			tenant: tenant.clone(),
 			workspace: run.workspace_id,
 			participant: Some(id),
@@ -192,7 +195,7 @@ pub(crate) async fn admit(
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(id))
-						.expr(Expr::value(store.deployment.as_str()))
+						.expr(Expr::value(run.home_node.as_str()))
 						.expr(Expr::value(&tenant))
 						.expr(Expr::value(run.workspace_id))
 						.expr(Expr::value(principal))
@@ -210,7 +213,7 @@ pub(crate) async fn admit(
 	};
 	let binding = Binding {
 		bank: Bank {
-			home: store.deployment.to_string(),
+			home: run.home_node.clone(),
 			tenant,
 			workspace: run.workspace_id,
 			participant: Some(participant),

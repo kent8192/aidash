@@ -115,7 +115,7 @@ impl Approvals {
 			.chain(self.compaction.iter().map(|a| &a.provider))
 			.chain(self.summary.iter().map(|a| &a.provider))
 		{
-			crate::nodes::DeploymentId::parse(&provider.node_id)?;
+			crate::nodes::validate_node_ref(&provider.node_id)?;
 			crate::nonempty(&provider.entry.id, "remote provider")?;
 			crate::nonempty(&provider.entry.version, "remote provider version")?;
 			if [&provider.digest, &provider.configuration_digest]
@@ -173,7 +173,7 @@ impl Usage {
 		{
 			return Err(ContractError::Semantic(Failure::ProviderContract));
 		}
-		crate::nodes::DeploymentId::parse(&self.dispatcher_node)?;
+		crate::nodes::validate_node_ref(&self.dispatcher_node)?;
 		Ok(())
 	}
 }
@@ -272,8 +272,7 @@ pub fn lineage_live(
 	enabled: bool,
 	now: chrono::DateTime<Utc>,
 ) -> bool {
-	(job.status == "ACTIVE"
-		|| (job.status == "QUEUED" && job.prepared && !job.home_node.is_empty()))
+	(job.status == "ACTIVE" || (job.status == "QUEUED" && job.prepared && !job.is_local()))
 		&& job.expires_at > now
 		&& enabled
 		&& !job.quota_released

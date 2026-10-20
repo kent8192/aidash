@@ -222,7 +222,11 @@ async fn admitted_run(
 	.bind(credential)
 	.bind(vec![
 		"alice".to_owned(),
-		aidash_server::domain::qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
+		aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+			"research",
+			"1.0.0",
+		),
 	])
 	.bind(description)
 	.execute(f.store.pool.fixture_driver())

@@ -3,7 +3,6 @@ use crate::{Error, Result, ports::authorization::peer::PeerInspectionScope};
 use aidash_domain::{
 	federation::execution::{Definition, Inspection, admission::InspectInput},
 	policy::SubjectKind,
-	qualified_agent,
 	registry::{EntityRef, Entry, rules::digest},
 };
 use serde_json::json;
@@ -44,7 +43,8 @@ async fn inspect_in(
 	// Receiving external execution is separate from advertising metadata.
 	let resource = access.resource("node", access.node_id(), json!({}));
 	access.require(&resource, "federation.execute").await?;
-	let executor = qualified_agent(access.node_id(), &input.agent.id, &input.agent.version);
+	let executor =
+		aidash_domain::agent_subject(access.node_id(), &input.agent.id, &input.agent.version);
 	if access
 		.bundle()
 		.subjects

@@ -14,7 +14,10 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 		&Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("home_node").eq(store.deployment.as_str()))
+			.and_where(crate::database::scope::local_home(
+				"runs",
+				store.deployment.as_str(),
+			))
 			.and_where(Expr::col("task_id").eq(Expr::value(job.task_id)))
 			.and_where(Expr::col("agent_id").eq(job.agent_id.as_str()))
 			.and_where(Expr::col("agent_version").eq(job.agent_version.as_str()))

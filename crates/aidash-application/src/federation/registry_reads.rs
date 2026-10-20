@@ -11,7 +11,6 @@ use aidash_domain::{
 		protocol::compatible,
 		registry_reads::Reference,
 	},
-	qualified_agent,
 	registry::{EntityRef, Entry, rules::digest},
 };
 use serde_json::json;
@@ -45,7 +44,7 @@ async fn check(
 			return Ok(false);
 		}
 		let mut resource = scope.catalog_resource(&entry);
-		resource.id = qualified_agent(&node, &id, &version);
+		resource.id = aidash_domain::agent_subject(&node, &id, &version);
 		resource.attributes["remote_node"] = json!(node);
 		if !scope.decide(&resource, "registry.read").await?
 			|| !scope.decide(&resource, "agent.execute").await?

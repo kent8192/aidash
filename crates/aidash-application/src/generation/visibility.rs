@@ -7,7 +7,7 @@ pub fn resource(scope: &dyn GenerationVisibility, job: &Request) -> Resource {
 	scope.resource("generation", &job.id.to_string(), job.resource_attributes())
 }
 pub async fn visible(scope: &mut dyn GenerationVisibility, job: &Request) -> Result<bool> {
-	if !job.home_node.is_empty() {
+	if !job.is_local() {
 		if !scope.inherited_lease() {
 			scope.context(json!({}));
 		}

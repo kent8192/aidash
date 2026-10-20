@@ -27,6 +27,7 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		run: RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
 			workspace_id: Uuid::new_v4(),
@@ -456,7 +457,7 @@ async fn only_observed_inputs_are_acknowledged_in_bounded_batches(mut scope: Sco
 #[rstest]
 #[tokio::test]
 async fn local_delivery_never_contacts_remote_protocol_ports(mut scope: Scope) {
-	scope.run.home_node = scope.node().into();
+	scope.run.home_node = format!("{}/{}", scope.node(), scope.run.node);
 	require_terminal_safe_delivery(&scope).await.unwrap();
 	deliver(&scope).await.unwrap();
 	assert!(history(&scope).await.unwrap().is_empty());

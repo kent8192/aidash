@@ -30,7 +30,8 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		.await
 		.unwrap();
 	let bank = Bank {
-		home: store.deployment.to_string(),
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,

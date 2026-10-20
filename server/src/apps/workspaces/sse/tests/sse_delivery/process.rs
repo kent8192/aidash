@@ -542,7 +542,10 @@ async fn oversized_reference_notification_replays_canonical_bytes(
 	assert!(envelope["dataref"].is_string());
 	let frames = receive(&mut received, 1, 3).await;
 	assert_eq!(frames[0].id, event.sequence);
-	assert_eq!(frames[0].data, event.cloud_event());
+	assert_eq!(
+		frames[0].data,
+		event.cloud_event(fixture.f.config.deployment.as_str())
+	);
 	let after = process.metrics().await;
 	assert_eq!(cause(&before, "fallback"), cause(&after, "fallback"));
 	assert!(cause(&after, "notification") > cause(&before, "notification"));

@@ -16,7 +16,7 @@ use aidash_domain::{
 			home::{FollowUpInput, Grant, Status},
 		},
 	},
-	nonempty, qualified_agent,
+	nonempty,
 	registry::EntityRef,
 	semantic::{
 		Failure,
@@ -174,7 +174,7 @@ pub async fn control<R: HomeRepository>(
 				TaskStatus::Cancelled | TaskStatus::Completed | TaskStatus::Failed
 			) {
 				let keys = scope.delivered_inputs(task, admission).await?;
-				let owner = qualified_agent(
+				let owner = aidash_domain::agent_subject(
 					&grant.node_id,
 					&grant.prepared()?.agent.id,
 					&grant.prepared()?.agent.version,

@@ -8,6 +8,9 @@ use crate::apps::identity::models::AuthorizationDecision;
 use crate::database::native::Pool;
 use crate::{Error, Result, store::Store};
 use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde_json::{Value, json};
 use std::ops::{Deref, DerefMut};
 use uuid::Uuid;
@@ -115,6 +118,10 @@ pub(crate) struct Access {
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	pub(crate) peer_client: reqwest::Client,
 	pub(crate) node_id: String,
+	/// The Node of the Workspace or Run this authority serves, once known.
+	/// Catalog Approvals are per Node; an Access with no Node yet uses the
+	/// Tenant's default Node.
+	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
@@ -283,6 +290,7 @@ impl Access {
 			dependency_frontier: None,
 			peer_client: client,
 			node_id: node.to_owned(),
+			node: None,
 			tx: AccessTransaction::new(tx),
 			identity: identity.clone(),
 			snapshot,
@@ -396,6 +404,7 @@ impl Access {
 			dependency_frontier: None,
 			peer_client: lease.peer_client.clone(),
 			node_id: lease.node_id.clone(),
+			node: lease.node.clone(),
 			tx: AccessTransaction::new(tx),
 			identity: lease.identity.clone(),
 			snapshot: lease.snapshot.clone(),
@@ -496,12 +505,72 @@ impl Access {
 	}
 
 	pub async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		aidash_application::authorization::workspaces::resource(
+		let resource = aidash_application::authorization::workspaces::resource(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
-		.await
-		.map_err(Into::into)
+		.await?;
+		let node = self.workspace_node(id).await?;
+		self.set_node(node);
+		Ok(resource)
+	}
+
+	/// Names the Node this authority serves. Approvals proven for another Node
+	/// do not carry over.
+	pub(crate) fn set_node(&mut self, node: aidash_domain::nodes::NodeName) {
+		if self.node.as_ref() != Some(&node) {
+			self.approved_catalog.clear();
+			self.node = Some(node);
+		}
+	}
+
+	/// The Node of a Workspace of this Access's Tenant.
+	pub(crate) async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeName> {
+		let name: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.tx)
+		.await?;
+		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
+	}
+
+	/// The Node whose Catalog Approvals apply: the Workspace's or Run's once an
+	/// operation has named it, the Tenant's default Node otherwise.
+	pub(crate) async fn catalog_node(&mut self) -> Result<aidash_domain::nodes::NodeName> {
+		if let Some(node) = &self.node {
+			return Ok(node.clone());
+		}
+		let name: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(
+					Expr::col(Alias::new("tenant")).eq(Expr::value(self.identity.tenant.clone())),
+				)
+				.and_where(Expr::col(Alias::new("is_default")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.tx)
+		.await?;
+		let node = aidash_domain::nodes::NodeName::parse(&name)?;
+		self.set_node(node.clone());
+		Ok(node)
+	}
+
+	/// The address of the Node whose Catalog Approvals apply.
+	pub(crate) async fn catalog_address(&mut self) -> Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.catalog_node().await?;
+		Ok(aidash_domain::nodes::NodeAddress {
+			deployment: aidash_domain::nodes::DeploymentId::parse(&self.node_id)?,
+			node,
+		})
 	}
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {

@@ -84,7 +84,7 @@ pub(crate) async fn authorize(lease: &mut Lease<'_>, bank: &Bank, action: &str) 
 	bank.validate()?;
 	if let Some(access) = lease.access() {
 		let workspace = access.workspace(bank.workspace).await?;
-		if bank.home != access.node_id
+		if aidash_domain::nodes::deployment_of(&bank.home) != access.node_id
 			|| bank.tenant != workspace.tenant
 			|| bank.tenant != access.identity.tenant
 		{

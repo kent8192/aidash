@@ -52,7 +52,7 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 				.column(Asterisk)
 				.from(Alias::new("generation_requests"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(tenant=? AND (? || '/agents/' || agent_id || '@' || agent_version)=ANY(?))"
+					"(tenant=? AND (? || '/' || node || '/agents/' || agent_id || '@' || agent_version)=ANY(?))"
 						.to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),

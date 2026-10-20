@@ -24,7 +24,7 @@ pub struct Creation<'a> {
 	pub reason: &'a str,
 	pub depth: i32,
 	pub lifetime_seconds: f64,
-	pub home_node: &'a str,
+	/// The Home's request for a foreign generation; none for a local one.
 	pub foreign_intent: Option<Value>,
 }
 #[async_trait]
@@ -38,6 +38,11 @@ pub trait GenerationCreationScope: Send {
 	fn subjects(&self) -> &[String];
 	fn bundle(&self) -> &PolicyBundle;
 	fn node_id(&self) -> &str;
+	/// The address of the Node the Workspace belongs to.
+	async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeAddress>;
 	fn now(&self) -> DateTime<Utc>;
 	fn request_id(&self) -> Uuid;
 	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;

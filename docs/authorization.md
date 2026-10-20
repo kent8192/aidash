@@ -69,6 +69,10 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `credential.revoke`             | `credential`   | Revoke any Subject Credential of the Tenant                                                                    |
 | `peer_mapping.read`             | `peer_mapping` | List the Tenant's Peer Mappings and their history                                                              |
 | `peer_mapping.update`           | `peer_mapping` | Create, update and disable a Peer Mapping                                                                      |
+| `node.read`                     | `node`         | List the Tenant's Nodes (members hold it)                                                                      |
+| `node.use`                      | `node`         | Work in a Node, such as creating a Workspace there (members hold it)                                           |
+| `node.create`                   | `tenant`       | Create a Node within "Nodes per Tenant"                                                                        |
+| `node.update`                   | `node`         | Change a Node's label                                                                                          |
 | `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
 | `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
 | `billing.attach`                | `tenant`       | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
@@ -117,12 +121,15 @@ The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's po
 | `invitations`          | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations     |
 | `deletion_grace_days`  | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90)    |
 | `audit_retention_days` | `365`       | `365`  | `365`     | Days a purged Tenant's audit history is kept before it is deleted (1 to 3650) |
+| `nodes_per_tenant`     | `10`        | `10`   | `10`      | Nodes one Tenant may hold (1 to 1000); a Tier may be stricter                 |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 
 - The Deployment Administrator bearer token, or a browser session in the `deployment_administrator` context, creates a Tenant without limits and maps nobody into it. Its first administrator joins through an Invitation the Deployment Administrator issues and approves (`POST /api/dashboard/registrations/{id}/approve` with `groups` creates the subject in any group), or, for a Tenant with a Tenant Binding, through the bound pool's request. The dashboard offers the Invitation controls in the Deployment Administrator's view of a Tenant, and `GET /api/dashboard/registrations` reports each request's `invitation_id` and `proposed_groups`, from which the approval form starts; a request without an Invitation starts from no groups, so `administrators` is always an explicit choice.
 - Any other browser session creates a Tenant for its External Identity, without needing a Mapping, where `tenant_creation` allows it. The identity becomes the Tenant Creator: it receives the first Mapping, to `owner` in `administrators`, and the first policy revision's actor is `oidc:<identity>`. Exceeding `creation_per_hour` answers 429 with `Retry-After` until a slot frees; exceeding `creation_total` answers 403 `tenant_limit_reached`. Personal Tenants never count. An advisory lock per identity serializes concurrent creations.
 - Subject Credentials, agents and peers never create Tenants (403).
+
+Every Tenant starts with one default Node, labelled `Default`, which `tenants::create` writes with the root record for every creator, Personal Tenants included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`, unique in the Deployment, never changed and never reused, so `node_names` outlives a purge) and a label of 1 to 64 characters that its Tenant Administrators change. Its address is `aidash://<deployment>/<name>`. `GET /api/tenants/{tenant}/nodes` lists the Tenant's Nodes under `node.read`, the default first. `POST /api/tenants/{tenant}/nodes` with `{"label":…}` creates a Node under `node.create`, answers 201, and answers 403 `node_limit_reached` when the Tenant holds `nodes_per_tenant` Nodes or the Tier's limit, whichever is lower; an advisory lock per Tenant serializes concurrent creations. The Community build has no Tier limit. `PATCH /api/tenants/{tenant}/nodes/{node}` with `{"label":…}` changes the label under `node.update`. Nodes are created here and never stopped; #388 decides how a Node stops. Creations are appended to `dashboard_administration_history` as `node.create`.
 
 `GET /api/tenants?offset=0` lists root records for Deployment Administrators, newest first, 200 per page, each with its current `deletion`, if any. `PUT /api/tenants/{tenant}/label` changes the label under `tenant.update`, through a browser Mapping of that Tenant.
 
@@ -254,17 +261,17 @@ Cross-Node atomic manifests have a narrower durable-admission contract: every ne
 
 Scoped workspace creation saves tenant and owner independently of editable workspace state, in the same transaction as the workspace, event and authorization decision. Resource kind is `workspace`, resource ID is its UUID, and trusted attributes are `owner` (the creating subject ID) and `workspace_id`. Environment attributes are `node_id` and `transport: "api"`. Setting `owner` or `tenant` inside workspace state never changes authority; extra creation fields are rejected.
 
-| Operation                                               | Required action                                                                         |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Create a workspace                                      | `workspace.create`                                                                      |
-| Read a workspace snapshot or include it in `/api/state` | `workspace.read`                                                                        |
-| Update workspace state                                  | Both `workspace.read` and `workspace.update` (the response includes the full workspace) |
-| Create a task in a workspace                            | `task.create`                                                                           |
-| Append a workspace message                              | `message.create`                                                                        |
-| Read or stream workspace events                         | Both `workspace.read` and `workspace.events`                                            |
-| Configure the workspace's semantic index                | Both `workspace.read` and `semantic.index.manage` (#360)                                |
-| Read the semantic index's cleanup state                 | Both `workspace.read` and `semantic.read`                                               |
-| Stream a Run's inference progress                       | The authority of a run-scoped event of that Run (below)                                 |
+| Operation                                               | Required action                                                                                           |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Create a workspace                                      | `workspace.create`, and `node.use` on the chosen Node (the body's `node`, else the Tenant's default Node) |
+| Read a workspace snapshot or include it in `/api/state` | `workspace.read`                                                                                          |
+| Update workspace state                                  | Both `workspace.read` and `workspace.update` (the response includes the full workspace)                   |
+| Create a task in a workspace                            | `task.create`                                                                                             |
+| Append a workspace message                              | `message.create`                                                                                          |
+| Read or stream workspace events                         | Both `workspace.read` and `workspace.events`                                                              |
+| Configure the workspace's semantic index                | Both `workspace.read` and `semantic.index.manage` (#360)                                                  |
+| Read the semantic index's cleanup state                 | Both `workspace.read` and `semantic.read`                                                                 |
+| Stream a Run's inference progress                       | The authority of a run-scoped event of that Run (below)                                                   |
 
 For example, an allow policy with `subjects: {"ids":["alice"]}`, these actions, `resources: {"kinds":["workspace"]}` and a condition comparing resource `/owner` to literal `"alice"` grants Alice access to her workspaces in that tenant. Another tenant's Alice cannot access them. Workspace read opens the workspace. Its tasks, artifacts and messages additionally require `task.read`, `artifact.read` and `message.read` on each stored record. Artifact reads also require the producing task to be readable. Existing policies that only grant workspace actions must explicitly add these resource actions; no implicit content grant is retained.
 
@@ -282,7 +289,7 @@ Every Tenant has its own Registry. A definition's identity is `(tenant, id, vers
 | ------ | ------------------------------------------------ | ------------------------------------------------------------------ |
 | POST   | `/api/registry`                                  | `registry.create` on `registry` `{kind}/{id}`                      |
 | GET    | `/api/registry/versions`                         | `registry.read`: every version with its approval state and history |
-| GET    | `/api/authorization/{tenant}/catalog`            | `registry.read`: the Tenant's Catalog Approvals                    |
+| GET    | `/api/authorization/{tenant}/catalog?node=`      | `registry.read`: one Node's Catalog Approvals                      |
 | POST   | `/api/authorization/{tenant}/catalog`            | `catalog.approve` on `registry` `{kind}/{id}@{version}`            |
 | POST   | `/api/authorization/{tenant}/catalog/approvals`  | `catalog.approve` for each version of one dependency closure       |
 | POST   | `/api/marketplace/installations/{id}/activation` | `catalog.approve` on the activated revision's definition           |
@@ -290,9 +297,9 @@ Every Tenant has its own Registry. A definition's identity is `(tenant, id, vers
 
 Every path that writes a version also needs `registry.create`, besides its own action: agent configuration (`agent.configure`), workbench registration (`agent_draft.register`), Marketplace installation (`marketplace.install`) and skill import. Idempotency keys belong to `(tenant, principal, key)`; a replay decides the action again, and the same key with different input returns 409. A denial or a failure leaves no definition, approval, document, idempotency row or event.
 
-A Catalog Approval decides that one exact version may be used in the Tenant. Approval changes use optimistic revisions and keep their history, with the deciding subject as actor. An approval is refused while any dependency (an agent's model, context summarizer and bindings, a bundle's members, a cluster's coordinator) is neither approved nor an ordinary built-in; one `/catalog/approvals` request can approve the whole closure. Withdrawing an approval is never blocked, and execution then refuses the version. Built-in tools need no approval, except Sandboxed tools, Research providers and Deciders, which each Tenant approves before use (ADR 0034).
+A Catalog Approval decides that one exact version may be used on one Node of the Tenant (#241). The `catalog` and `catalog/approvals` bodies name the Node as `node`, `GET` takes it as a required query parameter, and a Node of another Tenant answers 404. A new Node starts with no approvals, and nothing copies them from another Node. Marketplace activation, Generation policies and the Graph View read and write the Tenant's default Node; a Run, a Workspace and a generation request use their own Node's approvals. Approval changes use optimistic revisions and keep their history, with the deciding subject as actor. An approval is refused while any dependency (an agent's model, context summarizer and bindings, a bundle's members, a cluster's coordinator) is neither approved nor an ordinary built-in; one `/catalog/approvals` request can approve the whole closure. Withdrawing an approval is never blocked, and execution then refuses the version. Built-in tools need no approval, except Sandboxed tools, Research providers and Deciders, which each Tenant approves before use (ADR 0034).
 
-Approving an agent version also makes the agent a subject of the Tenant's policy, `aidash://<node>/agents/<id>@<version>`, so that it can run (ADR 0062). The subject joins `members` when the policy marks it Assignable; naming other Assignable Groups in `groups` also needs `subject.group.update`. It has no delegator: its authority is its groups intersected with each Run's chain. Approving again leaves an existing subject unchanged, so it never re-enables a disabled one, and naming groups for an existing subject returns 409. `PUT /api/tenants/{tenant}/subjects/{subject}/groups` moves agent subjects between Assignable Groups like user subjects.
+Approving an agent version also makes the agent a subject of the Tenant's policy, `<Node address>/agents/<id>@<version>` for the Node the approval names, so that it can run (ADR 0062). The subject joins `members` when the policy marks it Assignable; naming other Assignable Groups in `groups` also needs `subject.group.update`. It has no delegator: its authority is its groups intersected with each Run's chain. Approving again leaves an existing subject unchanged, so it never re-enables a disabled one, and naming groups for an existing subject returns 409. `PUT /api/tenants/{tenant}/subjects/{subject}/groups` moves agent subjects between Assignable Groups like user subjects.
 
 Approval alone does not grant a policy action; policy permission alone does not expose an unapproved entry. Discovery and execution see only approved versions satisfying `registry.read`. Scoped API and worker discovery search the local node and source-authorized peers. Worker decisions intersect every subject in the originating execution chain.
 

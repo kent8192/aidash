@@ -456,7 +456,7 @@ async fn cancellation_fences_delivered_messages_and_task_revision_after_receiver
 		state.cancelled,
 		Some((
 			7,
-			qualified_agent("aidash://receiver", "agent", "1.0.0"),
+			aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0"),
 			vec!["delivered-key".into()]
 		))
 	);

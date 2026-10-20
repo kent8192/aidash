@@ -72,7 +72,7 @@ impl Workbench {
 		self.call(
 			"POST",
 			"/api/authorization/acme/catalog/approvals",
-			json!({ "approvals": approvals }),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 		)
 		.await;
 	}
@@ -1095,6 +1095,7 @@ async fn trust_run_backlog(
 					"task_id",
 					"workspace_id",
 					"home_node",
+					"node",
 					"agent_id",
 					"agent_version",
 					"phase",
@@ -1107,7 +1108,10 @@ async fn trust_run_backlog(
 					.expr(Expr::cust("$1"))
 					.expr(Expr::cust("$2"))
 					.expr(Expr::cust("$3"))
-					.expr(Expr::cust("$4"))
+					.expr(Expr::cust(
+						"$4 || '/' || (SELECT node FROM workspaces WHERE id = $3)",
+					))
+					.expr(Expr::cust("(SELECT node FROM workspaces WHERE id = $3)"))
 					.expr(Expr::cust("$5"))
 					.expr(Expr::cust("'1.0.0'"))
 					.expr(Expr::cust("'COMPLETED'"))

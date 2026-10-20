@@ -2,7 +2,6 @@ use super::*;
 use aidash_domain::{
 	identity::execution::{ExecutionPrincipal, TaskOrigin},
 	policy::Resource,
-	qualified_agent,
 };
 use async_trait::async_trait;
 use rstest::rstest;
@@ -11,10 +10,11 @@ use std::sync::Mutex;
 
 fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 	let run = RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
 		workspace_id: Uuid::from_u128(3),
-		home_node: "aidash://node".into(),
+		home_node: "aidash://node/brave-otter-k3m9q2xa".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
 		phase: aidash_domain::RunPhase::Ready,
@@ -38,7 +38,7 @@ fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 		subject_chain: vec![
 			"root".into(),
 			"delegator".into(),
-			qualified_agent(&run.home_node, &run.agent_id, &run.agent_version),
+			aidash_domain::agent_subject(&run.home_node, &run.agent_id, &run.agent_version),
 		],
 	};
 	let identity = ExecutionPrincipal {

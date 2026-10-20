@@ -239,6 +239,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -258,6 +259,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),

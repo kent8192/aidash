@@ -42,6 +42,7 @@ pub(crate) struct RunTarget {
 	pub id: Uuid,
 	pub task_id: Uuid,
 	pub workspace_id: Uuid,
+	pub node: String,
 	pub home_node: String,
 	pub control: String,
 }
@@ -49,11 +50,17 @@ crate::native_record!(RunTarget {
 	id,
 	task_id,
 	workspace_id,
+	node,
 	home_node,
 	control
 });
 
 impl RunTarget {
+	/// Whether the Run's Home is its own executing Node in `deployment`.
+	pub fn is_local(&self, deployment: &str) -> bool {
+		aidash_domain::nodes::is_home(&self.home_node, deployment, &self.node)
+	}
+
 	/// Interrupted reason for an attempt whose worker no longer owns the Run.
 	fn orphan_outcome(&self) -> ProgressOutcome {
 		ProgressOutcome::Interrupted(if self.control == "CANCELLED" {
@@ -134,7 +141,17 @@ pub(crate) async fn target(executor: impl Executor, run: Uuid) -> Result<RunTarg
 	rows::<RunTarget>(
 		executor,
 		Query::select()
-			.columns(["id", "task_id", "workspace_id", "home_node", "control"].map(Alias::new))
+			.columns(
+				[
+					"id",
+					"task_id",
+					"workspace_id",
+					"node",
+					"home_node",
+					"control",
+				]
+				.map(Alias::new),
+			)
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("id").eq(Expr::value(run))),
 	)
@@ -222,8 +239,7 @@ async fn marker(
 	// The same workspace rule as the Run's own events keeps run-scoped visibility.
 	event_records::append(
 		tx,
-		node,
-		(run.home_node == node).then_some(run.workspace_id),
+		run.is_local(node).then_some(run.workspace_id),
 		kind,
 		data,
 	)

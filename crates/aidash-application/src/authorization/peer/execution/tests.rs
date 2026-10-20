@@ -20,7 +20,7 @@ struct Scope {
 }
 impl Scope {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+		let executor = aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0");
 		Self {
 			bundle: serde_json::from_value(
 				json!({"tenant":"local","subjects":{executor:{"kind":"agent","delegated_by":null}}}),
@@ -129,7 +129,7 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 	let inspection = inspect(&mut scope, "aidash://home", &input())
 		.await
 		.unwrap();
-	let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+	let executor = aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0");
 	assert_eq!(
 		scope.calls[0],
 		("federation.execute".into(), vec!["mapped".into()])
@@ -214,7 +214,7 @@ async fn denied_bound_tool_invocation_prevents_remote_preflight() {
 		subjects,
 		&[
 			"mapped".to_owned(),
-			qualified_agent("aidash://receiver", "agent", "1.0.0")
+			aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0")
 		]
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));

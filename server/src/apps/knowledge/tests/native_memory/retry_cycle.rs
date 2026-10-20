@@ -193,7 +193,11 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -206,7 +210,14 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 		.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -294,6 +305,7 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 			federation: true,
 			deployment_key: None,
 			sign_in: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		store,
 		client: runtime_controls.client,

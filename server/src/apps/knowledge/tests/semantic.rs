@@ -131,7 +131,7 @@ mod controlled_context_composition {
 					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
-					json!({"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true})
+					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true})
 				)
 				.await
 				.0,
@@ -168,7 +168,7 @@ mod controlled_context_composition {
 					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
-					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
+					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
 				)
 				.await
 				.0,
@@ -178,7 +178,11 @@ mod controlled_context_composition {
 		}
 		agent.config["bindings"] = json!(bindings);
 		f.registry.register(&acme, agent).await.unwrap();
-		let owner = qualified_agent(f.config.deployment.as_str(), "research", "1.0.1");
+		let owner = qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+			"research",
+			"1.0.1",
+		);
 		policy["subjects"][&owner] = json!({"kind":"agent"});
 		assert_eq!(
 			request(
@@ -198,7 +202,7 @@ mod controlled_context_composition {
 				&token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
 			)
 			.await
 			.0,
@@ -1651,7 +1655,11 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
+			&qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				"research",
+				"1.0.0",
+			),
 			"semantic-artifact",
 			&ArtifactInput {
 				kind: "text".into(),
