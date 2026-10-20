@@ -1054,7 +1054,6 @@ async fn a_pinned_plugin_tool_is_answered_only_by_its_fixture(
 	#[case] exposure: Option<&str>,
 	#[case] fixture: bool,
 ) {
-	// Arrange: a session that pinned the tool and a model that calls it.
 	let (repository, snapshot, pinned) = plugin_repository(exposure).await;
 	let repository = Arc::new(repository);
 	let model = model(
@@ -1067,11 +1066,9 @@ async fn a_pinned_plugin_tool_is_answered_only_by_its_fixture(
 			.fixtures
 			.insert(PLUGIN_TOOL.into(), plugin_fixture());
 	}
-	// Act
 	let outcome = simulate(&execution(repository), session().id, &job)
 		.await
 		.unwrap();
-	// Assert: the first request offered the tool; the call is simulated or missing.
 	let requests = model.requests.lock().unwrap();
 	assert!(
 		requests[0]
@@ -1099,7 +1096,6 @@ async fn a_pinned_plugin_tool_is_answered_only_by_its_fixture(
 
 #[tokio::test]
 async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
-	// Arrange: the server's tools are Discoverable, so the first request only indexes them.
 	let (repository, snapshot, pinned) = plugin_repository(Some("deferred")).await;
 	let digest = pinned.servers[0].tools[0].schema_digest.clone();
 	let repository = Arc::new(repository);
@@ -1138,11 +1134,9 @@ async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
 	job.input
 		.fixtures
 		.insert(PLUGIN_TOOL.into(), plugin_fixture());
-	// Act
 	let outcome = simulate(&execution(repository), session().id, &job)
 		.await
 		.unwrap();
-	// Assert: an unloaded tool is not simulated, and a loaded one is answered by its fixture.
 	assert_eq!(outcome.status, "completed");
 	assert_eq!(outcome.error, None);
 	assert_eq!(outcome.tool_calls[0]["outcome"], deferred::EVALUATED);
@@ -1175,7 +1169,6 @@ async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
 #[case::offered_and_simulated(true)]
 #[tokio::test]
 async fn a_real_tool_profile_never_dispatches_a_plugin_tool(#[case] fixture: bool) {
-	// Arrange: a profile that permits a Registry tool, in a session that also pinned a plugin tool.
 	let (mut repository, snapshot, pinned) = plugin_repository(None).await;
 	let permitted = EntityRef {
 		id: "message".into(),
@@ -1208,11 +1201,10 @@ async fn a_real_tool_profile_never_dispatches_a_plugin_tool(#[case] fixture: boo
 			.fixtures
 			.insert(PLUGIN_TOOL.into(), plugin_fixture());
 	}
-	// Act: the repository panics if the session reaches for a real dispatch.
+	// The repository panics if the session reaches for a real dispatch.
 	let outcome = simulate(&execution(repository), session().id, &job)
 		.await
 		.unwrap();
-	// Assert
 	assert_eq!(
 		outcome.tool_calls[0]["outcome"],
 		if fixture {
@@ -1225,18 +1217,15 @@ async fn a_real_tool_profile_never_dispatches_a_plugin_tool(#[case] fixture: boo
 
 #[tokio::test]
 async fn a_plugin_tool_the_session_did_not_pin_stays_denied_despite_a_fixture() {
-	// Arrange: the session pinned `search` only.
 	let (repository, snapshot, pinned) = plugin_repository(None).await;
 	let repository = Arc::new(repository);
 	let alias = "acme__docs__other";
 	let model = model(repository.clone(), vec![calling(alias)]);
 	let mut job = offering(job(model.clone()), &snapshot, pinned, false);
 	job.input.fixtures.insert(alias.into(), plugin_fixture());
-	// Act
 	let outcome = simulate(&execution(repository), session().id, &job)
 		.await
 		.unwrap();
-	// Assert
 	assert_eq!(outcome.status, "blocked");
 	assert_eq!(outcome.tool_calls[0]["outcome"], "denied");
 	assert_eq!(model.requests.lock().unwrap().len(), 1);

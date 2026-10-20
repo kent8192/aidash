@@ -360,6 +360,7 @@ pub(crate) struct FakeSessions {
 	>,
 	listings: std::sync::Mutex<Vec<(uuid::Uuid, crate::ports::tools::PluginServer)>>,
 	calls: std::sync::Mutex<Vec<SessionCall>>,
+	closed: std::sync::Mutex<Vec<uuid::Uuid>>,
 	replies: std::sync::Mutex<std::collections::VecDeque<Result<serde_json::Value>>>,
 	in_flight: std::sync::atomic::AtomicUsize,
 	peak: std::sync::atomic::AtomicUsize,
@@ -389,6 +390,10 @@ impl FakeSessions {
 	}
 	pub(crate) fn calls(&self) -> Vec<SessionCall> {
 		self.calls.lock().unwrap().clone()
+	}
+	/// The Runs whose sessions were ended, in order.
+	pub(crate) fn closed(&self) -> Vec<uuid::Uuid> {
+		self.closed.lock().unwrap().clone()
 	}
 	/// The most listings that ran at the same time.
 	pub(crate) fn peak(&self) -> usize {
@@ -455,5 +460,7 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 			.pop_front()
 			.unwrap_or_else(|| Ok(json!({"content": []})))
 	}
-	async fn close(&self, _: uuid::Uuid) {}
+	async fn close(&self, run: uuid::Uuid) {
+		self.closed.lock().unwrap().push(run);
+	}
 }

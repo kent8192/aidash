@@ -5,7 +5,7 @@ use crate::{
 	ports::tools::{PluginServer, PluginSessions},
 };
 use aidash_domain::{
-	agent_plugin::{self, Listing, McpServer, PluginTools},
+	agent_plugin::{self, Listing, McpServer, PluginName, PluginTools, ServerName},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	tool::providers::reserved_aliases,
 };
@@ -55,22 +55,25 @@ pub async fn pin_for_run(
 							digest: plugin.digest.clone(),
 							server: name.clone(),
 						},
-						config,
+						config.clone(),
 					)),
 					McpServer::Stdio(_) => None,
 				})
 		})
 		.collect();
-	let key = |server: &PluginServer| (server.plugin.clone(), server.server.clone());
+	let keys: Vec<_> = servers.iter().map(|(server, _)| key(server)).collect();
 	let deadline = Instant::now() + TOTAL_TIMEOUT;
-	let mut answers = stream::iter(&servers)
+	// The stream owns its servers and `key` is a function: with borrowing closures here, the
+	// compiler cannot prove this future `Send` inside a route handler that awaits it.
+	let mut answers = stream::iter(servers)
 		.map(|(server, config)| async move {
-			let listing = match timeout(SERVER_TIMEOUT, sessions.list(run, server, config)).await {
+			let listing = match timeout(SERVER_TIMEOUT, sessions.list(run, &server, &config)).await
+			{
 				Ok(Ok(tools)) => Listing::Listed(tools),
 				Ok(Err(error)) => Listing::Unavailable(cause(&error)),
 				Err(_) => Listing::Unavailable(TIMEOUT.into()),
 			};
-			(key(server), listing)
+			(key(&server), listing)
 		})
 		.buffer_unordered(CONCURRENCY);
 	let mut listed = BTreeMap::new();
@@ -78,9 +81,9 @@ pub async fn pin_for_run(
 		listed.insert(server, listing);
 	}
 	drop(answers);
-	for (server, _) in &servers {
+	for server in keys {
 		listed
-			.entry(key(server))
+			.entry(server)
 			.or_insert_with(|| Listing::Unavailable(TIMEOUT.into()));
 	}
 	let taken: BTreeSet<String> = reserved_aliases()
@@ -100,6 +103,10 @@ pub async fn pin_for_run(
 		&listed,
 		&taken,
 	))
+}
+
+fn key(server: &PluginServer) -> (PluginName, ServerName) {
+	(server.plugin.clone(), server.server.clone())
 }
 
 fn cause(error: &Error) -> String {
