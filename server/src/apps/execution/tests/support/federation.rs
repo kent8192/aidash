@@ -233,6 +233,51 @@ pub async fn signed(
 	request
 }
 
+/// What a request to a Node's federation routes carries as its credential.
+pub enum Bearer<'a> {
+	/// A Federation token the stand-in Deployment signs for one of its Nodes.
+	Signed(&'a Remote, String),
+	/// Anything else, sent as is.
+	Raw(&'a str),
+}
+
+/// POSTs `body` to the full route `path` (under `/federation/v0.1`) of
+/// `receiver`, as `subject`, with the credential `bearer` names.
+pub async fn post_as(
+	client: &reinhardt::test::APIClient,
+	receiver: &aidash_domain::nodes::NodeAddress,
+	bearer: Bearer<'_>,
+	subject: &str,
+	path: &str,
+	body: &Value,
+) -> reinhardt::test::TestResponse {
+	let bytes = body.to_string();
+	let target = path
+		.strip_prefix("/federation/v0.1")
+		.expect("a federation route");
+	let headers = match bearer {
+		Bearer::Signed(remote, node) => {
+			remote
+				.headers(
+					&node,
+					&receiver.to_string(),
+					subject,
+					("POST", target, bytes.as_bytes()),
+				)
+				.await
+		}
+		Bearer::Raw(token) => peer_headers(token),
+	};
+	let mut request = client
+		.request(http::Method::POST, path)
+		.body(bytes::Bytes::copy_from_slice(bytes.as_bytes()))
+		.header(http::header::CONTENT_TYPE, "application/json");
+	for (name, value) in &headers {
+		request = request.header(*name, value.as_str());
+	}
+	request.send().await.unwrap()
+}
+
 /// A Deployment that exists only as a name, a key and the document it
 /// publishes at `/.well-known/aidash`. Tests register its Nodes and send
 /// requests as them.

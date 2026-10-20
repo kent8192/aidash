@@ -20,7 +20,7 @@ use aidash_server::apps::{
 use chrono::{Duration, Utc};
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
-use peering::Remote;
+use peering::{Bearer, Remote};
 use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
@@ -107,44 +107,17 @@ async fn receiving_node(
 	crate::endpoint::default_node(&f.store, "acme").await.node
 }
 
-/// What a request to the receiving Node carries as its credential.
-enum Bearer<'a> {
-	/// A Federation token the stand-in Deployment signs for `node` of `SOURCE`.
-	Signed(&'a Remote, String),
-	/// Anything else, sent as is.
-	Raw(&'a str),
-}
-
 async fn discover(app: &EndpointFixture, bearer: Bearer<'_>, subject: &str) -> (u16, Value) {
-	let path = "/federation/v0.1/scoped/discover";
-	let body = json!({"search":{}}).to_string();
 	let receiver = crate::endpoint::default_node(&app.runtime.store, "acme").await;
-	let headers = match bearer {
-		Bearer::Signed(remote, node) => {
-			remote
-				.headers(
-					&node,
-					&receiver.to_string(),
-					subject,
-					("POST", "/scoped/discover", body.as_bytes()),
-				)
-				.await
-		}
-		Bearer::Raw(token) => peering::peer_headers(token),
-	};
-	let response = async {
-		let client = &(app.anonymous);
-		let mut request = client
-			.request(http::Method::POST, path)
-			.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &headers {
-			request = request.header(*name, value.as_str());
-		}
-		request.send().await
-	}
-	.await
-	.unwrap();
+	let response = peering::post_as(
+		&app.anonymous,
+		&receiver,
+		bearer,
+		subject,
+		"/federation/v0.1/scoped/discover",
+		&json!({"search":{}}),
+	)
+	.await;
 	(response.status_code(), response.json_value().unwrap())
 }
 
