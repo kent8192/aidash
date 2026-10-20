@@ -89,6 +89,7 @@ const settingsIcons: Record<
   typeof Server
 > = {
   node: Server,
+  nodes: Waypoints,
   agents: Bot,
   registry: Package,
   clusters: Network,

@@ -70,6 +70,27 @@ export function nodeView(
   };
 }
 
+/**
+ * Discovery names this Deployment's own agents by the Deployment (`node_id` is
+ * `aidash://<deployment>`) and every other Node by its address. Sent from
+ * `node`, the agents of the Deployment are that Node's, so they take its
+ * address, the identity the dashboard compares with `State.node.id`.
+ */
+export function localizeDiscovery<
+  Found extends { agents: readonly { node_id: string }[] },
+>(found: Found, node: Pick<TenantNode, "address"> | undefined): Found {
+  if (!node) return found;
+  const deployment = deploymentId(node.address);
+  return {
+    ...found,
+    agents: found.agents.map((agent) =>
+      agent.node_id === deployment
+        ? { ...agent, node_id: node.address }
+        : agent,
+    ),
+  };
+}
+
 /** The name a Node goes by in the dashboard: its label, or its name when the
  *  Node is not in the list (yet). */
 export function nodeLabel(
@@ -85,4 +106,18 @@ export function parseNodeAddress(
 ): { deployment: string; node: string } | null {
   const match = /^aidash:\/\/([^/\s]+)\/([^/\s]+)$/.exec(address.trim());
   return match ? { deployment: match[1], node: match[2] } : null;
+}
+
+/** `aidash://<deployment>` of an address that names a Deployment or one of its Nodes. */
+export function deploymentId(address: string): string {
+  return address.replace(/^(aidash:\/\/[^/]*).*$/, "$1");
+}
+
+/**
+ * The Deployment whose Registry `state` lists. A definition names it
+ * (`registry_deployment`, an agent tool's `node_id`), while `node.id` is a
+ * Node's address once a Tenant's Node is selected.
+ */
+export function registryDeployment(state: { node: { id: string } }): string {
+  return deploymentId(state.node.id);
 }

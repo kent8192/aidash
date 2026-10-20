@@ -36,6 +36,7 @@ export default defineConfig({
     "agent-plugins.spec.ts",
     "citations.spec.ts",
     "community-sign-in.spec.ts",
+    "nodes.spec.ts",
   ],
   workers: 1,
   retries: 0,

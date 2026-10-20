@@ -10,6 +10,7 @@ import type {
 } from "./generated/models";
 import { DisplayState, ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
+import { registryDeployment } from "./node-selection";
 import { Field, useI18n } from "./ui";
 import { Group, Hint } from "./components/patterns";
 
@@ -34,6 +35,9 @@ export function TransactionComposer({
   change: (value: TransactionManifest) => void;
 }) {
   const data = useContext(DisplayState);
+  // A transaction names this Deployment for its coordinator and its local
+  // participant, as `GET /api/session` reports it; `node.id` may be a Node.
+  const local = data ? registryDeployment(data) : undefined;
   const { t } = useI18n();
   const workspaceLabels = disambiguateLabels(
     data?.workspaces ?? [],
@@ -131,7 +135,7 @@ export function TransactionComposer({
               </NativeSelect>
             )}
           </Field>
-          {participant.node_id !== data?.node.id && (
+          {participant.node_id !== local && (
             <Hint>{t("transactionRemoteReferenceHelp")}</Hint>
           )}
           {participant.mutations.map((mutation, mutationIndex) => {
@@ -188,7 +192,7 @@ export function TransactionComposer({
                 {mutation.kind === "workspace_state" && (
                   <>
                     <Field label={t("workspace")}>
-                      {participant.node_id === data?.node.id ? (
+                      {participant.node_id === local ? (
                         <NativeSelect
                           required
                           value={mutation.workspace_id}
@@ -236,7 +240,7 @@ export function TransactionComposer({
                 {mutation.kind === "complete_task" && (
                   <>
                     <Field label={t("task")}>
-                      {participant.node_id === data?.node.id ? (
+                      {participant.node_id === local ? (
                         <NativeSelect
                           required
                           value={mutation.task_id}
@@ -317,7 +321,7 @@ export function TransactionComposer({
                 {mutation.kind === "finish_run" && (
                   <>
                     <Field label={t("execution")}>
-                      {participant.node_id === data?.node.id ? (
+                      {participant.node_id === local ? (
                         <NativeSelect
                           required
                           value={mutation.run_id}
@@ -355,7 +359,7 @@ export function TransactionComposer({
                         />
                       )}
                     </Field>
-                    {participant.node_id !== data?.node.id && (
+                    {participant.node_id !== local && (
                       <Field label={t("task")}>
                         <Input
                           required

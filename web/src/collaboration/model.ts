@@ -13,10 +13,12 @@ export const settingsSections = [
   "providerCredentials",
   "marketplace",
   "node",
+  "nodes",
 ] as const;
 /** Destinations with their own documented surface; other views live in context. */
 export const visibleSettingsSections = [
   "node",
+  "nodes",
   "agents",
   "registry",
   "clusters",

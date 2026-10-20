@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
+  defaultNode,
   registryVersion,
   routeRegistryVersions,
   routeTenantActions,
@@ -293,6 +294,7 @@ test("a new agent version starts from the groups of the latest approved earlier 
       enabled: true,
       expected_revision: 0,
       groups: ["reviewers"],
+      node: defaultNode.name,
     },
   });
   await expect(
@@ -327,6 +329,7 @@ test("without subject.group.update an agent approval keeps the default group", a
     entry: ref("helper"),
     enabled: true,
     expected_revision: 0,
+    node: defaultNode.name,
   });
 });
 
@@ -409,6 +412,7 @@ test("an approval refused for a dependency approves the whole closure in one req
         },
         { entry: ref("planner"), enabled: true, expected_revision: 0 },
       ],
+      node: defaultNode.name,
     },
   });
   await expect(closure).toHaveCount(0);
@@ -480,5 +484,6 @@ test("withdrawing fences on the approval revision and reports a conflict", async
     entry: ref("search"),
     enabled: false,
     expected_revision: 3,
+    node: defaultNode.name,
   });
 });

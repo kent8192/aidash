@@ -334,7 +334,7 @@ function Dashboard({
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   const [queueOpen, setQueueOpen] = useState(false);
   const discovery = useQuery({
-    ...discoveryQuery(current?.name),
+    ...discoveryQuery(current),
     enabled: connected && !nodes.pending,
     refetchInterval: 10000,
   });

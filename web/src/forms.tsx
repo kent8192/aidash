@@ -1,4 +1,5 @@
 import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
+import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -500,7 +501,7 @@ export function EntityForm({
             !hasInstructionalBinding(
               core.bindings,
               data.registry,
-              data.node.id,
+              registryDeployment(data),
               agentPlugins({ kind, config: pluginConfig }) ?? [],
             )
           )
@@ -635,7 +636,7 @@ export function EntityForm({
               value={core}
               change={setCore}
               cluster={Boolean(cluster)}
-              node={data.node.id}
+              node={registryDeployment(data)}
               entries={data.registry}
             />
             <AgentPluginImport config={pluginConfig} change={setPluginConfig} />

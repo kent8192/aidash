@@ -142,7 +142,7 @@ function SemanticWorkspace({
 }) {
   const { t } = useI18n();
   const labels = useRecordLabels();
-  const sendingNode = useNodes().selected?.name;
+  const sendingNode = useNodes().selected;
   const discovery = useQuery({
     ...discoveryQuery(sendingNode),
     retry: false,
@@ -910,7 +910,7 @@ function AgentScope({
   id?: string;
 }) {
   const { t } = useI18n();
-  const sendingNode = useNodes().selected?.name;
+  const sendingNode = useNodes().selected;
   const discovery = useQuery({
     ...discoveryQuery(sendingNode),
     retry: false,

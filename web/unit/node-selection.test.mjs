@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   chooseNode,
+  localizeDiscovery,
   nodeLabel,
   nodeStorageKey,
   nodeView,
@@ -116,4 +117,22 @@ test("a Node address splits into its Deployment and Node name", () => {
   assert.equal(parseNodeAddress("aidash://home"), null);
   assert.equal(parseNodeAddress("aidash://home/a/b"), null);
   assert.equal(parseNodeAddress("https://home/a"), null);
+});
+
+test("sent from a Node, the Deployment's own agents are that Node's", () => {
+  const found = {
+    agents: [
+      { node_id: "aidash://home", entity: { id: "local" } },
+      { node_id: "aidash://home/sibling", entity: { id: "sibling" } },
+      { node_id: "aidash://away/other", entity: { id: "away" } },
+    ],
+    errors: [{ node_id: "aidash://away/down", error: "refused" }],
+  };
+  const localized = localizeDiscovery(found, nodes[1]);
+  assert.deepEqual(
+    localized.agents.map((agent) => agent.node_id),
+    ["aidash://home/second", "aidash://home/sibling", "aidash://away/other"],
+  );
+  assert.deepEqual(localized.errors, found.errors);
+  assert.equal(localizeDiscovery(found, undefined), found);
 });

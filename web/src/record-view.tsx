@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useNodes } from "./nodes";
+import { registryDeployment } from "./node-selection";
 import type { State } from "./types";
 import { JsonView, useEntityLabel, useEntityName, useI18n } from "./ui";
 import { presentRecord } from "./record-presentation";
@@ -25,7 +26,7 @@ export function useRecordLabels() {
     labels.set(entry.id, entityName(entry));
     labels.set(`${entry.id}@${entry.version}`, entityLabel(entry));
     labels.set(
-      `${data!.node.id}/${entry.id}@${entry.version}`,
+      `${registryDeployment(data!)}/${entry.id}@${entry.version}`,
       entityLabel(entry),
     );
     if (entry.kind === "agent")
@@ -53,7 +54,12 @@ export function useRecordLabels() {
       return t("unavailableEntity");
     }
   };
-  if (data) labels.set(data.node.id, endpointLabel(data.node.endpoint));
+  if (data) {
+    // `node.id` is a Node's address once a Tenant's Node is selected, and the
+    // Deployment names itself in a transaction.
+    labels.set(data.node.id, endpointLabel(data.node.endpoint));
+    labels.set(registryDeployment(data), endpointLabel(data.node.endpoint));
+  }
   for (const node of nodes) labels.set(node.address, node.label);
   return labels;
 }

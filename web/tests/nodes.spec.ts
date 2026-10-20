@@ -1,0 +1,388 @@
+import { expect, test, type Page } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
+
+const access = { kind: "subject", tenant: "alpha", subject: "alice" };
+const deployment = "aidash://home";
+const created = "2026-10-21T00:00:00Z";
+
+type Node = {
+  name: string;
+  address: string;
+  label: string;
+  default: boolean;
+  created_at: string;
+};
+const node = (name: string, label: string, isDefault = false): Node => ({
+  name,
+  address: `${deployment}/${name}`,
+  label,
+  default: isDefault,
+  created_at: created,
+});
+const workspace = (id: string, title: string, owner: string) => ({
+  id,
+  node: owner,
+  title,
+  goal: `${title} goal`,
+  state: {},
+  revision: 1,
+  created_at: created,
+});
+const registration = (
+  owner: string,
+  source: string,
+  overrides: Record<string, unknown> = {},
+) => ({
+  node: owner,
+  source_node: source,
+  endpoint: null,
+  key_id: null,
+  atomic_transactions: false,
+  enabled: true,
+  revision: 1,
+  actor: "oidc:identity",
+  created_at: created,
+  updated_at: created,
+  ...overrides,
+});
+
+/** One Tenant with two Nodes, a Workspace in each, and a Tenant Administrator
+ *  who may manage Nodes and their registrations. */
+async function setup(page: Page) {
+  const nodes = [node("first", "Home", true), node("second", "Lab")];
+  const registrations: Record<string, ReturnType<typeof registration>[]> = {
+    first: [registration("first", `${deployment}/sibling`)],
+    second: [],
+  };
+  const posts: { path: string; body: Record<string, unknown> }[] = [];
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await installBearerDashboard(page, "fixture", {
+    tenant: "alpha",
+    name: "alice",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({ json: { access, node_id: deployment } });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access,
+          node: {
+            id: deployment,
+            endpoint: "http://localhost",
+            protocol_version: "0.4",
+            capabilities: [],
+            clusters: [],
+          },
+          registry: [],
+          workspaces: [
+            workspace("w-home", "Home research", "first"),
+            workspace("w-lab", "Lab notebook", "second"),
+          ],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+        },
+      });
+    if (path === "/api/tenants/alpha/administration")
+      return route.fulfill({
+        json: {
+          tenant: "alpha",
+          label: null,
+          actions: [
+            "node.create",
+            "node.update",
+            "node_registration.read",
+            "node_registration.update",
+          ],
+          assignable_groups: [],
+          policy_revision: 1,
+        },
+      });
+    if (path === "/api/tenants/alpha/nodes") {
+      if (method === "POST") {
+        const body = request.postDataJSON();
+        posts.push({ path, body });
+        const added = node("third", body.label);
+        nodes.push(added);
+        registrations.third = [];
+        return route.fulfill({ status: 201, json: added });
+      }
+      return route.fulfill({ json: nodes });
+    }
+    const relabel = /^\/api\/tenants\/alpha\/nodes\/([^/]+)$/.exec(path);
+    if (relabel && method === "PATCH") {
+      const body = request.postDataJSON();
+      posts.push({ path, body });
+      const target = nodes.find((value) => value.name === relabel[1])!;
+      target.label = body.label;
+      return route.fulfill({ json: target });
+    }
+    const registered =
+      /^\/api\/tenants\/alpha\/nodes\/([^/]+)\/registrations$/.exec(path);
+    if (registered) {
+      const owner = registered[1];
+      if (method === "POST") {
+        const body = request.postDataJSON();
+        posts.push({ path, body });
+        const rows = registrations[owner];
+        const index = rows.findIndex(
+          (row) => row.source_node === body.source_node,
+        );
+        const next = registration(owner, body.source_node, {
+          endpoint: body.endpoint ?? null,
+          key_id: body.key_id ?? null,
+          atomic_transactions: body.atomic_transactions,
+          enabled: body.enabled,
+          revision: body.expected_revision + 1,
+        });
+        if (index < 0) rows.push(next);
+        else rows[index] = next;
+        return route.fulfill({ json: next });
+      }
+      return route.fulfill({ json: registrations[owner] });
+    }
+    if (/\/registration-history$/.test(path))
+      return route.fulfill({ json: [] });
+    if (/^\/api\/workspaces\/[^/]+\/message-history$/.test(path))
+      return route.fulfill({ json: { messages: [], next_before: null } });
+    const snapshot = /^\/api\/workspaces\/([^/]+)$/.exec(path);
+    if (snapshot && method === "GET")
+      return route.fulfill({
+        json: {
+          workspace: workspace(
+            snapshot[1],
+            snapshot[1] === "w-lab" ? "Lab notebook" : "Home research",
+            snapshot[1] === "w-lab" ? "second" : "first",
+          ),
+          tasks: [],
+          artifacts: [],
+          events: [],
+          messages: [],
+        },
+      });
+    if (path === "/api/workspaces" && method === "POST") {
+      const body = request.postDataJSON();
+      posts.push({ path, body });
+      return route.fulfill({
+        json: workspace("w-new", body.title, body.node ?? "first"),
+      });
+    }
+    return route.fulfill({ json: [] });
+  });
+  return { posts, errors };
+}
+
+const openAccountMenu = (page: Page) =>
+  page.getByRole("button", { name: "Account settings", exact: true }).click();
+const switcher = (page: Page) =>
+  page.getByRole("button", { name: /^Switch request/ });
+
+test("the selected Node decides which Workspaces are listed, and is remembered", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  await page.goto("/");
+  await switcher(page).click();
+  const list = page.getByRole("navigation", { name: "Workspaces" });
+  await expect(
+    list.getByRole("link", { name: "# Home research" }),
+  ).toBeVisible();
+  await expect(list.getByRole("link", { name: "# Lab notebook" })).toHaveCount(
+    0,
+  );
+  await page.keyboard.press("Escape");
+
+  await openAccountMenu(page);
+  const selector = page.getByTestId("node-selector");
+  await expect(selector).toHaveValue("first");
+  await selector.selectOption("second");
+  await expect(page.getByText("home / Lab", { exact: true })).toBeVisible();
+
+  await switcher(page).click();
+  await expect(
+    page
+      .getByRole("navigation", { name: "Workspaces" })
+      .getByRole("link", { name: "# Lab notebook" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("navigation", { name: "Workspaces" })
+      .getByRole("link", { name: "# Home research" }),
+  ).toHaveCount(0);
+
+  await page.reload();
+  await openAccountMenu(page);
+  await expect(page.getByTestId("node-selector")).toHaveValue("second");
+  expect(
+    await page.evaluate(() => localStorage.getItem("aidash-node:alpha")),
+  ).toBe("second");
+  expect(errors).toEqual([]);
+});
+
+test("a link to a Workspace of another Node opens in that Node", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  await page.goto("/collaboration?channel=w-lab");
+  await expect(
+    page.getByRole("heading", { name: "# Lab notebook", exact: true }),
+  ).toBeVisible();
+  await openAccountMenu(page);
+  await expect(page.getByTestId("node-selector")).toHaveValue("second");
+  expect(errors).toEqual([]);
+});
+
+test("a new Workspace is created in the Node chosen in its form", async ({
+  page,
+}) => {
+  const { posts, errors } = await setup(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Prepare a channel", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Node", { exact: true })).toHaveValue("first");
+  await dialog
+    .getByRole("textbox", { name: "Title", exact: true })
+    .fill("Draft");
+  await dialog
+    .getByRole("textbox", { name: "Goal", exact: true })
+    .fill("Notes");
+  await dialog.getByLabel("Node", { exact: true }).selectOption("second");
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(page).toHaveURL(/channel=w-new/);
+  expect(posts).toEqual([
+    {
+      path: "/api/workspaces",
+      body: { title: "Draft", goal: "Notes", node: "second" },
+    },
+  ]);
+  await openAccountMenu(page);
+  await expect(page.getByTestId("node-selector")).toHaveValue("second");
+  expect(errors).toEqual([]);
+});
+
+test("a Tenant Administrator adds and relabels Nodes", async ({ page }) => {
+  const { posts, errors } = await setup(page);
+  await page.goto("/settings?view=nodes");
+  const rows = page.locator("[data-node]");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("Home");
+  await expect(rows.first()).toContainText("Default");
+  await expect(rows.first()).toContainText(`${deployment}/first`);
+
+  await page.getByRole("button", { name: "Add Node", exact: true }).click();
+  await page.getByRole("dialog").getByLabel("Node label").fill("Staging");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(rows).toHaveCount(3);
+  await expect(page.locator('[data-node="third"]')).toContainText("Staging");
+
+  await page
+    .locator('[data-node="second"]')
+    .getByRole("button", { name: "Change label" })
+    .click();
+  await page.getByRole("dialog").getByLabel("Node label").fill("Laboratory");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.locator('[data-node="second"]')).toContainText(
+    "Laboratory",
+  );
+  expect(posts).toEqual([
+    { path: "/api/tenants/alpha/nodes", body: { label: "Staging" } },
+    { path: "/api/tenants/alpha/nodes/second", body: { label: "Laboratory" } },
+  ]);
+  expect(errors).toEqual([]);
+});
+
+test("registering a Node of another Deployment pins its endpoint and key ID", async ({
+  page,
+}) => {
+  const { posts, errors } = await setup(page);
+  await page.goto("/settings?view=nodes");
+  const registrations = page.locator("[data-registration]");
+  await expect(registrations).toHaveCount(1);
+  await expect(registrations).toContainText(`${deployment}/sibling`);
+
+  await page.getByRole("button", { name: "Register a Node" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Node address").fill("aidash://away/other-node");
+  await dialog.getByLabel("Endpoint").fill("https://aidash.example.com");
+  await dialog.getByLabel("Key ID").fill("a".repeat(43));
+  await dialog.getByRole("checkbox").check();
+  await dialog.getByRole("button", { name: "Register", exact: true }).click();
+  await expect(registrations).toHaveCount(2);
+  const remote = page.locator('[data-registration="aidash://away/other-node"]');
+  await expect(remote).toContainText("https://aidash.example.com");
+  await expect(remote).toContainText("a".repeat(43));
+  await expect(remote).toContainText("Atomic transactions");
+
+  await remote.getByRole("button", { name: "Disable", exact: true }).click();
+  await expect(remote).toContainText("Disabled");
+  expect(posts.map((post) => post.body)).toEqual([
+    {
+      source_node: "aidash://away/other-node",
+      atomic_transactions: true,
+      enabled: true,
+      expected_revision: 0,
+      endpoint: "https://aidash.example.com",
+      key_id: "a".repeat(43),
+    },
+    {
+      source_node: "aidash://away/other-node",
+      atomic_transactions: true,
+      enabled: false,
+      expected_revision: 1,
+    },
+  ]);
+  expect(errors).toEqual([]);
+});
+
+test("a Node of this Deployment is registered with its address alone", async ({
+  page,
+}) => {
+  const { posts, errors } = await setup(page);
+  await page.goto("/settings?view=nodes");
+  await page.getByRole("button", { name: "Register a Node" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Node address").fill(`${deployment}/neighbour`);
+  await expect(dialog.getByLabel("Endpoint")).toHaveCount(0);
+  await expect(dialog.getByLabel("Key ID")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Register", exact: true }).click();
+  await expect(page.locator("[data-registration]")).toHaveCount(2);
+  expect(posts.map((post) => post.body)).toEqual([
+    {
+      source_node: `${deployment}/neighbour`,
+      atomic_transactions: false,
+      enabled: true,
+      expected_revision: 0,
+    },
+  ]);
+  expect(errors).toEqual([]);
+});
+
+test("registrations belong to the selected Node", async ({ page }) => {
+  const { errors } = await setup(page);
+  await page.goto("/settings?view=nodes");
+  await expect(page.locator("[data-registration]")).toHaveCount(1);
+  await page
+    .locator('[data-node="second"]')
+    .getByRole("button", { name: "Work here" })
+    .click();
+  await expect(
+    page.getByText("No Node is registered at this Node."),
+  ).toBeVisible();
+  await expect(page.locator("[data-registration]")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

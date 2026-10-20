@@ -7,8 +7,19 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { tenantNodes } from "./generated/aidash";
-import type { Binding, Discovery, RequestSearch } from "./generated/models";
-import { chooseNode, nodeStorageKey, type TenantNode } from "./node-selection";
+import type {
+  Binding,
+  Discovery,
+  NodeRegistrationRevision,
+  RegistrationRecord,
+  RequestSearch,
+} from "./generated/models";
+import {
+  chooseNode,
+  localizeDiscovery,
+  nodeStorageKey,
+  type TenantNode,
+} from "./node-selection";
 import { apiFetch } from "./transport";
 
 /** The Nodes of the signed-in Tenant and the one this browser works in. */
@@ -110,10 +121,11 @@ export function discoverFrom(
 
 /** The query that reads discovery for the sending Node, so every view of it
  *  shares one cache entry per Node. */
-export function discoveryQuery(node: string | undefined) {
+export function discoveryQuery(node: TenantNode | undefined) {
   return {
-    queryKey: ["discovery", node ?? null] as const,
-    queryFn: () => discoverFrom(node),
+    queryKey: ["discovery", node?.name ?? null] as const,
+    queryFn: async () =>
+      localizeDiscovery(await discoverFrom(node?.name), node),
   };
 }
 
@@ -125,5 +137,29 @@ export function catalogBindings(
 ): Promise<Binding[]> {
   return apiFetch<Binding[]>(
     `/api/authorization/${encodeURIComponent(tenant)}/catalog?node=${encodeURIComponent(node)}`,
+  );
+}
+
+/** The generated client leaves out the paging parameters of the two reads of
+ *  Node Registrations. `limit` is at most 200. */
+export function registrationsPage(
+  tenant: string,
+  node: string,
+  offset: number,
+  limit: number,
+): Promise<RegistrationRecord[]> {
+  return apiFetch<RegistrationRecord[]>(
+    `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registrations?offset=${offset}&limit=${limit}`,
+  );
+}
+
+export function registrationHistoryPage(
+  tenant: string,
+  node: string,
+  after: number,
+  limit: number,
+): Promise<NodeRegistrationRevision[]> {
+  return apiFetch<NodeRegistrationRevision[]>(
+    `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registration-history?after=${after}&limit=${limit}`,
   );
 }

@@ -6,6 +6,15 @@ export const tenantSubject = {
   subject: "alice",
 } as const;
 
+/** The Node a Tenant starts with: Catalog Approvals are decided on it. */
+export const defaultNode = {
+  name: "default-node",
+  address: "aidash://node/default-node",
+  label: "Default",
+  default: true,
+  created_at: "2026-10-17T09:00:00Z",
+} as const;
+
 export async function routeTenantActions(
   page: Page,
   actions: readonly string[],
@@ -14,6 +23,9 @@ export async function routeTenantActions(
     assignable,
   }: { tenant?: string; assignable?: string[] } = {},
 ) {
+  await page.route(`**/api/tenants/${tenant}/nodes`, (route) =>
+    route.fulfill({ json: [defaultNode] }),
+  );
   await page.route(`**/api/tenants/${tenant}/administration`, (route) =>
     route.fulfill({
       json: {

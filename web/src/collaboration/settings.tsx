@@ -10,6 +10,7 @@ import {
   Search,
   Server,
   Store,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -36,7 +37,8 @@ import {
 } from "../catalog-approval";
 import type { RegistryVersion } from "../generated/models";
 import { useNodes } from "../nodes";
-import { parseNodeAddress } from "../node-selection";
+import { NodesPage } from "../nodes-settings";
+import { registryDeployment } from "../node-selection";
 import { useTenantActions } from "../tenant-administration";
 import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
@@ -61,6 +63,7 @@ const deploymentAdministratorSections: Partial<Record<SettingsSection, true>> =
 
 const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   node: Server,
+  nodes: Waypoints,
   agents: Bot,
   registry: Library,
   clusters: Network,
@@ -368,10 +371,7 @@ function NodeView({
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
   const { selected } = useNodes();
-  // `node.id` is the selected Node's address once a Tenant's Node is selected.
-  const deployment = parseNodeAddress(data.node.id)
-    ? `aidash://${parseNodeAddress(data.node.id)!.deployment}`
-    : data.node.id;
+  const deployment = registryDeployment(data);
   return (
     <div className="grid max-w-4xl min-w-0 gap-6">
       <Panel title={copy.node}>
@@ -549,6 +549,7 @@ export function Configuration({
           {section === "node" && (
             <NodeView data={data} disconnect={disconnect} />
           )}
+          {section === "nodes" && <NodesPage data={data} />}
         </>
       )}
     </SettingsFrame>
