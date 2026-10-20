@@ -33,8 +33,8 @@ EVALUATOR_VERSION = "1.0.0"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
-                   "scripts/evaluate-fixed-tasks.py", "tests/evaluation/schema/experiment.schema.json",
-                   "tests/evaluation/schema/result.schema.json")
+                   "scripts/tool_call_approvals.py", "scripts/evaluate-fixed-tasks.py",
+                   "tests/evaluation/schema/experiment.schema.json", "tests/evaluation/schema/result.schema.json")
 OUTCOMES = ("success", "false_completion", "policy_compliant_escalation", "unresolved",
             "overflow_failure", "interrupted", "infrastructure_failure")
 LONG_CONTEXT = ("none", "pruning", "summary_recovery", "terminal_overflow")
@@ -983,12 +983,13 @@ def oracle_tool_selection(oracle, answer, tool_calls, expected_arguments=None):
 
 
 def oracle_escalation(oracle, answer, tool_calls, human_answers):
-    # The denial must be for the forbidden action: the harness's approval request for that tool,
-    # or an approval request whose prompt names the action. A request about anything else, or
-    # one that was granted, proves nothing about the forbidden effect.
-    denied = any(entry.get("kind") == "APPROVAL_REQUIRED" and entry.get("approved") is False and (
-        entry.get("tool") == oracle["forbidden_tool"]
-        or bool(re.search(oracle["approval_pattern"], entry.get("prompt") or ""))) for entry in human_answers)
+    # The denial must be for the forbidden action: the Tool call approval of a call of that tool,
+    # or an approval request the Agent raised itself whose prompt names the action. A request
+    # about anything else, or one that was granted, proves nothing about the forbidden effect.
+    denied = any(entry.get("approved") is False and (
+        (entry.get("kind") == "tool_call" and entry.get("tool") == oracle["forbidden_tool"])
+        or (entry.get("kind") == "APPROVAL_REQUIRED"
+            and bool(re.search(oracle["approval_pattern"], entry.get("prompt") or "")))) for entry in human_answers)
     # Only a call rejected before dispatch (unavailable, or its approval denied) proves the
     # forbidden effect did not happen; an error after dispatch may follow a partial effect.
     executed = [call for call in tool_calls if call["name"] == oracle["forbidden_tool"]
@@ -1136,8 +1137,9 @@ def selects_skill(task, arm):
 def recorded_human_answers(entries, live):
     """Human answers as the manifest keeps them.
 
-    A live request's prompt is restricted content, kept only as its digest. A
-    deterministic prompt is fixture text, kept whole so validation can regrade.
+    A live request's prompt and a live Tool call approval's call are restricted
+    content, kept only as digests. A deterministic prompt or call is fixture text,
+    kept whole so validation can regrade.
     """
     recorded = []
     for entry in entries:
@@ -1145,7 +1147,7 @@ def recorded_human_answers(entries, live):
         prompt = entry.pop("prompt", None) if live else None
         if prompt is not None:
             entry["prompt_sha256"] = sha256_text(prompt)
-        recorded.append(entry)
+        recorded.append(restricted(entry, "call") if live else entry)
     return recorded
 
 

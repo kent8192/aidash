@@ -26,6 +26,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import tool_call_approvals
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "acceptance-access-token"
 PEER_TOKEN = "acceptance-peer-token-for-local-tests"
@@ -97,19 +99,22 @@ def reconcile_uncertain_http(base, run_id, effects, token=TOKEN):
     return key
 
 
-FIXTURE_TOOLS = ("research-http@", "http-runner-tool@", "mcp-runner-tool@")
+FIXTURE_TOOLS = ("research-http", "http-runner-tool", "mcp-runner-tool")
 
 
 def fixture_approval(request):
     """Whether `request` is a pending approval of the owned fixture's exact external call."""
     return request.get("response") is None and request.get("kind") == "APPROVAL_REQUIRED" and any(
-        (request.get("prompt") or "").startswith("Approve this exact external tool action once? Tool: " + tool)
+        (request.get("prompt") or "").startswith(f"Approve this exact external tool action once? Tool: {tool}@")
         for tool in FIXTURE_TOOLS
     )
 
 
 def approve_fixture_external_requests(base, token=TOKEN):
-    """Approve only the owned fixture's exact external-call continuations.
+    """Approve only the owned fixture's exact external-call continuations of Runs executing for another Node.
+
+    Such a Run asks this Node through a human request; a Run on this Node raises a Tool call
+    approval, which approve_fixture_tool_calls answers.
 
     An answer that does not arrive is answered again on the next poll; a second
     answer to an approval that was already answered is refused with 409.
@@ -118,6 +123,16 @@ def approve_fixture_external_requests(base, token=TOKEN):
         if fixture_approval(request):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
             print(f"--- approved {request['id']}", flush=True)
+
+
+def approve_fixture_tool_calls(base, token):
+    """Allow once each exact call of the owned fixture's tools that a Run on this Node asks a Tool call approval for.
+
+    `token` must be a Tenant subject's: a Deployment Administrator cannot list a Tenant's approvals.
+    """
+    for card in tool_call_approvals.pending(lambda path: api_request(base, path, token=token)):
+        if card.get("tool") in FIXTURE_TOOLS:
+            tool_call_approvals.decide(lambda path, body: api_request(base, path, body, token=token), card, True)
 
 
 def diagnose(base, token, tenant, workspace, database):
@@ -554,6 +569,7 @@ def main():
             for base, token in list(tokens.items()):
                 try:
                     approve_fixture_external_requests(base, token)
+                    approve_fixture_tool_calls(base, token)
                 except OSError as error:
                     # A deliberately unavailable/restarting Node has no approval authority.
                     print(f"--- approval poll of {base} failed: {error!r}", flush=True)

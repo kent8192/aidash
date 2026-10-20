@@ -202,10 +202,64 @@ fn the_creator_administers_and_members_use() {
 }
 
 #[test]
+fn members_approve_tool_calls_and_nothing_else_they_could_be_asked_for() {
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let evaluate = |subject: &str, kind: &str, action: &str| {
+		bundle
+			.evaluate(&Evaluation {
+				subject: subject.into(),
+				action: action.into(),
+				resource: Resource {
+					tenant: bundle.tenant.clone(),
+					kind: kind.into(),
+					id: "tool-1".into(),
+					attributes: json!({}),
+				},
+				environment: json!({}),
+			})
+			.allowed
+	};
+	assert!(evaluate("alice", "tool", "capability.approve"));
+	for kind in ["outbound", "research", "generation"] {
+		assert!(!evaluate("alice", kind, "capability.approve"), "{kind}");
+	}
+	// Calling without approval is never granted by default, not even by an
+	// administrator's wildcard: the Tenant has to name it.
+	assert!(!evaluate("alice", "tool", "tool.call_unapproved"));
+	assert!(!evaluate(OWNER, "tool", "tool.call_unapproved"));
+}
+
+#[test]
+fn a_wildcard_allow_never_grants_an_explicit_action_but_a_wildcard_deny_covers_it() {
+	let mut bundle = initial_policy("t", true).unwrap();
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(!allows(&bundle, OWNER, action), "{action}");
+	}
+	let mut named = bundle.policies[0].clone();
+	named.id = "named".into();
+	named.actions = crate::policy::EXPLICIT_ACTIONS
+		.iter()
+		.map(|action| (*action).to_owned())
+		.collect();
+	bundle.policies.push(named);
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(allows(&bundle, OWNER, action), "{action}");
+	}
+	let mut deny = bundle.policies[0].clone();
+	deny.id = "deny-all".into();
+	deny.effect = crate::policy::Effect::Deny;
+	deny.actions = ["*".to_owned()].into();
+	bundle.policies.push(deny);
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(!allows(&bundle, OWNER, action), "{action}");
+	}
+}
+
+#[test]
 fn a_tenant_without_a_creator_starts_empty() {
 	let bundle = initial_policy("calm-heron-00000000", false).unwrap();
 	assert!(bundle.subjects.is_empty());
-	assert_eq!(bundle.policies.len(), 2);
+	assert_eq!(bundle.policies.len(), 3);
 }
 
 fn with_member(mut bundle: PolicyBundle, name: &str, group: &str) -> PolicyBundle {

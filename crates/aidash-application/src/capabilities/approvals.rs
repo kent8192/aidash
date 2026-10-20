@@ -1,4 +1,5 @@
 //! Approval requests, human decisions and worker authorization retain one live scope.
+pub use crate::ports::capabilities::approvals::{Refusal, ToolCallApproval, ToolCallRequest};
 use crate::{
 	Error, Result,
 	ports::capabilities::approvals::{ApprovalScope, Creation},
@@ -23,8 +24,18 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 		json!({"origin":origin,"run_id":run,"action":"network.get"}),
 	)
 }
+/// Approval records of outbound reads.
+const OUTBOUND: &str = "outbound";
 /// Approval records of Web disclosures share the capability approval flow.
 pub const DISCLOSURE: &str = "disclosure";
+/// Approval records of Tenant tool calls share it too (ADR 0075).
+pub const TOOL_CALL: &str = "tool_call";
+/// The policy action that lets a call proceed without a Tool call approval
+/// (direct permission).
+pub const CALL_UNAPPROVED: &str = "tool.call_unapproved";
+/// The operation of a Tenant's HTTP or MCP tool definition, until a definition
+/// version can declare several (#410).
+pub const INVOKE: &str = "invoke";
 /// The policy action a Web disclosure approval authorizes.
 pub const DISCLOSE: &str = "research.disclose";
 /// The shortest Run grant an approver may give, and so the least a
@@ -41,6 +52,30 @@ fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) 
 		json!({"destination":destination,"run_id":run,"action":DISCLOSE}),
 	)
 }
+/// The target string of an approval record and Run grant for one operation of
+/// a tool. It cannot collide with an outbound origin or a disclosure destination.
+pub fn tool_target(tool: &aidash_domain::registry::EntityRef, operation: &str) -> String {
+	format!("tool:{}@{}#{operation}", tool.id, tool.version)
+}
+fn tool_resource(
+	scope: &dyn ApprovalScope,
+	tool: &aidash_domain::registry::EntityRef,
+	operation: &str,
+	run: Uuid,
+) -> Resource {
+	scope.resource(
+		"tool",
+		&tool.id,
+		json!({"version":tool.version,"operation":operation,"run_id":run,"action":CALL_UNAPPROVED}),
+	)
+}
+/// Whether `record` is a Run grant for `action`.
+fn grants(record: &Record, action: &str) -> bool {
+	record.kind == "grant"
+		&& record.data["actions"]
+			.as_array()
+			.is_some_and(|actions| actions.contains(&json!(action)))
+}
 /// The protected target of an approval record and the action it authorizes.
 fn target_of(
 	scope: &dyn ApprovalScope,
@@ -48,13 +83,16 @@ fn target_of(
 	target: &str,
 	run: Uuid,
 ) -> (Resource, &'static str) {
-	// A Run grant from an "allow for this Run" disclosure decision names the
-	// action it covers; it protects the same research resource.
-	let granted_disclosure = record.kind == "grant"
-		&& record.data["actions"]
-			.as_array()
-			.is_some_and(|actions| actions.contains(&json!(DISCLOSE)));
-	if record.kind == DISCLOSURE || granted_disclosure {
+	// A Run grant from an "allow for this Run" decision names the action it
+	// covers; it protects the same resource as the approval it came from.
+	if record.kind == TOOL_CALL || grants(record, CALL_UNAPPROVED) {
+		let tool = aidash_domain::registry::EntityRef {
+			id: record.data["tool"].as_str().unwrap_or_default().into(),
+			version: record.data["version"].as_str().unwrap_or_default().into(),
+		};
+		let operation = record.data["operation"].as_str().unwrap_or_default();
+		(tool_resource(scope, &tool, operation, run), CALL_UNAPPROVED)
+	} else if record.kind == DISCLOSURE || grants(record, DISCLOSE) {
 		(disclosure_resource(scope, target, run), DISCLOSE)
 	} else {
 		(resource(scope, target, run), "network.get")
@@ -148,6 +186,10 @@ pub async fn prepare(
 		g.data["targets"]
 			.as_array()
 			.is_some_and(|a| a.contains(&json!(origin)))
+			// Outbound reads, Web disclosures and tool calls never share a grant.
+			&& g.data["actions"]
+				.as_array()
+				.is_some_and(|a| a.contains(&json!("network.get")))
 			&& g.data["subjects"] == json!(scope.subjects())
 			&& eligible(
 				scope,
@@ -185,6 +227,12 @@ pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> 
 	}
 	let expired = record.expires_at.is_some_and(|t| t < Utc::now());
 	let mut result = approvals::projection(record, expired);
+	if record.kind == TOOL_CALL {
+		// What the approver is asked to allow: the exact call.
+		for field in ["tool", "version", "operation", "call"] {
+			result[field] = record.data[field].clone();
+		}
+	}
 	if let Some(file) = record.data.get("output_file") {
 		let entry: FileEntry = serde_json::from_value(file.clone())?;
 		let bytes = scope.read(&entry).await?;
@@ -200,17 +248,25 @@ pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> 
 	}
 	Ok(result)
 }
+/// Approval records of every kind share one decision API.
+async fn load_approval(scope: &mut dyn ApprovalScope, id: Uuid) -> Result<Record> {
+	match scope.load(id, OUTBOUND).await {
+		Err(Error::NotFound(_)) => {}
+		other => return other,
+	}
+	match scope.load(id, DISCLOSURE).await {
+		Err(Error::NotFound(_)) => {}
+		other => return other,
+	}
+	scope.load(id, TOOL_CALL).await
+}
 pub async fn decide(
 	scope: &mut dyn ApprovalScope,
 	id: Uuid,
 	input: ApprovalDecision,
 ) -> Result<Value> {
 	let limits = scope.limits()?;
-	let mut record = match scope.load(id, "outbound").await {
-		Err(Error::NotFound(_)) => scope.load(id, DISCLOSURE).await?,
-		other => other?,
-	};
-	let disclosure = record.kind == DISCLOSURE;
+	let mut record = load_approval(scope, id).await?;
 	let digest = aidash_domain::registry::rules::digest(&json!(["approval", id, input]));
 	if let Some(result) = scope.cached(input.idempotency_key, &digest).await? {
 		return Ok(result);
@@ -231,9 +287,10 @@ pub async fn decide(
 		return Err(Error::Conflict("APPROVAL_STALE_OR_EXPIRED".into()));
 	}
 	if run.control == RunControl::Cancelled || run.phase.is_terminal() {
-		// A disclosure ends with its Run. One its Run's end did not already
-		// close is closed now, with the reason, instead of failing forever.
-		if disclosure {
+		// A disclosure or tool call approval ends with its Run. One its Run's
+		// end did not already close is closed now, with the reason, instead of
+		// failing forever.
+		if record.kind != OUTBOUND {
 			record.state = "closed".into();
 			record.data["closed_reason"] = json!("run_ended");
 			scope.update(&mut record).await?;
@@ -247,7 +304,7 @@ pub async fn decide(
 	let allowed = ordinary(scope, &target, action);
 	scope.replace_subjects(subjects);
 	allowed?;
-	if !disclosure {
+	if record.kind == OUTBOUND {
 		permitted_origin(
 			record.data["url"].as_str().ok_or(Error::Forbidden)?,
 			&limits.origins,
@@ -277,7 +334,27 @@ pub async fn decide(
 			{
 				return Err(Error::Invalid("INVALID_GRANT_SCOPE".into()));
 			}
-			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"context_revision":record.data["context_revision"],"operation":record.data["operation"],"provider":record.data["provider"],"attribution":record.data["attribution"]}),expires:Some(expires)}).await?;
+			let mut data = json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"operation":record.data["operation"]});
+			// What a grant covers beyond its destination depends on the approval.
+			// A tool grant outlives new user input, so it has no context revision.
+			if record.kind == TOOL_CALL {
+				data["tool"] = record.data["tool"].clone();
+				data["version"] = record.data["version"].clone();
+			} else {
+				data["context_revision"] = record.data["context_revision"].clone();
+				data["provider"] = record.data["provider"].clone();
+				data["attribution"] = record.data["attribution"].clone();
+			}
+			let grant = scope
+				.insert(Creation {
+					id: Uuid::new_v4(),
+					area: record.area_id,
+					kind: "grant",
+					state: "active",
+					data,
+					expires: Some(expires),
+				})
+				.await?;
 			scope.transfer_owner(grant.id, &record.owner).await?;
 			record.data["grant_id"] = json!(grant.id);
 			record.data["approval_mode"] = json!("allow_run");
@@ -362,6 +439,9 @@ pub async fn authorize(scope: &mut dyn ApprovalScope, record: &Record) -> Result
 			if grant.state != "active"
 				|| grant.expires_at.is_none_or(|t| t <= Utc::now())
 				|| grant.data["run_id"] != json!(id)
+				|| !grant.data["actions"]
+					.as_array()
+					.is_some_and(|a| a.contains(&json!("network.get")))
 				|| grant.data["subjects"] != json!(scope.subjects())
 				|| !grant.data["targets"]
 					.as_array()
@@ -396,14 +476,18 @@ pub struct DisclosureRequest {
 	pub query: Option<Value>,
 }
 
-fn disclosure_key(digest: &str, generation: u32) -> Uuid {
-	let bytes = aidash_domain::registry::rules::digest(&json!([DISCLOSURE, digest, generation]));
+/// A cache key derived from a digest, in the namespace of one approval kind.
+fn derived_key(parts: Value) -> Uuid {
+	let bytes = aidash_domain::registry::rules::digest(&parts);
 	let hex = bytes.trim_start_matches("sha256:");
 	let mut id = [0u8; 16];
 	for (index, byte) in id.iter_mut().enumerate() {
 		*byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).unwrap_or_default();
 	}
 	uuid::Builder::from_random_bytes(id).into_uuid()
+}
+fn disclosure_key(digest: &str, generation: u32) -> Uuid {
+	derived_key(json!([DISCLOSURE, digest, generation]))
 }
 
 /// The newest recorded generation of one exact disclosure and its cache entry.
@@ -437,8 +521,8 @@ async fn newest_disclosure(
 	Ok(Some((low, newest)))
 }
 
-/// Whether an approved disclosure of `run` still admits what it approved: the
-/// approval has not expired, current policy does not forbid the disclosure,
+/// Whether an approved disclosure or tool call of `run` still admits what it
+/// approved: the approval has not expired, current policy does not forbid it,
 /// and unless policy now permits it directly, its approver is still eligible
 /// and an "allow for this Run" decision's grant is still active. As
 /// [`authorize`] does for outbound reads, a decision never outlives these.
@@ -446,11 +530,11 @@ async fn still_approved(scope: &mut dyn ApprovalScope, run: &Run, record: &Recor
 	if record.expires_at.is_none_or(|t| t <= Utc::now()) {
 		return Ok(false);
 	}
-	let Some(destination) = record.data["destination"].as_str() else {
+	let Some(destination) = record.data["targets"][0].as_str() else {
 		return Ok(false);
 	};
-	let target = disclosure_resource(scope, destination, run.id);
-	match ordinary(scope, &target, DISCLOSE) {
+	let (target, action) = target_of(scope, record, destination, run.id);
+	match ordinary(scope, &target, action) {
 		Ok(true) => return Ok(true),
 		Ok(false) => {}
 		Err(Error::Forbidden) => return Ok(false),
@@ -629,6 +713,136 @@ pub async fn consume_disclosure(
 		// or an Evidence Revocation closed it. Either wins the race.
 		Err(Error::Conflict(_)) => Ok(false),
 		other => other.map(|()| true),
+	}
+}
+
+/// Admit one exact call of a Tenant's HTTP or MCP tool. Policy may permit it
+/// directly (`tool.call_unapproved`) or through a Run grant; otherwise a
+/// designated approver decides through the ordinary approval decision and the
+/// Run waits on the returned approval. The same invocation key and call always
+/// map to the same approval, which the one call it allows consumes.
+pub async fn tool_call(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	request: ToolCallRequest,
+) -> Result<ToolCallApproval> {
+	let limits = scope.limits()?;
+	if run.phase.is_terminal() || run.control == RunControl::Cancelled {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
+	let digest = aidash_domain::registry::rules::digest(&json!([
+		TOOL_CALL,
+		run.id,
+		request.key,
+		request.call
+	]));
+	let cache_key = derived_key(json!([TOOL_CALL, digest]));
+	if let Some(previous) = scope.cached(cache_key, &digest).await? {
+		let id = serde_json::from_value(previous["operation_id"].clone())?;
+		let record = scope.load(id, TOOL_CALL).await?;
+		return recorded_tool_call(scope, run, record).await;
+	}
+	let destination = tool_target(&request.tool, &request.operation);
+	let target = tool_resource(scope, &request.tool, &request.operation, run.id);
+	let direct = match ordinary(scope, &target, CALL_UNAPPROVED) {
+		Err(Error::Forbidden) => return Ok(ToolCallApproval::Refused(Refusal::Forbidden)),
+		other => other?,
+	};
+	// Unlike a Web disclosure's, a tool grant outlives new user input: the tool's
+	// destination is fixed by the Tenant, not chosen from the conversation.
+	let grant = scope.grants(run.id).await?.into_iter().find(|g| {
+		grants(g, CALL_UNAPPROVED)
+			&& g.data["targets"]
+				.as_array()
+				.is_some_and(|a| a.contains(&json!(destination)))
+			&& g.data["subjects"] == json!(scope.subjects())
+			&& eligible(
+				scope,
+				g.data["approver"].as_str().unwrap_or_default(),
+				&g.owner,
+				&target,
+			)
+	});
+	let designated = grant
+		.as_ref()
+		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
+		.or_else(|| approver(scope, &target));
+	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let id = Uuid::new_v4();
+	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
+		"tool":request.tool.id,"version":request.tool.version,"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,
+		"digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	let record = scope
+		.insert(Creation {
+			id,
+			area: request.area,
+			kind: TOOL_CALL,
+			// A direct or granted call is consumed by this call.
+			state: if state == "approved" {
+				"consumed"
+			} else {
+				state
+			},
+			data,
+			expires: Some(Utc::now() + Duration::seconds(limits.approval_seconds as i64)),
+		})
+		.await?;
+	scope
+		.cache(cache_key, &digest, &json!({"operation_id":id}))
+		.await?;
+	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"],"action":CALL_UNAPPROVED})).await?;
+	Ok(settled_tool_call(&record))
+}
+
+/// What a recorded approval says about its call, once nothing is left to decide
+/// or consume. An `approved` record is not settled: see [`recorded_tool_call`].
+fn settled_tool_call(record: &Record) -> ToolCallApproval {
+	match (record.state.as_str(), record.expires_at) {
+		("consumed", _) => ToolCallApproval::Approved {
+			approval_id: (record.data["ordinary"] != true).then_some(record.id),
+		},
+		("pending", Some(expires_at)) if expires_at > Utc::now() => ToolCallApproval::Pending {
+			approval_id: record.id,
+			expires_at,
+		},
+		("pending", _) => ToolCallApproval::Refused(Refusal::Expired),
+		("denied", _) => ToolCallApproval::Refused(Refusal::Denied),
+		("revoked", _) => ToolCallApproval::Refused(Refusal::Revoked),
+		("closed", _) => ToolCallApproval::Refused(Refusal::Closed),
+		_ => ToolCallApproval::Refused(Refusal::Blocked),
+	}
+}
+
+/// Map the approval recorded for a call the Run asks about again. An approved
+/// one is consumed here, by the one call it allows, unless it has lapsed since
+/// the decision.
+async fn recorded_tool_call(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	mut record: Record,
+) -> Result<ToolCallApproval> {
+	if record.state != "approved" {
+		return Ok(settled_tool_call(&record));
+	}
+	if !still_approved(scope, run, &record).await? {
+		let expired = record.expires_at.is_none_or(|t| t <= Utc::now());
+		return Ok(ToolCallApproval::Refused(if expired {
+			Refusal::Expired
+		} else {
+			Refusal::Revoked
+		}));
+	}
+	record.state = "consumed".into();
+	record.data["consumed_at"] = json!(Utc::now());
+	match scope.update(&mut record).await {
+		Ok(()) => Ok(settled_tool_call(&record)),
+		// The approval changed since it was loaded: an Evidence Revocation closed
+		// it or the approver revoked it. That wins the race.
+		Err(Error::Conflict(_)) => {
+			let current = scope.load(record.id, TOOL_CALL).await?;
+			Ok(settled_tool_call(&current))
+		}
+		Err(error) => Err(error),
 	}
 }
 
