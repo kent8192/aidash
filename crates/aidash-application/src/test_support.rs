@@ -187,3 +187,37 @@ pub(crate) fn native_memory_snapshot(node: &str, id: &str) -> BindingSnapshot {
 	root.config["bindings"] = json!([binding("memory", node, "native")]);
 	resolve(node, &root, true, native_memory_entries())
 }
+
+/// A Node of another Deployment, as its sender's Node Registration pins it.
+pub(crate) fn foreign_route(target: &str) -> aidash_domain::federation::route::Route {
+	use aidash_domain::{
+		federation::route::Route,
+		nodes::{
+			DeploymentKeyId, NodeAddress,
+			registration::{Counterpart, PinnedKey},
+		},
+	};
+	let target = if target
+		.strip_prefix("aidash://")
+		.unwrap_or(target)
+		.contains('/')
+	{
+		target.to_owned()
+	} else {
+		format!("{target}/calm-heron-ab12cd34")
+	};
+	Route {
+		tenant: aidash_domain::tenancy::TenantName::new("tenant").unwrap(),
+		sender: NodeAddress::parse("aidash://home/quiet-otter-cd34ef56").unwrap(),
+		subject: None,
+		target: NodeAddress::parse(&target).unwrap(),
+		counterpart: Counterpart::OtherDeployment {
+			endpoint: "https://foreign.invalid".into(),
+			key: PinnedKey {
+				key_id: DeploymentKeyId::parse(&"a".repeat(43)).unwrap(),
+				public_key_pem: "pem".into(),
+			},
+		},
+		atomic_transactions: true,
+	}
+}

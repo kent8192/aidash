@@ -10,7 +10,6 @@ use crate::{
 	},
 };
 use aidash_domain::federation::{
-	Peer,
 	dependencies::Reference,
 	execution::home::{Grant, HomeBinding},
 };
@@ -134,14 +133,11 @@ impl ProducerScope for Producer<'_> {
 }
 #[async_trait]
 impl SourcePeerScope for Reader {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		Ok(Some(Peer {
-			node_id: node.into(),
-			endpoint: "https://receiver.invalid".into(),
-			credential_env: "CREDENTIAL".into(),
-			protocol_version: "current".into(),
-			enabled: true,
-		}))
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		Ok(Some(crate::test_support::foreign_route(node)))
 	}
 }
 fn visit_key() -> (String, Uuid, String) {

@@ -12,22 +12,24 @@ use std::time::Duration;
 #[async_trait]
 impl DependencyTransport for HttpTransport {
 	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
-		let reply = tokio::time::timeout(
-			remaining.min(Duration::from_secs(10)),
-			self.send(
-				route,
-				"POST",
-				"/scoped/dependencies/verify",
-				Some(&json!({"reference":input.reference})),
-			),
-		)
+		// The caller's remaining time bounds the headers and the whole body.
+		tokio::time::timeout(remaining.min(Duration::from_secs(10)), async {
+			let reply = self
+				.send(
+					route,
+					"POST",
+					"/scoped/dependencies/verify",
+					Some(&json!({"reference":input.reference})),
+				)
+				.await
+				.ok()?;
+			if !reply.status().is_success() {
+				return None;
+			}
+			crate::response::json(reply, 131072).await.ok()
+		})
 		.await
 		.ok()?
-		.ok()?;
-		if !reply.status().is_success() {
-			return None;
-		}
-		crate::response::json(reply, 131072).await.ok()
 	}
 }
 

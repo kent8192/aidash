@@ -7,12 +7,21 @@ use aidash_domain::federation::route::{Route, Sender};
 use aidash_domain::nodes::{DeploymentId, NodeAddress, NodeName, registration::Counterpart};
 use reinhardt::db::backends::TransactionExecutor;
 
-/// The sending Node, in the sender's Tenant scope. A sender that names no Node
-/// is its Tenant's default Node: the one seam that stands in until Workspaces
-/// carry their own Node.
+/// The sending Node, in the sender's Tenant scope. A named Node must belong to
+/// the sender's Tenant: the name may come from a request (the dashboard's Node
+/// selector) or a Run's chain, and a Node of another Tenant is refused as an
+/// unknown Node is, so a sender cannot speak as a Node it does not hold. A
+/// sender that names no Node is its Tenant's default Node: the one seam that
+/// stands in until Workspaces carry their own Node.
 async fn sending_node(tx: &mut dyn TransactionExecutor, sender: &Sender) -> Result<NodeName> {
 	match &sender.node {
-		Some(node) => Ok(node.clone()),
+		Some(node) => {
+			let holder = registrations::name_tenant(tx, node.as_str()).await?;
+			if holder.as_deref() != Some(sender.tenant.as_str()) {
+				return Err(unregistered());
+			}
+			Ok(node.clone())
+		}
 		None => Ok(nodes::default_of(tx, sender.tenant.as_str()).await?.name),
 	}
 }

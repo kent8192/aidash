@@ -7,10 +7,7 @@ use crate::{
 		grants::{GrantRepository, GrantScope},
 	},
 };
-use aidash_domain::{
-	federation::Peer,
-	policy::{PolicyBundle, SubjectKind},
-};
+use aidash_domain::policy::{PolicyBundle, SubjectKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 struct SourceRepository {
 	repository: Repository,
@@ -81,9 +78,6 @@ impl GrantRepository for SourceRepository {
 	fn source_identity(&self) -> Option<ExecutionPrincipal> {
 		HomeRepository::identity(&self.repository)
 	}
-	fn protocol_version(&self) -> &str {
-		"current"
-	}
 	fn validation(&self) -> crate::registry::DefinitionValidation {
 		panic!("early authority regressions must not reach inspection validation")
 	}
@@ -108,6 +102,7 @@ impl GrantRepository for SourceRepository {
 		_: &str,
 		_: &str,
 		_: &Value,
+		_: &str,
 	) -> Result<T> {
 		self.repository.call("source_rpc");
 		Err(Error::External("receiver unavailable".into()))
@@ -300,14 +295,11 @@ impl SourceAuthorityScope for SourceSession {
 }
 #[async_trait]
 impl SourcePeerScope for SourceSession {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		Ok(Some(Peer {
-			node_id: node.into(),
-			endpoint: "https://receiver.invalid".into(),
-			credential_env: "CREDENTIAL".into(),
-			protocol_version: "current".into(),
-			enabled: true,
-		}))
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		Ok(Some(crate::test_support::foreign_route(node)))
 	}
 }
 #[async_trait]

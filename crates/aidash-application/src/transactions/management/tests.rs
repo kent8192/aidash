@@ -1,5 +1,4 @@
 use super::*;
-use crate::ports::transactions::management::TrustScope;
 use aidash_domain::transactions::{
 	Isolation, Participant, coordination::Vote, management::History,
 };
@@ -67,9 +66,6 @@ struct State {
 	calls: Vec<String>,
 	cursors: Vec<Option<(DateTime<Utc>, Uuid)>>,
 	failure: Option<&'static str>,
-	trusts: Vec<Trust>,
-	pending: Vec<Uuid>,
-	scopes: usize,
 }
 #[derive(Clone)]
 struct Repository {
@@ -86,12 +82,6 @@ fn repository() -> Repository {
 			calls: vec![],
 			cursors: vec![],
 			failure: None,
-			trusts: vec![Trust {
-				node_id: "aidash://peer".into(),
-				enabled: true,
-			}],
-			pending: vec![Uuid::from_u128(1)],
-			scopes: 0,
 		})),
 		active: Arc::new(AtomicUsize::new(0)),
 		peak: Arc::new(AtomicUsize::new(0)),
@@ -118,26 +108,6 @@ struct Active(Arc<AtomicUsize>);
 impl Drop for Active {
 	fn drop(&mut self) {
 		self.0.fetch_sub(1, Ordering::SeqCst);
-	}
-}
-struct TrustMutation(Repository);
-impl Drop for TrustMutation {
-	fn drop(&mut self) {
-		let mut state = self.0.state.lock().unwrap();
-		state.scopes -= 1;
-		state.calls.push("release:trust".into());
-	}
-}
-#[async_trait]
-impl TrustScope for TrustMutation {
-	async fn set(&mut self, trust: Trust) -> Result<Trust> {
-		self.0.event("set:trust")?;
-		self.0.state.lock().unwrap().trusts = vec![trust.clone()];
-		Ok(trust)
-	}
-	async fn pending_peer(&mut self, node: &str) -> Result<Vec<Uuid>> {
-		assert_eq!(self.0.state.lock().unwrap().scopes, 1);
-		self.0.pending_peer(node).await
 	}
 }
 #[async_trait]
@@ -244,40 +214,6 @@ impl ManagementRepository for Repository {
 	async fn participants(&self) -> Result<Vec<LocalStatus>> {
 		self.event("participants")?;
 		Ok(vec![])
-	}
-	async fn trusts(&self) -> Result<Vec<Trust>> {
-		self.event("trusts")?;
-		Ok(self.state.lock().unwrap().trusts.clone())
-	}
-	async fn ensure_peer(&self, node: &str) -> Result<()> {
-		assert_eq!(node, "aidash://peer");
-		self.event("peer")
-	}
-	async fn trust_scope(&self) -> Result<Box<dyn TrustScope>> {
-		self.event("open:trust")?;
-		self.state.lock().unwrap().scopes += 1;
-		Ok(Box::new(TrustMutation(self.clone())))
-	}
-	async fn pending_peer(&self, node: &str) -> Result<Vec<Uuid>> {
-		assert_eq!(node, "aidash://peer");
-		self.event("pending")?;
-		Ok(self.state.lock().unwrap().pending.clone())
-	}
-	fn credential(&self, reference: &str) -> Result<String> {
-		assert_eq!(reference, "PEER_FIXTURE_KEY");
-		self.event("credential")?;
-		Ok("fixture-key".into())
-	}
-	async fn restore_peer(&self, node: &str, reference: &str, credential: &str) -> Result<Peer> {
-		self.event("restore")?;
-		assert_eq!(credential, "fixture-key");
-		Ok(Peer {
-			node_id: node.into(),
-			endpoint: "http://127.0.0.1".into(),
-			credential_env: reference.into(),
-			protocol_version: "0.1".into(),
-			enabled: true,
-		})
 	}
 }
 
@@ -463,110 +399,6 @@ async fn abort_returns_the_new_decision_after_its_existing_authority_workflow(
 		.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(repository.calls(), calls);
-}
-
-#[rstest]
-#[case::enabled(true, & ["peer", "open:trust", "set:trust", "release:trust"], vec![])]
-#[case::disabled(false, & ["open:trust", "set:trust", "pending", "release:trust"], vec![Uuid::from_u128(1)])]
-#[tokio::test]
-async fn disabling_trust_keeps_the_pending_scan_after_the_durable_change(
-	repository: Repository,
-	#[case] enabled: bool,
-	#[case] calls: &[&str],
-	#[case] pending: Vec<Uuid>,
-) {
-	let result = trust(
-		&repository,
-		Trust {
-			node_id: "aidash://peer".into(),
-			enabled,
-		},
-	)
-	.await
-	.unwrap();
-	assert_eq!(result.pending_transactions, pending);
-	assert_eq!(result.trust.enabled, enabled);
-	assert_eq!(repository.state.lock().unwrap().scopes, 0);
-	assert_eq!(repository.calls(), calls);
-}
-
-#[rstest]
-#[case::set("set:trust", true)]
-#[case::pending("pending", false)]
-#[tokio::test]
-async fn trust_scope_releases_on_error_without_undoing_a_committed_change(
-	repository: Repository,
-	#[case] failure: &'static str,
-	#[case] persisted_enabled: bool,
-) {
-	repository.state.lock().unwrap().failure = Some(failure);
-	assert!(
-		trust(
-			&repository,
-			Trust {
-				node_id: "aidash://peer".into(),
-				enabled: false
-			}
-		)
-		.await
-		.is_err()
-	);
-	assert_eq!(
-		repository.state.lock().unwrap().trusts[0].enabled,
-		persisted_enabled
-	);
-	assert_eq!(repository.state.lock().unwrap().scopes, 0);
-	assert_eq!(repository.calls().last().unwrap(), "release:trust");
-}
-
-#[rstest]
-#[tokio::test]
-async fn enabling_trust_requires_a_current_enabled_peer_before_opening_storage(
-	repository: Repository,
-) {
-	repository.state.lock().unwrap().failure = Some("peer");
-	assert!(
-		trust(
-			&repository,
-			Trust {
-				node_id: "aidash://peer".into(),
-				enabled: true
-			}
-		)
-		.await
-		.is_err()
-	);
-	assert_eq!(repository.calls(), ["peer"]);
-}
-
-#[rstest]
-#[tokio::test]
-async fn trust_listing_checks_pending_obligations_only_for_disabled_peers(repository: Repository) {
-	repository.state.lock().unwrap().trusts.push(Trust {
-		node_id: "aidash://peer".into(),
-		enabled: false,
-	});
-	let result = trust_list(&repository).await.unwrap();
-	assert!(result[0].pending_transactions.is_empty());
-	assert_eq!(result[1].pending_transactions, [Uuid::from_u128(1)]);
-	assert_eq!(repository.calls(), ["trusts", "pending"]);
-}
-
-#[rstest]
-#[case::valid(false, & ["credential", "restore"])]
-#[case::invalid(true, & ["credential"])]
-#[tokio::test]
-async fn peer_recovery_resolves_the_key_before_native_restoration(
-	repository: Repository,
-	#[case] rejected: bool,
-	#[case] calls: &[&str],
-) {
-	if rejected {
-		repository.state.lock().unwrap().failure = Some("credential");
-	}
-	let result = restore_peer(&repository, "aidash://peer", "PEER_FIXTURE_KEY").await;
-	assert_eq!(result.is_err(), rejected);
 	assert_eq!(repository.calls(), calls);
 }
 

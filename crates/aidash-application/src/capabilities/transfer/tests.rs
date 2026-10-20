@@ -33,7 +33,7 @@ impl TransferRepository for Repository {
 	async fn begin_receipt(&self, _: Uuid) -> Result<Box<dyn ReceiptScope + '_>> {
 		Ok(Box::new(Receipt(self)))
 	}
-	async fn request(&self, _: &str, path: &str, _: &Value) -> Result<Value> {
+	async fn request(&self, _: &str, _: &str, path: &str, _: &Value) -> Result<Value> {
 		self.events.lock().unwrap().push(path.into());
 		Ok(self.receipt.clone())
 	}

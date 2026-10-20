@@ -27,7 +27,7 @@ impl Scope {
 			)
 			.unwrap(),
 			subjects: vec!["mapped".into()],
-			context: json!({}),
+			context: json!({"source_subject":"human"}),
 			calls: vec![],
 			active: true,
 			model_kind: "model".into(),
@@ -119,7 +119,8 @@ impl PeerInspectionScope for Scope {
 	}
 }
 fn input() -> InspectInput {
-	serde_json::from_value(json!({"tenant":"source","subject":"human","agent":{"id":"agent","version":"1.0.0"},"requirements":{}})).unwrap()
+	serde_json::from_value(json!({"agent":{"id":"agent","version":"1.0.0"},"requirements":{}}))
+		.unwrap()
 }
 
 #[rstest]
@@ -151,7 +152,7 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 	assert_eq!(
 		inspection.authority_digest,
 		digest(
-			&json!({"source_node":"aidash://home","source_tenant":"source","source_subject":"human","tenant":"local","credential_id":Uuid::from_u128(1),"subjects":["mapped",executor]})
+			&json!({"source_node":"aidash://home","source_subject":"human","tenant":"local","credential_id":Uuid::from_u128(1),"subjects":["mapped",executor]})
 		)
 	);
 }

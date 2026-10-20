@@ -1,6 +1,9 @@
 use super::*;
 use crate::ports::federation::inbound::ViewerGrant;
-use aidash_capability::{FederationClaims, InMemorySigner, body_digest};
+use aidash_capability::{
+	InMemorySigner,
+	federation::{FederationClaims, body_digest},
+};
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
 	nodes::{
