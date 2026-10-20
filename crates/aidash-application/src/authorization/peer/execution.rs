@@ -132,7 +132,7 @@ async fn inspect_in(
 		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,
-		node_id: access.node_id().to_owned(),
+		node_id: access.receiver_address(),
 		authority_digest: digest(
 			&json!({"source_node":node,"source_subject":source_subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
 		),

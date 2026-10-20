@@ -43,6 +43,9 @@ impl PeerInspectionScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://receiver"
 	}
+	fn receiver_address(&self) -> String {
+		aidash_domain::nodes::NodeAddress::derived("aidash://receiver", "receiver").to_string()
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
 			tenant: "local".into(),

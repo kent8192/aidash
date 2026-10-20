@@ -151,7 +151,7 @@ async fn described<R: PeerAdmissionRepository>(
 	)?;
 	let description = &reply.description;
 	if description.source_node != source
-		|| description.target_node != repository.node_id()
+		|| description.target_node != format!("{}/{receiver}", repository.node_id())
 		|| description.grant_id != grant
 		|| description.task.status != TaskStatus::Open
 	{

@@ -2,11 +2,8 @@
 use super::Grant as GrantRow;
 use crate::apps::identity::repositories::home_execution::{Repository, Scope};
 use crate::{
-	Error as NativeError, Result as NativeResult,
-	authorization::{
-		access::Access,
-		identity::{Actor, SubjectIdentity},
-	},
+	Result as NativeResult,
+	authorization::{access::Access, identity::SubjectIdentity},
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
@@ -87,6 +84,9 @@ impl SourceAuthorityScope for Scope {
 }
 #[async_trait]
 impl GrantScope for Scope {
+	fn home_address(&self) -> String {
+		self.access.node_reference().to_owned()
+	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) {
 		self.access.subjects = subjects;
 	}
@@ -242,7 +242,8 @@ impl GrantScope for Scope {
 							reinhardt::query::Alias::new("root_subject"),
 							reinhardt::query::Alias::new("subject_chain"),
 							reinhardt::query::Alias::new("inspection"),
-							reinhardt::query::Alias::new("expires_at")
+							reinhardt::query::Alias::new("expires_at"),
+							reinhardt::query::Alias::new("node")
 						])
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -290,6 +291,8 @@ impl GrantScope for Scope {
 									"(CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => ?))".to_owned(),
 									vec![Expr::value(query_bind_11.to_owned()).into()]
 								))
+								// The Home Node issuing the grant is its Workspace's.
+								.expr(crate::database::scope::workspace_node(query_bind_4))
 								.to_owned()
 						)
 						.to_owned()
@@ -453,13 +456,10 @@ impl GrantRepository for Repository {
 		node: &str,
 		path: &str,
 		input: &Value,
-		subject: &str,
+		identity: &ExecutionPrincipal,
 	) -> Result<T> {
-		let Some(Actor::Subject(identity)) = &self.actor else {
-			return Err(NativeError::Forbidden.into());
-		};
 		let sender = aidash_domain::federation::route::Sender {
-			subject: Some(subject.to_owned()),
+			subject: Some(identity.subject.clone()),
 			..crate::authorization::peer::node_sender(&identity.tenant)?
 		};
 		crate::authorization::peer::authority_request(&self.runtime, &sender, node, path, input)

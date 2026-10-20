@@ -20,6 +20,8 @@ use uuid::Uuid;
 #[async_trait]
 pub trait PeerInspectionScope: Send {
 	fn node_id(&self) -> &str;
+	/// The address of the receiving Node, which an inspection reports.
+	fn receiver_address(&self) -> String;
 	fn identity(&self) -> ExecutionPrincipal;
 	fn bundle(&self) -> &PolicyBundle;
 	fn subjects(&self) -> &[String];
