@@ -46,8 +46,7 @@ async fn mapped<'a>(
 	let result = async {
 		if description.protocol != "file-transfer/1"
 			|| description.source_node != source
-			|| aidash_domain::nodes::deployment_of(&description.target.node_id)
-				!= repository.node_id()
+			|| description.target.node_id != repository.node_id()
 		{
 			return Err(Error::Forbidden);
 		}

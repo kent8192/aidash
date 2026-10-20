@@ -127,7 +127,7 @@ pub async fn prepare(
 	let description = Description {
 		protocol: "file-transfer/1".into(),
 		transfer_id: id,
-		source_node: scope.node_id().to_owned(),
+		source_node: format!("{}/{}", scope.node_id(), run.node),
 		target: input.recipient,
 		source_tenant: scope.tenant().to_owned(),
 		source_subject: scope.principal().to_owned(),
@@ -164,7 +164,7 @@ pub async fn authority<'a>(
 		if record.expires_at.is_none_or(|t| t <= Utc::now()) {
 			return Err(Error::Conflict("TRANSFER_EXPIRED".into()));
 		}
-        let peer_enabled: Option<bool> = scope.peer_enabled(aidash_domain::nodes::deployment_of(&description.target.node_id)).await?;
+        let peer_enabled: Option<bool> = scope.peer_enabled(&description.target.node_id).await?;
         if peer_enabled != Some(true) { return Err(Error::Forbidden); }
         let run = scope
             .run(serde_json::from_value(record.data["run_id"].clone())?)
@@ -229,9 +229,7 @@ pub async fn describe(
 ) -> Result<Description> {
 	let record = repository.snapshot(input.transfer_id).await?;
 	let description: Description = serde_json::from_value(record.data["description"].clone())?;
-	if aidash_domain::nodes::deployment_of(&description.target.node_id) != node
-		|| description.input_digest != input.input_digest
-	{
+	if description.target.node_id != node || description.input_digest != input.input_digest {
 		return Err(Error::Forbidden);
 	}
 	// A queued policy writer may sit between the sender's shared lease and
@@ -342,8 +340,7 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 			)
 			.await?;
 		if negotiation["protocol"] != "file-transfer/1"
-			|| negotiation["node_id"]
-				!= aidash_domain::nodes::deployment_of(&description.target.node_id)
+			|| negotiation["node_id"] != description.target.node_id
 			|| negotiation["chunk_bytes"] != 4194304
 		{
 			return Err(Error::Conflict("FILE_TRANSFER_UNAVAILABLE".into()));
