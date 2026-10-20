@@ -17,7 +17,7 @@ pub(crate) struct NativeDependencies<'a>(pub(crate) &'a mut Access);
 #[async_trait]
 impl DependencyScope for NativeDependencies<'_> {
 	fn node(&self) -> &str {
-		&self.0.node_id
+		self.0.node_reference()
 	}
 	fn identity(&self) -> (&str, &str) {
 		(&self.0.identity.tenant, &self.0.identity.subject)

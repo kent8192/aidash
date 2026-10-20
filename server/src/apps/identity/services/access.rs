@@ -124,6 +124,8 @@ pub(crate) struct Access {
 	/// Catalog Approvals are per Node; an Access with no Node yet uses the
 	/// Tenant's default Node.
 	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
+	/// The address of `node`, which Federation references name Nodes by.
+	pub(crate) node_address: Option<String>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
@@ -325,6 +327,7 @@ impl Access {
 			wire,
 			node_id: node.to_owned(),
 			node: None,
+			node_address: None,
 			tx: AccessTransaction::new(tx),
 			identity: identity.clone(),
 			snapshot,
@@ -439,6 +442,7 @@ impl Access {
 			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
 			node: lease.node.clone(),
+			node_address: lease.node_address.clone(),
 			tx: AccessTransaction::new(tx),
 			identity: lease.identity.clone(),
 			snapshot: lease.snapshot.clone(),
@@ -554,6 +558,7 @@ impl Access {
 	pub(crate) fn set_node(&mut self, node: aidash_domain::nodes::NodeName) {
 		if self.node.as_ref() != Some(&node) {
 			self.approved_catalog.clear();
+			self.node_address = Some(format!("{}/{node}", self.node_id));
 			self.node = Some(node);
 		}
 	}
@@ -862,6 +867,12 @@ impl NativeAccess {
 }
 
 impl Access {
+	/// How a Federation reference names the Node this authority serves: its
+	/// address once the Node is known, the Deployment id before.
+	pub(crate) fn node_reference(&self) -> &str {
+		self.node_address.as_deref().unwrap_or(&self.node_id)
+	}
+
 	/// Read the same current policy environment used by worker inference decisions.
 	pub(in crate::apps::identity) fn execution_node(&self) -> Option<&str> {
 		self.environment["node_id"].as_str()
