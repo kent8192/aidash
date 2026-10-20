@@ -164,7 +164,8 @@ async fn another_protocol_version_is_refused() {
 #[rstest]
 #[case::expires_now(|c: &mut FederationClaims| c.exp = NOW, FederationFailure::Expired)]
 #[case::expired(|c: &mut FederationClaims| { c.iat = NOW - 120; c.exp = NOW - 60 }, FederationFailure::Expired)]
-#[case::issued_in_the_future(|c: &mut FederationClaims| { c.iat = NOW + 1; c.exp = NOW + 61 }, FederationFailure::ClaimViolation)]
+#[case::issued_31_seconds_ahead(|c: &mut FederationClaims| { c.iat = NOW + IAT_LEEWAY_SECS + 1; c.exp = NOW + IAT_LEEWAY_SECS + 61 }, FederationFailure::ClaimViolation)]
+#[case::issued_40_seconds_ahead(|c: &mut FederationClaims| { c.iat = NOW + 40; c.exp = NOW + 100 }, FederationFailure::ClaimViolation)]
 #[case::lives_61_seconds(|c: &mut FederationClaims| { c.iat = NOW - 1; c.exp = NOW + 60 }, FederationFailure::ClaimViolation)]
 #[case::expires_before_it_is_issued(|c: &mut FederationClaims| { c.iat = NOW; c.exp = NOW - 1 }, FederationFailure::Expired)]
 #[case::nil_jti(|c: &mut FederationClaims| c.jti = Uuid::nil(), FederationFailure::ClaimViolation)]
@@ -180,6 +181,19 @@ async fn the_time_window_and_the_jti_are_checked(
 		FederationClaims::verify(&token, &keys(), NOW, &request()).unwrap_err(),
 		expected
 	);
+}
+
+#[rstest]
+#[case::now(0)]
+#[case::twenty_seconds_ahead(20)]
+#[case::the_whole_leeway(IAT_LEEWAY_SECS)]
+#[tokio::test]
+async fn a_sender_whose_clock_is_ahead_by_the_leeway_or_less_is_accepted(#[case] ahead: u64) {
+	let mut early = claims();
+	early.iat = NOW + ahead;
+	early.exp = NOW + ahead + 60;
+	let token = signed(&early).await;
+	FederationClaims::verify(&token, &keys(), NOW, &request()).unwrap();
 }
 
 #[tokio::test]

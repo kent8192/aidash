@@ -11,6 +11,11 @@ use uuid::Uuid;
 
 pub const FEDERATION_TOKEN_TYPE: &str = "aidash-federation+jwt";
 
+/// How far ahead of the receiver's clock a sender's `iat` may be. Two
+/// Deployments keep their own clocks, and the 60 second lifetime leaves no
+/// margin of its own.
+pub const IAT_LEEWAY_SECS: u64 = 30;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationClaims {
@@ -99,7 +104,8 @@ impl FederationClaims {
 	/// Verify `token` against the keys the receiver trusts for its sender, at
 	/// `now` seconds since the epoch, for exactly `request`. The checks run in
 	/// this order: size, shape, header, key, signature, `kid`, expiry, issue
-	/// time, lifetime, `jti`, protocol, then method, path and body. A repeat of
+	/// time (at most `IAT_LEEWAY_SECS` ahead of `now`), lifetime, `jti`,
+	/// protocol, then method, path and body. A repeat of
 	/// the same request within the lifetime is the handlers' to deduplicate; the
 	/// receiver keeps no `jti` store.
 	pub fn verify(
@@ -115,7 +121,7 @@ impl FederationClaims {
 		if now >= claims.exp {
 			return Err(FederationFailure::Expired);
 		}
-		if claims.iat > now
+		if claims.iat > now.saturating_add(IAT_LEEWAY_SECS)
 			|| claims.exp <= claims.iat
 			|| claims.exp - claims.iat > TOKEN_TTL_SECS
 			|| claims.jti.is_nil()
