@@ -18,11 +18,7 @@ import {
 } from "@tanstack/react-query";
 import { state as getState, session as getSession } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
-import {
-  discoveryQuery,
-  NodeSelectionContext,
-  useNodeSelection,
-} from "./nodes";
+import { discoveryQuery, useNodeSelection } from "./nodes";
 import { subscribe } from "./event-stream";
 import { coalescedRefresh } from "./query-refresh";
 import {
@@ -840,258 +836,253 @@ function Dashboard({
     if (task) open({ kind: "taskDetail", task });
   };
   return (
-    <NodeSelectionContext value={nodes}>
-      <DisplayProvider data={data}>
-        <NotificationProvider
-          key={`${browserSessionId}:${context}`}
-          data={everything}
-          approvals={inbox.pending}
-          locale={locale}
+    <DisplayProvider data={data} nodes={nodes}>
+      <NotificationProvider
+        key={`${browserSessionId}:${context}`}
+        data={everything}
+        approvals={inbox.pending}
+        locale={locale}
+        theme={theme}
+        onSelect={visit}
+      >
+        <AppShell
+          section={route.section}
+          settings={route.settings}
+          data={data}
+          channel={currentChannel}
+          deploymentAdministrator={deploymentAdministrator}
+          streamStatus={streamStatus}
+          decisions={requests.filter((item) => item.request.response === null)}
+          inbox={inbox}
+          queueOpen={queueOpen}
+          setQueueOpen={setQueueOpen}
+          selectDecision={({ request, node }) =>
+            visit({
+              kind: "human",
+              id: request.id,
+              node,
+              workspace: request.workspace_id,
+            })
+          }
+          go={go}
+          newRequest={() => open({ kind: "goal" })}
+          prepareChannel={() => open({ kind: "workspace" })}
           theme={theme}
-          onSelect={visit}
+          account={{
+            name:
+              session.data?.access.kind === "subject"
+                ? session.data.access.subject
+                : auth.deploymentAdministrator,
+            provider: oidcProvider,
+            context,
+            mappings: browserSession?.mappings ?? [],
+            deploymentAdministratorAllowed:
+              browserSession?.deployment_administrator ?? false,
+            personalAccount: browserSession?.personal_account ?? false,
+            deletedTenants: browserSession?.deleted_tenants ?? [],
+            personalTenantDeleted:
+              browserSession?.personal_tenant_deleted ?? false,
+            tenantCreation:
+              (browserSession?.tenant_creation ?? false) ||
+              (context === "deployment_administrator" &&
+                (browserSession?.deployment_administrator ?? false)),
+            tenantCreated: (created) => void tenantCreated(created),
+            sharedAccess: {
+              status: registration.data?.status,
+              loading: registration.isPending,
+              submitting: registrationSubmitting,
+              error: registrationError || registration.error?.message,
+              request: () => void requestRegistration(),
+            },
+            chooseContext,
+            chooseNode: (name) => {
+              nodes.select(name);
+              // The open Workspace belongs to the Node being left.
+              if (workspace && workspace.node !== name)
+                go("collaboration", { channel: "" });
+            },
+            setLocale,
+            logOut: (allDevices) => void logOut(allDevices),
+            preference,
+            setPreference,
+          }}
         >
-          <AppShell
-            section={route.section}
-            settings={route.settings}
-            data={data}
-            channel={currentChannel}
-            deploymentAdministrator={deploymentAdministrator}
-            streamStatus={streamStatus}
-            decisions={requests.filter(
-              (item) => item.request.response === null,
-            )}
-            inbox={inbox}
-            queueOpen={queueOpen}
-            setQueueOpen={setQueueOpen}
-            selectDecision={({ request, node }) =>
-              visit({
-                kind: "human",
-                id: request.id,
-                node,
-                workspace: request.workspace_id,
-              })
-            }
-            go={go}
-            newRequest={() => open({ kind: "goal" })}
-            prepareChannel={() => open({ kind: "workspace" })}
-            theme={theme}
-            account={{
-              name:
-                session.data?.access.kind === "subject"
-                  ? session.data.access.subject
-                  : auth.deploymentAdministrator,
-              provider: oidcProvider,
-              context,
-              mappings: browserSession?.mappings ?? [],
-              deploymentAdministratorAllowed:
-                browserSession?.deployment_administrator ?? false,
-              personalAccount: browserSession?.personal_account ?? false,
-              deletedTenants: browserSession?.deleted_tenants ?? [],
-              personalTenantDeleted:
-                browserSession?.personal_tenant_deleted ?? false,
-              tenantCreation:
-                (browserSession?.tenant_creation ?? false) ||
-                (context === "deployment_administrator" &&
-                  (browserSession?.deployment_administrator ?? false)),
-              tenantCreated: (created) => void tenantCreated(created),
-              sharedAccess: {
-                status: registration.data?.status,
-                loading: registration.isPending,
-                submitting: registrationSubmitting,
-                error: registrationError || registration.error?.message,
-                request: () => void requestRegistration(),
-              },
-              chooseContext,
-              chooseNode: (name) => {
-                nodes.select(name);
-                // The open Workspace belongs to the Node being left.
-                if (workspace && workspace.node !== name)
-                  go("collaboration", { channel: "" });
-              },
-              setLocale,
-              logOut: (allDevices) => void logOut(allDevices),
-              preference,
-              setPreference,
-            }}
-          >
-            <BillingNotice />
-            {((error && !selection) || state.isError) && (
-              <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
-                {error && !selection && <Alert>{error}</Alert>}
-                {state.isError && (
-                  <Alert
-                    retry={() => void state.refetch()}
-                    retryLabel={copy.retry}
-                  >
-                    <p>{state.error.message}</p>
-                    {session.data && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        type="button"
-                        onClick={() => {
-                          void navigate({
-                            to: "/$section",
-                            params: { section: "collaboration" },
-                            search: {
-                              channel: currentChannel || undefined,
-                              view: "progress",
-                            },
-                          });
-                        }}
-                      >
-                        {shellCopy[locale].recovery}
-                      </Button>
-                    )}
-                  </Alert>
-                )}
-              </div>
-            )}
-            {!data && !state.isError && (
-              <Loading className="flex flex-1 items-center justify-center">
-                {copy.processing}
-              </Loading>
-            )}
-            {data && (
-              <div className="relative flex min-h-0 flex-1 flex-col">
-                {route.section === "collaboration" &&
-                  (workspace ? (
-                    <Channel
-                      key={workspace.id}
-                      workspace={workspace}
-                      data={data}
-                      discovery={discovery.isError ? undefined : discovery.data}
-                      threadList={location.search.view === "threads"}
-                      tools={(view) => {
+          <BillingNotice />
+          {((error && !selection) || state.isError) && (
+            <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
+              {error && !selection && <Alert>{error}</Alert>}
+              {state.isError && (
+                <Alert
+                  retry={() => void state.refetch()}
+                  retryLabel={copy.retry}
+                >
+                  <p>{state.error.message}</p>
+                  {session.data && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      onClick={() => {
                         void navigate({
                           to: "/$section",
                           params: { section: "collaboration" },
-                          search: { channel: workspace.id, view },
+                          search: {
+                            channel: currentChannel || undefined,
+                            view: "progress",
+                          },
                         });
                       }}
-                      runs={runs}
-                      requests={requests}
-                      open={open}
-                      graph={(focus) =>
-                        go("graph", {
-                          channel: workspace.id,
-                          focus: focus ?? "",
-                        })
-                      }
-                    />
-                  ) : (
-                    <RequestWelcome
-                      unavailable={!!route.channel}
-                      create={() => open({ kind: "goal" })}
-                    />
-                  ))}
-                {route.section === "graph" && (
-                  <Graph
-                    key={`${context}:${currentChannel}`}
+                    >
+                      {shellCopy[locale].recovery}
+                    </Button>
+                  )}
+                </Alert>
+              )}
+            </div>
+          )}
+          {!data && !state.isError && (
+            <Loading className="flex flex-1 items-center justify-center">
+              {copy.processing}
+            </Loading>
+          )}
+          {data && (
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              {route.section === "collaboration" &&
+                (workspace ? (
+                  <Channel
+                    key={workspace.id}
+                    workspace={workspace}
                     data={data}
                     discovery={discovery.isError ? undefined : discovery.data}
+                    threadList={location.search.view === "threads"}
+                    tools={(view) => {
+                      void navigate({
+                        to: "/$section",
+                        params: { section: "collaboration" },
+                        search: { channel: workspace.id, view },
+                      });
+                    }}
                     runs={runs}
-                    channel={currentChannel}
-                    focus={route.focus}
-                    setFocus={(focus) => go("graph", { focus })}
-                    visitChannel={(channel) => go("collaboration", { channel })}
+                    requests={requests}
                     open={open}
-                  />
-                )}
-                {(route.section === "creator" || route.section === "trust") && (
-                  <Workbench
-                    key={context ?? ""}
-                    mode={route.section}
-                    data={data}
-                    focus={route.focus}
-                    select={(focus) => go(route.section, { focus })}
-                    switchMode={(section, focus) => go(section, { focus })}
-                    integratedTools={
-                      route.section === "creator" ? (
-                        <CreatorTools
-                          data={data}
-                          initiallyOpen={route.integration === "generation"}
-                        />
-                      ) : (
-                        <TrustTools
-                          deploymentAdministrator={deploymentAdministrator}
-                          invitations={browserSession?.invitations ?? false}
-                          tenant={subjectTenant}
-                          subject={subjectName}
-                          initiallyOpen={route.integration === "authorization"}
-                          evidenceOpen={route.integration === "evidence"}
-                        />
-                      )
+                    graph={(focus) =>
+                      go("graph", {
+                        channel: workspace.id,
+                        focus: focus ?? "",
+                      })
                     }
                   />
-                )}
-                {route.section === "settings" && (
-                  <Suspense
-                    fallback={
-                      <Loading className="p-6">{copy.processing}</Loading>
-                    }
-                  >
-                    <Configuration
-                      data={data}
-                      section={route.settings}
-                      select={(settings) => go("settings", { settings })}
-                      open={open}
-                      disconnect={disconnect}
-                      integration={route.integration}
-                      channel={currentChannel}
-                    />
-                  </Suspense>
-                )}
-              </div>
-            )}
-            {!data && session.data && route.section === "trust" && (
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
-                <TrustTools
-                  deploymentAdministrator={deploymentAdministrator}
-                  invitations={browserSession?.invitations ?? false}
-                  tenant={subjectTenant}
-                  subject={subjectName}
-                  initiallyOpen={route.integration === "authorization"}
-                  evidenceOpen={route.integration === "evidence"}
+                ) : (
+                  <RequestWelcome
+                    unavailable={!!route.channel}
+                    create={() => open({ kind: "goal" })}
+                  />
+                ))}
+              {route.section === "graph" && (
+                <Graph
+                  key={`${context}:${currentChannel}`}
+                  data={data}
+                  discovery={discovery.isError ? undefined : discovery.data}
+                  runs={runs}
+                  channel={currentChannel}
+                  focus={route.focus}
+                  setFocus={(focus) => go("graph", { focus })}
+                  visitChannel={(channel) => go("collaboration", { channel })}
+                  open={open}
                 />
-              </div>
-            )}
-          </AppShell>
-          {session.data && (
-            <ConversationTools
-              key={`${context}:${route.integration}`}
-              view={
-                route.integration === "files" ||
-                route.integration === "progress"
-                  ? route.integration
-                  : undefined
-              }
-              data={data}
-              stateError={state.isError ? state.error.message : undefined}
-              nodeId={session.data.node_id}
-              deploymentAdministrator={deploymentAdministrator}
-              workspace={currentChannel || undefined}
-              close={() => go("collaboration", { focus: "" })}
-            />
+              )}
+              {(route.section === "creator" || route.section === "trust") && (
+                <Workbench
+                  key={context ?? ""}
+                  mode={route.section}
+                  data={data}
+                  focus={route.focus}
+                  select={(focus) => go(route.section, { focus })}
+                  switchMode={(section, focus) => go(section, { focus })}
+                  integratedTools={
+                    route.section === "creator" ? (
+                      <CreatorTools
+                        data={data}
+                        initiallyOpen={route.integration === "generation"}
+                      />
+                    ) : (
+                      <TrustTools
+                        deploymentAdministrator={deploymentAdministrator}
+                        invitations={browserSession?.invitations ?? false}
+                        tenant={subjectTenant}
+                        subject={subjectName}
+                        initiallyOpen={route.integration === "authorization"}
+                        evidenceOpen={route.integration === "evidence"}
+                      />
+                    )
+                  }
+                />
+              )}
+              {route.section === "settings" && (
+                <Suspense
+                  fallback={
+                    <Loading className="p-6">{copy.processing}</Loading>
+                  }
+                >
+                  <Configuration
+                    data={data}
+                    section={route.settings}
+                    select={(settings) => go("settings", { settings })}
+                    open={open}
+                    disconnect={disconnect}
+                    integration={route.integration}
+                    channel={currentChannel}
+                  />
+                </Suspense>
+              )}
+            </div>
           )}
-          {selection && data && (
-            <Suspense fallback={<Loading>{copy.processing}</Loading>}>
-              <OperationsDialog
-                selection={selection}
-                data={data}
-                discovery={discovery.isError ? undefined : discovery.data}
-                open={open}
-                close={() => setSelection(null)}
-                submit={submit}
-                error={error}
-                busy={busy}
-                visitChannel={(channel) => go("collaboration", { channel })}
+          {!data && session.data && route.section === "trust" && (
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+              <TrustTools
+                deploymentAdministrator={deploymentAdministrator}
+                invitations={browserSession?.invitations ?? false}
+                tenant={subjectTenant}
+                subject={subjectName}
+                initiallyOpen={route.integration === "authorization"}
+                evidenceOpen={route.integration === "evidence"}
               />
-            </Suspense>
+            </div>
           )}
-        </NotificationProvider>
-      </DisplayProvider>
-    </NodeSelectionContext>
+        </AppShell>
+        {session.data && (
+          <ConversationTools
+            key={`${context}:${route.integration}`}
+            view={
+              route.integration === "files" || route.integration === "progress"
+                ? route.integration
+                : undefined
+            }
+            data={data}
+            stateError={state.isError ? state.error.message : undefined}
+            nodeId={session.data.node_id}
+            deploymentAdministrator={deploymentAdministrator}
+            workspace={currentChannel || undefined}
+            close={() => go("collaboration", { focus: "" })}
+          />
+        )}
+        {selection && data && (
+          <Suspense fallback={<Loading>{copy.processing}</Loading>}>
+            <OperationsDialog
+              selection={selection}
+              data={data}
+              discovery={discovery.isError ? undefined : discovery.data}
+              open={open}
+              close={() => setSelection(null)}
+              submit={submit}
+              error={error}
+              busy={busy}
+              visitChannel={(channel) => go("collaboration", { channel })}
+            />
+          </Suspense>
+        )}
+      </NotificationProvider>
+    </DisplayProvider>
   );
 }
 const rootRoute = createRootRoute({

@@ -1,19 +1,26 @@
 import { createContext, useContext, type ReactNode } from "react";
-import { useNodes } from "./nodes";
+import { NodeSelectionContext, useNodes, type NodeSelection } from "./nodes";
 import { registryDeployment } from "./node-selection";
 import type { State } from "./types";
 import { JsonView, useEntityLabel, useEntityName, useI18n } from "./ui";
 import { presentRecord } from "./record-presentation";
 
 export const DisplayState = createContext<State | undefined>(undefined);
+/** What the dashboard shows: State narrowed to one Node, and the Tenant's Nodes. */
 export function DisplayProvider({
   data,
+  nodes,
   children,
 }: {
   data?: State;
+  nodes: NodeSelection;
   children: ReactNode;
 }) {
-  return <DisplayState.Provider value={data}>{children}</DisplayState.Provider>;
+  return (
+    <DisplayState.Provider value={data}>
+      <NodeSelectionContext value={nodes}>{children}</NodeSelectionContext>
+    </DisplayState.Provider>
+  );
 }
 export function useRecordLabels() {
   const data = useContext(DisplayState);
