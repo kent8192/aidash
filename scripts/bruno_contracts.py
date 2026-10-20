@@ -17,6 +17,17 @@ COLLECTION = ROOT / "server/tests/bruno"
 CATALOG = COLLECTION / "contracts.json"
 MANIFEST = COLLECTION / "scenarios.json"
 MISSING = "11111111-1111-4111-8111-111111111111"
+# A Deployment Administrator works in the Tenant of the Workspace it names, and
+# an unknown Workspace has none (#265), so these reads would answer 404 for
+# MISSING. They name the Workspace that journey 08 creates, which keeps their
+# own response checks (an empty list, a typed cleanup status, an empty page, a
+# task that is not found) in force.
+FIXTURE_WORKSPACE_READS = {
+    "semantic-history",
+    "semantic-cleanup",
+    "memory-participants",
+    "memory-participant-current",
+}
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 PEER = {
@@ -828,6 +839,13 @@ def render():
             add(endpoint, "Only a deleted Tenant can be restored", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["name"] == "tenants-purge":
+            # Only a Deployment Administrator purges, and only a deleted Tenant (ADR 0061).
+            add(endpoint, "Subject Credential bearer never purges a Tenant", 403,
+                headers=SUBJECT, immutable=True)
+            add(endpoint, "Only a deleted Tenant can be purged", 409,
+                headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
             body = json.dumps(tenant_route["body"])
@@ -1083,6 +1101,8 @@ def render():
             if not route["uuid_parameters"]:
                 status = 200
                 checks += 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().next_cursor).to.equal(null);'
+        if route["name"] in FIXTURE_WORKSPACE_READS:
+            uri = path.replace("{workspace}", "{{workspace_id}}")
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,

@@ -26,4 +26,5 @@ pub mod provider_credentials;
 pub mod sign_in;
 pub mod tenant_administration;
 pub mod tenant_deletions;
+pub mod tenant_purge;
 pub mod tenants;

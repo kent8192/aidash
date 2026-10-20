@@ -19,6 +19,8 @@ pub struct MaterializedFile {
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct ApprovalCard {
 	pub id: Uuid,
+	/// `outbound` (an outbound read), `disclosure` (a Web disclosure),
+	/// `tool_call` (a call of a Tenant's tool) or `grant` (a Run grant).
 	pub kind: String,
 	pub run_id: Uuid,
 	pub area_id: Option<Uuid>,
@@ -38,10 +40,20 @@ pub struct ApprovalCard {
 	pub viewer_is_approver: bool,
 	pub agent_id: Option<String>,
 	pub agent_version: Option<String>,
+	/// For a Tool call approval, or a Run grant from one, the Tenant's tool and
+	/// its definition version.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub version: Option<String>,
 	/// The research operation of a Web disclosure approval, or of the
-	/// approval a Web disclosure Run grant came from.
+	/// approval a Web disclosure Run grant came from; for a Tool call
+	/// approval, the operation of the tool the call invokes.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub operation: Option<String>,
+	/// For a Tool call approval, the exact call the approver is asked to allow.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub call: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider: Option<String>,
 	/// The price of this one request, recorded when approval was requested
@@ -56,7 +68,7 @@ pub struct ApprovalCard {
 	pub decided_by: Option<String>,
 	pub decided_at: Option<DateTime<Utc>>,
 	/// Why a `closed` approval or Run grant was closed, such as
-	/// `evidence_revoked`.
+	/// `evidence_revoked` or `run_ended`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub closed_reason: Option<String>,
 }

@@ -41,6 +41,8 @@ reqwest = { version = "0.13", default-features = false, features = [
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+tracing = "0.1"
 url = "2"
 uuid.workspace = true
 
@@ -55,6 +57,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
   "use_pem",
 ] }
+regex = "1.12"
 reinhardt = { workspace = true, features = ["test", "testcontainers"] }
 rstest.workspace = true
 sqlx = { version = "0.8.6", default-features = false, features = [

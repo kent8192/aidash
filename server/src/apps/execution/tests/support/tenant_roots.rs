@@ -60,7 +60,7 @@ pub async fn tenant_scope(
 		return scope;
 	}
 	let bundle = serde_json::json!({"tenant":name,"subjects":{"alice":{"kind":"user"}},
-		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
+		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]});
 	aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	}

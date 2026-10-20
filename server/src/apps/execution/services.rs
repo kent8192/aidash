@@ -32,4 +32,6 @@ pub mod worker;
 
 pub mod metrics;
 
+pub mod storage_usage;
+
 pub mod node_commands;

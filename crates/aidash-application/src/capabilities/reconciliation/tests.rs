@@ -27,6 +27,7 @@ struct Trace {
 	failure: Option<(String, bool)>,
 	/// Request bodies sent to the runner.
 	bodies: Vec<Value>,
+	pod_times: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<Trace>>);
@@ -101,6 +102,7 @@ fn repository() -> Repository {
 		commit: false,
 		failure: None,
 		bodies: vec![],
+		pod_times: vec![],
 	})))
 }
 impl Repository {
@@ -238,6 +240,22 @@ impl OperationReconciliationScope for Scope {
 	async fn event(&mut self, data: Value) -> Result<()> {
 		self.0.call("event")?;
 		self.0.0.lock().unwrap().events.push(data);
+		Ok(())
+	}
+	async fn pod_time(
+		&mut self,
+		operation: Uuid,
+		started_at: chrono::DateTime<chrono::Utc>,
+		ended_at: chrono::DateTime<chrono::Utc>,
+	) -> Result<()> {
+		assert_eq!(operation, Uuid::from_u128(1));
+		self.0.call("pod_time")?;
+		self.0
+			.0
+			.lock()
+			.unwrap()
+			.pod_times
+			.push((started_at, ended_at));
 		Ok(())
 	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
@@ -522,6 +540,54 @@ async fn cancelling_a_running_operation_uses_the_same_runner_identity_and_cancel
 	);
 	assert_eq!(trace.saved[0].state, "cancelling");
 	assert!(!trace.calls.contains(&"configuration".into()));
+}
+/// The runner's Pod start and stop, for every kind of operation, are what
+/// the Execution Pod's time is metered from.
+#[rstest]
+#[case::shell("shell")]
+#[case::python("code_interpreter")]
+#[case::check(VERIFICATION)]
+#[tokio::test]
+async fn a_finished_operation_reports_the_time_its_pod_ran(
+	repository: Repository,
+	#[case] kind: &str,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = kind.into();
+		trace.operation.state = "running".into();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":[],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0,
+			"started_at":1000.25,"finished_at":1004.75});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let [(started, ended)] = trace.pod_times[..] else {
+		panic!("one report: {:?}", trace.pod_times);
+	};
+	assert_eq!(started.timestamp_millis(), 1_000_250);
+	assert_eq!(ended.timestamp_millis(), 1_004_750);
+}
+#[rstest]
+#[tokio::test]
+async fn an_operation_that_never_ran_or_has_no_runner_times_reports_nothing(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = json!({"status":"cancelled","termination_confirmed":true,"executed":false,
+			"started_at":1000.0,"finished_at":1001.0});
+	}
+	run(&repository).await.unwrap();
+	assert!(repository.0.lock().unwrap().pod_times.is_empty());
+	let repository = repository.clone();
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":[],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	assert!(repository.0.lock().unwrap().pod_times.is_empty());
 }
 #[rstest]
 #[tokio::test]

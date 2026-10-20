@@ -32,6 +32,7 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 		remote_read_cache: Default::default(),
 		unavailable_peers: Default::default(),
 		checking_reads: Default::default(),
+		read_verdicts: Default::default(),
 		peer_client: http_client,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,

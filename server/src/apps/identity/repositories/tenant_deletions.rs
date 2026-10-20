@@ -42,21 +42,9 @@ impl TenantDeletion {
 	}
 }
 
-/// The deletion of `tenant` that no restore has closed, purged or not.
-pub(crate) async fn current<E: OrmExecutor>(
-	tx: &mut E,
-	tenant: &str,
-) -> Result<Option<TenantDeletion>> {
-	Ok(TenantDeletion::objects()
-		.filter(TenantDeletion::field_tenant().eq(tenant.to_owned()))
-		.filter(TenantDeletion::field_restored_at().is_null())
-		.all_with_db(tx)
-		.await?
-		.pop())
-}
-
-/// Like [`current`], holding the deletion row until the transaction ends, so
-/// a concurrent restore of the Tenant waits for it.
+/// The deletion of `tenant` that no restore has closed, purged or not, holding
+/// the row until the transaction ends, so a concurrent restore of the Tenant
+/// waits for it.
 pub(crate) async fn current_locked(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -103,6 +91,58 @@ pub(crate) async fn is_deleted(tx: &mut dyn TransactionExecutor, tenant: &str) -
 		.is_some())
 }
 
+/// The Tenants among `names` whose data was purged.
+pub(crate) async fn purged_of<E: OrmExecutor>(
+	tx: &mut E,
+	names: Vec<String>,
+) -> Result<std::collections::BTreeSet<String>> {
+	if names.is_empty() {
+		return Ok(Default::default());
+	}
+	Ok(TenantDeletion::objects()
+		.filter(TenantDeletion::field_tenant().is_in(names))
+		.filter(TenantDeletion::field_purged_at().is_not_null())
+		.all_with_db(tx)
+		.await?
+		.into_iter()
+		.map(|deletion| deletion.tenant)
+		.collect())
+}
+
+/// Why `tenant` can no longer be restored or purged at once, without locking
+/// anything: its data is purged (`tenant_purged`), or the grace period ended or
+/// a purge owns it (`tenant_grace_period_ended`).
+pub(crate) async fn ended(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> Result<Option<&'static str>> {
+	let now = database_time(tx).await?;
+	let (sql, values) = Query::select()
+		.expr_as(Expr::col("purged_at").is_not_null(), Alias::new("purged"))
+		.from(Alias::new(TenantDeletion::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("restored_at").is_null())
+		.and_where(
+			Expr::col("purged_at")
+				.is_not_null()
+				.or(Expr::col("purge_step").is_not_null())
+				.or(Expr::col("purge_after").lte(Expr::value(now)))
+				.or(Expr::col("purge_leased_until").gt(Expr::value(now))),
+		)
+		.build(PostgresQueryBuilder);
+	let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+		return Ok(None);
+	};
+	let purged: bool = row
+		.get("purged")
+		.map_err(reinhardt::core::exception::Error::from)?;
+	Ok(Some(if purged {
+		"tenant_purged"
+	} else {
+		"tenant_grace_period_ended"
+	}))
+}
+
 /// Records the deletion of `tenant` and stops what a restore must not bring
 /// back: its pending Invitations are revoked and its unfinished Runs stop.
 pub(crate) async fn record(
@@ -126,6 +166,13 @@ pub(crate) async fn record(
 		restored_by_kind: None,
 		restored_by_identity: None,
 		purged_at: None,
+		purge_step: None,
+		purge_failures: 0,
+		purge_error: None,
+		purge_failed_at: None,
+		purge_lease: None,
+		purge_leased_until: None,
+		audit_erased_at: None,
 	};
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new(TenantDeletion::table_name()))
@@ -137,6 +184,7 @@ pub(crate) async fn record(
 				"deleted_by_kind",
 				"deleted_by_identity",
 				"purge_after",
+				"purge_failures",
 			]
 			.map(Alias::new),
 		)
@@ -147,6 +195,7 @@ pub(crate) async fn record(
 			IntoValue::into_value(row.deleted_by_kind.clone()),
 			IntoValue::into_value(row.deleted_by_identity),
 			IntoValue::into_value(row.purge_after),
+			IntoValue::into_value(row.purge_failures),
 		])
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
@@ -187,6 +236,16 @@ pub(crate) async fn restore(
 		.and_where(Expr::col("id").eq(Expr::value(deletion.id)))
 		.and_where(Expr::col("restored_at").is_null())
 		.and_where(Expr::col("purged_at").is_null())
+		// A purge may already own the deletion, and the grace period may have
+		// ended since the caller read it: the row lock does not stop either, so
+		// the write checks both again.
+		.and_where(Expr::col("purge_after").gt(Expr::value(now)))
+		.and_where(Expr::col("purge_step").is_null())
+		.and_where(
+			Expr::col("purge_leased_until")
+				.is_null()
+				.or(Expr::col("purge_leased_until").lte(Expr::value(now))),
+		)
 		.build(PostgresQueryBuilder);
 	if tx
 		.execute(&sql, convert_values(values))
@@ -194,7 +253,7 @@ pub(crate) async fn restore(
 		.rows_affected
 		!= 1
 	{
-		return Err(Error::Conflict("the Tenant is not deleted".into()));
+		return Err(Error::Conflict("tenant_grace_period_ended".into()));
 	}
 	cancel_stopped_runs(tx, &deletion.tenant).await
 }

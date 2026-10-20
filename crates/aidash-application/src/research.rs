@@ -29,7 +29,7 @@ use uuid::Uuid;
 pub mod reading;
 
 /// Instruction returned with a pending Web disclosure approval.
-pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision; after approval, repeat this exact call.";
+pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision and then makes this exact call.";
 /// Instruction returned with the pages of a document that carry no text.
 pub const VIEW_INSTRUCTION: &str = "These pages carry no text. View one as an image with the view operation, if it is bound; a model without image input cannot read them.";
 /// Instruction returned when those pages cannot be viewed.
@@ -41,11 +41,11 @@ pub const NOT_RETAINED_INSTRUCTION: &str =
 pub fn specification(operation: Operation) -> aidash_domain::provider::ToolSpec {
 	let (description, parameters) = match operation {
 		Operation::Search => (
-			"Web search for public sources. Results are Source records to read, not evidence: snippets cannot be cited. Read a source with the fetch operation before citing it. If the result is approval_required, the Run waits for Web disclosure approval; then repeat the identical call.",
+			"Web search for public sources. Results are Source records to read, not evidence: snippets cannot be cited. Read a source with the fetch operation before citing it. A call that needs Web disclosure approval makes the Run wait for the decision and then runs.",
 			aidash_domain::research::search::search_schema(),
 		),
 		Operation::Fetch => (
-			"Read one public Web page as a fixed Document snapshot. Give a source_id from search or an http(s) url; continue a snapshot with document_id and next_cursor. Each delivered passage has an evidence_ref; cite it in the final answer as [[cite:<evidence_ref>]]. If the result is approval_required, the Run waits for Web disclosure approval; then repeat the identical call.",
+			"Read one public Web page as a fixed Document snapshot. Give a source_id from search or an http(s) url; continue a snapshot with document_id and next_cursor. Each delivered passage has an evidence_ref; cite it in the final answer as [[cite:<evidence_ref>]]. A call that needs Web disclosure approval makes the Run wait for the decision and then runs.",
 			json!({
 				"type": "object",
 				"properties": {

@@ -112,6 +112,7 @@ pub(crate) struct Access {
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
+	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	pub(crate) peer_client: reqwest::Client,
 	pub(crate) node_id: String,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
@@ -151,6 +152,7 @@ pub(crate) struct PublicationContext {
 	cached_humans: std::collections::BTreeMap<Uuid, bool>,
 	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
+	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 }
 
@@ -277,6 +279,7 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
+			read_verdicts: Default::default(),
 			dependency_frontier: None,
 			peer_client: client,
 			node_id: node.to_owned(),
@@ -342,6 +345,7 @@ impl Access {
 			cached_humans: std::mem::take(&mut self.cached_humans),
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
 			checking_reads: std::mem::take(&mut self.checking_reads),
+			read_verdicts: std::mem::take(&mut self.read_verdicts),
 			dependency_frontier: self.dependency_frontier.take(),
 		};
 		self.worker();
@@ -371,6 +375,7 @@ impl Access {
 		self.cached_humans = old.cached_humans;
 		self.remote_read_cache = old.remote_read_cache;
 		self.checking_reads = old.checking_reads;
+		self.read_verdicts = old.read_verdicts;
 		self.dependency_frontier = old.dependency_frontier;
 	}
 
@@ -387,6 +392,7 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
+			read_verdicts: Default::default(),
 			dependency_frontier: None,
 			peer_client: lease.peer_client.clone(),
 			node_id: lease.node_id.clone(),
@@ -449,6 +455,7 @@ impl Access {
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
 		self.checking_reads.clear();
+		self.read_verdicts.clear();
 		self.dependency_frontier = None;
 		self.subjects = vec![self.identity.subject.clone()];
 		self.durable_audit = true;

@@ -100,3 +100,47 @@ fn restored_and_purged_deletions_cannot_be_restored() {
 fn actors_round_trip(#[case] actor: Actor) {
 	assert_eq!(Actor::parse(actor.as_str()).unwrap(), actor);
 }
+
+#[test]
+fn a_purge_runs_its_steps_in_order_and_ends_after_the_last() {
+	let mut order = vec![PurgeStep::FIRST];
+	while let Some(next) = order.last().unwrap().next() {
+		order.push(next);
+	}
+	assert_eq!(order, PurgeStep::ALL);
+	assert!(PurgeStep::ALL.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn a_purge_step_round_trips_its_stored_name() {
+	for step in PurgeStep::ALL {
+		assert_eq!(PurgeStep::parse(step.as_str()).unwrap(), step);
+	}
+	assert!(PurgeStep::parse("sweep").is_err());
+}
+
+#[rstest]
+#[case::once(1, false)]
+#[case::twice(2, false)]
+#[case::three_times(3, true)]
+fn a_purge_that_keeps_failing_is_stalled(#[case] failures: u32, #[case] stalled_now: bool) {
+	assert_eq!(stalled(failures), stalled_now);
+}
+
+#[rstest]
+#[case::zero(0, false)]
+#[case::one(1, true)]
+#[case::default(365, true)]
+#[case::longest(3_650, true)]
+#[case::too_long(3_651, false)]
+fn audit_history_is_kept_for_a_finite_period(#[case] days: u32, #[case] valid: bool) {
+	assert_eq!(audit_retention_days(days).is_ok(), valid);
+}
+
+#[test]
+fn audit_history_is_kept_a_year_by_default() {
+	assert_eq!(
+		audit_erase_after(at(0), DEFAULT_AUDIT_RETENTION_DAYS),
+		at(365 * 24 * 60 * 60)
+	);
+}

@@ -26,9 +26,16 @@ import urllib.error
 import urllib.request
 import uuid
 
+import tool_call_approvals
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "acceptance-access-token"
 PEER_TOKEN = "acceptance-peer-token-for-local-tests"
+
+
+# A Tenant subject's /api/state waits about 15 s before it is served on a
+# CI runner while the research cluster runs, then takes about 5 s (#404).
+API_TIMEOUT = 60
 
 
 def api_request(base, path, body=None, token=TOKEN, headers=None):
@@ -37,7 +44,7 @@ def api_request(base, path, body=None, token=TOKEN, headers=None):
         data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})},
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=API_TIMEOUT) as response:
         return json.load(response)
 
 
@@ -92,28 +99,69 @@ def reconcile_uncertain_http(base, run_id, effects, token=TOKEN):
     return key
 
 
+FIXTURE_TOOLS = ("research-http", "http-runner-tool", "mcp-runner-tool")
+
+
+def fixture_approval(request):
+    """Whether `request` is a pending approval of the owned fixture's exact external call."""
+    return request.get("response") is None and request.get("kind") == "APPROVAL_REQUIRED" and any(
+        (request.get("prompt") or "").startswith(f"Approve this exact external tool action once? Tool: {tool}@")
+        for tool in FIXTURE_TOOLS
+    )
+
+
 def approve_fixture_external_requests(base, token=TOKEN):
-    """Approve only the owned fixture's exact external-call continuations."""
-    allowed = ("research-http@", "http-runner-tool@", "mcp-runner-tool@")
+    """Approve only the owned fixture's exact external-call continuations of Runs executing for another Node.
+
+    Such a Run asks this Node through a human request; a Run on this Node raises a Tool call
+    approval, which approve_fixture_tool_calls answers.
+
+    An answer that does not arrive is answered again on the next poll; a second
+    answer to an approval that was already answered is refused with 409.
+    """
     for request in api_request(base, "/api/state", token=token)["human_requests"]:
-        prompt = request["prompt"]
-        if request.get("response") is None and request["kind"] == "APPROVAL_REQUIRED" and any(
-            prompt.startswith("Approve this exact external tool action once? Tool: " + tool)
-            for tool in allowed
-        ):
+        if fixture_approval(request):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
+            print(f"--- approved {request['id']}", flush=True)
 
 
-def diagnose(base, token, tenant, workspace):
-    """Print a stalled workspace's tasks and Runs, and its Tenant's policy, catalog and every policy decision."""
+def approve_fixture_tool_calls(base, token):
+    """Allow once each exact call of the owned fixture's tools that a Run on this Node asks a Tool call approval for.
+
+    `token` must be a Tenant subject's: a Deployment Administrator cannot list a Tenant's approvals.
+    """
+    for card in tool_call_approvals.pending(lambda path: api_request(base, path, token=token)):
+        if card.get("tool") in FIXTURE_TOOLS:
+            tool_call_approvals.decide(lambda path, body: api_request(base, path, body, token=token), card, True)
+
+
+def diagnose(base, token, tenant, workspace, database):
+    """Print a stalled workspace's Runs and human requests from the database, then its Tenant's state through the API."""
     def show(label, value):
         print(f"--- {label}: {json.dumps(value, ensure_ascii=False)}", flush=True)
 
+    # The database answers even when the API is too slow to (#386).
+    for label, query in [
+        ("runs", "SELECT id, agent_id, phase, control, step, coalesce(error, ''), pending_human_request_id FROM runs ORDER BY updated_at"),
+        ("human requests", "SELECT run_id, kind, left(prompt, 160), response IS NOT NULL, coalesce(answered_by, ''), to_char(created_at, 'HH24:MI:SS') FROM human_requests ORDER BY created_at"),
+        ("decision count", "SELECT count(*) FROM authorization_decisions"),
+        ("decisions by action", "SELECT action, count(*) FROM authorization_decisions GROUP BY action ORDER BY 2 DESC LIMIT 15"),
+        ("decisions by subject", "SELECT left(subject, 80), count(*) FROM authorization_decisions GROUP BY 1 ORDER BY 2 DESC LIMIT 8"),
+        # Rows of one transaction share its timestamp, so these are the largest audits.
+        ("largest decision batches", "SELECT to_char(created_at, 'HH24:MI:SS.MS'), count(*), string_agg(DISTINCT action, ',') FROM authorization_decisions GROUP BY created_at ORDER BY 2 DESC LIMIT 10"),
+        ("decisions per 10 s", "SELECT to_char(date_trunc('minute', created_at) + floor(extract(second FROM created_at) / 10) * interval '10 seconds', 'HH24:MI:SS'), count(*) FROM authorization_decisions GROUP BY 1 ORDER BY 1"),
+    ]:
+        try:
+            show(label, psql(database, query).splitlines())
+        except subprocess.CalledProcessError as error:
+            print(f"--- {label} unavailable: {error!r}", flush=True)
     try:
         snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
         show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
         tasks = {task["id"] for task in snapshot["tasks"]}
-        for run in api_request(base, "/api/state", token=token)["runs"]:
+        state = api_request(base, "/api/state", token=token)
+        show("api human requests", [[request["run_id"], request["kind"], request.get("response") is not None] for request in state["human_requests"]])
+        for run in state["runs"]:
             if run["task_id"] in tasks:
                 detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
                 response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
@@ -440,7 +488,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=os.environ.get("AIDASH_BINARY", "target/debug/aidash"))
     parser.add_argument("--keep", action="store_true", help="Keep the completed local demo running until interrupted")
-    parser.add_argument("--dashboard", action="store_true", help="Submit the golden path goal through Chromium instead of the API")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dashboard", action="store_true", help="Submit the golden path goal through Chromium instead of the API")
+    mode.add_argument("--browser-suite", action="store_true", help="Run the browser suite, except @golden-path specs, after the setup alone")
     args = parser.parse_args()
     revision = runpy.run_path(str(ROOT / "scripts/core-capability-evidence.py"))["revision"]
     source = revision()
@@ -511,17 +561,47 @@ def main():
     approval_errors = []
 
     def approve_fixture_calls():
-        while not approval_stop.wait(0.25):
+        # Each subject read of /api/state journals a policy decision per item,
+        # so frequent polling slows the Node it waits on.
+        while not approval_stop.wait(2):
             if not local_approvals.is_set():
                 continue
             for base, token in list(tokens.items()):
                 try:
                     approve_fixture_external_requests(base, token)
-                except OSError:
+                    approve_fixture_tool_calls(base, token)
+                except OSError as error:
                     # A deliberately unavailable/restarting Node has no approval authority.
-                    pass
+                    print(f"--- approval poll of {base} failed: {error!r}", flush=True)
                 except Exception as error:
                     approval_errors.append(str(error))
+
+    def watch_slow_sessions():
+        # Name every Node A session that has run a statement or held a
+        # transaction for over 10 s, with what it last ran and what blocks it,
+        # once per statement (#386).
+        reported, failed = set(), False
+        query = (
+            "SELECT pid, state, coalesce(wait_event_type || ':' || wait_event, ''), "
+            "round(extract(epoch FROM now() - query_start)), round(extract(epoch FROM now() - xact_start)), "
+            "pg_blocking_pids(pid)::text, to_char(query_start, 'HH24:MI:SS.MS'), "
+            "left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 200) "
+            "FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND state <> 'idle' AND (now() - query_start > interval '10 seconds' OR now() - xact_start > interval '10 seconds')"
+        )
+        while not approval_stop.wait(5):
+            try:
+                rows = psql(db_a, query).splitlines()
+            except subprocess.CalledProcessError as error:
+                if not failed:
+                    failed = True
+                    print(f"--- slow session query failed: {error!r}", flush=True)
+                continue
+            for row in rows:
+                fields = row.split("|")
+                if (fields[0], fields[6]) not in reported:
+                    reported.add((fields[0], fields[6]))
+                    print(f"--- slow session (pid|state|wait|query s|xact s|blockers|started|query): {row}", flush=True)
 
     def node_env(node, database, port, login):
         env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
@@ -540,6 +620,13 @@ def main():
             subprocess.run([args.binary, "migrate"], cwd=ROOT, env=node_env(node, database, port, OWNER_LOGIN),
                            stdout=log, stderr=log, check=True, timeout=600)
 
+    def browser(grep_args):
+        for proxy in browser_provider_proxies:
+            proxy.start()
+        browser_report = logs / "browser-report.json"
+        subprocess.run(["npx", "playwright", "test", *grep_args, "--reporter=list,json"], cwd=ROOT / "web", check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"})
+        return json.loads(browser_report.read_text())["stats"]["expected"]
+
     def launch(node, database, port, mode):
         env = node_env(node, database, port, SERVER_LOGIN)
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")
@@ -555,8 +642,11 @@ def main():
                 for line in response:
                     if line.startswith(b"data:"):
                         stream_events.append(json.loads(line[5:]))
-        except (OSError, ValueError):
-            pass
+                        if stream_events[-1].get("type") == "human.requested":
+                            print(f"--- streamed human.requested {stream_events[-1]['data'].get('id')} at {time.strftime('%H:%M:%S')}", flush=True)
+            print(f"--- event stream ended after {len(stream_events)} events", flush=True)
+        except (OSError, ValueError) as error:
+            print(f"--- event stream stopped after {len(stream_events)} events: {error!r}", flush=True)
 
     try:
         # Create isolated databases; application schema belongs to the native
@@ -584,7 +674,9 @@ def main():
         tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
         register(base_a, [
             model, tool,
-            entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover researchers, decompose the goal, delegate, wait and synthesize.", "schema_version": 1, "bindings": [], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate"),
+            # A Run may delegate only to agents whose definitions its own lease
+            # already approved (#401), so the coordinator binds the research tool.
+            entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover researchers, decompose the goal, delegate, wait and synthesize.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate"),
             entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}),
             entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}),
         ])
@@ -595,13 +687,29 @@ def main():
         worker_a = launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
+        threading.Thread(target=watch_slow_sessions, daemon=True).start()
+        if args.browser_suite:
+            nats_proxy.restore()
+            browser_scenarios = browser(["--grep-invert", "@golden-path"])
+            assert not approval_errors, approval_errors
+            assert source == revision(), "Source changed while the browser suite was running"
+            assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed while the browser suite was running"
+            report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "browser_scenarios": browser_scenarios, "source": source, "binary_sha256": binary_sha256}
+            (logs / "browser-suite.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+            print("Browser suite passed:", json.dumps(report, ensure_ascii=False), flush=True)
+            return
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
             created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
         workspace = created["workspace"]["id"]
-        if not fixture.remote_effect_started.wait(90):
-            diagnose(base_a, tokens[base_a], tenant_a, workspace)
+        # Reaching Actix takes the coordinator's delegation and the Axum
+        # researcher's whole Run first, each step authorized for a Tenant
+        # subject, and the two researchers share a Working Area, so they run
+        # one after the other. Like scoped recovery (#321), this waits for
+        # progress, not a latency bound.
+        if not fixture.remote_effect_started.wait(300):
+            diagnose(base_a, tokens[base_a], tenant_a, workspace, db_a)
             raise AssertionError("The Actix research tool was never invoked")
 
         def actix_run():
@@ -623,7 +731,10 @@ def main():
                 return False
             return snapshot if len(snapshot["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in snapshot["tasks"]) else False
 
-        snapshot = wait_for(complete, timeout=150, label="all four tasks and artifacts")
+        # The rest of the research, Actix's recovery, Rocket's whole Run and the
+        # coordinator's synthesis, is twenty-odd authorized steps; on a CI runner
+        # each takes 10-20 s (#404).
+        snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
         recovered = wait_for(lambda: next((r for r in api_request(base_a, "/api/state", token=tokens[base_a])["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same durable research run")
         assert recovered["id"] == before["id"]
         assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a]))
@@ -631,7 +742,9 @@ def main():
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
         assert fixture.provider_calls["openrouter"] > 0
-        wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), label="SSE result delivery")
+        # Subject event delivery checks each frame's provenance and runs a
+        # minute or two behind on a CI runner (#404).
+        wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), timeout=300, label="SSE result delivery")
         pending_events = int(psql(db_a, queries["pending_events"]))
         assert pending_events > 0, "Outage must leave durable events awaiting publication"
         assert int(psql(db_a, queries["inbox"])) == 0
@@ -673,11 +786,7 @@ def main():
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()
         if args.dashboard:
-            browser_report = logs / "browser-report.json"
-            for proxy in browser_provider_proxies:
-                proxy.start()
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name})
-            report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
+            report["browser_scenarios"] = browser(["--grep", "@golden-path"])
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
         assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed while Golden Path was running"

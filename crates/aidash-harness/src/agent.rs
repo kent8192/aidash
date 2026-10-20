@@ -1,5 +1,10 @@
 //! Durable agent execution use case. All effects cross application ports.
-use aidash_application::{Error, Result, execution::*, ports::execution::*};
+use aidash_application::{
+	Error, Result,
+	capabilities::approvals::{INVOKE, ToolCallApproval, ToolCallRequest},
+	execution::*,
+	ports::execution::*,
+};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
@@ -50,7 +55,7 @@ impl<'a> Executor<'a> {
 		run.state.tool_mut()?.request_tokens =
 			run.state.tool()?.request_tokens.saturating_add(growth);
 		run.context = context.clone();
-		run.state.tool_mut()?.cursor = cursor + 1;
+		run.state.tool_mut()?.advance(cursor + 1);
 		self.environment
 			.store()
 			.save_run(run, token, "run.tool_recorded")
@@ -263,7 +268,7 @@ impl<'a> Executor<'a> {
 		progress.workspace_read_plan = None;
 		progress.skill_read_plan = None;
 		progress.workspace_observation_plan = None;
-		progress.cursor = end;
+		progress.advance(end);
 		progress.batch_end = None;
 		store.save_run(run, token, "run.tool_recorded").await?;
 		Ok(true)
@@ -1978,7 +1983,8 @@ impl<'a> Executor<'a> {
 					workspace_read_plan: None,
 					skill_read_plan: None,
 					workspace_observation_plan: None,
-					workbench_approval_result: None,
+					home_approval: None,
+					approval: None,
 					batch_end: None,
 				}));
 				run.error = None;
@@ -2509,33 +2515,77 @@ impl<'a> Executor<'a> {
 				}
 				let call = &call;
 				let response_epoch = run.state.tool()?.response_epoch;
-				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
+				let call_key = format!("{}:{}:{}", run.id, response_epoch, cursor);
+				// A call resumed after an approval raised inside it runs under its
+				// own key, so the recorded `approval_required` result never replays.
+				let key = match run.state.tool()?.approval {
+					Some(approval) => format!("{call_key}:approval:{approval}"),
+					None => call_key.clone(),
+				};
 				// Approval follows the admitted provider contract for every Agent.
-				if contract.behavior.workbench_approval {
+				if contract.behavior.tool_call_approval {
 					let (reference_id, reference_version) = match &contract.identity {
 						ToolIdentity::Descriptor(reference) => (&reference.id, &reference.version),
 						ToolIdentity::Registry(reference) => (&reference.id, &reference.version),
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
 					};
-					if let Some(decision) = run
+					if home.local() {
+						let Some(guard) = guard else {
+							return self
+								.tool_error(run, token, call, cursor, "tool call approval is unavailable without scoped authority".into())
+								.await;
+						};
+						let request = ToolCallRequest {
+							key: call_key.clone(),
+							tool: aidash_domain::registry::EntityRef {
+								id: reference_id.clone(),
+								version: reference_version.clone(),
+							},
+							operation: INVOKE.into(),
+							call: call.clone(),
+							area: None,
+						};
+						match guard.tool_call_approval(run, request).await? {
+							ToolCallApproval::Approved { .. } => {}
+							ToolCallApproval::Pending { approval_id, .. } => {
+								run.state = RunState::Waiting(Box::new(WaitingState::Approval {
+									approval: ApprovalRef::Capability { approval_id },
+									resume: Box::new(run.state.tool()?.clone()),
+								}));
+								store
+									.save_run(run, token, "run.waiting_for_tool_approval")
+									.await?;
+								return Ok(());
+							}
+							ToolCallApproval::Refused(refusal) => {
+								return self
+									.tool_error(run, token, call, cursor, refusal.message().into())
+									.await;
+							}
+						}
+					} else if let Some(decision) = run
 						.state
 						.tool()?
-						.workbench_approval_result
+						.home_approval
 						.as_ref()
-						.filter(|d| d.key == key && d.call == *call)
+						.filter(|d| d.key == call_key && d.call == *call)
 					{
-						if !decision.approved || decision.expires_at <= chrono::Utc::now() {
+						if !decision.approved {
 							return self
 								.tool_error(
 									run,
 									token,
 									call,
 									cursor,
-									"external write approval was denied or expired".into(),
+									"tool call approval was denied or expired".into(),
 								)
 								.await;
 						}
 					} else {
+						if let Some(guard) = guard {
+							guard.action("human.request", "run", run.id).await?;
+						}
+						// The person who can approve is at the Node the Run executes for.
 						let prompt = format!(
 							"Approve this exact external tool action once? Tool: {}@{}; call: {}",
 							reference_id,
@@ -2547,17 +2597,18 @@ impl<'a> Executor<'a> {
 								run,
 								"APPROVAL_REQUIRED",
 								&prompt,
-								&format!("{key}:workbench-approval"),
+								&format!("{call_key}:workbench-approval"),
 							)
 							.await?;
-						run.state =
-							RunState::Waiting(Box::new(WaitingState::ExternalApproval {
+						run.state = RunState::Waiting(Box::new(WaitingState::Approval {
+							approval: ApprovalRef::Home {
 								request_id: request.id,
-								key: key.clone(),
+								key: call_key.clone(),
 								call: call.clone(),
 								expires_at: request.created_at + chrono::Duration::minutes(15),
-								resume: Box::new(run.state.tool()?.clone()),
-							}));
+							},
+							resume: Box::new(run.state.tool()?.clone()),
+						}));
 						store
 							.save_run(run, token, "run.waiting_for_tool_approval")
 							.await?;
@@ -2682,6 +2733,25 @@ impl<'a> Executor<'a> {
 				} else {
 					output
 				};
+				// What a Tenant's HTTP or MCP tool returns is external data and never
+				// raises an approval, which would repeat the external call.
+				let framework = if contract.behavior.tool_call_approval {
+					FrameworkResult::Ordinary
+				} else {
+					FrameworkResult::decode(&contract, &output)?
+				};
+				// An approval raised inside the call is not its result. The Run waits,
+				// then makes the same call again under the approval's own key.
+				if let FrameworkResult::Approval(approval_id) = framework {
+					let mut resume = run.state.tool()?.clone();
+					resume.approval = Some(approval_id);
+					run.state = RunState::Waiting(Box::new(WaitingState::Approval {
+						approval: ApprovalRef::Capability { approval_id },
+						resume: Box::new(resume),
+					}));
+					store.save_run(run, token, "run.waiting_for_approval").await?;
+					return Ok(());
+				}
 				// Load/Unload results are staged with the same save that records
 				// them and take effect with the next inference.
 				if contract.behavior.exposure_update
@@ -2702,15 +2772,8 @@ impl<'a> Executor<'a> {
 				progress.workspace_read_plan = None;
 				progress.skill_read_plan = None;
 				progress.workspace_observation_plan = None;
-				progress.cursor = cursor + 1;
-				match FrameworkResult::decode(&contract, &output)? {
-					FrameworkResult::Approval(approval_id) => {
-						run.step += 1;
-						run.state = RunState::Waiting(Box::new(WaitingState::CoreApproval {
-							approval_id,
-							resume: ThinkingState::default(),
-						}));
-					}
+				progress.advance(cursor + 1);
+				match framework {
 					FrameworkResult::Human(request_id) => {
 						run.step += 1;
 						run.state = RunState::Waiting(Box::new(WaitingState::Human {
@@ -2724,7 +2787,8 @@ impl<'a> Executor<'a> {
 							resume,
 						})?
 					}
-					FrameworkResult::Ordinary => {}
+					// An approval returned above, before the call was recorded.
+					FrameworkResult::Ordinary | FrameworkResult::Approval(_) => {}
 				}
 				home.report(
 					&format!("{key}:tool"),
@@ -2758,14 +2822,17 @@ impl<'a> Executor<'a> {
 						store.save_run(run, token, "run.waiting").await?;
 						return Ok(());
 					}
-					let response = if home.local() && matches!(&waiting, WaitingState::ExternalApproval {expires_at,..} if *expires_at <= chrono::Utc::now()) {store.expire_workbench_approval(id).await?.response} else {h.response}.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
+					let response = h.response.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
-						WaitingState::ExternalApproval {
-							key,
-							call,
-							expires_at,
+						WaitingState::Approval {
+							approval:
+								ApprovalRef::Home {
+									key,
+									call,
+									expires_at,
+									..
+								},
 							resume,
-							..
 						} => {
 							#[derive(serde::Deserialize)]
 							struct ApprovalAnswer {
@@ -2773,11 +2840,11 @@ impl<'a> Executor<'a> {
 							}
 							let decision =
 								serde_json::from_value::<ApprovalAnswer>(response.clone()).ok();
-							resume.workbench_approval_result = Some(ApprovalDecision {
+							resume.home_approval = Some(HomeApproval {
 								key: key.clone(),
 								call: call.clone(),
-								approved: decision.is_some_and(|d| d.approved),
-								expires_at: *expires_at,
+								approved: decision.is_some_and(|d| d.approved)
+									&& *expires_at > chrono::Utc::now(),
 							})
 						}
 						WaitingState::Reconciliation { key, .. } => {
@@ -2809,12 +2876,11 @@ impl<'a> Executor<'a> {
 				}
 				run.state = match waiting {
 					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
-					WaitingState::Children { resume, .. }
-					| WaitingState::CoreApproval { resume, .. } => RunState::Thinking(resume),
+					WaitingState::Children { resume, .. } => RunState::Thinking(resume),
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
 					}
-					WaitingState::ExternalApproval { resume, .. }
+					WaitingState::Approval { resume, .. }
 					| WaitingState::Reconciliation { resume, .. } => RunState::ToolCall(resume),
 					WaitingState::FailureDelivery { .. } => {
 						return Err(Error::Invalid(

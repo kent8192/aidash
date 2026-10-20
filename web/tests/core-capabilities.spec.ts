@@ -692,6 +692,198 @@ test("located search, progressive Skills, denied approval and uncertain transfer
   expect(errors).toEqual([]);
 });
 
+const toolArguments = { account: "acme", fields: ["owner", "stage"] };
+
+function toolApproval(id: string, patch: Record<string, unknown> = {}) {
+  return {
+    id,
+    area_id: "area-one",
+    run_id: "run-0",
+    revision: 1,
+    kind: "tool_call",
+    state: "pending",
+    requester: "alice",
+    approver: "alice",
+    viewer_is_approver: true,
+    targets: ["tool:crm@1.0.0#invoke"],
+    action: "tool.call_unapproved",
+    expires_at: "2099-01-01T00:00:00Z",
+    agent_id: "researcher",
+    agent_version: "1.0.0",
+    tool: "crm",
+    version: "1.0.0",
+    operation: "invoke",
+    call: { id: "call-0", name: "lookup_account", arguments: toolArguments },
+    ...patch,
+  };
+}
+
+test("a Tool call approval shows the exact call and is allowed once, for this Run or denied", async ({
+  page,
+}) => {
+  const { calls, errors } = await core(page);
+  const longArguments = Object.fromEntries(
+    Array.from({ length: 80 }, (_, i) => [`field_${i}`, `value ${i}`]),
+  );
+  const cards = [
+    toolApproval("tool-once"),
+    toolApproval("tool-run", {
+      call: { id: "call-1", name: "lookup_account", arguments: { id: "run" } },
+    }),
+    toolApproval("tool-deny", {
+      call: { id: "call-2", name: "lookup_account", arguments: { id: "deny" } },
+    }),
+    toolApproval("tool-long", {
+      call: { id: "call-3", name: "export", arguments: longArguments },
+    }),
+    toolApproval("tool-denied", {
+      state: "denied",
+      decided_by: "bob",
+      decided_at: "2026-10-19T00:00:00Z",
+      call: { id: "call-4", name: "lookup_account", arguments: { id: "no" } },
+    }),
+    toolApproval("tool-blocked", {
+      state: "blocked",
+      approver: null,
+      viewer_is_approver: false,
+      call: { id: "call-5", name: "lookup_account", arguments: { id: "nb" } },
+    }),
+    {
+      ...toolApproval("tool-grant", {
+        kind: "grant",
+        state: "active",
+        call: null,
+        approver: "alice",
+      }),
+      revision: 3,
+    },
+  ];
+  await page.route("**/api/capabilities/approvals**", (route) => {
+    const url = new URL(route.request().url());
+    if (
+      route.request().method() !== "GET" ||
+      url.pathname !== "/api/capabilities/approvals"
+    )
+      return route.fallback();
+    return route.fulfill({ json: { items: cards, next_cursor: null } });
+  });
+  await openThread(page);
+
+  const once = page
+    .getByRole("article", { name: "Tool call approval" })
+    .filter({ hasText: "acme" });
+  for (const text of [
+    "crm@1.0.0",
+    "invoke",
+    "researcher@1.0.0",
+    "lookup_account",
+  ])
+    await expect(once.getByText(text, { exact: true })).toBeVisible();
+  const shown = once.getByRole("region", { name: /^Arguments/ });
+  await expect(shown).toHaveText(JSON.stringify(toolArguments, null, 2));
+  await expect(
+    once.getByText("once allowed, this exact call runs", { exact: false }),
+  ).toBeVisible();
+
+  // A long argument list stays in a bounded block that scrolls.
+  const long = page
+    .getByRole("article", { name: "Tool call approval" })
+    .filter({ hasText: "export" })
+    .getByRole("region", { name: /^Arguments/ });
+  const box = await long.evaluate((el) => ({
+    scrolls: el.scrollHeight > el.clientHeight,
+    height: el.clientHeight,
+    overflow: getComputedStyle(el).overflowY,
+  }));
+  expect(box).toMatchObject({ scrolls: true, overflow: "auto" });
+  expect(box.height).toBeLessThanOrEqual(220);
+
+  await once.getByRole("button", { name: "Allow once", exact: true }).click();
+  await expect
+    .poll(() => calls.find((c) => c.path.endsWith("/tool-once/decide"))?.body)
+    .toMatchObject({
+      choice: "allow_once",
+      expected_revision: 1,
+      targets: null,
+      expires_at: null,
+    });
+
+  const run = page
+    .getByRole("article", { name: "Tool call approval" })
+    .filter({ hasText: '"id": "run"' });
+  await run.getByRole("checkbox").check();
+  await expect(
+    run.getByText(
+      "Every later invoke call of crm@1.0.0 in this Run, whatever its arguments, until expiry. New user input does not end it",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await run.getByLabel("Duration (minutes, up to 60)").fill("30");
+  await run.getByRole("button", { name: "Allow for this Run" }).click();
+  await expect
+    .poll(() => calls.find((c) => c.path.endsWith("/tool-run/decide"))?.body)
+    .toMatchObject({
+      choice: "allow_run",
+      targets: ["tool:crm@1.0.0#invoke"],
+    });
+  const granted = calls.find((c) => c.path.endsWith("/tool-run/decide"))!;
+  const minutes =
+    (Date.parse(String(granted.body.expires_at)) - Date.now()) / 60000;
+  expect(minutes).toBeGreaterThan(29);
+  expect(minutes).toBeLessThanOrEqual(30);
+
+  await page
+    .getByRole("article", { name: "Tool call approval" })
+    .filter({ hasText: '"id": "deny"' })
+    .getByRole("button", { name: "Deny", exact: true })
+    .click();
+  await expect
+    .poll(() => calls.find((c) => c.path.endsWith("/tool-deny/decide"))?.body)
+    .toMatchObject({ choice: "deny", targets: null, expires_at: null });
+
+  // Decided and blocked approvals say the call is refused and the Run goes on.
+  await expect(
+    page.getByText(
+      /^Denied by bob at .+\. The call is refused and the Run continues\.$/,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Nobody in this Tenant may approve calls of crm@1.0.0. The call is refused and the Run continues.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const grant = page.getByRole("article", { name: "Tool Run grant" });
+  await expect(
+    grant.getByText("Every later invoke call of crm@1.0.0", { exact: false }),
+  ).toBeVisible();
+  await grant.getByRole("button", { name: "Revoke" }).click();
+  await expect
+    .poll(
+      () =>
+        calls.find(
+          (c) => c.path === "/api/capabilities/grants/tool-grant/revoke",
+        )?.body,
+    )
+    .toMatchObject({ expected_revision: 3 });
+
+  // The approver's inbox lists the same pending approvals and the grant given.
+  await page.getByRole("button", { name: /Decisions/ }).click();
+  const inbox = page.getByRole("region", {
+    name: "Approvals awaiting you",
+    exact: true,
+  });
+  await expect(
+    inbox.getByRole("article", { name: "Tool call approval" }),
+  ).toHaveCount(4);
+  await expect(
+    page
+      .getByRole("region", { name: "Run grants you gave", exact: true })
+      .getByRole("article", { name: "Tool Run grant" }),
+  ).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
 test("narrow keyboard cleanup keeps default, separates confirmation and restores retained files", async ({
   page,
 }, info) => {

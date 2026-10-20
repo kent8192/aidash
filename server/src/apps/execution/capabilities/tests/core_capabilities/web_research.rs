@@ -3,6 +3,7 @@
 //! whose disclosure waits for an exact approval that one dispatch consumes.
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_domain::run_state::ApprovalRef;
 use aidash_server::{
 	domain::{Run, RunPhase, RunState, WaitingState},
 	harness::Harness,
@@ -253,7 +254,10 @@ impl Research {
 			.unwrap();
 			let run = self.c.f.store.run(&TEST_FIXTURE, id).await.unwrap();
 			if let RunState::Waiting(waiting) = &run.state
-				&& let WaitingState::CoreApproval { approval_id, .. } = waiting.as_ref()
+				&& let WaitingState::Approval {
+					approval: ApprovalRef::Capability { approval_id },
+					..
+				} = waiting.as_ref()
 			{
 				return *approval_id;
 			}
@@ -356,8 +360,9 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	assert_eq!(status, 200, "{decided}");
 	assert_eq!(decided["state"], "approved");
 
-	// The resumed Run repeats the call: exactly one dispatch consumes the
-	// approval, and the following identical call waits for a new one.
+	// The approved call runs as asked, so the model is never asked to repeat
+	// it: exactly one dispatch consumes the approval, and the following
+	// identical call waits for a new one.
 	let second = r.until_waiting(run.id).await;
 	assert_ne!(second, first);
 	assert_eq!(r.attempts(run.id).await, 1, "exactly one dispatch");
@@ -376,7 +381,11 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 				.to_owned()
 		})
 		.collect::<Vec<_>>();
-	assert_eq!(statuses, ["approval_required", "ok", "approval_required"]);
+	assert_eq!(
+		statuses,
+		["ok"],
+		"the wait for approval is no result the model reads"
+	);
 	let (_, approvals) = request(
 		&r.c.app,
 		&r.c.token,
@@ -399,7 +408,11 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 		.collect::<std::collections::BTreeMap<_, _>>();
 	assert_eq!(states[&first.to_string()], "consumed");
 	assert_eq!(states[&second.to_string()], "pending");
-	assert_eq!(r.requests.load(Ordering::SeqCst), 3);
+	assert_eq!(
+		r.requests.load(Ordering::SeqCst),
+		2,
+		"one model response asked for each search"
+	);
 	r.close().await;
 }
 

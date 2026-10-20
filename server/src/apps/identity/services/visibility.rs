@@ -126,10 +126,26 @@ impl NativeAccess {
 			run,
 			self.access.authority_context(),
 		);
+		// This walk does not verify remote dependencies as `Access` does, so
+		// its verdicts are kept apart from those (#404).
+		let verdict_key = (key.0.clone(), run, format!("native:{}", key.2));
+		if let Some(verdict) = self.access.read_verdicts.get(&verdict_key) {
+			return Ok(verdict);
+		}
+		let outermost = self.access.checking_reads.is_idle();
 		let Some(_visit) = self.access.checking_reads.enter(key) else {
 			return Ok(true);
 		};
-		self.run_reads_visible_in(run).await
+		let result = self.run_reads_visible_in(run).await;
+		match result {
+			Ok(verdict) => self
+				.access
+				.read_verdicts
+				.record(verdict_key, verdict, outermost),
+			Err(_) if outermost => self.access.read_verdicts.abandon(),
+			Err(_) => {}
+		}
+		result
 	}
 
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
