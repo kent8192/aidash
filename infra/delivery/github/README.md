@@ -21,7 +21,7 @@ by default. Existing GCP/App/mail account variables remain untouched.
 | -------------------------- | ------------------------------ | -------------------------------------------------------------------------------- |
 | `nonproduction`            | Configured `automation_branch` | No admin bypass                                                                  |
 | `production`               | `main`                         | Explicit numeric user reviewers, no admin bypass, prevent self review by default |
-| `release-automation`       | Configured `automation_branch` | App key provisioned separately                                                   |
+| `release-automation`       | Configured `automation_branch` | Explicit numeric user reviewers, no admin bypass, prevent self review by default |
 | `deployment-notifications` | Configured `automation_branch` | Sending token provisioned separately                                             |
 | `certificate-renewal`      | Configured `automation_branch` | DNS credentials provisioned separately                                           |
 

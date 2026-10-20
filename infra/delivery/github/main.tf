@@ -3,6 +3,9 @@ locals {
   nonproduction   = try(jsondecode(var.nonproduction_config_json), null)
   production      = try(jsondecode(var.production_config_json), null)
   bot_login       = try("${var.release_app.slug}[bot]", null)
+  # Both environments hold credentials that can write repository state or report
+  # checks, so each needs an independent human approval and cannot self-approve.
+  reviewed_environments = toset(["production", "release-automation"])
   environments = {
     nonproduction            = var.automation_branch
     production               = "main"
@@ -168,9 +171,9 @@ resource "github_repository_environment" "delivery" {
   repository          = local.repository_name
   environment         = each.key
   can_admins_bypass   = false
-  prevent_self_review = each.key == "production" ? var.production_prevent_self_review : false
+  prevent_self_review = contains(local.reviewed_environments, each.key) ? var.production_prevent_self_review : false
   dynamic "reviewers" {
-    for_each = each.key == "production" ? [var.production_reviewer_user_ids] : []
+    for_each = contains(local.reviewed_environments, each.key) ? [var.production_reviewer_user_ids] : []
     content {
       users = reviewers.value
     }

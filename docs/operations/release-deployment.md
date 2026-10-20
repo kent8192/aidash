@@ -135,7 +135,7 @@ repository variables so credential-free intake can validate them:
 | -------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
 | `nonproduction`            | Exact `automation_branch` | Staging, test and explicitly authorized PR lifecycle                                   |
 | `production`               | `main` only               | Isolated production deployment; configure required reviewers and prevent self approval |
-| `release-automation`       | Exact `automation_branch` | Release GitHub App private key; no source builds or application runtime                |
+| `release-automation`       | Exact `automation_branch` | Release GitHub App private key; required reviewers and no self approval                |
 | `deployment-notifications` | Exact `automation_branch` | Mail delivery with no application execution or deployment permissions                  |
 | `certificate-renewal`      | Exact `automation_branch` | Scoped DNS-01 and TLS/ACME Secret versions; no application deployment                  |
 
@@ -145,7 +145,9 @@ not any actor that can create a status with that name. Install that App only on
 this repository, with Actions read, Contents write, Pull requests write and
 Checks write. Set `RELEASE_APP_CLIENT_ID` as a repository variable and
 `RELEASE_APP_PRIVATE_KEY` only in the protected `release-automation` Environment,
-not as a repository secret. Set matching `release_app_bot_login` in both config
+not as a repository secret. That Environment requires the same explicit reviewers
+as production and prevents self approval, so a develop-branch change cannot mint
+the App key on its own. Set matching `release_app_bot_login` in both config
 JSONs. The App token is short lived and
 is never passed to source builds, runtime Pods or receipts.
 

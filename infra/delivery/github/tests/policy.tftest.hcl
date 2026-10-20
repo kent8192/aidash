@@ -125,6 +125,8 @@ run "disabled_setup_scopes_credentials_to_exact_branches" {
     condition = (
       github_repository_environment.delivery["production"].prevent_self_review &&
       toset(github_repository_environment.delivery["production"].reviewers[0].users) == toset([51869472]) &&
+      github_repository_environment.delivery["release-automation"].prevent_self_review &&
+      toset(github_repository_environment.delivery["release-automation"].reviewers[0].users) == toset([51869472]) &&
       alltrue([for key in ["GCP_ENVIRONMENTS_ENABLED", "GCP_PRODUCTION_ENABLED", "GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED", "GCP_CERTIFICATE_RENEWAL_ENABLED"] :
         github_actions_variable.delivery[key].value == "false"
       ])

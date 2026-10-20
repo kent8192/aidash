@@ -459,10 +459,11 @@ jobs:
         acceptance,
         browser,
       ]
-    # `always()` stays true after cancellation, so a run superseded by a newer head
-    # kept this job queued. `!cancelled()` still runs after failed or skipped
-    # prerequisites, which the result check below rejects.
-    if: ${{ !cancelled() }}
+    # `always()` runs this required gate after a manual cancellation as well;
+    # `needs` then records cancelled prerequisites and the check fails instead of
+    # being skipped, which GitHub would treat as satisfied. Concurrency still
+    # cancels a superseded run, whose gate now fails rather than staying queued.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
