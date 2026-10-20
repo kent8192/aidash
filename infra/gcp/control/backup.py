@@ -65,7 +65,7 @@ def wait_window():
     return window
 
 
-def take(plan, generation, sha):
+def take(plan, generation, sha, cluster):
     """Create the generation's Backup, or resume it after a crashed run, and wait for SUCCEEDED."""
     if not PLAN.fullmatch(plan):
         raise Refused("The Pre-update Backup plan name is invalid")
@@ -101,6 +101,10 @@ def take(plan, generation, sha):
             # would still produce a SUCCEEDED backup; it is not ours to restore.
             if not application_scope(backup):
                 raise Refused("The Pre-update Backup does not select the protected application")
+            # A deleted and recreated plan can point at another cluster while
+            # the application scope and volume counts still match.
+            if backup.get("clusterMetadata", {}).get("cluster") != cluster:
+                raise Refused("The Pre-update Backup came from another cluster")
             return name
         if state in {"FAILED", "DELETING"}:
             raise Refused(f"The Pre-update Backup ended {state}")

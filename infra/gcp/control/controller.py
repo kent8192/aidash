@@ -548,7 +548,7 @@ class GcipTerraform:
     def broker_configuration_changed(self, store, environments):
         return self.terraform.broker_configuration_changed(store, environments)
 
-    def apply(self, managed, retiring=(), starting=(), affected=None, allow_failures=False):
+    def apply(self, managed, retiring=(), starting=(), affected=None, allow_failures=False, keep_sealed=()):
         # Include removed environments until their destruction plan is fenced.
         protected = self.previous | managed
         if affected is None:
@@ -576,7 +576,9 @@ class GcipTerraform:
         _, changed = gate_gcip_changes(self.config, self.store, self, managed, fenced=affected)
         affected.update(changed)
         targets = {identity: generation for identity, generation in affected.items() if identity in managed and identity not in self.failed}
-        failures = refresh_gcip_environments(self.config, self.store, self, managed, revision, targets)
+        failures = refresh_gcip_environments(
+            self.config, self.store, self, managed, revision, targets, keep_sealed
+        )
         self.failed.update(failures)
         if failures and not allow_failures:
             raise Refused("GCIP refresh incomplete: " + ", ".join(failures))
@@ -632,12 +634,17 @@ def gate_gcip_changes(config, store, terraform, managed, force=False, fenced=())
 
 
 
-def refresh_gcip_environments(config, store, terraform, managed, revision, affected):
+def refresh_gcip_environments(config, store, terraform, managed, revision, affected, keep_sealed=()):
     if not affected:
         return []
     outputs = terraform.outputs()
     failures = []
     for identity, generation in affected.items():
+        if identity in keep_sealed:
+            # A pending production update keeps writers stopped; its deployment
+            # applies these settings to the new release instead of reloading the
+            # old one and invalidating the Pre-update Backup.
+            continue
         try:
             entry = current_entry(store, identity, generation)
             output = outputs[identity]
@@ -768,6 +775,21 @@ def validate_staging_publication(config, store, terraform):
                  staging_publication_run_id=str(os.environ["GITHUB_RUN_ID"]), staging_verified_at=int(time.time()), staging_publication_pending=True)
 
 
+def require_backup_covers_retained_volumes(cluster, identity):
+    """The ledger is the only retained volume the Backup may leave out."""
+    namespace = kube.namespace_of(identity)
+    unexpected = sorted(
+        claim["metadata"]["name"]
+        for claim in cluster.items("persistentvolumeclaim", namespace)
+        if claim.get("metadata", {}).get("labels", {}).get(kube.BACKUP_LABEL) == kube.BACKUP_EXCLUDE
+        and claim["metadata"]["name"] != kube.LEDGER_CLAIM
+    )
+    if unexpected:
+        raise Refused(
+            "Retained volumes are excluded from the Pre-update Backup: " + ", ".join(unexpected)
+        )
+
+
 def pre_update_backup(config, store, terraform, identity, generation, entry):
     """Back up the sealed Environment before anything changes. Failure parks the
     update as `failed`; only an explicit retry_failed starts a new generation."""
@@ -786,7 +808,10 @@ def pre_update_backup(config, store, terraform, identity, generation, entry):
     if entry.get("pre_update_backup"):
         return
     kube.protect(cluster, identity)
-    name = backup.take(plan, generation, entry["sha"])
+    require_backup_covers_retained_volumes(cluster, identity)
+    shared = terraform.shared_outputs().get("cluster") or {}
+    expected_cluster = f"projects/{shared.get('project_id')}/locations/{shared.get('location')}/clusters/{shared.get('name')}"
+    name = backup.take(plan, generation, entry["sha"], expected_cluster)
     current_entry(store, identity, generation)
     update_entry(store, identity, generation, pre_update_backup=name)
 
@@ -935,6 +960,7 @@ def reconcile_locked(config, store, terraform, managed):
     gcip_failures = []
     shared_apply = broker_changed or bool(affected)
     deploy_pending = False
+    keep_sealed = set()
     if shared_apply:
         presealed, deploy_pending, backup_ready = take_pre_update_backup_before_shared(
             config, store, terraform, managed, presealed
@@ -943,8 +969,15 @@ def reconcile_locked(config, store, terraform, managed):
             # Active work kept production from sealing, so no Pre-update Backup
             # exists. Do not change shared infrastructure ahead of it.
             return
+        if deploy_pending:
+            state, _ = store.read("lifecycle/state.json")
+            entry = state["environments"].get("production")
+            if entry and entry.get("pre_update_backup"):
+                keep_sealed.add("production")
         try:
-            gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True)
+            gcip_failures = terraform.apply(
+                managed, affected=affected, allow_failures=True, keep_sealed=keep_sealed
+            )
         except (Exception, OperationDeadline) as error:
             if deploy_pending:
                 state, _ = store.read("lifecycle/state.json")
@@ -970,10 +1003,15 @@ def reconcile_locked(config, store, terraform, managed):
     if shared_apply and deploy_pending:
         entry = state["environments"].get("production")
         if entry and entry.get("pre_update_backup"):
-            # The shared apply's GCIP refresh reloads the release and reopens
-            # admission. Re-seal before the deployment rather than trusting the
-            # pre-apply seal.
-            presealed.discard("production")
+            if "production" in keep_sealed:
+                # The refresh left production sealed; this deployment applies
+                # the GCIP change to the new release.
+                update_entry(store, "production", entry["generation"], gcip_quiesced=False)
+            else:
+                # The shared apply's GCIP refresh reloads the release and reopens
+                # admission. Re-seal before the deployment rather than trusting
+                # the pre-apply seal.
+                presealed.discard("production")
     failures = list(gcip_failures)
     trusted = trusted_revision()
     for identity, snapshot in sorted(
@@ -982,6 +1020,7 @@ def reconcile_locked(config, store, terraform, managed):
     ):
         deployment_started = False
         reloaded = False
+        keep_sealed = set()
         sealed = identity in presealed
         try:
             generation = snapshot["generation"]
@@ -1253,9 +1292,14 @@ def reconcile_locked(config, store, terraform, managed):
             # to start again after a later stop.
             update_entry(store, identity, generation, start_pending=False)
             deployment_started = True
+            # The Pre-update Backup is valid only while the refresh leaves this
+            # Environment's writers stopped; the deployment applies the new
+            # settings to the new release.
+            if entry.get("pre_update_backup"):
+                keep_sealed = {identity}
             if previous:
                 managed[identity].update(published=False, address=None)
-                terraform.apply(managed)
+                terraform.apply(managed, keep_sealed=keep_sealed)
             current_entry(store, identity, generation)
             managed[identity] = dict(
                 kind=entry["kind"],
@@ -1278,6 +1322,7 @@ def reconcile_locked(config, store, terraform, managed):
             terraform.apply(
                 managed,
                 starting={identity} if entry.get("start_pending") else set(),
+                keep_sealed=keep_sealed,
             )
             output = terraform.outputs()[identity]
             cluster = terraform.cluster()
@@ -1305,7 +1350,14 @@ def reconcile_locked(config, store, terraform, managed):
             current_entry(store, identity, generation)
             verify_source(config, identity, entry)
             managed[identity].update(published=True, address=kube.address(cluster, identity))
-            terraform.apply(managed)
+            # A kept-sealed production update has not consumed its GCIP change
+            # yet; publishing must not re-fence it and stop the writers that
+            # just started. The success update below records the new revision.
+            terraform.apply(
+                managed,
+                affected={identity: generation} if keep_sealed else None,
+                keep_sealed=keep_sealed,
+            )
             current_entry(store, identity, generation)
             kube.admission(cluster, identity, "open")
             # Certificate issuance requires live DNS; validate it before declaring ready.
@@ -1352,7 +1404,7 @@ def reconcile_locked(config, store, terraform, managed):
                         except Exception:
                             pass
                         try:
-                            terraform.apply(managed)
+                            terraform.apply(managed, keep_sealed=keep_sealed)
                         except Exception:
                             pass
                 elif sealed:
