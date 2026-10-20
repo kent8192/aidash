@@ -3,6 +3,7 @@ use aidash_application::{
 	Error, Result,
 	capabilities::approvals::{
 		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
+		answer_deadline_response, answer_for_model,
 	},
 	execution::*,
 	ports::execution::*,
@@ -2324,6 +2325,7 @@ impl<'a> Executor<'a> {
 								let h=home.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
 								run.state = RunState::Waiting(Box::new(WaitingState::Human {
 									request_id: h.id,
+									answer_by: None,
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							} else {
@@ -2870,9 +2872,17 @@ impl<'a> Executor<'a> {
 				progress.advance(cursor + 1);
 				match framework {
 					FrameworkResult::Human(request_id) => {
+						// Only a model's question of a person on this Node has an
+						// Answer Deadline; the person's settings are read now.
+						let seconds = match guard {
+							Some(guard) if home.local() => guard.answer_deadline(run).await?,
+							_ => None,
+						};
 						run.step += 1;
 						run.state = RunState::Waiting(Box::new(WaitingState::Human {
 							request_id,
+							answer_by: seconds
+								.map(|seconds| chrono::Utc::now() + chrono::Duration::seconds(seconds)),
 							resume: ResumeState::Thinking(ThinkingState::default()),
 						}));
 					}
@@ -2910,12 +2920,22 @@ impl<'a> Executor<'a> {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
-                    let h = home.human_request_by_id(id).await?;
+                    let mut h = home.human_request_by_id(id).await?;
 					if !home.local() && h.response.is_none() {
 						// A remote scheduler polls Home; an unanswered continuation
 						// remains waiting and advances the next polling deadline.
 						store.save_run(run, token, "run.waiting").await?;
 						return Ok(());
+					}
+					if h.response.is_none()
+						&& let WaitingState::Human { answer_by: Some(answer_by), .. } = &waiting
+					{
+						if *answer_by > chrono::Utc::now() {
+							// Woken by a clock that runs ahead of this one.
+							store.save_run(run, token, "run.waiting").await?;
+							return Ok(());
+						}
+						h = answer_at_deadline(home.as_ref(), id).await?;
 					}
 					let response = h.response.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
@@ -2965,7 +2985,7 @@ impl<'a> Executor<'a> {
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,
-							response,
+							response: answer_for_model(response),
 						});
 					}
 				}
@@ -2990,6 +3010,19 @@ impl<'a> Executor<'a> {
 			}
 		}
 		Ok(())
+	}
+}
+
+/// Answer a model's question on the system's behalf because its person's
+/// Answer Deadline passed. A person who answered first wins, and so does a
+/// system answer given before a crash.
+async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<HumanRequest> {
+	match home
+		.close_human_request(request, answer_deadline_response())
+		.await
+	{
+		Err(Error::Conflict(_)) => home.human_request_by_id(request).await,
+		closed => closed,
 	}
 }
 

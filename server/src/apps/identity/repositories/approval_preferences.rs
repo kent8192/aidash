@@ -429,6 +429,8 @@ pub(crate) struct Covering {
 	pub subject: String,
 	pub mode: ApprovalMode,
 	pub bypass_accepted: bool,
+	/// How long the person's Runs wait for an answer to the model's question.
+	pub answer_deadline_seconds: Option<i64>,
 }
 
 /// Row of the one query that finds who covers a Run and in which mode.
@@ -437,12 +439,14 @@ struct Coverage {
 	default_mode: Option<String>,
 	bypass_accepted_at: Option<DateTime<Utc>>,
 	thread_mode: Option<String>,
+	answer_deadline_seconds: Option<i64>,
 }
 crate::native_record!(Coverage {
 	root_subject,
 	default_mode,
 	bypass_accepted_at,
-	thread_mode
+	thread_mode,
+	answer_deadline_seconds
 });
 
 /// Who covers `run`, and in which mode: the person its delegation chain
@@ -478,6 +482,10 @@ pub(crate) async fn covering(
 			Alias::new("bypass_accepted_at"),
 		)
 		.expr_as(Expr::col(column("m", "mode")), Alias::new("thread_mode"))
+		.expr_as(
+			Expr::col(column("p", "answer_deadline_seconds")),
+			Alias::new("answer_deadline_seconds"),
+		)
 		.from_as(Alias::new("authorization_execution"), Alias::new("e"))
 		.join(
 			JoinType::LeftJoin,
@@ -521,6 +529,7 @@ pub(crate) async fn covering(
 		subject: row.root_subject,
 		mode,
 		bypass_accepted: row.bypass_accepted_at.is_some(),
+		answer_deadline_seconds: row.answer_deadline_seconds,
 	}))
 }
 

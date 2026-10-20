@@ -1,6 +1,8 @@
 //! A person's Approval Mode and Approval Rules over HTTP (#411, ADR 0076).
 use crate::{Error, Result};
-use aidash_domain::approval_rules::{ApprovalKind, ApprovalMode, RuleEffect, RuleTarget};
+use aidash_domain::approval_rules::{
+	ANSWER_DEADLINE_SECONDS, ApprovalKind, ApprovalMode, RuleEffect, RuleTarget,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -102,6 +104,7 @@ pub struct Preferences {
 pub struct PreferencesUpdate {
 	pub expected_revision: i64,
 	pub default_mode: ApprovalMode,
+	/// One minute to 30 days; `null` waits for an answer without limit.
 	#[serde(default)]
 	pub answer_deadline_seconds: Option<i64>,
 	/// Records the person's acceptance of the risk of Bypass. Needed once,
@@ -117,11 +120,13 @@ impl PreferencesUpdate {
 		}
 		if self
 			.answer_deadline_seconds
-			.is_some_and(|seconds| seconds <= 0)
+			.is_some_and(|seconds| !ANSWER_DEADLINE_SECONDS.contains(&seconds))
 		{
-			return Err(Error::Invalid(
-				"answer_deadline_seconds must be positive".into(),
-			));
+			return Err(Error::Invalid(format!(
+				"answer_deadline_seconds must be from {} seconds to {} seconds, or null",
+				ANSWER_DEADLINE_SECONDS.start(),
+				ANSWER_DEADLINE_SECONDS.end()
+			)));
 		}
 		Ok(())
 	}
@@ -299,16 +304,24 @@ mod tests {
 		assert!(every.validate().is_ok());
 	}
 
-	#[test]
-	fn a_preference_update_refuses_a_non_positive_deadline() {
-		let update = |seconds| PreferencesUpdate {
+	#[rstest]
+	#[case::none(None, true)]
+	#[case::a_minute(Some(60), true)]
+	#[case::thirty_days(Some(30 * 24 * 60 * 60), true)]
+	#[case::too_short(Some(59), false)]
+	#[case::zero(Some(0), false)]
+	#[case::negative(Some(-60), false)]
+	#[case::too_long(Some(30 * 24 * 60 * 60 + 1), false)]
+	fn a_preference_update_keeps_the_answer_deadline_between_a_minute_and_thirty_days(
+		#[case] seconds: Option<i64>,
+		#[case] accepted: bool,
+	) {
+		let update = PreferencesUpdate {
 			expected_revision: 0,
 			default_mode: ApprovalMode::Manual,
 			answer_deadline_seconds: seconds,
 			accept_bypass: false,
 		};
-		assert!(update(None).validate().is_ok());
-		assert!(update(Some(60)).validate().is_ok());
-		assert!(update(Some(0)).validate().is_err());
+		assert_eq!(update.validate().is_ok(), accepted);
 	}
 }

@@ -448,7 +448,10 @@ async fn a_call_refused_by_a_rule_or_dont_ask_is_reported_to_the_model(
 	));
 }
 
-fn human_request_tool(fixture: &mut Fixture, mode: Option<ApprovalMode>) -> Arc<Scripted> {
+pub(super) fn human_request_tool(
+	fixture: &mut Fixture,
+	mode: Option<ApprovalMode>,
+) -> Arc<Scripted> {
 	let tool = Scripted::new(
 		ToolSpec {
 			name: "human_request".into(),

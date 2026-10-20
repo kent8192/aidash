@@ -423,6 +423,11 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>>;
+	/// How many seconds the person whose delegation chain `run` starts at
+	/// waits for an answer to the model's question before the Run continues
+	/// without one (their Answer Deadline). `None` when they set none or when
+	/// no person's settings cover the Run, as for [`Self::approval_mode`].
+	async fn answer_deadline(&self, run: &Run) -> Result<Option<i64>>;
 	/// The pending approval of `run` that the approval Decider is to judge, or
 	/// `None` when it is not one: unknown, decided, expired, another Run's, or
 	/// asked of a person (Manual, a rule that asks, Auto suspended).

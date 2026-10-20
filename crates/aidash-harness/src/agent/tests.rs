@@ -168,6 +168,14 @@ struct State {
 	tool_call_requests: Mutex<Vec<ToolCallRequest>>,
 	/// The Approval Mode of the person the Run's chain starts at.
 	approval_mode: Option<aidash_domain::approval_rules::ApprovalMode>,
+	/// A child Task failed and the others are unfinished, so the Run's final
+	/// answer waits for a person to intervene.
+	failed_children: bool,
+	/// The Answer Deadline, in seconds, of the person the Run's chain starts at.
+	answer_deadline: Option<i64>,
+	/// A person's answer that lands just before the system closes the Home
+	/// request, as when both race for it.
+	answered_just_before_close: Mutex<Option<Value>>,
 	/// Answers of `approval_judgement` in call order; once empty, nothing is the
 	/// approval Decider's to judge.
 	approval_judgements: Mutex<VecDeque<Option<JudgeRequest>>>,
@@ -684,6 +692,7 @@ impl ExecutionHome for Backend {
 			response: None,
 			created_at: run.updated_at,
 			answered_by: None,
+			answer_by: None,
 		};
 		*self.0.human.lock().unwrap() = Some(request.clone());
 		Ok(request)
@@ -699,6 +708,10 @@ impl ExecutionHome for Backend {
 		let mut human = self.0.human.lock().unwrap();
 		let request = human.as_mut().expect("Home request");
 		assert_eq!(request.id, id);
+		if let Some(answer) = self.0.answered_just_before_close.lock().unwrap().take() {
+			request.response = Some(answer);
+			request.answered_by = Some("alice".into());
+		}
 		if request.response.is_some() {
 			return Err(Error::Conflict("human request already answered".into()));
 		}
@@ -778,8 +791,8 @@ impl ExecutionHome for Backend {
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let _ = parent;
 		Ok(ChildTaskSummary {
-			has_pending: false,
-			has_failed: false,
+			has_pending: self.0.failed_children,
+			has_failed: self.0.failed_children,
 		})
 	}
 	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
@@ -870,6 +883,10 @@ impl ExecutionAuthority for Backend {
 	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
 		self.record("authority.approval_mode");
 		Ok(self.0.approval_mode)
+	}
+	async fn answer_deadline(&self, _run: &Run) -> Result<Option<i64>> {
+		self.record("authority.answer_deadline");
+		Ok(self.0.answer_deadline)
 	}
 	async fn approval_judgement(
 		&self,
@@ -1489,6 +1506,9 @@ fn fixture() -> Fixture {
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
 		approval_mode: None,
+		failed_children: false,
+		answer_deadline: None,
+		answered_just_before_close: Mutex::new(None),
 		approval_judgements: Mutex::new(VecDeque::new()),
 		settlements: Mutex::new(vec![]),
 		approval_decider: None,
@@ -1514,9 +1534,11 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		response: None,
 		created_at: fixture.run.updated_at,
 		answered_by: None,
+		answer_by: None,
 	});
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Human {
 		request_id: id,
+		answer_by: None,
 		resume: ResumeState::Ready(ReadyState::default()),
 	}));
 	for _ in 0..2 {
@@ -4659,6 +4681,7 @@ async fn compaction_leaves_the_exposure_set_intact(mut fixture: Fixture) {
 	assert_eq!(context.exposure, exposure);
 }
 
+mod answer_deadline;
 mod approvals;
 mod batch;
 mod decider;

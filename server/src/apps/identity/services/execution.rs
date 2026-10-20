@@ -335,6 +335,28 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	/// The Answer Deadline, in seconds, of the person whose delegation chain
+	/// `run` starts at, under the worker's current authority lease. `None` when
+	/// they set none or no person's settings cover the Run (ADR 0076).
+	pub async fn answer_deadline(&self, store: &Store, run: &Run) -> Result<Option<i64>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let access = &mut access;
+			crate::apps::identity::repositories::approval_preferences::covering(
+				&mut *access.tx,
+				&access.snapshot.bundle,
+				&store.node_id,
+				access.subjects.first().map(String::as_str),
+				&run.metadata(),
+			)
+			.await
+			.map(|covering| covering.and_then(|covering| covering.answer_deadline_seconds))
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	/// The pending approval of `run` that the approval Decider is to judge, read
 	/// under the worker's current authority lease (ADR 0077).
 	pub async fn approval_judgement(

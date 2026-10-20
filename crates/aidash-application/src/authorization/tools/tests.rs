@@ -480,6 +480,7 @@ impl AgentToolScope for Scope<'_> {
 			prompt: "saved question".into(),
 			response: None,
 			answered_by: None,
+			answer_by: None,
 			created_at: Utc::now(),
 		}))
 	}
