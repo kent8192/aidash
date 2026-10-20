@@ -9,13 +9,16 @@ use aidash_server::apps::identity::models::{
 	AuthorizationBundle, AuthorizationCatalog, AuthorizationCatalogHistory, DemoDataLoad,
 	DemoTenant, Tenant,
 };
+use aidash_server::apps::identity::services::tenant_purge;
 use aidash_server::registry::Search;
+use aidash_server::store::Store;
 use native_database::{DatabaseFixture, database};
 use reinhardt::db::orm::Model;
 use rstest::rstest;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const NODE: &str = "aidash://demo-data-test";
 
@@ -295,4 +298,78 @@ async fn demo_data_loads_once_and_adds_only_what_is_missing(#[future] database: 
 		stderr(&third)
 	);
 	assert_eq!(rows(&f).await, extended);
+}
+
+/// A Demo Tenant a reviewer deleted stays deleted after its grace-period
+/// purge. Its structure key still resolves to the purged Tenant through
+/// `demo_tenants`, so a later load with changed inputs must not create a
+/// replacement Tenant for the key.
+#[rstest]
+#[tokio::test]
+async fn a_purged_demo_tenant_is_not_recreated_by_a_changed_load(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange: a loaded Deployment.
+	let f = database.await;
+	let directory = tempfile::tempdir().unwrap();
+	let inputs = tempfile::tempdir().unwrap();
+	settings(directory.path(), true);
+	let original = write(inputs.path(), "structure.json", &structure());
+	let first = command(&f, directory.path(), &original).await;
+	assert!(first.status.success(), "{}", stderr(&first));
+	let loaded = rows(&f).await;
+	let acme = loaded.tenants["acme"].clone();
+	let globex = loaded.tenants["globex"].clone();
+
+	// The reviewer deleted one Demo Tenant and its grace period ended.
+	let pool = f.connection.clone().into_postgres().unwrap();
+	sqlx::query(
+		"INSERT INTO tenant_deletions \
+		 (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES ($1, $2, now() - interval '2 seconds', 'deployment_administrator', \
+		 now() - interval '1 second', 0)",
+	)
+	.bind(Uuid::new_v4())
+	.bind(acme.as_str())
+	.execute(&pool)
+	.await
+	.unwrap();
+	let store = Store::from_pool(pool.clone(), NODE.into()).await.unwrap();
+
+	// Act: purge the Tenant's rows. The Store shares the fixture's pool, so it
+	// stays open for the reload below.
+	tenant_purge::sweep(&store, 365).await.unwrap();
+
+	// Assert: the key-to-tombstone mapping survived the purge.
+	let mapping = f
+		.fixture(async |tx| {
+			Ok(DemoTenant::objects()
+				.filter(DemoTenant::field_key().eq("acme"))
+				.all_with_db(tx)
+				.await?)
+		})
+		.await;
+	assert_eq!(mapping.len(), 1);
+	assert_eq!(mapping[0].tenant, acme);
+
+	// Act: a changed structure forces another load.
+	let mut changed = structure();
+	changed["tenants"][1]["subjects"]
+		.as_array_mut()
+		.unwrap()
+		.push(json!({"id": "casey", "groups": ["members"]}));
+	let changed = write(inputs.path(), "changed.json", &changed);
+	let reload = command(&f, directory.path(), &changed).await;
+
+	// Assert: the purged Tenant keeps its key and gets nothing; the live
+	// Tenant still receives its new subject.
+	assert!(reload.status.success(), "{}", stderr(&reload));
+	let after = rows(&f).await;
+	assert_eq!(after.tenants, loaded.tenants);
+	assert_eq!(after.roots, loaded.roots);
+	assert_eq!(after.tenants["acme"], acme);
+	assert_eq!(after.tenants["globex"], globex);
+	assert!(!after.policies.contains_key(&acme));
+	assert!(after.policies.contains_key(&globex));
+	assert_eq!(after.loads, 2);
 }

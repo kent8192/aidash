@@ -2,9 +2,8 @@
 //!
 //! Migrations run as the role that owns every table. Servers and workers log in
 //! as a separate role that row-level security binds (#223), so they refuse a
-//! login that would bypass it. Management commands, including the migration
-//! Job's maintenance steps, keep Reinhardt's ordinary connection. The `demo-data`
-//! command runs in that Job under the migration owner and so opens
+//! login that would bypass it. The migration Job's maintenance steps,
+//! `memory-recovery` and `demo-data`, run under that owner and so open
 //! [`connect_maintenance`], which accepts the owner but nothing else that
 //! bypasses row-level security.
 use crate::{Error, Result};
@@ -30,7 +29,8 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 }
 
 /// Open a pool for a maintenance command that the migration Job runs under the
-/// migration owner (`aidash_owner`), such as `demo-data`. The owner is accepted
+/// migration owner (`aidash_owner`), such as `memory-recovery` and `demo-data`.
+/// The owner is accepted
 /// because `FORCE ROW LEVEL SECURITY` binds it like any other login: a
 /// statement that scans a Tenant-owned table fails without a scope (`TS001`),
 /// and every write through [`Pool`](super::native::Pool) opens one. The

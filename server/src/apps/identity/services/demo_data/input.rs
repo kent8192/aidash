@@ -244,7 +244,7 @@ fn validate_people(people: &mut People, structure: &Structure) -> Result<()> {
 		.map(|tenant| tenant.key.as_str())
 		.collect();
 	let mut seen = BTreeSet::new();
-	for person in &mut people.people {
+	for (index, person) in people.people.iter_mut().enumerate() {
 		if !keys.contains(person.tenant.as_str()) {
 			return Err(Error::Invalid(format!(
 				"people: tenant {:?} is not a structure key",
@@ -255,9 +255,12 @@ fn validate_people(people: &mut People, structure: &Structure) -> Result<()> {
 			.map_err(|error| Error::Invalid(format!("people: subject: {error}")))?;
 		person.email = email(&person.email)?;
 		if !seen.insert((person.tenant.clone(), person.email.clone())) {
+			// The people file is a secret: name the duplicate record and Tenant,
+			// never the address that the command's stderr would retain in pod logs.
 			return Err(Error::Invalid(format!(
-				"people: {} appears twice for tenant {}",
-				person.email, person.tenant
+				"people: record {} reserves the same address twice for tenant {:?}",
+				index + 1,
+				person.tenant
 			)));
 		}
 	}

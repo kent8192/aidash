@@ -552,6 +552,12 @@ def materialize(cluster, identity, project, output, runtime):
         AIDASH_API_TOKEN=tokens["api"],
         AIDASH_CORE_RUNNER_TOKEN=tokens["runner"],
     )
+    if identity != PRODUCTION:
+        # Every non-production pod reads this Secret through `envFrom`, and the
+        # migration Job copies the server template. Enabling it here reaches
+        # both the servers that fulfil Demo Reservations (ADR 0079) and the Job
+        # that loads Demo data (ADR 0080); production keeps the false default.
+        values["AIDASH_DEMO_DATA_ENABLED"] = "true"
     if gcip is None:
         values.update(AIDASH_OIDC_ISSUER="https://accounts.google.com", AIDASH_OIDC_PUBLIC_ORIGIN="https://" + output["hostname"])
     for manifest in (
@@ -892,8 +898,10 @@ def migrate(cluster, identity, sha, demo_people=None, fork=False):
         " && aidash activation-provision"
     ]
     if demo:
+        # The copied server template's `app-runtime` envFrom already carries
+        # AIDASH_DEMO_DATA_ENABLED for a non-production Environment; the same
+        # Secret gives the server pods the setting that fulfils reservations.
         container["args"][0] += f" && aidash demo-data --from {DEMO_STRUCTURE}"
-        container["env"].append({"name": "AIDASH_DEMO_DATA_ENABLED", "value": "true"})
         if people is not None:
             # Mounted into this Job's container only, never into a server or worker.
             container["args"][0] += f" --people {DEMO_PEOPLE_DIR}/people.json"

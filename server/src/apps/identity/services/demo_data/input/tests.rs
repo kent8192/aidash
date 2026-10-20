@@ -182,7 +182,14 @@ fn the_same_email_twice_for_one_tenant_is_refused_whatever_its_case() {
 	listed["people"].as_array_mut().unwrap().push(json!({
 		"email": "alex@EXAMPLE.com", "tenant": "acme", "subject": "alex-2", "role": "member"
 	}));
-	assert!(refusal(parse(&structure(), Some(&listed))).contains("appears twice"));
+	let message = refusal(parse(&structure(), Some(&listed)));
+	assert!(message.contains("record 2"), "{message}");
+	assert!(message.contains("tenant \"acme\""), "{message}");
+	// The people file is a secret: retained Job logs must not learn the address.
+	assert!(
+		!message.contains("alex") && !message.contains("example"),
+		"{message}"
+	);
 }
 
 #[test]

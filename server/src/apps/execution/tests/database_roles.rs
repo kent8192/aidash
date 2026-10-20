@@ -50,6 +50,35 @@ async fn maintenance_accepts_the_owner_but_not_a_login_that_bypasses_row_level_s
 	assert!(error.to_string().contains("is a superuser"), "{error}");
 }
 
+/// The migration Job runs `memory-recovery init-if-missing` before its
+/// `demo-data` step under the owner's login. That command must accept the
+/// owner, or the Job's `-e` shell exits before Demo data is loaded.
+#[rstest]
+#[tokio::test]
+async fn memory_recovery_init_if_missing_accepts_the_migration_owner(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange: the fixture is migrated and hands over the owner URL exactly as
+	// the Job's `app-migration` Secret does.
+	let f = database.await;
+	let directory = tempfile::tempdir().unwrap();
+	let home = directory.path().join("home");
+	std::fs::create_dir(&home).unwrap();
+	let mut command = crate::deployment::deployment_command(&f.owner_url, directory.path());
+	command
+		.args(["memory-recovery", "init-if-missing", "--directory"])
+		.arg(&home);
+	// Act
+	let output = command.output().await.expect("run memory-recovery");
+	// Assert: the owner is accepted, so the Job reaches the appended command.
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(home.join("epoch.cbor").exists());
+}
+
 /// A login that owns no table but owns a schema can still create and drop
 /// objects in it, so it is refused as well.
 #[rstest]

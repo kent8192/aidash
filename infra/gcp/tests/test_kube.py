@@ -108,6 +108,24 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual(self.cluster.secret("aidash-pr-2", "env-activity")["AIDASH_CORE_RUNNER_TOKEN"], tokens["runner"])
         self.assertEqual(self.cluster.secret("aidash-pr-2", "app-runner"), {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]})
 
+    def test_demo_data_is_enabled_for_nonproduction_servers_and_job_only(self):
+        # The server Deployment reads app-runtime through envFrom; the copied
+        # migration Job inherits the same envFrom. Both need the setting so a
+        # sign-in can fulfil the Reservations that the Job loaded.
+        self.materialize(RUNTIME)
+        self.assertEqual(
+            self.cluster.secret("aidash-pr-2", "app-runtime")["AIDASH_DEMO_DATA_ENABLED"],
+            "true",
+        )
+        production = FakeCluster([])
+        production.put({"kind": "Namespace", "metadata": {"name": "aidash-production"}})
+        output = dict(OUTPUT, hostname="aidash.run", runtime_secret="production")
+        kube.materialize(production, "production", PROJECT, output, RUNTIME)
+        self.assertNotIn(
+            "AIDASH_DEMO_DATA_ENABLED",
+            production.secret("aidash-production", "app-runtime"),
+        )
+
     def test_observer_never_receives_the_application_database_login(self):
         self.materialize(RUNTIME)
         tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
@@ -550,6 +568,7 @@ class SealAndMigrationTests(unittest.TestCase):
             "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
             "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
                 "name": "aidash", "args": ["server"], "volumeMounts": mounts,
+                "envFrom": [{"secretRef": {"name": "app-runtime"}}],
                 "env": [{"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]}],
             }]}}},
         })
@@ -565,8 +584,10 @@ class SealAndMigrationTests(unittest.TestCase):
         self.assertEqual(container["env"], [
             {"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]},
             {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "app-migration", "key": "DATABASE_URL"}}},
-            {"name": "AIDASH_DEMO_DATA_ENABLED", "value": "true"},
         ])
+        # The copied server template keeps reading app-runtime, which carries
+        # AIDASH_DEMO_DATA_ENABLED for a non-production Environment.
+        self.assertEqual(container["envFrom"], [{"secretRef": {"name": "app-runtime"}}])
         self.assertIn('--directory "$AIDASH_MEMORY_RECOVERY_DIR"', container["args"][0])
 
     def migration_job(self, identity, people=None, fork=False):
@@ -577,6 +598,7 @@ class SealAndMigrationTests(unittest.TestCase):
             "kind": kind.capitalize(), "metadata": {"name": name, "namespace": namespace},
             "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
                 "name": "aidash", "args": ["server"], "env": [], "volumeMounts": [],
+                "envFrom": [{"secretRef": {"name": "app-runtime"}}],
             }]}}},
         })
         applied = []
@@ -600,7 +622,9 @@ class SealAndMigrationTests(unittest.TestCase):
         spec, applied = self.migration_job("test")
         (container,) = spec["containers"]
         self.assertTrue(container["args"][0].endswith(" && aidash demo-data --from /app/deploy/demo-data/structure.json"))
-        self.assertIn({"name": "AIDASH_DEMO_DATA_ENABLED", "value": "true"}, container["env"])
+        # The Job inherits the server's app-runtime envFrom, which
+        # `materialize` gives the enabled flag to on non-production.
+        self.assertEqual(container["envFrom"], [{"secretRef": {"name": "app-runtime"}}])
         self.assertNotIn("volumes", spec)
         self.assertEqual(container["volumeMounts"], [])
         self.assertEqual(applied, [])

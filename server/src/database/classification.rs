@@ -267,8 +267,10 @@ pub const TABLES: &[Table] = &[
 	table("identity", "demo_data_loads", DeploymentWide),
 	// a Demo Reservation, spent by the sign-in of the email it names
 	table("identity", "demo_reservations", TenantOwned),
-	// the Tenant each Demo data structure key was assigned
-	named("identity", "demo_tenants"),
+	// The Tenant each Demo data structure key was assigned. Purge keeps this
+	// pointer: a later load resolves the purged Tenant through it and, seeing
+	// the Tenant deleted, leaves it deleted instead of creating a replacement.
+	table("identity", "demo_tenants", DeploymentWide),
 	// desktop sign-in
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
