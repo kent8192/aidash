@@ -71,6 +71,7 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `peer_mapping.update`           | `peer_mapping` | Create, update and disable a Peer Mapping                                                                      |
 | `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
 | `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
+| `approval.read`                 | `subject`      | Read a member's default Approval Mode and Approval Rules. Only the member writes them.                         |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 
@@ -82,7 +83,7 @@ The Tenant's policy marks the groups a Tenant Administrator may confer without r
 - `PUT /api/tenants/{tenant}/subjects/{subject}/groups` with `{"groups":[...],"expected_policy_revision":n}` replaces only Assignable Group memberships. Other groups and roles are retained.
 - Neither operation edits roles, group definitions or any other part of the policy. Those change only when the whole policy is replaced.
 
-A Tenant created through Aidash starts with two Assignable Groups: `administrators`, allowed every action, and `members`, allowed an explicit list of actions to use the Tenant and author definitions. The initial policy also grants `members` `capability.approve` on resource kind `tool` (policy `members-tool-call-approval`), so they may approve the Tool call approvals of their own Runs. It grants no other approval action. Tenant Administrators can therefore appoint each other; unmarking `administrators` stops that. A Tenant Administrator cannot disable its own Mapping or change its own subject's groups (403). Before a Tenant Administrator disables a Mapping, changes Assignable Groups or replaces the policy, and before a member leaves, the same transaction checks that another enabled Mapping of an enabled External Identity keeps every administration action without conditions; otherwise it answers 409. A replacement counts the actor's own Mapping. The administration actions are `registration.read`, `registration.approve`, `registration.reject`, `mapping.read`, `mapping.disable`, `subject.group.update`, `invitation.create`, `policy.read`, `policy.update` and `tenant.delete`, so a Tenant always keeps someone who can repair its policy (ADR 0026) and nobody leaves behind a Tenant no one can delete (ADR 0060). Conditional allows, and allows limited to particular resources, do not count, and every deny counts as matching. Deployment Administrator actions, including replacing the whole policy, are never blocked.
+A Tenant created through Aidash starts with two Assignable Groups: `administrators`, allowed every action, and `members`, allowed an explicit list of actions to use the Tenant and author definitions. The initial policy also grants `members` `capability.approve` on resource kind `tool` (policy `members-tool-call-approval`), so they may approve the Tool call approvals of their own Runs. It also grants `approval.advance` and `approval.mode.auto`, so members may approve in advance within what the Tenant's policy lets them approve, and use Auto. It never grants `approval.mode.bypass`, so a Tenant that wants Bypass must name it. Tenant Administrators can therefore appoint each other; unmarking `administrators` stops that. A Tenant Administrator cannot disable its own Mapping or change its own subject's groups (403). Before a Tenant Administrator disables a Mapping, changes Assignable Groups or replaces the policy, and before a member leaves, the same transaction checks that another enabled Mapping of an enabled External Identity keeps every administration action without conditions; otherwise it answers 409. A replacement counts the actor's own Mapping. The administration actions are `registration.read`, `registration.approve`, `registration.reject`, `mapping.read`, `mapping.disable`, `subject.group.update`, `invitation.create`, `policy.read`, `policy.update` and `tenant.delete`, so a Tenant always keeps someone who can repair its policy (ADR 0026) and nobody leaves behind a Tenant no one can delete (ADR 0060). Conditional allows, and allows limited to particular resources, do not count, and every deny counts as matching. Deployment Administrator actions, including replacing the whole policy, are never blocked.
 
 Subjects created, memberships changed and policies replaced by a Tenant Administrator advance the policy revision with the actor `oidc:<identity id>` and the Mapping it acted through (`actor_mapping_id`). A browser Deployment Administrator's replacement records `deployment_administrator:oidc:<identity id>`. A Deployment Administrator replacing the policy at an older `expected_revision` receives 409 and must reload.
 
@@ -301,7 +302,7 @@ The grant stores tenant, workspace, root subject, credential ID and the complete
 
 The policy action `tool.call_unapproved` on resource kind `tool` lets a tool call proceed without a Tool call approval. Its resource ID is the tool's registry ID, and its attributes are `version` and `operation`.
 
-A version of a Tenant's HTTP or MCP tool definition declares its one `invoke` operation a Read-only operation with `replay: "read_only"` in its transport, and calls of it need no Tool call approval whatever the policy says. The declaration belongs to the version: versions are immutable, so changing `replay` registers a new version (the same id and version with another value is a 409), and the Catalog Approval of the version covers the declaration. `idempotent` and `unsafe` calls still ask. A Read-only operation implies no Concurrency safety, and it still sends its arguments to the service the Tenant registered (ADR 0078). What an MCP server says about its own tools never makes an operation read-only: `POST /api/registry/mcp-tool-hint` reads one tool's `annotations.readOnlyHint` from the server's `tools/list` so that the registration form can prefill its choice, stores nothing and needs `registry.create` like the registration itself. It returns `{"read_only_hint": true | false | null}`. The server is reached like a Keyless endpoint (ADR 0036): public addresses and the Deployment's permitted private origins only, with host names checked against every address they resolve to and no redirects. A refused address answers 400 with the same message as an unreachable server.
+A version of a Tenant's HTTP or MCP tool definition declares its one `invoke` operation a Read-only operation with `replay: "read_only"` in its transport, and calls of it need no Tool call approval, though an explicit deny in the Tenant's policy still refuses them. The declaration belongs to the version: versions are immutable, so changing `replay` registers a new version (the same id and version with another value is a 409), and the Catalog Approval of the version covers the declaration. `idempotent` and `unsafe` calls still ask. A Read-only operation implies no Concurrency safety, and it still sends its arguments to the service the Tenant registered (ADR 0078). What an MCP server says about its own tools never makes an operation read-only: `POST /api/registry/mcp-tool-hint` reads one tool's `annotations.readOnlyHint` from the server's `tools/list` so that the registration form can prefill its choice, stores nothing and needs `registry.create` like the registration itself. It returns `{"read_only_hint": true | false | null}`. The server is reached like a Keyless endpoint (ADR 0036): public addresses and the Deployment's permitted private origins only, with host names checked against every address they resolve to and no redirects. A refused address answers 400 with the same message as an unreachable server.
 
 Under a `deferred@1` Exposure policy, `capability_search`, `capability_describe`, `capability_load` and `capability_unload` add no Agent flag, Core capability or resource requirement beyond the Run authority above and the `tool.invoke` check every bound Built-in passes. They disclose and change only the Run's own Binding snapshot and Exposure set. Loading a capability grants nothing: every Binding's authority is still checked at each step, and revocation fails the step whether or not the capability is loaded. `skill_asset_read` identifies its Skill by alias and decides by identity kind: a Registry Skill must be configured on the Agent and pass `skill.use`, and a direct Skill requires the Skills Core capability. An alias that names no Registry Skill on an Agent without Skill attachments or roots names no asset; it reaches the tool, which returns the recoverable `UNKNOWN_CAPABILITY`.
 
@@ -312,6 +313,55 @@ Each worker boundary reloads and locks the current policy, credential, grant, wo
 The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
 
 Scoped remote delegation uses durable source grants, receiver admissions and scoped Worker/Home boundaries, described below. It is the only remote delegation: the unscoped peer offer, workspace-command and control endpoints are removed (ADR 0043).
+
+## Approval Rules and Modes
+
+A person can decide in advance which approvals their own Runs get without waiting for a Designated approver. Their Approval Mode and Approval Rules never approve more than the Tenant's policy lets that person approve in advance. Aidash records each approval they give under their name, with the rule or mode that gave it (ADR 0076).
+
+These settings cover only Runs whose delegation chain starts at an enabled user subject of the Tenant and that execute on their home Node. They never cover a Run that arrived through Federation.
+
+Aidash decides each approval when the Run needs it, in this order:
+
+1. An explicit deny in the Tenant's policy refuses the approval.
+2. Direct permission in the Tenant's policy, or a Read-only operation, proceeds without an approval.
+3. The person's Approval Rules apply, deny before ask before allow. An ask rule asks in Auto and Bypass too, and refuses in Don't ask. An allow rule approves only what the policy lets the person approve in advance.
+4. The person's Approval Mode applies.
+
+| Mode      | What it does with an approval the Run would otherwise wait for                                        |
+| --------- | ----------------------------------------------------------------------------------------------------- |
+| Manual    | Asks the Designated approver.                                                                         |
+| Auto      | Is decided by the Tenant's approval Decider. Until that Decider ships (#412), Auto asks like Manual.  |
+| Don't ask | Is refused, so the Run never waits. The model's `human_request` is refused too.                       |
+| Bypass    | Is approved, within what the Tenant's policy lets the person approve. Deny and ask rules still apply. |
+
+A person has a default mode and can override it for any Thread. A change applies to running Runs at their next approval. The API refuses a mode the Tenant's policy does not allow. If the policy later withdraws a mode, it acts as Manual.
+
+Bypass needs a recorded acceptance, given once with `accept_bypass: true` on the preferences update. Until then Bypass acts as Manual, and a Thread cannot set it.
+
+The policy actions that govern these settings are checked on the approval's own resource or on a mode resource:
+
+| Action                 | Resource                     | Allows                                                                                                       |
+| ---------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `approval.advance`     | The approval's own resource  | Approval Rules and Bypass approve it, only where the person is an eligible approver and holds this action.   |
+| `approval.mode.auto`   | `approval_mode`, ID `auto`   | Using Auto. Members hold it by default.                                                                      |
+| `approval.mode.bypass` | `approval_mode`, ID `bypass` | Using Bypass. An allow of `*` never grants it, so the policy must name it. Members never hold it by default. |
+
+A rule names an approval kind, an effect (allow, ask or deny) and a target. The target is one target of that kind or every target of it. The kinds are a Tenant tool definition (optionally one operation), an outbound origin, a Research provider for Web search, a page host for Page reading, and a Generation policy. An allow rule beyond what the policy lets the person approve in advance stays stored with `effective: false` and has no effect.
+
+An approval that a rule or mode gives records `given_by` as `{"rule": id}` or `{"mode": "bypass"}`. `allow_always` approves once and creates an allow rule for the person. Only the person the Run's delegation chain starts at is offered it.
+
+The routes below read and change these settings. The `mine` routes and the Thread routes take the owner's own browser or desktop session, and a Subject Credential gets 403.
+
+| Method | Path                                                         | Body or result                                                                                      |
+| ------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| GET    | `/api/tenants/{tenant}/approval-preferences/mine`            | The default mode, Bypass acceptance, revision, and each mode with whether the policy allows it.     |
+| PUT    | `/api/tenants/{tenant}/approval-preferences/mine`            | Body: `expected_revision`, `default_mode`, and optionally `accept_bypass`.                          |
+| GET    | `/api/tenants/{tenant}/approval-rules/mine`                  | The person's rules, each with `effective`.                                                          |
+| POST   | `/api/tenants/{tenant}/approval-rules/mine`                  | Body: `kind`, `target` and `effect`.                                                                |
+| DELETE | `/api/tenants/{tenant}/approval-rules/mine/{id}`             | Deletes one of the person's rules.                                                                  |
+| GET    | `/api/tenants/{tenant}/subjects/{subject}/approval-settings` | Needs `approval.read`. Shows a member's default mode, Bypass acceptance and rules.                  |
+| GET    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | The caller's mode for the Thread, `null` when the default applies, the default mode, and the modes. |
+| PUT    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | Body: `mode`. `null` clears the Thread's mode.                                                      |
 
 ## Scoped conversations and human interaction
 
