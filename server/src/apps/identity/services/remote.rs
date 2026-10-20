@@ -8,7 +8,7 @@ use super::{access::Access, identity::Actor, peer::execution::Inspection};
 #[cfg(test)]
 use crate::registry::Search;
 use crate::{Result, domain::Task, federation::Federation, registry::EntityRef, store::Store};
-use aidash_domain::federation::{execution::Described, protocol::carries_corpus_digest};
+use aidash_domain::federation::execution::Described;
 use reinhardt::injectable;
 use serde_json::Value;
 #[cfg(test)]
@@ -142,9 +142,7 @@ impl RemoteGrants {
 		.await
 		.map_err(Into::into)
 	}
-	/// The pinned Description, plus the Workspace's current corpus digest for a
-	/// peer whose protocol carries it. A peer registered at an older version
-	/// gets exactly the reply it always did.
+	/// The pinned Description, plus the Workspace's current corpus digest.
 	pub(crate) async fn describe(
 		&self,
 		headers: HeaderMap,
@@ -158,15 +156,7 @@ impl RemoteGrants {
 		)
 		.await?;
 		let description = access.finish(Ok(description)).await?;
-		let corpus_digest = if headers
-			.get("x-aidash-protocol")
-			.and_then(|value| value.to_str().ok())
-			.is_some_and(carries_corpus_digest)
-		{
-			corpus_digest(&f.store, &description).await?
-		} else {
-			None
-		};
+		let corpus_digest = corpus_digest(&f.store, &description).await?;
 		Ok(Described {
 			description,
 			corpus_digest,
