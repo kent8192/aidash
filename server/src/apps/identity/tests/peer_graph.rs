@@ -11,22 +11,37 @@ use uuid::Uuid;
 
 const SOURCE: &str = "aidash://source";
 
+/// A stand-in Deployment that `tenant`'s default Node of the receiving
+/// Deployment accepts, and the Node of it that sends.
+struct Source {
+	remote: common::peering::Remote,
+	node: String,
+	receiver: aidash_domain::nodes::NodeAddress,
+}
+
+impl Source {
+	fn address(&self) -> String {
+		self.remote.node(&self.node)
+	}
+}
+
 async fn graph(
 	app: &common::TestApplication,
-	token: &str,
+	source: &Source,
 	viewer: Value,
 	cursor: Option<&str>,
 	limit: u16,
 ) -> (u16, Value) {
-	graph_custom(app, token, viewer, json!({"cursor":cursor,"limit":limit})).await
+	graph_custom(app, source, viewer, json!({"cursor":cursor,"limit":limit})).await
 }
 
 async fn graph_custom(
 	app: &common::TestApplication,
-	token: &str,
+	source: &Source,
 	viewer: Value,
 	overrides: Value,
 ) -> (u16, Value) {
+	use common::peering::Bearer;
 	let mut payload = json!({
 		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
 		"kinds":["workspace","goal","task","agent","tool","model"],
@@ -38,70 +53,63 @@ async fn graph_custom(
 		.as_object_mut()
 		.unwrap()
 		.extend(overrides.as_object().unwrap().clone());
-	let authorization = format!("Bearer {token}");
-	let response = async {
-		let client = &(app.client());
-		let mut request = client
-			.request(http::Method::POST, "/federation/v0.1/scoped/graph")
-			.body(bytes::Bytes::copy_from_slice(
-				payload.to_string().as_bytes(),
-			))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &[
-			("authorization", authorization.as_str()),
-			("x-aidash-node", SOURCE),
-			("x-aidash-protocol", "0.2"),
-		] {
-			request = request.header(*name, *value);
-		}
-		request.send().await
-	}
-	.await
-	.unwrap();
-	let status = response.status().as_u16();
-	let bytes = response.body();
-	(status, serde_json::from_slice(bytes).unwrap_or(Value::Null))
+	// A subject viewer is a Node's request as that subject; a Deployment
+	// Administrator viewer has no Node and names the receiving Deployment.
+	let (receiver, bearer, subject) = if viewer["kind"] == "deployment_administrator" {
+		let identity = viewer["id"].as_str().unwrap().parse().unwrap();
+		(
+			source.receiver.deployment.to_string(),
+			Bearer::Viewer(&source.remote, identity),
+			String::new(),
+		)
+	} else {
+		(
+			source.receiver.to_string(),
+			Bearer::Signed(&source.remote, source.node.clone()),
+			viewer["subject"].as_str().unwrap().to_owned(),
+		)
+	};
+	let response = common::peering::post_as(
+		&app.client(),
+		&receiver,
+		bearer,
+		&subject,
+		"/federation/v0.1/scoped/graph",
+		&payload,
+	)
+	.await;
+	(
+		response.status_code(),
+		response.json_value().unwrap_or(Value::Null),
+	)
 }
 
-async fn add_peer(f: &aidash_server::federation::Federation, node: &str) {
-	{
-		let query_bind_1 = node;
-		let query_bind_2 = if node == SOURCE {
-			"AIDASH_SECRET_TEST_PEER"
-		} else {
-			"AIDASH_SECRET_GRAPH_THIRD"
-		};
-		sqlx::query(
-			&reinhardt::query::Query::insert()
-				.into_table(reinhardt::query::Alias::new("peers"))
-				.columns([
-					reinhardt::query::Alias::new("node_id"),
-					reinhardt::query::Alias::new("endpoint"),
-					reinhardt::query::Alias::new("credential_env"),
-					reinhardt::query::Alias::new("protocol_version"),
-					reinhardt::query::Alias::new("enabled"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'0.2'"))
-						.expr(reinhardt::query::Expr::cust("TRUE"))
-						.to_owned(),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
+/// Registers a Node of the stand-in Deployment `deployment` at `tenant`'s
+/// default Node, through the registration route.
+async fn add_peer(
+	f: &aidash_server::federation::Federation,
+	app: &common::TestApplication,
+	deployment: &str,
+	tenant: &str,
+) -> Source {
+	let remote = common::peering::Remote::start(deployment).await;
+	let node = aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender")).to_string();
+	let receiver = common::default_node(&f.store, tenant).await;
+	common::peering::permit(f, &remote.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&common::peering::registration_path(tenant, receiver.node.as_str()),
+		remote.registration(&node),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	Source {
+		remote,
+		node,
+		receiver,
 	}
-	.unwrap();
 }
 
 #[rstest::rstest]
@@ -127,8 +135,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	add_peer(&f, SOURCE).await;
-	let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
+	let source = add_peer(&f, &app, SOURCE, "acme").await;
 	let (status, visible_peers) = request(
 		&app,
 		&subject_token,
@@ -138,7 +145,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{visible_peers}");
-	assert_eq!(visible_peers, json!([{"node_id":SOURCE}]));
+	assert_eq!(visible_peers, json!([{"node_id":source.address()}]));
 	assert_eq!(
 		request(
 			&app,
@@ -151,12 +158,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.0,
 		403
 	);
-	add_peer(&f, "aidash://third").await;
-	let viewer = json!({"kind":"subject","tenant":"source-tenant","subject":"source-subject"});
-	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
-		403
-	);
+	let _third = add_peer(&f, &app, "aidash://third", "acme").await;
+	let viewer = json!({"kind":"subject","subject":"source-subject"});
+	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
 	let (_, issued) = request(
 		&app,
 		&f.config.api_token,
@@ -171,13 +175,13 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"source-subject",
+			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
-	let (status, page) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
+	let (status, page) = graph(&app, &source, viewer.clone(), None, 80).await;
 	assert_eq!(status, 200, "{page}");
 	let nodes = page["nodes"].as_array().unwrap();
 	assert!(
@@ -207,7 +211,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	assert!(page["activity"].as_array().is_some());
 	let (status, goals) = graph_custom(
 		&app,
-		&peer_token,
+		&source,
 		viewer.clone(),
 		json!({"kinds":["goal"],"relations":["goal"]}),
 	)
@@ -227,13 +231,13 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["goal_body"] == long_goal)
 	);
-	let (status, first) = graph(&app, &peer_token, viewer.clone(), None, 2).await;
+	let (status, first) = graph(&app, &source, viewer.clone(), None, 2).await;
 	assert_eq!(status, 200, "{first}");
 	let cursor = first["next_cursor"]
 		.as_str()
 		.expect("additional authorized data");
 	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), Some(cursor), 2)
+		graph(&app, &source, viewer.clone(), Some(cursor), 2)
 			.await
 			.0,
 		200
@@ -241,9 +245,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let mut bad = cursor.to_owned();
 	bad.push('x');
 	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), Some(&bad), 2)
-			.await
-			.0,
+		graph(&app, &source, viewer.clone(), Some(&bad), 2).await.0,
 		403
 	);
 	let mut other_policy = common::policy(f.config.deployment.as_str());
@@ -269,6 +271,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 					Alias::new("title"),
 					Alias::new("goal"),
 					Alias::new("tenant"),
+					Alias::new("node"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -279,6 +282,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 						.expr(Expr::cust("'Other tenant'"))
 						.expr(Expr::cust("'Unrelated'"))
 						.expr(Expr::cust("'other'"))
+						.expr(Expr::cust(
+							"(SELECT name FROM nodes WHERE tenant = 'other' AND is_default)",
+						))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -318,7 +324,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.into_table(Alias::new("events"))
 			.columns([
 				Alias::new("id"),
-				Alias::new("node_id"),
+				Alias::new("node"),
 				Alias::new("workspace_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
@@ -326,7 +332,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			])
 			.values_panic([
 				IntoValue::into_value(Uuid::new_v4()),
-				IntoValue::into_value(f.config.deployment.as_str()),
+				IntoValue::into_value(common::default_node(&f.store, "other").await.node.as_str()),
 				IntoValue::into_value(other_workspace),
 				IntoValue::into_value("workspace.updated"),
 				IntoValue::into_value(json!({})),
@@ -337,11 +343,11 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let (status, after_other_tenant) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
+	let (status, after_other_tenant) = graph(&app, &source, viewer.clone(), None, 80).await;
 	assert_eq!(status, 200, "{after_other_tenant}");
 	assert_eq!(after_other_tenant["generation"], page["generation"]);
 	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), Some(cursor), 2)
+		graph(&app, &source, viewer.clone(), Some(cursor), 2)
 			.await
 			.0,
 		200
@@ -393,6 +399,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			"task_id",
 			"workspace_id",
 			"home_node",
+			"node",
 			"agent_id",
 			"agent_version",
 			"phase",
@@ -406,7 +413,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			IntoValue::into_value(Uuid::from_u128(index)),
 			IntoValue::into_value(Uuid::from_u128(index + 1000)),
 			IntoValue::into_value(workspace_id),
-			IntoValue::into_value(f.config.deployment.as_str()),
+			IntoValue::into_value(common::default_node(&f.store, "acme").await.to_string()),
+			IntoValue::into_value(common::default_node(&f.store, "acme").await.node.as_str()),
 			IntoValue::into_value("research"),
 			IntoValue::into_value("1.0.0"),
 			IntoValue::into_value("THINKING"),
@@ -421,7 +429,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let mut options = json!({"kinds":["task","run","agent"],"relations":["executes"],"limit":80});
 	let mut run_page = Value::Null;
 	for _ in 0..4 {
-		let (status, page) = graph_custom(&app, &peer_token, viewer.clone(), options.clone()).await;
+		let (status, page) = graph_custom(&app, &source, viewer.clone(), options.clone()).await;
 		assert_eq!(status, 200, "{page}");
 		if page["nodes"]
 			.as_array()
@@ -479,7 +487,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.unwrap();
 	let (status, unapproved) = graph_custom(
 		&app,
-		&peer_token,
+		&source,
 		viewer.clone(),
 		json!({"kinds":["run","agent"],"relations":["executes"],"limit":80}),
 	)
@@ -515,30 +523,27 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"source-subject",
+			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":issued["credential"]["id"],"enabled":false,"expected_revision":1,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
-	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
-		403
-	);
+	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
 	let (status, mapping) = request(
 		&app,
 		&f.config.api_token,
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"source-subject",
+			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":2,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
 	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), Some(cursor), 2)
+		graph(&app, &source, viewer.clone(), Some(cursor), 2)
 			.await
 			.0,
 		409
@@ -559,7 +564,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await
 	.unwrap();
-	let (status, without_agent) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
+	let (status, without_agent) = graph(&app, &source, viewer.clone(), None, 80).await;
 	assert_eq!(status, 200, "{without_agent}");
 	assert!(
 		!without_agent["nodes"]
@@ -587,8 +592,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-workspace-graph","effect":"deny","subjects":{"any":true},
 		"actions":["workspace.read"],"resources":{"kinds":["workspace"]},
-		"condition":{"op":"eq","left":{"source":"resource","path":"/source_tenant"},
-			"right":{"source":"literal","value":"source-tenant"}},
+		"condition":{"op":"eq","left":{"source":"environment","path":"/source_scope"},
+			"right":{"source":"literal","value":"remote"}},
 	}));
 	let (status, written) = request(
 		&app,
@@ -599,7 +604,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	let (status, without_goal) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
+	let (status, without_goal) = graph(&app, &source, viewer.clone(), None, 80).await;
 	assert_eq!(status, 200, "{without_goal}");
 	assert!(
 		!without_goal["nodes"]
@@ -612,14 +617,14 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	assert_eq!(
 		graph(
 			&app,
-			&peer_token,
+			&source,
 			json!({"kind":"deployment_administrator","id":deployment_administrator}),
 			None,
 			80
 		)
 		.await
 		.0,
-		403
+		401
 	);
 	let (status, grant) = request(
 		&app,
@@ -627,14 +632,14 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/peer-graph-grants",
 		json!({
-			"source_node":SOURCE,"source_identity":deployment_administrator,"enabled":true,"expected_revision":0,
+			"source_deployment":SOURCE,"source_identity":deployment_administrator,"endpoint":source.remote.endpoint,"key_id":source.remote.key_id(),"enabled":true,"expected_revision":0,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{grant}");
 	let (status, deployment_administrator_page) = graph(
 		&app,
-		&peer_token,
+		&source,
 		json!({"kind":"deployment_administrator","id":deployment_administrator}),
 		None,
 		80,
@@ -661,14 +666,11 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
-		403
-	);
+	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
 	assert_eq!(
 		graph(
 			&app,
-			&peer_token,
+			&source,
 			json!({"kind":"deployment_administrator","id":deployment_administrator}),
 			None,
 			80
@@ -691,10 +693,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
-		403
-	);
+	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
 	policy["subjects"]["alice"]["enabled"] = json!(true);
 	let (status, written) = request(
 		&app,
@@ -705,10 +704,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
-		200
-	);
+	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 200);
 	let (status, short) = request(
 		&app,
 		&f.config.api_token,
@@ -726,17 +722,14 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"source-subject",
+			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":short["credential"]["id"],"enabled":true,"expected_revision":3,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
 	tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-	assert_eq!(
-		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
-		403
-	);
+	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
 	let gate = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -744,7 +737,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.columns(["id", "coordinator", "digest", "manifest", "phase"].map(Alias::new))
 			.values_panic([
 				IntoValue::into_value(gate),
-				IntoValue::into_value(f.config.deployment.as_str()),
+				IntoValue::into_value(common::default_node(&f.store, "acme").await.to_string()),
 				IntoValue::into_value("fixture"),
 				IntoValue::into_value(json!({})),
 				IntoValue::into_value("PREPARED"),
@@ -778,7 +771,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/peer-graph-grants",
 		json!({
-			"source_node":SOURCE,"source_identity":deployment_administrator,"enabled":false,"expected_revision":1,
+			"source_deployment":SOURCE,"source_identity":deployment_administrator,"enabled":false,"expected_revision":1,
 		}),
 	)
 	.await;
@@ -804,14 +797,14 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	assert_eq!(
 		graph(
 			&app,
-			&peer_token,
+			&source,
 			json!({"kind":"deployment_administrator","id":deployment_administrator}),
 			None,
 			80
 		)
 		.await
 		.0,
-		403
+		401
 	);
 	let _ = subject_token;
 	cleanup(f, &url, &schema).await;
@@ -827,8 +820,6 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	bootstrap(&f, &app, "http://localhost:1").await;
-	add_peer(&f, SOURCE).await;
-	let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
 	let final_id = Uuid::from_u128(u128::MAX);
 	let policy = json!({
 		"tenant":"sparse","subjects":{"alice":{"kind":"user"}},
@@ -841,6 +832,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		]
 	});
 	common::tenant_root(&f, "sparse").await;
+	let source = add_peer(&f, &app, SOURCE, "sparse").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,
@@ -864,7 +856,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		&f.config.api_token,
 		"POST",
 		"/api/authorization/sparse/peer-mappings",
-		json!({"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"sparse-subject",
+		json!({"node":source.receiver.node,"source_node":source.address(),"source_subject":"sparse-subject",
 			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0}),
 	)
 	.await;
@@ -877,6 +869,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			Alias::new("title"),
 			Alias::new("goal"),
 			Alias::new("tenant"),
+			Alias::new("node"),
 		]);
 		let mut authorities = Query::insert();
 		authorities
@@ -892,6 +885,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				IntoValue::into_value("Hidden"),
 				IntoValue::into_value("Hidden goal"),
 				IntoValue::into_value("sparse"),
+				IntoValue::into_value(source.receiver.node.as_str()),
 			]);
 			authorities.values_panic([
 				IntoValue::into_value(*id),
@@ -918,6 +912,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 					Alias::new("title"),
 					Alias::new("goal"),
 					Alias::new("tenant"),
+					Alias::new("node"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -928,6 +923,9 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 						.expr(Expr::cust("'Last'"))
 						.expr(Expr::cust("'Reachable goal'"))
 						.expr(Expr::cust("'sparse'"))
+						.expr(Expr::cust(
+							"(SELECT name FROM nodes WHERE tenant = 'sparse' AND is_default)",
+						))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -966,7 +964,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	let mut events = Query::insert();
 	events.into_table(Alias::new("events")).columns([
 		Alias::new("id"),
-		Alias::new("node_id"),
+		Alias::new("node"),
 		Alias::new("workspace_id"),
 		Alias::new("kind"),
 		Alias::new("data"),
@@ -979,7 +977,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	for (id, kind) in samples {
 		events.values_panic([
 			IntoValue::into_value(Uuid::new_v4()),
-			IntoValue::into_value(f.config.deployment.as_str()),
+			IntoValue::into_value(source.receiver.node.as_str()),
 			IntoValue::into_value(id),
 			IntoValue::into_value(kind),
 			IntoValue::into_value(json!({})),
@@ -991,15 +989,15 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let viewer = json!({"kind":"subject","tenant":"source-tenant","subject":"sparse-subject"});
+	let viewer = json!({"kind":"subject","subject":"sparse-subject"});
 	let options = json!({"kinds":["goal"],"relations":[]});
-	let (status, first) = graph_custom(&app, &peer_token, viewer.clone(), options.clone()).await;
+	let (status, first) = graph_custom(&app, &source, viewer.clone(), options.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["nodes"].as_array().unwrap().is_empty());
 	let cursor = first["next_cursor"].as_str().expect("scan continuation");
 	let mut next_options = options;
 	next_options["cursor"] = json!(cursor);
-	let (status, second) = graph_custom(&app, &peer_token, viewer.clone(), next_options).await;
+	let (status, second) = graph_custom(&app, &source, viewer.clone(), next_options).await;
 	assert_eq!(status, 200, "{second}");
 	assert!(
 		second["nodes"]
@@ -1009,12 +1007,12 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			.any(|node| node["goal_body"] == "Reachable goal")
 	);
 	let options = json!({"kinds":["workspace","goal"],"relations":[],"limit":2});
-	let (status, first) = graph_custom(&app, &peer_token, viewer.clone(), options.clone()).await;
+	let (status, first) = graph_custom(&app, &source, viewer.clone(), options.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["nodes"].as_array().unwrap().is_empty());
 	let mut options = options;
 	options["cursor"] = first["next_cursor"].clone();
-	let (status, activity) = graph_custom(&app, &peer_token, viewer, options).await;
+	let (status, activity) = graph_custom(&app, &source, viewer, options).await;
 	assert_eq!(status, 200, "{activity}");
 	let reference = json!([
 		"resource",

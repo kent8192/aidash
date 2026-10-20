@@ -255,6 +255,9 @@ pub async fn signed(
 pub enum Bearer<'a> {
 	/// A Federation token the stand-in Deployment signs for one of its Nodes.
 	Signed(&'a Remote, String),
+	/// A Peer Graph Grant's viewer: a Deployment Administrator of the stand-in
+	/// Deployment, who has no Node.
+	Viewer(&'a Remote, uuid::Uuid),
 	/// Anything else, sent as is.
 	Raw(&'a str),
 }
@@ -263,7 +266,7 @@ pub enum Bearer<'a> {
 /// `receiver`, as `subject`, with the credential `bearer` names.
 pub async fn post_as(
 	client: &reinhardt::test::APIClient,
-	receiver: &aidash_domain::nodes::NodeAddress,
+	receiver: &str,
 	bearer: Bearer<'_>,
 	subject: &str,
 	path: &str,
@@ -276,12 +279,12 @@ pub async fn post_as(
 	let headers = match bearer {
 		Bearer::Signed(remote, node) => {
 			remote
-				.headers(
-					&node,
-					&receiver.to_string(),
-					subject,
-					("POST", target, bytes.as_bytes()),
-				)
+				.headers(&node, receiver, subject, ("POST", target, bytes.as_bytes()))
+				.await
+		}
+		Bearer::Viewer(remote, identity) => {
+			remote
+				.viewer_headers(receiver, identity, ("POST", target, bytes.as_bytes()))
 				.await
 		}
 		Bearer::Raw(token) => peer_headers(token),
@@ -376,6 +379,30 @@ impl Remote {
 				&self.node(sender),
 				receiver,
 				subject,
+				request,
+			)
+			.await,
+		)
+	}
+}
+
+impl Remote {
+	/// The headers of a request that a Deployment Administrator of this
+	/// Deployment sends to the Deployment `receiver` under a Peer Graph Grant:
+	/// the token names the two Deployments and the browser identity, no Node.
+	pub async fn viewer_headers(
+		&self,
+		receiver: &str,
+		identity: uuid::Uuid,
+		request: (&str, &str, &[u8]),
+	) -> [(&'static str, String); 2] {
+		peer_headers(
+			&token(
+				&self.key.key,
+				&self.id,
+				&self.id,
+				receiver,
+				&format!("oidc:{identity}"),
 				request,
 			)
 			.await,

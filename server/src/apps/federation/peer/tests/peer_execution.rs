@@ -85,7 +85,7 @@ async fn inspect(
 	decoded(
 		peering::post_as(
 			&app.anonymous,
-			&receiver,
+			&receiver.to_string(),
 			bearer,
 			subject,
 			"/federation/v0.1/scoped/execution/inspect",

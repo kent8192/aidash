@@ -111,7 +111,7 @@ async fn discover(app: &EndpointFixture, bearer: Bearer<'_>, subject: &str) -> (
 	let receiver = crate::endpoint::default_node(&app.runtime.store, "acme").await;
 	let response = peering::post_as(
 		&app.anonymous,
-		&receiver,
+		&receiver.to_string(),
 		bearer,
 		subject,
 		"/federation/v0.1/scoped/discover",
