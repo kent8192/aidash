@@ -2002,6 +2002,30 @@ async fn three_blocks_in_a_row_return_the_run_to_asking_until_a_person_approves_
 }
 
 #[tokio::test]
+async fn a_blocked_verdict_is_not_recorded_once_auto_no_longer_covers_it() {
+	// Arrange: the Decider blocks while the person switches to Manual.
+	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	let run = scope.run.clone();
+	scope.settings.as_mut().unwrap().mode = ApprovalMode::Manual;
+
+	// Act
+	let settled = settle(
+		&mut scope,
+		&run,
+		approval_id,
+		blocked(BlockReason::Destructive),
+	)
+	.await
+	.unwrap();
+
+	// Assert: the person decides, not the stale blocked verdict.
+	assert!(!settled);
+	assert_eq!(scope.records[&approval_id].state, "pending");
+	assert!(scope.records[&approval_id].data.get("refused_by").is_none());
+}
+
+#[tokio::test]
 async fn a_call_the_decider_allows_ends_the_blocks_in_a_row() {
 	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
 	for (n, verdict) in [

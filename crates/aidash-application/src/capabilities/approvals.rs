@@ -1257,10 +1257,7 @@ pub async fn settle(
 			evidence,
 		),
 	};
-	if record.state != "pending"
-		|| matches!(settlement, Settlement::Allowed { .. })
-			&& !judged_now(scope, run, &record).await?
-	{
+	if record.state != "pending" || !judged_now(scope, run, &record).await? {
 		return Ok(false);
 	}
 	advice.record(&mut record.data);

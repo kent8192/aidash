@@ -207,6 +207,83 @@ fn an_exact_search_rule_is_effective_on_a_real_destination_the_policy_names() {
 }
 
 #[test]
+fn a_generation_rule_sees_the_request_attributes_admission_checks() {
+	// Arrange: admission passes the generated policy, its root subject and a
+	// task id. The settings view has no task yet, but must still carry these
+	// attributes so the policy's conditions are evaluated.
+	let mut bundle = bundle();
+	bundle.policies.push(Policy {
+		id: "alice-generation".into(),
+		effect: Effect::Allow,
+		subjects: SubjectSelector {
+			ids: ["alice".to_owned()].into(),
+			..Default::default()
+		},
+		actions: ["generation.approve".to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: ["generation".to_owned()].into(),
+			ids: BTreeSet::new(),
+		},
+		condition: Some(Condition::All {
+			conditions: vec![
+				Condition::Eq {
+					left: Operand::Resource {
+						path: "/policy_id".into(),
+					},
+					right: Operand::Literal {
+						value: json!("gen"),
+					},
+				},
+				Condition::Eq {
+					left: Operand::Resource {
+						path: "/root_subject".into(),
+					},
+					right: Operand::Literal {
+						value: json!("alice"),
+					},
+				},
+				Condition::Exists {
+					value: Operand::Resource {
+						path: "/task_id".into(),
+					},
+				},
+			],
+		}),
+	});
+	bundle.policies.push(Policy {
+		id: "alice-catalog".into(),
+		effect: Effect::Allow,
+		subjects: SubjectSelector {
+			ids: ["alice".to_owned()].into(),
+			..Default::default()
+		},
+		actions: ["catalog.approve".to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: ["registry".to_owned()].into(),
+			ids: BTreeSet::new(),
+		},
+		condition: None,
+	});
+	let template: aidash_domain::registry::Entry = serde_json::from_value(json!({
+		"id": "generated",
+		"version": "1.0.0",
+		"kind": "agent",
+		"name": {},
+		"description": {}
+	}))
+	.unwrap();
+	let generation = rule(ApprovalKind::Generation, RuleTarget::Exact("gen".into()));
+
+	// Act + Assert
+	assert!(effective(
+		&bundle,
+		"alice",
+		&generation,
+		&[("gen".to_owned(), template)]
+	));
+}
+
+#[test]
 fn a_rule_for_every_target_applies_to_the_real_ids_the_policy_names() {
 	// Arrange: members may approve only the real tool `crm`, not the
 	// representative id alone.
@@ -217,6 +294,14 @@ fn a_rule_for_every_target_applies_to_the_real_ids_the_policy_names() {
 		.find(|policy| policy.id == MEMBER_TOOL_APPROVAL)
 		.expect("members approve their tool calls");
 	approval.resources.ids = ["crm".to_owned()].into();
+	approval.condition = Some(Condition::Eq {
+		left: Operand::Resource {
+			path: "/operation".into(),
+		},
+		right: Operand::Literal {
+			value: json!("invoke"),
+		},
+	});
 	let every = rule(ApprovalKind::ToolCall, RuleTarget::Every);
 
 	// Act + Assert

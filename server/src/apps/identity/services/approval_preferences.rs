@@ -20,7 +20,7 @@ use crate::authorization::{
 };
 use crate::federation::Federation;
 use crate::{Error, Result};
-use aidash_application::capabilities::approvals::{CALL_UNAPPROVED, DISCLOSE};
+use aidash_application::capabilities::approvals::{CALL_UNAPPROVED, DISCLOSE, INVOKE};
 use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, MODE_RESOURCE, RuleEffect, RuleTarget,
 };
@@ -147,7 +147,12 @@ const REPRESENTATIVE: &str = "any";
 /// target of a kind, and a search rule (whose destination only a Run knows),
 /// are judged on `id`: a real target the policy names, or [`REPRESENTATIVE`]
 /// when the policy allows the whole kind.
-fn judged(bundle: &PolicyBundle, rule: &ApprovalRule, id: &str) -> (Resource, &'static str) {
+fn judged(
+	bundle: &PolicyBundle,
+	owner: &str,
+	rule: &ApprovalRule,
+	id: &str,
+) -> (Resource, &'static str) {
 	let exact = match &rule.target {
 		RuleTarget::Exact(target) => Some(target.as_str()),
 		RuleTarget::Every => None,
@@ -158,15 +163,16 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule, id: &str) -> (Resource, &'
 				Some(target) => target
 					.strip_prefix("tool:")
 					.and_then(|target| target.split_once('#'))
-					.unwrap_or((REPRESENTATIVE, "")),
-				None => (id, ""),
+					.unwrap_or((REPRESENTATIVE, INVOKE)),
+				None => (id, INVOKE),
 			};
-			let mut attributes = json!({"action": CALL_UNAPPROVED});
-			if !operation.is_empty() {
-				attributes["operation"] = json!(operation);
-			}
 			(
-				resource(bundle, "tool", tool, attributes),
+				resource(
+					bundle,
+					"tool",
+					tool,
+					json!({"operation": operation, "action": CALL_UNAPPROVED}),
+				),
 				"capability.approve",
 			)
 		}
@@ -210,11 +216,15 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule, id: &str) -> (Resource, &'
 		}
 		ApprovalKind::Generation => {
 			let policy = exact.unwrap_or(id);
-			let attributes = if policy == REPRESENTATIVE {
-				json!({})
-			} else {
-				json!({"policy_id": policy})
-			};
+			// Settings are read before a Task exists: the owner is the root
+			// subject, and a nil task id keeps existence conditions evaluable.
+			let mut attributes = json!({
+				"root_subject": owner,
+				"task_id": Uuid::nil(),
+			});
+			if policy != REPRESENTATIVE {
+				attributes["policy_id"] = json!(policy);
+			}
 			(
 				resource(bundle, "generation", REPRESENTATIVE, attributes),
 				"generation.approve",
@@ -292,7 +302,7 @@ fn effective_for(
 	target: &str,
 	templates: &[(String, aidash_domain::registry::Entry)],
 ) -> bool {
-	let (protected, action) = judged(bundle, rule, target);
+	let (protected, action) = judged(bundle, owner, rule, target);
 	let eligible = if action == "capability.approve" {
 		approver_eligible(
 			bundle,
