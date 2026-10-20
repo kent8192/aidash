@@ -677,5 +677,6 @@
   "catalogRegistryUnavailable": "The Registry is unavailable with your current access.",
   "deciderClefRoute": "Ask Cloudflare's Clef (on Cloudflare, DeepInfra or PrimeIntellect) when Jev is unavailable",
   "catalogDeciderRecipients": "Sends Run state to",
-  "catalogReadOnlyNotice": "This version declares that its calls only read, so they need no Tool call approval. Approving the version approves that declaration."
+  "catalogReadOnlyNotice": "This version declares that its calls only read, so they need no Tool call approval. Approving the version approves that declaration.",
+  "approvals": "Approvals"
 }

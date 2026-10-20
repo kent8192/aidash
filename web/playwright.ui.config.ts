@@ -35,6 +35,7 @@ export default defineConfig({
     "catalog-approval.spec.ts",
     "citations.spec.ts",
     "community-sign-in.spec.ts",
+    "approval-modes.spec.ts",
   ],
   workers: 1,
   retries: 0,

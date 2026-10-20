@@ -16,6 +16,12 @@ import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
 import { requestPrice, runGrantScope } from "../research";
+import { approvalCopy } from "../approval-settings-copy";
+import {
+  decisionScope,
+  givenBy,
+  type DecisionChoice,
+} from "../approval-settings-model";
 import {
   isToolCard,
   toolCallView,
@@ -228,6 +234,8 @@ function stateText(item: Approval, ja: boolean, locale: string) {
 export function ApprovalCardView({ item }: { item: Approval }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
+  const words = approvalCopy[locale];
+  const advance = givenBy(item.given_by);
   const client = useQueryClient();
   const [runGrant, setRunGrant] = useState(false);
   const [minutes, setMinutes] = useState(15);
@@ -258,10 +266,11 @@ export function ApprovalCardView({ item }: { item: Approval }) {
           idempotency_key: crypto.randomUUID(),
           expected_revision: item.revision,
           choice,
-          targets: runGrant ? item.targets : null,
-          expires_at: runGrant
-            ? new Date(Date.now() + minutes * 60000).toISOString()
-            : null,
+          ...decisionScope(choice as DecisionChoice, {
+            targets: item.targets,
+            minutes,
+            now: Date.now(),
+          }),
         });
       await client.invalidateQueries({ queryKey: ["core-approvals"] });
     } catch (e) {
@@ -290,6 +299,15 @@ export function ApprovalCardView({ item }: { item: Approval }) {
             : "Blocked: no eligible approver")}
       </Hint>
       <Hint role="status">{stateText(item, ja, locale)}</Hint>
+      {advance && (
+        <Hint>
+          {item.viewer_is_approver
+            ? advance.by === "rule"
+              ? words.givenByRule
+              : words.givenByBypass
+            : words.givenByOther(item.decided_by ?? "?", advance.by)}
+        </Hint>
+      )}
       {item.state === "pending" && item.viewer_is_approver && (
         <>
           <Check
@@ -334,6 +352,16 @@ export function ApprovalCardView({ item }: { item: Approval }) {
                   ? "今回だけ許可"
                   : "Allow once"}
             </Button>
+            {item.allow_always && (
+              <Button
+                variant="outline"
+                type="button"
+                disabled={busy}
+                onClick={() => void action("allow_always")}
+              >
+                {words.alwaysAllow}
+              </Button>
+            )}
             <Button
               variant="outline"
               type="button"
@@ -343,6 +371,7 @@ export function ApprovalCardView({ item }: { item: Approval }) {
               {ja ? "拒否" : "Deny"}
             </Button>
           </div>
+          {item.allow_always && <Hint>{words.alwaysAllowScope}</Hint>}
         </>
       )}
       {/* A disclosure approval is decided, not revoked; its Run grant is. */}

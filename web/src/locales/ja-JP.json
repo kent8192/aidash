@@ -677,5 +677,6 @@
   "catalogRegistryUnavailable": "現在の権限ではレジストリを表示できません。",
   "deciderClefRoute": "Jevを使えないときはCloudflareのClef（Cloudflare、DeepInfra、PrimeIntellect上）に尋ねる",
   "catalogDeciderRecipients": "Runの状態の送信先",
-  "catalogReadOnlyNotice": "このバージョンは、呼び出しが読み取りのみであると宣言しているため、ツール呼び出しの承認は不要になります。バージョンを承認すると、この宣言も承認されます。"
+  "catalogReadOnlyNotice": "このバージョンは、呼び出しが読み取りのみであると宣言しているため、ツール呼び出しの承認は不要になります。バージョンを承認すると、この宣言も承認されます。",
+  "approvals": "承認"
 }

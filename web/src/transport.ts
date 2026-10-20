@@ -251,6 +251,8 @@ export async function apiFetch<T>(
   const response = await authenticatedFetch(url, options);
   if (response.headers.get("content-type")?.startsWith("text/event-stream"))
     return response as T;
+  // A bodyless success, such as the 204 of a delete, has nothing to parse.
+  if ([204, 205].includes(response.status)) return undefined as T;
   const result = (await response.json()) as T;
   current(generation);
   return result;

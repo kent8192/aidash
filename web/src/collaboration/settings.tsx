@@ -9,6 +9,7 @@ import {
   Plus,
   Search,
   Server,
+  ShieldCheck,
   Store,
   type LucideIcon,
 } from "lucide-react";
@@ -25,6 +26,8 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { ApprovalSettingsPage } from "../approval-settings";
+import { approvalCopy } from "../approval-settings-copy";
 import { DeploymentPage } from "../deployment";
 import {
   Alert,
@@ -54,6 +57,7 @@ import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import type { Selection } from "./details";
 import {
+  personalSettingsSections,
   visibleSettingsSections,
   type IntegratedView,
   type SettingsSection,
@@ -72,6 +76,7 @@ const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   deployment: Container,
   providerCredentials: KeyRound,
   marketplace: Store,
+  approvals: ShieldCheck,
 };
 
 const listCopy = {
@@ -107,9 +112,10 @@ function SettingsFrame({
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const label = useSectionLabel();
-  const sections = visibleSettingsSections.filter(
-    (value) =>
-      deploymentAdministrator || !deploymentAdministratorSections[value],
+  const sections = visibleSettingsSections.filter((value) =>
+    deploymentAdministrator
+      ? !personalSettingsSections[value]
+      : !deploymentAdministratorSections[value],
   );
   return (
     <section className="collab-settings flex h-full min-h-0 flex-col">
@@ -595,6 +601,15 @@ export function Configuration({
           {section === "marketplace" && deploymentAdministrator && (
             <MarketplaceAdministration />
           )}
+          {section === "approvals" &&
+            (data.access.kind === "subject" ? (
+              <ApprovalSettingsPage
+                key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                tenant={data.access.tenant}
+              />
+            ) : (
+              <Notice role="status">{approvalCopy[locale].personalOnly}</Notice>
+            ))}
           {section === "node" && (
             <NodeView data={data} open={open} disconnect={disconnect} />
           )}
