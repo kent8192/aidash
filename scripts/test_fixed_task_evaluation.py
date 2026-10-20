@@ -854,13 +854,15 @@ class RunnerTest(unittest.TestCase):
     def test_refusal_messages_match_the_rust_definitions(self):
         approvals = (evaluation.ROOT / "crates/aidash-application/src/ports/capabilities/approvals.rs").read_text()
         harness = (evaluation.ROOT / "crates/aidash-harness/src/agent.rs").read_text()
+        auto = (evaluation.ROOT / "crates/aidash-domain/src/decision/approval.rs").read_text()
         body = re.search(r"pub fn message\(self\) -> &'static str \{(.*?)\n\t\}", approvals, re.S).group(1)
-        messages = re.findall(r'=> "([^"]+)"', body)
+        auto_body = re.search(r"pub const fn refusal_message\(self\) -> &'static str \{(.*?)\n\t\}", auto, re.S).group(1)
+        messages = re.findall(r'=> "([^"]+)"', body) + re.findall(r'=> "([^"]+)"', auto_body)
         self.assertEqual(set(messages) | {"tool call approval is unavailable without scoped authority",
                                           "tool call approval was denied or expired"},
                          set(tool_call_approvals.REFUSALS))
         for message in tool_call_approvals.REFUSALS:
-            self.assertTrue(f'"{message}"' in approvals + harness, message)
+            self.assertTrue(f'"{message}"' in approvals + harness + auto, message)
 
     def test_text_macros_expand_deterministically(self):
         self.assertEqual(len(runner.expand("@oversized:500")), 500)
