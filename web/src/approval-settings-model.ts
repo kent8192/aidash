@@ -140,6 +140,16 @@ export function deadlineDraft(seconds: number | null): DeadlineDraft {
   return { none: false, amount: String(seconds / unitSeconds[unit]), unit };
 }
 
+/** The Answer Deadline in the unit the form uses, for a read-only summary. */
+export function deadlineSummary(
+  seconds: number | null,
+  units: Record<DeadlineUnit, string>,
+  none: string,
+): string {
+  const draft = deadlineDraft(seconds);
+  return draft.none ? none : `${draft.amount} ${units[draft.unit]}`;
+}
+
 export type DeadlineProblem = "amount_required" | "too_short" | "too_long";
 
 export type DeadlineResult =

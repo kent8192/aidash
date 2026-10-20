@@ -10,6 +10,7 @@ import {
   continuesAt,
   deadlineDraft,
   deadlineSeconds,
+  deadlineSummary,
   deadlineTime,
   deadlineUpdate,
   decisionScope,
@@ -70,6 +71,14 @@ test("a default mode is saved with the revision and keeps the Answer Deadline", 
     ).answer_deadline_seconds,
     null,
   );
+});
+
+test("a member's Answer Deadline reads in the form's largest exact unit", () => {
+  const units = { minutes: "Minutes", hours: "Hours", days: "Days" };
+  assert.equal(deadlineSummary(null, units, "None"), "None");
+  assert.equal(deadlineSummary(300, units, "None"), "5 Minutes");
+  assert.equal(deadlineSummary(7200, units, "None"), "2 Hours");
+  assert.equal(deadlineSummary(90, units, "None"), "1.5 Minutes");
 });
 
 test("Bypass acceptance is sent only for Bypass, and only once confirmed", () => {

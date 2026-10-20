@@ -767,7 +767,7 @@ impl ExecutionAuthority for Bench {
 		_run: &Run,
 		_approval: Uuid,
 		_settlement: aidash_application::capabilities::approvals::Settlement,
-	) -> Result<()> {
+	) -> Result<bool> {
 		unexpected("ExecutionAuthority.settle_judgement")
 	}
 	async fn model_media(

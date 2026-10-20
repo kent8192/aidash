@@ -185,7 +185,7 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule, id: &str) -> (Resource, &'
 		ApprovalKind::WebSearch => {
 			// A search rule names its provider, while its ceiling is judged on
 			// the destination a Run chooses.
-			let destination = if exact.is_some() { REPRESENTATIVE } else { id };
+			let destination = id;
 			(
 				resource(bundle, "research", destination, json!({"action": DISCLOSE})),
 				"capability.approve",
@@ -261,6 +261,11 @@ fn effective(
 	match &rule.target {
 		RuleTarget::Exact(_) => {
 			candidates.insert(REPRESENTATIVE.to_owned());
+			// A search rule names its provider, while the ceiling it needs is
+			// judged on a destination the policy may name by id.
+			if rule.kind == ApprovalKind::WebSearch {
+				candidates.extend(named_targets(bundle, rule.kind));
+			}
 		}
 		RuleTarget::Every => {
 			candidates.insert(REPRESENTATIVE.to_owned());

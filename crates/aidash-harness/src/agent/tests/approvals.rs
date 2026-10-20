@@ -658,6 +658,35 @@ async fn an_allowed_call_runs_at_once_without_waiting_or_another_model_response(
 
 #[rstest]
 #[tokio::test]
+async fn a_settlement_a_person_or_withdrawn_auto_beat_never_reruns_the_call(mut fixture: Fixture) {
+	// Arrange: the Decider allows, but by the time it settles the record a
+	// person's denial (or a withdrawn Auto mode) keeps the call pending.
+	let tool = tenant_tool(&mut fixture);
+	auto(
+		&mut fixture,
+		ApprovalDecider::allowing(Mode::Enforce),
+		1,
+		ApprovalKind::ToolCall,
+	);
+	let approval = Uuid::from_u128(0xa1);
+	approvals(&fixture, [pending(approval)]);
+	respond(
+		&mut fixture.run,
+		vec![call("call-0", "crm", json!({"customer":"c-1"}))],
+	);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().settle_ignored = true;
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: the stale allowance is not acted on.
+	assert_eq!(tool.invocations(), 0);
+	assert_eq!(last_write(&fixture).0, "run.waiting_for_tool_approval");
+	assert!(settlements(&fixture).is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn the_decider_is_told_what_people_wrote_and_the_call_it_judges(mut fixture: Fixture) {
 	// Arrange
 	let tool = tenant_tool(&mut fixture);
@@ -696,7 +725,8 @@ async fn the_decider_is_told_what_people_wrote_and_the_call_it_judges(mut fixtur
 	assert!(text.contains("Do the task"));
 	assert!(text.contains("c-9"));
 	assert!(text.contains("Tenant HTTP fixture"));
-	assert!(text.contains("tool:crm@1.0.0#invoke"));
+	assert!(text.contains("https://example.invalid"));
+	assert!(!text.contains("tool:crm@1.0.0#invoke"));
 }
 
 #[rstest]
@@ -1035,15 +1065,17 @@ async fn a_capability_approval_the_decider_does_not_judge_waits_for_a_person(mut
 }
 
 #[rstest]
-#[case::auto(Some(ApprovalMode::Auto), true)]
-#[case::manual(Some(ApprovalMode::Manual), false)]
-#[case::dont_ask(Some(ApprovalMode::DontAsk), false)]
-#[case::bypass(Some(ApprovalMode::Bypass), false)]
-#[case::no_person_covers_the_run(None, false)]
+#[case::auto(Some(ApprovalMode::Auto), true, true)]
+#[case::auto_falls_back_to_manual(Some(ApprovalMode::Auto), false, false)]
+#[case::manual(Some(ApprovalMode::Manual), false, false)]
+#[case::dont_ask(Some(ApprovalMode::DontAsk), false, false)]
+#[case::bypass(Some(ApprovalMode::Bypass), false, false)]
+#[case::no_person_covers_the_run(None, false, false)]
 #[tokio::test]
-async fn only_in_auto_the_model_is_told_not_to_stop_for_questions(
+async fn only_while_auto_is_effective_the_model_is_told_not_to_stop_for_questions(
 	mut fixture: Fixture,
 	#[case] mode: Option<ApprovalMode>,
+	#[case] effective_auto: bool,
 	#[case] told: bool,
 ) {
 	// Arrange
@@ -1051,6 +1083,7 @@ async fn only_in_auto_the_model_is_told_not_to_stop_for_questions(
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.scoped = true;
 	state.approval_mode = mode;
+	state.auto_judging = effective_auto;
 
 	// Act
 	advance_sources(&mut fixture).await.unwrap();
@@ -1077,6 +1110,7 @@ async fn an_ordered_request_keeps_the_auto_instruction_out_of_the_cached_system_
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.scoped = true;
 	state.approval_mode = Some(ApprovalMode::Auto);
+	state.auto_judging = true;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 
 	// Act

@@ -1345,7 +1345,7 @@ impl<'a> Executor<'a> {
 				if !run_message_catchup
 					&& home.local()
 					&& let Some(guard) = guard
-					&& guard.approval_mode(run).await? == Some(ApprovalMode::Auto)
+					&& guard.auto_judging(run).await?
 				{
 					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(AUTO_MODE_INSTRUCTION);
 				}

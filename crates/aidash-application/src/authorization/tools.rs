@@ -1,5 +1,9 @@
 //! Current tool authority, plugin delegation, and builtin visibility are use cases.
-use crate::{Error, Result, ports::authorization::tools::AgentToolRepository};
+use crate::{
+	Error, Result,
+	capabilities::approvals::{CALL_UNAPPROVED, INVOKE},
+	ports::authorization::tools::AgentToolRepository,
+};
 use aidash_domain::{
 	RunMetadata,
 	exposure::{self, CapabilityIdentity},
@@ -43,6 +47,27 @@ pub fn remote_identifier(run: &RunMetadata, kind: &str, id: &str) -> Result<Stri
 		return Err(Error::Forbidden);
 	}
 	Ok(format!("{}/{kind}s/{id}", run.home_node))
+}
+
+/// The `<id>@<version>` an approval names for the tool, when the tool is one the
+/// Tenant's HTTP, MCP or Agent Plugin policy approves outside its contract.
+fn approval_reference(contract: &ToolContract) -> Option<(String, String)> {
+	match &contract.identity {
+		ToolIdentity::Descriptor(reference) => {
+			Some((reference.id.clone(), reference.version.clone()))
+		}
+		ToolIdentity::Registry(reference) => {
+			Some((reference.id.clone(), reference.version.clone()))
+		}
+		ToolIdentity::AgentPlugin(tool) => {
+			let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
+			Some((
+				format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool),
+				digest.chars().take(12).collect(),
+			))
+		}
+		ToolIdentity::Builtin(_) => None,
+	}
 }
 
 pub async fn authorize(
@@ -229,6 +254,27 @@ pub async fn authorize(
 						.await?;
 				scope.require(&resource, action).await?;
 			}
+		}
+	}
+	// A Read-only operation needs no approval, but the explicit deny of
+	// `tool.call_unapproved` still refuses it. The capability approval path
+	// checks this on the Run's home Node; doing it with the contract authority
+	// also covers a Run executing for another Node.
+	if contract.behavior.read_only_operation
+		&& let Some((id, version)) = approval_reference(contract)
+	{
+		let resource = scope.resource(
+			"tool",
+			&id,
+			json!({
+				"version": version,
+				"operation": INVOKE,
+				"run_id": run.id,
+				"action": CALL_UNAPPROVED,
+			}),
+		);
+		if scope.explicitly_denied(&resource, CALL_UNAPPROVED).await? {
+			return Err(Error::Forbidden);
 		}
 	}
 	Ok(())

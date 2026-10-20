@@ -171,6 +171,34 @@ fn a_rule_is_effective_where_the_owner_could_approve_in_advance() {
 }
 
 #[test]
+fn an_exact_search_rule_is_effective_on_a_real_destination_the_policy_names() {
+	// Arrange: members may approve only the destination `research.example`, and
+	// the rule names the provider rather than that destination.
+	let mut bundle = bundle();
+	bundle.policies.push(Policy {
+		id: "alice-research".into(),
+		effect: Effect::Allow,
+		subjects: SubjectSelector {
+			ids: ["alice".to_owned()].into(),
+			..Default::default()
+		},
+		actions: ["capability.approve".to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: ["research".to_owned()].into(),
+			ids: ["research.example".to_owned()].into(),
+		},
+		condition: None,
+	});
+	let search = rule(
+		ApprovalKind::WebSearch,
+		RuleTarget::Exact("research.brave@1".into()),
+	);
+
+	// Act + Assert
+	assert!(effective(&bundle, "alice", &search, &[]));
+}
+
+#[test]
 fn a_rule_for_every_target_applies_to_the_real_ids_the_policy_names() {
 	// Arrange: members may approve only the real tool `crm`, not the
 	// representative id alone.

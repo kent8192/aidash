@@ -363,6 +363,11 @@ pub trait ExecutionHome: Send + Sync {
 pub trait ExecutionTool: Send + Sync {
 	fn specification(&self) -> ToolSpec;
 	fn contract(&self) -> aidash_domain::tool::ToolContract;
+	/// The external address a call of a Tenant's HTTP or MCP tool reaches, when
+	/// the Decider must see where arguments would be sent.
+	fn external_target(&self) -> Option<String> {
+		None
+	}
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
 	/// Resource Claims and output bound derived by trusted provider code from
@@ -423,6 +428,13 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>>;
+	/// Whether Auto is the Run's effective Approval Mode now: selected,
+	/// permitted by policy, backed by an available Decider, and not suspended
+	/// by its block limits. Defaults to false for an authority that does not
+	/// know the person's settings.
+	async fn auto_judging(&self, _run: &Run) -> Result<bool> {
+		Ok(false)
+	}
 	/// How many seconds the person whose delegation chain `run` starts at
 	/// waits for an answer to the model's question before the Run continues
 	/// without one (their Answer Deadline). `None` when they set none or when
@@ -440,13 +452,14 @@ pub trait ExecutionAuthority: Send + Sync {
 	/// person the Run's chain starts at: given, or refused with the reason the
 	/// model receives. Only a pending judged approval settles; asking again with
 	/// the same decision settles nothing more, and one a person decided
-	/// meanwhile is left as they decided it.
+	/// meanwhile is left as they decided it. Returns whether the record was
+	/// settled as asked; `false` means the settlement had no effect.
 	async fn settle_judgement(
 		&self,
 		run: &Run,
 		approval: Uuid,
 		settlement: crate::ports::capabilities::approvals::Settlement,
-	) -> Result<()>;
+	) -> Result<bool>;
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],

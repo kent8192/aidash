@@ -96,14 +96,23 @@ struct Answered {
 struct Unanswered {
 	state_digest: Option<String>,
 	attempts: Vec<AttemptEvidence>,
+	/// Answers any batch recorded before the Route became unavailable.
+	answers: BTreeMap<String, Probability>,
 	stop: bool,
 	error: Error,
 }
 impl Unanswered {
-	fn route(state_digest: &str, attempts: Vec<AttemptEvidence>, stop: bool, error: Error) -> Self {
+	fn route(
+		state_digest: &str,
+		attempts: Vec<AttemptEvidence>,
+		answers: BTreeMap<String, Probability>,
+		stop: bool,
+		error: Error,
+	) -> Self {
 		Self {
 			state_digest: Some(state_digest.to_owned()),
 			attempts,
+			answers,
 			stop,
 			error,
 		}
@@ -114,6 +123,7 @@ impl<E: Into<Error>> From<E> for Unanswered {
 		Self {
 			state_digest: None,
 			attempts: vec![],
+			answers: BTreeMap::new(),
 			stop: true,
 			error: error.into(),
 		}
@@ -184,6 +194,7 @@ impl DecisionGate<'_> {
 		let unanswered = last_unanswered.unwrap_or(Unanswered {
 			state_digest: None,
 			attempts: vec![],
+			answers: BTreeMap::new(),
 			stop: true,
 			error: Error::Invalid("approval Decider lists no Route".into()),
 		});
@@ -223,7 +234,7 @@ impl DecisionGate<'_> {
 				unanswered
 					.state_digest
 					.unwrap_or_else(|| digest(&Value::Null)),
-				BTreeMap::new(),
+				unanswered.answers,
 				unanswered.attempts,
 				binding.clone(),
 				Verdict::Blocked(BlockReason::Unavailable),
@@ -299,9 +310,16 @@ impl DecisionGate<'_> {
 			.filter_map(|prior| prior.answers.clone())
 			.flatten()
 			.collect();
-		let unanswered = |attempts: &[AttemptEvidence], stop, error| {
-			Unanswered::route(&state_digest, attempts.to_vec(), stop, error)
-		};
+		let unanswered =
+			|attempts: &[AttemptEvidence], answers: &BTreeMap<String, Probability>, stop, error| {
+				Unanswered::route(
+					&state_digest,
+					attempts.to_vec(),
+					answers.clone(),
+					stop,
+					error,
+				)
+			};
 		let initial = self
 			.authority
 			.check(input.boundary, &input.decider.pin, &[])
@@ -309,7 +327,7 @@ impl DecisionGate<'_> {
 			.and_then(|approval| Ok(route_restrictions.intersect(&approval.restrictions, config)?));
 		let mut restrictions = match initial {
 			Ok(restrictions) => restrictions,
-			Err(error) => return Err(unanswered(&attempts, true, error)),
+			Err(error) => return Err(unanswered(&attempts, &answers, true, error)),
 		};
 		let requests = match built
 			.fits
@@ -325,7 +343,7 @@ impl DecisionGate<'_> {
 						Error::Invalid("decision cannot plan complete provider requests".into())
 					}
 				};
-				return Err(unanswered(&attempts, false, error));
+				return Err(unanswered(&attempts, &answers, false, error));
 			}
 		};
 		let records = requests
@@ -362,7 +380,7 @@ impl DecisionGate<'_> {
 			if let Some(current) = batch.restrictions {
 				restrictions = restrictions
 					.intersect(&current, config)
-					.map_err(|error| unanswered(&attempts, true, error.into()))?;
+					.map_err(|error| unanswered(&attempts, &answers, true, error.into()))?;
 			}
 			if let Some((_, error)) = batch.failure {
 				unavailable &= batch.next_route;
@@ -370,11 +388,11 @@ impl DecisionGate<'_> {
 			}
 		}
 		if let Some(error) = failure {
-			return Err(unanswered(&attempts, !unavailable, error));
+			return Err(unanswered(&attempts, &answers, !unavailable, error));
 		}
 		if validate_answers(&questions, &answers).is_err() {
 			let error = Error::Invalid("incomplete durable decision answers".into());
-			return Err(unanswered(&attempts, true, error));
+			return Err(unanswered(&attempts, &answers, true, error));
 		}
 		let current = self
 			.authority
@@ -383,7 +401,7 @@ impl DecisionGate<'_> {
 			.and_then(|current| Ok(restrictions.intersect(&current.restrictions, config)?));
 		match current {
 			Ok(current) => restrictions = current,
-			Err(error) => return Err(unanswered(&attempts, true, error)),
+			Err(error) => return Err(unanswered(&attempts, &answers, true, error)),
 		}
 		Ok(Answered {
 			index,

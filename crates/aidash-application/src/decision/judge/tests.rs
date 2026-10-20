@@ -54,6 +54,10 @@ struct Fixture {
 	pinned_adapter: &'static str,
 	/// The journal lost the worker's lease.
 	fail_commit: bool,
+	/// Split the questions across two provider requests.
+	split: bool,
+	/// Fail every dispatch after this many, as a later batch on one Route would.
+	fail_after_batch: Option<usize>,
 	saved: Mutex<Saved>,
 }
 impl Fixture {
@@ -67,6 +71,8 @@ impl Fixture {
 			allowance: usize::MAX,
 			pinned_adapter: ADAPTER,
 			fail_commit: false,
+			split: false,
+			fail_after_batch: None,
 			saved: Mutex::new(Saved::default()),
 		}
 	}
@@ -78,6 +84,14 @@ impl Fixture {
 	}
 	fn replying(mut self, route: usize, reply: Reply) -> Self {
 		self.replies.insert(route, reply);
+		self
+	}
+	fn split(mut self) -> Self {
+		self.split = true;
+		self
+	}
+	fn failing_after_batch(mut self, batches: usize) -> Self {
+		self.fail_after_batch = Some(batches);
 		self
 	}
 	fn config(&self) -> DeciderConfig {
@@ -211,13 +225,33 @@ impl DecisionProvider for Fixture {
 	}
 	fn plan(&self, _: usize, state: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>> {
 		self.saved.lock().unwrap().states.push(state.clone());
-		Ok(vec![PreparedRequest {
-			body: serde_json::to_vec(
-				&json!({"state":state,"questions":questions.keys().collect::<Vec<_>>()}),
-			)
-			.unwrap(),
-			questions: questions.clone(),
-		}])
+		let batches: Vec<Questions> = if self.split {
+			let keys: Vec<_> = questions.keys().cloned().collect();
+			keys.chunks(3)
+				.map(|chunk| {
+					chunk
+						.iter()
+						.filter_map(|key| {
+							questions
+								.get_key_value(key)
+								.map(|(k, v)| (k.clone(), v.clone()))
+						})
+						.collect()
+				})
+				.collect()
+		} else {
+			vec![questions.clone()]
+		};
+		Ok(batches
+			.into_iter()
+			.map(|questions| PreparedRequest {
+				body: serde_json::to_vec(
+					&json!({"state":state,"questions":questions.keys().collect::<Vec<_>>()}),
+				)
+				.unwrap(),
+				questions,
+			})
+			.collect())
 	}
 	async fn prepare(
 		&self,
@@ -242,12 +276,18 @@ impl PreparedDispatch for Dispatch<'_> {
 	async fn dispatch(
 		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
-		self.fixture
-			.saved
-			.lock()
-			.unwrap()
-			.dispatched
-			.push(self.route);
+		{
+			let mut saved = self.fixture.saved.lock().unwrap();
+			saved.dispatched.push(self.route);
+			let count = saved.dispatched.len();
+			if self
+				.fixture
+				.fail_after_batch
+				.is_some_and(|batches| count > batches)
+			{
+				return Err(Error::External("later batch outage".into()).into());
+			}
+		}
 		match self
 			.fixture
 			.replies
@@ -403,6 +443,21 @@ async fn judge(fixture: &Fixture) -> ApprovalEvidence {
 	judge_as(fixture, Case::new(), fixture.binding.clone())
 		.await
 		.unwrap()
+}
+
+#[tokio::test]
+async fn a_later_batch_failure_keeps_the_answers_earlier_batches_recorded() {
+	// Arrange: the five questions span two requests, and the second fails.
+	let fixture = Fixture::new(Mode::Enforce).split().failing_after_batch(1);
+
+	// Act
+	let evidence = judge(&fixture).await;
+
+	// Assert: an unavailable decision still keeps the three recorded answers.
+	assert_eq!(evidence.verdict, Verdict::Blocked(BlockReason::Unavailable));
+	assert_eq!(evidence.route, None);
+	assert_eq!(evidence.answers.len(), 3, "{:?}", evidence.answers);
+	assert_eq!(fixture.recorded(), std::slice::from_ref(&evidence));
 }
 
 #[tokio::test]

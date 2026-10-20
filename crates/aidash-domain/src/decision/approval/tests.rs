@@ -319,6 +319,18 @@ fn evidence_replays_its_verdict_from_the_answers_and_the_effective_threshold() {
 }
 
 #[test]
+fn an_unavailable_route_keeps_the_answers_its_attempts_recorded() {
+	let mut none = evidence();
+	none.route = None;
+	none.failed_routes = vec![0];
+	none.answers = answers([0.0, 0.0, 0.25, 0.0, 0.0]);
+	none.attempts.clear();
+	none.verdict = Verdict::Blocked(BlockReason::Unavailable);
+	none.validate().unwrap();
+	assert_eq!(none.outcome(), ApprovalOutcome::Blocked);
+}
+
+#[test]
 fn without_a_verdict_from_any_route_the_call_is_blocked_as_unavailable() {
 	let mut none = evidence();
 	none.route = None;
@@ -329,10 +341,12 @@ fn without_a_verdict_from_any_route_the_call_is_blocked_as_unavailable() {
 	none.validate().unwrap();
 	assert_eq!(none.outcome(), ApprovalOutcome::Blocked);
 	let changes: [(&str, Change); 3] = [
-		("answers without a Route", |e| e.answers = answers([0.0; 5])),
 		("another verdict", |e| e.verdict = Verdict::Allowed),
 		("a failed Route that does not exist", |e| {
 			e.failed_routes = vec![0, 2]
+		}),
+		("an answer no question names", |e| {
+			e.answers.insert("unavailable".into(), Probability::half());
 		}),
 	];
 	for (what, change) in changes {

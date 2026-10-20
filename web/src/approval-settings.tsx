@@ -43,6 +43,7 @@ import {
   bypassNeedsConfirmation,
   deadlineDraft,
   deadlineSeconds,
+  deadlineSummary,
   deadlineUnits,
   deadlineUpdate,
   type DeadlineDraft,
@@ -405,7 +406,11 @@ function AnswerDeadline({ tenant }: { tenant: string }) {
           <p className="text-muted-foreground">{preferences.error.message}</p>
         </Alert>
       ) : preferences.data ? (
-        <AnswerDeadlineForm tenant={tenant} current={preferences.data} />
+        <AnswerDeadlineForm
+          key={preferences.data.answer_deadline_seconds ?? "none"}
+          tenant={tenant}
+          current={preferences.data}
+        />
       ) : (
         <Loading />
       )}
@@ -661,7 +666,8 @@ function MemberSettings({
   });
   if (settings.isError) return <Alert>{settings.error.message}</Alert>;
   if (!settings.data) return <Loading>{copy.memberLoading}</Loading>;
-  const { default_mode, bypass_accepted_at, rules } = settings.data;
+  const { default_mode, bypass_accepted_at, answer_deadline_seconds, rules } =
+    settings.data;
   return (
     <>
       <Hint>{copy.memberReadOnly}</Hint>
@@ -672,6 +678,14 @@ function MemberSettings({
             copy.modes.bypass.label,
             copy.memberBypass(bypass_accepted_at, (value) =>
               new Date(value).toLocaleString(locale),
+            ),
+          ],
+          [
+            copy.deadline.title,
+            deadlineSummary(
+              answer_deadline_seconds,
+              copy.deadline.units,
+              copy.deadline.none,
             ),
           ],
         ]}

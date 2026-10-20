@@ -1652,7 +1652,9 @@ async fn the_decider_is_told_only_what_enabled_users_wrote_and_where_the_call_go
 		person_input(4, "stranger", "Who am I"),
 		person_input(5, "gone", "A user who left"),
 		person_input(6, "bob", "Thanks"),
+		person_input(7, "bob", "Arrived after the pending call"),
 	];
+	scope.run.observed_input_seq = 6;
 	let approval_id = pending_call(&mut scope, "run:0:0").await;
 	let run = scope.run.clone();
 
@@ -1939,6 +1941,27 @@ fn allowed() -> Settlement {
 	Settlement::Allowed {
 		evidence: Uuid::new_v4(),
 	}
+}
+
+#[tokio::test]
+async fn auto_judging_requires_an_available_decider_and_no_suspension() {
+	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
+	scope.settings.as_mut().unwrap().auto_available = true;
+	let run = scope.run.clone();
+	assert!(auto_judging(&mut scope, &run).await.unwrap());
+
+	// A withdrawn Decider Catalog Approval makes Auto fall back to Manual.
+	scope.settings.as_mut().unwrap().auto_available = false;
+	assert!(!auto_judging(&mut scope, &run).await.unwrap());
+	scope.settings.as_mut().unwrap().auto_available = true;
+
+	// Three blocks in a row suspend Auto as well.
+	for n in 0..3 {
+		judge_next(&mut scope, n, blocked(BlockReason::Destructive))
+			.await
+			.expect("judged");
+	}
+	assert!(!auto_judging(&mut scope, &run).await.unwrap());
 }
 
 #[tokio::test]

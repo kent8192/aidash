@@ -221,6 +221,7 @@ fn plugin_call(fixture: &mut Fixture, read_only: bool) -> ToolCall {
 	let tool = Arc::new(Scripted {
 		specification,
 		contract: ToolContract::agent_plugin(identity(), read_only),
+		external_target: None,
 		outputs: Mutex::new([json!({"content": []})].into()),
 		invocations: Mutex::new(0),
 		keys: Mutex::new(vec![]),

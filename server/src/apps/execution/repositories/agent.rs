@@ -589,6 +589,16 @@ impl ExecutionAuthority for Authority<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn auto_judging(&self, run: &Run) -> Result<bool> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(false);
+		};
+		authority
+			.auto_judging(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn answer_deadline(&self, run: &Run) -> Result<Option<i64>> {
 		// A Run executing for another Node is covered by nobody's settings here.
 		let Some(authority) = self.guard.local_authority() else {
@@ -618,7 +628,7 @@ impl ExecutionAuthority for Authority<'_> {
 		run: &Run,
 		approval: Uuid,
 		settlement: aidash_application::capabilities::approvals::Settlement,
-	) -> Result<()> {
+	) -> Result<bool> {
 		let authority = self
 			.guard
 			.local_authority()

@@ -167,7 +167,9 @@ pub struct ApprovalEvidence {
 	pub route_thresholds: Vec<Probability>,
 	pub configuration_parameters_digest: String,
 	pub state_digest: String,
-	/// One probability per [`approval_questions`] question; empty without a Route.
+	/// One probability per [`approval_questions`] question; empty without a
+	/// Route, or the partial answers its charged attempts recorded before it
+	/// became unavailable.
 	pub answers: BTreeMap<String, Probability>,
 	/// The effective restrictions: the Route's threshold under the Binding's.
 	pub restrictions: Restrictions,
@@ -248,8 +250,11 @@ impl ApprovalEvidence {
 				let in_range = self.failed_routes.last().is_none_or(|last| {
 					usize::try_from(*last).is_ok_and(|l| l < self.route_models.len())
 				});
-				let unanswered = self.answers.is_empty()
-					&& self.verdict == Verdict::Blocked(BlockReason::Unavailable);
+				let unanswered = self.verdict == Verdict::Blocked(BlockReason::Unavailable)
+					&& self
+						.answers
+						.keys()
+						.all(|question| questions.contains_key(question));
 				if !(ordered && in_range && unanswered) {
 					return Err(corrupt());
 				}

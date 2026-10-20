@@ -149,6 +149,9 @@ impl ExecutionTool for McpPluginTool {
 	fn contract(&self) -> ToolContract {
 		self.contract.clone()
 	}
+	fn external_target(&self) -> Option<String> {
+		Some(self.config.url.as_str().to_owned())
+	}
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()
 	}

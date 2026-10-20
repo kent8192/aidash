@@ -993,7 +993,7 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
         json: {
           subject: "carol",
           default_mode: "dont_ask",
-          answer_deadline_seconds: null,
+          answer_deadline_seconds: 7200,
           bypass_accepted_at: null,
           revision: 2,
           rules: [
@@ -1018,6 +1018,7 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
   await expect(member).toContainText("Default Approval Mode");
   await expect(member).toContainText("Don't ask");
   await expect(member).toContainText("Has not accepted Bypass");
+  await expect(member).toContainText("2 Hours");
   await expect(member).toContainText("https://example.com");
   await expect(member).toContainText("Disabled by your Tenant's policy");
   await expect(member).toContainText("Read only");

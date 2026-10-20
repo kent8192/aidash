@@ -117,6 +117,16 @@ pub(crate) async fn add_rule(
 		.count_with_executor(tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?;
+	// Deduplicate before the cap: an equal rule already held answers the call
+	// even when the owner has no room for another.
+	if let Some(existing) = rules(tx, tenant, subject)
+		.await?
+		.into_iter()
+		.find(|(stored, _)| {
+			stored.kind == new.kind && stored.effect == new.effect && stored.target == new.target
+		}) {
+		return Ok(existing.0.id);
+	}
 	if held >= MAX_RULES {
 		return Err(crate::Error::Conflict(format!(
 			"at most {MAX_RULES} Approval Rules are kept"

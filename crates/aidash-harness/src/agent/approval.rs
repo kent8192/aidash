@@ -58,7 +58,14 @@ fn approval_tool(pending: &PendingCall<'_>, target: &str) -> ApprovalTool {
 		version,
 		description: specification.description,
 		input_schema: specification.parameters,
-		target: Some(target.to_owned()),
+		// The approval record names the call, not where it goes. A Tenant's
+		// HTTP or MCP tool knows its registered external address.
+		target: Some(
+			pending
+				.tool
+				.external_target()
+				.unwrap_or_else(|| target.to_owned()),
+		),
 	}
 }
 
@@ -113,7 +120,12 @@ impl Executor<'_> {
 			return Ok(Judged::Undecided);
 		};
 		let settlement = settlement_of(&evidence);
-		guard.settle_judgement(run, approval, settlement).await?;
+		if !guard.settle_judgement(run, approval, settlement).await? {
+			// A person decided meanwhile, or Auto stopped covering the call while
+			// the Decider ran. The record did not get this settlement, so the Run
+			// must not act on it.
+			return Ok(Judged::Undecided);
+		}
 		Ok(match settlement {
 			Settlement::Allowed { .. } => Judged::Allowed,
 			Settlement::Blocked { reason, .. } => Judged::Blocked(reason),

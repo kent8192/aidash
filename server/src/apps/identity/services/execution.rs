@@ -335,6 +335,21 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	/// Whether Auto is this Run's effective Approval Mode now, under the
+	/// worker's current authority lease.
+	pub async fn auto_judging(&self, store: &Store, run: &Run) -> Result<bool> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::auto_judging(&mut scope, &run.metadata())
+				.await
+				.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	/// The Answer Deadline, in seconds, of the person whose delegation chain
 	/// `run` starts at, under the worker's current authority lease. `None` when
 	/// they set none or no person's settings cover the Run (ADR 0076).
@@ -389,7 +404,7 @@ impl WorkerAuthority {
 		run: &Run,
 		approval: Uuid,
 		settlement: aidash_application::capabilities::approvals::Settlement,
-	) -> Result<()> {
+	) -> Result<bool> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {

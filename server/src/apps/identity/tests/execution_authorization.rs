@@ -3981,6 +3981,18 @@ mod approval_modes {
 		.await
 		.unwrap();
 
+		// Fill the owner's rule list to one below the cap. The first decision
+		// stores rule 500; the second must still find its equal, not the cap.
+		sqlx::query(
+			"INSERT INTO identity_approval_rules (tenant, id, subject, kind, target, effect, created_at) \
+			 SELECT 'acme', gen_random_uuid(), 'alice', 'tool_call', \
+			        jsonb_build_object('exact', 'tool:dummy-' || n || '#invoke'), 'allow', clock_timestamp() \
+			 FROM generate_series(1, 499) AS n",
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+
 		// Act: the first decision stores a rule, the second finds it equal.
 		let (first, decided) = decide_tool_call(app, &token, approval, "allow_always").await;
 		let (second, again) = decide_tool_call(app, &token, duplicate, "allow_always").await;
@@ -4010,7 +4022,7 @@ mod approval_modes {
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-		assert_eq!(rules, 1, "the equal rule is stored once");
+		assert_eq!(rules, 500, "the equal rule is stored once at the cap");
 		drop(t.server);
 		cleanup(f, &url, &schema).await;
 	}

@@ -168,6 +168,8 @@ struct State {
 	tool_call_requests: Mutex<Vec<ToolCallRequest>>,
 	/// The Approval Mode of the person the Run's chain starts at.
 	approval_mode: Option<aidash_domain::approval_rules::ApprovalMode>,
+	/// Whether that mode is Auto and effective now.
+	auto_judging: bool,
 	/// A child Task failed and the others are unfinished, so the Run's final
 	/// answer waits for a person to intervene.
 	failed_children: bool,
@@ -181,6 +183,8 @@ struct State {
 	approval_judgements: Mutex<VecDeque<Option<JudgeRequest>>>,
 	/// What `settle_judgement` was asked to record.
 	settlements: Mutex<Vec<aidash_application::capabilities::approvals::Settlement>>,
+	/// Settle nothing, as when a person or a withdrawn Auto mode wins the race.
+	settle_ignored: bool,
 	/// How the Tenant's approval Decider answers; `None` when Auto is not
 	/// available to the Run.
 	approval_decider: Option<decider::ApprovalDecider>,
@@ -884,6 +888,10 @@ impl ExecutionAuthority for Backend {
 		self.record("authority.approval_mode");
 		Ok(self.0.approval_mode)
 	}
+	async fn auto_judging(&self, _run: &Run) -> Result<bool> {
+		self.record("authority.auto_judging");
+		Ok(self.0.auto_judging)
+	}
 	async fn answer_deadline(&self, _run: &Run) -> Result<Option<i64>> {
 		self.record("authority.answer_deadline");
 		Ok(self.0.answer_deadline)
@@ -907,9 +915,12 @@ impl ExecutionAuthority for Backend {
 		_run: &Run,
 		_approval: Uuid,
 		settlement: aidash_application::capabilities::approvals::Settlement,
-	) -> Result<()> {
+	) -> Result<bool> {
+		if self.0.settle_ignored {
+			return Ok(false);
+		}
 		self.0.settlements.lock().unwrap().push(settlement);
-		Ok(())
+		Ok(true)
 	}
 	async fn model_media(
 		&self,
@@ -1506,11 +1517,13 @@ fn fixture() -> Fixture {
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
 		approval_mode: None,
+		auto_judging: false,
 		failed_children: false,
 		answer_deadline: None,
 		answered_just_before_close: Mutex::new(None),
 		approval_judgements: Mutex::new(VecDeque::new()),
 		settlements: Mutex::new(vec![]),
+		settle_ignored: false,
 		approval_decider: None,
 		approval_evidence: Mutex::new(vec![]),
 		judged_states: Mutex::new(vec![]),
@@ -1724,7 +1737,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 		boundary,
 		[
 			"authority.inference",
-			"authority.approval_mode",
+			"authority.auto_judging",
 			"save",
 			"authority.inference",
 			"reservation.admit",
@@ -3737,6 +3750,7 @@ async fn url_intents_of_run_messages_taken_in_by_media_intake_are_carried_forwar
 struct Scripted {
 	specification: ToolSpec,
 	contract: aidash_domain::tool::ToolContract,
+	external_target: Option<String>,
 	outputs: Mutex<std::collections::VecDeque<Value>>,
 	invocations: Mutex<usize>,
 	/// The invocation key of each call.
@@ -3747,6 +3761,7 @@ impl Scripted {
 		Arc::new(Self {
 			specification,
 			contract: aidash_domain::tool::builtin_contract(contract).expect("declared builtin"),
+			external_target: None,
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3770,6 +3785,7 @@ impl Scripted {
 				parameters: json!({"type":"object"}),
 			},
 			contract,
+			external_target: None,
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3793,6 +3809,7 @@ impl Scripted {
 					replay: "unsafe".into(),
 				},
 			),
+			external_target: Some("https://example.invalid".into()),
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3813,6 +3830,7 @@ impl Scripted {
 					replay: "read_only".into(),
 				},
 			),
+			external_target: Some("https://example.invalid".into()),
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3832,6 +3850,7 @@ impl Scripted {
 				parameters: json!({"type":"object"}),
 			},
 			contract: aidash_domain::tool::providers::research_contract(operation),
+			external_target: None,
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3845,6 +3864,9 @@ impl ExecutionTool for Scripted {
 	}
 	fn contract(&self) -> aidash_domain::tool::ToolContract {
 		self.contract.clone()
+	}
+	fn external_target(&self) -> Option<String> {
+		self.external_target.clone()
 	}
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()

@@ -231,6 +231,40 @@ async fn advise(
 		},
 	)
 }
+/// Whether the Run's effective Approval Mode is Auto: the person selected it,
+/// the policy allows it, the Decider is available, and its block limits have
+/// not suspended it. The model is told not to stop for clarifying questions
+/// only while this holds.
+pub async fn auto_judging(scope: &mut dyn ApprovalScope, run: &Run) -> Result<bool> {
+	let Some(settings) = scope.approval_settings(run).await? else {
+		return Ok(false);
+	};
+	if settings.mode != ApprovalMode::Auto {
+		return Ok(false);
+	}
+	let Some(root) = scope.chain_root() else {
+		return Ok(false);
+	};
+	let mode_allowed = settings
+		.mode
+		.policy_requirement()
+		.is_none_or(|(action, id)| {
+			scope
+				.bundle()
+				.evaluate(&scope.evaluation(
+					root,
+					&scope.resource(MODE_RESOURCE, id, json!({})),
+					action,
+				))
+				.allowed
+		});
+	let ceiling = settings.ceiling(Standing {
+		approver: false,
+		advance: false,
+		mode: mode_allowed,
+	});
+	Ok(ceiling.mode_allowed && !scope.auto_blocks(run).await?.suspended())
+}
 fn tool_resource(
 	scope: &dyn ApprovalScope,
 	tool: &aidash_domain::registry::EntityRef,
@@ -1179,6 +1213,7 @@ pub async fn judgement(
 	let bundle = scope.bundle();
 	let people = inputs
 		.into_iter()
+		.filter(|input| input.seq <= run.observed_input_seq)
 		.filter(|input| is_person(bundle, &input.sender))
 		.collect();
 	Ok(Some(JudgeRequest {
@@ -1197,14 +1232,14 @@ pub async fn settle(
 	run: &Run,
 	id: Uuid,
 	settlement: Settlement,
-) -> Result<()> {
+) -> Result<bool> {
 	let mut record = load_approval(scope, id).await?;
 	if record.data["run_id"] != json!(run.id) || record.data["judge"] != true {
 		return Err(Error::NotFound("approval unavailable".into()));
 	}
 	let person = scope.chain_root().ok_or(Error::Forbidden)?.to_owned();
 	let (advice, state, evidence) = match settlement {
-		Settlement::Shadow { .. } => return Ok(()),
+		Settlement::Shadow { .. } => return Ok(false),
 		Settlement::Allowed { evidence } => (
 			Advice::Approve {
 				by: GivenBy::Auto(evidence),
@@ -1226,7 +1261,7 @@ pub async fn settle(
 		|| matches!(settlement, Settlement::Allowed { .. })
 			&& !judged_now(scope, run, &record).await?
 	{
-		return Ok(());
+		return Ok(false);
 	}
 	advice.record(&mut record.data);
 	record.data["decision"] = json!(evidence);
@@ -1234,13 +1269,14 @@ pub async fn settle(
 	match scope.update(&mut record).await {
 		Ok(()) => {}
 		// A person decided it, or its Run ended, since it was loaded.
-		Err(Error::Conflict(_)) => return Ok(()),
+		Err(Error::Conflict(_)) => return Ok(false),
 		Err(error) => return Err(error),
 	}
 	let result = json!({"approval_id":id,"state":record.state,"revision":record.revision,"grant_id":Value::Null});
 	scope
 		.event(run.workspace_id, "capability.approval_decided", result)
-		.await
+		.await?;
+	Ok(true)
 }
 
 #[cfg(test)]
