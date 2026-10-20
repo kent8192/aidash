@@ -283,7 +283,12 @@ impl ToolContract {
 		Self {
 			identity: ToolIdentity::AgentPlugin(identity),
 			authorization: ToolAuthorization::none(),
-			behavior: external_behavior(ToolEffect::Unsafe, !read_only),
+			behavior: ToolBehavior {
+				// A read-only tool the Agent version declares still passes the
+				// Tool call gate, so an explicit deny refuses it (ADR 0076).
+				read_only_operation: read_only,
+				..external_behavior(ToolEffect::Unsafe, !read_only)
+			},
 			disclosure: DisclosureBoundary::External,
 			remote_exposure: false,
 		}
@@ -807,6 +812,8 @@ mod tests {
 			assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
 			assert!(!contract.replay_safe());
 			assert_eq!(contract.behavior.tool_call_approval, !read_only);
+			assert_eq!(contract.behavior.read_only_operation, read_only);
+			assert!(contract.behavior.tenant_tool_call());
 			assert!(contract.behavior.concurrency.is_sequential());
 			assert_eq!(contract.disclosure, DisclosureBoundary::External);
 			assert!(!contract.remote_exposure);
@@ -814,14 +821,16 @@ mod tests {
 		}
 	}
 	#[test]
-	fn a_read_only_plugin_tool_differs_from_a_normal_one_in_its_approval_only() {
+	fn a_read_only_plugin_tool_differs_from_a_normal_one_in_its_approval_gate_only() {
 		let normal = ToolContract::agent_plugin(plugin_tool(), false);
 		let mut read_only = ToolContract::agent_plugin(plugin_tool(), true);
 
 		assert_ne!(normal.digest().unwrap(), read_only.digest().unwrap());
 		assert!(normal.behavior.tool_call_approval);
 		assert!(!read_only.behavior.tool_call_approval);
+		assert!(read_only.behavior.read_only_operation);
 		read_only.behavior.tool_call_approval = true;
+		read_only.behavior.read_only_operation = false;
 		assert_eq!(normal, read_only);
 	}
 	#[test]
