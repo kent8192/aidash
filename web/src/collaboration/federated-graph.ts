@@ -42,6 +42,8 @@ export type GraphPage = {
 };
 export type GraphRequest = {
   node_id: string;
+  /** The Node of the viewer's Tenant that asks; its default Node when null. */
+  sending_node: string | null;
   scope_workspace: string | null;
   depth: 1;
   mode: MeshMode;
@@ -86,8 +88,12 @@ const projectedRelations = new Set<MeshRelation>([
 ]);
 const projectedLayers = new Set(["configuration", "activity", "federation"]);
 
-export async function graphPeers(): Promise<GraphPeer[]> {
-  return apiFetch<GraphPeer[]>("/api/federation/graph/peers");
+/** The Nodes `sendingNode` reaches: the other Nodes of its Tenant and those
+ *  registered at it. The Tenant's default Node when absent. */
+export async function graphPeers(sendingNode?: string): Promise<GraphPeer[]> {
+  return apiFetch<GraphPeer[]>(
+    `/api/federation/graph/peers${sendingNode ? `?node=${encodeURIComponent(sendingNode)}` : ""}`,
+  );
 }
 
 export async function graphPage(request: GraphRequest): Promise<GraphPage> {

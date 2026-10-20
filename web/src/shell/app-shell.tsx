@@ -55,6 +55,7 @@ import {
 } from "../collaboration/model";
 import { cn } from "../lib/utils";
 import { NotificationBell } from "../notifications";
+import { useNodes } from "../nodes";
 import type { Theme } from "../theme";
 import type { State } from "../types";
 import { useI18n } from "../ui";
@@ -273,7 +274,13 @@ export function AppShell({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const workspace = data?.workspaces.find((value) => value.id === channel);
-  const nodeName = data?.node.id.replace(/^aidash:\/\//, "");
+  const { selected } = useNodes();
+  // `node.id` is the selected Node's address, `aidash://<deployment>/<node>`.
+  const deploymentName = data?.node.id.replace(/^aidash:\/\/([^/]*).*$/, "$1");
+  const nodeName =
+    deploymentName && selected
+      ? `${deploymentName} / ${selected.label}`
+      : deploymentName;
   const create = () => {
     closeMenus();
     newRequest();
@@ -296,6 +303,10 @@ export function AppShell({
     tenantCreated: (created) => {
       closeMenus();
       account.tenantCreated(created);
+    },
+    chooseNode: (name) => {
+      closeMenus();
+      account.chooseNode(name);
     },
   };
   const listProps = {
@@ -550,7 +561,6 @@ export function AppShell({
               )}
             </Button>
             <DecisionQueue
-              data={data}
               decisions={decisions}
               inbox={inbox}
               open={queueOpen}

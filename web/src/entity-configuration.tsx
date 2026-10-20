@@ -4,7 +4,7 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Alert, Check, Group, Hint, pairClass } from "./components/patterns";
 import { useQuery } from "@tanstack/react-query";
-import { discover } from "./generated/aidash";
+import { discoveryQuery, useNodes } from "./nodes";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
 import { useState } from "react";
@@ -299,9 +299,10 @@ export function EntityConfiguration({
   const [remoteId, setRemoteId] = useState("");
   const [remoteVersion, setRemoteVersion] = useState("1.0.0");
   const [manualRemote, setManualRemote] = useState(false);
+  const sendingNode = useNodes().selected?.name;
   const discovery = useQuery({
-    queryKey: ["discovery", "tool-picker"],
-    queryFn: () => discover({}),
+    ...discoveryQuery(sendingNode),
+    queryKey: ["discovery", "tool-picker", sendingNode ?? null],
     enabled: kind === "tool" && transport === "agent" && node !== data.node.id,
     retry: false,
   });

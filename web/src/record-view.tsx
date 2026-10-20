@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
+import { useNodes } from "./nodes";
 import type { State } from "./types";
 import { JsonView, useEntityLabel, useEntityName, useI18n } from "./ui";
 import { presentRecord } from "./record-presentation";
@@ -15,6 +16,7 @@ export function DisplayProvider({
 }
 export function useRecordLabels() {
   const data = useContext(DisplayState);
+  const { nodes } = useNodes();
   const { t } = useI18n();
   const entityName = useEntityName(data?.registry ?? []);
   const entityLabel = useEntityLabel(data?.registry ?? []);
@@ -52,6 +54,7 @@ export function useRecordLabels() {
     }
   };
   if (data) labels.set(data.node.id, endpointLabel(data.node.endpoint));
+  for (const node of nodes) labels.set(node.address, node.label);
   return labels;
 }
 export function useNodeLabel() {

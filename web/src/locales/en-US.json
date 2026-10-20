@@ -357,6 +357,7 @@
   "semanticRevisionChanged": "The source or index changed. Reload and retry.",
   "semanticDeleted": "Deleted",
   "deployment": "Deployment",
+  "deploymentId": "Deployment",
   "deploymentUnavailable": "Deployment observations are unavailable. Check Kubernetes connectivity and service account permissions.",
   "deploymentDisabled": "Kubernetes observation is not configured for this node.",
   "deploymentScope": "Namespace / release",

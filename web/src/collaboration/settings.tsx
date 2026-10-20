@@ -35,12 +35,14 @@ import {
   useRegistryVersions,
 } from "../catalog-approval";
 import type { RegistryVersion } from "../generated/models";
+import { useNodes } from "../nodes";
+import { parseNodeAddress } from "../node-selection";
 import { useTenantActions } from "../tenant-administration";
 import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
 import { ProviderCredentialsPage } from "../provider-credentials";
-import { RecordView, ReferenceName } from "../record-view";
+import { RecordView } from "../record-view";
 import { SemanticPage } from "../semantic";
 import type { State } from "../types";
 import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
@@ -365,12 +367,20 @@ function NodeView({
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
+  const { selected } = useNodes();
+  // `node.id` is the selected Node's address once a Tenant's Node is selected.
+  const deployment = parseNodeAddress(data.node.id)
+    ? `aidash://${parseNodeAddress(data.node.id)!.deployment}`
+    : data.node.id;
   return (
     <div className="grid max-w-4xl min-w-0 gap-6">
       <Panel title={copy.node}>
         <Facts
           items={[
-            [copy.node, <ReferenceName id={data.node.id} />],
+            [t("deploymentId"), deployment, true],
+            ...(selected
+              ? ([[t("node"), selected.label]] as [string, string][])
+              : []),
             [t("endpoint"), data.node.endpoint, true],
             [t("protocol"), data.node.protocol_version, true],
           ]}
