@@ -34,6 +34,8 @@ pub use application::{
 };
 #[path = "peer.rs"]
 mod peer;
+#[path = "federation.rs"]
+pub mod peering;
 #[path = "upstream.rs"]
 pub mod upstream_fixtures;
 #[allow(unused_imports)] // Worker-process fixtures share this settings module.
@@ -85,6 +87,111 @@ pub async fn request(
 	}
 	let response = request.send().await.unwrap();
 	json_response(method, path, response.status_code(), response.body())
+}
+
+/// Registers `other`'s default Node of `other_tenant` at `local`'s default Node
+/// of `tenant`, through the registration route with the Deployment
+/// Administrator's token. `other` must be serving, because the route fetches
+/// its `/.well-known/aidash`.
+#[allow(dead_code)]
+pub async fn register_default_node(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	peering::permit(f, &other.config.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		peering::registration(
+			&other_node.to_string(),
+			Some((&other.config.endpoint, &peering::key_id(other))),
+		),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
+/// Registers the default Node of `source_tenant`, another Tenant of this
+/// Deployment, at `tenant`'s default Node, and returns the registered address.
+#[allow(dead_code)]
+pub async fn register_local_node(
+	f: &Federation,
+	app: &TestApplication,
+	tenant: &str,
+	source_tenant: &str,
+) -> aidash_domain::nodes::NodeAddress {
+	tenant_root(f, source_tenant).await;
+	let node = default_node(&f.store, tenant).await;
+	let source = default_node(&f.store, source_tenant).await;
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		peering::registration(&source.to_string(), None),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	source
+}
+
+/// Both fixture Deployments register the other's default Node, so each accepts
+/// and addresses the other. Both serve their routes.
+#[allow(dead_code)]
+pub async fn register_pair(
+	a: (&Federation, &TestApplication, &str),
+	b: (&Federation, &TestApplication, &str),
+) {
+	register_default_node(a, (b.0, b.2)).await;
+	register_default_node(b, (a.0, a.2)).await;
+}
+
+/// A request to `receiver`'s routes from `from`'s default Node of
+/// `from_tenant`, as `subject`, signed with `from`'s Deployment Key. `path` is
+/// the full path of the route, which starts with `/federation/v0.1`.
+#[allow(dead_code)]
+pub async fn peer_request(
+	app: &TestApplication,
+	from: (&Federation, &str),
+	receiver: &aidash_domain::nodes::NodeAddress,
+	subject: &str,
+	path: &str,
+	input: Value,
+) -> (u16, Value) {
+	let (f, tenant) = from;
+	let node = default_node(&f.store, tenant).await;
+	let body = input.to_string();
+	let target = path
+		.strip_prefix("/federation/v0.1")
+		.expect("a federation route");
+	let token = peering::token(
+		f.config
+			.deployment_key
+			.as_deref()
+			.expect("the fixture Deployment holds a key"),
+		f.config.deployment.as_str(),
+		&node.to_string(),
+		&receiver.to_string(),
+		subject,
+		("POST", target, body.as_bytes()),
+	)
+	.await;
+	let client = app.client();
+	let mut request = client
+		.request(http::Method::POST, path)
+		.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
+		.header(http::header::CONTENT_TYPE, "application/json");
+	for (name, value) in peering::peer_headers(&token) {
+		request = request.header(name, value);
+	}
+	let response = request.send().await.unwrap();
+	json_response("POST", path, response.status_code(), response.body())
 }
 
 fn json_response(method: &str, path: &str, status: u16, body: &[u8]) -> (u16, Value) {

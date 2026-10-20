@@ -116,7 +116,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		assert!(outcome.complete, "{outcome:?}");
 		assert_eq!(outcome.decision.as_deref(), Some("COMMIT"), "{outcome:?}");
 		for _ in 0..2 {
-			participant::finish(&f, f.config.deployment.as_str(), &manifest)
+			participant::finish(&f, None, f.config.deployment.as_str(), &manifest)
 				.await
 				.unwrap();
 		}

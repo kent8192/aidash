@@ -192,6 +192,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		assert_eq!(
 			participant::finish(
 				&app.runtime,
+				None,
 				app.runtime.config.deployment.as_str(),
 				&manifest
 			)

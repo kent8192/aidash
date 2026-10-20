@@ -264,31 +264,8 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	)
 	.await;
 	assert_eq!(status, 200);
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("peers"))
-			.columns(
-				[
-					"node_id",
-					"endpoint",
-					"credential_env",
-					"protocol_version",
-					"enabled",
-				]
-				.map(Alias::new),
-			)
-			.values_panic::<_, reinhardt::query::Value>([
-				"aidash://source".into(),
-				"http://localhost:1".into(),
-				"AIDASH_SECRET_TEST_PEER".into(),
-				"0.2".into(),
-				true.into(),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	let source = common::register_local_node(&f, &app, "acme", "remote").await;
+	let node = common::default_node(&f.store, "acme").await.node;
 	let old_pool = f.store.control_pool.clone();
 	f.store.control_pool = old_pool
 		.options()
@@ -304,7 +281,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	let app = common::application(f.clone()).await;
 	for (revision, enabled) in [(0, true), (1, true), (2, false)] {
 		let (status, body) = request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-mappings",
-            json!({"source_node":"aidash://source","source_tenant":"remote","source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
+            json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
 		assert_eq!(
 			status, 200,
 			"mapping change must not acquire a second control slot: {body}"
