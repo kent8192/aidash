@@ -2,6 +2,8 @@
 
 mod agent_knowledge;
 pub use agent_knowledge::AgentKnowledge;
+mod agent_plugin_copies;
+pub use agent_plugin_copies::AgentPluginCopy;
 mod registry;
 pub use registry::Definition;
 mod registry_agent_model_refs;

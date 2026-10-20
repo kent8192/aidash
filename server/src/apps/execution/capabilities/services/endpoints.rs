@@ -696,6 +696,11 @@ pub(crate) async fn outbound_history(
 	.await;
 	access.finish(result).await
 }
+/// Approval records that end with their Run, so a pending one whose Run has
+/// ended is closed rather than left to be decided.
+fn ends_with_run(row: &super::records::Record) -> bool {
+	matches!(row.kind.as_str(), "disclosure" | "tool_call") && row.state == "pending"
+}
 pub(crate) async fn approval_list(
 	f: Federation,
 	actor: Actor,
@@ -722,9 +727,11 @@ pub(crate) async fn approval_list(
 			),
 		});
 		let (kinds, state): (&[&str], _) = match query.state {
-			Some(ApprovalState::Pending) => (&["outbound", "disclosure"], Some("pending")),
+			Some(ApprovalState::Pending) => {
+				(&["outbound", "disclosure", "tool_call"], Some("pending"))
+			}
 			Some(ApprovalState::Active) => (&["grant"], Some("active")),
-			None => (&["outbound", "grant", "disclosure"], None),
+			None => (&["outbound", "grant", "disclosure", "tool_call"], None),
 		};
 		select.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()));
 		if let Some(state) = state {
@@ -733,10 +740,11 @@ pub(crate) async fn approval_list(
 				.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())));
 		}
 		if query.state == Some(ApprovalState::Pending) {
-			// A disclosure ends with its Run: an inbox never offers one whose
-			// Run has ended, since no decision on it could take effect.
+			// A disclosure or tool call approval ends with its Run: an inbox never
+			// offers one whose Run has ended, since no decision on it could take
+			// effect.
 			select.and_where(Expr::cust(
-				"(kind <> 'disclosure' OR NOT EXISTS (SELECT 1 FROM runs r \
+				"(kind NOT IN ('disclosure', 'tool_call') OR NOT EXISTS (SELECT 1 FROM runs r \
 				 WHERE r.id::text = core_records.data->>'run_id' \
 				 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
 			));
@@ -746,13 +754,13 @@ pub(crate) async fn approval_list(
 				.fetch_all(&mut **access.tx)
 				.await?;
 		let next_cursor = (rows.len() == 51).then(|| rows[49].id);
-		// Every view, not only the inbox, shows a pending disclosure whose Run
-		// has ended as closed, as a decision on it would close it, so no
-		// reader is offered it.
+		// Every view, not only the inbox, shows a pending disclosure or tool call
+		// approval whose Run has ended as closed, as a decision on it would close
+		// it, so no reader is offered it.
 		let waiting: Vec<Uuid> = rows
 			.iter()
 			.take(50)
-			.filter(|row| row.kind == "disclosure" && row.state == "pending")
+			.filter(|row| ends_with_run(row))
 			.filter_map(|row| serde_json::from_value(row.data["run_id"].clone()).ok())
 			.collect();
 		let ended: std::collections::HashSet<Uuid> = if waiting.is_empty() {
@@ -781,7 +789,7 @@ pub(crate) async fn approval_list(
 				continue;
 			}
 			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
-			let run_ended = row.kind == "disclosure" && row.state == "pending" && ended.contains(&run);
+			let run_ended = ends_with_run(&row) && ended.contains(&run);
 			// A Run grant past its `expires_at` no longer admits anything, so
 			// it reads as expired rather than active and revocable.
 			let expired = matches!(row.state.as_str(), "pending" | "active")
@@ -805,7 +813,10 @@ pub(crate) async fn approval_list(
 				"viewer_is_approver": data["approver"] == json!(subject),
 				"agent_id": data["agent_id"],
 				"agent_version": data["agent_version"],
+				"tool": data["tool"],
+				"version": if data["tool"].is_string() { data["version"].clone() } else { Value::Null },
 				"operation": data["operation"],
+				"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
 				"provider": data["provider"],
 				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
 				"query": data["query"],
@@ -838,7 +849,11 @@ pub(crate) async fn approval_revoke(
 	input: super::approvals::Revoke,
 ) -> Result<Revoked> {
 	let mut access = access(&f, actor).await?;
-	let result = super::approvals::revoke(&mut access, id, "outbound", input).await;
+	let result = async {
+		let kind = super::approvals::revocable_kind(&mut access, id).await?;
+		super::approvals::revoke(&mut access, id, kind, input).await
+	}
+	.await;
 	typed(access.finish(result).await?)
 }
 pub(crate) async fn grant_revoke(

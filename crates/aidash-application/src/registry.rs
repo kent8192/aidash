@@ -274,6 +274,8 @@ mod tests;
 
 pub mod personal;
 
+pub mod agent_plugin_import;
+
 pub mod skill_import;
 
 pub mod workbench;

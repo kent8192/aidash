@@ -5,13 +5,15 @@ import {
 } from "./auth-fixture";
 import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
+import { acceptanceSubject } from "./tenant-fixture";
 
 test("semantic dashboard configures, searches, migrates and deletes persistent sources in both languages", async ({
   page,
   request,
 }) => {
   test.setTimeout(90000);
-  const headers = { authorization: "Bearer acceptance-access-token" };
+  const subject = acceptanceSubject();
+  const headers = { authorization: `Bearer ${subject.token}` };
   const api = async (path: string, data?: unknown) => {
     const response =
       data === undefined
@@ -45,7 +47,10 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   let releaseRefresh = () => {};
   let releaseConfigure = () => {};
   try {
-    await installBearerDashboard(page, "acceptance-access-token");
+    await installBearerDashboard(page, subject.token, {
+      tenant: subject.tenant,
+      name: subject.name,
+    });
     await page.addInitScript(() => {
       localStorage.setItem("aidash-locale", "en-US");
     });

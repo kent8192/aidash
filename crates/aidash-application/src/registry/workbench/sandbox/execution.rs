@@ -11,6 +11,7 @@ use crate::{
 	},
 };
 use aidash_domain::{
+	agent_plugin::PluginTools,
 	exposure::ExposureState,
 	provider::ModelRequest,
 	registry::{
@@ -41,6 +42,9 @@ pub struct Job {
 	pub request: ModelRequest,
 	pub initial_conversation: Vec<Value>,
 	pub pinned_draft: Draft,
+	/// What the session pinned from its Agent's plugin servers at admission.
+	/// A pinned tool is answered by its explicit fixture and never dispatched.
+	pub plugin_tools: PluginTools,
 	/// `deferred@1`: the session's Exposure set and the request text around
 	/// its per-turn Skill blocks and capability index. `None` under `legacy@1`.
 	pub exposure: Option<SessionExposure>,
@@ -112,7 +116,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		}
 		authority.commit().await?;
 		let discoverable = match &exposure {
-			Some(_) => deferred::Deferred::new(&snapshot)?,
+			Some(_) => deferred::Deferred::new(&snapshot, Some(&job.plugin_tools))?,
 			None => None,
 		};
 		if exceeds_limits(
@@ -167,14 +171,16 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			let binding = snapshot.bindings.iter().find(|binding| {
 				binding.alias.as_deref() == Some(&call.name) && binding.excluded_reason.is_none()
 			});
-			let admitted = binding.ok_or(Error::Forbidden).and_then(|binding| {
-				binding
+			let admitted = match binding {
+				Some(binding) => binding
 					.narrow
 					.apply(&mut call.arguments)
-					.map_err(Error::from)
-			});
-			let evaluated = match (&discoverable, exposure.as_mut(), binding, &admitted) {
-				(Some(discoverable), Some(session), Some(binding), Ok(())) => {
+					.map_err(Error::from),
+				None if pinned_plugin_tool(&job.plugin_tools, &call.name) => Ok(()),
+				None => Err(Error::Forbidden),
+			};
+			let evaluated = match (&discoverable, exposure.as_mut(), &admitted) {
+				(Some(discoverable), Some(session), Ok(())) => {
 					// The next request resends the whole conversation, so a
 					// result must leave it within the session's limits.
 					let fits = |output: &Value, reserve: usize| {
@@ -289,6 +295,14 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		usage: json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete}),
 		error,
 	})
+}
+
+fn pinned_plugin_tool(pinned: &PluginTools, alias: &str) -> bool {
+	pinned
+		.servers
+		.iter()
+		.flat_map(|server| &server.tools)
+		.any(|tool| tool.alias == alias)
 }
 
 /// Whether `request`, grown by `reserve` bytes, exceeds the session's input,

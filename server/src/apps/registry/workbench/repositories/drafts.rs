@@ -103,6 +103,12 @@ impl DefinitionLookup for Scope {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		NativeScope(&mut self.tx).definition(id, version).await
 	}
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> Result<Option<aidash_application::ports::bindings::StoredAgentPlugin>> {
+		NativeScope(&mut self.tx).agent_plugin(digest).await
+	}
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		NativeScope(&mut self.tx).executor_kind(id, version).await
 	}

@@ -1,3 +1,5 @@
+import { toolLabel } from "./capabilities/tool-approval-model.ts";
+
 /**
  * Web research as the dashboard sees it. Research operations are ordinary
  * capabilities an Agent binds (there is no research mode), so everything here
@@ -268,13 +270,15 @@ export function runGrantScope(
 /**
  * The one line a notification shows for a capability approval: what is
  * asked, where it would go, which Agent asks and for whom. It never carries
- * the disclosed content, which only the card shows, collapsed.
+ * the disclosed content or a tool call's arguments, which only the card shows.
  */
 export function approvalNotice(
   card: {
     kind: string;
     operation?: string | null;
     targets: string[];
+    tool?: string | null;
+    version?: string | null;
     agent_id?: string | null;
     agent_version?: string | null;
     requester: string;
@@ -282,23 +286,28 @@ export function approvalNotice(
   ja: boolean,
 ): string {
   const what =
-    card.kind === "disclosure"
-      ? card.operation === "search"
-        ? ja
-          ? "Web 検索"
-          : "Web search"
+    card.kind === "tool_call"
+      ? ja
+        ? "ツール呼び出し"
+        : "Tool call"
+      : card.kind === "disclosure"
+        ? card.operation === "search"
+          ? ja
+            ? "Web 検索"
+            : "Web search"
+          : ja
+            ? "ページ読み取り"
+            : "Page reading"
         : ja
-          ? "ページ読み取り"
-          : "Page reading"
-      : ja
-        ? "外部接続"
-        : "Outbound request";
+          ? "外部接続"
+          : "Outbound request";
   const agent = card.agent_id
     ? `${card.agent_id}@${card.agent_version ?? ""}`
     : null;
   return [
     what,
-    card.targets.join(", "),
+    // A tool call's target is an internal address, so the tool stands for it.
+    card.kind === "tool_call" ? toolLabel(card) : card.targets.join(", "),
     agent,
     ja ? `依頼者 ${card.requester}` : `requested by ${card.requester}`,
   ]

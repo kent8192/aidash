@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Check, Group, Hint, pairClass } from "./components/patterns";
 import { Field, useI18n } from "./ui";
 import { disambiguateLabels } from "./display-labels";
+import { hasPluginSkills, type AgentPluginRef } from "./agent-plugins";
 export type Binding = {
   kind: "tool" | "bundle" | "skill" | "memory" | "source";
   target: { registry_deployment: string; id: string; version: string };
@@ -30,7 +31,9 @@ export function hasInstructionalBinding(
     config: Record<string, unknown>;
   }[],
   node: string,
+  plugins: readonly AgentPluginRef[] = [],
 ): boolean {
+  if (hasPluginSkills(plugins)) return true;
   return bindings.some((binding) => {
     if (binding.target.registry_deployment !== node) return false;
     const entry = entries.find(

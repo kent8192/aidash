@@ -29,10 +29,15 @@ pub const TENANT_DELETE: &str = "tenant.delete";
 /// Consenting, for the Tenant, to its attachment to a Billing Account.
 pub const BILLING_ATTACH: &str = "billing.attach";
 
+/// The policy that lets members approve the Tool call approvals of their own
+/// Runs, and nothing else they could be asked to approve.
+pub const MEMBER_TOOL_APPROVAL: &str = "members-tool-call-approval";
+
 /// What every ordinary member may do: use the Tenant and author definitions,
-/// never administer people, change Tenant settings, approve use, hold Provider
-/// Credentials, disclose research or administer Federation. An explicit list,
-/// because deny rules would make the last-administrator check unreliable.
+/// never administer people, change Tenant settings, approve use beyond their
+/// own tool calls (see [`MEMBER_TOOL_APPROVAL`]), hold Provider Credentials,
+/// disclose research or administer Federation. An explicit list, because deny
+/// rules would make the last-administrator check unreliable.
 pub const MEMBER_ACTIONS: &[&str] = &[
 	"agent.configure",
 	"agent.execute",
@@ -334,6 +339,18 @@ pub fn initial_policy(tenant: &str, creator: bool) -> Result<PolicyBundle> {
 					.map(|action| (*action).to_owned())
 					.collect(),
 			),
+			Policy {
+				id: MEMBER_TOOL_APPROVAL.into(),
+				resources: ResourceSelector {
+					kinds: ["tool".to_owned()].into(),
+					ids: BTreeSet::new(),
+				},
+				..group_policy(
+					MEMBER_TOOL_APPROVAL,
+					MEMBERS,
+					["capability.approve".to_owned()].into(),
+				)
+			},
 		],
 	};
 	bundle.validate()?;

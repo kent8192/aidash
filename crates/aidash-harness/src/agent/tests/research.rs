@@ -133,16 +133,22 @@ async fn runs_without_citing_operations_are_not_verified(mut fixture: Fixture) {
 
 #[rstest]
 #[tokio::test]
-async fn disclosure_approval_waits_like_every_capability_approval(mut fixture: Fixture) {
+async fn an_approval_raised_inside_a_call_resumes_that_call_without_another_response(
+	mut fixture: Fixture,
+) {
+	// Arrange
 	let fetch = Scripted::research(Operation::Fetch);
 	let approval = Uuid::from_u128(0xa1);
-	*fetch.outputs.lock().unwrap() = [json!({
-		"version": 1,
-		"operation": "fetch",
-		"status": "approval_required",
-		"approval_id": approval,
-		"instruction": "repeat after approval",
-	})]
+	*fetch.outputs.lock().unwrap() = [
+		json!({
+			"version": 1,
+			"operation": "fetch",
+			"status": "approval_required",
+			"approval_id": approval,
+			"instruction": "the Run waits",
+		}),
+		json!({"version": 1, "operation": "fetch", "status": "ok"}),
+	]
 	.into();
 	bind(&mut fixture, "page", fetch.clone());
 	respond(
@@ -153,14 +159,59 @@ async fn disclosure_approval_waits_like_every_capability_approval(mut fixture: F
 			json!({"url":"https://example.com/"}),
 		)],
 	);
+
+	// Act
 	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
 	assert_eq!(fetch.invocations(), 1);
-	let (_, saved) = last_write(&fixture);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.waiting_for_approval");
+	let RunState::Waiting(waiting) = &saved.state else {
+		panic!("the Run waits for the approval");
+	};
+	let WaitingState::Approval {
+		approval: ApprovalRef::Capability { approval_id },
+		resume,
+	} = &**waiting
+	else {
+		panic!("the Run waits for a capability approval");
+	};
+	assert_eq!(*approval_id, approval);
+	assert_eq!((resume.cursor, resume.approval), (0, Some(approval)));
+	assert!(
+		saved
+			.context
+			.events()
+			.all(|event| !matches!(event, ContextEvent::Tool { .. })),
+		"the approval request is not the call's result"
+	);
+
+	// The approval is decided: the Run wakes into the same call and makes it.
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	let keys = fetch.keys();
+	let run = fixture.run.id;
+	assert_eq!(
+		keys,
+		[
+			format!("{run}:0:0"),
+			format!("{run}:0:0:approval:{approval}")
+		]
+	);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
 	assert!(matches!(
-		&saved.state,
-		RunState::Waiting(waiting)
-			if matches!(**waiting, WaitingState::CoreApproval { approval_id, .. } if approval_id == approval)
+		saved.context.events().last(),
+		Some(ContextEvent::Tool { result, .. }) if result["status"] == "ok"
 	));
+	assert!(
+		matches!(&saved.state, RunState::ToolCall(state) if state.cursor == 1 && state.approval.is_none())
+	);
+	assert!(
+		!fixture.backend.calls().contains(&"inference.start"),
+		"the approved call needs no further model response"
+	);
 }
 
 #[rstest]

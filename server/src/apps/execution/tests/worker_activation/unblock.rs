@@ -224,6 +224,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 #[tokio::test]
 async fn approval_notifications_target_only_the_bound_run(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[values("outbound", "disclosure", "tool_call")] kind: &str,
 ) {
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();
@@ -239,8 +240,10 @@ async fn approval_notifications_target_only_the_bound_run(
 				.value(
 					a("pending"),
 					common::pending(aidash_server::domain::RunState::Waiting(Box::new(
-						aidash_server::domain::WaitingState::CoreApproval {
-							approval_id: approval,
+						aidash_server::domain::WaitingState::Approval {
+							approval: aidash_domain::run_state::ApprovalRef::Capability {
+								approval_id: approval,
+							},
 							resume: Default::default(),
 						},
 					))),
@@ -255,7 +258,7 @@ async fn approval_notifications_target_only_the_bound_run(
 	for (id, kind, data) in [
 		(Uuid::new_v4(), "file", json!({"run_id":"not-a-run"})),
 		(Uuid::new_v4(), "grant", json!({"run_id":target})),
-		(approval, "outbound", json!({"run_id":target})),
+		(approval, kind, json!({"run_id":target})),
 	] {
 		sqlx::query(
 			&Query::insert()

@@ -45,7 +45,7 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 			})
 			.unwrap();
 		assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
-		assert!(contract.behavior.workbench_approval);
+		assert!(contract.behavior.tool_call_approval);
 		assert!(!contract.replay_safe());
 	}
 }

@@ -4,6 +4,7 @@
 //! broken by alias. Budgets are bytes of the JSON request text.
 use crate::{
 	Error, Result,
+	agent_plugin::{PluginName, PluginTools, ServerName},
 	capabilities::skills::SkillMetadata,
 	context::estimated_tokens,
 	provider::ToolSpec,
@@ -226,7 +227,16 @@ impl SkillOriginKind {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CapabilityIdentity {
 	Registry(QualifiedRef),
-	DirectSkill { skill_id: Uuid, origin: String },
+	DirectSkill {
+		skill_id: Uuid,
+		origin: String,
+	},
+	/// A tool of a remote MCP server that the Run pinned from an Agent Plugin.
+	AgentPluginTool {
+		plugin: PluginName,
+		server: ServerName,
+		tool: String,
+	},
 }
 impl std::fmt::Display for CapabilityIdentity {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -237,6 +247,11 @@ impl std::fmt::Display for CapabilityIdentity {
 				reference.registry_deployment, reference.id, reference.version
 			),
 			Self::DirectSkill { skill_id, origin } => write!(f, "{origin}#{skill_id}"),
+			Self::AgentPluginTool {
+				plugin,
+				server,
+				tool,
+			} => write!(f, "agent-plugin:{plugin}/{server}/{tool}"),
 		}
 	}
 }
@@ -393,10 +408,13 @@ impl Selection {
 
 /// Every Discoverable capability of a Run, sorted by alias. `specs` are the
 /// tool specifications exactly as dispatch advertises them, keyed by alias.
+/// `plugin_tools` is what the Run pinned from its Agent Plugins; admission-time
+/// callers have no Run yet and pass `None`.
 pub fn catalog(
 	snapshot: &BindingSnapshot,
 	specs: &BTreeMap<String, ToolSpec>,
 	direct: &[DirectSkill],
+	plugin_tools: Option<&PluginTools>,
 ) -> Result<Vec<Capability>> {
 	let agent = snapshot
 		.definitions
@@ -509,6 +527,32 @@ pub fn catalog(
 				None => bundle.is_some_and(|(_, eager)| *eager),
 			},
 		});
+	}
+	for server in plugin_tools.iter().flat_map(|pinned| &pinned.servers) {
+		for tool in &server.tools {
+			let Some(spec) = specs.get(&tool.alias) else {
+				continue;
+			};
+			result.push(Capability {
+				alias: tool.alias.clone(),
+				kind: CapabilityKind::Tool,
+				identity: CapabilityIdentity::AgentPluginTool {
+					plugin: server.plugin.clone(),
+					server: server.server.clone(),
+					tool: tool.name.clone(),
+				},
+				digest: tool.schema_digest.clone(),
+				name: tool.name.clone(),
+				description: spec.description.clone(),
+				bundle: None,
+				companions: vec![],
+				companion_bytes: vec![],
+				definition_bytes: tool_bytes(spec)?,
+				detail: serde_json::to_value(spec)?,
+				mandatory: false,
+				eager: tool.eager,
+			});
+		}
 	}
 	for binding in snapshot
 		.bindings

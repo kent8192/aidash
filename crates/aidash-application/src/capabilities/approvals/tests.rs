@@ -1,5 +1,5 @@
-//! Web disclosure approvals share the capability approval records, decisions
-//! and grants, with their own resource kind and action.
+//! Web disclosure and tool call approvals share the capability approval records,
+//! decisions and grants, with their own resource kinds and actions.
 use super::*;
 use crate::ports::{
 	capabilities::approvals::{ApprovalScope, Creation, Limits},
@@ -24,6 +24,8 @@ struct Fake {
 	/// Close the record the next update writes just before it does, as an
 	/// Evidence Revocation committing meanwhile would.
 	close_before_update: bool,
+	/// Outbound reads are admitted, to `https://example.com`.
+	admission: bool,
 }
 
 #[async_trait]
@@ -64,8 +66,8 @@ impl ApprovalScope for Fake {
 	}
 	fn limits(&self) -> Result<Limits> {
 		Ok(Limits {
-			admission: false,
-			origins: vec![],
+			admission: self.admission,
+			origins: vec!["https://example.com".into()],
 			approval_seconds: 600,
 			grant_seconds: 3600,
 		})
@@ -188,6 +190,7 @@ fn scope(extra: Value) -> Fake {
 		records: BTreeMap::new(),
 		cache: BTreeMap::new(),
 		close_before_update: false,
+		admission: false,
 		run: Run {
 			id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(2),
@@ -728,4 +731,468 @@ async fn an_approval_closed_while_it_is_consumed_is_not_consumed() {
 			.unwrap()
 	);
 	assert_eq!(scope.records[&approval_id].state, "closed");
+}
+
+fn tool_scope(extra: Value) -> Fake {
+	let mut scope = scope(extra);
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({"id":"approve-tools","effect":"allow","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}))
+			.unwrap(),
+	);
+	scope
+}
+
+fn tool_request(key: &str, arguments: Value) -> ToolCallRequest {
+	ToolCallRequest {
+		key: key.into(),
+		tool: aidash_domain::registry::EntityRef {
+			id: "crm".into(),
+			version: "1.0.0".into(),
+		},
+		operation: INVOKE.into(),
+		call: aidash_domain::provider::ToolCall {
+			id: "call-0".into(),
+			name: "crm".into(),
+			arguments,
+		},
+		area: None,
+	}
+}
+
+const TOOL_TARGET: &str = "tool:crm@1.0.0#invoke";
+
+async fn ask(scope: &mut Fake, request: ToolCallRequest) -> ToolCallApproval {
+	let run = scope.run.clone();
+	tool_call(scope, &run, request).await.unwrap()
+}
+
+/// The approval a call waits for.
+async fn pending_call(scope: &mut Fake, key: &str) -> Uuid {
+	let ToolCallApproval::Pending { approval_id, .. } =
+		ask(scope, tool_request(key, json!({"customer":"c-1"}))).await
+	else {
+		panic!("a designated approver must decide first");
+	};
+	approval_id
+}
+
+async fn decide_tool(scope: &mut Fake, id: Uuid, choice: ApprovalChoice) -> Result<Value> {
+	scope.principal = "bob".into();
+	let revision = scope.records[&id].revision;
+	let (targets, expires_at) = match choice {
+		ApprovalChoice::AllowRun => (
+			Some(vec![TOOL_TARGET.to_owned()]),
+			Some(Utc::now() + Duration::minutes(30)),
+		),
+		_ => (None, None),
+	};
+	let result = decide(
+		scope,
+		id,
+		ApprovalDecision {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+			choice,
+			targets,
+			expires_at,
+		},
+	)
+	.await;
+	scope.principal = "alice".into();
+	result
+}
+
+#[tokio::test]
+async fn a_tool_call_waits_for_the_designated_approver_and_the_approval_is_consumed_by_the_call() {
+	// Arrange
+	let mut scope = tool_scope(Value::Null);
+
+	// Act
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+
+	// Assert
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.kind, TOOL_CALL);
+	assert_eq!(record.state, "pending");
+	assert_eq!(record.data["action"], CALL_UNAPPROVED);
+	assert_eq!(record.data["targets"], json!([TOOL_TARGET]));
+	assert_eq!(record.data["approver"], "bob");
+	assert_eq!(record.data["call"]["arguments"], json!({"customer":"c-1"}));
+	// Asking again while it is pending waits on the same approval.
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:0", json!({"customer":"c-1"}))).await,
+		ToolCallApproval::Pending { approval_id: same, .. } if same == approval_id
+	));
+
+	let decided = decide_tool(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	assert_eq!(decided["state"], "approved");
+	// The approval waits for the call it allows, which consumes it.
+	assert_eq!(scope.records[&approval_id].state, "approved");
+	let approved = ToolCallApproval::Approved {
+		approval_id: Some(approval_id),
+	};
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		approved
+	);
+	assert_eq!(scope.records[&approval_id].state, "consumed");
+	// Asking again after a restart maps to the same decision, not a new approval.
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		approved
+	);
+	assert_eq!(scope.records.len(), 1);
+	// Another call, even of the same tool, needs its own approval.
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:1", json!({"customer":"c-1"}))).await,
+		ToolCallApproval::Pending { approval_id: next, .. } if next != approval_id
+	));
+}
+
+#[tokio::test]
+async fn policy_can_permit_or_forbid_a_tool_call_without_approval() {
+	let mut permitted = tool_scope(
+		json!({"id":"unapproved","effect":"allow","subjects":{"ids":["alice"]},"actions":[CALL_UNAPPROVED],"resources":{"kinds":["tool"]}}),
+	);
+	let direct = ToolCallApproval::Approved { approval_id: None };
+	assert_eq!(
+		ask(&mut permitted, tool_request("run:0:0", json!({}))).await,
+		direct
+	);
+	assert_eq!(
+		ask(&mut permitted, tool_request("run:0:0", json!({}))).await,
+		direct
+	);
+	assert_eq!(permitted.records.len(), 1);
+	assert!(
+		permitted
+			.records
+			.values()
+			.all(|record| record.state == "consumed" && record.data["ordinary"] == true)
+	);
+
+	let mut forbidden = tool_scope(
+		json!({"id":"never","effect":"deny","subjects":{"any":true},"actions":[CALL_UNAPPROVED],"resources":{"kinds":["tool"]}}),
+	);
+	assert_eq!(
+		ask(&mut forbidden, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Refused(Refusal::Forbidden)
+	);
+	assert!(forbidden.records.is_empty());
+}
+
+#[tokio::test]
+async fn without_an_eligible_approver_a_tool_call_is_blocked() {
+	let mut scope = tool_scope(Value::Null);
+	scope
+		.bundle
+		.policies
+		.retain(|policy| policy.id != "approve-tools");
+
+	assert_eq!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Refused(Refusal::Blocked)
+	);
+	assert!(
+		scope
+			.records
+			.values()
+			.all(|record| record.state == "blocked")
+	);
+}
+
+#[tokio::test]
+async fn a_denied_tool_call_stays_denied() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_tool(&mut scope, approval_id, ApprovalChoice::Deny)
+		.await
+		.unwrap();
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Refused(Refusal::Denied)
+	);
+}
+
+#[tokio::test]
+async fn an_unanswered_tool_call_approval_expires() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	scope.records.get_mut(&approval_id).unwrap().expires_at =
+		Some(Utc::now() - Duration::seconds(1));
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Refused(Refusal::Expired)
+	);
+}
+
+#[tokio::test]
+async fn an_approval_that_lapsed_before_its_call_resumed_admits_nothing() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_tool(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	// The worker resumes only after the approval expired.
+	scope.records.get_mut(&approval_id).unwrap().expires_at =
+		Some(Utc::now() - Duration::seconds(1));
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Refused(Refusal::Expired)
+	);
+	assert_eq!(scope.records[&approval_id].state, "approved");
+}
+
+#[tokio::test]
+async fn a_tool_call_approval_admits_nothing_once_its_approver_is_ineligible() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_tool(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	scope
+		.bundle
+		.policies
+		.retain(|policy| policy.id != "approve-tools");
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Refused(Refusal::Revoked)
+	);
+	assert_eq!(scope.records[&approval_id].state, "approved");
+}
+
+#[tokio::test]
+async fn an_approval_revoked_before_its_call_resumed_admits_nothing() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_tool(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	scope.records.get_mut(&approval_id).unwrap().state = "revoked".into();
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Refused(Refusal::Revoked)
+	);
+}
+
+#[tokio::test]
+async fn a_run_grant_covers_later_calls_of_the_operation_across_new_user_input() {
+	// Arrange
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	let decided = decide_tool(&mut scope, approval_id, ApprovalChoice::AllowRun)
+		.await
+		.unwrap();
+	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+	assert_eq!(
+		scope.records[&grant].data["actions"],
+		json!([CALL_UNAPPROVED])
+	);
+	assert_eq!(scope.records[&grant].data["targets"], json!([TOOL_TARGET]));
+	assert_eq!(scope.records[&grant].owner, "alice");
+	assert!(scope.records[&grant].data.get("context_revision").is_none());
+
+	// Act: the user writes again, then the model calls the tool with new arguments.
+	scope.run.observed_input_seq = 3;
+	let later = ask(
+		&mut scope,
+		tool_request("run:1:0", json!({"customer":"c-2"})),
+	)
+	.await;
+
+	// Assert
+	let ToolCallApproval::Approved {
+		approval_id: Some(later),
+	} = later
+	else {
+		panic!("the Run grant admits the call");
+	};
+	assert_ne!(later, approval_id);
+	assert_eq!(scope.records[&later].state, "consumed");
+	assert_eq!(scope.records[&later].data["grant_id"], json!(grant));
+	// Another operation, or another version of the tool, was not approved.
+	let mut other_operation = tool_request("run:1:1", json!({}));
+	other_operation.operation = "other".into();
+	let mut other_version = tool_request("run:1:2", json!({}));
+	other_version.tool.version = "1.1.0".into();
+	for request in [other_operation, other_version] {
+		assert!(matches!(
+			ask(&mut scope, request).await,
+			ToolCallApproval::Pending { .. }
+		));
+	}
+}
+
+#[rstest::rstest]
+#[case::outbound(&["network.get"])]
+#[case::disclosure(&[DISCLOSE])]
+#[tokio::test]
+async fn a_grant_of_another_kind_never_covers_a_tool_call(#[case] actions: &[&str]) {
+	let mut scope = tool_scope(Value::Null);
+	let run = scope.run.clone();
+	let grant = Uuid::new_v4();
+	scope.records.insert(
+		grant,
+		Record {
+			id: grant,
+			tenant: "tenant".into(),
+			owner: "alice".into(),
+			area_id: None,
+			kind: "grant".into(),
+			state: "active".into(),
+			revision: 1,
+			data: json!({"run_id":run.id,"subjects":["alice"],"targets":[TOOL_TARGET],"actions":actions,"approver":"bob"}),
+			expires_at: Some(Utc::now() + Duration::minutes(30)),
+		},
+	);
+
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Pending { .. }
+	));
+}
+
+#[tokio::test]
+async fn a_tool_grant_never_covers_an_outbound_read() {
+	let mut scope = tool_scope(
+		json!({"id":"outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["outbound"]}}),
+	);
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({"id":"approve-outbound","effect":"allow","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}))
+			.unwrap(),
+	);
+	scope.admission = true;
+	let run = scope.run.clone();
+	let grant = Uuid::new_v4();
+	scope.records.insert(
+		grant,
+		Record {
+			id: grant,
+			tenant: "tenant".into(),
+			owner: "alice".into(),
+			area_id: None,
+			kind: "grant".into(),
+			state: "active".into(),
+			revision: 1,
+			data: json!({"run_id":run.id,"subjects":["alice"],"targets":["https://example.com"],"actions":[CALL_UNAPPROVED],"approver":"bob"}),
+			expires_at: Some(Utc::now() + Duration::minutes(30)),
+		},
+	);
+
+	let result = prepare(
+		&mut scope,
+		&run,
+		Uuid::new_v4(),
+		aidash_domain::capabilities::approvals::Outbound {
+			idempotency_key: Uuid::new_v4(),
+			url: "https://example.com/page".into(),
+		},
+	)
+	.await
+	.unwrap();
+
+	assert_eq!(result["status"], "approval_required");
+}
+
+#[tokio::test]
+async fn the_approver_sees_the_exact_call_and_may_see_its_run_grant() {
+	let mut scope = tool_scope(Value::Null);
+	let run = scope.run.clone();
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+
+	let record = scope.records[&approval_id].clone();
+	let card = view(&mut scope, &run, &record).await.unwrap();
+
+	assert_eq!(card["tool"], "crm");
+	assert_eq!(card["version"], "1.0.0");
+	assert_eq!(card["operation"], INVOKE);
+	assert_eq!(card["call"]["arguments"], json!({"customer":"c-1"}));
+	assert_eq!(card["status"], "approval_required");
+	let decided = decide_tool(&mut scope, approval_id, ApprovalChoice::AllowRun)
+		.await
+		.unwrap();
+	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+	let record = scope.records[&grant].clone();
+	scope.principal = "bob".into();
+	assert!(visible(&mut scope, &record).await.unwrap());
+}
+
+#[tokio::test]
+async fn deciding_a_tool_call_whose_run_ended_closes_it() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	scope.run.control = RunControl::Cancelled;
+
+	let decided = decide_tool(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+
+	assert_eq!(decided["state"], "closed");
+	assert_eq!(
+		scope.records[&approval_id].data["closed_reason"],
+		"run_ended"
+	);
+}
+
+#[tokio::test]
+async fn a_closed_tool_call_approval_refuses_its_call() {
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	scope.records.get_mut(&approval_id).unwrap().state = "closed".into();
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Refused(Refusal::Closed)
+	);
+}
+
+#[tokio::test]
+async fn a_cancelled_run_asks_for_no_approval() {
+	let mut scope = tool_scope(Value::Null);
+	scope.run.control = RunControl::Cancelled;
+	let run = scope.run.clone();
+
+	let result = tool_call(&mut scope, &run, tool_request("run:0:0", json!({}))).await;
+
+	assert!(matches!(result, Err(Error::Conflict(reason)) if reason == "RUN_NOT_ACTIVE"));
+	assert!(scope.records.is_empty());
 }

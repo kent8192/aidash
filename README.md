@@ -364,6 +364,8 @@ Golden Path also requires subject-scoped remote execution on these real Node pro
 
 Use `scripts/test-acceptance.sh` to build the current checkout's binary and frontend before running the full gate. The report includes the Git revision, dirty status, source fingerprint and binary digest; changing the source or binary while the gate runs fails verification. The browser authentication fixture exercises real Bearer-authenticated APIs; it does not establish an OIDC provider login flow.
 
+The script's default run keeps only the browser specs tagged `@golden-path`, which need the state its scenarios create. `scripts/test-acceptance.sh --browser-suite` runs every other browser spec after the Node setup alone, so a Golden Path failure does not hide the browser suite. CI runs the two modes as separate jobs.
+
 The script adds `server/src/apps/execution/tests/fixtures/acceptance.compose.yaml` to give its disposable PostgreSQL service 400 connections for the two API processes and two workers. When running Golden Path directly, start Compose with `COMPOSE_FILE=compose.yaml:server/src/apps/execution/tests/fixtures/acceptance.compose.yaml` so those independent pools have the same capacity.
 
 For browser tests, keep that completed fixture environment running in one terminal:

@@ -1,11 +1,11 @@
-//! Request replay, approval expiration and answer validation without I/O.
+//! Request replay, Home journal approval expiration and answer validation without I/O.
 use crate::apps::execution::serializers::human_requests::HumanRequest;
 use crate::{
 	Error, Result,
 	domain::{Run, nonempty},
 };
 use chrono::{DateTime, Duration, Utc};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub(crate) fn validate_request(kind: &str, prompt: &str) -> Result<()> {
 	if !matches!(
@@ -31,6 +31,10 @@ pub(crate) fn validate_replay(
 	Ok(())
 }
 
+/// Whether the human request a Run executing for another Node sent to that
+/// Node asking for a Tool call approval has lapsed. Tool call approvals of a
+/// Run on this Node are capability approvals and follow `approval_seconds`
+/// (ADR 0075).
 pub(crate) fn approval_expired(request: &HumanRequest, now: DateTime<Utc>) -> bool {
 	request.kind == "APPROVAL_REQUIRED" && request.created_at + Duration::minutes(15) <= now
 }
@@ -52,24 +56,13 @@ pub(crate) fn answer(
 	run: &Run,
 	response: Value,
 	actor: &str,
-	now: DateTime<Utc>,
 ) -> Result<Answer> {
 	validate_response(&response)?;
-	let expired = approval_expired(request, now)
-		&& matches!(&run.state, crate::domain::RunState::Waiting(s) if matches!(s.as_ref(), crate::domain::WaitingState::ExternalApproval { request_id, .. } if *request_id == request.id));
-	let automatic_expiry = expired && (actor == "system" || request.response.is_none());
-	let (response, actor) = if automatic_expiry {
-		(json!({"approved": false, "expired": true}), "system")
-	} else {
-		(response, actor)
-	};
 	if let Some(existing) = &request.response {
 		if existing == &response {
 			return Ok(Answer::Replay);
 		}
-		if !automatic_expiry {
-			return Err(Error::Conflict("human request already answered".into()));
-		}
+		return Err(Error::Conflict("human request already answered".into()));
 	}
 	if matches!(&run.state, crate::domain::RunState::Waiting(s) if matches!(s.as_ref(), crate::domain::WaitingState::Reconciliation { .. }))
 		&& response.get("result").is_none()

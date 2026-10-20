@@ -10,6 +10,8 @@ import type { State } from "./types";
 import { ApiError } from "./transport";
 import { keylessOrigin } from "./keyless";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
+import { agentPlugins, type AgentPluginRef } from "./agent-plugins";
+import { AgentPluginSummary } from "./agent-plugin-summary";
 import { Badge, useEntryLabel, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
 import {
@@ -98,6 +100,52 @@ export function DeciderRecipients({
   );
 }
 
+/** The Agent Plugins an Agent version takes in. Approving the version admits
+ *  the servers they declare, so the approver reads each command or URL here
+ *  and every part left out (ADR 0072, ADR 0073). */
+export function AgentPluginsDisclosure({
+  plugins,
+  admits,
+}: {
+  plugins: AgentPluginRef[];
+  /** The viewer is about to approve this version. */
+  admits: boolean;
+}) {
+  const { t } = useI18n();
+  const hasServers = plugins.some(
+    (plugin) => Object.keys(plugin.servers).length > 0,
+  );
+  return (
+    <section
+      className="agent-plugins grid min-w-0 gap-2"
+      aria-label={t("catalogAgentPlugins")}
+    >
+      <h5 className="text-xs font-semibold text-foreground">
+        {t("catalogAgentPlugins")} ({plugins.length})
+      </h5>
+      {hasServers && (
+        <Notice
+          tone={admits ? "warning" : "info"}
+          role="status"
+          className="agent-plugins-notice"
+        >
+          {t("catalogAgentPluginsAdmit")} {t("agentPluginRuntime")}
+        </Notice>
+      )}
+      <ul className="grid min-w-0 gap-3">
+        {plugins.map((plugin) => (
+          <li
+            key={plugin.digest}
+            className="min-w-0 rounded-md border border-border bg-surface px-3 py-2.5"
+          >
+            <AgentPluginSummary plugin={plugin} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /** One version's Catalog Approval: its state and history, and for a subject
  *  holding `catalog.approve`, the decision itself. An approval refused for an
  *  unapproved dependency turns into one request for the whole closure. */
@@ -122,6 +170,7 @@ export function CatalogApprovalSection({
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
   const recipients = deciderRecipients(entry);
+  const plugins = agentPlugins(entry);
   const installed = !!entry.installation;
   const decides =
     tenant !== null &&
@@ -210,6 +259,12 @@ export function CatalogApprovalSection({
           <KeylessOrigin origin={origin} />
         ))}
       {recipients && <DeciderRecipients recipients={recipients} />}
+      {plugins && (
+        <AgentPluginsDisclosure
+          plugins={plugins}
+          admits={decides && state !== "approved"}
+        />
+      )}
       {version.subject && (
         <Facts
           items={[
@@ -262,6 +317,7 @@ export function CatalogApprovalSection({
             {[...closure.dependencies, version].map((item) => {
               const keyless = keylessOrigin(item.entry);
               const routes = deciderRecipients(item.entry);
+              const itemPlugins = agentPlugins(item.entry);
               return (
                 <li
                   key={`${item.entry.id}@${item.entry.version}`}
@@ -273,6 +329,11 @@ export function CatalogApprovalSection({
                   <Badge value={item.entry.kind} />
                   {keyless && <KeylessOrigin origin={keyless} />}
                   {routes && <DeciderRecipients recipients={routes} />}
+                  {itemPlugins && (
+                    <div className="w-full">
+                      <AgentPluginsDisclosure plugins={itemPlugins} admits />
+                    </div>
+                  )}
                 </li>
               );
             })}

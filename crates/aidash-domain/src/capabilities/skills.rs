@@ -53,6 +53,9 @@ fn metadata(attachment: &SkillAttachment) -> Result<SkillMetadata> {
 	})
 }
 
+/// The most direct Skills one Run pins, from any origin.
+pub const MAX_RUN_SKILLS: usize = 32;
+
 pub fn content_digest(a: &SkillAttachment) -> String {
 	crate::registry::rules::digest(&json!({"instructions":a.instructions,"files":a.files}))
 }
@@ -87,7 +90,7 @@ pub fn validate(a: &SkillAttachment) -> Result<SkillMetadata> {
 }
 
 pub fn validate_config(config: &AgentConfig) -> Result<()> {
-	if config.skill_attachments.len() > 16 || config.skill_roots.len() > 8 {
+	if config.skill_attachments.len() > MAX_RUN_SKILLS || config.skill_roots.len() > 8 {
 		return Err(Error::Invalid("SKILL_BINDING_LIMIT".into()));
 	}
 	if (!config.skill_attachments.is_empty() || !config.skill_roots.is_empty())

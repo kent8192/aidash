@@ -10,6 +10,7 @@ import json
 import time
 import uuid
 
+import tool_call_approvals
 from fixed_task_evaluation import (DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
                                    task_tools)
 
@@ -20,10 +21,6 @@ CANCEL_GRACE = 30.0
 # The harness retries a retryable provider failure up to five times without advancing
 # the step (crates/aidash-harness/src/recovery.rs), so one step can make six attempts.
 PROVIDER_ATTEMPTS_PER_STEP = 6
-# The tool result the harness records when a workbench approval was denied: the call never ran.
-APPROVAL_DENIED = "external write approval was denied or expired"
-# How the harness words a workbench approval request (crates/aidash-harness/src/agent.rs).
-APPROVAL_PROMPT = "Approve this exact external tool action once? Tool: "
 
 
 class ApiError(RuntimeError):
@@ -226,22 +223,11 @@ def tool_calls_from(context):
         error = result.get("error") if isinstance(result, dict) and isinstance(result.get("error"), str) else None
         # Rejected before dispatch: the tool never ran. Any other error may follow a partial effect.
         calls.append({"name": event["call"]["name"], "arguments": event["call"].get("arguments"), "error": error,
-                      "dispatch_rejected": bool(error) and (error == APPROVAL_DENIED or error.startswith(
+                      "dispatch_rejected": bool(error) and (error in tool_call_approvals.REFUSALS or error.startswith(
                           "unavailable tool ") or (error.startswith("capability ") and error.endswith(
                               ("use capability_load", "call it after the next model request")))),
                       "loaded": loaded_identity(event["call"]["name"], result)})
     return calls
-
-
-def approval_tool(prompt):
-    """The tool call a harness workbench approval prompt names, else None."""
-    if not prompt.startswith(APPROVAL_PROMPT) or "; call: " not in prompt:
-        return None
-    try:
-        call = json.loads(prompt.split("; call: ", 1)[1])
-    except ValueError:
-        return None
-    return call["name"] if isinstance(call, dict) and isinstance(call.get("name"), str) else None
 
 
 def final_answer(api, token, workspace, run):
@@ -262,15 +248,15 @@ def final_answer(api, token, workspace, run):
     return None
 
 
-def approves(task, prompt, approve_fixture_tools, prefix):
-    """Approve only an exact external action of this experiment's own fixture tools.
+def approves(task, card, approve_fixture_tools, prefix):
+    """Allow only the exact call a Tool call approval card asks about, and only for this experiment's own fixture tools.
 
     The deterministic tier enables this for its local fixture endpoints. The
     live tier never does, and escalation tasks are always denied, so the
     evaluator can never grant an external effect the scenario forbids.
     """
     return (approve_fixture_tools and task["kind"] != "escalation"
-            and prompt.startswith(f"{APPROVAL_PROMPT}{prefix}-"))
+            and (card.get("tool") or "").startswith(f"{prefix}-"))
 
 
 def blank_observation():
@@ -410,9 +396,10 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                     for request in bounded.get("/api/state", token)["human_requests"]:
                         if request["run_id"] != run_id or request.get("response") is not None:
                             continue
+                        # The Agent raised this itself: the harness asks for tool calls through
+                        # Tool call approvals, below. No scenario lets the evaluator grant one.
                         if request["kind"] == "APPROVAL_REQUIRED":
-                            answer = {"approved": approves(task, request["prompt"], approve_fixture_tools,
-                                                           experiment.prefix)}
+                            answer = {"approved": False}
                         else:
                             text = next(answers, None)
                             answer = {"answer": expand(text) if text is not None else NO_HUMAN}
@@ -422,8 +409,22 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                         observation["human_answers"].append({"kind": request["kind"],
                                                              "answer_sha256": canonical_sha256(answer),
                                                              "approved": answer.get("approved"),
-                                                             "prompt": request["prompt"],
-                                                             "tool": approval_tool(request["prompt"])})
+                                                             "prompt": request["prompt"]})
+                    for card in tool_call_approvals.pending(lambda path: bounded.get(path, token), run_id):
+                        approved = approves(task, card, approve_fixture_tools, experiment.prefix)
+                        try:
+                            tool_call_approvals.decide(lambda path, body: bounded.post(path, body, token), card,
+                                                       approved)
+                        except ApiError as error:
+                            # Decided, revoked or expired since it was listed: the next poll shows what is left.
+                            if error.status != 409:
+                                raise
+                            continue
+                        # The call stays in memory for grading; run_result keeps only its digest for a live Run.
+                        observation["human_answers"].append({
+                            "kind": card["kind"], "answer_sha256": canonical_sha256({"approved": approved}),
+                            "approved": approved, "tool": tool_call_approvals.call_name(card),
+                            "call": card.get("call")})
                 # Never sleep across the deadline: the next poll then notices it and cancels at once.
                 sleep(min(interval, max(0.0, deadline - clock())))
         except Exception as error:

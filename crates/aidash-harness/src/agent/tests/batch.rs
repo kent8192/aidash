@@ -470,9 +470,6 @@ impl ExecutionStore for Bench {
 	async fn human_request_by_id(&self, _id: Uuid) -> Result<HumanRequest> {
 		unexpected("ExecutionStore.human_request_by_id")
 	}
-	async fn expire_workbench_approval(&self, _id: Uuid) -> Result<HumanRequest> {
-		unexpected("ExecutionStore.expire_workbench_approval")
-	}
 	async fn invocation_start(
 		&self,
 		_run: &Run,
@@ -741,6 +738,13 @@ impl ExecutionAuthority for Bench {
 	}
 	async fn human_read(&self, _id: Uuid) -> Result<()> {
 		unexpected("ExecutionAuthority.human_read")
+	}
+	async fn tool_call_approval(
+		&self,
+		_run: &Run,
+		_request: ToolCallRequest,
+	) -> Result<ToolCallApproval> {
+		unexpected("ExecutionAuthority.tool_call_approval")
 	}
 	async fn model_media(
 		&self,

@@ -1831,17 +1831,6 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	for _ in 0..12 {
 		worker.worker_once().await.unwrap();
 		let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-		if let aidash_domain::RunState::Waiting(wait) = &current.state
-			&& let aidash_domain::WaitingState::ExternalApproval {
-				request_id, call, ..
-			} = wait.as_ref()
-		{
-			assert_eq!(call.name, "plugin_0");
-			f.store
-				.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
-				.await
-				.unwrap();
-		}
 		if current.phase().as_str() == "COMPLETED" {
 			break;
 		}

@@ -633,6 +633,14 @@ pub fn skill_import() -> aidash_application::registry::skill_import::SkillImport
 	))
 }
 
+/// Agent Plugin transport is external; HTTP handlers depend only on the use case.
+pub fn agent_plugin_import() -> aidash_application::registry::agent_plugin_import::AgentPluginImport
+{
+	aidash_application::registry::agent_plugin_import::AgentPluginImport::new(Arc::new(
+		aidash_integrations::agent_plugin_import::PublicAgentPluginSource,
+	))
+}
+
 /// Keep conversation authorization, writes, and delegation in one borrowed scope.
 pub(crate) fn conversation_scope<'a>(
 	federation: &'a Federation,

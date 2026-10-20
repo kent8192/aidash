@@ -243,7 +243,9 @@ impl ReadProvenanceScope for Reads<'_> {
 	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>> {
 		let result: NativeResult<Option<RunMetadata>> = async {
 			let this = &mut *self.access;
-			let source: Option<crate::domain::Run> = {
+			// Only the metadata is decoded: a Run's state grows with every step,
+			// and provenance checks reach the same Runs many times (#404).
+			let source: Option<crate::domain::RunMetadata> = {
 				let query_bind_1 = id;
 				let query_bind_2 = workspace;
 				aidash_server::database::query_as(
@@ -274,7 +276,7 @@ impl ReadProvenanceScope for Reads<'_> {
 				.fetch_optional(&mut **this.tx)
 				.await?
 			};
-			Ok(source.map(|run| run.metadata()))
+			Ok(source)
 		}
 		.await;
 		result.map_err(Into::into)

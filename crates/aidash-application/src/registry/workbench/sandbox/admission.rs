@@ -2,10 +2,14 @@
 use super::{
 	deferred::{self, Deferred},
 	execution::{Job, SessionExposure},
+	plugins,
 };
 use crate::{
 	Error, Result,
-	ports::registry::workbench::sandbox::admission::{AdmissionRepository, SandboxModels},
+	ports::{
+		registry::workbench::sandbox::admission::{AdmissionRepository, SandboxModels},
+		tools::PluginSessions,
+	},
 };
 use aidash_domain::{
 	model::ModelConfig,
@@ -19,10 +23,14 @@ use aidash_domain::{
 	},
 };
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
 pub struct Admission<'a> {
 	pub repository: &'a dyn AdmissionRepository,
 	pub models: &'a dyn SandboxModels,
+	/// Lists the Agent's remote plugin servers once when a test starts, so their tools can be
+	/// offered. Without it those tools are absent and the test says so.
+	pub plugin_sessions: Option<Arc<dyn PluginSessions>>,
 }
 pub struct Admitted {
 	pub session: TestSession,
@@ -132,18 +140,25 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	} else {
 		None
 	};
-	let mut conversation = if let Some(previous_id) = input.continue_from {
+	let (mut conversation, continued_tools) = if let Some(previous_id) = input.continue_from {
 		let previous = scope.session(previous_id, false).await?;
-		sandbox::continued_conversation(
+		let tools = previous.scenario.get("plugin_tools").cloned();
+		let conversation = sandbox::continued_conversation(
 			previous,
 			&draft,
 			&input,
 			profile.as_ref().map(|pin| pin.revision),
-		)?
+		)?;
+		(conversation, tools)
 	} else {
-		Vec::new()
+		(Vec::new(), None)
 	};
 	conversation.push(json!({"role":"user","content":input.message}));
+	// A continued session keeps what its first request pinned and never lists again.
+	let plugin_tools = match continued_tools {
+		Some(saved) => serde_json::from_value(saved)?,
+		None => plugins::pin(admission.plugin_sessions.as_ref(), &snapshot).await?,
+	};
 	let tool_references = snapshot
 		.bindings
 		.iter()
@@ -160,7 +175,12 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	} else {
 		instructions.push_str("\n\nSandbox: all tool calls are simulated from explicit fixtures. Never claim an unprovided tool result.\n");
 	}
-	let (tool_specs, exposure) = if let Some(discoverable) = Deferred::new(&snapshot)? {
+	if let Some(note) = plugins::note(&plugin_tools) {
+		instructions.push_str(&note);
+	}
+	let (tool_specs, exposure) = if let Some(discoverable) =
+		Deferred::new(&snapshot, Some(&plugin_tools))?
+	{
 		let prefix = instructions.clone();
 		// A continued session resumes the Exposure set it ended with.
 		let state = deferred::replayed(&conversation)?;
@@ -174,7 +194,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 			instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
 		}
 		instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
-		let specs = snapshot
+		let mut specs: Vec<_> = snapshot
 			.bindings
 			.iter()
 			.filter(|b| b.excluded_reason.is_none())
@@ -184,6 +204,9 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 					.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
 			})
 			.collect();
+		specs.extend(
+			crate::tools::agent_plugin::pinned_specifications(Some(&plugin_tools)).into_values(),
+		);
 		(specs, None)
 	};
 	let suffix_start = instructions.len();
@@ -228,7 +251,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	}
 	// Keep draft, policy, credential, and tenant-concurrency locks until admission commits.
 	let session = scope.admit(&draft,&limits,
-			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures,"binding_snapshot":snapshot}),
+			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures,"binding_snapshot":snapshot,"plugin_tools":plugin_tools}),
 			json!(conversation)).await?;
 	scope.commit().await?;
 
@@ -245,6 +268,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 			request,
 			initial_conversation: conversation,
 			pinned_draft: draft,
+			plugin_tools,
 			exposure,
 		},
 	})

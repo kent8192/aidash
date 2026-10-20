@@ -1,5 +1,5 @@
 use crate::native_database::{DatabaseFixture, database};
-use crate::run_fixtures::{human_pending, pending, run};
+use crate::run_fixtures::{approval_pending, human_pending, pending, run};
 use aidash_server::apps::execution::models::{
 	HumanRequest, Run,
 	states::{HumanRequestKind, RunPhase},
@@ -38,6 +38,58 @@ async fn remote_waiting_requests_keep_home_identity_without_a_local_request(
 	assert!(
 		HumanRequest::objects()
 			.filter(HumanRequest::field_id().eq(request))
+			.all_with_db(&mut db)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_approval_waits_keep_home_identity_and_capability_waits_name_no_request(
+	#[future] database: DatabaseFixture,
+	run: Run,
+) {
+	// Arrange: neither wait names a row of the local request table.
+	let database = database.await;
+	database.tenant("acme").await;
+	let mut db = database.lease.handle();
+	let approval = Uuid::new_v4();
+	let mut remote = run.clone();
+	remote.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	remote.phase = RunPhase::Waiting;
+	remote.pending = approval_pending(approval, true).into();
+	let local = Run {
+		id: Uuid::new_v4(),
+		task_id: Uuid::new_v4(),
+		phase: RunPhase::Waiting,
+		pending: approval_pending(approval, false).into(),
+		..run.clone()
+	};
+
+	// Act
+	for waiting in [&remote, &local] {
+		Run::objects()
+			.create_with_conn(&mut db, waiting)
+			.await
+			.unwrap();
+	}
+
+	// Assert: the Home request lives at Home, and a capability approval is no request.
+	for (waiting, source) in [(&remote, "home"), (&local, "capability")] {
+		let saved = Run::objects()
+			.get(waiting.id)
+			.get_with_db(&mut db)
+			.await
+			.unwrap();
+		assert_eq!(saved.pending.0["data"]["reason"], "approval");
+		assert_eq!(saved.pending.0["data"]["approval"]["source"], source);
+		assert_eq!(saved.pending_human_request_id, None, "{source}");
+	}
+	assert!(
+		HumanRequest::objects()
+			.filter(HumanRequest::field_id().eq(approval))
 			.all_with_db(&mut db)
 			.await
 			.unwrap()

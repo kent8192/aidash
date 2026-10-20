@@ -3,7 +3,7 @@ use crate::{Result, ports::activation::*};
 use aidash_domain::{
 	FailureTarget, ResumeState, Run, RunControl, RunState, WaitingState,
 	activation::{Envelope, QuarantineReason},
-	run_state::{PersistedCapability, RawRun, StateRequirements},
+	run_state::{ApprovalRef, PersistedCapability, RawRun, StateRequirements},
 };
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -100,7 +100,11 @@ pub async fn due(
 				} else {
 					wait.deadline()
 				}
-			} else if let WaitingState::CoreApproval { approval_id, .. } = wait.as_ref() {
+			} else if let WaitingState::Approval {
+				approval: ApprovalRef::Capability { approval_id },
+				..
+			} = wait.as_ref()
+			{
 				match scope.approval(*approval_id).await? {
 					Some(Approval { state, expires_at }) if state == "pending" => expires_at,
 					_ => Some(now),

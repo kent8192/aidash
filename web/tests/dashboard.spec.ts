@@ -3,6 +3,7 @@ import {
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
+import { acceptanceSubject } from "./tenant-fixture";
 
 test.beforeEach(async ({ page }) => {
   await installBearerDashboard(page, "acceptance-access-token");
@@ -76,61 +77,72 @@ test("reinitializes an open tab after its shared session is replaced", async ({
     .toBeNull();
 });
 
-test("observes the two-node execution and all management screens", async ({
-  page,
-}) => {
-  const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  await expect(page.locator(".stream-status")).toHaveText("接続中");
-  await expect(page.locator(".collab-rail")).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "新しい依頼", exact: true }),
-  ).toBeVisible();
-  await page.goto("/graph");
-  await page
-    .getByLabel("グラフの視点", { exact: true })
-    .selectOption("neighborhood");
-  await page
-    .getByRole("button", { name: "ノード構成と通信", exact: true })
-    .click();
-  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
-  await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
-  for (const view of [
-    "agents",
-    "clusters",
-    "registry",
-    "marketplace",
-    "node",
-  ]) {
-    await page.goto(`/settings?view=${view}`);
-    await expect(page.locator(".collab-settings-select select")).toHaveValue(
-      view,
-    );
-    await expect(page.locator(".collab-settings h1")).toHaveText("設定");
-  }
-  await page.goto("/settings?view=generation");
-  await expect(page).toHaveURL(/\/creator\?.*view=generation/);
-  await expect(page.locator(".generation-page")).toBeVisible();
-  await page.goto("/collaboration");
-  await selectDashboardLanguage(page, "en-US");
-  await expect(
-    page.getByRole("button", { name: "New request", exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: "../private/dashboard-overview.png",
-    fullPage: true,
-  });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({
-    path: "../private/dashboard-mobile.png",
-    fullPage: true,
-  });
-  expect(errors).toEqual([]);
-});
+// Needs the golden path's two-node mesh and existing runs.
+test(
+  "observes the two-node execution and all management screens",
+  { tag: "@golden-path" },
+  async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await expect(page.locator(".stream-status")).toHaveText("接続中");
+    await expect(page.locator(".collab-rail")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "新しい依頼", exact: true }),
+    ).toBeVisible();
+    await page.goto("/graph");
+    await page
+      .getByLabel("グラフの視点", { exact: true })
+      .selectOption("neighborhood");
+    await page
+      .getByRole("button", { name: "ノード構成と通信", exact: true })
+      .click();
+    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
+    await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+    for (const view of [
+      "agents",
+      "clusters",
+      "registry",
+      "marketplace",
+      "node",
+    ]) {
+      await page.goto(`/settings?view=${view}`);
+      await expect(page.locator(".collab-settings-select select")).toHaveValue(
+        view,
+      );
+      await expect(page.locator(".collab-settings h1")).toHaveText("設定");
+    }
+    await page.goto("/settings?view=generation");
+    await expect(page).toHaveURL(/\/creator\?.*view=generation/);
+    await expect(page.locator(".generation-page")).toBeVisible();
+    await page.goto("/collaboration");
+    await selectDashboardLanguage(page, "en-US");
+    await expect(
+      page.getByRole("button", { name: "New request", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: "../private/dashboard-overview.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: "../private/dashboard-mobile.png",
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+  },
+);
 
 test("creates a workspace and task and receives live assignment changes", async ({
   page,
 }) => {
+  // A Tenant subject's state can take seconds to refresh (#404).
+  test.setTimeout(120000);
+  // The research agent belongs to the golden path's Tenant.
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
   const name = `Browser workspace ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
   await page.goto("/collaboration");
@@ -148,7 +160,9 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("dialog")
     .getByRole("button", { name: "作成", exact: true })
     .click();
-  await expect(page.getByRole("dialog")).not.toBeVisible();
+  // The dialog closes once the refreshed state lists the new channel, and a
+  // Tenant subject's state took over 5 s in CI (#404).
+  await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });
   await page
     .getByRole("button", { name: "タスクと成果物", exact: true })
     .click();
@@ -201,7 +215,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     const response = await route.fetch({
       headers: {
         ...route.request().headers(),
-        authorization: "Bearer acceptance-access-token",
+        authorization: `Bearer ${subject.token}`,
       },
     });
     const discovery = await response.json();
@@ -221,7 +235,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await openTasks();
-  await expect(row).toContainText("完了", { timeout: 30000 });
+  await expect(row).toContainText("完了", { timeout: 60000 });
 });
 
 test("preserves a draft after a failed message request and clears it after success", async ({
@@ -254,7 +268,12 @@ test("preserves a draft after a failed message request and clears it after succe
 test("creates task dependencies and a parent through the dashboard", async ({
   page,
 }) => {
-  const headers = { authorization: "Bearer acceptance-access-token" };
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
+  const headers = { authorization: `Bearer ${subject.token}` };
   const name = `Relationships ${Date.now()}`;
   const workspace = await (
     await page.request.post("/api/workspaces", {

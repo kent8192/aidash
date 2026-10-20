@@ -33,6 +33,7 @@ export default defineConfig({
     "tenancy.spec.ts",
     "keyless-approval.spec.ts",
     "catalog-approval.spec.ts",
+    "agent-plugins.spec.ts",
     "citations.spec.ts",
     "community-sign-in.spec.ts",
   ],

@@ -178,11 +178,6 @@ impl ExecutionStore for RunStore {
 			.await
 			.map_err(Into::into)
 	}
-	async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest> {
-		Store::expire_workbench_approval(&self.store, &self.scope, id)
-			.await
-			.map_err(Into::into)
-	}
 	async fn invocation_start(
 		&self,
 		run: &Run,
@@ -564,6 +559,22 @@ impl ExecutionAuthority for Authority<'_> {
 	}
 	async fn human_read(&self, id: Uuid) -> Result<()> {
 		self.guard.human_read(id).await.map_err(Into::into)
+	}
+	async fn tool_call_approval(
+		&self,
+		run: &Run,
+		request: aidash_application::ports::capabilities::approvals::ToolCallRequest,
+	) -> Result<aidash_application::ports::capabilities::approvals::ToolCallApproval> {
+		// A Run executing for another Node asks that Node through a human request
+		// and never reaches this capability approval (ADR 0075).
+		let authority = self
+			.guard
+			.local_authority()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.tool_call_approval(&self.federation.store, run, request)
+			.await
+			.map_err(Into::into)
 	}
 	async fn model_media(&self, selections: &[ModelMedia]) -> Result<Vec<ContentPart>> {
 		self.guard
@@ -1378,6 +1389,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,
+			sessions: None,
 		}
 		.tools(run)
 		.await

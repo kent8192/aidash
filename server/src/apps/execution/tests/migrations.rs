@@ -46,6 +46,10 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0035_decider_kind"),
 	("registry", "0036_decider_kind_state"),
 	("registry", "0037_tenant_owned_row_level_security"),
+	("registry", "0038_agent_plugin_copies"),
+	("registry", "0039_agent_plugin_copies_state"),
+	("registry", "0040_agent_plugin_copies_row_level_security"),
+	("registry", "0041_agent_plugins_definition"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -98,7 +102,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		39
+		40
 	);
 	let tables = migrations
 		.iter()
@@ -638,7 +642,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		39
+		40
 	);
 }
 
@@ -1973,6 +1977,304 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(full)]).await,
 		"the denied rollback must retain the upgraded contract"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn agent_plugins_migration_validates_references_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	fixture.tenant_root("acme").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let digest = format!("sha256:{}", "ab01".repeat(16));
+	let plugin = |field: serde_json::Value| {
+		let mut plugin = json!({"digest":digest,"name":"tools","source":"https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567",
+			"skills":["review"],"servers":{},"findings":[]});
+		plugin
+			.as_object_mut()
+			.unwrap()
+			.extend(field.as_object().unwrap().clone());
+		plugin
+	};
+	let agent = |instructions: &str, plugins: serde_json::Value| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":instructions,
+			"agent_plugins":plugins})
+	};
+	// Assert: the contract mirrors AgentBindings::validate_agent_plugins' shape.
+	for valid in [
+		json!([]),
+		json!([plugin(json!({}))]),
+		json!([plugin(json!({"version":"1.2.0","license":"MIT"}))]),
+		json!(
+			(0..8)
+				.map(|n| plugin(json!({"name":format!("tools-{n}")})))
+				.collect::<Vec<_>>()
+		),
+	] {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent("Work", valid.clone())]
+			)
+			.await,
+			"{valid}"
+		);
+	}
+	for invalid in [
+		json!(null),
+		json!("plugins"),
+		json!({"digest":digest}),
+		json!([null]),
+		json!([plugin(json!({"digest":"sha256:ABCD"}))]),
+		json!([plugin(
+			json!({"digest":format!("sha256:{}", "ab".repeat(31))})
+		)]),
+		json!([plugin(
+			json!({"digest":format!("sha256:{}", "AB".repeat(32))})
+		)]),
+		json!([plugin(json!({"digest":7}))]),
+		json!([plugin(json!({"name":7}))]),
+		json!([plugin(json!({"source":null}))]),
+		json!([plugin(json!({"skills":{}}))]),
+		json!([plugin(json!({"findings":"none"}))]),
+		json!([plugin(json!({"servers":[]}))]),
+		json!(
+			(0..9)
+				.map(|n| plugin(json!({"name":format!("tools-{n}")})))
+				.collect::<Vec<_>>()
+		),
+	] {
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent("Work", invalid.clone())]
+			)
+			.await,
+			"{invalid}"
+		);
+	}
+	// Assert: a plugin with Skills stands in for instructions, one without does not.
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("", json!([plugin(json!({}))]))]
+		)
+		.await
+	);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("", json!([plugin(json!({"skills":[]}))]))]
+		)
+		.await
+	);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("", json!([]))]
+		)
+		.await
+	);
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0041_agent_plugins_definition")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without stored references the reverse restores the 0029 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![
+				json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work"})
+			]
+		)
+		.await
+	);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("Work", json!([plugin(json!({}))]))]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path stores a valid reference.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Plugin fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let referenced = agent("", json!([plugin(json!({}))]));
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("tooled")
+				.version("1.0.0")
+				.kind(DefinitionKind::Agent)
+				.metadata(
+					json!({"id":"tooled","version":"1.0.0","kind":"agent",
+						"name":{"en":"Plugin agent"},"description":{"en":"Migration test"},
+						"config":referenced.clone()})
+					.into(),
+				)
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored reference refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains(
+			"registry 0041_agent_plugins_definition cannot be reversed: Agent definitions declare agent_plugins"
+		),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![referenced]).await,
+		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn agent_plugin_copies_key_by_tenant_and_digest_and_check_their_documents(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::models::AgentPluginCopy;
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("globex").await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let digest = format!("sha256:{}", "cd23".repeat(16));
+	let copy = |tenant: &str, digest: &str, plugin: serde_json::Value, files: serde_json::Value| {
+		AgentPluginCopy::build()
+			.tenant(tenant)
+			.digest(digest)
+			.name("tools")
+			.source("https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567")
+			.plugin(plugin.into())
+			.files(files.into())
+			.denied(json!([]).into())
+			.finish()
+	};
+	let plugin = json!({"digest":digest,"manifest":{"name":"tools"}});
+	// Act
+	let created = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy("acme", &digest, plugin.clone(), json!([])),
+		)
+		.await;
+	let other_tenant = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy("globex", &digest, plugin.clone(), json!([])),
+		)
+		.await;
+	let duplicate = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy("acme", &digest, plugin.clone(), json!([])),
+		)
+		.await;
+	let unknown_tenant = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy("initech", &digest, plugin.clone(), json!([])),
+		)
+		.await;
+	let bad_digest = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy(
+				"acme",
+				"sha256:ABCD",
+				json!({"digest":"sha256:ABCD"}),
+				json!([]),
+			),
+		)
+		.await;
+	let other_digest = format!("sha256:{}", "ef45".repeat(16));
+	let mismatched = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy("acme", &other_digest, plugin.clone(), json!([])),
+		)
+		.await;
+	let files_not_array = AgentPluginCopy::objects()
+		.create_with_conn(
+			&mut connection,
+			&copy(
+				"acme",
+				&other_digest,
+				json!({"digest":other_digest}),
+				json!({}),
+			),
+		)
+		.await;
+	// Assert
+	assert!(created.is_ok(), "{created:?}");
+	assert!(other_tenant.is_ok(), "{other_tenant:?}");
+	assert!(duplicate.is_err(), "a Tenant keeps one copy per digest");
+	assert!(
+		unknown_tenant.is_err(),
+		"the Tenant must have a root record"
+	);
+	assert!(
+		bad_digest.is_err(),
+		"the digest is sha256: and lowercase hex"
+	);
+	assert!(
+		mismatched.is_err(),
+		"the plugin document carries the key's digest"
+	);
+	assert!(files_not_array.is_err(), "files are an array");
 }
 
 #[rstest]

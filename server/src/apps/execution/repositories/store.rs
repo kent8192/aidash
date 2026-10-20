@@ -3467,34 +3467,6 @@ impl Store {
 		Ok(request)
 	}
 
-	pub(crate) async fn expire_workbench_approval(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
-		let request = HumanRequestRecord::read_in(tx.as_mut(), id, true)
-			.await?
-			.ok_or_else(|| Error::NotFound("human request".into()))?;
-		let result = if human_interaction::approval_expired(&request, chrono::Utc::now()) {
-			self.answer_in(
-				tx.as_mut(),
-				id,
-				json!({"approved": false, "expired": true}),
-				"system",
-			)
-			.await?
-		} else {
-			request
-		};
-		tx.commit().await?;
-		Ok(result)
-	}
-
 	pub async fn answer(
 		&self,
 		scope: &TenancyScope,
@@ -3543,7 +3515,7 @@ impl Store {
 			.await?
 			.ok_or_else(|| Error::NotFound("run".into()))?;
 		let human_interaction::Answer::Write { response, actor } =
-			human_interaction::answer(&old, &run, response, actor, chrono::Utc::now())?
+			human_interaction::answer(&old, &run, response, actor)?
 		else {
 			return Ok(old);
 		};

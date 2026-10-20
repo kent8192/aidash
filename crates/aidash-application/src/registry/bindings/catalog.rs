@@ -1,7 +1,10 @@
 //! Registry admission uses immutable documents without legacy overlays.
 use crate::{
 	Error, Result,
-	ports::{bindings::BindingCatalog, registry::DefinitionLookup},
+	ports::{
+		bindings::{BindingCatalog, StoredAgentPlugin},
+		registry::DefinitionLookup,
+	},
 };
 use aidash_domain::registry::{Entry, Projection, bindings::QualifiedRef};
 use async_trait::async_trait;
@@ -28,6 +31,9 @@ impl BindingCatalog for LookupCatalog<'_> {
 			.definition(&reference.id, &reference.version)
 			.await
 	}
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		self.definitions.agent_plugin(digest).await
+	}
 	async fn installation(&mut self, projection: &Projection) -> Result<()> {
 		self.definitions.binding_installation(projection).await
 	}
@@ -47,6 +53,9 @@ pub struct LocalCatalog<'a>(pub LookupCatalog<'a>);
 impl BindingCatalog for LocalCatalog<'_> {
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		self.0.definition(reference).await
+	}
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		self.0.agent_plugin(digest).await
 	}
 	async fn installation(&mut self, projection: &Projection) -> Result<()> {
 		self.0.installation(projection).await

@@ -204,6 +204,18 @@ fn matches_name(values: &BTreeSet<String>, name: &str) -> bool {
 	values.contains("*") || values.contains(name)
 }
 
+/// Actions an allow grants only by naming them. Each lets a Run act without a
+/// person's approval, so a wildcard grant, such as a Tenant Administrator's,
+/// never removes approvals by itself (ADR 0075, ADR 0076). A wildcard deny
+/// still covers them.
+pub const EXPLICIT_ACTIONS: &[&str] = &["tool.call_unapproved", "approval.mode.bypass"];
+
+fn matches_action(values: &BTreeSet<String>, action: &str, effect: &Effect) -> bool {
+	values.contains(action)
+		|| (values.contains("*")
+			&& (*effect == Effect::Deny || !EXPLICIT_ACTIONS.contains(&action)))
+}
+
 impl PolicyBundle {
 	pub fn validate(&self) -> Result<()> {
 		identifier(&self.tenant)?;
@@ -399,7 +411,7 @@ impl PolicyBundle {
 				|| !selectors.groups.is_disjoint(&subject.groups)
 				|| !selectors.roles.is_disjoint(&roles);
 			if !subject_matches
-				|| !matches_name(&policy.actions, &input.action)
+				|| !matches_action(&policy.actions, &input.action, &policy.effect)
 				|| !matches_name(&policy.resources.kinds, &input.resource.kind)
 				|| (!policy.resources.ids.is_empty()
 					&& !matches_name(&policy.resources.ids, &input.resource.id))
