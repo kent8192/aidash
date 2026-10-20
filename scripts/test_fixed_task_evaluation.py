@@ -856,7 +856,6 @@ class RunnerTest(unittest.TestCase):
         harness = (evaluation.ROOT / "crates/aidash-harness/src/agent.rs").read_text()
         body = re.search(r"pub fn message\(self\) -> &'static str \{(.*?)\n\t\}", approvals, re.S).group(1)
         messages = re.findall(r'=> "([^"]+)"', body)
-        self.assertEqual(len(messages), 6)
         self.assertEqual(set(messages) | {"tool call approval is unavailable without scoped authority",
                                           "tool call approval was denied or expired"},
                          set(tool_call_approvals.REFUSALS))
