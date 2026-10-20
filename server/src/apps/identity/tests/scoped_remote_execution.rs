@@ -291,13 +291,13 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 		.connect_with(f.store.pool.connect_options().as_ref().clone())
 		.await
 		.unwrap();
-	let mut store = aidash_server::store::Store::from_pool(pool, f.config.node_id.clone())
+	let mut store = aidash_server::store::Store::from_pool(pool, f.config.deployment.clone())
 		.await
 		.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.
 	store.keyless = f.store.keyless.clone();
 	f.registry =
-		aidash_server::registry::Registry::new(store.pool.clone(), &f.config.node_id).unwrap();
+		aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment).unwrap();
 	f.store.pool.close().await;
 	f.store.control_pool.close().await;
 	f.store = store;
@@ -399,8 +399,8 @@ mod scoped_pair_composition {
 			.0,
 			200
 		);
-		source_policy["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
-			json!({"kind":"agent"});
+		source_policy["subjects"]
+			[qualified_agent(b.config.deployment.as_str(), "research", "1.0.0")] = json!({"kind":"agent"});
 		assert_eq!(
 			request(
 				&aa,
@@ -415,7 +415,7 @@ mod scoped_pair_composition {
 		);
 		for (local, other) in [(&a, &b), (&b, &a)] {
 			{
-				let query_bind_1 = &other.config.node_id;
+				let query_bind_1 = other.config.deployment.as_str();
 				let query_bind_2 = &other.config.endpoint;
 				sqlx::query(
 					&Query::insert()
@@ -460,7 +460,7 @@ mod scoped_pair_composition {
 			json!({"subject":"alice"}),
 		)
 		.await;
-		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
+		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
 		if semantic {
 			let (_, home_reader) = request(
 				&aa,
@@ -470,7 +470,7 @@ mod scoped_pair_composition {
 				json!({"subject":"alice"}),
 			)
 			.await;
-			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 			assert_eq!(status, 200, "{body}");
 		}
 		let servers = vec![_aserver, _bserver];
@@ -487,7 +487,7 @@ mod scoped_pair_composition {
 				&aa,
 				&token,
 				workspace,
-				&b.config.node_id,
+				b.config.deployment.as_str(),
 				(native, large_native_journal),
 				embedding_provider.await,
 				tenant_embedding.as_ref(),
@@ -521,7 +521,8 @@ mod scoped_pair_composition {
 			)
 			.await;
 			source_policy["subjects"]
-				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
+				[qualified_agent(b.config.deployment.as_str(), "research-native", "1.0.0")] =
+				json!({"kind":"agent"});
 			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
 			Some(data)
 		} else {
@@ -570,7 +571,7 @@ mod scoped_pair_composition {
 				&token,
 				"POST",
 				&format!("/api/tasks/{task}/remote-grants"),
-				json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
+				json!({"id":grant,"node_id":b.config.deployment,"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
 			)
 			.await;
 			assert_eq!(status, 200, "{prepared}");
@@ -669,7 +670,7 @@ async fn ordered_receiver_agent(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let subject = qualified_agent(&b.config.node_id, "research-ordered", "1.0.0");
+	let subject = qualified_agent(b.config.deployment.as_str(), "research-ordered", "1.0.0");
 	for (runtime, app) in [(b, ba), (a, aa)] {
 		let (_, mut policy) = request(
 			app,
@@ -752,7 +753,7 @@ async fn native_remote_fixture(
 				json!({"memory":provider,"scope":"workspace","max_tokens":8192}),
 			),
 		];
-		if runtime.config.node_id == b.config.node_id {
+		if runtime.config.deployment == b.config.deployment {
 			roles.insert(
 				0,
 				("embedding", "home-embedding", embedding["config"].clone()),
@@ -784,7 +785,7 @@ async fn native_remote_fixture(
 			.as_object_mut()
 			.unwrap()
 			.remove("binding_normalization");
-		agent["id"] = json!(if runtime.config.node_id == a.config.node_id {
+		agent["id"] = json!(if runtime.config.deployment == a.config.deployment {
 			"home-native"
 		} else {
 			"research-native"
@@ -792,7 +793,7 @@ async fn native_remote_fixture(
 		let bindings = agent["config"]["bindings"].as_array_mut().unwrap();
 		bindings.retain(|binding| binding["kind"] != "memory");
 		for (kind, id) in [("memory", "native-memory"), ("source", "native-shared")] {
-			bindings.push(json!({"kind":kind,"target":{"registry_node":runtime.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
+			bindings.push(json!({"kind":kind,"target":{"registry_deployment":runtime.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
 		}
 		let id = agent["id"].as_str().unwrap().to_owned();
 		let (status, body) = request(
@@ -813,7 +814,7 @@ async fn native_remote_fixture(
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		if runtime.config.node_id == b.config.node_id {
+		if runtime.config.deployment == b.config.deployment {
 			let (_, mut policy) = request(
 				app,
 				&runtime.config.api_token,
@@ -824,7 +825,8 @@ async fn native_remote_fixture(
 			.await;
 			let revision = policy["revision"].clone();
 			policy["bundle"]["subjects"]
-				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
+				[qualified_agent(b.config.deployment.as_str(), "research-native", "1.0.0")] =
+				json!({"kind":"agent"});
 			let (status, body) = request(
 				app,
 				&runtime.config.api_token,
@@ -855,7 +857,7 @@ async fn native_remote_fixture(
 		),
 		(
 			shared,
-			json!({"home":a.config.node_id,"tenant":"acme","workspace":workspace,"participant":null}),
+			json!({"home":a.config.deployment,"tenant":"acme","workspace":workspace,"participant":null}),
 			"Native shared claim: 自転車の設計 uses reciprocal rank fusion.",
 		),
 	] {
@@ -1043,7 +1045,11 @@ async fn configure_semantic(
 			),
 			(
 				"other-node",
-				Some(qualified_agent(&a.config.node_id, "research", "1.0.0")),
+				Some(qualified_agent(
+					a.config.deployment.as_str(),
+					"research",
+					"1.0.0",
+				)),
 				"DO NOT DISCLOSE: same name at Home.",
 			),
 			(
@@ -1096,7 +1102,7 @@ async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
-	assert_eq!(semantic["home_node"], p.a.config.node_id, "{context}");
+	assert_eq!(semantic["home_node"], p.a.config.deployment, "{context}");
 	let encoded = serde_json::to_string(semantic).unwrap();
 	assert!(encoded.contains("ochre falcon"));
 	assert!(encoded.contains("silver fern"));
@@ -1153,10 +1159,10 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
-	assert_eq!(semantic["home_node"], p.a.config.node_id, "{context}");
+	assert_eq!(semantic["home_node"], p.a.config.deployment, "{context}");
 	assert_eq!(
 		semantic["executor"],
-		qualified_agent(&p.b.config.node_id, "research", "1.0.0")
+		qualified_agent(p.b.config.deployment.as_str(), "research", "1.0.0")
 	);
 	assert_eq!(semantic["grant_id"], p.grant.to_string());
 	let encoded = serde_json::to_string(semantic).unwrap();
@@ -1353,7 +1359,7 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 		&Query::update()
 			.table(Alias::new("peers"))
 			.value(Alias::new("protocol_version"), protocol)
-			.and_where(Expr::col("node_id").eq(Expr::value(p.a.config.node_id.as_str())))
+			.and_where(Expr::col("node_id").eq(Expr::value(p.a.config.deployment.as_str())))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(p.b.store.pool.fixture_driver())
@@ -1378,7 +1384,11 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 	write_home_entry(
 		&p,
 		"other-node",
-		Some(qualified_agent(&p.a.config.node_id, "research", "1.0.0")),
+		Some(qualified_agent(
+			p.a.config.deployment.as_str(),
+			"research",
+			"1.0.0",
+		)),
 		1,
 		"DO NOT DISCLOSE: edited marker amber lynx.",
 	)
@@ -1420,7 +1430,7 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 					p.a.config.endpoint
 				))
 				.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-				.header("x-aidash-node", &p.b.config.node_id)
+				.header("x-aidash-node", p.b.config.deployment.as_str())
 				.header("x-aidash-protocol", protocol)
 				.json(&json!({"grant_id":p.grant}))
 				.send()
@@ -1470,7 +1480,7 @@ async fn home_describe_omits_the_corpus_digest_without_semantic_access(
 			p.a.config.endpoint
 		))
 		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-		.header("x-aidash-node", &p.b.config.node_id)
+		.header("x-aidash-node", p.b.config.deployment.as_str())
 		.header("x-aidash-protocol", "0.3")
 		.json(&json!({"grant_id":p.grant}))
 		.send()
@@ -1934,7 +1944,7 @@ async fn semantic_journal_reads_require_the_current_viewer_at_home(
 		json!({"subject":"bob"}),
 	)
 	.await;
-	let (status,body)=request(&p.aa,&p.a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":p.b.config.node_id,"source_tenant":"acme","source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+	let (status,body)=request(&p.aa,&p.a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":p.b.config.deployment,"source_tenant":"acme","source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(&p.ba, token, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{body}");
@@ -1975,7 +1985,7 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 			.workspace_id;
 	let ids: Vec<Uuid> = {
 		let query_bind_1 = workspace;
-		let query_bind_2 = qualified_agent(&p.b.config.node_id, "research", "1.0.0");
+		let query_bind_2 = qualified_agent(p.b.config.deployment.as_str(), "research", "1.0.0");
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
@@ -2466,7 +2476,7 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 				&local.config.api_token,
 				"POST",
 				"/api/transactions/trust",
-				json!({"node_id":remote.config.node_id,"enabled":true})
+				json!({"node_id":remote.config.deployment,"enabled":true})
 			)
 			.await
 			.0,
@@ -2488,9 +2498,9 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 		.value(Alias::new("phase"),"TOOL_CALL").value_expr(Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
 		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
-	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":p.a.config.node_id,"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
-		"participants":[{"node_id":p.a.config.node_id,"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
-		{"node_id":p.b.config.node_id,"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
+	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":p.a.config.deployment,"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
+		"participants":[{"node_id":p.a.config.deployment,"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
+		{"node_id":p.b.config.deployment,"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
 	manifest
 		.participants
 		.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -2562,7 +2572,7 @@ async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operati
 			home.delegate_with_key(
 				"scoped-child-delegate",
 				child.id,
-				&p.a.config.node_id,
+				p.a.config.deployment.as_str(),
 				&agent
 			)
 			.await
@@ -2694,7 +2704,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 		}
 		"receiver_mapping" => {
 			let id: Uuid = {
-				let query_bind_1 = &p.a.config.node_id;
+				let query_bind_1 = p.a.config.deployment.as_str();
 				sqlx::query_scalar(
 					&Query::select()
 						.column(Alias::new("credential_id"))
@@ -2709,7 +2719,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 				.await
 			}
 			.unwrap();
-			assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":p.a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
+			assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":p.a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
 		}
 		"task_revision" => {
 			{
@@ -3065,7 +3075,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	let runs = p.b.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(
 		runs.iter()
-			.filter(|run| run.home_node == p.a.config.node_id && run.task_id == p.task)
+			.filter(|run| run.home_node == p.a.config.deployment && run.task_id == p.task)
 			.count(),
 		1
 	);
@@ -3250,11 +3260,11 @@ async fn prepare_generated_pair(
 		)
 		.await;
 		assert_eq!(status, 200, "{embedding}");
-		Some(descriptor(&a.config.node_id, &embedding))
+		Some(descriptor(a.config.deployment.as_str(), &embedding))
 	} else {
 		None
 	};
-	let model_descriptor = descriptor(&b.config.node_id, &model);
+	let model_descriptor = descriptor(b.config.deployment.as_str(), &model);
 	let (_, decider) = request(
 		ba,
 		&common::tenant_token(&b.store, "acme").await,
@@ -3263,7 +3273,7 @@ async fn prepare_generated_pair(
 		Value::Null,
 	)
 	.await;
-	let decider_descriptor = descriptor(&b.config.node_id, &decider);
+	let decider_descriptor = descriptor(b.config.deployment.as_str(), &decider);
 	let common = json!({"enabled":true,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":4,"max_concurrent":4,"max_depth":4,"token_budget":4000000,"tokens_per_agent":800000,"lifetime_seconds":3600}});
 	let mut parent_spec = common.clone();
 	parent_spec["template"] = parent_template;
@@ -3318,7 +3328,7 @@ async fn prepare_generated_pair(
 	let chain = vec![
 		"alice".to_owned(),
 		qualified_agent(
-			&a.config.node_id,
+			a.config.deployment.as_str(),
 			&parent_run.agent_id,
 			&parent_run.agent_version,
 		),
@@ -3391,7 +3401,7 @@ async fn prepare_generated_pair(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let input = json!({"id":Uuid::new_v4(),"node_id":b.config.node_id,"policy_id":"remote-child","policy_revision":1,"ttl_seconds":600,"reason":"foreign task specialist"});
+	let input = json!({"id":Uuid::new_v4(),"node_id":b.config.deployment,"policy_id":"remote-child","policy_revision":1,"ttl_seconds":600,"reason":"foreign task specialist"});
 	let route = format!("/api/tasks/{task}/remote-generation");
 	let (status, prepared) = request(aa, token, "POST", &route, input.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
@@ -3423,7 +3433,7 @@ async fn prepare_generated_pair(
 		"foreign preparation cannot create a fake local task"
 	);
 	let count: i64 = {
-		let query_bind_1 = &a.config.node_id;
+		let query_bind_1 = a.config.deployment.as_str();
 		let query_bind_2 = task;
 		sqlx::query_scalar(
 			&Query::select()
@@ -3465,7 +3475,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body, *pending);
 	}
-	let grant = json!({"id":p.grant,"node_id":p.b.config.node_id,"agent":pending["agent"],"ttl_seconds":300,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}});
+	let grant = json!({"id":p.grant,"node_id":p.b.config.deployment,"agent":pending["agent"],"ttl_seconds":300,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}});
 	let grant_route = format!("/api/tasks/{}/remote-grants", p.task);
 	let mut nil_grant = grant.clone();
 	nil_grant["id"] = json!(Uuid::nil());
@@ -3503,7 +3513,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		assert_eq!(body["request_id"], pending["request_id"]);
 	}
 	let count: i64 = {
-		let query_bind_1 = &p.a.config.node_id;
+		let query_bind_1 = p.a.config.deployment.as_str();
 		let query_bind_2 = p.task;
 		sqlx::query_scalar(
 			&Query::select()
@@ -3542,7 +3552,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed["admission_id"], activated["admission_id"]);
 	let rows: (i64, i64) = {
-		let query_bind_1 = &p.a.config.node_id;
+		let query_bind_1 = p.a.config.deployment.as_str();
 		let query_bind_2 = p.task;
 		sqlx::query_as(
 			&Query::select()
@@ -3699,7 +3709,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 	assert_eq!(status, 200, "{fresh}");
 	assert_ne!(fresh["request_id"], pending["request_id"]);
 	let retained: i64 = {
-		let query_bind_1 = &p.a.config.node_id;
+		let query_bind_1 = p.a.config.deployment.as_str();
 		let query_bind_2 = p.task;
 		sqlx::query_scalar(
 			&Query::select()
@@ -3850,7 +3860,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 						owner.config.endpoint
 					))
 					.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-					.header("x-aidash-node", &dispatcher.config.node_id)
+					.header("x-aidash-node", dispatcher.config.deployment.as_str())
 					.header("x-aidash-protocol", "0.2")
 					.json(&json!({"usage":usage,"result":finalization}))
 					.send()
@@ -3888,7 +3898,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 			usage.len(),
 			2,
 			"both embedding and inference must debit {}: {usage:?}",
-			node.config.node_id
+			node.config.deployment
 		);
 		let finalized: i64 = sqlx::query_scalar(
 			&Query::select()
@@ -3920,9 +3930,9 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 			budget,
 			(3, 1),
 			"exact one-call settlement at {}",
-			node.config.node_id
+			node.config.deployment
 		);
-		let (app, token, route) = if node.config.node_id == pair.a.config.node_id {
+		let (app, token, route) = if node.config.deployment == pair.a.config.deployment {
 			(
 				&pair.aa,
 				&pair.token,
@@ -3940,7 +3950,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 		};
 		let (status, view) = request(app, token, "GET", &route, Value::Null).await;
 		assert_eq!(status, 200, "{view}");
-		assert_eq!(view["allowance_node"], node.config.node_id);
+		assert_eq!(view["allowance_node"], node.config.deployment);
 		assert_eq!(view["allowances"].as_array().unwrap().len(), 1);
 		assert_eq!(view["allowances"][0]["used_tokens"], 3);
 		assert_eq!(view["allowances"][0]["embedding_calls"], 1);
@@ -4000,7 +4010,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 				p.b.config.endpoint
 			))
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &p.a.config.node_id)
+			.header("x-aidash-node", p.a.config.deployment.as_str())
 			.header("x-aidash-protocol", "0.2")
 			.json(&json!({"usage":usage,"boundary":boundary}))
 			.send()
@@ -4210,7 +4220,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 				assert!(
 					!body.to_string().contains(hidden),
 					"Deployment Administrator path {} {path} leaked {hidden}: {:?}",
-					f.config.node_id,
+					f.config.deployment,
 					body.as_object().map(|fields| fields
 						.iter()
 						.filter(|(_, value)| value.to_string().contains(hidden))
@@ -4513,7 +4523,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	let mut denied = serde_json::to_value(&snapshot.bundle).unwrap();
 	denied["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-retired-agent-model", "effect":"deny",
-		"subjects":{"ids":[aidash_server::domain::qualified_agent(&p.b.config.node_id,&run.agent_id,&run.agent_version)]},
+		"subjects":{"ids":[aidash_server::domain::qualified_agent(p.b.config.deployment.as_str(),&run.agent_id,&run.agent_version)]},
 		"actions":["model.infer"], "resources":{"kinds":["model"]}
 	}));
 	let (status, policy) = request(
@@ -4875,7 +4885,7 @@ async fn remote_status_uses_one_deadline_and_skips_unavailable_dependencies(
 	),
 ) {
 	let (p, inspections, server) = status_scenario;
-	redirect_peer(&p.a, &p.b.config.node_id, &server.url).await;
+	redirect_peer(&p.a, p.b.config.deployment.as_str(), &server.url).await;
 	let start = tokio::time::Instant::now();
 	let response = tokio::time::timeout(
 		std::time::Duration::from_secs(3),
@@ -4979,7 +4989,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 	};
 	let remote = if kind == "finalization" { &p.a } else { &p.b };
 	let (entered, release, server) = reconciliation_provider;
-	redirect_peer(local, &remote.config.node_id, &server.url).await;
+	redirect_peer(local, remote.config.deployment.as_str(), &server.url).await;
 	let f = local.clone();
 	let reconcile =
 		tokio::spawn(async move { aidash_server::generation::provision::reconcile(&f).await });
@@ -5209,7 +5219,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 		let query_bind_1 = attempt;
 		let query_bind_2 = &usage;
 		let query_bind_3 = aidash_server::registry::digest(&usage);
-		let query_bind_4 = &p.a.config.node_id;
+		let query_bind_4 = p.a.config.deployment.as_str();
 		let query_bind_5 = &boundary;
 		sqlx::query(
 			&Query::insert()
@@ -5296,7 +5306,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 				p.a.config.endpoint
 			))
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &p.b.config.node_id)
+			.header("x-aidash-node", p.b.config.deployment.as_str())
 			.header("x-aidash-protocol", "0.2")
 			.json(&json!({"usage":usage,"boundary":boundary}))
 			.send()
@@ -5463,7 +5473,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 		assert_eq!(
 			used, count as i64,
 			"{}: {used}/{limit}",
-			node.config.node_id
+			node.config.deployment
 		);
 		if count > 0 {
 			let amount: i64 = sqlx::query_scalar(
@@ -6063,7 +6073,7 @@ async fn generated_remote_embedding_validates_contract_and_retains_uncertain_cha
 			budget,
 			(reserved + if rejected { 0 } else { 2 }, 1),
 			"{fault} {}",
-			node.config.node_id
+			node.config.deployment
 		);
 	}
 	p.close().await;
@@ -6285,12 +6295,12 @@ fn scoped_runtime(
 	#[from(recovery_directory)] directory: Arc<tempfile::TempDir>,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
-	let node = node.to_owned();
+	let node = aidash_domain::nodes::DeploymentId::parse(node).unwrap();
 	async move {
 		let mut owner = runtime.await;
 		let f = &mut owner.federation;
-		f.config.node_id = node.clone();
-		f.store.node_id = node.clone();
+		f.config.deployment = node.clone();
+		f.store.deployment = node.clone();
 		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
 		if ordered {
 			// A node without Cache Salt Keys creates only Legacy Runs.

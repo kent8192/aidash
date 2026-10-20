@@ -165,13 +165,13 @@ pub fn discovery_pair(
 		let destination = destination.lock().await.take().unwrap();
 		persist_peer(
 			&source.app,
-			&destination.app.runtime.config.node_id,
+			destination.app.runtime.config.deployment.as_str(),
 			&server.url,
 		)
 		.await;
 		persist_peer(
 			&destination.app,
-			&source.app.runtime.config.node_id,
+			source.app.runtime.config.deployment.as_str(),
 			&source.app.server.url,
 		)
 		.await;

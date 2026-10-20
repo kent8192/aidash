@@ -15,7 +15,7 @@ pub(crate) struct Projection<'a, 'scope> {
 #[async_trait]
 impl GraphProjectionScope for Projection<'_, '_> {
 	fn node_id(&self) -> &str {
-		&self.f.config.node_id
+		self.f.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()

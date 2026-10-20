@@ -26,7 +26,7 @@ fn agent(model: &str, tools: &[&str]) -> Entry {
 	let bindings: Vec<_> = tools
 		.iter()
 		.map(
-			|tool| json!({"kind":"tool","target":{"registry_node":NODE,"id":tool,"version":"1.0.0"}}),
+			|tool| json!({"kind":"tool","target":{"registry_deployment":NODE,"id":tool,"version":"1.0.0"}}),
 		)
 		.collect();
 	entry(

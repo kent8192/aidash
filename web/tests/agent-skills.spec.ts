@@ -167,7 +167,7 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
       {
         kind: "skill",
         target: {
-          registry_node: "aidash://test",
+          registry_deployment: "aidash://test",
           id: "research-skill",
           version: "2.0.0",
         },

@@ -1276,9 +1276,9 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		);
 	} else if boundary == "install" {
 		let mut settings = common::settings_for(&url);
-		settings.node.node_id = f.config.node_id.clone();
-		settings.node.endpoint = f.config.endpoint.clone();
-		settings.node.api_token = f.config.api_token.clone();
+		settings.deployment.id = f.config.deployment.to_string();
+		settings.deployment.endpoint = f.config.endpoint.clone();
+		settings.deployment.api_token = f.config.api_token.clone();
 		// Only the Enterprise build's own settings source carries the GCIP
 		// settings, as the managed file of a Cloud Environment does.
 		let managed = tempfile::NamedTempFile::new().unwrap();
@@ -3396,9 +3396,9 @@ async fn start(
 	gcip: &GcipConfig,
 ) -> aidash_server::Result<aidash_server::federation::Federation> {
 	let mut settings = common::settings_for(url);
-	settings.node.node_id = f.config.node_id.clone();
-	settings.node.endpoint = f.config.endpoint.clone();
-	settings.node.api_token = f.config.api_token.clone();
+	settings.deployment.id = f.config.deployment.to_string();
+	settings.deployment.endpoint = f.config.endpoint.clone();
+	settings.deployment.api_token = f.config.api_token.clone();
 	let managed = tempfile::NamedTempFile::new().unwrap();
 	std::fs::write(
 		managed.path(),

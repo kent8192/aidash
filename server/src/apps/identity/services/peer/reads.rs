@@ -135,7 +135,10 @@ impl PeerReads {
 		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 		let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
 		let result = aidash_application::federation::registry_reads::verify(
-			&mut crate::bootstrap::registry_verification_scope(&mut access, &f.config.node_id),
+			&mut crate::bootstrap::registry_verification_scope(
+				&mut access,
+				f.config.deployment.as_str(),
+			),
 			&input.references,
 		)
 		.await

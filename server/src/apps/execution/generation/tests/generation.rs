@@ -255,7 +255,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	assert_eq!(history.as_array().unwrap().len(), 4);
 	assert_eq!(history[3]["actor"], "alice");
 	let subject = aidash_server::domain::qualified_agent(
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 		job["agent_id"].as_str().unwrap(),
 		"1.0.0",
 	);
@@ -818,7 +818,7 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	spec["approval_required"] = json!(false);
 	spec["template"]["binding_normalization"] = Value::Null;
 	spec["template"]["config"]["bindings"].as_array_mut().unwrap().push(json!({
-		"kind":"tool", "target":{"registry_node":f.config.node_id,"id":assignment_tool["id"],"version":assignment_tool["version"]}
+		"kind":"tool", "target":{"registry_deployment":f.config.deployment,"id":assignment_tool["id"],"version":assignment_tool["version"]}
 	}));
 	assert_eq!(
 		request(

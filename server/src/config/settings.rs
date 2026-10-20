@@ -49,7 +49,6 @@
 use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
 use crate::apps::execution::serializers::research_providers::ResearchProviderSettings;
 use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
-use crate::apps::federation::remote::serializers::settings::NodeSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
 use crate::apps::identity::serializers::plan_connections::PlanConnectionSettings;
 use crate::apps::identity::serializers::provider_credentials::ManagedSource;
@@ -68,7 +67,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -234,8 +233,8 @@ mod tests {
 				"[core]\nsecret_key = \"isolated-settings-test-secret-0123456789\"\n",
 			)
 			.replace(
-				"[node]\n",
-				"[node]\napi_token = \"isolated-settings-test-deployment-administrator-0123456789\"\n",
+				"[deployment]\n",
+				"[deployment]\napi_token = \"isolated-settings-test-deployment-administrator-0123456789\"\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), source).unwrap();
 		directory
@@ -432,8 +431,8 @@ mod tests {
 			"isolated-settings-test-secret-0123456789"
 		);
 		assert!(settings.settings().core.debug);
-		assert_eq!(settings.settings().node.worker_count, 2);
-		assert_eq!(settings.settings().node.node_id, "aidash://local");
+		assert_eq!(settings.settings().deployment.worker_count, 2);
+		assert_eq!(settings.settings().deployment.id, "aidash://local");
 		assert!(settings.settings().contacts.admins.is_empty());
 		assert!(settings.settings().contacts.managers.is_empty());
 		assert!(settings.settings().dashboard.oidc.is_none());
@@ -466,18 +465,18 @@ mod tests {
 				"[core]\nsecret_key = \"isolated-settings-test-secret-0123456789\"\n",
 			)
 			.replace(
-				"[node]\n",
-				"[node]\napi_token = \"isolated-settings-test-deployment-administrator-0123456789\"\n",
+				"[deployment]\n",
+				"[deployment]\napi_token = \"isolated-settings-test-deployment-administrator-0123456789\"\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), source).unwrap();
 		std::fs::write(
 			directory.path().join("local.toml"),
-			"[core]\ndebug = true\n[node]\nworker_count = 2\n",
+			"[core]\ndebug = true\n[deployment]\nworker_count = 2\n",
 		)
 		.unwrap();
 		std::fs::write(
 			directory.path().join("development.toml"),
-			"[node]\nworker_count = 9\n",
+			"[deployment]\nworker_count = 9\n",
 		)
 		.unwrap();
 		directory
@@ -508,8 +507,8 @@ mod tests {
 				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
 			)
 			.replace(
-				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
+				"[deployment]\n",
+				"[deployment]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
 			);
 		std::fs::write(
 			directory.path().join("base.toml"),
@@ -539,8 +538,8 @@ mod tests {
 				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
 			)
 			.replace(
-				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
+				"[deployment]\n",
+				"[deployment]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), base).unwrap();
 		let settings = file_settings_builder("local", directory.path(), directory.path())

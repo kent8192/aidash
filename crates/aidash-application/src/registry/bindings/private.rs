@@ -22,7 +22,7 @@ pub async fn detach(
 	let mut retained = Vec::new();
 	for binding in input.bindings {
 		if binding.kind == BindingKind::Source
-			&& binding.target.registry_node == node
+			&& binding.target.registry_deployment == node
 			&& binding.target.version == "1.0.0"
 			&& binding.target.id.starts_with("private.")
 		{
@@ -51,7 +51,7 @@ pub async fn detach(
 fn identity(node: &str, id: &str, version: &str, digest: &str) -> QualifiedRef {
 	let hash = aidash_domain::registry::rules::digest(&json!([node, id, version, digest]));
 	QualifiedRef {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		id: format!("private.{}", hash.trim_start_matches("sha256:")),
 		version: "1.0.0".into(),
 	}

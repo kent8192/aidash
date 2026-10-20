@@ -35,7 +35,7 @@ pub(super) async fn publish(store: &Store, access: &mut Access, input: &Publish)
 		&mut crate::bootstrap::marketplace_publication_scope(store, access),
 		&crate::bootstrap::registry_validation_for(store),
 		&command(input),
-		&store.node_id,
+		store.deployment.as_str(),
 	)
 	.await
 	.map_err(Into::into)
@@ -86,7 +86,7 @@ pub(super) async fn deliver(store: &Store, announcements: Vec<Announcement>) -> 
 				for tenant in announcement.tenants.intersection(&recipients) {
 					crate::apps::execution::models::event_records::append_for_tenant(
 						tx,
-						&store.node_id,
+						store.deployment.as_str(),
 						tenant,
 						announcement.kind,
 						announcement.payload.clone(),

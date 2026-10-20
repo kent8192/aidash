@@ -105,7 +105,7 @@ fn graph() -> Fixture {
 				entry(
 					"tool",
 					"tool",
-					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":r("agent")}}),
+					json!({"registry_deployment":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":r("agent")}}),
 				),
 			),
 			("model".into(), entry("model", "model", json!({}))),
@@ -248,7 +248,7 @@ fn remote_agent_tool_is_not_resolved_from_same_named_local_content() {
 	let tool = entry(
 		"remote-tool",
 		"tool",
-		json!({"registry_node":"aidash://remote","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"remote","agent":r("agent")}}),
+		json!({"registry_deployment":"aidash://remote","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"remote","agent":r("agent")}}),
 	);
 	assert!(matches!(refs(&tool, "local"), Err(Error::Forbidden)));
 }
@@ -270,7 +270,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 	let bundle = entry(
 		"bundle",
 		"bundle",
-		json!({"members":[{"registry_node":publishing,"id":original.id,"version":original.version}]}),
+		json!({"members":[{"registry_deployment":publishing,"id":original.id,"version":original.version}]}),
 	);
 	let manifest_source = serde_json::to_string(&Package {
 		entity: bundle,
@@ -319,7 +319,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 	.unwrap();
 	assert_eq!(
 		resolved.config["members"],
-		json!([{"registry_node":receiving,"id":target.id,"version":target.version}])
+		json!([{"registry_deployment":receiving,"id":target.id,"version":target.version}])
 	);
 	assert_eq!(dependencies, vec![target]);
 	assert_eq!(
@@ -333,7 +333,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 			.any(|call| call == "registry.read:installed-tool")
 	);
 	assert_eq!(
-		manifest(&source).unwrap().entity.config["members"][0]["registry_node"],
+		manifest(&source).unwrap().entity.config["members"][0]["registry_deployment"],
 		publishing
 	);
 

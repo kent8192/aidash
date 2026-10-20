@@ -40,7 +40,7 @@ impl MappingRepository for Repository<'_> {
 	type Write = WriteScope;
 	type Access = AccessScope;
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<WriteScope> {
 		let result: NativeResult<WriteScope> = async {

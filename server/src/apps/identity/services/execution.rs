@@ -59,7 +59,7 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 ) -> Result<()> {
 	aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
-		&store.node_id,
+		store.deployment.as_str(),
 		&run.metadata(),
 	)
 	.await
@@ -115,7 +115,7 @@ pub async fn delegate(
 	node: &str,
 	agent: &EntityRef,
 ) -> Result<Delegation> {
-	if node != f.config.node_id {
+	if node != f.config.deployment {
 		return super::remote::execution::delegate(f, identity, task, node, agent).await;
 	}
 	let mut access = Access::begin(&f.store, identity).await?;
@@ -579,7 +579,7 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let mut access = self.access.write().await;
-		if binding.identity.registry_node != access.node_id {
+		if binding.identity.registry_deployment != access.node_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let current =
@@ -906,7 +906,7 @@ impl Guard {
 		}
 		compaction::decider(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&f.store.node_id,
+			f.store.deployment.as_str(),
 			&self.generation_context(),
 		)
 		.await
@@ -1172,7 +1172,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		self.guard.remote.is_some()
 	}
 	fn node_id(&self) -> &str {
-		&self.f.config.node_id
+		self.f.config.deployment.as_str()
 	}
 	async fn refresh(&self) -> aidash_application::Result<()> {
 		self.guard.refresh_remote().await.map_err(Into::into)
@@ -1227,7 +1227,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		let mut access = self.guard.access.write().await;
 		aidash_application::generation::summary::recheck(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&self.f.store.node_id,
+			self.f.store.deployment.as_str(),
 			&self.generation_context(),
 			summarizer,
 		)

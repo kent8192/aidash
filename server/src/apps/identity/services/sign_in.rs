@@ -232,7 +232,10 @@ pub async fn admit(f: &Federation, sign_in: &SignIn) -> Result<Account> {
 	}
 	Ok(crate::bootstrap::dashboard_authority(f)
 		.admit_login(
-			&mut crate::bootstrap::dashboard_login(f.store.pool.clone(), &f.config.node_id),
+			&mut crate::bootstrap::dashboard_login(
+				f.store.pool.clone(),
+				f.config.deployment.as_str(),
+			),
 			sign_in,
 		)
 		.await?)

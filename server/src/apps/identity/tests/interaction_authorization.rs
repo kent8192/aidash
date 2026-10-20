@@ -67,7 +67,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 		chain,
 		vec![
 			"alice".to_owned(),
-			qualified_agent(&f.config.node_id, "research", "1.0.0")
+			qualified_agent(f.config.deployment.as_str(), "research", "1.0.0")
 		]
 	);
 	let sender: String = {

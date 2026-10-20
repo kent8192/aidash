@@ -45,7 +45,7 @@ impl PackageGroup {
 			providers.contract(
 				&descriptor,
 				&QualifiedRef {
-					registry_node: descriptor.registry_node.clone(),
+					registry_deployment: descriptor.registry_deployment.clone(),
 					id: entry.id.clone(),
 					version: entry.version.clone(),
 				},
@@ -70,7 +70,7 @@ pub fn offered(
 
 /// Every Sandboxed and research group, whether or not the Deployment runs it.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<PackageGroup>> {
-	aidash_domain::configuration::validate_node_id(node)?;
+	aidash_domain::nodes::DeploymentId::parse(node)?;
 	let specs = validation.node_specifications();
 	SANDBOXED_GROUPS
 		.iter()
@@ -170,7 +170,7 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 			members: operations
 				.iter()
 				.map(|entry| QualifiedRef {
-					registry_node: node.into(),
+					registry_deployment: node.into(),
 					id: entry.id.clone(),
 					version: entry.version.clone(),
 				})

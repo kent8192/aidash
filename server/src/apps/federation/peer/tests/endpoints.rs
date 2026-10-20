@@ -27,7 +27,7 @@ async fn identity_is_public_but_federation_requires_a_peer_credential(
 		.unwrap();
 	// Assert
 	let identity = assert_json(identity, 200);
-	assert_eq!(identity["id"], app.runtime.config.node_id);
+	assert_eq!(identity["id"], app.runtime.config.deployment);
 	assert_eq!(identity["protocol_version"], PROTOCOL_VERSION);
 	assert_json(missing_protocol, 400);
 	assert_json(invalid_peer, 401);

@@ -565,7 +565,7 @@ pub(crate) async fn run_mutate(
 	key: &str,
 	changes: &[Change],
 ) -> Result<Vec<Unit>> {
-	if run.home_node != store.node_id {
+	if run.home_node != store.deployment {
 		return Err(Error::Forbidden);
 	}
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
@@ -612,7 +612,7 @@ pub(crate) async fn run_recall(
 	query: RecallQuery,
 	reflect: bool,
 ) -> Result<Outcome> {
-	if run.home_node != store.node_id {
+	if run.home_node != store.deployment {
 		return Err(Error::Forbidden);
 	}
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
@@ -689,7 +689,7 @@ pub(crate) async fn scope(
 	action: &str,
 ) -> Result<()> {
 	bank.validate()?;
-	if bank.home != store.node_id {
+	if bank.home != store.deployment {
 		return Err(Error::Forbidden);
 	}
 	let tenant: Option<String> = native::query_scalar(
@@ -840,7 +840,7 @@ pub async fn upgrade_participant(
 			&mut lease,
 			&bank.tenant,
 			&accepted,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		if let Some(provider) = &configuration.memory {
@@ -929,7 +929,7 @@ pub async fn create_participant(
 			&mut lease,
 			&tenant,
 			&accepted,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		let principal = lease.saved()?["subject"]
@@ -938,7 +938,7 @@ pub async fn create_participant(
 			.to_owned();
 		let id = Uuid::now_v7();
 		let bank = Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant,
 			workspace,
 			participant: Some(id),
@@ -1188,7 +1188,7 @@ pub async fn participants(
 		query
 			.column(reinhardt::query::ColumnRef::Asterisk)
 			.from(Alias::new("memory_participants"))
-			.and_where(Expr::col("home").eq(store.node_id.as_str()))
+			.and_where(Expr::col("home").eq(store.deployment.as_str()))
 			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 			.and_where(Expr::col("deleted").eq(false))
 			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)

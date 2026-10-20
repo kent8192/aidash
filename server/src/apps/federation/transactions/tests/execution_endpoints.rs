@@ -98,9 +98,9 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	);
 	let id = Uuid::new_v4();
 	let manifest: Manifest = serde_json::from_value(json!({
-		"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
+		"id":id,"coordinator":app.runtime.config.deployment,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),
-		"participants":[{"node_id":app.runtime.config.node_id,"mutations":[
+		"participants":[{"node_id":app.runtime.config.deployment,"mutations":[
 			{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,
 			 "artifact":{"kind":"text","name":"Atomic output","content":"derived protected result"}},
 			{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}
@@ -190,10 +190,14 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	assert!(completed);
 	for _ in 0..2 {
 		assert_eq!(
-			participant::finish(&app.runtime, &app.runtime.config.node_id, &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::finish(
+				&app.runtime,
+				app.runtime.config.deployment.as_str(),
+				&manifest
+			)
+			.await
+			.unwrap()
+			.phase,
 			"COMMITTED"
 		);
 	}

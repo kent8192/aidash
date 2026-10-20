@@ -137,8 +137,9 @@ pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunMana
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
-		let mut result: RunManagement =
-			authorized(&mut access, id, &f.config.node_id).await?.into();
+		let mut result: RunManagement = authorized(&mut access, id, f.config.deployment.as_str())
+			.await?
+			.into();
 		result.memory_cleanup =
 			crate::apps::knowledge::repositories::receiver_caches::status(&mut access.tx, id)
 				.await?;
@@ -171,7 +172,7 @@ pub(crate) async fn control(
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
-		let run = authorized(&mut access, id, &f.config.node_id).await?;
+		let run = authorized(&mut access, id, f.config.deployment.as_str()).await?;
 		let run = if run.control == RunControl::Cancelled {
 			run
 		} else {

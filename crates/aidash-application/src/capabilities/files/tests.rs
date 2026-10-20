@@ -56,7 +56,7 @@ impl FileScopePort for Scope {
 			.definitions
 			.iter()
 			.find(|saved| {
-				saved.identity.registry_node == self.local_node()
+				saved.identity.registry_deployment == self.local_node()
 					&& saved.identity.local() == *reference
 			})
 			.unwrap()

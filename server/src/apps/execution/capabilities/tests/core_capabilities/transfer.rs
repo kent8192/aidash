@@ -124,7 +124,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	}
 	.unwrap();
 	tx.commit().await.unwrap();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":c.b.f.config.node_id,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":c.b.f.config.deployment,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
 		&c.a.token,
@@ -173,13 +173,18 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	let mut fixture = Box::pin(chunked_transfer).await;
 	let c = &mut fixture.peers;
 	let identity = &fixture.identity;
-	let (status, prepared) =
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone()).await;
+	let (status, prepared) = peer_request(
+		&c.b,
+		c.a.f.config.deployment.as_str(),
+		"prepare",
+		identity.clone(),
+	)
+	.await;
 	assert_eq!(status, 200, "{prepared}");
 	let mut wrong = identity.clone();
 	wrong["input_digest"] = json!("sha256:wrong");
 	assert_ne!(
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", wrong)
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "prepare", wrong)
 			.await
 			.0,
 		200
@@ -196,15 +201,25 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	};
 	let last = chunk(4194304);
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", last.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"chunk",
+			last.clone()
+		)
+		.await
+		.0,
 		200
 	);
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "commit", identity.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"commit",
+			identity.clone()
+		)
+		.await
+		.0,
 		409,
 		"missing first chunk cannot publish"
 	);
@@ -219,26 +234,36 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	assert_eq!(hidden["manifest"], json!([]));
 	c.restart_servers().await;
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"prepare",
+			identity.clone()
+		)
+		.await
+		.0,
 		200
 	);
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", last)
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "chunk", last)
 			.await
 			.0,
 		200,
 		"lost chunk acknowledgment retries identically"
 	);
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk(0))
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "chunk", chunk(0))
 			.await
 			.0,
 		200
 	);
-	let (status, receipt) =
-		peer_request(&c.b, &c.a.f.config.node_id, "commit", identity.clone()).await;
+	let (status, receipt) = peer_request(
+		&c.b,
+		c.a.f.config.deployment.as_str(),
+		"commit",
+		identity.clone(),
+	)
+	.await;
 	assert_eq!(status, 200, "{receipt}");
 	assert_eq!(
 		receipt["receipt"]["files"][0]["digest"],
@@ -246,7 +271,13 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	);
 	c.restart_servers().await;
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "status", identity.clone()).await,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"status",
+			identity.clone()
+		)
+		.await,
 		(200, receipt.clone())
 	);
 	let WorkerControl { stop, receiver: rx } = control_1;
@@ -335,9 +366,14 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 		.await
 		.unwrap();
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"prepare",
+			identity.clone()
+		)
+		.await
+		.0,
 		409
 	);
 	sqlx::query(&quota)
@@ -346,9 +382,14 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 		.await
 		.unwrap();
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"prepare",
+			identity.clone()
+		)
+		.await
+		.0,
 		200
 	);
 	let mut chunk = identity.clone();
@@ -356,12 +397,13 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 	chunk["offset"] = json!(0);
 	chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode("corrupted 東京\n"));
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk)
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "chunk", chunk)
 			.await
 			.0,
 		200
 	);
-	let (status, failed) = peer_request(&c.b, &c.a.f.config.node_id, "commit", identity).await;
+	let (status, failed) =
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "commit", identity).await;
 	assert_eq!(status, 409, "{failed}");
 	let (_, area) = request(
 		&c.b.app,
@@ -453,7 +495,7 @@ pub(super) fn connected_nodes(
 a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 	b.f.config.endpoint = format!("http://{}", bl.local_addr().unwrap());
 	a.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&b.f.config.node_id, "research", "1.1.0")] =
+		[aidash_server::domain::qualified_agent(b.f.config.deployment.as_str(), "research", "1.1.0")] =
 		json!({"kind":"agent"});
 	let (status, result) = request(
 		&a.app,
@@ -466,7 +508,7 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 	assert_eq!(status, 200, "{result}");
 	for (home, peer) in [(&a, &b), (&b, &a)] {
 		{
-			let query_bind_1 = &peer.f.config.node_id;
+			let query_bind_1 = peer.f.config.deployment.as_str();
 			let query_bind_2 = &peer.f.config.endpoint;
 			sqlx::query(
 				&Query::insert()
@@ -505,13 +547,13 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 		)
 		.await;
 		assert_eq!(status, 200, "{credential}");
-		let (status, result) = request(&home.app, &home.f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"source_node":peer.f.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true})).await;
+		let (status, result) = request(&home.app, &home.f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"source_node":peer.f.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true})).await;
 		assert_eq!(status, 200, "{result}");
 	}
 
  for node in [&a,&b] {node.app.context.set_singleton(node.f.clone());
   let mut settings=common::settings_for(&node.f.config.database_url);
-  settings.node.node_id=node.f.config.node_id.clone();settings.node.endpoint=node.f.config.endpoint.clone();settings.node.api_token=node.f.config.api_token.clone();settings.node.web_dir=node.f.config.web_dir.clone();settings.node.lease_seconds=node.f.config.lease_seconds;node.app.context.set_singleton(settings);
+  settings.deployment.id=node.f.config.deployment.to_string();settings.deployment.endpoint=node.f.config.endpoint.clone();settings.deployment.api_token=node.f.config.api_token.clone();settings.deployment.web_dir=node.f.config.web_dir.clone();settings.deployment.lease_seconds=node.f.config.lease_seconds;node.app.context.set_singleton(settings);
  }
  let a_router:Arc<dyn Handler>=a.app.native_router();
  let b_router:Arc<dyn Handler>=Arc::new(CommitReplyFault {router:b.app.native_router(),fault:lose_commit_reply.clone()});
@@ -568,7 +610,7 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 	)
 	.await;
 	let file = area["manifest"][0].clone();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.b.f.config.node_id,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.b.f.config.deployment,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
 		&c.a.token,
@@ -703,13 +745,23 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	.unwrap();
 	let mut identity = identity;
 	identity["input_digest"] = data["description"]["input_digest"].clone();
-	let (status, result) =
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone()).await;
+	let (status, result) = peer_request(
+		&c.b,
+		c.a.f.config.deployment.as_str(),
+		"prepare",
+		identity.clone(),
+	)
+	.await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "commit", identity.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"commit",
+			identity.clone()
+		)
+		.await
+		.0,
 		409
 	);
 	let bytes = base64::engine::general_purpose::STANDARD.encode("immutable 東京\n");
@@ -718,20 +770,30 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	chunk["offset"] = json!(0);
 	chunk["data"] = json!(bytes);
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"chunk",
+			chunk.clone()
+		)
+		.await
+		.0,
 		200
 	);
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk.clone())
-			.await
-			.0,
+		peer_request(
+			&c.b,
+			c.a.f.config.deployment.as_str(),
+			"chunk",
+			chunk.clone()
+		)
+		.await
+		.0,
 		200
 	);
 	chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode("corrupted 東京\n"));
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk)
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "chunk", chunk)
 			.await
 			.0,
 		409
@@ -749,7 +811,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	revoked["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-transfer","effect":"deny","subjects":{"ids":["alice"]},"actions":["file.share"],"resources":{"kinds":["working_area"]}}));
 	crate::common::replace_policy(&c.a.f.store, "acme", revoked.clone()).await;
 	assert_eq!(
-		peer_request(&c.b, &c.a.f.config.node_id, "commit", identity)
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "commit", identity)
 			.await
 			.0,
 		403,
@@ -807,7 +869,11 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	};
 	let mut snapshot = auth.snapshot("acme").await.unwrap();
 	snapshot.bundle.subjects.insert(
-		aidash_server::domain::qualified_agent(&c.f.config.node_id, &entry.id, &entry.version),
+		aidash_server::domain::qualified_agent(
+			c.f.config.deployment.as_str(),
+			&entry.id,
+			&entry.version,
+		),
 		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
 	);
 	auth.replace(
@@ -826,7 +892,7 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":entry.id,"version":entry.version}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":entry.id,"version":entry.version}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{admitted}");
@@ -860,7 +926,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 	let mut snapshot = auth.snapshot("acme").await.unwrap();
 	snapshot.bundle.subjects.insert(
 		aidash_server::domain::qualified_agent(
-			&b.f.config.node_id,
+			b.f.config.deployment.as_str(),
 			&receiver.agent_id,
 			&receiver.agent_version,
 		),
@@ -900,8 +966,13 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 	}
 	.unwrap();
 	let identity = json!({"transfer_id":pending["transfer_id"],"input_digest":data["description"]["input_digest"]});
-	let (status, prepared) =
-		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone()).await;
+	let (status, prepared) = peer_request(
+		&c.b,
+		c.a.f.config.deployment.as_str(),
+		"prepare",
+		identity.clone(),
+	)
+	.await;
 	assert_eq!(status, 200, "{prepared}");
 	let revoked = if receiver_revoked { &c.b } else { &c.a };
 	let auth = aidash_server::authorization::Authorization {
@@ -925,9 +996,9 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		chunk["file"] = json!(0);
 		chunk["offset"] = json!(0);
 		chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode("immutable 東京\n"));
-		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk).await
+		peer_request(&c.b, c.a.f.config.deployment.as_str(), "chunk", chunk).await
 	} else {
-		peer_request(&c.a, &c.b.f.config.node_id, "describe", identity).await
+		peer_request(&c.a, c.b.f.config.deployment.as_str(), "describe", identity).await
 	};
 	assert_eq!(
 		status, 403,

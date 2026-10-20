@@ -54,7 +54,7 @@ struct Catalog {
 #[async_trait]
 impl BindingCatalog for Catalog {
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
-		if reference.registry_node != self.node {
+		if reference.registry_deployment != self.node {
 			return Err(Error::Forbidden);
 		}
 		if let Some(entry) = self
@@ -117,7 +117,7 @@ pub(crate) fn resolve(
 		},
 		&Providers,
 		QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			id: root.id.clone(),
 			version: root.version.clone(),
 		},
@@ -137,7 +137,7 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 	entry(
 		id,
 		"tool",
-		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":alias,"tier":"integration","transport":{"transport":"http","endpoint":"https://production.example/rpc","replay":"unsafe"}}),
+		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":alias,"tier":"integration","transport":{"transport":"http","endpoint":"https://production.example/rpc","replay":"unsafe"}}),
 	)
 }
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
@@ -152,7 +152,7 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 		.collect()
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {
-	json!({"kind":kind,"target":{"registry_node":node,"id":id,"version":"1.0.0"},"narrow":{}})
+	json!({"kind":kind,"target":{"registry_deployment":node,"id":id,"version":"1.0.0"},"narrow":{}})
 }
 
 pub(crate) fn native_memory_entries() -> Vec<Entry> {

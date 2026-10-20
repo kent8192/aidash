@@ -330,7 +330,7 @@ export async function setup(
         {
           kind: "memory",
           target: {
-            registry_node: data.node.id,
+            registry_deployment: data.node.id,
             id: "native-memory",
             version: "1.0.0",
           },
@@ -364,7 +364,7 @@ export async function setup(
         {
           kind: "bundle",
           target: {
-            registry_node: data.node.id,
+            registry_deployment: data.node.id,
             id: "approved-host-tools",
             version: "1.0.0",
           },
@@ -645,7 +645,7 @@ export async function setup(
                                   ...binding,
                                   target: {
                                     ...binding.target,
-                                    registry_node: "aidash://remote",
+                                    registry_deployment: "aidash://remote",
                                     id: "remote-native",
                                   },
                                 }

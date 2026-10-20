@@ -460,7 +460,7 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 		.await
 		.unwrap();
 		let mut bundle = json!(snapshot.bundle);
-		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-compaction","effect":"deny","subjects":{"ids":[aidash_server::domain::qualified_agent(&f.config.node_id,&run.agent_id,&run.agent_version)]},"actions":["decision.invoke"],"resources":{"kinds":["decider"]}}));
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-compaction","effect":"deny","subjects":{"ids":[aidash_server::domain::qualified_agent(f.config.deployment.as_str(),&run.agent_id,&run.agent_version)]},"actions":["decision.invoke"],"resources":{"kinds":["decider"]}}));
 		assert_eq!(
 			request(
 				&app,
@@ -752,7 +752,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	let chain = vec![
 		"alice".to_owned(),
 		aidash_server::domain::qualified_agent(
-			&f.config.node_id,
+			f.config.deployment.as_str(),
 			&parent_run.agent_id,
 			&parent_run.agent_version,
 		),

@@ -506,7 +506,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	.bind(run)
 	.bind(task)
 	.bind(workspace)
-	.bind(&d.federation.config.node_id)
+	.bind(d.federation.config.deployment.as_str())
 	.execute(&mut *tx)
 	.await
 	.unwrap();

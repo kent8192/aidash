@@ -392,7 +392,7 @@ impl GrantScope for Scope {
 impl GrantRepository for Repository {
 	type Scope = Scope;
 	fn source_node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn source_identity(&self) -> Option<ExecutionPrincipal> {
 		HomeRepository::identity(self)

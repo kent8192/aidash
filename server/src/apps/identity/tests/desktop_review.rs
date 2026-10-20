@@ -223,7 +223,7 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 		.unwrap();
 	let old_pool = std::mem::replace(&mut fixture.f.store.pool, pool.clone().into());
 	fixture.f.registry =
-		aidash_server::registry::Registry::new(pool.clone(), &fixture.f.config.node_id).unwrap();
+		aidash_server::registry::Registry::new(pool.clone(), &fixture.f.config.deployment).unwrap();
 	old_pool.close().await;
 	// Act: rebuild the native application after changing the runtime authority.
 	fixture.app = common::application_with_settings(

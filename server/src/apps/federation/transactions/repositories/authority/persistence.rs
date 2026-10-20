@@ -183,7 +183,7 @@ pub(crate) async fn run(access: &mut Access, id: Uuid) -> Result<crate::domain::
 }
 
 pub(crate) async fn mapped(f: &Federation, input: &Preflight) -> Result<Access> {
-	if input.coordinator == f.config.node_id {
+	if input.coordinator == f.config.deployment {
 		return access(f, &input.origin).await;
 	}
 	let mut access = crate::authorization::peer::access(

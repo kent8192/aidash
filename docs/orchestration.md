@@ -71,12 +71,12 @@ done
 
 ```sh
 helm upgrade --install node-a deploy/helm/aidash --namespace aidash \
-  --set node.id=aidash://node-a --set existingSecret=node-a-secrets \
+  --set deployment.id=aidash://node-a --set existingSecret=node-a-secrets \
   --set image.repository=your-registry/aidash --set image.tag=0.1.0 \
   --set frontend.image.repository=your-registry/aidash-frontend \
   --set frontend.image.tag=0.1.0 --wait
 helm upgrade --install node-b deploy/helm/aidash --namespace aidash \
-  --set node.id=aidash://node-b --set existingSecret=node-b-secrets \
+  --set deployment.id=aidash://node-b --set existingSecret=node-b-secrets \
   --set image.repository=your-registry/aidash --set image.tag=0.1.0 \
   --set frontend.image.repository=your-registry/aidash-frontend \
   --set frontend.image.tag=0.1.0 --wait
@@ -84,7 +84,7 @@ helm upgrade --install node-b deploy/helm/aidash --namespace aidash \
 
 Register reciprocal peers using `http://node-a-backend.aidash.svc:8080` and
 `http://node-b-backend.aidash.svc:8080`. For independent clusters, configure a
-reachable TLS endpoint in `node.endpoint` and your ingress/load balancer. An
+reachable TLS endpoint in `deployment.endpoint` and your ingress/load balancer. An
 external endpoint must stay stable across Pod replacements. The `<release>-aidash`
 Service fronts the dashboard and keeps the configured `service.type`; it is
 cluster-local by default. The backend uses a separate cluster-local

@@ -54,7 +54,7 @@ impl Scope {
 impl SemanticSearchRepository for Repository<'_> {
 	type Scope = Scope;
 	fn home_node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn journal(&self) -> &dyn JournalRepository {
 		&self.journal

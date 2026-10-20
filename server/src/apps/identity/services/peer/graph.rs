@@ -59,7 +59,7 @@ pub(crate) async fn expand(
 	input: GraphExpandInput,
 ) -> Result<GraphPage> {
 	input.options.validate()?;
-	crate::config::validate_node_id(&input.node_id)?;
+	aidash_domain::nodes::DeploymentId::parse(&input.node_id)?;
 	match actor {
 		Actor::Subject(identity) => {
 			if input.options.target_tenant.is_some() {
@@ -192,7 +192,7 @@ async fn project_page(f: &Federation, node: &str, input: GraphRequest) -> Result
 			}
 			let mut access = super::access(f, node, tenant, subject).await?;
 			let result = async {
-				let resource = access.resource("node", &f.config.node_id, json!({}));
+				let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
 				access.require(&resource, "federation.graph.read").await?;
 				let mapping_revision =
 					crate::apps::identity::repositories::graph::persistence::mapping_revision(

@@ -173,7 +173,7 @@ impl PeerMappings {
 		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 		let mut access = access(&f, node, &input.tenant, &input.subject).await?;
 		let result = async {
-			let resource = access.resource("node", &f.config.node_id, json!({}));
+			let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
 			access.require(&resource, "federation.discover").await?;
 			let mut search = input.search;
 			search.kind = Some("agent".into());

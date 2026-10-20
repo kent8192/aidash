@@ -4,7 +4,7 @@ use std::env;
 
 #[derive(Clone)]
 pub struct Config {
-	pub node_id: String,
+	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub endpoint: String,
 	pub database_url: String,
 	pub nats_url: String,
@@ -12,6 +12,14 @@ pub struct Config {
 	pub web_dir: String,
 	pub lease_seconds: i32,
 	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
+	/// `[deployment] federation`: whether this Deployment federates with other
+	/// Deployments. Exchange between Nodes of this Deployment never depends on it.
+	pub federation: bool,
+	/// The Deployment Key `[deployment.key]` names. `bootstrap::initialize`
+	/// loads it, not `from_settings`, because a Cloud KMS key is fetched over the
+	/// network. Without one this Deployment cannot federate with others.
+	pub deployment_key:
+		Option<std::sync::Arc<dyn aidash_application::federation::key::DeploymentKey>>,
 	pub oidc: Option<OidcConfig>,
 	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
@@ -49,7 +57,7 @@ impl Config {
 
 	pub fn from_settings(settings: &super::settings::ProjectSettings) -> Result<Self> {
 		settings
-			.node
+			.deployment
 			.validate(&Profile::parse("local"))
 			.map_err(|error| Error::Invalid(error.to_string()))?;
 		settings
@@ -77,10 +85,10 @@ impl Config {
 				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
 			));
 		}
-		let node = &settings.node;
+		let node = &settings.deployment;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
-			node_id: node.node_id.clone(),
+			deployment: aidash_domain::nodes::DeploymentId::parse(&node.id)?,
 			endpoint: node.endpoint.clone(),
 			database_url: database.to_url(),
 			nats_url: node.nats_url.clone(),
@@ -88,6 +96,8 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
+			federation: node.federation,
+			deployment_key: None,
 			sign_in,
 			oidc: settings
 				.dashboard
@@ -97,9 +107,25 @@ impl Config {
 				.transpose()?,
 		})
 	}
+	/// What `/.well-known/aidash` publishes: this Deployment and its public key,
+	/// never its Nodes.
+	pub fn deployment_identity(&self) -> DeploymentIdentity {
+		DeploymentIdentity {
+			id: self.deployment.to_string(),
+			endpoint: self.endpoint.clone(),
+			protocol_version: PROTOCOL_VERSION.into(),
+			key: self
+				.deployment_key
+				.as_ref()
+				.map(|key| DeploymentKeyIdentity {
+					id: key.key_id().to_string(),
+					public_key_pem: key.public_key_pem().to_owned(),
+				}),
+		}
+	}
 	pub fn identity(&self, clusters: Vec<String>) -> NodeIdentity {
 		NodeIdentity {
-			id: self.node_id.clone(),
+			id: self.deployment.to_string(),
 			endpoint: self.endpoint.clone(),
 			capabilities: vec![
 				"agent.discovery".into(),
@@ -110,10 +136,6 @@ impl Config {
 			protocol_version: PROTOCOL_VERSION.into(),
 		}
 	}
-}
-
-pub fn validate_node_id(value: &str) -> Result<()> {
-	aidash_domain::configuration::validate_node_id(value).map_err(Into::into)
 }
 
 pub fn validate_endpoint(value: &str) -> Result<()> {
@@ -141,7 +163,9 @@ pub fn validate_peer_credential(value: &str) -> Result<()> {
 
 pub(crate) use aidash_domain::configuration::same_secret;
 
-pub use crate::apps::federation::peer::serializers::identity::NodeIdentity;
+pub use crate::apps::federation::peer::serializers::identity::{
+	DeploymentIdentity, DeploymentKeyIdentity, NodeIdentity,
+};
 
 #[cfg(test)]
 #[path = "../apps/execution/tests/config_runtime.rs"]

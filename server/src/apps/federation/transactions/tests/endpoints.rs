@@ -22,8 +22,8 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let subject = subject(&app, "alice", _credential_client_0.await).await;
 	let created = workspace(&subject, "Atomic validation").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
-		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,
+	let manifest = json!({"id":id,"coordinator":app.runtime.config.deployment,"isolation":"serializable",
+		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.deployment,
 		"mutations":[{"kind":"workspace_state","workspace_id":created["id"],"expected_revision":0,"state":{"result":"committed"}}]}]});
 	// Act / Assert
 	let session = assert_json(subject.get("/api/session").await.unwrap(), 200);
@@ -107,7 +107,7 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Atomic mutation").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
+	let manifest = json!({"id":id,"coordinator":app.runtime.config.deployment,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.deployment,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
 	let path = format!("/api/transactions/{id}");
 	// Act
 	let admitted = app
@@ -178,9 +178,9 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Concurrent admission").await;
 	let id = Uuid::new_v4();
-	let first = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
+	let first = json!({"id":id,"coordinator":app.runtime.config.deployment,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state",
+        "participants":[{"node_id":app.runtime.config.deployment,"mutations":[{"kind":"workspace_state",
             "workspace_id":workspace["id"],"expected_revision":0,"state":{"literal":"'$1 $2'"}}]}]});
 	let mut second = first.clone();
 	if conflicting {
@@ -225,7 +225,7 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	assert_eq!(listed[0]["id"], json!(id));
 	assert_eq!(
 		details["participants"],
-		json!([{"node_id":app.runtime.config.node_id,"phase":"PENDING"}])
+		json!([{"node_id":app.runtime.config.deployment,"phase":"PENDING"}])
 	);
 	assert_eq!(details["history"].as_array().unwrap().len(), 1);
 	assert_eq!(details["history"][0]["phase"], "PENDING");
@@ -252,9 +252,9 @@ async fn deployment_administrator_abort_is_durable_while_recovery_owns_the_lease
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Abort during recovery").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
+	let manifest = json!({"id":id,"coordinator":app.runtime.config.deployment,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state",
+        "participants":[{"node_id":app.runtime.config.deployment,"mutations":[{"kind":"workspace_state",
             "workspace_id":workspace["id"],"expected_revision":0,"state":{"never": "applied"}}]}]});
 	assert_json(
 		app.deployment_administrator
@@ -379,7 +379,7 @@ async fn participant_list_reads_persisted_orm_state(#[future] endpoint: Endpoint
 	// Arrange
 	let app = endpoint.await;
 	let participant = AtomicParticipant::build()
-		.coordinator(&app.runtime.config.node_id)
+		.coordinator(app.runtime.config.deployment.as_str())
 		.digest("fixture-manifest")
 		.manifest(json!({"literal":"'$1 $2'"}).into())
 		.phase(AtomicParticipantPhase::Reserved)
@@ -461,7 +461,7 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 	let mut lease = ReadLease::begin(&app.runtime.store).await.unwrap();
 	lease.suspend().await.unwrap();
 	let participant = AtomicParticipant::build()
-		.coordinator(&app.runtime.config.node_id)
+		.coordinator(app.runtime.config.deployment.as_str())
 		.digest("visibility-fixture")
 		.manifest(json!({}).into())
 		.phase(AtomicParticipantPhase::Reserved)

@@ -33,7 +33,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		let node = self.runtime.config.node_id.clone();
+		let node = self.runtime.config.deployment.to_string();
 		crate::apps::registry::repositories::bindings::preview(
 			&mut *self.access.tx,
 			&node,
@@ -55,7 +55,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		&self.access.snapshot.bundle
 	}
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -78,7 +78,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let f = self.runtime;
 		let previous_depth: Option<i32> = {
 			let query_bind_1 = &access.identity.tenant;
-			let query_bind_2 = &f.config.node_id;
+			let query_bind_2 = f.config.deployment.as_str();
 			let query_bind_3 = &access.subjects;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("MAX(depth)"))
@@ -679,7 +679,7 @@ impl GenerationCreationScope for Session {
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		let node = self.runtime.config.node_id.clone();
+		let node = self.runtime.config.deployment.to_string();
 		crate::apps::registry::repositories::bindings::preview(
 			&mut *self.access.tx,
 			&node,
@@ -701,7 +701,7 @@ impl GenerationCreationScope for Session {
 		&self.access.snapshot.bundle
 	}
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()

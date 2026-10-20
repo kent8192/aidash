@@ -262,7 +262,7 @@ Compose creates `aidash_a`, `aidash_b`, and `aidash_test`. Node B needs its own 
 
 ```sh
 DATABASE_URL=postgres://aidash_server:aidash-server-local@127.0.0.1:54370/aidash_b \
-AIDASH_NODE_ID=aidash://node-b \
+AIDASH_DEPLOYMENT_ID=aidash://node-b \
 AIDASH_ENDPOINT=http://127.0.0.1:8081 \
 AIDASH_LISTEN=127.0.0.1:8081 \
 cargo run --locked -- serve
@@ -284,7 +284,7 @@ Tools are immutable Registry descriptors with provider-owned behavior and a JSON
 
 ```json
 {
-  "registry_node": "aidash://node-a",
+  "registry_deployment": "aidash://node-a",
   "provider": "integration.http@1",
   "operation": "invoke",
   "default_alias": "research_lookup",
@@ -310,7 +310,7 @@ Bind its exact registered identity in the Agent configuration:
     {
       "kind": "tool",
       "target": {
-        "registry_node": "aidash://node-a",
+        "registry_deployment": "aidash://node-a",
         "id": "research-http",
         "version": "1.0.0"
       },

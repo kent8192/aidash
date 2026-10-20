@@ -142,7 +142,7 @@ impl Federation {
 	pub async fn for_workers(&self) -> Result<Self> {
 		let store = self.store.isolated_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.node_id)?,
+			registry: Registry::new(store.pool.clone(), &store.deployment)?,
 			store,
 			..self.clone()
 		})
@@ -150,7 +150,7 @@ impl Federation {
 	pub async fn for_recovery(&self) -> Result<Self> {
 		let store = self.store.recovery_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.node_id)?,
+			registry: Registry::new(store.pool.clone(), &store.deployment)?,
 			store,
 			..self.clone()
 		})
@@ -158,19 +158,19 @@ impl Federation {
 	pub async fn for_runtime_workers(&self) -> Result<Self> {
 		let store = self.store.worker_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.node_id)?,
+			registry: Registry::new(store.pool.clone(), &store.deployment)?,
 			store,
 			..self.clone()
 		})
 	}
 
 	pub async fn peers(&self) -> Result<Vec<Peer>> {
-		PeerRecords::new(&self.store.pool, &self.config.node_id)
+		PeerRecords::new(&self.store.pool, self.config.deployment.as_str())
 			.list()
 			.await
 	}
 	pub async fn peer(&self, node: &str) -> Result<Peer> {
-		PeerRecords::new(&self.store.pool, &self.config.node_id)
+		PeerRecords::new(&self.store.pool, self.config.deployment.as_str())
 			.enabled(node)
 			.await
 	}
@@ -329,13 +329,13 @@ impl Home {
 	}
 	pub fn owner(&self) -> String {
 		qualified_agent(
-			&self.federation.config.node_id,
+			self.federation.config.deployment.as_str(),
 			&self.run.agent_id,
 			&self.run.agent_version,
 		)
 	}
 	pub fn local(&self) -> bool {
-		self.run.home_node == self.federation.config.node_id
+		self.run.home_node == self.federation.config.deployment
 	}
 	pub(crate) async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
 		if let Some(grant) =

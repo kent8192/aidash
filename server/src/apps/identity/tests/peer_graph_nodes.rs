@@ -35,11 +35,12 @@ fn graph_runtime(
 	async move {
 		let mut owner = runtime.await;
 		let f = &mut owner.federation;
-		f.config.node_id = format!("aidash://graph-{suffix}");
-		f.store.node_id = f.config.node_id.clone();
+		f.config.deployment =
+			aidash_domain::nodes::DeploymentId::parse(&format!("aidash://graph-{suffix}")).unwrap();
+		f.store.deployment = f.config.deployment.clone();
 		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
 		f.config.api_token = format!("peer-graph-{suffix}");
-		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.deployment).unwrap();
 		owner
 	}
 	.boxed()
@@ -84,14 +85,15 @@ async fn graph_node(
 
 async fn connect(local: &Node, remote: &Node) {
 	{
-		let query_bind_1 = &remote.f.config.node_id;
+		let query_bind_1 = remote.f.config.deployment.as_str();
 		let query_bind_2 = &remote.f.config.endpoint;
-		let query_bind_3 =
-			if local.f.config.node_id.ends_with("-c") || remote.f.config.node_id.ends_with("-c") {
-				"AIDASH_SECRET_GRAPH_THIRD"
-			} else {
-				"AIDASH_SECRET_TEST_PEER"
-			};
+		let query_bind_3 = if local.f.config.deployment.as_str().ends_with("-c")
+			|| remote.f.config.deployment.as_str().ends_with("-c")
+		{
+			"AIDASH_SECRET_GRAPH_THIRD"
+		} else {
+			"AIDASH_SECRET_TEST_PEER"
+		};
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("peers"))
@@ -161,10 +163,10 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	connect(&b, &c).await;
 	connect(&c, &b).await;
 	let third_secret = std::env::var("AIDASH_SECRET_GRAPH_THIRD").unwrap();
-	b.f.authenticate_peer(&c.f.config.node_id, &third_secret)
+	b.f.authenticate_peer(c.f.config.deployment.as_str(), &third_secret)
 		.await
 		.unwrap();
-	c.f.authenticate_peer(&b.f.config.node_id, &third_secret)
+	c.f.authenticate_peer(b.f.config.deployment.as_str(), &third_secret)
 		.await
 		.unwrap();
 
@@ -238,7 +240,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			"POST",
 			"/api/authorization/acme/peer-mappings",
 			json!({
-				"source_node":a.f.config.node_id,"source_tenant":"acme","source_subject":subject,
+				"source_node":a.f.config.deployment,"source_tenant":"acme","source_subject":subject,
 				"credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0,
 			}),
 		)
@@ -382,7 +384,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":a.f.config.node_id,"source_tenant":"acme","source_subject":"alice",
+			"source_node":a.f.config.deployment,"source_tenant":"acme","source_subject":"alice",
 			"credential_id":alice_b["credential"]["id"],"enabled":false,"expected_revision":1,
 		}),
 	)
@@ -395,14 +397,14 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":a.f.config.node_id,"source_tenant":"acme","source_subject":"alice",
+			"source_node":a.f.config.deployment,"source_tenant":"acme","source_subject":"alice",
 			"credential_id":alice_b["credential"]["id"],"enabled":true,"expected_revision":2,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200);
 	let source_peer = Peer {
-		node_id: b.f.config.node_id.clone(),
+		node_id: b.f.config.deployment.to_string(),
 		endpoint: b.f.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
 		protocol_version: "0.2".into(),
@@ -417,7 +419,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	.await
 	.unwrap();
 	let receiver_peer = Peer {
-		node_id: a.f.config.node_id.clone(),
+		node_id: a.f.config.deployment.to_string(),
 		endpoint: a.f.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
 		protocol_version: "0.2".into(),

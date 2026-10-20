@@ -32,7 +32,7 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		.map(|definition| {
 			ResolvedDefinition::new(
 				QualifiedRef {
-					registry_node: node.into(),
+					registry_deployment: node.into(),
 					id: definition.id.clone(),
 					version: definition.version.clone(),
 				},

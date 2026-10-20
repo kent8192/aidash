@@ -34,6 +34,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		registry.register_capability(command);
 	}
 	registry.register_capability(Box::new(
+		crate::apps::federation::peer::services::key_commands::Command,
+	));
+	registry.register_capability(Box::new(
 		crate::apps::operations::services::diagnostics::Diagnostics,
 	));
 	registry.register_capability(Box::new(
@@ -64,7 +67,10 @@ pub async fn initialize(
 		.with_writer(std::io::stderr)
 		.with_ansi(false)
 		.try_init();
-	let config = Config::from_settings(settings)?;
+	let mut config = Config::from_settings(settings)?;
+	// A Deployment Key that cannot be loaded refuses to start (ADR 0064).
+	config.deployment_key =
+		configure_deployment_key(settings.deployment.key.as_ref(), &settings.core.base_dir).await?;
 	// A malformed Research provider declaration refuses to start (ADR 0055),
 	// before registry validation reads which providers are available.
 	crate::apps::execution::services::research::configure(
@@ -86,7 +92,7 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
-	let mut store = Store::from_pool(pool, config.node_id.clone())
+	let mut store = Store::from_pool(pool, config.deployment.clone())
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
@@ -101,7 +107,7 @@ pub async fn initialize(
 		&settings.plan_connections,
 	)?;
 	build::current().extension.install(&mut store)?;
-	let registry = Registry::new(store.pool.clone(), &store.node_id)?
+	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
 	registry.seed_system().await?;
@@ -164,7 +170,7 @@ impl RuntimeTasks {
 		));
 		if let Some(service) = event_streams.clone() {
 			let url = federation.config.nats_url.clone();
-			let node = federation.config.node_id.clone();
+			let node = federation.config.deployment.to_string();
 			let stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
 				service.run(&url, &node, stopping).await
@@ -544,7 +550,7 @@ pub(crate) fn federation(f: &Federation) -> aidash_application::federation::Fede
 pub(crate) fn peer_transport(f: &Federation) -> aidash_integrations::federation::PeerHttp {
 	aidash_integrations::federation::PeerHttp {
 		client: f.client.clone(),
-		node_id: f.config.node_id.clone(),
+		node_id: f.config.deployment.to_string(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -936,7 +942,7 @@ pub(crate) fn generation_inference_repository(
 	crate::apps::execution::generation::repositories::inference::NativeInferenceRepository {
 		pool: store.pool.clone(),
 		scope,
-		node_id: store.node_id.clone(),
+		node_id: store.deployment.to_string(),
 	}
 }
 
@@ -955,7 +961,7 @@ pub(crate) fn generation_embedding_repository(
 	crate::apps::execution::generation::repositories::embedding::NativeEmbeddingRepository {
 		pool: store.pool.clone(),
 		scope,
-		node_id: store.node_id.clone(),
+		node_id: store.deployment.to_string(),
 	}
 }
 
@@ -1986,11 +1992,11 @@ pub(crate) fn workbench_sandbox_repository(
 ) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
-		node_id: runtime.config.node_id.clone(),
+		node_id: runtime.config.deployment.to_string(),
 		tenant_actions:
 			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
 				actor.clone(),
-				runtime.config.node_id.clone(),
+				runtime.config.deployment.to_string(),
 			),
 		actor,
 	}
@@ -2098,7 +2104,7 @@ pub(crate) fn activation_driver(
 	}
 	let connector = aidash_integrations::activation::Connector::new(
 		federation.config.nats_url.clone(),
-		federation.config.node_id.clone(),
+		federation.config.deployment.to_string(),
 		activation_broker_configuration(&settings),
 		worker,
 	);
@@ -2221,7 +2227,7 @@ pub(crate) fn peer_authority(
 	federation: &Federation,
 ) -> aidash_application::federation::peers::PeerAuthority {
 	aidash_application::federation::peers::PeerAuthority {
-		node: federation.config.node_id.clone(),
+		node: federation.config.deployment.to_string(),
 		protocol: crate::config::PROTOCOL_VERSION.into(),
 		configuration: Arc::new(crate::apps::federation::peer::repositories::Configuration(
 			federation.clone(),
@@ -2240,6 +2246,31 @@ pub(crate) fn desktop_protocol(
 	runtime: &Federation,
 ) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}
+
+/// The Deployment Key `[deployment.key]` names, or none when it is omitted. A
+/// file is read here, and a Cloud KMS key version is read through the build's
+/// extension, which only the Enterprise build implements. The error names the
+/// reason and never the key.
+pub async fn configure_deployment_key(
+	settings: Option<&crate::apps::operations::serializers::deployment::DeploymentKeySettings>,
+	base_dir: &std::path::Path,
+) -> Result<Option<Arc<dyn aidash_application::federation::key::DeploymentKey>>> {
+	use crate::apps::operations::serializers::deployment::DeploymentKeySource;
+	let Some(settings) = settings else {
+		return Ok(None);
+	};
+	let key: Arc<dyn aidash_application::federation::key::DeploymentKey> =
+		match settings.source().map_err(Error::Invalid)? {
+			DeploymentKeySource::File(file) => Arc::new(
+				aidash_integrations::federation::key::FileDeploymentKey::load(
+					&base_dir.join(file),
+				)?,
+			),
+			DeploymentKeySource::Kms(kms) => build::current().extension.deployment_key(kms).await?,
+		};
+	tracing::info!(key_id = %key.key_id(), "Deployment Key available");
+	Ok(Some(key))
 }
 
 /// Load privately supplied keys only at shared server/worker bootstrap.
@@ -2285,7 +2316,7 @@ pub async fn configure_provider_credentials(
 			repository: Arc::new(
 				crate::apps::identity::repositories::provider_credentials::NativeRepository {
 					pool: store.control_pool.clone(),
-					node: store.node_id.clone(),
+					node: store.deployment.to_string(),
 				},
 			),
 			store: adapter,
@@ -2337,7 +2368,7 @@ pub fn configure_plan_connections(
 		repository: Arc::new(
 			crate::apps::identity::repositories::plan_connections::NativeRepository {
 				pool: store.control_pool.clone(),
-				node: store.node_id.clone(),
+				node: store.deployment.to_string(),
 			},
 		),
 		store: credentials.store.clone(),

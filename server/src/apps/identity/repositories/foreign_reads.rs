@@ -49,7 +49,7 @@ pub(crate) async fn retired_run_catalog_read(
 			.as_ref()
 			.is_none_or(|snapshot| {
 				!snapshot.remote
-					|| snapshot.agent.registry_node != access.node_id
+					|| snapshot.agent.registry_deployment != access.node_id
 					|| snapshot.agent.id != reference.id
 					|| snapshot.agent.version != reference.version
 			}) {

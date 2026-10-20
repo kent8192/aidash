@@ -16,7 +16,7 @@ const PEER_ENV: &str = "AIDASH_SECRET_PEER_REGISTRATION_FIXTURE";
 const PEER_SECRET: &str = "peer-registration-fixture-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 fn input(remote: &EndpointFixture) -> Value {
-	json!({"node_id":remote.runtime.config.node_id,"endpoint":remote.server.url,
+	json!({"node_id":remote.runtime.config.deployment,"endpoint":remote.server.url,
         "credential_env":PEER_ENV,"protocol_version":"0.2","enabled":true})
 }
 async fn register(local: &EndpointFixture, input: &Value, status: u16) -> Value {
@@ -108,7 +108,10 @@ async fn registration_updates_disable_and_reenable_one_peer_with_atomic_audit_ev
 	expected["enabled"] = json!(false);
 	assert_eq!(stopped, expected);
 	assert!(matches!(
-		local.runtime.peer(&remote.runtime.config.node_id).await,
+		local
+			.runtime
+			.peer(remote.runtime.config.deployment.as_str())
+			.await,
 		Err(Error::Unauthorized)
 	));
 	assert_eq!(register(&local, &updated, 200).await, updated);
@@ -138,7 +141,7 @@ async fn registration_updates_disable_and_reenable_one_peer_with_atomic_audit_ev
 	let mut db = local.database.lease.handle();
 	let records = Peer::objects().all().all_with_db(&mut db).await.unwrap();
 	assert_eq!(records.len(), 1);
-	assert_eq!(records[0].node_id, remote.runtime.config.node_id);
+	assert_eq!(records[0].node_id, remote.runtime.config.deployment);
 	assert_eq!(records[0].endpoint, relocated.url);
 	assert_eq!(records[0].credential_env, PEER_ENV);
 	assert!(records[0].enabled);
@@ -158,7 +161,7 @@ async fn registration_updates_disable_and_reenable_one_peer_with_atomic_audit_ev
 	assert!(
 		events
 			.iter()
-			.all(|event| event.data.0["node_id"] == remote.runtime.config.node_id)
+			.all(|event| event.data.0["node_id"] == remote.runtime.config.deployment)
 	);
 }
 

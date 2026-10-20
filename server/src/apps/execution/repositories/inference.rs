@@ -648,7 +648,7 @@ impl crate::store::Store {
 	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
-		let orphans = start(tx.as_mut(), &self.node_id, run, token, attempt).await?;
+		let orphans = start(tx.as_mut(), self.deployment.as_str(), run, token, attempt).await?;
 		tx.commit().await?;
 		record_interruptions(&orphans);
 		Ok(())
@@ -678,7 +678,7 @@ impl crate::store::Store {
 	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
-		finish(tx.as_mut(), &self.node_id, run, attempt, outcome).await?;
+		finish(tx.as_mut(), self.deployment.as_str(), run, attempt, outcome).await?;
 		tx.commit().await
 	}
 
@@ -695,7 +695,7 @@ impl crate::store::Store {
 			fence(tx.as_mut(), run, token).await?;
 			let closed = close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				run,
 				Some(ProgressOutcome::Discarded),
 			)
@@ -715,7 +715,7 @@ impl crate::store::Store {
 	pub async fn close_orphaned_inference(&self) -> Result<usize> {
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::Retention);
 		let mut tx = self.pool.begin(scope).await?;
-		let closed = close_orphans(tx.as_mut(), &self.node_id).await?;
+		let closed = close_orphans(tx.as_mut(), self.deployment.as_str()).await?;
 		tx.commit().await?;
 		record_interruptions(&closed);
 		Ok(closed.len())

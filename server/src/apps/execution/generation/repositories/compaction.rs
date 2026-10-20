@@ -109,7 +109,7 @@ struct Session {
 #[async_trait]
 impl GenerationCompactionRepository for NativeCompactionRepository {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationCompactionSession>> {
 		Ok(Box::new(Session {

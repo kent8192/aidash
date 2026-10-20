@@ -17,6 +17,17 @@ COLLECTION = ROOT / "server/tests/bruno"
 CATALOG = COLLECTION / "contracts.json"
 MANIFEST = COLLECTION / "scenarios.json"
 MISSING = "11111111-1111-4111-8111-111111111111"
+# A Deployment Administrator works in the Tenant of the Workspace it names, and
+# an unknown Workspace has none (#265), so these reads would answer 404 for
+# MISSING. They name the Workspace that journey 08 creates, which keeps their
+# own response checks (an empty list, a typed cleanup status, an empty page, a
+# task that is not found) in force.
+FIXTURE_WORKSPACE_READS = {
+    "semantic-history",
+    "semantic-cleanup",
+    "memory-participants",
+    "memory-participant-current",
+}
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 PEER = {
@@ -595,7 +606,7 @@ def render():
                     else 'expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");'
                 )
                 if path == "/health":
-                    checks += 'expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")});'
+                    checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
                     checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.3");'
                 if path == "/auth/config":
@@ -1090,6 +1101,8 @@ def render():
             if not route["uuid_parameters"]:
                 status = 200
                 checks += 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().next_cursor).to.equal(null);'
+        if route["name"] in FIXTURE_WORKSPACE_READS:
+            uri = path.replace("{workspace}", "{{workspace_id}}")
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,

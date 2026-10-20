@@ -54,7 +54,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				Expr::value(id),
 				Expr::value(task.id),
 				Expr::value(bank.workspace),
-				Expr::value(&store.node_id),
+				Expr::value(store.deployment.as_str()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),
@@ -864,7 +864,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 	)
 	.await;
 	let bank = Bank {
-		home: store.node_id.clone(),
+		home: store.deployment.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,

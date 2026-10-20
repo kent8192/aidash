@@ -333,8 +333,11 @@ impl Cloud {
 			);
 		}
 		let agent = registered.unwrap();
-		let owner =
-			aidash_server::domain::qualified_agent(&f.store.node_id, &agent.id, &agent.version);
+		let owner = aidash_server::domain::qualified_agent(
+			f.store.deployment.as_str(),
+			&agent.id,
+			&agent.version,
+		);
 		f.store
 			.claim(&scope, task.id, task.revision, &owner, &agent)
 			.await

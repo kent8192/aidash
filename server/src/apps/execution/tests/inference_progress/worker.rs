@@ -149,7 +149,7 @@ async fn admit_streaming_agent(
 	mut policy: Value,
 ) {
 	let deployment_administrator = &f.config.api_token;
-	let subject = qualified_agent(&f.config.node_id, "research", "1.0.1");
+	let subject = qualified_agent(f.config.deployment.as_str(), "research", "1.0.1");
 	policy["subjects"][subject] = json!({"kind":"agent"});
 	let (status, body) = request(
 		app,

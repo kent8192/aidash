@@ -18,7 +18,7 @@ const tool = (id: string, provider: string, operation: string) => ({
   languages: [],
   skills: [],
   schema: {},
-  config: { registry_node: NODE, provider, operation },
+  config: { registry_deployment: NODE, provider, operation },
 });
 
 type Card = Record<string, unknown> & { id: string; state: string };
@@ -189,7 +189,7 @@ async function research(
       kind: "bundle",
       config: {
         members: ["search", "fetch", "find"].map((operation) => ({
-          registry_node: NODE,
+          registry_deployment: NODE,
           id: `aidash.research.fixture.${operation}`,
           version: "1.0.0",
         })),
@@ -199,13 +199,17 @@ async function research(
   data.registry[0].config.bindings = [
     {
       kind: "bundle",
-      target: { registry_node: NODE, id: "research-fixture", version: "1.0.0" },
+      target: {
+        registry_deployment: NODE,
+        id: "research-fixture",
+        version: "1.0.0",
+      },
       narrow: {},
     },
     {
       kind: "tool",
       target: {
-        registry_node: NODE,
+        registry_deployment: NODE,
         id: "aidash.research.page.fetch",
         version: "1.0.0",
       },

@@ -174,11 +174,11 @@ mod controlled_context_composition {
 				.0,
 				200
 			);
-			bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
+			bindings.push(json!({"kind":kind,"target":{"registry_deployment":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
 		}
 		agent.config["bindings"] = json!(bindings);
 		f.registry.register(&acme, agent).await.unwrap();
-		let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
+		let owner = qualified_agent(f.config.deployment.as_str(), "research", "1.0.1");
 		policy["subjects"][&owner] = json!({"kind":"agent"});
 		assert_eq!(
 			request(
@@ -1651,7 +1651,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.publish_artifact(
 			&TEST_FIXTURE,
 			task,
-			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+			&qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
 			"semantic-artifact",
 			&ArtifactInput {
 				kind: "text".into(),

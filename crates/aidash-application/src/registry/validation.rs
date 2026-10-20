@@ -8,8 +8,9 @@ use aidash_domain::exposure::{
 };
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
-	configuration::{validate_endpoint, validate_node_id},
+	configuration::validate_endpoint,
 	model::ModelConfig,
+	nodes::DeploymentId,
 	registry::{AgentConfig, ClusterConfig, Entry},
 	tool::ToolConfig,
 };
@@ -241,7 +242,7 @@ impl DefinitionValidation {
 				self.contract(
 					&descriptor,
 					&aidash_domain::registry::bindings::QualifiedRef {
-						registry_node: descriptor.registry_node.clone(),
+						registry_deployment: descriptor.registry_deployment.clone(),
 						id: e.id.clone(),
 						version: e.version.clone(),
 					},
@@ -323,7 +324,7 @@ impl DefinitionValidation {
 				}
 			}
 			ToolConfig::Agent { node_id, agent } => {
-				validate_node_id(node_id)?;
+				DeploymentId::parse(node_id)?;
 				if agent.id.is_empty()
 					|| agent.id.len() > 100
 					|| !agent
@@ -357,7 +358,7 @@ impl DefinitionValidation {
 			.definitions
 			.iter()
 			.find(|d| {
-				d.identity.registry_node == snapshot.agent.registry_node
+				d.identity.registry_deployment == snapshot.agent.registry_deployment
 					&& d.identity.local() == config.model
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;

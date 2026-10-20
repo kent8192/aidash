@@ -93,14 +93,14 @@ impl Definitions for Scope {
 			for n in 0..self.private_sources {
 				let id = format!("references-{n}");
 				root.config["bindings"].as_array_mut().unwrap().push(
-					json!({"kind":"source","target":{"registry_node":node,"id":id,"version":"1.0.0"}}),
+					json!({"kind":"source","target":{"registry_deployment":node,"id":id,"version":"1.0.0"}}),
 				);
 				extras.push(crate::test_support::entry(&id, "source", json!({"schema_version":1,"source":{"adapter":"private_references","digest":format!("{n:064x}")}})));
 			}
 		}
 
 		if self.skills {
-			root.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":node,"id":"mounted-skills","version":"1.0.0"}}));
+			root.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":node,"id":"mounted-skills","version":"1.0.0"}}));
 			extras.push(crate::test_support::entry(
 				"mounted-skills",
 				"source",

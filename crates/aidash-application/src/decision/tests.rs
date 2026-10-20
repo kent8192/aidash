@@ -624,7 +624,7 @@ async fn evaluate(
 	let definition = definition_of(&config);
 	let pin = DeciderPin {
 		identity: aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: boundary.node.clone(),
+			registry_deployment: boundary.node.clone(),
 			id: definition.id.clone(),
 			version: definition.version.clone(),
 		},
@@ -1496,7 +1496,7 @@ async fn replay_rejects_decider_pins_from_another_execution_node() {
 		let mut recovered: Evidence =
 			serde_json::from_value(serde_json::to_value(evidence).unwrap()).unwrap();
 		assert_eq!(recovered.replay().unwrap(), recovered.branches);
-		recovered.decider.identity.registry_node = "aidash://foreign-decider".into();
+		recovered.decider.identity.registry_deployment = "aidash://foreign-decider".into();
 		recovered.boundary.validate().unwrap();
 		recovered.decider.validate().unwrap();
 		assert!(
@@ -2013,7 +2013,7 @@ async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
 	let decider = BoundDecider {
 		pin: DeciderPin {
 			identity: aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: boundary.node.clone(),
+				registry_deployment: boundary.node.clone(),
 				id: definition.id.clone(),
 				version: definition.version.clone(),
 			},
@@ -2074,7 +2074,7 @@ async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
 fn the_resume_cycle_changes_the_decision_identity() {
 	let decider = DeciderPin {
 		identity: aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: "aidash://execution".into(),
+			registry_deployment: "aidash://execution".into(),
 			id: "decider".into(),
 			version: "1.0.0".into(),
 		},

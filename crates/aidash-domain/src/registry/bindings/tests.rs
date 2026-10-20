@@ -85,7 +85,7 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 	agent.bindings.push(Binding {
 		kind: BindingKind::Memory,
 		target: QualifiedRef {
-			registry_node: "aidash://node-a".into(),
+			registry_deployment: "aidash://node-a".into(),
 			id: "native.memory".into(),
 			version: "1.0.0".into(),
 		},
@@ -115,7 +115,7 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 fn bound_skills_require_support_tools() {
 	let mut agent = agent();
 	let mut binding = Binding::tool(QualifiedRef {
-		registry_node: "aidash://node-a".into(),
+		registry_deployment: "aidash://node-a".into(),
 		id: "skill".into(),
 		version: "1.0.0".into(),
 	});
@@ -143,7 +143,7 @@ fn bundle_member_ids_are_unique_across_versions_and_nodes() {
 			..member.clone()
 		},
 		QualifiedRef {
-			registry_node: "aidash://node-b".into(),
+			registry_deployment: "aidash://node-b".into(),
 			..member.clone()
 		},
 		member.clone(),
@@ -179,7 +179,7 @@ fn concurrency_narrowing_requires_a_tool_or_bundle_binding(
 ) {
 	// Arrange: a Binding of each kind, valid without the restriction.
 	let mut binding = Binding::tool(QualifiedRef {
-		registry_node: "aidash://node-a".into(),
+		registry_deployment: "aidash://node-a".into(),
 		id: "target".into(),
 		version: "1.0.0".into(),
 	});
@@ -200,7 +200,7 @@ fn skill_binding() -> Binding {
 	Binding {
 		kind: BindingKind::Skill,
 		..Binding::tool(QualifiedRef {
-			registry_node: "aidash://node-a".into(),
+			registry_deployment: "aidash://node-a".into(),
 			id: "skill".into(),
 			version: "1.0.0".into(),
 		})
@@ -311,7 +311,7 @@ fn legacy_agent_json_round_trips_byte_identically() {
 		"instructions": "Work on the Task.",
 		"bindings": [{
 			"kind": "tool",
-			"target": {"registry_node": "aidash://node-a", "id": "aidash.file_read", "version": "1.0.0"},
+			"target": {"registry_deployment": "aidash://node-a", "id": "aidash.file_read", "version": "1.0.0"},
 			"alias": "read",
 			"narrow": {}
 		}],

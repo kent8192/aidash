@@ -63,7 +63,7 @@ fn endpoint_runtime(
 			.try_init();
 		let database = database.await;
 		let mut settings = settings_for(&database.url);
-		settings.node.node_id = node_id.into();
+		settings.deployment.id = node_id.into();
 		let runtime =
 			bootstrap::initialize(&injection_context, &settings, database.connection.clone())
 				.await

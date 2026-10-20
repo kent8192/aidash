@@ -479,7 +479,7 @@ impl SessionScope for Scope<'_> {
 			)
 			.bind(Uuid::new_v4())
 			.bind(&access.identity.tenant)
-			.bind(&store.node_id)
+			.bind(store.deployment.as_str())
 			.bind(task.workspace_id)
 			.bind(thread)
 			.bind(agent_id)
@@ -491,7 +491,7 @@ impl SessionScope for Scope<'_> {
 				let query_bind_2 = task.workspace_id;
 				let query_bind_3 = thread;
 				let query_bind_4 = agent_id;
-				let query_bind_5 = &store.node_id;
+				let query_bind_5 = store.deployment.as_str();
 				let query_bind_6 = &access.identity.subject;
 				crate::database::native::query_as(
 					&select("core_areas")

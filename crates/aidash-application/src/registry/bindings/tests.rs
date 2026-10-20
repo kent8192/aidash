@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 const NODE: &str = "aidash://node-a";
 fn reference(id: &str) -> QualifiedRef {
 	QualifiedRef {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		id: id.into(),
 		version: "1.0.0".into(),
 	}
@@ -518,7 +518,7 @@ async fn node_identity_cannot_be_replaced_by_a_same_named_local_definition() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	let mut target = catalog.core("outbound_get");
-	target.registry_node = "aidash://other".into();
+	target.registry_deployment = "aidash://other".into();
 	config.bindings.push(Binding::tool(target));
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
@@ -621,7 +621,7 @@ async fn complete_snapshot_retains_delegation_and_cluster_dependencies_and_rejec
 	));
 	catalog.insert(entry("delegated-model", "model", json!({})));
 	let descriptor = ToolDescriptor {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		provider: "integration.agent@1".into(),
 		operation: "invoke".into(),
 		default_alias: "delegate_peer".into(),
@@ -1326,7 +1326,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 		.entries
 		.into_iter()
 		.map(|(mut identity, mut entry)| {
-			identity.registry_node = foreign.into();
+			identity.registry_deployment = foreign.into();
 			if entry.kind == "tool" {
 				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
 				entry.config =
@@ -1341,7 +1341,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 		&mut catalog,
 		&providers(),
 		QualifiedRef {
-			registry_node: foreign.into(),
+			registry_deployment: foreign.into(),
 			..reference("agent")
 		},
 		&agent_entry(&config),
@@ -1501,7 +1501,7 @@ async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
 		let mut catalog = Catalog::new();
 		let member = catalog.core("outbound_get");
 		let mut other = member.clone();
-		other.registry_node = node.into();
+		other.registry_deployment = node.into();
 		other.version = version.into();
 		let bundle = catalog.bundle("ambiguous", vec![member.clone(), other]);
 		let mut config = agent_config();
@@ -1550,7 +1550,7 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 		.entries
 		.into_iter()
 		.map(|(mut identity, mut entry)| {
-			identity.registry_node = node.into();
+			identity.registry_deployment = node.into();
 			if entry.kind == "tool" {
 				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
 				entry.config =
@@ -1564,7 +1564,7 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 		&mut catalog,
 		&providers(),
 		QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			..reference("agent")
 		},
 		&agent_entry(&agent_config()),
@@ -1581,7 +1581,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 	let mut catalog = Catalog::new();
 	catalog.foreign.insert(child.agent.clone(), child.clone());
 	let descriptor = ToolDescriptor {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		provider: "integration.agent@1".into(),
 		operation: "invoke".into(),
 		default_alias: "remote_child".into(),
@@ -1589,7 +1589,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 		narrow: Default::default(),
 		lifecycle: None,
 		transport: Some(aidash_domain::tool::ToolConfig::Agent {
-			node_id: child.agent.registry_node.clone(),
+			node_id: child.agent.registry_deployment.clone(),
 			agent: child.agent.local(),
 		}),
 	};
@@ -1617,7 +1617,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 		graph
 			.bindings
 			.iter()
-			.all(|binding| binding.identity.registry_node == NODE)
+			.all(|binding| binding.identity.registry_deployment == NODE)
 	);
 	assert_eq!(
 		graph
@@ -1633,7 +1633,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 	recovered.foreign_agents.clear();
 	assert!(recovered.validate().is_err());
 	let mut forged = graph.clone();
-	forged.foreign_agents[0].agent.registry_node = NODE.into();
+	forged.foreign_agents[0].agent.registry_deployment = NODE.into();
 	assert!(forged.validate().is_err());
 	let mut forged = graph.clone();
 	forged.foreign_agents[0].definitions[0].digest = "forged".into();
@@ -1656,7 +1656,7 @@ async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
 		changed.definitions.push(
 			ResolvedDefinition::new(
 				QualifiedRef {
-					registry_node: saved.agent.registry_node.clone(),
+					registry_deployment: saved.agent.registry_deployment.clone(),
 					..reference("private")
 				},
 				entry("private", kind, json!({})),
@@ -1674,7 +1674,7 @@ async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
 	});
 	assert!(installed.validate().is_err());
 	let mut changed = saved.clone();
-	changed.definitions[0].identity.registry_node = NODE.into();
+	changed.definitions[0].identity.registry_deployment = NODE.into();
 	assert!(changed.validate().is_err());
 	let mut local = saved.snapshot();
 	local.remote = false;
@@ -1871,7 +1871,7 @@ async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admis
 			.unwrap()
 			.pin
 			.identity
-			.registry_node,
+			.registry_deployment,
 		NODE
 	);
 }

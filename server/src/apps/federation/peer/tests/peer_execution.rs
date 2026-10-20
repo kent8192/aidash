@@ -141,7 +141,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	}
 	let (status, result) = inspect(app, PEER_SECRET, input.clone()).await;
 	assert_eq!(status, 200, "{result}");
-	assert_eq!(result["node_id"], f.config.node_id);
+	assert_eq!(result["node_id"], f.config.deployment);
 	assert_eq!(result["agent"]["id"], "research");
 	let definitions = result["definitions"].as_array().unwrap();
 	assert_eq!(
@@ -168,7 +168,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let mut mismatch = input.clone();
 	mismatch["requirements"] = json!({"capability":"missing-capability"});
 	assert_eq!(inspect(app, PEER_SECRET, mismatch).await.0, 400);
-	let executor = qualified_agent(&f.config.node_id, "research", "1.0.0");
+	let executor = qualified_agent(f.config.deployment.as_str(), "research", "1.0.0");
 	// Every denied action is tested for both the mapped root and the receiver's
 	// executor. An allow on one must never override the other's explicit deny.
 	let mut revision = 1;
@@ -280,7 +280,7 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 	endpoint::register_fixture_agent(&child, "public-child").await;
 	for (owner, peer) in [(&home, &child), (&child, &home)] {
 		let record = Peer::build()
-			.node_id(&peer.runtime.config.node_id)
+			.node_id(peer.runtime.config.deployment.as_str())
 			.endpoint(&peer.server.url)
 			.credential_env(PEER_ENV)
 			.protocol_version("0.2")
@@ -291,7 +291,7 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 			.await
 			.unwrap();
 	}
-	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.node_id,"agent":{"id":"public-child","version":"1.0.0"}}}});
+	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_deployment":home.runtime.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.deployment,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
 	assert_eq!(registered.0, 200, "{}", registered.1);
 	let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
@@ -303,7 +303,7 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		.unwrap();
 	parent.version = "1.0.1".into();
 	parent.binding_normalization = None;
-	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.node_id,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
+	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":home.runtime.config.deployment,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
 	assert!(matches!(
 		home.runtime.registry.register(&acme, parent).await,
 		Err(aidash_server::Error::Forbidden)

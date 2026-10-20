@@ -123,7 +123,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 					.column(Alias::new("workspace_id"))
 					.from(Alias::new("memory_banks"))
 					.and_where(Expr::col("id").eq(Expr::value(bank)))
-					.and_where(Expr::col("home").eq(store.node_id.as_str()))
+					.and_where(Expr::col("home").eq(store.deployment.as_str()))
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_optional(&mut **lease.tx())

@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"source","version":"1.0.0","kind":"tool","name":{"en":"Source"},"description":{"en":"Fixture"},"config":{"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":{"id":"agent","version":"1.0.0"}}}})).unwrap()
+	serde_json::from_value(json!({"id":"source","version":"1.0.0","kind":"tool","name":{"en":"Source"},"description":{"en":"Fixture"},"config":{"registry_deployment":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":{"id":"agent","version":"1.0.0"}}}})).unwrap()
 }
 fn version() -> Version {
 	let package = Package {
@@ -90,8 +90,8 @@ fn bundle_substitutions_requalify_only_verified_members_to_the_receiving_node() 
 	let mut bundle = entry();
 	bundle.kind = "bundle".into();
 	bundle.config = json!({"members":[
-		{"registry_node":"aidash://publisher","id":"shell","version":"1.0.0"},
-		{"registry_node":"aidash://publisher","id":"unbound","version":"1.0.0"}
+		{"registry_deployment":"aidash://publisher","id":"shell","version":"1.0.0"},
+		{"registry_deployment":"aidash://publisher","id":"unbound","version":"1.0.0"}
 	]});
 	rewrite(
 		&mut bundle,
@@ -111,8 +111,8 @@ fn bundle_substitutions_requalify_only_verified_members_to_the_receiving_node() 
 	assert_eq!(
 		bundle.config["members"],
 		json!([
-			{"registry_node":"aidash://receiver","id":"installed-shell","version":"2.0.0"},
-			{"registry_node":"aidash://publisher","id":"unbound","version":"1.0.0"}
+			{"registry_deployment":"aidash://receiver","id":"installed-shell","version":"2.0.0"},
+			{"registry_deployment":"aidash://publisher","id":"unbound","version":"1.0.0"}
 		])
 	);
 }
@@ -146,7 +146,7 @@ fn installed_descriptors_and_bound_lifecycle_match_the_receiving_node(#[case] op
 	rewrite(&mut installed, &bindings, receiving).unwrap();
 	let rewritten: ToolDescriptor = serde_json::from_value(installed.config).unwrap();
 	let identity = QualifiedRef {
-		registry_node: receiving.into(),
+		registry_deployment: receiving.into(),
 		id: installed.id,
 		version: installed.version,
 	};
@@ -154,7 +154,7 @@ fn installed_descriptors_and_bound_lifecycle_match_the_receiving_node(#[case] op
 	assert!(
 		rewritten
 			.declared_contract(QualifiedRef {
-				registry_node: publishing.into(),
+				registry_deployment: publishing.into(),
 				..identity
 			})
 			.is_err()
@@ -164,7 +164,7 @@ fn installed_descriptors_and_bound_lifecycle_match_the_receiving_node(#[case] op
 			.into_iter()
 			.zip(bindings)
 		{
-			assert_eq!(reference.registry_node, receiving);
+			assert_eq!(reference.registry_deployment, receiving);
 			assert_eq!(reference.local(), binding.target);
 		}
 	}

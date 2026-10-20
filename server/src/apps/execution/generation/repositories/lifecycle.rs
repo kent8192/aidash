@@ -20,7 +20,7 @@ pub(crate) struct NativeLifecycle<'a> {
 #[async_trait]
 impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -175,7 +175,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			Expr::value(job.task_id).into(),
 			Expr::value(job.home_node.clone()).into(),
 			Expr::value(job.home_node.clone()).into(),
-			Expr::value(f.config.node_id.clone()).into(),
+			Expr::value(f.config.deployment.to_string()).into(),
 			Expr::value(job.agent_id.clone()).into(),
 			Expr::value(job.agent_version.clone()).into(),
 		];

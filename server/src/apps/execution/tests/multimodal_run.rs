@@ -585,9 +585,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;
-	policy["subjects"]
-		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
-		json!({"kind":"agent"});
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		f.config.deployment.as_str(),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
 	let (status, body) = request(
 		&app,
 		&f.config.api_token,

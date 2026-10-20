@@ -50,7 +50,7 @@ async fn provisioning_needs_only_node_and_broker_inputs(
 	let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_aidash"))
 		.arg("activation-provision")
 		.env_clear()
-		.env("AIDASH_NODE_ID", &node)
+		.env("AIDASH_DEPLOYMENT_ID", &node)
 		.env("AIDASH_ACTIVATION_NATS_URL", &environment.nats_url)
 		// Unrelated application settings must not be loaded by provisioning.
 		.env("AIDASH_OIDC_ISSUER", "invalid")
@@ -154,9 +154,13 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		namespace: schema.clone(),
 		..Default::default()
 	};
-	let broker = Broker::provision(&environment.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
+	let broker = Broker::provision(
+		&environment.nats_url,
+		f.config.deployment.as_str(),
+		&settings,
+	)
+	.await
+	.unwrap();
 	let proxy = ack_proxy.await;
 	let release = proxy.signals.release.clone();
 	let held = proxy.signals.held.lock().unwrap().take().unwrap();
@@ -178,7 +182,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		Uuid::new_v4().into(),
 		Uuid::new_v4().into(),
 		Uuid::new_v4().into(),
-		f.config.node_id.clone().into(),
+		f.config.deployment.to_string().into(),
 		"fixture".into(),
 		"1.0.0".into(),
 		"PAUSED".into(),
@@ -975,7 +979,7 @@ fn ack_proxy(
 			namespace: runtime.schema.clone(),
 			..Default::default()
 		};
-		let (_, subject) = Broker::names(&runtime.federation.config.node_id, &settings);
+		let (_, subject) = Broker::names(runtime.federation.config.deployment.as_str(), &settings);
 		let marker = format!("HPUB {subject} ").into_bytes();
 		let address = reqwest::Url::parse(&environment.nats_url).unwrap();
 		let upstream = format!(

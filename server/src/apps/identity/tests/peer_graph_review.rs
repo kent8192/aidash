@@ -164,11 +164,11 @@ async fn admitted_run(
 	let snapshot = aidash_application::registry::bindings::resolve(
 		&mut aidash_application::registry::bindings::catalog::LookupCatalog {
 			definitions: &mut FixtureDefinitions(f),
-			node: &f.config.node_id,
+			node: f.config.deployment.as_str(),
 		},
 		&aidash_server::bootstrap::registry_validation(),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.config.node_id.clone(),
+			registry_deployment: f.config.deployment.to_string(),
 			id: agent_entry.id.clone(),
 			version: agent_entry.version.clone(),
 		},
@@ -183,9 +183,9 @@ async fn admitted_run(
 	};
 	let grant = Uuid::new_v4();
 	let description = json!({
-		"grant_id":grant,"source_node":source,"target_node":f.config.node_id,
+		"grant_id":grant,"source_node":source,"target_node":f.config.deployment,
 		"source_tenant":"source-tenant","source_subject":"source-subject","task":task,
-		"inspection":{"node_id":f.config.node_id,"authority_digest":format!("sha256:{}", "0".repeat(64)),
+		"inspection":{"node_id":f.config.deployment,"authority_digest":format!("sha256:{}", "0".repeat(64)),
 			"agent":agent,"definitions":[],"binding_snapshot":snapshot},
 		"expires_at":chrono::Utc::now() + chrono::Duration::hours(1),
 	});
@@ -222,7 +222,7 @@ async fn admitted_run(
 	.bind(credential)
 	.bind(vec![
 		"alice".to_owned(),
-		aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.0"),
+		aidash_server::domain::qualified_agent(f.config.deployment.as_str(), "research", "1.0.0"),
 	])
 	.bind(description)
 	.execute(f.store.pool.fixture_driver())
@@ -293,7 +293,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(Uuid::new_v4())
-	.bind(&f.config.node_id)
+	.bind(f.config.deployment.as_str())
 	.bind(workspace)
 	.bind(kind)
 	.bind(data)
@@ -367,7 +367,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	}
 	let third = admitted_run(&f, &task, credential, "acme", "aidash://third", workspace).await;
 	let other_scope = admitted_run(&f, &task, credential, "acme", SOURCE, Uuid::new_v4()).await;
-	let mut other_policy = common::policy(&f.config.node_id);
+	let mut other_policy = common::policy(f.config.deployment.as_str());
 	other_policy["tenant"] = json!("other");
 	common::tenant_root(&f, "other").await;
 	let (status, value) = request(

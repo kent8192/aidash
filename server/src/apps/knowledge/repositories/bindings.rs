@@ -21,7 +21,7 @@ pub(crate) async fn claimed(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("home_node").eq(store.node_id.as_str()))
+			.and_where(Expr::col("home_node").eq(store.deployment.as_str()))
 			.and_where(Expr::col("task_id").eq(Expr::value(task)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),
@@ -110,11 +110,11 @@ pub(crate) async fn admit(
 	.scalar_optional(&mut **lease.tx())
 	.await?
 	.ok_or(Error::Forbidden)?;
-	let config = configuration(lease, &tenant, agent, &store.node_id).await?;
+	let config = configuration(lease, &tenant, agent, store.deployment.as_str()).await?;
 	let Some(provider) = config.memory else {
 		return Ok(None);
 	};
-	if run.home_node != store.node_id
+	if run.home_node != store.deployment
 		|| agent.id != run.agent_id
 		|| agent.version != run.agent_version
 	{
@@ -141,7 +141,7 @@ pub(crate) async fn admit(
 		let id: Uuid = assignment.try_get("participant_id")?;
 		let observed: i64 = assignment.try_get("participant_revision")?;
 		let bank = Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: tenant.clone(),
 			workspace: run.workspace_id,
 			participant: Some(id),
@@ -192,7 +192,7 @@ pub(crate) async fn admit(
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(id))
-						.expr(Expr::value(&store.node_id))
+						.expr(Expr::value(store.deployment.as_str()))
 						.expr(Expr::value(&tenant))
 						.expr(Expr::value(run.workspace_id))
 						.expr(Expr::value(principal))
@@ -210,7 +210,7 @@ pub(crate) async fn admit(
 	};
 	let binding = Binding {
 		bank: Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant,
 			workspace: run.workspace_id,
 			participant: Some(participant),
@@ -272,7 +272,7 @@ pub(crate) async fn configuration(
 			BindingKind::Source => "source",
 			_ => continue,
 		};
-		if binding.target.registry_node != node {
+		if binding.target.registry_deployment != node {
 			return Err(Error::Forbidden);
 		}
 		let entry = crate::semantic::native_memory::definition(

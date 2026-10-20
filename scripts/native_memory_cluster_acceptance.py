@@ -105,7 +105,7 @@ class NativeMemory(RemoteMemory):
         self.tenants = [self.created(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
         for node in range(2):
             def binding(kind, target, origin=node):
-                return {"kind": kind, "target": {"registry_node": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
+                return {"kind": kind, "target": {"registry_deployment": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
             subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
             subjects[f"aidash://tx-{node:02}/agents/learning@1.0.0"] = {"kind": "agent"}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}

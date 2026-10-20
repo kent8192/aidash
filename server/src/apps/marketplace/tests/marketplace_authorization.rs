@@ -30,7 +30,7 @@ fn reference(id: &str) -> EntityRef {
 	}
 }
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only"}}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only"}}})).unwrap()
 }
 fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
@@ -673,7 +673,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 		)
 		.bind(key)
 		.bind(hidden)
-		.bind(&f.store.node_id)
+		.bind(f.store.deployment.as_str())
 		.bind("a")
 		.bind(package_id)
 		.bind("1.0.0")
@@ -1341,7 +1341,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	};
 	let mut authority = bundle("a", "user");
 	authority["subjects"][aidash_server::domain::qualified_agent(
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 		&old_ref.id,
 		&old_ref.version,
 	)] = json!({"kind":"agent","roles":["manager"]});
@@ -1390,7 +1390,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		version: "1.0.0".into(),
 	};
 	authority["subjects"][aidash_server::domain::qualified_agent(
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 		&new_ref.id,
 		&new_ref.version,
 	)] = json!({"kind":"agent","roles":["manager"]});
@@ -1691,7 +1691,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 		)
 		.await
 		.unwrap();
-	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -3364,7 +3364,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 		.await
 		.unwrap();
 	let mut bridge = tool("bridge");
-	bridge.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":reference("nested")}});
+	bridge.config = json!({"registry_deployment":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.deployment,"agent":reference("nested")}});
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -3375,7 +3375,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let mut root = agent;
 	root.id = "root".into();
 	root.binding_normalization = None;
-	root.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"bridge","version":"1.0.0"},"narrow":{}}]);
+	root.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"bridge","version":"1.0.0"},"narrow":{}}]);
 	f.registry
 		.register(&aidash_domain::tenancy::TenantName::new("a").unwrap(), root)
 		.await
@@ -3402,7 +3402,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	);
 	for config in [
 		json!({"agent":reference("replacement")}),
-		json!({"node_id":f.config.node_id}),
+		json!({"node_id":f.config.deployment}),
 		json!({"transport":"agent"}),
 	] {
 		bridge_input["config"] = config;
@@ -3538,7 +3538,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 		approve(&f, "a", &reference(&id)).await;
 	}
 	let mut authority = bundle("a", "user");
-	authority["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sources","effect":"deny","subjects":{"any":true},"actions":["registry.export"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/page-0@1.0.0",f.config.node_id),format!("{}/tools/page-2@1.0.0",f.config.node_id)]}}));
+	authority["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sources","effect":"deny","subjects":{"any":true},"actions":["registry.export"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/page-0@1.0.0",f.config.deployment),format!("{}/tools/page-2@1.0.0",f.config.deployment)]}}));
 	policy(&f, "a", 1, authority).await;
 	let response = app
 		.clone()

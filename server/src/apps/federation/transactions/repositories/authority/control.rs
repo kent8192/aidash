@@ -53,7 +53,7 @@ impl Repository {
 #[async_trait]
 impl AuthorityRepository for Repository {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		aidash_application::transactions::validate(manifest)

@@ -12,8 +12,8 @@ fn managed_gcip_settings_are_validated_at_startup() {
 			"[core]\nsecret_key = 'startup-fixture-secret-key-0123456789'\n",
 		)
 		.replace(
-			"[node]\n",
-			"[node]\napi_token = 'startup-fixture-deployment-administrator-0123456789'\n",
+			"[deployment]\n",
+			"[deployment]\napi_token = 'startup-fixture-deployment-administrator-0123456789'\n",
 		)
 		.replace("offering = \"self-hosted\"", "offering = \"cloud\"");
 	std::fs::write(settings.path().join("base.toml"), base).unwrap();

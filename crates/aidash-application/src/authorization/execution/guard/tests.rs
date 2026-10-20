@@ -48,8 +48,8 @@ fn scope() -> Scope {
 	let mut agent = crate::test_support::agent("producer");
 	agent.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
 	agent.config["bindings"] = json!([
-		{"kind":"memory","target":{"registry_node":node,"id":"memory","version":"1.0.0"}},
-		{"kind":"tool","target":{"registry_node":node,"id":"tool","version":"1.0.0"}}
+		{"kind":"memory","target":{"registry_deployment":node,"id":"memory","version":"1.0.0"}},
+		{"kind":"tool","target":{"registry_deployment":node,"id":"tool","version":"1.0.0"}}
 	]);
 	let memory = crate::test_support::entry(
 		"memory",
@@ -59,7 +59,7 @@ fn scope() -> Scope {
 	let tool = crate::test_support::entry(
 		"tool",
 		"tool",
-		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe"}}),
+		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe"}}),
 	);
 	Scope {
 		visible: true,
@@ -111,7 +111,7 @@ impl RunGuardScope for Scope {
 			.definitions
 			.iter()
 			.find(|d| {
-				d.identity.registry_node == self.node_id() && d.identity.local() == *reference
+				d.identity.registry_deployment == self.node_id() && d.identity.local() == *reference
 			})
 			.map(|d| d.definition.clone())
 			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "cluster", json!({})));
@@ -368,13 +368,13 @@ async fn foreign_closures_do_not_require_local_namesakes_or_match_their_digests(
 		.definitions
 		.iter_mut()
 		.find(|saved| {
-			saved.identity.registry_node == "aidash://local" && saved.identity.id == "tool"
+			saved.identity.registry_deployment == "aidash://local" && saved.identity.id == "tool"
 		})
 		.unwrap();
 	saved.definition.config = json!({
-		"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke",
+		"registry_deployment":"aidash://local","provider":"integration.agent@1","operation":"invoke",
 		"default_alias":"lookup","tier":"integration",
-		"transport":{"transport":"agent","node_id":foreign.agent.registry_node,"agent":foreign.agent.local()}
+		"transport":{"transport":"agent","node_id":foreign.agent.registry_deployment,"agent":foreign.agent.local()}
 	});
 	*saved = ResolvedDefinition::new(saved.identity.clone(), saved.definition.clone()).unwrap();
 	let binding = scope
@@ -406,7 +406,7 @@ async fn foreign_closures_do_not_require_local_namesakes_or_match_their_digests(
 		.snapshot
 		.definitions
 		.iter()
-		.filter(|saved| saved.identity.registry_node == "aidash://local")
+		.filter(|saved| saved.identity.registry_deployment == "aidash://local")
 		.count();
 	assert!(authorize(&mut scope, &run, true).await.is_ok());
 	assert_eq!(

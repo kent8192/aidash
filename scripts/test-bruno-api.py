@@ -675,7 +675,7 @@ def main():
                     "REINHARDT_SETTINGS_DIR": str(settings),
                     "DATABASE_URL": login_url("server", database_name, args),
                     "NATS_URL": args.nats_url,
-                    "AIDASH_NODE_ID": node_id,
+                    "AIDASH_DEPLOYMENT_ID": node_id,
                     "AIDASH_ENDPOINT": base,
                     "AIDASH_LISTEN": f"127.0.0.1:{port}",
                     "AIDASH_API_TOKEN": deployment_administrator,
@@ -714,7 +714,7 @@ def main():
             }
             peer_environment.update(
                 DATABASE_URL=login_url("server", peer_database, args),
-                AIDASH_NODE_ID=peer_node,
+                AIDASH_DEPLOYMENT_ID=peer_node,
                 AIDASH_ENDPOINT=peer_base,
                 AIDASH_LISTEN=f"127.0.0.1:{peer_port}",
                 AIDASH_API_TOKEN=peer_deployment_administrator,

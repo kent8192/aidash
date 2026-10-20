@@ -28,7 +28,7 @@ pub(crate) struct Scope<'a> {
 #[async_trait]
 impl AdmissionScope for Scope<'_> {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()

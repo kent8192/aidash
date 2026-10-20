@@ -101,9 +101,11 @@ async fn research_fixture(
 	core: CoreFuture,
 ) -> Research {
 	let mut c = core.await;
-	c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
-		json!({"kind":"agent"});
+	c.policy["subjects"][aidash_server::domain::qualified_agent(
+		c.f.config.deployment.as_str(),
+		"research",
+		VERSION,
+	)] = json!({"kind":"agent"});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	let bundle =
 		c.f.registry
@@ -146,7 +148,7 @@ async fn research_fixture(
 	agent.version = VERSION.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Research with the bound tools.");
-	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_node":c.f.config.node_id,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_deployment":c.f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
 	agent.config["remove_default"] = json!([]);
 	for (method, path, body) in [
 		("POST", "/api/registry".to_owned(), json!(agent)),
@@ -200,7 +202,7 @@ impl Research {
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}
 	async fn register_search_only_agent(&mut self) {
-		let node = self.c.f.config.node_id.clone();
+		let node = self.c.f.config.deployment.to_string();
 		self.c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&node, "research", "3.1.0")] = json!({"kind":"agent"});
 		let mut agent = self
@@ -216,7 +218,7 @@ impl Research {
 			.unwrap();
 		agent.version = "3.1.0".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
+		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 		for (path, body) in [
 			("/api/registry", json!(agent)),
@@ -235,7 +237,7 @@ impl Research {
 			&self.c.token,
 			"POST",
 			&format!("/api/tasks/{}/delegate", self.c.task),
-			json!({"node_id":self.c.f.config.node_id,"agent":{"id":"research","version":VERSION}}),
+			json!({"node_id":self.c.f.config.deployment,"agent":{"id":"research","version":VERSION}}),
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");

@@ -425,7 +425,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
       {
         kind: "source",
         target: {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "skill-source",
           version: "1.0.0",
         },
@@ -434,7 +434,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
       {
         kind: "memory",
         target: {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "conversation-memory",
           version: "1.0.0",
         },
@@ -443,7 +443,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
       {
         kind: "bundle",
         target: {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "approved-shell",
           version: "1.0.0",
         },

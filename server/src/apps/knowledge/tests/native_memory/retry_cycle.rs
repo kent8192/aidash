@@ -193,7 +193,7 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(store.deployment.as_str(), &agent.id, &agent.version);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -283,7 +283,7 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
-			node_id: store.node_id.clone(),
+			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:1".into(),
 			database_url: database.url.clone(),
 			nats_url: "nats://127.0.0.1:1".into(),
@@ -291,6 +291,8 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
 		},
 		store,

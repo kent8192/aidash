@@ -100,7 +100,7 @@ where
 	F: Borrow<Federation> + Send + Sync,
 {
 	fn node_id(&self) -> &str {
-		&self.runtime.borrow().config.node_id
+		self.runtime.borrow().config.deployment.as_str()
 	}
 	fn identity(&self) -> ExecutionPrincipal {
 		let id = &self.access.identity;
@@ -167,7 +167,7 @@ where
 
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>> {
 		let f = self.runtime.borrow();
-		crate::generation::remote::lineage(&mut self.access, &f.config.node_id)
+		crate::generation::remote::lineage(&mut self.access, f.config.deployment.as_str())
 			.await
 			.map_err(Into::into)
 	}
@@ -505,7 +505,7 @@ impl PeerAdmissionScope for Owned {
 			let node = access.node_id.clone();
 			let snapshot = d.inspection.binding_snapshot.clone();
 			snapshot.validate()?;
-			if snapshot.agent.registry_node != node || !snapshot.remote {
+			if snapshot.agent.registry_deployment != node || !snapshot.remote {
 				return Err(crate::Error::Forbidden);
 			}
 			// The receiver executes the Run, so its own Cache Salt Key decides;
@@ -710,7 +710,7 @@ impl PeerAdmissionRecords for Repository<'_> {
 impl PeerAdmissionRepository for Repository<'_> {
 	type Scope = Owned;
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	async fn request(&self, source: &str, path: &str, input: &Value) -> Result<Value> {
 		crate::authorization::peer::authority_request(self.runtime, source, path, input)

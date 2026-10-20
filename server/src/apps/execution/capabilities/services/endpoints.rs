@@ -1233,7 +1233,7 @@ pub(crate) async fn transfer_recipients(
 ) -> Result<RecipientPage> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
-		if input.node_id == f.config.node_id {
+		if input.node_id == f.config.deployment {
 			return super::transfer::recipient_list(&f, &mut access, input.cursor).await;
 		}
 		access

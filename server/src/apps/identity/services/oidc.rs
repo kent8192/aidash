@@ -602,7 +602,7 @@ impl DashboardSessions {
 			exchange_identity(config, metadata, &transaction, query.code).await?;
 		let identity = crate::bootstrap::dashboard_authority(&f)
 			.admit_login(
-				&mut crate::bootstrap::dashboard_login(pool.clone(), &f.config.node_id),
+				&mut crate::bootstrap::dashboard_login(pool.clone(), f.config.deployment.as_str()),
 				&sign_in,
 			)
 			.await?;
@@ -658,7 +658,7 @@ impl DashboardSessions {
 		{
 			crate::apps::identity::repositories::personal_tenant::provision(
 				pool,
-				&f.config.node_id,
+				f.config.deployment.as_str(),
 				external.id,
 			)
 			.await?;
@@ -759,7 +759,11 @@ impl DashboardSessions {
 							// Restoring locks the Mapping's credential as valid.
 							restorable: active.contains(&mapping.credential_id)
 								&& bundle.is_some_and(|bundle| {
-									may_restore(bundle, &mapping.subject, &f.config.node_id)
+									may_restore(
+										bundle,
+										&mapping.subject,
+										f.config.deployment.as_str(),
+									)
 								}) && deletion.rule().is_ok_and(|rule| {
 								aidash_domain::identity::tenancy::deletion::restorable(
 								&rule,

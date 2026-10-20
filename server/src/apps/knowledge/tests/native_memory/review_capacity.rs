@@ -17,7 +17,7 @@ async fn bank(store: &Store, workspace: Uuid, participant: bool) -> Bank {
 		.bank
 	} else {
 		let bank = Bank {
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -405,7 +405,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 		let path = directory.join("units").join(format!("{id}.cbor"));
 		let fence = recovery::Fence {
 			bank: Bank {
-				home: store.node_id.clone(),
+				home: store.deployment.to_string(),
 				tenant: "t".repeat(1024 * 1024),
 				workspace: Uuid::now_v7(),
 				participant: None,

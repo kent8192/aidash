@@ -53,7 +53,7 @@ async fn home_owned_human_waits_poll_without_querying_local_requests(
 ) {
 	let mut row = raw(now);
 	row.metadata.phase = RunPhase::Waiting;
-	row.context["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	row.context["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
 	row.pending = aidash_domain::run_state::encode(
 		&RunState::Waiting(Box::new(WaitingState::Human {
 			request_id: Uuid::new_v4(),

@@ -262,7 +262,7 @@ impl Store {
 		}
 		self.event(
 			&mut tx,
-			(m.home_node == self.node_id).then_some(m.workspace_id),
+			(m.home_node == self.deployment).then_some(m.workspace_id),
 			kind,
 			json!({"run_id":m.id,"task_id":m.task_id,"phase":state.phase(),"delivery_error":error}),
 		)
@@ -271,7 +271,7 @@ impl Store {
 		let closed = if state.phase().is_terminal() {
 			crate::apps::execution::repositories::inference::close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				m.id,
 				None,
 			)

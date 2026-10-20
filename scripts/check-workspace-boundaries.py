@@ -71,8 +71,8 @@ def violations(metadata, root):
     portable_layers = {
         "aidash-capability": set(),
         "aidash-domain": set(),
-        "aidash-application": {"aidash-domain"},
-        "aidash-harness": {"aidash-domain", "aidash-application"},
+        "aidash-application": {"aidash-domain", "aidash-capability"},
+        "aidash-harness": {"aidash-domain", "aidash-application", "aidash-capability"},
     }
     for layer, allowed in portable_layers.items():
         if layer not in members:

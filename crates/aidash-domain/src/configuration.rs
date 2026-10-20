@@ -1,21 +1,6 @@
 //! Pure validation of configured identities and transport references.
 use crate::{Error, Result};
 
-pub fn validate_node_id(id: &str) -> Result<()> {
-	let suffix = id.strip_prefix("aidash://").unwrap_or_default();
-	if suffix.is_empty()
-		|| suffix.len() > 100
-		|| !suffix
-			.chars()
-			.all(|c| c.is_ascii_alphanumeric() || c == '-')
-	{
-		return Err(Error::Invalid(
-			"node id must be aidash:// followed by letters, numbers or hyphens".into(),
-		));
-	}
-	Ok(())
-}
-
 pub fn validate_endpoint(endpoint: &str) -> Result<()> {
 	let url =
 		url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;

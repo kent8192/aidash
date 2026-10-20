@@ -23,7 +23,7 @@ struct Session {
 #[async_trait]
 impl GenerationSummaryRepository for NativeSummaryRepository {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationSummarySession>> {
 		Ok(Box::new(Session {

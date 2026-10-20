@@ -58,7 +58,7 @@ pub struct Store {
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
-	pub node_id: String,
+	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub semantic_client: reqwest::Client,
 	/// Model and embedding clients: `semantic_client` for Provider Catalog
 	/// endpoints and permitted private origins, a public-only one for every
@@ -221,7 +221,7 @@ impl Store {
 		nonempty(content, "message")?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			&self.node_id,
+			self.deployment.as_str(),
 			run.workspace_id,
 			sender,
 			content,
@@ -377,7 +377,10 @@ impl Store {
 		}
 	}
 
-	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
+	pub async fn from_pool(
+		pool: sqlx::PgPool,
+		deployment: aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
 		let tool_slots = aidash_application::ports::execution::ToolSlots::new(tool_parallelism(
 			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
 			pool.options().get_max_connections() as usize,
@@ -392,7 +395,7 @@ impl Store {
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::new(
 					directory.into(),
-					node_id.clone(),
+					deployment.to_string(),
 				)
 			})
 			.transpose()?
@@ -404,7 +407,7 @@ impl Store {
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
-			node_id,
+			deployment,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			keyless: Default::default(),
@@ -509,7 +512,7 @@ impl Store {
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
-			node_id: self.node_id.clone(),
+			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
@@ -558,7 +561,7 @@ impl Store {
 			control_pool: control_pool
 				.with_memory_recovery(self.control_pool.memory_recovery())
 				.with_dashboard_policy(self.control_pool.dashboard_policy()),
-			node_id: self.node_id.clone(),
+			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
@@ -595,7 +598,7 @@ impl Store {
 		.await?;
 		Ok({
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = &self.node_id;
+			let query_bind_2 = self.deployment.as_str();
 			let query_bind_3 = workspace;
 			let query_bind_4 = kind;
 			let query_bind_5 = data;
@@ -652,7 +655,7 @@ impl Store {
 		self.pool
 			.atomic(scope, async |tx| {
 				Ok(
-					event_records::create(tx, &self.node_id, workspace, kind, data)
+					event_records::create(tx, self.deployment.as_str(), workspace, kind, data)
 						.await?
 						.into(),
 				)
@@ -1134,13 +1137,13 @@ impl Store {
 			));
 		}
 		let claimed: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; aidash_server::database::query_as(&Query::update().table(Alias::new("tasks")).value_expr(Alias::new("status"), Expr::cust("'CLAIMED'")).value_expr(Alias::new("owner"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND status = 'OPEN' AND NOT EXISTS(SELECT 1 FROM delegations AS d WHERE d.task_id = tasks.id AND d.node_id || '/agents/' || d.agent_id || '@' || d.agent_version <> ?) AND NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(tasks.dependencies) AND d.status <> 'COMPLETED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
-		if owner == qualified_agent(&self.node_id, &agent.id, &agent.version) {
+		if owner == qualified_agent(self.deployment.as_str(), &agent.id, &agent.version) {
 			let snapshot = if let Some(snapshot) = admitted {
 				snapshot.clone()
 			} else {
 				crate::apps::registry::repositories::bindings::snapshot(
 					tx,
-					&self.node_id,
+					self.deployment.as_str(),
 					agent,
 					false,
 					self.provider_credentials.is_some(),
@@ -1174,7 +1177,7 @@ impl Store {
 				let query_bind_1 = Uuid::new_v4();
 				let query_bind_2 = id;
 				let query_bind_3 = claimed.workspace_id;
-				let query_bind_4 = &self.node_id;
+				let query_bind_4 = self.deployment.as_str();
 				let query_bind_5 = &agent.id;
 				let query_bind_6 = &agent.version;
 				let query_bind_7 = serde_json::to_value(&context)?;
@@ -1236,7 +1239,7 @@ impl Store {
 				.await?
 			};
 			let executor: (String, String) = {
-				let query_bind_1 = &self.node_id;
+				let query_bind_1 = self.deployment.as_str();
 				let query_bind_2 = id;
 				crate::database::native::query_as(
 					&Query::select()
@@ -1266,7 +1269,7 @@ impl Store {
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("runs"))
-					.and_where(Expr::col("home_node").eq(Expr::value(&self.node_id)))
+					.and_where(Expr::col("home_node").eq(Expr::value(self.deployment.as_str())))
 					.and_where(Expr::col("task_id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -2262,7 +2265,7 @@ impl Store {
 			.atomic(scope, async |tx| {
 				InputRecord::admit(
 					tx,
-					&self.node_id,
+					self.deployment.as_str(),
 					run_id,
 					sender,
 					content,
@@ -2284,7 +2287,7 @@ impl Store {
 	) -> Result<()> {
 		InputRecord::admit(
 			tx,
-			&self.node_id,
+			self.deployment.as_str(),
 			run_id,
 			sender,
 			content,
@@ -2340,7 +2343,7 @@ impl Store {
 	pub async fn pending_terminal_run_message(&self) -> Result<Option<RunMetadata>> {
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
 		Ok({
-			let query_bind_1 = &self.node_id;
+			let query_bind_1 = self.deployment.as_str();
 			aidash_server::database::query_as(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))
 				.from(reinhardt::query::Alias::new("runs"))
@@ -2432,7 +2435,7 @@ impl Store {
 				InputRecord::import_history(tx, run_id, messages, max_input_tokens).await?;
 				InputRecord::admit(
 					tx,
-					&self.node_id,
+					self.deployment.as_str(),
 					run_id,
 					sender,
 					content,
@@ -2558,7 +2561,7 @@ impl Store {
 		let mut tx = self.pool.begin(scope).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			&self.node_id,
+			self.deployment.as_str(),
 			run.workspace_id,
 			sender,
 			content,
@@ -2863,7 +2866,7 @@ impl Store {
 			worker,
 			seconds,
 			None,
-			&self.node_id,
+			self.deployment.as_str(),
 			&mut cursor,
 		)
 		.await?;
@@ -2989,7 +2992,7 @@ impl Store {
 		let closed = if kind == "model.completed" {
 			crate::apps::execution::repositories::inference::close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				run.id,
 				Some(aidash_domain::provider::progress::ProgressOutcome::Accepted),
 			)
@@ -2998,7 +3001,7 @@ impl Store {
 		} else if saved.phase().is_terminal() {
 			crate::apps::execution::repositories::inference::close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				run.id,
 				None,
 			)
@@ -3015,7 +3018,7 @@ impl Store {
 		}
 		self.event(
 			tx,
-			(run.home_node == self.node_id).then_some(run.workspace_id),
+			(run.home_node == self.deployment).then_some(run.workspace_id),
 			kind,
 			data,
 		)
@@ -3195,7 +3198,7 @@ impl Store {
 		.await?;
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
-			&self.node_id,
+			self.deployment.as_str(),
 			run.id,
 			None,
 		)
@@ -3267,7 +3270,8 @@ impl Store {
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
-		let workspace = (r.metadata.home_node == self.node_id).then_some(r.metadata.workspace_id);
+		let workspace =
+			(r.metadata.home_node == self.deployment).then_some(r.metadata.workspace_id);
 		if let Some(reason) = semantic_retry {
 			// An authorized manual retry of a semantic pause opens the Run's next
 			// Retry Cycle, so its memory operations get a fresh retry ledger while
@@ -3348,7 +3352,7 @@ impl Store {
 		if created {
 			event_records::append(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				None,
 				"human.requested",
 				json!(request),
@@ -3374,8 +3378,8 @@ impl Store {
 		if created {
 			event_records::append(
 				tx,
-				&self.node_id,
-				(run.home_node == self.node_id).then_some(run.workspace_id),
+				self.deployment.as_str(),
+				(run.home_node == self.deployment).then_some(run.workspace_id),
 				"human.requested",
 				json!(request),
 			)
@@ -3546,8 +3550,8 @@ impl Store {
 		let request = HumanRequestRecord::answer_locked(tx, id, response, &actor).await?;
 		event_records::append(
 			tx,
-			&self.node_id,
-			(run.home_node == self.node_id).then_some(run.workspace_id),
+			self.deployment.as_str(),
+			(run.home_node == self.deployment).then_some(run.workspace_id),
 			"human.answered",
 			json!(request),
 		)
@@ -3767,7 +3771,7 @@ impl Store {
 		if created {
 			self.event(
 				tx,
-				(run.home_node == self.node_id).then_some(run.workspace_id),
+				(run.home_node == self.deployment).then_some(run.workspace_id),
 				"tool.started",
 				json!({"run_id":run.id,"tool":tool,"idempotency_key":key,"input":input}),
 			)
@@ -3806,8 +3810,8 @@ impl Store {
 		if InvocationRecord::complete(tx.as_mut(), run.id, key, result).await? {
 			event_records::append(
 				tx.as_mut(),
-				&self.node_id,
-				(run.home_node == self.node_id).then_some(run.workspace_id),
+				self.deployment.as_str(),
+				(run.home_node == self.deployment).then_some(run.workspace_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
 			)
@@ -3886,7 +3890,12 @@ impl Store {
 	) -> Result<PeerObservation> {
 		self.pool
 			.atomic(scope, async |tx| {
-				crate::apps::execution::models::journals::observe(tx, &self.node_id, home).await
+				crate::apps::execution::models::journals::observe(
+					tx,
+					self.deployment.as_str(),
+					home,
+				)
+				.await
 			})
 			.await
 	}
@@ -4719,7 +4728,7 @@ impl Store {
 		}
 		self.event(
 			&mut tx,
-			(run.home_node == self.node_id).then_some(run.workspace_id),
+			(run.home_node == self.deployment).then_some(run.workspace_id),
 			event_kind,
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
@@ -4727,7 +4736,7 @@ impl Store {
 		// Pausing releases the lease; the worker can no longer finish its attempt.
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
-			&self.node_id,
+			self.deployment.as_str(),
 			run.id,
 			None,
 		)
@@ -4912,7 +4921,7 @@ impl Store {
 			Some(h) => {
 				self.event(
 					tx,
-					(run.home_node == self.node_id).then_some(run.workspace_id),
+					(run.home_node == self.deployment).then_some(run.workspace_id),
 					"human.requested",
 					json!(h),
 				)
@@ -4966,7 +4975,7 @@ fn require_projection(
 		.find(|d| {
 			d.identity.id == agent.model.id
 				&& d.identity.version == agent.model.version
-				&& d.identity.registry_node == snapshot.agent.registry_node
+				&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or_else(|| Error::Invalid("pinned model is outside the Binding snapshot".into()))?;
 	let model: aidash_domain::model::ModelConfig =

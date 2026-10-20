@@ -1,5 +1,5 @@
 //! Explicit peer mappings bind a local credential to a distinct remote subject.
-use crate::{Error, Result, configuration::validate_node_id, policy::identifier};
+use crate::{Error, Result, nodes::DeploymentId, policy::identifier};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -31,7 +31,7 @@ impl PeerMappingInput {
 		identifier(tenant)?;
 		identifier(&self.source_tenant)?;
 		identifier(&self.source_subject)?;
-		validate_node_id(&self.source_node)?;
+		DeploymentId::parse(&self.source_node)?;
 		if self.source_node == node || !(0..i64::MAX).contains(&self.expected_revision) {
 			return Err(Error::Invalid("invalid peer mapping or revision".into()));
 		}

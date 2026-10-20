@@ -18,7 +18,7 @@ use uuid::Uuid;
 #[async_trait]
 impl RemoteCommandEffects for Scope<'_> {
 	fn local_node(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)

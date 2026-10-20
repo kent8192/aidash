@@ -90,7 +90,7 @@ impl RecoveryBatch for Batch {
 #[async_trait]
 impl CoordinatorRepository for Repository {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 
 	fn now(&self) -> DateTime<Utc> {
@@ -200,7 +200,7 @@ impl ParticipantTransport for Transport {
 		operation: ParticipantOperation,
 	) -> ApplicationResult<LocalStatus> {
 		let response: ApplicationResult<native::LocalStatus> =
-			if node == self.runtime.config.node_id {
+			if node == self.runtime.config.deployment {
 				match operation {
 					ParticipantOperation::Reserve => {
 						participant::reserve(&self.runtime, &manifest.coordinator, manifest).await

@@ -342,7 +342,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 	// Act
 	match revocation {
 		Revocation::RunRead => {
-			let mut denied = common::policy(&c.f.config.node_id);
+			let mut denied = common::policy(c.f.config.deployment.as_str());
 			denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[c.run.workspace_id]}}));
 			let (status, value) = request(
 				&c.app,

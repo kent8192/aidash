@@ -61,7 +61,7 @@ pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resourc
 		>(entry.config.clone())
 	{
 		let identity = aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: descriptor.registry_node,
+			registry_deployment: descriptor.registry_deployment,
 			id: entry.id.clone(),
 			version: entry.version.clone(),
 		};

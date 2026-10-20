@@ -99,7 +99,7 @@ impl ToolOperations for Operations {
 		changes: &[aidash_domain::memory::Change],
 	) -> Result<Vec<aidash_domain::memory::Unit>> {
 		let ctx = &self.0;
-		if ctx.run.home_node != ctx.store.node_id {
+		if ctx.run.home_node != ctx.store.deployment {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		if let Some(authority) = &ctx.home.authority {

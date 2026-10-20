@@ -404,7 +404,7 @@ pub(crate) async fn graph_generation(
 			options,
 			workspace,
 			source_node,
-			&f.config.node_id,
+			f.config.deployment.as_str(),
 		)
 		.await?;
 		return Ok(crate::registry::digest(&json!({
@@ -528,7 +528,7 @@ pub(crate) async fn project_activity(
 		)
 		.and_where(
 			Expr::col((Alias::new("e"), Alias::new("node_id")))
-				.eq(Expr::value(f.config.node_id.clone())),
+				.eq(Expr::value(f.config.deployment.to_string())),
 		)
 		.and_where(Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(end)))
 		.and_where(
@@ -571,7 +571,7 @@ pub(crate) async fn project_activity(
 		let exhausted = events.len() < 512;
 		before = events.last().map(|event| event.sequence);
 		for event in events {
-			let Some(reference) = event_reference(&event, &f.config.node_id) else {
+			let Some(reference) = event_reference(&event, f.config.deployment.as_str()) else {
 				continue;
 			};
 			if !visible.contains(reference.as_str()) || !authority.event_visible(&event).await? {
@@ -627,8 +627,9 @@ pub(crate) async fn set_grant(
 	input: PeerGraphGrantInput,
 ) -> Result<PeerGraphGrant> {
 	identifier(&tenant)?;
-	crate::config::validate_node_id(&input.source_node)?;
-	if input.source_node == f.config.node_id || !(0..i64::MAX).contains(&input.expected_revision) {
+	aidash_domain::nodes::DeploymentId::parse(&input.source_node)?;
+	if input.source_node == f.config.deployment || !(0..i64::MAX).contains(&input.expected_revision)
+	{
 		return Err(Error::Invalid(
 			"invalid Peer Graph Grant or revision".into(),
 		));

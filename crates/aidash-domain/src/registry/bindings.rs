@@ -2,8 +2,8 @@
 use super::{EntityRef, Entry, Projection};
 use crate::{
 	Error, Result,
-	configuration::validate_node_id,
 	exposure::{BindingExposure, ExposurePolicy},
+	nodes::DeploymentId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ pub fn definition_references(
 ) -> Result<Vec<(QualifiedRef, String)>> {
 	let mut result = vec![];
 	let local = |reference: &EntityRef| QualifiedRef {
-		registry_node: identity.registry_node.clone(),
+		registry_deployment: identity.registry_deployment.clone(),
 		id: reference.id.clone(),
 		version: reference.version.clone(),
 	};
@@ -73,7 +73,7 @@ pub fn definition_references(
 				result.push((local(&summary.model), "model".into()));
 			}
 			result.extend(config.cluster.iter().map(|r| (local(r), "cluster".into())));
-			for normalized in entry.normalized_bindings(&identity.registry_node)? {
+			for normalized in entry.normalized_bindings(&identity.registry_deployment)? {
 				let kind = match normalized.binding.kind {
 					BindingKind::Tool => "tool",
 					BindingKind::Bundle => "bundle",
@@ -102,7 +102,7 @@ pub fn definition_references(
 		"tool" => {
 			let descriptor: crate::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config.clone())?;
-			if descriptor.registry_node != identity.registry_node {
+			if descriptor.registry_deployment != identity.registry_deployment {
 				return Err(Error::Invalid(
 					"descriptor origin differs from its qualified identity".into(),
 				));
@@ -117,7 +117,7 @@ pub fn definition_references(
 			if let Some(crate::tool::ToolConfig::Agent { node_id, agent }) = descriptor.transport {
 				result.push((
 					QualifiedRef {
-						registry_node: node_id,
+						registry_deployment: node_id,
 						id: agent.id,
 						version: agent.version,
 					},
@@ -287,7 +287,7 @@ impl AgentBindings {
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
-		crate::configuration::validate_node_id(node)?;
+		crate::nodes::DeploymentId::parse(node)?;
 		let mut result = Vec::new();
 		let has_skills = self.bindings.iter().any(|b| b.kind == BindingKind::Skill);
 		let policy = self.exposure_policy();
@@ -346,7 +346,7 @@ impl AgentBindings {
 #[serde(deny_unknown_fields)]
 pub struct AgentNormalization {
 	pub schema_version: u8,
-	pub registry_node: String,
+	pub registry_deployment: String,
 	pub bindings: Vec<NormalizedBinding>,
 }
 impl Entry {
@@ -362,7 +362,7 @@ impl Entry {
 		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
 		self.binding_normalization = Some(AgentNormalization {
 			schema_version: BINDING_SCHEMA,
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			bindings: config.normalize(node)?,
 		});
 		Ok(())
@@ -372,7 +372,7 @@ impl Entry {
 		let expected = config.normalize(node)?;
 		if let Some(saved) = &self.binding_normalization {
 			if saved.schema_version != BINDING_SCHEMA
-				|| saved.registry_node != node
+				|| saved.registry_deployment != node
 				|| saved.bindings != expected
 			{
 				return Err(Error::Invalid(
@@ -388,13 +388,13 @@ impl Entry {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QualifiedRef {
-	pub registry_node: String,
+	pub registry_deployment: String,
 	pub id: String,
 	pub version: String,
 }
 impl QualifiedRef {
 	pub fn validate(&self) -> Result<()> {
-		validate_node_id(&self.registry_node)?;
+		DeploymentId::parse(&self.registry_deployment)?;
 		if self.id.is_empty()
 			|| self.id.len() > 100
 			|| !self
@@ -422,13 +422,16 @@ impl QualifiedRef {
 	}
 	pub fn builtin(node: &str, operation: &str) -> Self {
 		Self {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
 			version: "1.0.0".into(),
 		}
 	}
 	pub fn resource_id(&self) -> String {
-		format!("{}/tools/{}@{}", self.registry_node, self.id, self.version)
+		format!(
+			"{}/tools/{}@{}",
+			self.registry_deployment, self.id, self.version
+		)
 	}
 }
 
@@ -813,7 +816,7 @@ impl ForeignAgentSnapshot {
 	}
 	pub fn validate(&self) -> Result<()> {
 		if self.definitions.iter().any(|definition| {
-			definition.identity.registry_node != self.agent.registry_node
+			definition.identity.registry_deployment != self.agent.registry_deployment
 				|| definition.definition.installation.is_some()
 				|| matches!(
 					definition.definition.kind.as_str(),
@@ -963,7 +966,8 @@ impl BindingSnapshot {
 						definition_references(&definition.identity, &definition.definition)?
 					{
 						if kind == "agent"
-							&& reference.registry_node != definition.identity.registry_node
+							&& reference.registry_deployment
+								!= definition.identity.registry_deployment
 						{
 							roots.insert(reference);
 						}
@@ -1013,7 +1017,7 @@ impl BindingSnapshot {
 		}
 		let policy = config.exposure_policy();
 		let model = QualifiedRef {
-			registry_node: self.agent.registry_node.clone(),
+			registry_deployment: self.agent.registry_deployment.clone(),
 			id: config.model.id,
 			version: config.model.version,
 		};
@@ -1091,7 +1095,7 @@ impl BindingSnapshot {
 			}
 		}
 		for operation in policy.required_tools() {
-			let identity = QualifiedRef::builtin(&self.agent.registry_node, operation);
+			let identity = QualifiedRef::builtin(&self.agent.registry_deployment, operation);
 			if !self.bindings.iter().any(|binding| {
 				binding.identity == identity
 					&& binding.origin == BindingOrigin::Required

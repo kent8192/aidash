@@ -34,9 +34,9 @@ pub fn execution(
 	let final_server = Box::pin(final_server);
 	async move {
 		let app = endpoint.await;
-		assert_eq!(app.runtime.config.node_id, node_id);
+		assert_eq!(app.runtime.config.deployment, node_id);
 		let provider = final_server.await;
-		let node = &app.runtime.config.node_id;
+		let node = app.runtime.config.deployment.as_str();
 		let agent = qualified_agent(node, "research", "1.0.0");
 		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
 			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
@@ -72,12 +72,12 @@ pub fn execution(
 			(
 				"tool",
 				"http",
-				json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
+				json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 			),
 			(
 				"agent",
 				"research",
-				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":node,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
+				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":node,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
 			),
 		] {
 			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});

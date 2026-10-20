@@ -32,7 +32,7 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 		&b.f,
 		"acme",
 		PeerMappingInput {
-			source_node: a.f.config.node_id.clone(),
+			source_node: a.f.config.deployment.to_string(),
 			source_tenant: "acme".into(),
 			source_subject: "alice".into(),
 			credential_id: credential.id,

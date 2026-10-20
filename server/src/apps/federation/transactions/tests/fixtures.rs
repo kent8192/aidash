@@ -103,7 +103,7 @@ pub fn pair(
 			local
 				.f
 				.register_peer(Peer {
-					node_id: remote.f.config.node_id.clone(),
+					node_id: remote.f.config.deployment.to_string(),
 					endpoint: remote.f.config.endpoint.clone(),
 					credential_env: PEER_ENV.into(),
 					protocol_version: "0.2".into(),
@@ -116,7 +116,7 @@ pub fn pair(
 					.post(
 						"/api/transactions/trust",
 						&json!({
-							"node_id": remote.f.config.node_id, "enabled": true
+							"node_id": remote.f.config.deployment, "enabled": true
 						})
 					)
 					.await
@@ -138,12 +138,12 @@ pub fn pair(
 		}
 		let (wa, wb) = (workspaces[0], workspaces[1]);
 		let manifest = serde_json::from_value(json!({
-			"id":Uuid::new_v4(), "coordinator":a.f.config.node_id,
+			"id":Uuid::new_v4(), "coordinator":a.f.config.deployment,
 			"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
 			"participants":[
-				{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state",
+				{"node_id":a.f.config.deployment,"mutations":[{"kind":"workspace_state",
 					"workspace_id":wa,"expected_revision":0,"state":{"value":"new-a"}}]},
-				{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state",
+				{"node_id":b.f.config.deployment,"mutations":[{"kind":"workspace_state",
 					"workspace_id":wb,"expected_revision":0,"state":{"value":"new-b"}}]}
 			]
 		}))
@@ -379,10 +379,10 @@ fn protocol_runtime(
 		let link = link.await;
 		let guard = link.lock().await;
 		let mut settings = settings_for(&database.url);
-		settings.node.node_id = format!("aidash://atomic-{suffix}");
-		settings.node.endpoint = guard.as_ref().unwrap().url.clone();
-		settings.node.api_token = "atomic-deployment-administrator-fixture-token".into();
-		settings.node.nats_url = "nats://127.0.0.1:0".into();
+		settings.deployment.id = format!("aidash://atomic-{suffix}");
+		settings.deployment.endpoint = guard.as_ref().unwrap().url.clone();
+		settings.deployment.api_token = "atomic-deployment-administrator-fixture-token".into();
+		settings.deployment.nats_url = "nats://127.0.0.1:0".into();
 		let f = bootstrap::initialize(&injection_context, &settings, database.connection.clone())
 			.await
 			.unwrap();
@@ -421,7 +421,7 @@ fn protocol_client(
 ) -> ProtocolClientFuture {
 	async move {
 		let runtime = protocol_runtime.await;
-		let client = api_client_from_url(&runtime.settings.node.endpoint);
+		let client = api_client_from_url(&runtime.settings.deployment.endpoint);
 		if deployment_administrator {
 			client
 				.set_header(
