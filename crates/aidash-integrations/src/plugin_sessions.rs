@@ -38,13 +38,13 @@ use uuid::Uuid;
 const IDLE_LIMIT: Duration = Duration::from_secs(10 * 60);
 const MAX_SESSIONS: usize = 512;
 const MAX_PAGES: usize = 10;
-const MAX_SCHEMA_BYTES: usize = 1 << 20;
+const MAX_LISTED_SCHEMA_BYTES: usize = 1 << 20;
 
 type Service = RunningService<RoleClient, ()>;
 type Failure = StreamableHttpError<reqwest::Error>;
 type Attempt<T> = std::result::Result<T, Fault>;
 
-/// The sessions the server shares, through one `Arc`, among every Run of the process.
+/// Every Run of the process shares one instance, through an `Arc`.
 pub struct McpPluginSessions {
 	origins: KeylessAccess,
 	clients: ToolClients,
@@ -214,6 +214,7 @@ impl PluginSessions for McpPluginSessions {
 		let key = Key::new(run, server);
 		let (service, _) = self.session(&key, config).await.map_err(Fault::for_list)?;
 		list_tools(&service).await.map_err(|fault| {
+			// The Run pins nothing from a server that failed to list, so nothing will use the session.
 			self.state().forget(&key, &service);
 			fault.for_list()
 		})
@@ -308,7 +309,7 @@ async fn list_tools(service: &Service) -> Attempt<Vec<ListedTool>> {
 			for tool in page.tools {
 				let input_schema = Value::Object((*tool.input_schema).clone());
 				bytes += input_schema.to_string().len();
-				if bytes > MAX_SCHEMA_BYTES {
+				if bytes > MAX_LISTED_SCHEMA_BYTES {
 					return Err(Fault::Limit);
 				}
 				tools.push(ListedTool {

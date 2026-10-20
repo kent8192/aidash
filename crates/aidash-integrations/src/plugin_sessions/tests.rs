@@ -25,6 +25,8 @@ enum Mode {
 	BreakInitialize,
 	/// `tools/list` answers with something that is not MCP.
 	GarbageList,
+	/// `tools/call` fails after the server received it.
+	BreakCall,
 }
 
 struct Seen {
@@ -197,6 +199,9 @@ async fn rpc(
 			([("content-type", "text/plain")], "not MCP").into_response()
 		}
 		"tools/list" => reply(id, fake.page(&body["params"]["cursor"])),
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::BreakCall) => {
+			StatusCode::INTERNAL_SERVER_ERROR.into_response()
+		}
 		"tools/call" => {
 			if fake
 				.lost_calls
@@ -483,6 +488,20 @@ async fn a_call_the_server_keeps_rejecting_is_not_sent_again_forever() {
 }
 
 #[tokio::test]
+async fn a_call_that_failed_after_the_server_got_it_is_not_sent_again() {
+	let fixture = Fixture::start().await;
+	fixture.list().await.unwrap();
+	fixture.fake.set_mode(Mode::BreakCall);
+
+	let result = fixture
+		.call("alpha", &digest(&alpha()), json!({"q": "x"}))
+		.await;
+
+	assert!(matches!(result, Err(Error::External(_))));
+	assert_eq!(fixture.fake.count("tools/call"), 1);
+}
+
+#[tokio::test]
 async fn a_reopened_session_refuses_a_tool_whose_schema_changed() {
 	let fixture = Fixture::start().await;
 	let pinned = digest(&alpha());
@@ -709,6 +728,15 @@ async fn a_full_map_drops_the_least_recently_used_session() {
 		4,
 		"the oldest session was dropped"
 	);
+}
+
+#[test]
+fn sessions_idle_for_ten_minutes_are_dropped_and_at_most_512_are_kept() {
+	let sessions = McpPluginSessions::new(KeylessAccess::default(), ToolClients::new().unwrap());
+
+	let state = sessions.state();
+	assert_eq!(state.idle, Duration::from_secs(600));
+	assert_eq!(state.capacity, 512);
 }
 
 #[tokio::test]
