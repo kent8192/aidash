@@ -31,6 +31,14 @@ pub struct KeyFile {
 }
 
 impl KeyFile {
+	pub fn key_id(&self) -> String {
+		self.key.key_id().to_string()
+	}
+
+	pub fn public_key_pem(&self) -> &str {
+		self.key.public_key_pem()
+	}
+
 	pub fn generate() -> Arc<Self> {
 		let directory = tempfile::tempdir().expect("a directory for the Deployment Key");
 		let path = directory.path().join("deployment-key.pem");
@@ -78,6 +86,16 @@ pub fn give_key(f: &mut Federation) -> Arc<KeyFile> {
 		key: Some(key),
 	};
 	file
+}
+
+/// [`give_key`] for a fixture that already serves: the keyed Federation
+/// replaces the one the routes inject. Returns it, because the fixture's own
+/// copy does not hold the key.
+pub fn enable(f: &Federation, context: &reinhardt::InjectionContext) -> Federation {
+	let mut keyed = f.clone();
+	give_key(&mut keyed);
+	context.set_singleton(keyed.clone());
+	keyed
 }
 
 /// The file behind `f`'s Deployment Key, for a process started from the fixture.

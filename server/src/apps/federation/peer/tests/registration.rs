@@ -10,9 +10,7 @@ use serde_json::{Value, json};
 /// Gives `app` a Deployment Key, as `[deployment.key] file` does at startup,
 /// and lets it reach the loopback origins of the other fixtures.
 fn federate(app: &EndpointFixture, reachable: &[&str]) -> aidash_server::federation::Federation {
-	let mut runtime = app.runtime.clone();
-	peering::give_key(&mut runtime);
-	app.context.set_singleton(runtime.clone());
+	let runtime = peering::enable(&app.runtime, &app.context);
 	for origin in reachable {
 		peering::permit(&runtime, origin);
 	}
