@@ -120,10 +120,10 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
   for (const name of ["skill_list", "skill_load", "skill_read"])
     await dialog.getByLabel(name, { exact: true }).uncheck();
   await dialog
-    .getByLabel("追加する定義")
+    .getByLabel("追加するもの")
     .selectOption("skill:research-skill@2.0.0");
   await dialog
-    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .getByRole("button", { name: "このエージェントに追加", exact: true })
     .click();
   await expect(
     dialog.getByText("skill: aidash://test/research-skill@1.0.0", {
@@ -223,10 +223,10 @@ test("uploads real PDF and Excel reference text separately from registry metadat
   await dialog.getByLabel("説明").fill("Personal documents");
   await dialog.locator('[name="model"]').selectOption("model@1.0.0");
   await dialog
-    .getByLabel("追加する定義")
+    .getByLabel("追加するもの")
     .selectOption("skill:research-skill@2.0.0");
   await dialog
-    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .getByRole("button", { name: "このエージェントに追加", exact: true })
     .click();
   await dialog.getByLabel("参考資料を追加").setInputFiles([
     { name: "private.pdf", mimeType: "application/pdf", buffer: pdfFixture() },
