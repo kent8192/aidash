@@ -37,6 +37,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 	};
 	let record = Record {
 		id: Uuid::from_u128(5),
+		node: crate::nodes::NodeName::parse("calm-heron-ab12cd34").unwrap(),
 		source_node: description.source_node.clone(),
 		grant_id: description.grant_id,
 		task_id: description.task.id,

@@ -3,10 +3,7 @@ use super::coordination::plumbing;
 use crate::apps::{
 	execution::repositories::inference,
 	federation::transactions::{
-		models::{
-			AtomicGate, AtomicHistory, AtomicParticipant, AtomicPeerTrust,
-			states::AtomicParticipantPhase,
-		},
+		models::{AtomicGate, AtomicHistory, AtomicParticipant, states::AtomicParticipantPhase},
 		serializers::contracts as native,
 		services::{authority, fault},
 	},
@@ -102,11 +99,6 @@ impl ParticipantScope for Scope {
 		AtomicParticipant::lock(self.transaction.executor(), id)
 			.await
 			.map(|row| row.map(status))
-			.map_err(Into::into)
-	}
-	async fn trusted(&mut self, node: &str) -> Result<bool> {
-		AtomicPeerTrust::permits(self.transaction.executor(), node)
-			.await
 			.map_err(Into::into)
 	}
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>> {
@@ -221,6 +213,8 @@ impl PendingParticipants for Pending {
 
 pub(crate) struct Repository {
 	pub runtime: Federation,
+	/// The Node that called, when this serves an inbound request.
+	pub(crate) admitted: Option<aidash_application::federation::inbound::Admitted>,
 }
 
 #[async_trait]
@@ -241,7 +235,9 @@ impl ParticipantRepository for Repository {
 		caller: &str,
 		manifest: &Manifest,
 	) -> Result<Option<Box<dyn ParticipantScope>>> {
-		let Some(access) = authority::admission(&self.runtime, caller, manifest).await? else {
+		let Some(access) =
+			authority::admission(&self.runtime, self.admitted.as_ref(), caller, manifest).await?
+		else {
 			return Ok(None);
 		};
 		Ok(Some(Box::new(Scope {

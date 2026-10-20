@@ -1,16 +1,17 @@
 //! Native peer preflight adapts the caller's existing transaction to application policy.
 pub(crate) use crate::apps::identity::serializers::peer_execution::{InspectInput, Inspection};
 use crate::{Result, authorization::access::Access, federation::Federation};
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 use reinhardt::injectable;
 pub(crate) async fn inspect_in(
 	f: &Federation,
 	access: &mut Access,
+	receiver: &aidash_domain::nodes::NodeName,
 	node: &str,
 	input: &InspectInput,
 ) -> Result<Inspection> {
 	aidash_application::authorization::peer::execution::inspect(
-		&mut crate::bootstrap::peer_inspection_scope(f, access),
+		&mut crate::bootstrap::peer_inspection_scope(f, access, receiver.clone()),
 		node,
 		input,
 	)
@@ -28,13 +29,13 @@ pub async fn provide_execution(#[inject] runtime: Federation) -> PeerExecution {
 impl PeerExecution {
 	pub(crate) async fn inspect(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		input: InspectInput,
 	) -> Result<Inspection> {
 		let f = self.runtime.clone();
-		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-		let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
-		let result = inspect_in(&f, &mut access, node, &input).await;
+		let node = &admitted.sender.to_string();
+		let mut access = super::access(&f, &admitted).await?;
+		let result = inspect_in(&f, &mut access, &admitted.receiver.node, node, &input).await;
 		access.finish(result).await
 	}
 }

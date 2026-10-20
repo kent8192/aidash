@@ -633,15 +633,6 @@ export function EntityConfiguration({
                   <option value={data.node.id}>
                     <ReferenceName id={data.node.id} />
                   </option>
-                  {data.peers
-                    .filter(
-                      (peer) => peer.enabled && peer.node_id !== data.node.id,
-                    )
-                    .map((peer) => (
-                      <option key={peer.node_id} value={peer.node_id}>
-                        <ReferenceName id={peer.node_id} />
-                      </option>
-                    ))}
                 </NativeSelect>
               </Field>
               {node === data.node.id ? (

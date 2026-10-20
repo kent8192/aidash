@@ -274,3 +274,15 @@ async fn decision_tokens_are_alone_for_a_run_without_an_output_bound() {
 		);
 	}
 }
+
+#[test]
+fn a_public_key_pem_yields_its_raw_bytes_and_nothing_else_does() {
+	use ed25519_dalek::pkcs8::{EncodePublicKey, spki::der::pem::LineEnding};
+	let key = InMemorySigner::new("kid".into(), [9; 32]).public_key();
+	let pem = key.to_public_key_pem(LineEnding::LF).unwrap();
+	assert_eq!(public_key_bytes(&pem).unwrap(), key.to_bytes());
+	assert!(public_key_bytes("not a key").is_err());
+	assert!(
+		public_key_bytes("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n").is_err()
+	);
+}

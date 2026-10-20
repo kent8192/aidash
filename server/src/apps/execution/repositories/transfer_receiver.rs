@@ -59,15 +59,26 @@ impl From<NativeRequester> for Requester {
 #[async_trait]
 impl ReceiverRepository for Repository<'_> {
 	fn node_id(&self) -> &str {
-		self.federation.config.deployment.as_str()
+		self.receiver
+			.as_ref()
+			.map_or(self.federation.config.deployment.as_str(), |receiver| {
+				&receiver.address
+			})
 	}
-	async fn begin_peer(
-		&self,
-		source: &str,
-		tenant: &str,
-		subject: &str,
-	) -> Result<Box<dyn ReceiverScope + '_>> {
-		let access = peer::access(self.federation, source, tenant, subject).await?;
+	async fn callback(&self, source: &str, path: &str, body: &Value) -> Result<Value> {
+		let receiver = &self.receiving()?.node;
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: self.federation.node_tenant_of(receiver).await?,
+			node: Some(receiver.clone()),
+			subject: None,
+		};
+		peer::authority_request(self.federation, &sender, source, path, body)
+			.await
+			.map_err(Into::into)
+	}
+	async fn begin_peer(&self, source: &str, subject: &str) -> Result<Box<dyn ReceiverScope + '_>> {
+		let access =
+			peer::mapped_access(self.federation, &self.receiving()?.node, source, subject).await?;
 		Ok(Box::new(Scope {
 			store: Some(&self.federation.store),
 			authority: Authority::Owned(Box::new(access)),

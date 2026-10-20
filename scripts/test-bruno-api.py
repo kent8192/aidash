@@ -662,8 +662,6 @@ def main():
             )
             (web / "assets").mkdir()
             (web / "assets/probe.txt").write_text("bruno-asset\n")
-            peer_token = secrets.token_urlsafe(32)
-            peer_node = "aidash://bruno-peer-" + run_id
             environment = {
                 key: value
                 for key, value in os.environ.items()
@@ -680,7 +678,6 @@ def main():
                     "AIDASH_LISTEN": f"127.0.0.1:{port}",
                     "AIDASH_API_TOKEN": deployment_administrator,
                     "AIDASH_API_RATE_BURST": "10000",
-                    "AIDASH_SECRET_BRUNO_PEER": peer_token,
                     "AIDASH_WEB_DIR": str(web),
                     "AIDASH_OIDC_ISSUER": provider.issuer,
                     "AIDASH_OIDC_CLIENT_ID": "aidash-bruno",
@@ -698,39 +695,6 @@ def main():
                 node(binary, environment, private / "server.log")
             )
             wait_for_health(child, base, private / "server.log", environment)
-            # Peer registration verifies public identity through real HTTP.
-            # The receiver therefore owns a separate database and node identity.
-            peer_database = "aidash_bruno_" + uuid.uuid4().hex[:16]
-            resources.enter_context(database(args, peer_database))
-            with socket.socket() as listener:
-                listener.bind(("127.0.0.1", 0))
-                peer_port = listener.getsockname()[1]
-            peer_base = f"http://127.0.0.1:{peer_port}"
-            peer_deployment_administrator = secrets.token_urlsafe(32)
-            peer_environment = {
-                key: value
-                for key, value in environment.items()
-                if not key.startswith("AIDASH_OIDC_")
-            }
-            peer_environment.update(
-                DATABASE_URL=login_url("server", peer_database, args),
-                AIDASH_DEPLOYMENT_ID=peer_node,
-                AIDASH_ENDPOINT=peer_base,
-                AIDASH_LISTEN=f"127.0.0.1:{peer_port}",
-                AIDASH_API_TOKEN=peer_deployment_administrator,
-                AIDASH_SECRET_BRUNO_MAIN=peer_token,
-            )
-            migrate(
-                binary,
-                dict(peer_environment, DATABASE_URL=login_url("owner", peer_database, args)),
-                private / "peer-migrate.log",
-            )
-            peer_child = resources.enter_context(
-                node(binary, peer_environment, private / "peer.log")
-            )
-            wait_for_health(
-                peer_child, peer_base, private / "peer.log", peer_environment
-            )
             urls = checked(
                 [str(manage), "showurls"],
                 cwd=ROOT / "server",
@@ -775,10 +739,6 @@ def main():
                 "tenant": create_tenant(base, deployment_administrator, "bruno-" + run_id),
                 "issuer": provider.issuer,
                 "deployment_administrator_token": deployment_administrator,
-                "peer_node": peer_node,
-                "peer_token": peer_token,
-                "peer_base": peer_base,
-                "peer_deployment_administrator_token": peer_deployment_administrator,
                 "control_url": control.origin,
                 **{
                     f"stream_base_{number}": value

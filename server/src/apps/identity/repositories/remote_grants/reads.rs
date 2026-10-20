@@ -14,7 +14,6 @@ use aidash_application::{
 use aidash_domain::{
 	Task,
 	federation::{
-		Peer,
 		dependencies::Reference,
 		execution::home::{Grant, HomeBinding},
 	},
@@ -113,10 +112,11 @@ impl ProducerScope for Producer<'_> {
 }
 #[async_trait]
 impl SourcePeerScope for Scope<'_> {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		super::persistence::peer(self.access, node)
-			.await
-			.map_err(Into::into)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.access.route_to(node).await.map_err(Into::into)
 	}
 }
 #[async_trait]

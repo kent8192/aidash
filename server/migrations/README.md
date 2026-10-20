@@ -234,8 +234,7 @@ workspaces:
   `aidash.scope` and `aidash.tenant`; a test rejects any other writer, in Rust
   or in migration SQL.
 - Every table is classified in `server/src/database/classification.rs` as
-  Tenant-owned (enforced, or pending the Issue that enforces it) or
-  Deployment-wide. The `startup` test target compares the list with the
+  Tenant-owned (enforced) or Deployment-wide. The `startup` test target compares the list with the
   migrated database, so a migration that adds a table classifies it in the same
   change.
 - The Enterprise workspace classifies its own tables in
@@ -324,9 +323,8 @@ login and the activity observer all need a scope.
 
 Every Tenant-owned table carries `tenant text NOT NULL` (#265), except
 `research_revocations` and `dashboard_administration_history`, whose rows may
-address no Tenant, and `events`, whose Deployment-level rows (a peer
-registration) concern none until #241 gives peers a Tenant. A row without a
-Tenant is visible only in a Deployment Scope. The definitions are edited in the
+address no Tenant. A row without a Tenant is visible only in a Deployment
+Scope. The definitions are edited in the
 migration that creates each table, because Aidash is undeployed:
 
 - `tenant` references the Tenant root record, `tenants(name)`, through
@@ -370,6 +368,14 @@ migration that creates each table, because Aidash is undeployed:
   local request and leaves NULL for a foreign one; the `''` sentinel and the
   generated columns are gone. `memory_learning_discovery` is keyed by
   `deployment`, because the learning pass runs once per Deployment.
+- A Node Registration is a Tenant-owned row in `federation/node_registrations`,
+  keyed by `(tenant, node, source_node)`, with `(tenant, node)` referencing
+  `nodes` (#241). The registered Node is an address, and a Node of another
+  Deployment pins that Deployment's endpoint, public key and key ID in three
+  columns that are all set or all null. `node_registration_history` keeps every
+  revision under a sequence, like `authorization_peer_mapping_history`. Both
+  tables are purged with the Tenant. They are created in
+  `federation/0002_tables` and enforced by `federation/0011`.
 - Inserts name `tenant`. Statements built for a Tenant scope write the scope's
   Tenant with `crate::database::scope::tenant()`, a child of a row reads its
   parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant

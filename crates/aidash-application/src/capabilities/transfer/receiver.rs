@@ -41,11 +41,7 @@ async fn mapped<'a>(
 	description: &Description,
 ) -> Result<(Box<dyn ReceiverScope + 'a>, Area)> {
 	let mut scope = repository
-		.begin_peer(
-			source,
-			&description.source_tenant,
-			&description.source_subject,
-		)
+		.begin_peer(source, &description.source_subject)
 		.await?;
 	let result = async {
 		if description.protocol != "file-transfer/1"
@@ -128,9 +124,7 @@ pub async fn negotiate(
 	node: &str,
 	input: Requester,
 ) -> Result<Value> {
-	let mut scope = repository
-		.begin_peer(node, &input.tenant, &input.subject)
-		.await?;
+	let mut scope = repository.begin_peer(node, &input.subject).await?;
 	let result = scope
 		.require(
 			&scope.resource("node", repository.node_id(), json!({})),
@@ -156,7 +150,7 @@ pub async fn prepare(
 	// No receiver policy locks are held across the callback to source authority.
 	let description: Description = serde_json::from_value(
 		repository
-			.request(source, "/scoped/files/describe", &json!(input))
+			.callback(source, "/scoped/files/describe", &json!(input))
 			.await?,
 	)?;
 	if description.transfer_id != input.transfer_id
@@ -260,7 +254,7 @@ pub async fn commit(
 	// of the transport credential. Never hold receiver locks for this callback.
 	let fresh: Description = serde_json::from_value(
 		repository
-			.request(source, "/scoped/files/describe", &json!(input))
+			.callback(source, "/scoped/files/describe", &json!(input))
 			.await?,
 	)?;
 	let (mut scope, mut area, mut record, description) =
@@ -318,11 +312,7 @@ pub async fn status(
 	// sharing permission. Its metadata is still scoped to the original mapped
 	// subject; status never returns original bytes or creates a new binding.
 	let scope = repository
-		.begin_peer(
-			source,
-			&description.source_tenant,
-			&description.source_subject,
-		)
+		.begin_peer(source, &description.source_subject)
 		.await?;
 	if record.tenant != scope.tenant()
 		|| record.owner != scope.principal()
@@ -337,9 +327,7 @@ pub async fn recipients(
 	source: &str,
 	input: Requester,
 ) -> Result<Value> {
-	let mut scope = repository
-		.begin_peer(source, &input.tenant, &input.subject)
-		.await?;
+	let mut scope = repository.begin_peer(source, &input.subject).await?;
 	let result = recipient_list(&mut *scope, repository.node_id(), input.cursor).await;
 	finish(scope, result).await
 }

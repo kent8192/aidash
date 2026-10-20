@@ -5,6 +5,7 @@ use aidash_domain::capabilities::{
 	operations::MountedFile, records::Record, sessions::Area, transfer::Description,
 };
 use async_trait::async_trait;
+use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 pub trait ReceiverScope: TransferScope {
@@ -27,10 +28,9 @@ pub trait ReceiverRepository: TransferRepository {
 	fn node_id(&self) -> &str;
 	async fn incoming(&self, id: Uuid) -> Result<Record>;
 	async fn status_snapshot(&self, id: Uuid) -> Result<Record>;
-	async fn begin_peer(
-		&self,
-		source: &str,
-		tenant: &str,
-		subject: &str,
-	) -> Result<Box<dyn ReceiverScope + '_>>;
+	/// The mapped authority of `subject` of `source` at the receiving Node
+	/// this repository was built for.
+	/// A callback from the receiving Node to `source`.
+	async fn callback(&self, source: &str, path: &str, body: &Value) -> Result<Value>;
+	async fn begin_peer(&self, source: &str, subject: &str) -> Result<Box<dyn ReceiverScope + '_>>;
 }

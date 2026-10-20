@@ -107,10 +107,7 @@ impl AdmissionScope for Adapter {
 		}
 		Ok(())
 	}
-	async fn resolve_peer(&mut self, _node: &str) -> Result<()> {
-		self.event("resolve_peer")
-	}
-	async fn trusted(&mut self, _node: &str) -> Result<bool> {
+	async fn trusted(&mut self, _node: &str, _origin: Option<&Origin>) -> Result<bool> {
 		self.event("trusted")?;
 		Ok(self.0.lock().unwrap().trusted)
 	}
@@ -249,26 +246,13 @@ async fn replay_never_rebinds_another_origin(manifest: Manifest, origin: Origin)
 }
 
 #[rstest]
-#[case::peer_missing(true)]
-#[case::trust_disabled(false)]
 #[tokio::test]
-async fn peer_resolution_and_trust_precede_admission(manifest: Manifest, #[case] missing: bool) {
+async fn trust_precedes_admission(manifest: Manifest) {
 	let mut adapter = Adapter::new();
-	{
-		let mut state = adapter.0.lock().unwrap();
-		state.trusted = false;
-		if missing {
-			state.failure = Some("resolve_peer".into());
-		}
-	}
+	adapter.0.lock().unwrap().trusted = false;
 	let result = submit_in(&mut adapter, &manifest, None).await;
-	if missing {
-		assert!(matches!(result, Err(Error::External(message)) if message == "resolve_peer"));
-		assert_eq!(adapter.log(), ["status", "resolve_peer"]);
-	} else {
-		assert!(matches!(result, Err(Error::Forbidden)));
-		assert_eq!(adapter.log(), ["status", "resolve_peer", "trusted"]);
-	}
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(adapter.log(), ["status", "trusted"]);
 }
 
 #[rstest]
@@ -280,14 +264,7 @@ async fn new_origin_is_bound_inside_the_same_admission_scope(manifest: Manifest,
 		.unwrap();
 	assert_eq!(
 		adapter.log(),
-		[
-			"status",
-			"resolve_peer",
-			"trusted",
-			"admit",
-			"bind_origin",
-			"match_origin"
-		]
+		["status", "trusted", "admit", "bind_origin", "match_origin"]
 	);
 	assert_eq!(adapter.0.lock().unwrap().origin.as_ref(), Some(&origin));
 }

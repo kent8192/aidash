@@ -139,8 +139,12 @@ impl HomeGenerationRepository for NativeHome {
 		Ok(Box::new(Scope { access }))
 	}
 	async fn prepare(&self, target: &str, id: Uuid) -> Result<Prepared> {
+		let Some(Actor::Subject(identity)) = &self.actor else {
+			return Err(Error::Forbidden.into());
+		};
 		peer::authority_request(
 			&self.federation,
+			&peer::node_sender(&identity.tenant)?,
 			target,
 			"/scoped/generation/prepare",
 			&json!({"intent_id":id}),

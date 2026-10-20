@@ -1,24 +1,20 @@
 //! Native records and authority adapters for transaction management use cases.
-use super::{authority::persistence, coordination::plumbing};
-use crate::apps::federation::transactions::{
-	models::{AtomicParticipant, AtomicPeerTrust, coordinator_records},
-	serializers::protocol::TransactionTrust,
-};
+use super::coordination::plumbing;
+use crate::apps::federation::transactions::models::{AtomicParticipant, coordinator_records};
 use crate::{Error, federation::Federation};
 use aidash_application::{
 	Result,
 	ports::transactions::authority::AuthorityRepository,
-	ports::transactions::management::{ManagementRepository, TrustScope},
+	ports::transactions::management::ManagementRepository,
 	transactions::{admission, authority::control},
 };
 use aidash_domain::{
-	federation::Peer,
 	identity::execution::ExecutionPrincipal,
 	transactions::{
 		Manifest,
 		authority::{Origin, Status},
 		coordination::{LocalStatus, Vote},
-		management::{History, Trust},
+		management::History,
 	},
 };
 use async_trait::async_trait;
@@ -27,27 +23,6 @@ use uuid::Uuid;
 
 pub(crate) struct Repository {
 	pub runtime: Federation,
-}
-
-struct TrustUpdate {
-	runtime: Federation,
-}
-#[async_trait]
-impl TrustScope for TrustUpdate {
-	async fn set(&mut self, trust: Trust) -> Result<Trust> {
-		AtomicPeerTrust::set(
-			&self.runtime.store.control_pool,
-			TransactionTrust::from(trust),
-		)
-		.await
-		.map(Into::into)
-		.map_err(Into::into)
-	}
-	async fn pending_peer(&mut self, node: &str) -> Result<Vec<Uuid>> {
-		persistence::pending_peer(&self.runtime, node)
-			.await
-			.map_err(Into::into)
-	}
 }
 
 #[async_trait]
@@ -156,41 +131,5 @@ impl ManagementRepository for Repository {
 			.await
 			.map(|rows| rows.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
-	}
-	async fn trusts(&self) -> Result<Vec<Trust>> {
-		plumbing(&self.runtime, async |tx| AtomicPeerTrust::page(tx).await)
-			.await
-			.map(|rows| rows.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
-	}
-	async fn ensure_peer(&self, node: &str) -> Result<()> {
-		self.runtime
-			.peer(node)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
-	async fn trust_scope(&self) -> Result<Box<dyn TrustScope>> {
-		Ok(Box::new(TrustUpdate {
-			runtime: self.runtime.clone(),
-		}))
-	}
-	async fn pending_peer(&self, node: &str) -> Result<Vec<Uuid>> {
-		persistence::pending_peer(&self.runtime, node)
-			.await
-			.map_err(Into::into)
-	}
-	fn credential(&self, reference: &str) -> Result<String> {
-		crate::config::peer_secret(reference).map_err(Into::into)
-	}
-	async fn restore_peer(&self, node: &str, reference: &str, credential: &str) -> Result<Peer> {
-		crate::apps::federation::peer::models::records::restore_authentication(
-			&self.runtime.store.pool,
-			node,
-			reference,
-			credential,
-		)
-		.await
-		.map_err(Into::into)
 	}
 }

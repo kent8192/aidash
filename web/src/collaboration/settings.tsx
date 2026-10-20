@@ -412,57 +412,6 @@ function NodeView({
           <p className="text-[13px] text-foreground">{t("administrator")}</p>
         )}
       </Panel>
-      {deploymentAdministrator && (
-        <Panel
-          title={t("connectedNodes")}
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              onClick={() => open({ kind: "peer" })}
-            >
-              <Plus aria-hidden />
-              {t("addPeer")}
-            </Button>
-          }
-        >
-          {data.peers.length === 0 ? (
-            <Empty />
-          ) : (
-            <div className="min-w-0 rounded-md border border-border bg-surface">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("node")}</TableHead>
-                    <TableHead>{t("endpoint")}</TableHead>
-                    <TableHead>{t("protocol")}</TableHead>
-                    <TableHead className="text-right" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.peers.map((peer) => (
-                    <TableRow key={peer.node_id} className="peer-row">
-                      <TableCell className="font-medium">
-                        <ReferenceName id={peer.node_id} />
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {peer.endpoint}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {peer.protocol_version}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Badge value={peer.enabled ? "ACTIVE" : "PAUSED"} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </Panel>
-      )}
       <Disclosure summary={t("metadata")}>
         <RecordView value={data.node} />
       </Disclosure>

@@ -1260,8 +1260,13 @@ pub(crate) async fn transfer_recipients(
 				"file.transfer",
 			)
 			.await?;
+		let sender = aidash_domain::federation::route::Sender {
+			subject: Some(access.identity.subject.clone()),
+			..crate::authorization::peer::node_sender(&access.identity.tenant)?
+		};
 		crate::authorization::peer::authority_request(
 			&f,
+			&sender,
 			&input.node_id,
 			"/scoped/files/recipients",
 			&json!(super::transfer::Requester {

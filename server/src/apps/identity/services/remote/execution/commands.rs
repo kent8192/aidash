@@ -1,8 +1,8 @@
 //! HTTP commands adapt the shared application use case and commit its source authority lease.
 use super::*;
-use http::HeaderMap;
-pub(crate) async fn handle(f: Federation, headers: HeaderMap, input: Input) -> Result<Value> {
-	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+use aidash_application::federation::inbound::Admitted;
+pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> Result<Value> {
+	let node = &admitted.sender.to_string();
 	let mut revision_race = false;
 	let (mut access, description) =
 		super::super::description_lease_mode(&f, node, input.grant_id, true, &mut revision_race)

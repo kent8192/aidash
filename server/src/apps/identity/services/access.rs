@@ -116,7 +116,9 @@ pub(crate) struct Access {
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
-	pub(crate) peer_client: reqwest::Client,
+	/// How this authority's reads reach other Nodes. A transaction lent to a
+	/// disclosure check holds none, so its remote proofs are unavailable.
+	pub(crate) wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 	pub(crate) node_id: String,
 	/// The Node of the Workspace or Run this authority serves, once known.
 	/// Catalog Approvals are per Node; an Access with no Node yet uses the
@@ -243,18 +245,50 @@ impl Access {
 		Self::begin_on(
 			&store.pool,
 			store.deployment.as_str(),
-			store.semantic_client.clone(),
+			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
 			identity,
 			exclusive,
 		)
 		.await
 	}
 
+	/// The authority of a subject of the Tenant's own policy that holds no
+	/// credential: a Node of the same Tenant acting for one of its subjects
+	/// (ADR 0064). Its policy snapshot is locked like any authority's; code
+	/// that needs a credential, such as a durable Run identity, fails closed on
+	/// the nil credential.
+	pub(crate) async fn begin_subject(
+		store: &Store,
+		tenant: &str,
+		subject: &str,
+		exclusive: bool,
+	) -> Result<Self> {
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id: Uuid::nil(),
+			tenant: tenant.into(),
+			subject: subject.into(),
+		};
+		let mut tx = store.pool.begin(&identity.tenancy()?).await?;
+		let snapshot = Authorization::load_with_mode(&mut tx, tenant, exclusive).await?;
+		if !super::identity::enabled(&snapshot, subject) {
+			return Err(Error::Forbidden);
+		}
+		Ok(Self::from_transaction(
+			tx,
+			&store.pool,
+			store.deployment.as_str(),
+			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			&identity,
+			snapshot,
+		))
+	}
+
 	/// Revalidate another saved disclosure authority using existing pool capacity.
 	pub(crate) async fn begin_on(
 		pool: &Pool,
 		node: &str,
-		client: reqwest::Client,
+		wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 		identity: &SubjectIdentity,
 		exclusive: bool,
 	) -> Result<Self> {
@@ -262,7 +296,7 @@ impl Access {
 		let mut tx = pool.begin(&identity.tenancy()?).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self::from_transaction(
-			tx, pool, node, client, identity, snapshot,
+			tx, pool, node, wire, identity, snapshot,
 		))
 	}
 
@@ -270,7 +304,7 @@ impl Access {
 		tx: crate::database::native::Transaction,
 		pool: &Pool,
 		node: &str,
-		client: reqwest::Client,
+		wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 		identity: &SubjectIdentity,
 		snapshot: Snapshot,
 	) -> Self {
@@ -288,7 +322,7 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
-			peer_client: client,
+			wire,
 			node_id: node.to_owned(),
 			node: None,
 			tx: AccessTransaction::new(tx),
@@ -402,7 +436,7 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
-			peer_client: lease.peer_client.clone(),
+			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
 			node: lease.node.clone(),
 			tx: AccessTransaction::new(tx),
@@ -779,8 +813,10 @@ impl NativeAccess {
 	pub(crate) fn remote_identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
-	pub(crate) fn remote_transport_parts(&self) -> (&reqwest::Client, &str) {
-		(&self.access.peer_client, &self.access.node_id)
+	pub(crate) fn remote_transport(
+		&self,
+	) -> Option<crate::apps::federation::remote::services::wire::Wire> {
+		self.access.wire.clone()
 	}
 	pub(crate) fn cached_remote_read(&self, run: Uuid) -> Option<bool> {
 		self.access.cached_remote_read(run)

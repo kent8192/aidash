@@ -1,7 +1,7 @@
 meta {
-  name: 0113 desktop-consent - Desktop consent rejects wrong CSRF
+  name: 0113 desktop-consent - Desktop consent returns the bound callback
   type: http
-  seq: 47
+  seq: 49
 }
 
 post {
@@ -20,10 +20,10 @@ headers {
 
 body:form-urlencoded {
   request: {{desktop_request}}
-  csrf: invalid
+  csrf: {{csrf}}
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+  test("Exact HTTP 303", function () { expect(res.getStatus()).to.equal(303); });
+  test("Desktop consent returns the bound callback contract", function () { const callback=res.getHeader("location");expect(callback.split("?")[0]).to.equal("http://127.0.0.1:43217/callback");const params=Object.fromEntries(callback.split("?")[1].split("&").map(pair=>pair.split("=").map(decodeURIComponent)));expect(params.state).to.equal("ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss");expect(params.code).to.match(/^[0-9a-f]{64}$/);bru.setVar("desktop_code",params.code); });
 }

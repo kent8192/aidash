@@ -1,9 +1,7 @@
 //! Admission uses the existing transaction and immutable coordinator records.
 use super::authority::persistence;
 use crate::apps::federation::transactions::{
-	models::{AtomicPeerTrust, coordinator_records},
-	serializers::authority as dto,
-	services::fault,
+	models::coordinator_records, serializers::authority as dto, services::fault,
 };
 use crate::{Error, federation::Federation};
 use aidash_application::{
@@ -45,17 +43,21 @@ impl AdmissionScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn resolve_peer(&mut self, node: &str) -> Result<()> {
-		self.runtime
-			.peer(node)
+	async fn trusted(&mut self, node: &str, origin: Option<&Origin>) -> Result<bool> {
+		// A submission with no origin has no Tenant, so no Node to send from.
+		let Some(origin) = origin else {
+			return Ok(false);
+		};
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(origin.tenant.clone())?,
+			node: None,
+			subject: None,
+		};
+		Ok(self
+			.runtime
+			.route(&sender, node)
 			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
-	async fn trusted(&mut self, node: &str) -> Result<bool> {
-		AtomicPeerTrust::permits(self.tx, node)
-			.await
-			.map_err(Into::into)
+			.is_ok_and(|route| route.atomic_transactions))
 	}
 	async fn admit(&mut self, manifest: &Manifest) -> Result<Status> {
 		coordinator_records::admit_in(self.tx, manifest)

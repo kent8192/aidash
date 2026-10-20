@@ -11,12 +11,9 @@ use crate::{
 };
 use aidash_domain::{
 	TaskStatus,
-	federation::{
-		execution::{
-			Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
-			home::PreparationAuthority,
-		},
-		protocol::compatible,
+	federation::execution::{
+		Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
+		home::PreparationAuthority,
 	},
 	nodes::DeploymentId,
 	policy::SubjectKind,
@@ -49,8 +46,9 @@ async fn inspect<R: GrantRepository>(
 	scope
 		.source_require(&resource, "federation.execute")
 		.await?;
-	require_peer(scope, node, repository.protocol_version()).await?;
-	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"tenant":input.tenant,"subject":input.subject,"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider})).await?;
+	require_peer(scope, node).await?;
+	let identity = scope.identity();
+	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity.subject).await?;
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,
@@ -63,18 +61,14 @@ async fn inspect<R: GrantRepository>(
 	}
 	Ok(inspection)
 }
-fn inspection_input<S: HomeScope>(
-	scope: &S,
+fn inspection_input(
 	task: Uuid,
 	agent: &EntityRef,
 	requirements: Search,
 	decider: Option<&EntityRef>,
 ) -> InspectInput {
-	let identity = scope.identity();
 	InspectInput {
 		task_id: Some(task),
-		tenant: identity.tenant,
-		subject: identity.subject,
 		agent: agent.clone(),
 		requirements,
 		decider: decider.cloned(),
@@ -123,7 +117,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 		scope.require(&resource, "task.delegate").await?;
 		scope.require(&resource, "task.execute").await?;
 		let requirements: Search = serde_json::from_value(task.requirements.clone())?;
-		let request = inspection_input(&scope, task.id, &input.agent, requirements, None);
+		let request = inspection_input(task.id, &input.agent, requirements, None);
 		let inspection = inspect(repository, &mut scope, &input.node_id, request).await?;
 		crate::generation::foreign::check_preparation(&task, inspection.generation.as_ref())?;
 		super::authorize(&mut scope, &task, &input.node_id, &inspection).await?;
@@ -163,7 +157,7 @@ pub async fn prepare<R: GrantRepository>(
   scope.require(&resource,"task.delegate").await?;
   scope.require(&resource,"task.execute").await?;
   let requirements:Search=serde_json::from_value(task.requirements.clone())?;
-  let request=inspection_input(&scope,task.id,&input.agent,requirements,input.semantic.decider());
+  let request=inspection_input(task.id,&input.agent,requirements,input.semantic.decider());
   let inspection=inspect(repository,&mut scope,&input.node_id,request).await?;
   crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
   let semantic=serde_json::to_value(scope.semantic_binding(&task,&input.node_id,&inspection,&input.semantic).await?)?;
@@ -281,7 +275,7 @@ pub async fn description_mode<R: GrantRepository>(
 		let requirements = serde_json::from_value(task.requirements.clone())?;
 		let semantic: Binding = serde_json::from_value(current.semantic)?;
 		let request = semantic.request();
-		let input = inspection_input(&scope, task.id, &agent, requirements, request.decider());
+		let input = inspection_input(task.id, &agent, requirements, request.decider());
 		let fresh = inspect(repository, &mut scope, node, input).await?;
 		if !fresh.satisfies(&inspection) {
 			return Err(Error::Forbidden);
@@ -319,17 +313,9 @@ pub async fn description_mode<R: GrantRepository>(
 	}
 }
 
-/// Current reader and producer flows share the same enabled-peer protocol requirement.
-pub async fn require_peer<S: SourcePeerScope + ?Sized>(
-	scope: &mut S,
-	node: &str,
-	protocol: &str,
-) -> Result<()> {
-	if scope
-		.peer(node)
-		.await?
-		.is_none_or(|peer| !compatible(protocol, &peer.protocol_version))
-	{
+/// Current reader and producer flows share the same enabled-route requirement.
+pub async fn require_peer<S: SourcePeerScope + ?Sized>(scope: &mut S, node: &str) -> Result<()> {
+	if scope.route(node).await?.is_none() {
 		return Err(Error::Forbidden);
 	}
 	Ok(())

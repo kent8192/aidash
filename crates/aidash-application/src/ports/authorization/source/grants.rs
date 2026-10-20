@@ -51,7 +51,6 @@ pub trait GrantRepository: Send + Sync {
 	type Scope: GrantScope;
 	fn source_node_id(&self) -> &str;
 	fn source_identity(&self) -> Option<ExecutionPrincipal>;
-	fn protocol_version(&self) -> &str;
 	fn validation(&self) -> DefinitionValidation;
 	async fn source_begin(&self) -> Result<Self::Scope>;
 	async fn source_grant(&self, id: Uuid, node: &str) -> Result<Option<Grant>>;
@@ -62,5 +61,6 @@ pub trait GrantRepository: Send + Sync {
 		node: &str,
 		path: &str,
 		input: &Value,
+		subject: &str,
 	) -> Result<T>;
 }

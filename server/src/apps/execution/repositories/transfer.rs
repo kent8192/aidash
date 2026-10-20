@@ -44,6 +44,21 @@ const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Repository<'a> {
 	pub(crate) federation: &'a Federation,
+	/// The receiving Node of an inbound transfer; `None` for the sending side,
+	/// which acts for the Tenant that owns each transfer.
+	pub(crate) receiver: Option<Receiver>,
+}
+/// The Node a transfer arrives at.
+pub(crate) struct Receiver {
+	pub(crate) node: aidash_domain::nodes::NodeName,
+	pub(crate) address: String,
+}
+impl Repository<'_> {
+	pub(crate) fn receiving(&self) -> Result<&Receiver> {
+		self.receiver.as_ref().ok_or_else(|| {
+			aidash_application::Error::External("transfer receiver scope invariant".into())
+		})
+	}
 }
 pub(crate) enum Authority<'a> {
 	Owned(Box<Access>),
@@ -171,10 +186,16 @@ impl TransferRepository for Repository<'_> {
 		let tx = self.federation.store.pool.begin(&MAINTENANCE).await?;
 		Ok(Box::new(Receipt { tx, id }))
 	}
-	async fn request(&self, node: &str, path: &str, body: &Value) -> Result<Value> {
-		peer::authority_request(self.federation, node, path, body)
-			.await
-			.map_err(Into::into)
+	async fn request(&self, tenant: &str, node: &str, path: &str, body: &Value) -> Result<Value> {
+		peer::authority_request(
+			self.federation,
+			&peer::node_sender(tenant)?,
+			node,
+			path,
+			body,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn jobs(&self) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
@@ -301,30 +322,8 @@ impl TransferScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn peer_enabled(&mut self, node: &str) -> Result<Option<bool>> {
-		let result: NativeResult<Option<bool>> = async {
-			let access = self.authority.get_mut();
-			Ok({
-				let query_bind_1 = node;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("enabled"))
-						.from(Alias::new("peers"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("node_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								)),
-						)
-						.lock(reinhardt::query::LockType::Share)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
+		// The sender addresses the Node when it holds an enabled route to it.
+		Ok(self.authority.get_mut().route_to(node).await?.map(|_| true))
 	}
 	async fn record(&mut self, id: Uuid, kind: &str) -> Result<Record> {
 		records::get(self.authority.get_mut(), id, kind)

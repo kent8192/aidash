@@ -1,16 +1,28 @@
 use super::*;
 use crate::tenancy::TenancyScope;
+use aidash_domain::nodes::DeploymentId;
 use async_trait::async_trait;
 use chrono::DateTime;
 use rstest::{fixture, rstest};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+const RECEIVER: &str = "calm-heron-ab12cd34";
+const SOURCE: &str = "aidash://remote/quiet-otter-cd34ef56";
+fn receiver() -> NodeName {
+	NodeName::parse(RECEIVER).unwrap()
+}
+fn source() -> NodeAddress {
+	NodeAddress::parse(SOURCE).unwrap()
+}
+fn tenant() -> TenantName {
+	TenantName::new("tenant").unwrap()
+}
 #[fixture]
 fn input() -> PeerMappingInput {
 	PeerMappingInput {
-		source_node: "aidash://remote".into(),
-		source_tenant: "remote-tenant".into(),
+		node: receiver(),
+		source_node: source(),
 		source_subject: "alice".into(),
 		credential_id: Uuid::from_u128(1),
 		enabled: true,
@@ -19,8 +31,8 @@ fn input() -> PeerMappingInput {
 }
 fn mapping() -> Mapping {
 	Mapping {
-		source_node: "aidash://remote".into(),
-		source_tenant: "remote-tenant".into(),
+		node: receiver(),
+		source_node: source(),
 		source_subject: "alice".into(),
 		tenant: "tenant".into(),
 		credential_id: Uuid::from_u128(1),
@@ -36,7 +48,7 @@ struct Repository {
 	credential_denied: bool,
 	not_exportable: bool,
 	changed: bool,
-	peer_enabled: bool,
+	registered: bool,
 	history_failed: bool,
 }
 #[fixture]
@@ -46,7 +58,7 @@ fn repository() -> Repository {
 		credential_denied: false,
 		not_exportable: false,
 		changed: false,
-		peer_enabled: true,
+		registered: true,
 		history_failed: false,
 	}
 }
@@ -70,8 +82,10 @@ struct Access {
 impl MappingRepository for Repository {
 	type Write = Write;
 	type Access = Access;
-	fn node_id(&self) -> &str {
-		"aidash://local"
+	fn deployment(&self) -> &DeploymentId {
+		static OWN: std::sync::LazyLock<DeploymentId> =
+			std::sync::LazyLock::new(|| DeploymentId::parse("aidash://local").unwrap());
+		&OWN
 	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Write> {
 		assert!(
@@ -87,10 +101,21 @@ impl MappingRepository for Repository {
 			repository: self.clone(),
 		})
 	}
-	async fn resolved(&self, node: &str, tenant: &str, subject: &str) -> Result<Option<Mapping>> {
+	async fn resolved(
+		&self,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
+		subject: &str,
+	) -> Result<Option<Mapping>> {
 		assert_eq!(
-			(node, tenant, subject),
-			("aidash://remote", "remote-tenant", "alice")
+			(
+				tenant.as_str(),
+				node.as_str(),
+				source.to_string().as_str(),
+				subject
+			),
+			("tenant", RECEIVER, SOURCE, "alice")
 		);
 		self.called("resolve");
 		Ok(Some(mapping()))
@@ -112,6 +137,15 @@ impl MappingRepository for Repository {
 			context: Value::Null,
 		})
 	}
+	async fn begin_subject(&self, _: &TenantName, subject: &str, _: bool) -> Result<Access> {
+		self.called("begin-subject");
+		assert_eq!(subject, "alice");
+		Ok(Access {
+			repository: self.clone(),
+			environment: json!({"transport":"old"}),
+			context: Value::Null,
+		})
+	}
 }
 #[async_trait]
 impl MappingWrite for Write {
@@ -124,8 +158,8 @@ impl MappingWrite for Write {
 		self.repository.called("credential-subject");
 		Ok(Some("local-subject".into()))
 	}
-	async fn enabled_peer(&mut self, _: &str) -> Result<()> {
-		self.repository.called("enabled-peer");
+	async fn enabled_registration(&mut self, _: &str, _: &NodeName, _: &NodeAddress) -> Result<()> {
+		self.repository.called("enabled-registration");
 		Ok(())
 	}
 	async fn exportable(&mut self, _: &str, _: Uuid) -> Result<()> {
@@ -167,7 +201,13 @@ impl MappingWrite for Write {
 }
 #[async_trait]
 impl MappingAccess for Access {
-	async fn current(&mut self, _: &str, _: &str, _: &str) -> Result<Option<Mapping>> {
+	async fn current(
+		&mut self,
+		_: &TenantName,
+		_: &NodeName,
+		_: &NodeAddress,
+		_: &str,
+	) -> Result<Option<Mapping>> {
 		self.repository.called("lease-mapping");
 		let mut current = mapping();
 		if self.repository.changed {
@@ -175,9 +215,9 @@ impl MappingAccess for Access {
 		}
 		Ok(Some(current))
 	}
-	async fn peer_enabled(&mut self, _: &str) -> Result<bool> {
-		self.repository.called("lease-peer");
-		Ok(self.repository.peer_enabled)
+	async fn registered(&mut self, _: &TenantName, _: &NodeName, _: &NodeAddress) -> Result<bool> {
+		self.repository.called("lease-registration");
+		Ok(self.repository.registered)
 	}
 	fn environment(&mut self) -> &mut Value {
 		&mut self.environment
@@ -207,7 +247,7 @@ async fn writes_keep_lock_order_and_revocation_uses_control_scope(
 			"begin-data",
 			"policy",
 			"credential-subject",
-			"enabled-peer",
+			"enabled-registration",
 			"exportable",
 			"lock-credential",
 		]
@@ -237,7 +277,7 @@ async fn rejected_mapped_credential_is_forbidden_without_a_mutation(
 			"begin-data",
 			"policy",
 			"credential-subject",
-			"enabled-peer",
+			"enabled-registration",
 			"exportable",
 			"lock-credential"
 		]
@@ -301,7 +341,7 @@ async fn failed_history_prevents_commit(mut repository: Repository, input: PeerM
 			"begin-data",
 			"policy",
 			"credential-subject",
-			"enabled-peer",
+			"enabled-registration",
 			"exportable",
 			"lock-credential",
 			"insert",
@@ -327,10 +367,11 @@ async fn disabling_a_new_mapping_does_not_acquire_a_write_scope(
 async fn credential_rebinding_before_the_lease_is_rejected(mut repository: Repository) {
 	repository.changed = true;
 	assert!(matches!(
-		access(
+		mapped(
 			&repository,
-			"aidash://remote",
-			"remote-tenant",
+			&tenant(),
+			&receiver(),
+			&source(),
 			"alice",
 			true
 		)
@@ -349,13 +390,14 @@ async fn credential_rebinding_before_the_lease_is_rejected(mut repository: Repos
 }
 #[rstest]
 #[tokio::test]
-async fn disabled_peer_cannot_establish_mapped_authority(mut repository: Repository) {
-	repository.peer_enabled = false;
+async fn unregistered_source_cannot_establish_mapped_authority(mut repository: Repository) {
+	repository.registered = false;
 	assert!(matches!(
-		access(
+		mapped(
 			&repository,
-			"aidash://remote",
-			"remote-tenant",
+			&tenant(),
+			&receiver(),
+			&source(),
 			"alice",
 			true
 		)
@@ -369,7 +411,7 @@ async fn disabled_peer_cannot_establish_mapped_authority(mut repository: Reposit
 			"resolve-credential",
 			"begin-authority",
 			"lease-mapping",
-			"lease-peer"
+			"lease-registration"
 		]
 	);
 }
@@ -378,10 +420,11 @@ async fn disabled_peer_cannot_establish_mapped_authority(mut repository: Reposit
 async fn unusable_credential_does_not_challenge_an_authenticated_peer(mut repository: Repository) {
 	repository.credential_denied = true;
 	assert!(matches!(
-		access(
+		mapped(
 			&repository,
-			"aidash://remote",
-			"remote-tenant",
+			&tenant(),
+			&receiver(),
+			&source(),
 			"alice",
 			true
 		)
@@ -396,10 +439,11 @@ async fn unusable_credential_does_not_challenge_an_authenticated_peer(mut reposi
 #[rstest]
 #[tokio::test]
 async fn admitted_context_retains_transport_facts_and_the_source_identity(repository: Repository) {
-	let scope = access(
+	let scope = mapped(
 		&repository,
-		"aidash://remote",
-		"remote-tenant",
+		&tenant(),
+		&receiver(),
+		&source(),
 		"alice",
 		true,
 	)
@@ -407,10 +451,10 @@ async fn admitted_context_retains_transport_facts_and_the_source_identity(reposi
 	.unwrap();
 	assert_eq!(
 		scope.environment,
-		json!({"transport":"federation","source_node":"aidash://remote","trusted":"fact"})
+		json!({"transport":"federation","source_node":SOURCE,"source_scope":"remote","trusted":"fact"})
 	);
 	assert_eq!(
 		scope.context,
-		json!({"source_node":"aidash://remote","source_tenant":"remote-tenant","source_subject":"alice"})
+		json!({"source_node":SOURCE,"source_subject":"alice"})
 	);
 }

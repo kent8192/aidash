@@ -136,8 +136,7 @@ pub(crate) async fn parent_tenant(
 }
 
 /// The Tenant of an event: its Workspace's, or the transaction scope's when it
-/// concerns no Workspace, such as a Marketplace installation. A Deployment
-/// Administrator's event, such as a peer registration, concerns none.
+/// concerns no Workspace, such as a Marketplace installation.
 pub(crate) fn event_tenant(workspace: Option<Uuid>) -> SimpleExpr {
 	match workspace {
 		Some(workspace) => tenant_of("workspaces", "id", workspace),

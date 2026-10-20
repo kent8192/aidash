@@ -37,6 +37,7 @@ pub mod provider_credentials;
 
 pub mod tenant_administration;
 
+pub mod node_registrations;
 pub mod nodes;
 pub mod tenants;
 

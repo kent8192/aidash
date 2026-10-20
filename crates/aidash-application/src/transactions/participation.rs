@@ -110,7 +110,7 @@ impl Participant {
 	async fn reserve_in(
 		&self,
 		scope: &mut dyn ParticipantScope,
-		caller: &str,
+		_caller: &str,
 		manifest: &Manifest,
 	) -> Result<LocalStatus> {
 		if let Some(existing) = scope.lock(manifest.id).await? {
@@ -127,9 +127,6 @@ impl Participant {
 			return Err(Error::Invalid(
 				"new participant deadline must be within the next hour".into(),
 			));
-		}
-		if caller != self.repository.node_id() && !scope.trusted(caller).await? {
-			return Err(Error::Forbidden);
 		}
 		if scope.gate_exclusive().await?.is_some() {
 			return Err(Error::TransactionPending);

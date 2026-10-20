@@ -889,7 +889,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	// Every Tenant Administrator and Registry action, `node.create`,
 	// `node.update`, `tenant.update`, `tenant.delete` and `credential.create`
 	// for its own subject.
-	assert_eq!(actions.len(), 27, "{overview}");
+	assert_eq!(actions.len(), 29, "{overview}");
 	for action in [
 		"node.create",
 		"node.update",
@@ -1313,7 +1313,12 @@ async fn display_retention_follows_the_request_that_ended_last(
 
 #[path = "tenancy/deletion.rs"]
 mod deletion;
+
+#[path = "tenancy/exchange.rs"]
+mod exchange;
 #[path = "tenancy/nodes.rs"]
 mod nodes;
+#[path = "tenancy/registrations.rs"]
+mod registrations;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;

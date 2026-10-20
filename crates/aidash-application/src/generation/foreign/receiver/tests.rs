@@ -141,13 +141,9 @@ impl ForeignGenerationReceiver for Repository {
 	async fn begin(
 		&self,
 		source: &str,
-		tenant: &str,
 		subject: &str,
 	) -> Result<Box<dyn ForeignGenerationReceiverScope>> {
-		assert_eq!(
-			(source, tenant, subject),
-			("aidash://home", "source", "root")
-		);
+		assert_eq!((source, subject), ("aidash://home", "root"));
 		point(&self.0, "begin").await?;
 		self.0.lock().unwrap().leases += 1;
 		Ok(Box::new(Scope(self.0.clone())))

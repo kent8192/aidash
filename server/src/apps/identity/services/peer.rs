@@ -1,6 +1,7 @@
 //! Explicit inbound identity mappings. Peer authentication alone grants no
 //! tenant authority, and local subject bearer tokens never cross this boundary.
 use crate::apps::federation::peer::services::mapping_records::PeerMappingRecords;
+use aidash_application::federation::inbound::Admitted;
 use reinhardt::{Depends, injectable};
 #[path = "peer/admission.rs"]
 pub(crate) mod admission;
@@ -43,24 +44,82 @@ pub(crate) async fn write_as(
 	.map_err(Into::into)
 }
 
-pub(crate) async fn access(
+/// The Sender of work that a Tenant's Node does as itself, naming no subject:
+/// a callback that a grant or a transaction authorizes. The Node is the
+/// Tenant's default Node until Runs, Workspaces and Tasks name theirs (#241
+/// step 3); this is the one place that changes then.
+pub(crate) fn node_sender(tenant: &str) -> Result<aidash_domain::federation::route::Sender> {
+	Ok(aidash_domain::federation::route::Sender {
+		tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
+		node: None,
+		subject: None,
+	})
+}
+
+/// The Sender for a cross-Node generation or semantic operation, found from
+/// the grant and admission it names: this Deployment's Tenant of that work.
+pub(crate) async fn usage_sender(
 	f: &Federation,
-	node: &str,
-	tenant: &str,
+	admission: uuid::Uuid,
+	grant: uuid::Uuid,
+) -> Result<aidash_domain::federation::route::Sender> {
+	scope_sender(&f.store.remote_tenancy(admission, grant).await?)
+}
+
+/// The same for the Tenant a scope is opened in.
+pub(crate) fn scope_sender(
+	scope: &aidash_application::tenancy::TenancyScope,
+) -> Result<aidash_domain::federation::route::Sender> {
+	match scope {
+		aidash_application::tenancy::TenancyScope::Tenant(tenant) => {
+			Ok(aidash_domain::federation::route::Sender {
+				tenant: tenant.clone(),
+				node: None,
+				subject: None,
+			})
+		}
+		_ => Err(crate::Error::Forbidden),
+	}
+}
+
+/// The authority that `subject` of `source` is mapped to at the receiving Node
+/// `receiver`, for a request whose subject comes from a description the source
+/// signed rather than from the token.
+pub(crate) async fn mapped_access(
+	f: &Federation,
+	receiver: &aidash_domain::nodes::NodeName,
+	source: &str,
 	subject: &str,
 ) -> Result<Access> {
-	access_mode(f, node, tenant, subject, false).await
+	let tenant = f.node_tenant_of(receiver).await?;
+	let source = aidash_domain::nodes::NodeAddress::parse(source)?;
+	aidash_application::authorization::peer::mappings::mapped(
+		&crate::bootstrap::peer_mapping_repository(f),
+		&tenant,
+		receiver,
+		&source,
+		subject,
+		false,
+	)
+	.await
+	.map(|scope| *scope.access)
+	.map_err(Into::into)
+}
+
+pub(crate) async fn access(f: &Federation, admitted: &Admitted) -> Result<Access> {
+	access_mode(f, admitted, false).await
 }
 
 // Authority RPCs distinguish a permanent denial from a transport outage while
 // never reflecting a peer's response body or internal error details.
 pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
 	f: &Federation,
+	sender: &aidash_domain::federation::route::Sender,
 	node: &str,
 	path: &str,
 	body: &serde_json::Value,
 ) -> Result<T> {
-	crate::bootstrap::authority_peer_client(f)
+	crate::bootstrap::authority_peer_client(f, sender)
 		.request(node, path, body)
 		.await
 		.map_err(Into::into)
@@ -74,7 +133,6 @@ pub use crate::apps::identity::serializers::peer::{PeerMapping, PeerMappingInput
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::services::tenant_administration::TenantAdministrations;
 use crate::authorization::identity::Actor;
-use http::HeaderMap;
 
 #[derive(Clone)]
 pub struct PeerMappings {
@@ -166,45 +224,21 @@ impl PeerMappings {
 	}
 	pub(crate) async fn discover(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		input: DiscoveryInput,
 	) -> Result<Vec<Entry>> {
-		let f = self.runtime.clone();
-		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-		let mut access = access(&f, node, &input.tenant, &input.subject).await?;
-		let result = async {
-			let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
-			access.require(&resource, "federation.discover").await?;
-			let mut search = input.search;
-			search.kind = Some("agent".into());
-			let mut visible = vec![];
-			for entry in catalog::list_in(&mut access, &search).await? {
-				if access
-					.decide(&catalog::resource(&access, &entry), "agent.execute")
-					.await?
-				{
-					visible.push(entry);
-				}
-			}
-			Ok(visible)
-		}
-		.await;
-		access.finish(result).await
+		discover_for(self.runtime.clone(), admitted, input).await
 	}
 }
 
 pub(crate) async fn access_mode(
 	f: &Federation,
-	node: &str,
-	tenant: &str,
-	subject: &str,
+	admitted: &Admitted,
 	exclusive: bool,
 ) -> Result<Access> {
 	aidash_application::authorization::peer::mappings::access(
 		&crate::bootstrap::peer_mapping_repository(f),
-		node,
-		tenant,
-		subject,
+		admitted,
 		exclusive,
 	)
 	.await
@@ -216,3 +250,31 @@ pub(crate) mod dependencies;
 
 #[path = "peer/semantic.rs"]
 pub(crate) mod semantic;
+
+/// Discovery of another Node of this Deployment, or of another Deployment,
+/// as the subject its token names.
+pub(crate) async fn discover_for(
+	f: Federation,
+	admitted: Admitted,
+	input: DiscoveryInput,
+) -> Result<Vec<Entry>> {
+	let mut access = access(&f, &admitted).await?;
+	let result = async {
+		let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
+		access.require(&resource, "federation.discover").await?;
+		let mut search = input.search;
+		search.kind = Some("agent".into());
+		let mut visible = vec![];
+		for entry in catalog::list_in(&mut access, &search).await? {
+			if access
+				.decide(&catalog::resource(&access, &entry), "agent.execute")
+				.await?
+			{
+				visible.push(entry);
+			}
+		}
+		Ok(visible)
+	}
+	.await;
+	access.finish(result).await
+}

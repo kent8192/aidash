@@ -1,6 +1,5 @@
 import { Check, Plus } from "lucide-react";
 import { Button } from "./components/ui/button";
-import { NativeSelect } from "./components/ui/native-select";
 import {
   Table,
   TableBody,
@@ -12,13 +11,8 @@ import {
 import { cn } from "./lib/utils";
 import { TransactionComposer } from "./transaction-composer";
 import { disambiguateLabels } from "./display-labels";
-import {
-  RecordView,
-  ReferenceName,
-  useNodeLabel,
-  DisplayState,
-} from "./record-view";
-import { Fragment, useContext, useState } from "react";
+import { RecordView, ReferenceName, useNodeLabel } from "./record-view";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   transactions,
@@ -26,14 +20,12 @@ import {
   transactionDetails,
   transactionParticipants,
   transactionSubmit,
-  transactionTrust,
-  transactionTrustList,
 } from "./generated/aidash";
 import type {
   AtomicTransaction,
   TransactionManifest,
 } from "./generated/models";
-import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
+import { Badge, Empty, Modal, Panel, useI18n } from "./ui";
 import { Alert, Disclosure, Facts, Hint, Notice } from "./components/patterns";
 
 const meta = "font-mono text-[11px] text-faint tabular";
@@ -56,14 +48,12 @@ export function TransactionsPage({
 }) {
   const { t, locale } = useI18n();
   const nodeLabel = useNodeLabel();
-  const displayData = useContext(DisplayState);
   const transactionLabel = (manifest: TransactionManifest) =>
     `${nodeLabel(manifest.coordinator)} · ${new Date(manifest.deadline).toLocaleString()}`;
   const client = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState<TransactionManifest | null>(null);
   const [review, setReview] = useState<TransactionManifest | null>(null);
-  const [peer, setPeer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const list = useQuery({
@@ -81,12 +71,6 @@ export function TransactionsPage({
     queryFn: () => transactionParticipants(),
     enabled: deploymentAdministrator,
     refetchInterval: 1000,
-  });
-  const trust = useQuery({
-    queryKey: ["transactions", "trust"],
-    queryFn: () => transactionTrustList(),
-    enabled: deploymentAdministrator,
-    refetchInterval: 5000,
   });
   const details = useQuery({
     queryKey: ["transactions", selected],
@@ -108,12 +92,9 @@ export function TransactionsPage({
       setBusy(false);
     }
   };
-  const failures = [
-    list.error,
-    participants.error,
-    trust.error,
-    details.error,
-  ].filter(Boolean);
+  const failures = [list.error, participants.error, details.error].filter(
+    Boolean,
+  );
   const current = !details.isError ? details.data : undefined;
   const create = () => {
     setError("");
@@ -143,15 +124,6 @@ export function TransactionsPage({
     ? ["マニフェスト", "確認", "送信"]
     : ["Manifest", "Review", "Submit"];
   const step = review ? (busy ? 2 : 1) : 0;
-  const grantState = (grant: {
-    enabled: boolean;
-    pending_transactions?: string[] | null;
-  }) =>
-    grant.pending_transactions?.length
-      ? "PENDING"
-      : grant.enabled
-        ? "ENABLED"
-        : "DISABLED";
   return (
     <div className="grid min-w-0 gap-6">
       <Hint>{t("transactionsHelp")}</Hint>
@@ -228,118 +200,6 @@ export function TransactionsPage({
                   </li>
                 ))}
               </ul>
-            )}
-          </Panel>
-          <Panel title={t("transactionTrust")}>
-            <Hint>{t("transactionTrustHelp")}</Hint>
-            <form
-              className="flex flex-wrap items-end gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void mutate(() =>
-                  transactionTrust({ node_id: peer.trim(), enabled: true }),
-                );
-              }}
-            >
-              <div className="min-w-0 flex-1 basis-48">
-                <Field label={t("transactionPeer")}>
-                  <NativeSelect
-                    required
-                    value={peer}
-                    onChange={(event) => setPeer(event.target.value)}
-                  >
-                    <option value="">{t("choose")}</option>
-                    {displayData?.peers.map((peer) => (
-                      <option key={peer.node_id} value={peer.node_id}>
-                        <ReferenceName id={peer.node_id} />
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </Field>
-              </div>
-              <Button
-                variant="outline"
-                disabled={
-                  busy ||
-                  !!trust.data?.find((grant) => grant.node_id === peer.trim())
-                    ?.pending_transactions?.length
-                }
-              >
-                {t("transactionGrant")}
-              </Button>
-            </form>
-            {!trust.isError && !!trust.data?.length && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead>{t("transactionPeer")}</TableHead>
-                    <TableHead className="w-0">{t("status")}</TableHead>
-                    <TableHead className="w-0" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {trust.data.map((grant) => (
-                    <Fragment key={grant.node_id}>
-                      <TableRow
-                        className={cn(
-                          !!grant.pending_transactions?.length && "border-b-0",
-                        )}
-                      >
-                        <TableCell className="max-w-0 py-2">
-                          <div className="truncate font-medium">
-                            <ReferenceName id={grant.node_id} />
-                          </div>
-                        </TableCell>
-                        <TableCell className="w-0 whitespace-nowrap py-2 align-top">
-                          <Badge value={grantState(grant)} />
-                        </TableCell>
-                        <TableCell className="w-0 whitespace-nowrap py-2 text-right align-top">
-                          <Button
-                            variant={grant.enabled ? "ghost" : "outline"}
-                            size="sm"
-                            className={cn(
-                              grant.enabled &&
-                                !grant.pending_transactions?.length &&
-                                "hover:text-destructive",
-                            )}
-                            disabled={busy}
-                            onClick={() =>
-                              void mutate(() =>
-                                transactionTrust({
-                                  node_id: grant.node_id,
-                                  enabled:
-                                    !grant.enabled &&
-                                    !grant.pending_transactions?.length,
-                                }),
-                              )
-                            }
-                          >
-                            {t(
-                              grant.pending_transactions?.length
-                                ? "transactionCheckRevocation"
-                                : grant.enabled
-                                  ? "transactionRevoke"
-                                  : "transactionGrant",
-                            )}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                      {!!grant.pending_transactions?.length && (
-                        <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={3} className="h-auto pb-2.5 pt-0">
-                            <Notice tone="warning" role="status">
-                              {t("transactionRevocationPending")}{" "}
-                              <span className="break-all font-mono">
-                                {grant.pending_transactions.join(", ")}
-                              </span>
-                            </Notice>
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </Fragment>
-                  ))}
-                </TableBody>
-              </Table>
             )}
           </Panel>
         </>

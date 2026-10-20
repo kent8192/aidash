@@ -1,5 +1,5 @@
 import { Button } from "./components/ui/button";
-import { ReferenceName, PeerSelect } from "./record-view";
+import { ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { RecordView } from "./record-view";
 import { useEffect, useState } from "react";
@@ -131,17 +131,17 @@ export function PeerMappings({
               <div
                 className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 md:grid-cols-[minmax(0,1fr)_auto_auto]"
                 key={JSON.stringify([
+                  mapping.node,
                   mapping.source_node,
-                  mapping.source_tenant,
                   mapping.source_subject,
                 ])}
               >
                 <div className="grid min-w-0 gap-0.5">
-                  <span className="truncate font-medium text-foreground">
-                    <ReferenceName id={mapping.source_node} />
+                  <span className="truncate font-mono font-medium text-foreground">
+                    {mapping.source_node}
                   </span>
                   <span className="truncate font-mono text-[11px] text-muted-foreground">
-                    {mapping.source_tenant} / {mapping.source_subject}
+                    {mapping.node} / {mapping.source_subject}
                   </span>
                   <span className="truncate text-[11px] text-faint">
                     {t("authMappedCredential")}{" "}
@@ -182,8 +182,8 @@ export function PeerMappings({
                         void save({
                           expected_revision: mapping.revision,
                           enabled: !mapping.enabled,
+                          node: mapping.node,
                           source_node: mapping.source_node,
-                          source_tenant: mapping.source_tenant,
                           source_subject: mapping.source_subject,
                           credential_id: mapping.credential_id,
                         })
@@ -226,10 +226,10 @@ export function PeerMappings({
                 time={new Date(revision.updated_at).toLocaleString(locale)}
                 summary={
                   <>
-                    <ReferenceName id={revision.source_node} />
+                    <span className="font-mono">{revision.source_node}</span>
                     <span className="font-mono text-muted-foreground">
                       {" · "}
-                      {revision.source_tenant} / {revision.source_subject}
+                      {revision.node} / {revision.source_subject}
                     </span>
                   </>
                 }
@@ -284,8 +284,8 @@ export function PeerMappings({
               event.preventDefault();
               const form = new FormData(event.currentTarget);
               void save({
+                node: String(form.get("node")).trim(),
                 source_node: String(form.get("source_node")).trim(),
-                source_tenant: String(form.get("source_tenant")).trim(),
                 source_subject: String(form.get("source_subject")).trim(),
                 credential_id: String(form.get("credential_id")),
                 enabled: true,
@@ -293,24 +293,11 @@ export function PeerMappings({
               });
             }}
           >
-            <Field label={t("authSourceNode")}>
-              <PeerSelect
-                name="source_node"
-                initial={editing === "new" ? "" : editing.source_node}
-                disabled={editing !== "new"}
-              />
-            </Field>
-            {editing !== "new" && (
-              <input
-                type="hidden"
-                name="source_node"
-                value={editing.source_node}
-              />
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3">
               {(
                 [
-                  ["source_tenant", "authSourceTenant"],
+                  ["node", "authReceivingNode"],
+                  ["source_node", "authSourceNode"],
                   ["source_subject", "authSourceSubject"],
                 ] as const
               ).map(([name, label]) => (

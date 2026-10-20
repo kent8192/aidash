@@ -26,13 +26,8 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 
 /// The tables whose `tenant` stays nullable. A Deployment Administrator's
 /// decision on a request that addresses no Tenant keeps a row without one
-/// (#264, #265), and so does an event that concerns the Deployment, such as a
-/// peer registration, until #241 gives peers a Tenant.
-const NULLABLE_TENANT: &[&str] = &[
-	"dashboard_administration_history",
-	"events",
-	"research_revocations",
-];
+/// (#264, #265).
+const NULLABLE_TENANT: &[&str] = &["dashboard_administration_history", "research_revocations"];
 
 /// A foreign key as the catalog lists it.
 struct ForeignKey {
@@ -427,7 +422,7 @@ async fn purge_covers_every_tenant_table_and_nothing_it_keeps_blocks_it(
 		.iter()
 		.filter(|table| with_tenant.contains(table.name))
 		.filter(|table| match table.classification {
-			Classification::TenantOwned | Classification::Pending(_) => false,
+			Classification::TenantOwned => false,
 			Classification::DeploymentWide => !table.names_tenant && !allowed.contains(table.name),
 		})
 		.map(|table| table.name)

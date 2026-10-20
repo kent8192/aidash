@@ -1,5 +1,5 @@
 meta {
-  name: 0190 authorization-catalog - Missing scoped authority cannot disclose application data
+  name: 0190 authorization-catalog - Subject without registry.read cannot read the catalog
   type: http
   seq: 190
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{denied_token}}
 }
 
 tests {

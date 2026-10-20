@@ -504,13 +504,6 @@ function FileOperations({
                 <option value={data.node.id}>
                   {ja ? "このノード" : "This node"}
                 </option>
-                {data.peers
-                  .filter((p) => p.enabled)
-                  .map((p) => (
-                    <option key={p.node_id} value={p.node_id}>
-                      {p.node_id}
-                    </option>
-                  ))}
               </NativeSelect>
             </Field>
             {recipients.isError && <Alert>{recipients.error.message}</Alert>}

@@ -1,5 +1,5 @@
 meta {
-  name: 0164 remote_execution_activate - Anonymous request is rejected
+  name: 0164 remote_execution_activate - Unrecognized bearer cannot mutate state
   type: http
   seq: 164
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

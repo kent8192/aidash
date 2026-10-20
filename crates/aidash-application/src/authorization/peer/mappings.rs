@@ -1,4 +1,5 @@
 //! Peer authentication never substitutes for current mapped tenant authority.
+use crate::federation::inbound::{Acting, Admitted};
 use crate::tenancy::TenancyScope;
 use crate::{
 	Error, Result,
@@ -6,7 +7,9 @@ use crate::{
 };
 use aidash_domain::{
 	identity::peer_mapping::{Mapping, PeerMappingInput},
+	nodes::{NodeAddress, NodeName},
 	policy::identifier,
+	tenancy::TenantName,
 };
 use serde_json::json;
 // An unusable mapped credential denies authority without challenging the authenticated caller.
@@ -21,7 +24,7 @@ pub async fn write<R: MappingRepository>(
 	tenant: &str,
 	input: PeerMappingInput,
 ) -> Result<Mapping> {
-	input.validate(tenant, repository.node_id())?;
+	input.validate(tenant, repository.deployment())?;
 	input.require_existing_revocation()?;
 	let tenancy = TenancyScope::tenant(tenant)?;
 	let mut scope = repository.begin_write(&tenancy, input.enabled).await?;
@@ -32,7 +35,9 @@ pub async fn write<R: MappingRepository>(
 		.ok_or(Error::Forbidden)?;
 	scope.authorize(tenant, &input, &subject).await?;
 	if input.enabled {
-		scope.enabled_peer(&input.source_node).await?;
+		scope
+			.enabled_registration(tenant, &input.node, &input.source_node)
+			.await?;
 	}
 	// A disabled mapping may keep a revoked or expired credential, never one
 	// that could not be exported.
@@ -53,17 +58,53 @@ pub async fn write<R: MappingRepository>(
 	scope.commit().await?;
 	Ok(mapping)
 }
+
+/// The receiving authority of an admitted request: the mapped credential's
+/// subject for a Node of another Tenant, or the Tenant's own subject.
+/// Admission already decided that the sender may reach the Node; this holds
+/// the credential, policy and mapping leases for the operation itself.
 pub async fn access<R: MappingRepository>(
 	repository: &R,
-	node: &str,
-	tenant: &str,
+	admitted: &Admitted,
+	exclusive: bool,
+) -> Result<R::Access> {
+	match &admitted.acting {
+		Acting::SameTenant { subject } => {
+			identifier(subject)?;
+			let scope = repository
+				.begin_subject(&admitted.tenant, subject, exclusive)
+				.await
+				.map_err(authority_error)?;
+			described(scope, &admitted.sender, "tenant", subject)
+		}
+		Acting::Mapped { subject, .. } => {
+			mapped(
+				repository,
+				&admitted.tenant,
+				&admitted.receiver.node,
+				&admitted.sender,
+				subject,
+				exclusive,
+			)
+			.await
+		}
+		Acting::Node => Err(Error::Forbidden),
+	}
+}
+
+/// The authority of the local subject that `source`'s `subject` is mapped to
+/// at `node`.
+pub async fn mapped<R: MappingRepository>(
+	repository: &R,
+	tenant: &TenantName,
+	node: &NodeName,
+	source: &NodeAddress,
 	subject: &str,
 	exclusive: bool,
 ) -> Result<R::Access> {
-	identifier(tenant)?;
 	identifier(subject)?;
 	let mapping = repository
-		.resolved(node, tenant, subject)
+		.resolved(tenant, node, source, subject)
 		.await?
 		.ok_or(Error::Forbidden)?;
 	let local_subject = repository
@@ -74,15 +115,34 @@ pub async fn access<R: MappingRepository>(
 		.begin_access(&mapping, &local_subject, exclusive)
 		.await
 		.map_err(authority_error)?;
-	if scope.current(node, tenant, subject).await?.as_ref() != Some(&mapping) {
+	if scope.current(tenant, node, source, subject).await?.as_ref() != Some(&mapping) {
 		return Err(Error::Forbidden);
 	}
-	if !scope.peer_enabled(node).await? {
+	if !scope.registered(tenant, node, source).await? {
 		return Err(Error::Forbidden);
 	}
+	let source_scope = if source.deployment == *repository.deployment() {
+		"deployment"
+	} else {
+		"remote"
+	};
+	described(scope, source, source_scope, subject)
+}
+
+/// What the receiving policy and audit know about where the request came from.
+fn described<A: MappingAccess>(
+	mut scope: A,
+	source: &NodeAddress,
+	source_scope: &str,
+	subject: &str,
+) -> Result<A> {
 	scope.environment()["transport"] = json!("federation");
-	scope.environment()["source_node"] = json!(node);
-	*scope.context() = json!({"source_node":node,"source_tenant":tenant,"source_subject":subject});
+	scope.environment()["source_node"] = json!(source.to_string());
+	scope.environment()["source_scope"] = json!(source_scope);
+	*scope.context() = json!({
+		"source_node": source.to_string(),
+		"source_subject": subject,
+	});
 	Ok(scope)
 }
 #[cfg(test)]

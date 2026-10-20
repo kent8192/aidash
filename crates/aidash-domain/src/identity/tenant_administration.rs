@@ -39,13 +39,18 @@ pub const NODE_USE: &str = "node.use";
 pub const NODE_CREATE: &str = "node.create";
 /// Changing a Node's label.
 pub const NODE_UPDATE: &str = "node.update";
+/// Listing the Node Registrations of one of the Tenant's Nodes.
+pub const NODE_REGISTRATION_READ: &str = "node_registration.read";
+/// Registering a Node of another Tenant at one of the Tenant's Nodes, or
+/// changing that registration.
+pub const NODE_REGISTRATION_UPDATE: &str = "node_registration.update";
 /// Setting the Tenant's Workbench Test Limits within the Deployment's ceilings.
 pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
 /// Writing the Tenant's Workbench Test Profiles.
 pub const TEST_PROFILE_UPDATE: &str = "workbench.test_profile.update";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 21] = [
+pub const ACTIONS: [&str; 23] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -65,6 +70,8 @@ pub const ACTIONS: [&str; 21] = [
 	PEER_MAPPING_UPDATE,
 	NODE_CREATE,
 	NODE_UPDATE,
+	NODE_REGISTRATION_READ,
+	NODE_REGISTRATION_UPDATE,
 	TEST_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
 ];
@@ -111,6 +118,7 @@ pub fn resource_kind(action: &str) -> &'static str {
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
 		NODE_READ | NODE_USE | NODE_UPDATE => "node",
+		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
 		TEST_PROFILE_UPDATE => "test_profile",
 		crate::identity::tenancy::TENANT_UPDATE

@@ -3,18 +3,16 @@ use crate::apps::federation::transactions::{
 };
 use crate::authorization::identity::Actor;
 use crate::{Error, Result, federation::Federation};
+use aidash_application::federation::inbound::Admitted;
 use aidash_application::transactions::management as application;
 use aidash_domain::identity::execution::ExecutionPrincipal;
-use http::HeaderMap;
 use reinhardt::{Depends, injectable};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use uuid::Uuid;
 
-use crate::apps::federation::transactions::serializers::protocol::{
-	PeerRecovery, TransactionDetails, TransactionTrust, TrustChange,
-};
+use crate::apps::federation::transactions::serializers::protocol::TransactionDetails;
 
 #[derive(Clone)]
 pub struct SubmissionCapacity {
@@ -46,6 +44,13 @@ pub async fn provide(
 }
 
 impl Transactions {
+	/// The service for in-process Federation, which never submits.
+	pub(crate) fn for_peers(runtime: Federation) -> Self {
+		Self {
+			runtime,
+			submissions: Arc::new(Semaphore::new(1)),
+		}
+	}
 	pub async fn submit(&self, actor: Actor, manifest: Manifest) -> Result<Status> {
 		// Router clones share eight DI-scoped slots, leaving control capacity
 		// for inbound preflights from independent Nodes.
@@ -101,109 +106,47 @@ impl Transactions {
 		.map(|rows| rows.into_iter().map(Into::into).collect())
 		.map_err(Into::into)
 	}
-	pub async fn trust_list(&self) -> Result<Vec<TrustChange>> {
-		application::trust_list(&crate::bootstrap::transaction_management_repository(
-			&self.runtime,
-		))
-		.await
-		.map(|rows| rows.into_iter().map(Into::into).collect())
-		.map_err(Into::into)
-	}
-	pub async fn trust(
-		&self,
-		input: TransactionTrust,
-	) -> Result<(reinhardt::StatusCode, TrustChange)> {
-		let change = application::trust(
-			&crate::bootstrap::transaction_management_repository(&self.runtime),
-			input.into(),
-		)
-		.await?;
-		let status = if change.pending_transactions.is_empty() {
-			reinhardt::StatusCode::OK
-		} else {
-			reinhardt::StatusCode::ACCEPTED
-		};
-		Ok((status, change.into()))
-	}
-	pub(crate) async fn restore_peer(
-		&self,
-		input: PeerRecovery,
-	) -> Result<crate::federation::Peer> {
-		application::restore_peer(
-			&crate::bootstrap::transaction_management_repository(&self.runtime),
-			&input.node_id,
-			&input.credential_env,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	pub(crate) async fn preflight(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		input: authority::Preflight,
 	) -> Result<serde_json::Value> {
-		authority::preflight(
-			&self.runtime,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			&input,
-		)
-		.await?;
+		authority::preflight(&self.runtime, &admitted, &input).await?;
 		Ok(serde_json::json!({"authorized":true}))
 	}
 	pub(crate) async fn read_access(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		input: authority::Preflight,
 	) -> Result<serde_json::Value> {
-		authority::read_access(
-			&self.runtime,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			&input,
-		)
-		.await?;
+		authority::read_access(&self.runtime, &admitted, &input).await?;
 		Ok(serde_json::json!({"authorized":true}))
 	}
 	pub(crate) async fn authority_ticket(
 		&self,
-		headers: HeaderMap,
+		admitted: Admitted,
 		id: Uuid,
 	) -> Result<authority::Preflight> {
-		authority::ticket(
-			&self.runtime,
-			id,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-		)
-		.await
+		authority::ticket(&self.runtime, &admitted, id).await
 	}
-	pub async fn reserve(&self, headers: HeaderMap, manifest: Manifest) -> Result<LocalStatus> {
+	pub async fn reserve(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
-		participant::reserve(
-			&f,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			&manifest,
-		)
-		.await
+		require_atomic(&f, &admitted).await?;
+		participant::reserve(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
-	pub async fn prepare(&self, headers: HeaderMap, manifest: Manifest) -> Result<LocalStatus> {
+	pub async fn prepare(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
-		participant::prepare(
-			&f,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			&manifest,
-		)
-		.await
+		require_atomic(&f, &admitted).await?;
+		participant::prepare(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
-	pub async fn finish(&self, headers: HeaderMap, manifest: Manifest) -> Result<LocalStatus> {
+	pub async fn finish(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
-		participant::finish(
-			&f,
-			crate::apps::identity::services::http_auth::peer_node(&headers)?,
-			&manifest,
-		)
-		.await
+		require_atomic(&f, &admitted).await?;
+		participant::finish(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
-	pub async fn decision(&self, headers: HeaderMap, id: Uuid) -> Result<Status> {
-		let caller = crate::apps::identity::services::http_auth::peer_node(&headers).ok();
+	pub async fn decision(&self, admitted: Admitted, id: Uuid) -> Result<Status> {
+		let sender = admitted.sender.to_string();
+		let caller = Some(sender.as_str());
 		application::decision(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
 			caller,
@@ -223,5 +166,38 @@ fn principal(actor: &Actor) -> Option<ExecutionPrincipal> {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
 		}),
+	}
+}
+
+/// Taking part in an atomic transaction is a Tenant's decision about the
+/// sending Node (ADR 0064): its registration allows it, or the sender is
+/// another Node of the same Tenant.
+async fn require_atomic(f: &Federation, admitted: &Admitted) -> Result<()> {
+	use crate::apps::identity::repositories::node_registrations as registrations;
+	let tenancy = aidash_application::tenancy::TenancyScope::Tenant(admitted.tenant.clone());
+	let allowed = f
+		.store
+		.pool
+		.atomic(&tenancy, async |tx| {
+			let registered = registrations::get(
+				tx,
+				admitted.tenant.as_str(),
+				admitted.receiver.node.as_str(),
+				&admitted.sender,
+			)
+			.await?;
+			if let Some(registration) = registered {
+				return Ok(registration.enabled && registration.atomic_transactions);
+			}
+			Ok(admitted.sender.deployment == f.config.deployment
+				&& registrations::name_tenant(tx, admitted.sender.node.as_str())
+					.await?
+					.as_deref() == Some(admitted.tenant.as_str()))
+		})
+		.await?;
+	if allowed {
+		Ok(())
+	} else {
+		Err(Error::Forbidden)
 	}
 }

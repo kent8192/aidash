@@ -135,10 +135,6 @@ impl ParticipantScope for Scope {
 		self.adapter.event("lock")?;
 		Ok(self.working.row.clone())
 	}
-	async fn trusted(&mut self, _node: &str) -> Result<bool> {
-		self.adapter.event("trusted")?;
-		Ok(true)
-	}
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>> {
 		self.adapter.event("gate")?;
 		let state = &mut *self.adapter.0.lock().unwrap();

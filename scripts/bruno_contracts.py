@@ -30,10 +30,12 @@ FIXTURE_WORKSPACE_READS = {
 }
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
+# A Federation token (ADR 0064) is signed with a Deployment Key and bound to its
+# request, so a Bruno request cannot carry a valid one: these scenarios only
+# prove the boundary refuses what it cannot verify.
 PEER = {
-    "Authorization": "Bearer {{peer_token}}",
-    "X-Aidash-Node": "{{peer_node}}",
-    "X-Aidash-Protocol": "0.2",
+    "Authorization": "Bearer not-a-federation-token",
+    "X-Aidash-Protocol": "0.4",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
@@ -400,25 +402,6 @@ def render():
             }
         )
     add(
-        "POST /api/peers",
-        "Register the authenticated protocol peer",
-        200,
-        headers=DEPLOYMENT_ADMINISTRATOR,
-        body='{"node_id":"{{peer_node}}","endpoint":"{{peer_base}}","credential_env":"AIDASH_SECRET_BRUNO_PEER","protocol_version":"0.2","enabled":true}',
-        checks='expect(res.getBody().node_id).to.equal(bru.getEnvVar("peer_node"));expect(res.getBody().enabled).to.equal(true);',
-        seq=39,
-    )
-    add(
-        "POST /api/peers",
-        "Register the source node at the real receiver",
-        200,
-        path="{{peer_base}}/api/peers",
-        headers={"Authorization": "Bearer {{peer_deployment_administrator_token}}"},
-        body='{"node_id":"{{node_id}}","endpoint":"{{base_url}}","credential_env":"AIDASH_SECRET_BRUNO_MAIN","protocol_version":"0.2","enabled":true}',
-        checks='expect(res.getBody().node_id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().enabled).to.equal(true);',
-        seq=40,
-    )
-    add(
         "POST /auth/activity",
         "Browser activity rejects missing CSRF",
         403,
@@ -761,54 +744,25 @@ def render():
             )
             add(
                 endpoint,
-                "Require the peer node identity",
-                401,
-                headers={k: v for k, v in PEER.items() if k != "X-Aidash-Node"},
+                "Reject the retired federation protocol 0.3",
+                400,
+                headers={**PEER, "X-Aidash-Protocol": "0.3"},
                 immutable=method != "GET",
             )
             add(
                 endpoint,
-                "Require the peer bearer credential",
+                "Require the Federation token",
                 401,
                 headers={k: v for k, v in PEER.items() if k != "Authorization"},
                 immutable=method != "GET",
             )
-            if route["json"]:
-                add(
-                    endpoint,
-                    "Authenticated peer rejects malformed JSON",
-                    400,
-                    headers=PEER,
-                    body="{",
-                    media="application/json",
-                    immutable=True,
-                )
-            elif method == "GET" and route["uuid_parameters"]:
-                bad = path
-                for parameter in route["uuid_parameters"]:
-                    bad = bad.replace("{" + parameter + "}", "not-a-uuid")
-                add(
-                    endpoint,
-                    "Authenticated peer rejects malformed resource IDs",
-                    400,
-                    path=bad,
-                    headers=PEER,
-                )
-            elif path == "/federation/v0.1/observe":
-                add(
-                    endpoint,
-                    "Peer observes only its own execution state",
-                    200,
-                    headers=PEER,
-                    checks='expect(res.getBody()).to.be.an("object");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));',
-                )
-            else:
-                add(
-                    endpoint,
-                    "Unknown admission cannot supply receiving authority",
-                    403,
-                    headers=PEER,
-                )
+            add(
+                endpoint,
+                "Refuse a token that does not verify",
+                401,
+                headers=PEER,
+                immutable=method != "GET",
+            )
             continue
         if path == "/api/tenants" and method == "POST":
             # The creation API authenticates itself, after parsing the body.

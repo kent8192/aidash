@@ -334,7 +334,7 @@ impl Cloud {
 		}
 		let agent = registered.unwrap();
 		let owner = aidash_server::domain::qualified_agent(
-			&aidash_domain::nodes::NodeAddress::derived(f.store.deployment.as_str(), tenant),
+			&f.store.deployment.node(workspace.node.clone()),
 			&agent.id,
 			&agent.version,
 		);

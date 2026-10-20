@@ -12,7 +12,6 @@ use uuid::Uuid;
 pub trait ParticipantScope: Send {
 	async fn now(&mut self) -> Result<DateTime<Utc>>;
 	async fn lock(&mut self, id: Uuid) -> Result<Option<LocalStatus>>;
-	async fn trusted(&mut self, node: &str) -> Result<bool>;
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>>;
 	async fn reserve_gate(&mut self, id: Uuid) -> Result<()>;
 	async fn release_gate(&mut self, committed: bool) -> Result<()>;

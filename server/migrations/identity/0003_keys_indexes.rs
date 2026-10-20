@@ -90,9 +90,9 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "authorization_peer_graph_grants_pkey".to_owned(),
 				columns: vec![
-					"source_node".to_owned(),
-					"source_identity".to_owned(),
 					"tenant".to_owned(),
+					"source_deployment".to_owned(),
+					"source_identity".to_owned(),
 				],
 			},
 		})

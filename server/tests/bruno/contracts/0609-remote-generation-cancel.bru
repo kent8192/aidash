@@ -1,5 +1,5 @@
 meta {
-  name: 0609 remote-generation-cancel - Anonymous request is rejected
+  name: 0609 remote-generation-cancel - Unrecognized bearer cannot mutate state
   type: http
   seq: 609
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

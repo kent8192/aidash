@@ -1,5 +1,5 @@
 meta {
-  name: 0298 sessions-session-info - No opaque session
+  name: 0298 sessions-session-info - Revoked browser session
   type: http
   seq: 298
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Cookie: {{session_cookie}}
 }
 
 tests {

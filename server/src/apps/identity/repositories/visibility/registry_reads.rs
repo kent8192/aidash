@@ -8,7 +8,7 @@ use aidash_application::{
 	},
 };
 use aidash_domain::{
-	federation::{Peer, dependencies::Reference as Dependency},
+	federation::dependencies::Reference as Dependency,
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };
@@ -18,9 +18,6 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 impl RegistryReadScope for Reads<'_> {
-	fn protocol(&self) -> &str {
-		crate::config::PROTOCOL_VERSION
-	}
 	fn identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
@@ -122,38 +119,16 @@ impl RegistryReadScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		let result: NativeResult<Option<Peer>> = async {
-			let peer: Option<Peer> = {
-				let query_bind_1 = node;
-				crate::database::query_as(
-					&reinhardt::query::Query::select()
-						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-						))
-						.from(reinhardt::query::Alias::new("peers"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(node_id = ? AND enabled)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.lock(reinhardt::query::LockType::Share)
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **self.access.tx)
-				.await?
-			};
-			Ok(peer)
-		}
-		.await;
-		result.map_err(Into::into)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.access.route_to(node).await.map_err(Into::into)
 	}
 }
 
 #[async_trait]
 impl RegistryReadScope for NativeReads<'_> {
-	fn protocol(&self) -> &str {
-		crate::config::PROTOCOL_VERSION
-	}
 	fn identity(&self) -> (&str, &str) {
 		self.access.remote_identity()
 	}
@@ -196,10 +171,11 @@ impl RegistryReadScope for NativeReads<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		crate::apps::federation::peer::models::Peer::enabled_in(self.access.tx.as_mut(), node)
-			.await
-			.map_err(Into::into)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.access.route_to(node).await.map_err(Into::into)
 	}
 }
 pub(crate) struct VerificationScope<'a> {

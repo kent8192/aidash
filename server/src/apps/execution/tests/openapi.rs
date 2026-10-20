@@ -53,7 +53,6 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 		("/api/authorization/{tenant}/peer-mapping-history", "get"),
 		("/api/tasks/{task}/remote-executions", "get"),
 		("/api/tasks/{task}/remote-grants/{id}/messages", "post"),
-		("/api/transactions/trust", "get"),
 	] {
 		assert!(document["paths"][path][method].is_object());
 	}

@@ -33,10 +33,11 @@ pub trait ForeignGenerationReceiver: Send + Sync {
 	fn node_id(&self) -> &str;
 	fn now(&self) -> DateTime<Utc>;
 	async fn describe(&self, source: &str, id: Uuid) -> Result<Intent>;
+	/// The mapped authority of `subject` of `source` at the receiving Node
+	/// this repository was built for.
 	async fn begin(
 		&self,
 		source: &str,
-		tenant: &str,
 		subject: &str,
 	) -> Result<Box<dyn ForeignGenerationReceiverScope>>;
 }

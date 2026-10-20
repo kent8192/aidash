@@ -66,6 +66,7 @@ async fn interruption_store(
 		semantic_client: http_client.clone(),
 		provider_clients: crate::semantic::backend::clients().unwrap(),
 		keyless: Default::default(),
+		egress: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 		test_limit_ceilings: Default::default(),
 		recovery_cursors: Default::default(),

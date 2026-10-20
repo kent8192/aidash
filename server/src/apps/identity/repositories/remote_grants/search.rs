@@ -91,8 +91,15 @@ impl SemanticSearchRepository for Repository<'_> {
 		))
 	}
 	async fn verify_operation(&self, node: &str, operation: &Operation) -> Result<bool> {
+		let sender = crate::authorization::peer::usage_sender(
+			self.runtime,
+			operation.admission_id,
+			operation.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			self.runtime,
+			&sender,
 			node,
 			"/scoped/semantic/verify-operation",
 			&serde_json::to_value(operation)?,
@@ -101,8 +108,15 @@ impl SemanticSearchRepository for Repository<'_> {
 		.map_err(Into::into)
 	}
 	async fn receiver_reservations(&self, node: &str, input: &Input) -> Result<Vec<Reserved>> {
+		let sender = crate::authorization::peer::usage_sender(
+			self.runtime,
+			input.usage.admission_id,
+			input.usage.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			self.runtime,
+			&sender,
 			node,
 			"/scoped/usage/reserve",
 			&serde_json::to_value(input)?,

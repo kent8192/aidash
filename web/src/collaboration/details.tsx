@@ -47,7 +47,6 @@ import {
   AssignForm,
   EntityForm,
   GoalForm,
-  PeerForm,
   TaskForm,
   WorkspaceForm,
   type Submit,
@@ -199,7 +198,6 @@ export function OperationsDialog({
                 initial={d.kind === "cluster" ? "cluster" : "agent"}
               />
             )}
-            {d.kind === "peer" && <PeerForm submit={submit} />}
             {d.kind === "assign" && task && (
               <AssignForm
                 data={data}

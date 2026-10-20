@@ -554,8 +554,7 @@ async fn registry_versions_and_authenticated_api(
 	assert_eq!(auth.status(), StatusCode::OK);
 	let peer = http_client
 		.request(Method::POST, router.url("/federation/v0.1/scoped/discover"))
-		.header("x-aidash-node", "aidash://intruder")
-		.header("x-aidash-protocol", "0.2")
+		.header("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION)
 		.header("content-type", "application/json")
 		.body("{}")
 		.send()
@@ -1216,43 +1215,6 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 	cleanup(store, &database_url, &schema).await;
 }
 
-async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
-	{
-		let query_bind_1 = node;
-		let query_bind_2 = endpoint;
-		sqlx::query(
-			&reinhardt::query::Query::insert()
-				.into_table(reinhardt::query::Alias::new("peers"))
-				.columns([
-					reinhardt::query::Alias::new("node_id"),
-					reinhardt::query::Alias::new("endpoint"),
-					reinhardt::query::Alias::new("credential_env"),
-					reinhardt::query::Alias::new("protocol_version"),
-					reinhardt::query::Alias::new("enabled"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(reinhardt::query::Expr::cust("'0.2'"))
-						.expr(reinhardt::query::Expr::cust("TRUE"))
-						.to_owned(),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-}
-
 #[rstest::rstest]
 #[tokio::test]
 async fn child_creation_and_parent_completion_are_serialized(
@@ -1574,44 +1536,6 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn peer_disable_does_not_require_a_live_peer(
-	#[from(store)] _store_fixture: StoreFuture,
-	#[from(federation)]
-	#[with(_store_fixture.clone())]
-	_federation: common::RuntimeFuture,
-) {
-	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let f = _federation.await.federation;
-	add_test_peer(&store, "aidash://offline", "http://127.0.0.1:1").await;
-	sqlx::query(
-		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("peers"))
-			.value_expr(
-				reinhardt::query::Alias::new("credential_env"),
-				reinhardt::query::Expr::cust("'AIDASH_SECRET_REMOVED'"),
-			)
-			.and_where(reinhardt::query::Expr::cust("node_id = 'aidash://offline'"))
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.execute(store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let disabled = f
-		.register_peer(aidash_server::federation::Peer {
-			node_id: "aidash://offline".into(),
-			endpoint: "http://127.0.0.1:1".into(),
-			credential_env: "AIDASH_SECRET_REMOVED".into(),
-			protocol_version: "0.2".into(),
-			enabled: false,
-		})
-		.await
-		.unwrap();
-	assert!(!disabled.enabled);
-	cleanup(store, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn an_agent_runs_only_on_a_node_that_approved_it(
 	#[from(store)] _store_fixture: StoreFuture,
 	#[from(federation)]
@@ -1837,51 +1761,6 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 		.unwrap()
 	);
 	bus.context.delete_stream(&bus.stream_name).await.unwrap();
-	cleanup(store, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
-	#[from(store)] _store_fixture: StoreFuture,
-	#[from(federation)]
-	#[with(_store_fixture.clone())]
-	_federation: common::RuntimeFuture,
-	#[from(ambiguous_peer_credentials_cannot_impersonate_another_node_router)] _router: Arc<Router>,
-	#[future(awt)]
-	#[from(upstream)]
-	#[with(_router.clone())]
-	server: TestServerGuard,
-) {
-	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let f = _federation.await.federation;
-	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
-	add_test_peer(&store, "aidash://peer-b", "http://127.0.0.1:1").await;
-	assert!(
-		f.authenticate_peer("aidash://peer-b", &secret)
-			.await
-			.is_ok()
-	);
-	add_test_peer(&store, "aidash://peer-c", "http://127.0.0.1:1").await;
-	assert!(
-		f.authenticate_peer("aidash://peer-c", &secret)
-			.await
-			.is_err()
-	);
-
-	let endpoint = server.url.clone();
-	assert!(matches!(
-		f.register_peer(aidash_server::federation::Peer {
-			node_id: "aidash://peer-d".into(),
-			endpoint,
-			credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-			protocol_version: "0.2".into(),
-			enabled: true
-		})
-		.await,
-		Err(aidash_server::Error::Invalid(_))
-	));
-	drop(server);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -2197,23 +2076,6 @@ fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Route
 								.unwrap()
 						}
 					}
-				}),
-			)
-			.into_server_router(),
-	)
-}
-
-#[rstest::fixture]
-fn ambiguous_peer_credentials_cannot_impersonate_another_node_router() -> Arc<Router> {
-	Arc::new(
-		reinhardt::test::stub::StubRouter::new()
-			.route(
-				"/.well-known/aidash",
-				http::Method::GET,
-				reply(|_request: reinhardt::Request| async {
-					reinhardt::Response::ok()
-						.with_json(&json!({"id":"aidash://peer-d","protocol_version":"0.2"}))
-						.unwrap()
 				}),
 			)
 			.into_server_router(),

@@ -11,10 +11,9 @@ use serde_json::Value;
 pub struct Event {
 	#[field(primary_key = true)]
 	pub sequence: i64,
-	/// The Tenant the event concerns. A Deployment-level event, such as a peer
-	/// registration, concerns none.
-	#[field(field_type = "text", null = true)]
-	pub tenant: Option<String>,
+	/// The Tenant the event concerns.
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub id: uuid::Uuid,
 	/// The Node of the Workspace the event concerns; none for a Tenant-level event.
