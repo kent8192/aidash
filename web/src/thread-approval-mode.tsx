@@ -6,7 +6,6 @@ import {
   threadApprovalModeUpdate,
 } from "./generated/aidash";
 import type { ApprovalMode } from "./generated/models";
-import { useApprovalPreferences } from "./approval-settings";
 import { approvalCopy } from "./approval-settings-copy";
 import { threadModeOptions, threadModeUpdate } from "./approval-settings-model";
 import { useI18n } from "./ui";
@@ -22,11 +21,9 @@ const message = (reason: unknown) =>
  * approval.
  */
 export function ThreadApprovalMode({
-  tenant,
   workspace,
   thread,
 }: {
-  tenant: string;
   workspace: string;
   thread: string;
 }) {
@@ -39,7 +36,6 @@ export function ThreadApprovalMode({
     queryFn: ({ signal }) => threadApprovalMode(workspace, thread, { signal }),
     retry: false,
   });
-  const preferences = useApprovalPreferences(tenant);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (view.isError)
@@ -52,12 +48,7 @@ export function ThreadApprovalMode({
       </span>
     );
   if (!view.data) return null;
-  const { selected, options } = threadModeOptions(
-    view.data,
-    // Unknown until the preferences load: the server refuses Bypass until the
-    // person accepted it, so the option is not withheld on a guess.
-    preferences.data ? preferences.data.bypass_accepted_at !== null : true,
-  );
+  const { selected, options } = threadModeOptions(view.data);
   const label = (mode: ApprovalMode) => copy.modes[mode].label;
   const text = ({ value, mode, unavailable }: (typeof options)[number]) =>
     value === "default"

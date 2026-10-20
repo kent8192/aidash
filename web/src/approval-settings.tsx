@@ -15,7 +15,6 @@ import {
   inlineFormClass,
 } from "./components/patterns";
 import {
-  approvalPreferences,
   approvalPreferencesUpdate,
   approvalRuleCreate,
   approvalRuleDelete,
@@ -25,15 +24,25 @@ import {
 import type {
   ApprovalKind,
   ApprovalMode,
+  ApprovalModeReason,
   ApprovalRuleView,
   RuleEffect,
 } from "./generated/models";
+import { CatalogApprovalLink } from "./approval-decider";
+import {
+  approvalPreferencesKey,
+  useApprovalDecider,
+  useApprovalPreferences,
+} from "./approval-queries";
+import { versionKey } from "./approval-decider-model";
 import { approvalCopy } from "./approval-settings-copy";
 import {
   approvalKinds,
   approvalModes,
   bypassNeedsConfirmation,
   modeAllowed,
+  modeReason,
+  needsApprovalDecider,
   preferencesUpdate,
   ruleEffects,
   ruleInput,
@@ -47,21 +56,6 @@ const effectTones: Record<RuleEffect, StatusTone> = {
   ask: "warning",
   deny: "danger",
 };
-
-export function approvalPreferencesKey(tenant: string) {
-  return ["approval-preferences", tenant] as const;
-}
-
-/** The caller's own default Approval Mode, Bypass acceptance and the modes
- *  their Tenant's policy lets them use. */
-export function useApprovalPreferences(tenant: string) {
-  return useQuery({
-    queryKey: approvalPreferencesKey(tenant),
-    queryFn: ({ signal }) =>
-      approvalPreferences(encodeURIComponent(tenant), { signal }),
-    retry: false,
-  });
-}
 
 const message = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
@@ -105,12 +99,17 @@ function ModeOption({
   mode,
   checked,
   allowed,
+  reason,
+  decider,
   disabled,
   choose,
 }: {
   mode: ApprovalMode;
   checked: boolean;
   allowed: boolean;
+  reason: ApprovalModeReason | null;
+  /** The Tenant's approval Decider, once known. */
+  decider: { id: string; version: string } | null;
   disabled: boolean;
   choose: () => void;
 }) {
@@ -118,33 +117,42 @@ function ModeOption({
   const copy = approvalCopy[locale];
   const id = useId();
   return (
-    <label className="flex min-w-0 cursor-pointer items-start gap-3 rounded-md border border-border bg-surface px-3 py-2.5 transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft has-[:disabled]:cursor-not-allowed has-[:disabled]:hover:bg-surface">
-      <input
-        type="radio"
-        name="approval-mode"
-        className="mt-[3px] size-3.5 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
-        checked={checked}
-        disabled={disabled || !allowed}
-        aria-labelledby={`${id}-label`}
-        aria-describedby={`${id}-description`}
-        onChange={choose}
-      />
-      <span className="grid min-w-0 gap-0.5">
-        <span
-          id={`${id}-label`}
-          className="text-[13px] font-medium text-foreground"
-        >
-          {copy.modes[mode].label}
+    <div className="grid min-w-0 gap-1">
+      <label className="flex min-w-0 cursor-pointer items-start gap-3 rounded-md border border-border bg-surface px-3 py-2.5 transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft has-[:disabled]:cursor-not-allowed has-[:disabled]:hover:bg-surface">
+        <input
+          type="radio"
+          name="approval-mode"
+          className="mt-[3px] size-3.5 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
+          checked={checked}
+          disabled={disabled || !allowed}
+          aria-labelledby={`${id}-label`}
+          aria-describedby={`${id}-description`}
+          onChange={choose}
+        />
+        <span className="grid min-w-0 gap-0.5">
+          <span
+            id={`${id}-label`}
+            className="text-[13px] font-medium text-foreground"
+          >
+            {copy.modes[mode].label}
+          </span>
+          <span
+            id={`${id}-description`}
+            className="text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]"
+          >
+            {copy.modes[mode].description}
+            {reason &&
+              ` ${copy.modeReason[reason](decider ? versionKey(decider) : "")}`}
+          </span>
         </span>
-        <span
-          id={`${id}-description`}
-          className="text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]"
-        >
-          {copy.modes[mode].description}
-          {!allowed && ` ${copy.notAllowed}`}
-        </span>
-      </span>
-    </label>
+      </label>
+      {reason === "decider_unapproved" && decider && (
+        <CatalogApprovalLink
+          reference={decider}
+          className="ml-9 w-fit text-xs text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+        />
+      )}
+    </div>
   );
 }
 
@@ -153,6 +161,11 @@ function DefaultMode({ tenant }: { tenant: string }) {
   const copy = approvalCopy[locale];
   const client = useQueryClient();
   const preferences = useApprovalPreferences(tenant);
+  // Only a mode held back by the Decider needs to name it.
+  const decider = useApprovalDecider(
+    tenant,
+    preferences.data ? needsApprovalDecider(preferences.data.modes) : false,
+  );
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -200,6 +213,8 @@ function DefaultMode({ tenant }: { tenant: string }) {
             mode={mode}
             checked={current.default_mode === mode}
             allowed={modeAllowed(current.modes, mode)}
+            reason={modeReason(current.modes, mode)}
+            decider={decider.data?.decider ?? null}
             disabled={busy}
             choose={() =>
               bypassNeedsConfirmation(current, mode)

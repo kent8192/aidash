@@ -3,20 +3,33 @@ import assert from "node:assert/strict";
 import {
   approvalKinds,
   approvalModes,
+  blockReasons,
   bypassNeedsConfirmation,
   decisionScope,
   givenBy,
   modeAllowed,
+  modeReason,
+  needsApprovalDecider,
   preferencesUpdate,
+  refusedBy,
   ruleInput,
   ruleTargetText,
   targetExamples,
   threadModeOptions,
   threadModeUpdate,
 } from "../src/approval-settings-model.ts";
+import {
+  approvalCopy,
+  givenByText,
+  refusedByText,
+} from "../src/approval-settings-copy.ts";
 
-const choices = (allowed) =>
-  approvalModes.map((mode) => ({ mode, allowed: allowed.includes(mode) }));
+const choices = (allowed, reasons = {}) =>
+  approvalModes.map((mode) => ({
+    mode,
+    allowed: allowed.includes(mode),
+    reason: reasons[mode] ?? (allowed.includes(mode) ? null : "policy"),
+  }));
 
 test("a mode is offered only when the Tenant's policy reports it allowed", () => {
   const modes = choices(["manual", "dont_ask"]);
@@ -102,18 +115,128 @@ test("a rule's target reads back as text or as every target", () => {
   assert.equal(ruleTargetText({ exact: "example.com" }), "example.com");
 });
 
-test("an approval given in advance names its rule or Bypass", () => {
+test("an approval given in advance names its rule, Bypass or Auto", () => {
   assert.deepEqual(givenBy({ rule: "3f2c" }), { by: "rule", rule: "3f2c" });
   assert.deepEqual(givenBy({ mode: "bypass" }), { by: "bypass" });
+  assert.deepEqual(givenBy({ mode: "auto", decision: "4d1e" }), {
+    by: "auto",
+  });
   for (const unknown of [
     null,
     undefined,
     "bypass",
     {},
     { rule: "" },
-    { mode: "auto" },
+    { mode: "manual" },
   ])
     assert.equal(givenBy(unknown), null);
+});
+
+test("a refusal in advance names its rule, Don't ask, or Auto's block reason", () => {
+  assert.deepEqual(refusedBy({ rule: "9a0b" }), { by: "rule", rule: "9a0b" });
+  assert.deepEqual(refusedBy({ mode: "dont_ask" }), { by: "dont_ask" });
+  for (const reason of blockReasons)
+    assert.deepEqual(refusedBy({ mode: "auto", reason }), {
+      by: "auto",
+      reason,
+    });
+});
+
+test("an unknown block reason still reads as a block by Auto", () => {
+  assert.deepEqual(refusedBy({ mode: "auto", reason: "vibes" }), {
+    by: "auto",
+    reason: null,
+  });
+  assert.deepEqual(refusedBy({ mode: "auto" }), { by: "auto", reason: null });
+});
+
+test("a refusal this dashboard has nothing to say about is not read", () => {
+  for (const unknown of [
+    null,
+    undefined,
+    "dont_ask",
+    {},
+    { rule: "" },
+    { policy: "tenant" },
+    { mode: "bypass" },
+  ])
+    assert.equal(refusedBy(unknown), null);
+});
+
+test("a card says who gave an approval, to its owner and to others", () => {
+  const words = approvalCopy["en-US"];
+  assert.equal(
+    givenByText(words, { by: "rule", rule: "r" }, true, "alice"),
+    "Allowed by your rule",
+  );
+  assert.equal(
+    givenByText(words, { by: "bypass" }, true, "alice"),
+    "Allowed by Bypass",
+  );
+  assert.equal(
+    givenByText(words, { by: "rule", rule: "r" }, false, "alice"),
+    "Allowed by alice's rule",
+  );
+  for (const mine of [true, false])
+    assert.equal(
+      givenByText(words, { by: "auto" }, mine, "alice"),
+      "Allowed by Auto",
+    );
+});
+
+test("a card says what refused an approval, with Auto's reason in words", () => {
+  const words = approvalCopy["en-US"];
+  const text = (refused, mine = true) =>
+    refusedByText(words, refused, mine, "alice");
+  assert.equal(text({ by: "rule", rule: "r" }), "Refused by your rule");
+  assert.equal(text({ by: "dont_ask" }), "Refused: Don't ask");
+  assert.equal(
+    text({ by: "rule", rule: "r" }, false),
+    "Refused by alice's rule",
+  );
+  assert.equal(text({ by: "dont_ask" }, false), "Refused: alice's Don't ask");
+  const blocked = {
+    data_exfiltration: "data sent beyond your request",
+    destructive: "destroys or irreversibly changes things",
+    beyond_request: "goes beyond your request",
+    injected: "driven by content the Run read",
+    boundary: "contradicts a boundary you stated",
+    unavailable: "the Decider was unavailable",
+  };
+  assert.deepEqual(Object.keys(blocked), [...blockReasons]);
+  for (const [reason, words_] of Object.entries(blocked))
+    for (const mine of [true, false])
+      assert.equal(
+        text({ by: "auto", reason }, mine),
+        `Blocked by Auto: ${words_}`,
+      );
+  assert.equal(text({ by: "auto", reason: null }), "Blocked by Auto");
+});
+
+test("every copy names every block reason and mode reason in both languages", () => {
+  for (const words of Object.values(approvalCopy)) {
+    for (const reason of blockReasons)
+      assert.ok(words.blockReasons[reason], reason);
+    for (const reason of [
+      "policy",
+      "not_accepted",
+      "decider_unapproved",
+      "no_decider",
+    ]) {
+      assert.ok(words.modeReason[reason]("aidash.approval-decider@1.0.0"));
+      assert.ok(words.threadUnavailable[reason], reason);
+    }
+  }
+});
+
+test("a mode's reason names the Decider only when it is known", () => {
+  const words = approvalCopy["en-US"].modeReason;
+  assert.match(
+    words.decider_unapproved("aidash.approval-decider@1.0.0"),
+    /\(aidash\.approval-decider@1\.0\.0\) has no Catalog Approval/,
+  );
+  assert.doesNotMatch(words.decider_unapproved(""), /\(/);
+  assert.match(words.not_accepted(""), /first choose it as your default/);
 });
 
 const view = (mode, allowed = ["manual", "auto", "dont_ask", "bypass"]) => ({
@@ -123,7 +246,7 @@ const view = (mode, allowed = ["manual", "auto", "dont_ask", "bypass"]) => ({
 });
 
 test("a Thread without its own mode shows the default and offers every allowed mode", () => {
-  const { selected, options } = threadModeOptions(view(null), true);
+  const { selected, options } = threadModeOptions(view(null));
   assert.equal(selected, "default");
   assert.deepEqual(
     options.map((option) => [option.value, option.mode, option.unavailable]),
@@ -138,14 +261,11 @@ test("a Thread without its own mode shows the default and offers every allowed m
 });
 
 test("a Thread's own mode is the selected option", () => {
-  assert.equal(threadModeOptions(view("dont_ask"), true).selected, "dont_ask");
+  assert.equal(threadModeOptions(view("dont_ask")).selected, "dont_ask");
 });
 
 test("modes the policy withholds are unavailable with the policy as the reason", () => {
-  const { options } = threadModeOptions(
-    view(null, ["manual", "dont_ask"]),
-    true,
-  );
+  const { options } = threadModeOptions(view(null, ["manual", "dont_ask"]));
   const reason = (value) => options.find((o) => o.value === value).unavailable;
   assert.equal(reason("auto"), "policy");
   assert.equal(reason("bypass"), "policy");
@@ -153,9 +273,48 @@ test("modes the policy withholds are unavailable with the policy as the reason",
 });
 
 test("Bypass stays unavailable in a Thread until the person accepted its risk", () => {
-  const { options } = threadModeOptions(view(null), false);
+  const { options } = threadModeOptions({
+    ...view(null),
+    modes: choices(["manual", "auto", "dont_ask", "bypass"], {
+      bypass: "not_accepted",
+    }),
+  });
   const bypass = options.find((o) => o.value === "bypass");
-  assert.equal(bypass.unavailable, "bypass_unaccepted");
+  assert.equal(bypass.unavailable, "not_accepted");
+});
+
+test("Auto is unavailable in a Thread for the Decider's reason, not the policy's", () => {
+  for (const reason of ["decider_unapproved", "no_decider"]) {
+    const { options } = threadModeOptions({
+      ...view(null),
+      modes: choices(["manual", "dont_ask", "bypass"], { auto: reason }),
+    });
+    assert.equal(options.find((o) => o.value === "auto").unavailable, reason);
+  }
+});
+
+test("a mode's availability and reason come from the server's choices", () => {
+  const modes = choices(["manual", "auto", "bypass"], {
+    bypass: "not_accepted",
+    dont_ask: "policy",
+  });
+  assert.equal(modeAllowed(modes, "bypass"), true);
+  assert.equal(modeReason(modes, "bypass"), "not_accepted");
+  assert.equal(modeReason(modes, "dont_ask"), "policy");
+  assert.equal(modeReason(modes, "manual"), null);
+  assert.equal(modeReason([], "manual"), null);
+});
+
+test("only a mode held back by the approval Decider asks for its name", () => {
+  const without = choices(["manual", "dont_ask"]);
+  assert.equal(needsApprovalDecider(without), false);
+  for (const reason of ["decider_unapproved", "no_decider"])
+    assert.equal(
+      needsApprovalDecider(
+        choices(["manual", "dont_ask", "bypass"], { auto: reason }),
+      ),
+      true,
+    );
 });
 
 test("a Thread mode is set by name and cleared by the default", () => {

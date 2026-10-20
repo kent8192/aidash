@@ -16,10 +16,16 @@ import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
 import { requestPrice, runGrantScope } from "../research";
-import { approvalCopy } from "../approval-settings-copy";
+import { useViewerSubject } from "../approval-queries";
+import {
+  approvalCopy,
+  givenByText,
+  refusedByText,
+} from "../approval-settings-copy";
 import {
   decisionScope,
   givenBy,
+  refusedBy,
   type DecisionChoice,
 } from "../approval-settings-model";
 import {
@@ -235,7 +241,9 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const words = approvalCopy[locale];
+  const viewer = useViewerSubject();
   const advance = givenBy(item.given_by);
+  const refusal = refusedBy(item.refused_by);
   const client = useQueryClient();
   const [runGrant, setRunGrant] = useState(false);
   const [minutes, setMinutes] = useState(15);
@@ -301,11 +309,24 @@ export function ApprovalCardView({ item }: { item: Approval }) {
       <Hint role="status">{stateText(item, ja, locale)}</Hint>
       {advance && (
         <Hint>
-          {item.viewer_is_approver
-            ? advance.by === "rule"
-              ? words.givenByRule
-              : words.givenByBypass
-            : words.givenByOther(item.decided_by ?? "?", advance.by)}
+          {givenByText(
+            words,
+            advance,
+            item.viewer_is_approver,
+            item.decided_by ?? "?",
+          )}
+        </Hint>
+      )}
+      {refusal && (
+        <Hint>
+          {refusedByText(
+            words,
+            refusal,
+            // Nobody approves a refused card; the person whose rule or mode
+            // refused it is the one who decided it.
+            viewer !== null && item.decided_by === viewer,
+            item.decided_by ?? "?",
+          )}
         </Hint>
       )}
       {item.state === "pending" && item.viewer_is_approver && (

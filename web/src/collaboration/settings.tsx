@@ -13,7 +13,7 @@ import {
   Store,
   type LucideIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge as Tag } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -26,6 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { focusedVersion } from "../approval-decider-model";
 import { ApprovalSettingsPage } from "../approval-settings";
 import { approvalCopy } from "../approval-settings-copy";
 import { DeploymentPage } from "../deployment";
@@ -482,14 +483,25 @@ function TenantRegistry({
   data,
   section,
   open,
+  focus,
 }: {
   data: State;
   section: "agents" | "registry" | "clusters";
   open: (selection: Selection) => void;
+  /** `<id>@<version>` of a version a link asks to see, such as the Tenant's
+   *  approval Decider whose Catalog Approval Auto needs. */
+  focus?: string;
 }) {
   const { t } = useI18n();
   const versions = useRegistryVersions(data.access);
   const { can } = useTenantActions(data.access);
+  const opened = useRef("");
+  useEffect(() => {
+    if (!focus || !versions.data || opened.current === focus) return;
+    opened.current = focus;
+    const version = focusedVersion(versions.data, focus);
+    if (version) open({ kind: "entityDetail", entity: version.entry });
+  }, [focus, versions.data, open]);
   if (versions.isError) return <Alert>{t("catalogRegistryUnavailable")}</Alert>;
   if (!versions.data) return <Loading />;
   const kind = { agents: "agent", clusters: "cluster", registry: null }[
@@ -526,6 +538,7 @@ export function Configuration({
   disconnect,
   integration,
   channel,
+  focus,
 }: {
   data: State;
   section: SettingsSection;
@@ -534,6 +547,7 @@ export function Configuration({
   disconnect: () => void;
   integration?: IntegratedView;
   channel?: string;
+  focus?: string;
 }) {
   const { t, locale } = useI18n();
   const { can } = useTenantActions(data.access);
@@ -572,6 +586,7 @@ export function Configuration({
                 data={data}
                 section={section}
                 open={open}
+                focus={section === "registry" ? focus : undefined}
               />
             ))}
           {section === "registry" && (

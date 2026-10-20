@@ -1,10 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { setup } from "./collaboration-fixture";
+import {
+  builtInApprovalDecider,
+  registryVersion,
+  routeRegistryVersions,
+} from "./registry-fixture";
 
 // UI contract fixtures; the order of evaluation and the Tenant's ceiling are
 // verified by the Rust approval_preferences and execution_authorization suites.
 type Mode = "manual" | "auto" | "dont_ask" | "bypass";
+type Reason = "policy" | "not_accepted" | "decider_unapproved" | "no_decider";
 type Rule = {
   id: string;
   kind: string;
@@ -14,6 +20,7 @@ type Rule = {
   created_at: string;
 };
 const modes: Mode[] = ["manual", "auto", "dont_ask", "bypass"];
+const BUILT_IN = { id: "aidash.approval-decider", version: "1.0.0" };
 const rule = (id: string, patch: Partial<Rule> = {}): Rule => ({
   id,
   kind: "tool_call",
@@ -33,6 +40,10 @@ async function approvals(
     rules?: Rule[];
     refuseMode?: Mode;
     failThreadWrite?: boolean;
+    /** Why Auto is held back although the Tenant's policy allows it. */
+    auto?: "decider_unapproved" | "no_decider";
+    /** The versions (`id@version`) that hold a Catalog Approval. */
+    approvedDeciders?: string[];
   } = {},
 ) {
   const allowed = options.allowed ?? ["manual", "dont_ask"];
@@ -43,15 +54,37 @@ async function approvals(
     revision: 3,
     rules: options.rules ?? [],
     thread: null as Mode | null,
+    decider: {
+      decider: { id: BUILT_IN.id, version: BUILT_IN.version },
+      built_in: true,
+      registered: options.auto !== "no_decider",
+      approved: options.auto === undefined,
+      revision: 0,
+    },
   };
   const calls = {
+    deciders: [] as Record<string, unknown>[],
     preferences: [] as Record<string, unknown>[],
     rules: [] as Record<string, unknown>[],
     deleted: [] as string[],
     thread: [] as Record<string, unknown>[],
   };
+  // The reason the server reports for a mode: the policy first, then what the
+  // mode itself still needs.
+  const reasonOf = (mode: Mode): Reason | null =>
+    !allowed.includes(mode)
+      ? "policy"
+      : mode === "auto"
+        ? (options.auto ?? null)
+        : mode === "bypass" && state.bypass_accepted_at === null
+          ? "not_accepted"
+          : null;
   const choices = () =>
-    modes.map((mode) => ({ mode, allowed: allowed.includes(mode) }));
+    modes.map((mode) => ({
+      mode,
+      allowed: reasonOf(mode) === null || reasonOf(mode) === "not_accepted",
+      reason: reasonOf(mode),
+    }));
   const preferences = () => ({
     default_mode: state.default_mode,
     answer_deadline_seconds: state.answer_deadline_seconds,
@@ -76,6 +109,29 @@ async function approvals(
       state.revision += 1;
     }
     return route.fulfill({ json: preferences() });
+  });
+  await page.route("**/api/tenants/acme/approval-decider", (route) => {
+    const request = route.request();
+    if (request.method() === "PUT") {
+      const body = request.postDataJSON();
+      calls.deciders.push(body);
+      if (body.expected_revision !== state.decider.revision)
+        return route.fulfill({ status: 409, json: { error: "stale" } });
+      const named = body.decider as { id: string; version: string } | null;
+      state.decider = {
+        decider: named ?? { id: BUILT_IN.id, version: BUILT_IN.version },
+        built_in: named === null,
+        registered: true,
+        approved:
+          named === null
+            ? true
+            : (options.approvedDeciders ?? []).includes(
+                `${named.id}@${named.version}`,
+              ),
+        revision: state.decider.revision + 1,
+      };
+    }
+    return route.fulfill({ json: state.decider });
   });
   await page.route("**/api/tenants/acme/approval-rules/mine", (route) => {
     const request = route.request();
@@ -352,16 +408,24 @@ test("a Deployment Administrator has no Approvals section", async ({
   ).toHaveCount(0);
 });
 
-async function openThread(page: Page) {
+async function openThread(page: Page, ja = false) {
   await page.goto("/collaboration?channel=workspace-one");
   await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
+    .getByRole("button", {
+      name: ja ? "スレッドで返信" : "Reply in thread",
+      exact: true,
+    })
     .first()
     .click();
   await expect(
-    page.getByRole("heading", { name: "Thread", exact: true }),
+    page.getByRole("heading", {
+      name: ja ? "スレッド" : "Thread",
+      exact: true,
+    }),
   ).toBeVisible();
-  return page.getByRole("combobox", { name: "Approval Mode for this Thread" });
+  return page.getByRole("combobox", {
+    name: ja ? "この Thread の Approval Mode" : "Approval Mode for this Thread",
+  });
 }
 
 test("a Thread's composer switches the Approval Mode and returns to the default", async ({
@@ -375,10 +439,10 @@ test("a Thread's composer switches the Approval Mode and returns to the default"
 
   await expect(mode).toHaveValue("default");
   await expect(mode.locator("option:checked")).toHaveText("Default: Manual");
-  // Bypass cannot be chosen here before its risk is accepted in Settings.
+  // Bypass cannot be chosen here before its risk is accepted as the default.
   await expect(mode.locator("option[value=bypass]")).toBeDisabled();
   await expect(mode.locator("option[value=bypass]")).toHaveText(
-    "Bypass (accept in Settings first)",
+    "Bypass (choose it as default first)",
   );
 
   await mode.selectOption("dont_ask");
@@ -548,9 +612,8 @@ test("Allow for this Run still carries its targets and expiry", async ({
   expect(typeof decisions[0].expires_at).toBe("string");
 });
 
-test("an approval given in advance says which rule or mode gave it", async ({
-  page,
-}) => {
+/** A Thread whose Run shows `items` among its approvals and grants. */
+async function runApprovals(page: Page, items: unknown[], ja = false) {
   const area = {
     id: "area-one",
     workspace_id: "workspace-one",
@@ -562,16 +625,6 @@ test("an approval given in advance says which rule or mode gave it", async ({
     revision: 7,
     manifest: [],
   };
-  const given = (id: string, by: unknown) =>
-    pending({
-      id,
-      state: "approved",
-      allow_always: false,
-      given_by: by,
-      decided_by: "alice",
-      decided_at: "2026-10-20T00:00:00Z",
-    });
-  await setup(page, { subject: true });
   await page.route("**/api/working-areas**", (route) =>
     new URL(route.request().url()).pathname === "/api/working-areas"
       ? route.fulfill({ json: { items: [area], next_cursor: null } })
@@ -599,27 +652,112 @@ test("an approval given in advance says which rule or mode gave it", async ({
       new URL(route.request().url()).pathname !== "/api/capabilities/approvals"
     )
       return route.fallback();
-    return route.fulfill({
-      json: {
-        items: [
-          given("by-rule", { rule: "2f1c0b1e" }),
-          given("by-bypass", { mode: "bypass" }),
-          pending({ id: "by-person", state: "approved", allow_always: false }),
-        ],
-        next_cursor: null,
-      },
-    });
+    return route.fulfill({ json: { items, next_cursor: null } });
   });
-  await openThread(page);
-  await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
+  await openThread(page, ja);
+  await expect(
+    page.getByRole("heading", { name: ja ? "Agent の作業" : "Agent work" }),
+  ).toBeVisible();
   // Nothing is pending, so the list starts closed.
-  await page.getByText("Approvals and grants (3)").click();
-  const cards = page.getByRole("article", { name: "Tool call approval" });
-  await expect(cards).toHaveCount(3);
+  await page
+    .getByText(
+      `${ja ? "承認と接続許可" : "Approvals and grants"} (${items.length})`,
+    )
+    .click();
+  return page.getByRole("article", {
+    name: ja ? "ツール呼び出しの承認" : "Tool call approval",
+  });
+}
+
+const given = (id: string, by: unknown) =>
+  pending({
+    id,
+    state: "approved",
+    allow_always: false,
+    given_by: by,
+    decided_by: "alice",
+    decided_at: "2026-10-20T00:00:00Z",
+  });
+
+/** A call refused before anyone was asked: nobody approves it. */
+const refused = (id: string, by: unknown, person = "alice") =>
+  pending({
+    id,
+    state: "denied",
+    allow_always: false,
+    approver: null,
+    viewer_is_approver: false,
+    refused_by: by,
+    decided_by: person,
+    decided_at: "2026-10-20T00:00:00Z",
+  });
+
+test("an approval given in advance says which rule or mode gave it", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  const cards = await runApprovals(page, [
+    given("by-rule", { rule: "2f1c0b1e" }),
+    given("by-bypass", { mode: "bypass" }),
+    given("by-auto", { mode: "auto", decision: "4d1e9b27" }),
+    pending({ id: "by-person", state: "approved", allow_always: false }),
+  ]);
+  await expect(cards).toHaveCount(4);
   await expect(cards.nth(0)).toContainText("Allowed by your rule");
   await expect(cards.nth(1)).toContainText("Allowed by Bypass");
-  await expect(cards.nth(2)).not.toContainText("Allowed by your");
-  await expect(cards.nth(2)).not.toContainText("Allowed by Bypass");
+  await expect(cards.nth(2)).toContainText("Allowed by Auto");
+  await expect(cards.nth(3)).not.toContainText("Allowed by");
+});
+
+test("a refused approval says what refused it, and why Auto blocked it", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  const block = (reason: string) => ({ mode: "auto", reason });
+  const cards = await runApprovals(page, [
+    refused("by-rule", { rule: "9a0b" }),
+    refused("by-dont-ask", { mode: "dont_ask" }),
+    refused("by-others-rule", { rule: "9a0c" }, "bob"),
+    refused("exfiltration", block("data_exfiltration")),
+    refused("destructive", block("destructive")),
+    refused("beyond", block("beyond_request")),
+    refused("injected", block("injected")),
+    refused("boundary", block("boundary")),
+    refused("unavailable", block("unavailable")),
+  ]);
+  const texts = [
+    "Refused by your rule",
+    "Refused: Don't ask",
+    "Refused by bob's rule",
+    "Blocked by Auto: data sent beyond your request",
+    "Blocked by Auto: destroys or irreversibly changes things",
+    "Blocked by Auto: goes beyond your request",
+    "Blocked by Auto: driven by content the Run read",
+    "Blocked by Auto: contradicts a boundary you stated",
+    "Blocked by Auto: the Decider was unavailable",
+  ];
+  await expect(cards).toHaveCount(texts.length);
+  for (const [index, text] of texts.entries())
+    await expect(cards.nth(index)).toContainText(text);
+});
+
+test("what gave or refused an approval reads in Japanese", async ({ page }) => {
+  await setup(page, { subject: true, locale: "ja-JP" });
+  const cards = await runApprovals(
+    page,
+    [
+      given("by-auto", { mode: "auto", decision: "4d1e9b27" }),
+      refused("blocked", { mode: "auto", reason: "injected" }),
+      refused("by-rule", { rule: "9a0b" }),
+    ],
+    true,
+  );
+  await expect(cards).toHaveCount(3);
+  await expect(cards.nth(0)).toContainText("Auto により許可");
+  await expect(cards.nth(1)).toContainText(
+    "Auto がブロック: Run が読んだ内容に動かされている",
+  );
+  await expect(cards.nth(2)).toContainText("あなたのルールにより拒否");
 });
 
 test("a Tenant Administrator with approval.read sees a member's mode and rules, read only", async ({
@@ -665,6 +803,8 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -743,4 +883,266 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
   await expect(
     page.getByText("Approval settings", { exact: true }),
   ).toHaveCount(0);
+});
+
+const everyMode: Mode[] = ["manual", "auto", "dont_ask", "bypass"];
+const BUILT_IN_KEY = `${BUILT_IN.id}@${BUILT_IN.version}`;
+
+const decider = (id: string, version = "1.0.0", hook = "approval") => ({
+  id,
+  version,
+  kind: "decider",
+  name: { en: id === BUILT_IN.id ? "Approval Decider" : "Judge" },
+  description: { en: "Judges approvals" },
+  capabilities: [],
+  tags: [],
+  languages: [],
+  skills: [],
+  schema: {},
+  config: {
+    hook,
+    routes: [
+      { provider_contract: "typesafe.jev/1", model: "typesafe/jev-1.14" },
+      {
+        provider_contract: "openrouter.decisions/1",
+        model: "cloudflare/clef",
+        hosts: ["cloudflare", "deepinfra"],
+      },
+    ],
+  },
+});
+
+test("a mode held back by the approval Decider says so and links to its Catalog Approval", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await approvals(page, { allowed: everyMode, auto: "decider_unapproved" });
+  await page.goto("/settings?view=approvals");
+
+  await expect(radio(page, "Auto")).toBeDisabled();
+  await expect(radio(page, "Auto")).toHaveAccessibleDescription(
+    new RegExp(
+      `\\(${BUILT_IN_KEY.replaceAll(".", "\\.")}\\) has no Catalog Approval on this Node`,
+    ),
+  );
+  await expect(
+    page.getByRole("link", { name: "Review its Catalog Approval" }),
+  ).toHaveAttribute(
+    "href",
+    `/settings?view=registry&focus=${encodeURIComponent(BUILT_IN_KEY)}`,
+  );
+  // The policy's own wording is kept for the policy.
+  await expect(radio(page, "Manual")).toBeEnabled();
+});
+
+test("Auto without a registered approval Decider says it is not registered", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await approvals(page, { allowed: everyMode, auto: "no_decider" });
+  await page.goto("/settings?view=approvals");
+
+  await expect(radio(page, "Auto")).toBeDisabled();
+  await expect(radio(page, "Auto")).toHaveAccessibleDescription(
+    /is not registered as an approval Decider/,
+  );
+  await expect(
+    page.getByRole("link", { name: "Review its Catalog Approval" }),
+  ).toHaveCount(0);
+});
+
+test("Bypass explains that its risk is accepted when first chosen as the default", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await approvals(page, { allowed: everyMode });
+  await page.goto("/settings?view=approvals");
+
+  await expect(radio(page, "Bypass")).toBeEnabled();
+  await expect(radio(page, "Bypass")).toHaveAccessibleDescription(
+    /You accept the risk of Bypass when you first choose it as your default\./,
+  );
+  await expect(radio(page, "Auto")).toBeEnabled();
+  await expect(radio(page, "Auto")).not.toHaveAccessibleDescription(
+    /Catalog Approval/,
+  );
+});
+
+test("the Settings reasons read in Japanese", async ({ page }) => {
+  await setup(page, { subject: true, locale: "ja-JP" });
+  await approvals(page, { allowed: everyMode, auto: "decider_unapproved" });
+  await page.goto("/settings?view=approvals");
+
+  await expect(
+    page.getByRole("radio", { name: "Auto", exact: true }),
+  ).toHaveAccessibleDescription(/Catalog Approval を受けていません/);
+  await expect(
+    page.getByRole("radio", { name: "Bypass", exact: true }),
+  ).toHaveAccessibleDescription(/初めて既定のモードとして選ぶとき/);
+  await expect(
+    page.getByRole("link", { name: "Catalog Approval を確認する" }),
+  ).toBeVisible();
+});
+
+test("the Thread switcher names why Auto and Bypass cannot be chosen", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await approvals(page, { allowed: everyMode, auto: "decider_unapproved" });
+  const mode = await openThread(page);
+
+  await expect(mode.locator("option[value=auto]")).toBeDisabled();
+  await expect(mode.locator("option[value=auto]")).toHaveText(
+    "Auto (Decider not approved)",
+  );
+  await expect(mode.locator("option[value=bypass]")).toHaveText(
+    "Bypass (choose it as default first)",
+  );
+});
+
+test("the Thread switcher says when no approval Decider is registered", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await approvals(page, { allowed: everyMode, auto: "no_decider" });
+  const mode = await openThread(page);
+  await expect(mode.locator("option[value=auto]")).toHaveText(
+    "Auto (no approval Decider)",
+  );
+});
+
+test("the link opens the Catalog Approval of the Tenant's approval Decider", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await routeRegistryVersions(page, () => [
+    registryVersion(decider(BUILT_IN.id), { approval: null, history: [] }),
+    registryVersion(decider("tenant.judge")),
+  ]);
+  await approvals(page, { allowed: everyMode, auto: "decider_unapproved" });
+  await page.goto("/settings?view=approvals");
+
+  await page.getByRole("link", { name: "Review its Catalog Approval" }).click();
+  await expect(page).toHaveURL(/\/settings\?view=registry&focus=/);
+  const section = page.getByRole("region", { name: "Catalog Approval" });
+  await expect(section).toBeVisible();
+  await expect(section).toContainText("Not approved");
+  await expect(section).toContainText("typesafe/jev-1.14");
+  await expect(section).toContainText("cloudflare, deepinfra");
+});
+
+test("a focus that names no version opens nothing", async ({ page }) => {
+  await setup(page, { subject: true });
+  await routeRegistryVersions(page, () => [
+    registryVersion(decider("tenant.judge")),
+  ]);
+  await page.goto("/settings?view=registry&focus=missing%401.0.0");
+  await expect(page.getByRole("heading", { name: "Judge" })).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+const panelOf = (page: Page, title: string) =>
+  page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: title, exact: true }),
+  });
+
+async function deciderPanel(
+  page: Page,
+  actions: string[],
+  options: Parameters<typeof approvals>[1] = {},
+) {
+  const errors = (await setup(page, { subject: true, tenantActions: actions }))
+    .errors;
+  await routeRegistryVersions(page, () => [
+    registryVersion(decider(BUILT_IN.id), { approval: null, history: [] }),
+    registryVersion(decider("tenant.judge")),
+    registryVersion(decider("tenant.compaction", "1.0.0", "compaction")),
+  ]);
+  const { calls } = await approvals(page, options);
+  await page.goto("/trust?view=authorization");
+  const panel = panelOf(page, "Approval Decider");
+  return { panel, calls, errors };
+}
+
+test("Tenant administration shows the chosen Decider, its approval and where it sends Run state", async ({
+  page,
+}) => {
+  const { panel, errors } = await deciderPanel(page, ["registry.create"], {
+    auto: "decider_unapproved",
+  });
+  await expect(panel).toContainText(BUILT_IN_KEY);
+  await expect(panel).toContainText(
+    "Built-in, used until the Tenant names another",
+  );
+  await expect(panel).toContainText("Not approved, so Auto is unavailable");
+  await expect(panel).toContainText("typesafe");
+  await expect(panel).toContainText("cloudflare, deepinfra");
+  await expect(
+    panel.getByRole("link", { name: "Review its Catalog Approval" }),
+  ).toBeVisible();
+  // Without tenant.update the choice is read only.
+  await expect(panel.getByRole("combobox")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a holder of tenant.update chooses a Decider of hook approval or resets to the built-in", async ({
+  page,
+}) => {
+  const { panel, calls } = await deciderPanel(page, ["tenant.update"], {
+    approvedDeciders: ["tenant.judge@1.0.0"],
+  });
+  const select = panel.getByRole("combobox", {
+    name: "Approval Decider for Auto",
+  });
+  await expect(select).toHaveValue("");
+  // Only the Tenant's own Deciders of hook approval are offered.
+  await expect(select.locator("option")).toHaveText([
+    "Built-in",
+    "Judge · tenant.judge@1.0.0",
+  ]);
+
+  await select.selectOption("tenant.judge@1.0.0");
+  await expect(panel).toContainText("Chosen by this Tenant");
+  await expect(panel).toContainText("tenant.judge@1.0.0");
+  await expect(panel).toContainText("Approved");
+  await expect(select).toHaveValue("tenant.judge@1.0.0");
+  expect(calls.deciders).toEqual([
+    { expected_revision: 0, decider: { id: "tenant.judge", version: "1.0.0" } },
+  ]);
+
+  await select.selectOption("");
+  await expect(panel).toContainText(
+    "Built-in, used until the Tenant names another",
+  );
+  expect(calls.deciders.at(-1)).toEqual({
+    expected_revision: 1,
+    decider: null,
+  });
+});
+
+test("a Decider the Registry does not hold as an approval Decider says Auto is unavailable", async ({
+  page,
+}) => {
+  const { panel } = await deciderPanel(page, ["registry.create"], {
+    auto: "no_decider",
+  });
+  await expect(panel).toContainText(
+    "The Registry holds no Decider of hook approval under this name",
+  );
+  await expect(panel.getByRole("link")).toHaveCount(0);
+});
+
+test("the Approval Decider panel reads in Japanese", async ({ page }) => {
+  await setup(page, {
+    subject: true,
+    locale: "ja-JP",
+    tenantActions: ["tenant.update"],
+  });
+  await approvals(page, { auto: "decider_unapproved" });
+  await page.goto("/trust?view=authorization");
+  const panel = panelOf(page, "承認 Decider");
+  await expect(panel).toContainText("未承認のため、Auto は利用できません");
+  await expect(
+    panel.getByRole("combobox", { name: "Auto の承認 Decider" }),
+  ).toBeVisible();
 });

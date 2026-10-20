@@ -1,9 +1,14 @@
 import type {
   ApprovalKind,
   ApprovalMode,
+  ApprovalModeReason,
   RuleEffect,
 } from "./generated/models";
-import type { Unavailable } from "./approval-settings-model";
+import type {
+  BlockReason,
+  GivenBy,
+  RefusedBy,
+} from "./approval-settings-model";
 
 type ApprovalCopy = {
   title: string;
@@ -12,8 +17,10 @@ type ApprovalCopy = {
   modeTitle: string;
   modeHelp: string;
   modes: Record<ApprovalMode, { label: string; description: string }>;
-  notAllowed: string;
-  bypassNeedsAcceptance: string;
+  /** Why a mode is unavailable, or not yet in effect, in plain words. `decider`
+   *  names the Tenant's approval Decider, or is empty before it is known. */
+  modeReason: Record<ApprovalModeReason, (decider: string) => string>;
+  reviewCatalogApproval: string;
   saved: string;
   saving: string;
   rulesTitle: string;
@@ -47,15 +54,65 @@ type ApprovalCopy = {
   memberReadOnly: string;
   threadSwitcher: string;
   threadDefault: (mode: string) => string;
-  threadUnavailable: Record<Unavailable, string>;
+  threadUnavailable: Record<ApprovalModeReason, string>;
   threadFailed: string;
   threadLoadFailed: string;
   alwaysAllow: string;
   alwaysAllowScope: string;
   givenByRule: string;
   givenByBypass: string;
+  givenByAuto: string;
   givenByOther: (person: string, by: "rule" | "bypass") => string;
+  refusedByRule: string;
+  refusedByDontAsk: string;
+  refusedByOther: (person: string, by: "rule" | "dont_ask") => string;
+  blockedByAuto: (reason: string | null) => string;
+  blockReasons: Record<BlockReason, string>;
+  decider: {
+    title: string;
+    help: string;
+    chosen: string;
+    builtIn: string;
+    chosenByTenant: string;
+    catalogApproval: string;
+    approved: string;
+    notApproved: string;
+    notRegistered: string;
+    select: string;
+    builtInOption: string;
+    saving: string;
+    saved: string;
+    noChoices: string;
+  };
 };
+
+/** What an approval card says gave an approval in advance. */
+export function givenByText(
+  copy: ApprovalCopy,
+  given: GivenBy,
+  mine: boolean,
+  person: string,
+): string {
+  if (given.by === "auto") return copy.givenByAuto;
+  if (mine) return given.by === "rule" ? copy.givenByRule : copy.givenByBypass;
+  return copy.givenByOther(person, given.by);
+}
+
+/** What an approval card says refused an approval before anyone was asked. */
+export function refusedByText(
+  copy: ApprovalCopy,
+  refused: RefusedBy,
+  mine: boolean,
+  person: string,
+): string {
+  if (refused.by === "auto")
+    return copy.blockedByAuto(
+      refused.reason === null ? null : copy.blockReasons[refused.reason],
+    );
+  if (mine)
+    return refused.by === "rule" ? copy.refusedByRule : copy.refusedByDontAsk;
+  return copy.refusedByOther(person, refused.by);
+}
 
 export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
   "en-US": {
@@ -89,9 +146,16 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
           "Every approval your Tenant's policy lets you give is approved without asking. Deny and ask rules still apply.",
       },
     },
-    notAllowed: "Your Tenant's policy does not allow this mode.",
-    bypassNeedsAcceptance:
-      "Accept the risk of Bypass in Settings, Approvals first.",
+    modeReason: {
+      policy: () => "Your Tenant's policy does not allow this mode.",
+      not_accepted: () =>
+        "You accept the risk of Bypass when you first choose it as your default.",
+      decider_unapproved: (decider) =>
+        `Not available yet: the approval Decider your Tenant chose${decider && ` (${decider})`} has no Catalog Approval on this Node.`,
+      no_decider: (decider) =>
+        `Not available: the Decider your Tenant chose${decider && ` (${decider})`} is not registered as an approval Decider.`,
+    },
+    reviewCatalogApproval: "Review its Catalog Approval",
     saved: "Saved",
     saving: "Saving…",
     rulesTitle: "Approval Rules",
@@ -167,7 +231,9 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     threadDefault: (mode) => `Default: ${mode}`,
     threadUnavailable: {
       policy: "not allowed by policy",
-      bypass_unaccepted: "accept in Settings first",
+      not_accepted: "choose it as default first",
+      decider_unapproved: "Decider not approved",
+      no_decider: "no approval Decider",
     },
     threadFailed: "The Approval Mode could not be changed.",
     threadLoadFailed: "Approval Mode unavailable",
@@ -176,10 +242,45 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       "Allows this call now and adds an allow rule for it to your Approval Rules, so your Runs stop asking.",
     givenByRule: "Allowed by your rule",
     givenByBypass: "Allowed by Bypass",
+    givenByAuto: "Allowed by Auto",
     givenByOther: (person, by) =>
       by === "rule"
         ? `Allowed by ${person}'s rule`
         : `Allowed by ${person}'s Bypass`,
+    refusedByRule: "Refused by your rule",
+    refusedByDontAsk: "Refused: Don't ask",
+    refusedByOther: (person, by) =>
+      by === "rule"
+        ? `Refused by ${person}'s rule`
+        : `Refused: ${person}'s Don't ask`,
+    blockedByAuto: (reason) =>
+      reason === null ? "Blocked by Auto" : `Blocked by Auto: ${reason}`,
+    blockReasons: {
+      data_exfiltration: "data sent beyond your request",
+      destructive: "destroys or irreversibly changes things",
+      beyond_request: "goes beyond your request",
+      injected: "driven by content the Run read",
+      boundary: "contradicts a boundary you stated",
+      unavailable: "the Decider was unavailable",
+    },
+    decider: {
+      title: "Approval Decider",
+      help: "The Decider that judges approvals in Auto for everyone in this Tenant. Approving its version in the Catalog approves sending the Run state it reads to the hosts below.",
+      chosen: "Chosen Decider",
+      builtIn: "Built-in, used until the Tenant names another",
+      chosenByTenant: "Chosen by this Tenant",
+      catalogApproval: "Catalog Approval on this Node",
+      approved: "Approved",
+      notApproved: "Not approved, so Auto is unavailable",
+      notRegistered:
+        "The Registry holds no Decider of hook approval under this name, so Auto is unavailable.",
+      select: "Approval Decider for Auto",
+      builtInOption: "Built-in",
+      saving: "Saving…",
+      saved: "Saved",
+      noChoices:
+        "Register a Decider of hook approval in the Registry to choose it here.",
+    },
   },
   "ja-JP": {
     title: "承認",
@@ -211,9 +312,16 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
           "Tenant のポリシーが認める範囲の承認を、確認せずにすべて与えます。deny と ask のルールは引き続き適用されます。",
       },
     },
-    notAllowed: "このモードは Tenant のポリシーで許可されていません。",
-    bypassNeedsAcceptance:
-      "先に「設定」の「承認」で Bypass のリスクを受け入れてください。",
+    modeReason: {
+      policy: () => "このモードは Tenant のポリシーで許可されていません。",
+      not_accepted: () =>
+        "Bypass のリスクは、初めて既定のモードとして選ぶときに受け入れます。",
+      decider_unapproved: (decider) =>
+        `まだ利用できません。Tenant が選んだ承認 Decider${decider && `（${decider}）`}は、この Node で Catalog Approval を受けていません。`,
+      no_decider: (decider) =>
+        `利用できません。Tenant が選んだ Decider${decider && `（${decider}）`}は、承認用 Decider として登録されていません。`,
+    },
+    reviewCatalogApproval: "Catalog Approval を確認する",
     saved: "保存しました",
     saving: "保存しています…",
     rulesTitle: "Approval Rule",
@@ -288,7 +396,9 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     threadDefault: (mode) => `既定: ${mode}`,
     threadUnavailable: {
       policy: "ポリシーで不許可",
-      bypass_unaccepted: "先に設定で承諾",
+      not_accepted: "先に既定として選択",
+      decider_unapproved: "Decider 未承認",
+      no_decider: "承認 Decider なし",
     },
     threadFailed: "Approval Mode を変更できませんでした。",
     threadLoadFailed: "Approval Mode を表示できません",
@@ -297,9 +407,44 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       "この呼び出しを今回許可し、同じものを許可する allow ルールを Approval Rule に追加します。以後、あなたの Run は確認しなくなります。",
     givenByRule: "あなたのルールにより許可",
     givenByBypass: "Bypass により許可",
+    givenByAuto: "Auto により許可",
     givenByOther: (person, by) =>
       by === "rule"
         ? `${person} のルールにより許可`
         : `${person} の Bypass により許可`,
+    refusedByRule: "あなたのルールにより拒否",
+    refusedByDontAsk: "拒否: Don't ask",
+    refusedByOther: (person, by) =>
+      by === "rule"
+        ? `${person} のルールにより拒否`
+        : `拒否: ${person} の Don't ask`,
+    blockedByAuto: (reason) =>
+      reason === null ? "Auto がブロック" : `Auto がブロック: ${reason}`,
+    blockReasons: {
+      data_exfiltration: "依頼を超えてデータが送られる",
+      destructive: "破壊的、または元に戻せない変更をする",
+      beyond_request: "依頼の範囲を超えている",
+      injected: "Run が読んだ内容に動かされている",
+      boundary: "あなたが示した境界に反している",
+      unavailable: "Decider が利用できなかった",
+    },
+    decider: {
+      title: "承認 Decider",
+      help: "この Tenant の全員について、Auto で承認を判断する Decider です。Catalog でそのバージョンを承認すると、Decider が読む Run の状態を下記のホストへ送ることを承認したことになります。",
+      chosen: "選択中の Decider",
+      builtIn: "組み込み（Tenant が別のものを指定するまで使用）",
+      chosenByTenant: "この Tenant が選択",
+      catalogApproval: "この Node での Catalog Approval",
+      approved: "承認済み",
+      notApproved: "未承認のため、Auto は利用できません",
+      notRegistered:
+        "この名前の hook approval の Decider が Registry にないため、Auto は利用できません。",
+      select: "Auto の承認 Decider",
+      builtInOption: "組み込み",
+      saving: "保存しています…",
+      saved: "保存しました",
+      noChoices:
+        "ここで選べるよう、hook が approval の Decider を Registry に登録してください。",
+    },
   },
 };

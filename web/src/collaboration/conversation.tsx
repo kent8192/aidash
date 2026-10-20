@@ -832,11 +832,7 @@ function ConversationFeed({
                     <Code2 />
                   </Button>
                   {thread && approvalTenant !== null && (
-                    <ThreadApprovalMode
-                      tenant={approvalTenant}
-                      workspace={workspace}
-                      thread={thread}
-                    />
+                    <ThreadApprovalMode workspace={workspace} thread={thread} />
                   )}
                   {approvalTenant === null && (
                     <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-faint lg:flex">
