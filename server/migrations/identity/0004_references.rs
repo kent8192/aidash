@@ -622,6 +622,18 @@ pub(super) fn migration() -> Migration {
 				deferrable: None,
 			},
 		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "identity_tenant_approval_settings".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "identity_tenant_approval_settings_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),

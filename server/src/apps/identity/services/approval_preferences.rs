@@ -5,14 +5,19 @@
 //! stored: a mode it does not allow cannot be chosen, and a rule beyond it is
 //! kept but reported as not effective.
 use crate::apps::identity::models::ApprovalPreference;
+use crate::apps::identity::models::{AdministrationActor, AdministrationEvent};
 use crate::apps::identity::oidc::BrowserOrigin;
+use crate::apps::identity::repositories::approval_decider::{self as decider, Availability};
 use crate::apps::identity::repositories::approval_preferences as repository;
 use crate::apps::identity::serializers::approval_preferences::{
-	ModeChoice, Preferences, PreferencesUpdate, Rule, RuleInput, Rules, Settings, ThreadMode,
-	ThreadModeUpdate,
+	ApprovalDecider, ApprovalDeciderUpdate, DeciderReference, ModeChoice, ModeReason, Preferences,
+	PreferencesUpdate, Rule, RuleInput, Rules, Settings, ThreadMode, ThreadModeUpdate,
 };
 use crate::apps::identity::services::tenant_administration::TenantAdministrations;
-use crate::authorization::{access::Access, identity::Actor};
+use crate::authorization::{
+	access::{Access, NativeAccess},
+	identity::Actor,
+};
 use crate::federation::Federation;
 use crate::{Error, Result};
 use aidash_application::capabilities::approvals::{CALL_UNAPPROVED, DISCLOSE};
@@ -20,8 +25,10 @@ use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, MODE_RESOURCE, RuleEffect, RuleTarget,
 };
 use aidash_domain::capabilities::approvals::approver_eligible;
+use aidash_domain::identity::tenancy::TENANT_UPDATE;
 use aidash_domain::identity::tenant_administration::APPROVAL_READ;
 use aidash_domain::policy::{Evaluation, PolicyBundle, Resource, identifier};
+use aidash_domain::registry::EntityRef;
 use reinhardt::injectable;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -79,14 +86,54 @@ fn mode_allowed(bundle: &PolicyBundle, subject: &str, mode: ApprovalMode) -> boo
 	})
 }
 
-fn modes(bundle: &PolicyBundle, subject: &str) -> Vec<ModeChoice> {
+/// What the Tenant's policy and this Node say about one mode for one person.
+/// `accepted` is whether they accepted the risk of Bypass, and `auto` whether
+/// the Tenant's approval Decider can judge here.
+fn mode_choice(
+	bundle: &PolicyBundle,
+	subject: &str,
+	mode: ApprovalMode,
+	auto: Availability,
+	accepted: bool,
+) -> ModeChoice {
+	let (allowed, reason) = if !mode_allowed(bundle, subject, mode) {
+		(false, Some(ModeReason::Policy))
+	} else {
+		match (mode, auto) {
+			(ApprovalMode::Auto, Availability::Unapproved) => {
+				(false, Some(ModeReason::DeciderUnapproved))
+			}
+			(ApprovalMode::Auto, Availability::Missing) => (false, Some(ModeReason::NoDecider)),
+			(ApprovalMode::Bypass, _) if !accepted => (true, Some(ModeReason::NotAccepted)),
+			_ => (true, None),
+		}
+	};
+	ModeChoice {
+		mode,
+		allowed,
+		reason,
+	}
+}
+
+fn modes(
+	bundle: &PolicyBundle,
+	subject: &str,
+	auto: Availability,
+	accepted: bool,
+) -> Vec<ModeChoice> {
 	MODES
 		.into_iter()
-		.map(|mode| ModeChoice {
-			mode,
-			allowed: mode_allowed(bundle, subject, mode),
-		})
+		.map(|mode| mode_choice(bundle, subject, mode, auto, accepted))
 		.collect()
+}
+
+/// Whether the Tenant's approval Decider can judge on this Node now.
+async fn auto_availability(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+) -> Result<Availability> {
+	let chosen = decider::chosen(tx, tenant).await?;
+	decider::availability(tx, tenant, &chosen).await
 }
 
 /// The id of the representative resource a rule that names no one target is
@@ -217,13 +264,33 @@ fn view_preferences(
 	bundle: &PolicyBundle,
 	owner: &str,
 	row: Option<&ApprovalPreference>,
+	auto: Availability,
 ) -> Result<Preferences> {
+	let bypass_accepted_at = row.and_then(|row| row.bypass_accepted_at);
 	Ok(Preferences {
 		default_mode: repository::default_mode(row)?,
 		answer_deadline_seconds: row.and_then(|row| row.answer_deadline_seconds),
-		bypass_accepted_at: row.and_then(|row| row.bypass_accepted_at),
+		bypass_accepted_at,
 		revision: row.map_or(0, |row| row.revision),
-		modes: modes(bundle, owner),
+		modes: modes(bundle, owner, auto, bypass_accepted_at.is_some()),
+	})
+}
+
+/// The Tenant's approval Decider and what this Node says about it.
+async fn view_decider(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+) -> Result<ApprovalDecider> {
+	let chosen = decider::chosen(tx, tenant).await?;
+	Ok(ApprovalDecider {
+		registered: decider::registered(tx, &chosen.reference).await?.is_some(),
+		approved: decider::approved(tx, tenant, &chosen.reference).await?,
+		built_in: chosen.built_in,
+		revision: chosen.revision,
+		decider: DeciderReference {
+			id: chosen.reference.id,
+			version: chosen.reference.version,
+		},
 	})
 }
 
@@ -252,7 +319,8 @@ impl ApprovalPreferences {
 				let snapshot = &administrator.lock(tx, false).await?;
 				let subject = &administrator.identity.subject;
 				let row = repository::preference(tx, &tenant, subject).await?;
-				view_preferences(&snapshot.bundle, subject, row.as_ref())
+				let auto = auto_availability(tx, &tenant).await?;
+				view_preferences(&snapshot.bundle, subject, row.as_ref(), auto)
 			})
 			.await;
 		administrations.finish(&administrator, result).await
@@ -296,7 +364,8 @@ impl ApprovalPreferences {
 					},
 				)
 				.await?;
-				view_preferences(&snapshot.bundle, subject, Some(&row))
+				let auto = auto_availability(tx, &tenant).await?;
+				view_preferences(&snapshot.bundle, subject, Some(&row), auto)
 			})
 			.await;
 		administrations.finish(&administrator, result).await
@@ -427,7 +496,8 @@ impl ApprovalPreferences {
 				}
 				let row = repository::preference(tx, &tenant, &subject).await?;
 				let rules = repository::rules(tx, &tenant, &subject).await?;
-				let preferences = view_preferences(&snapshot.bundle, &subject, row.as_ref())?;
+				let auto = auto_availability(tx, &tenant).await?;
+				let preferences = view_preferences(&snapshot.bundle, &subject, row.as_ref(), auto)?;
 				Ok(Settings {
 					default_mode: preferences.default_mode,
 					answer_deadline_seconds: preferences.answer_deadline_seconds,
@@ -439,6 +509,93 @@ impl ApprovalPreferences {
 			})
 			.await;
 		administrations.finish(&administrator, result).await
+	}
+
+	/// The Tenant's approval Decider, for any member.
+	pub(crate) async fn decider(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<ApprovalDecider> {
+		identifier(&tenant)?;
+		let mut access = self.session(actor, origin).await?;
+		let result = async {
+			if access.identity.tenant != tenant {
+				return Err(Error::Forbidden);
+			}
+			view_decider(&mut *access.tx, &tenant).await
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// Names the Tenant's approval Decider, or with `null` resets it to the
+	/// built-in, under `tenant.update`. Only a Decider of hook `approval` that
+	/// the Tenant Registry holds can be named.
+	pub(crate) async fn set_decider(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		input: ApprovalDeciderUpdate,
+	) -> Result<ApprovalDecider> {
+		input.validate()?;
+		identifier(&tenant)?;
+		let (Actor::Subject(identity), Some(origin)) = (actor, origin) else {
+			return Err(Error::Forbidden);
+		};
+		let mapping = origin.mapping_id.ok_or(Error::Forbidden)?;
+		if identity.tenant != tenant {
+			return Err(Error::Forbidden);
+		}
+		identity.check_binding(&self.runtime.store.pool).await?;
+		let mut access = NativeAccess::begin(&self.runtime.store, &identity).await?;
+		let resource = Resource {
+			tenant: tenant.clone(),
+			kind: "tenant".into(),
+			id: tenant.clone(),
+			attributes: json!({}),
+		};
+		if let Err(error) = access.require(&resource, TENANT_UPDATE).await {
+			return access.finish(Err(error)).await;
+		}
+		let result = async {
+			let (tx, _) = access.tenant_transaction();
+			decider::lock(tx, &tenant).await?;
+			let target = input.decider.map(|decider| EntityRef {
+				id: decider.id,
+				version: decider.version,
+			});
+			if let Some(target) = &target
+				&& decider::registered(tx, target).await?.is_none()
+			{
+				return Err(Error::Invalid(
+					"the Decider is not a registered Decider of hook approval".into(),
+				));
+			}
+			decider::save(tx, &tenant, input.expected_revision, target.as_ref()).await?;
+			AdministrationActor::Identity {
+				identity: origin.identity_id,
+				mapping: Some(mapping),
+			}
+			.record(
+				tx,
+				AdministrationEvent {
+					action: TENANT_UPDATE,
+					identity: None,
+					registration: None,
+					mapping: None,
+					tenant: Some(&tenant),
+					subject: None,
+					invitation: None,
+				},
+			)
+			.await?;
+			view_decider(tx, &tenant).await
+		}
+		.await;
+		access.finish(result).await
 	}
 
 	/// The caller's own session: a dashboard or desktop session of their Mapping.
@@ -472,10 +629,17 @@ impl ApprovalPreferences {
 				access.identity.subject.clone(),
 			);
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
+			let auto = auto_availability(&mut *access.tx, &tenant).await?;
 			Ok(ThreadMode {
 				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
 				default_mode: repository::default_mode(row.as_ref())?,
-				modes: modes(&access.snapshot.bundle, &subject),
+				modes: modes(
+					&access.snapshot.bundle,
+					&subject,
+					auto,
+					row.as_ref()
+						.is_some_and(|row| row.bypass_accepted_at.is_some()),
+				),
 			})
 		}
 		.await;
@@ -523,10 +687,17 @@ impl ApprovalPreferences {
 			}
 			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, thread, input.mode)
 				.await?;
+			let auto = auto_availability(&mut *access.tx, &tenant).await?;
 			Ok(ThreadMode {
 				mode: input.mode,
 				default_mode: repository::default_mode(row.as_ref())?,
-				modes: modes(&access.snapshot.bundle, &subject),
+				modes: modes(
+					&access.snapshot.bundle,
+					&subject,
+					auto,
+					row.as_ref()
+						.is_some_and(|row| row.bypass_accepted_at.is_some()),
+				),
 			})
 		}
 		.await;

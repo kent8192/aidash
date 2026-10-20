@@ -268,6 +268,21 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, v::settings_of, &["String", "String"])?;
+		contracts.response::<_, approval::ApprovalDecider>(
+			document,
+			v::decider,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::decider, &["String"])?;
+		contracts.request::<_, approval::ApprovalDeciderUpdate>(document, v::set_decider)?;
+		contracts.response::<_, approval::ApprovalDecider>(
+			document,
+			v::set_decider,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::set_decider, &["String"])?;
 		contracts.response::<_, approval::ThreadMode>(
 			document,
 			v::thread_mode,

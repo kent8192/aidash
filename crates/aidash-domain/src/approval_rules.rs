@@ -164,6 +164,10 @@ pub struct Settings {
 	pub rules: Vec<ApprovalRule>,
 	/// The person has accepted the risk of Bypass.
 	pub bypass_accepted: bool,
+	/// The Tenant's approval Decider can judge on this Node: it holds a Catalog
+	/// Approval. Only Auto reads it, so a store may leave it false for another
+	/// mode.
+	pub auto_available: bool,
 }
 
 impl Settings {
@@ -172,7 +176,7 @@ impl Settings {
 			may_approve: standing.approver && standing.advance,
 			mode_allowed: match self.mode {
 				ApprovalMode::Manual | ApprovalMode::DontAsk => true,
-				ApprovalMode::Auto => standing.mode,
+				ApprovalMode::Auto => standing.mode && self.auto_available,
 				ApprovalMode::Bypass => standing.mode && self.bypass_accepted,
 			},
 		}
@@ -241,21 +245,21 @@ impl RefusedBy {
 	}
 }
 
-/// How often the approval Decider has blocked a Run's calls since a person last
+/// How often the approval Decider has refused a Run's calls since a person last
 /// approved one. A person's approval clears both counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AutoBlocks {
 	/// Blocks in a row, none of the Run's later calls having been allowed by
-	/// the Decider.
+	/// the Decider. A refusal for want of a verdict is not a block.
 	pub trailing: u32,
-	/// Blocks in all.
+	/// Refusals in all, with or without a verdict.
 	pub since_person: u32,
 }
 
 impl AutoBlocks {
 	/// Blocks in a row that return the Run to asking.
 	pub const TRAILING_LIMIT: u32 = 3;
-	/// Blocks in all that return the Run to asking.
+	/// Refusals in all that return the Run to asking.
 	pub const RUN_LIMIT: u32 = 20;
 
 	/// Whether the Run asks a person again until one approves a call.
@@ -263,17 +267,25 @@ impl AutoBlocks {
 		self.trailing >= Self::TRAILING_LIMIT || self.since_person >= Self::RUN_LIMIT
 	}
 
-	/// Counts the blocks recorded on a Run's approvals, in the order they were
+	/// Counts the refusals recorded on a Run's approvals, in the order they were
 	/// decided. A person's approval clears both counts and a call the Decider
-	/// allowed ends the blocks in a row. A decision with no verdict is neither a
-	/// block nor an allowance, so an outage never suspends Auto. Records decided
-	/// at the same instant keep the order given.
+	/// allowed ends the blocks in a row. A refusal for want of a verdict counts
+	/// toward the total only, so one bad call is not a streak, yet a long outage
+	/// still returns the Run to asking a person. Records decided at the same
+	/// instant keep the order given.
 	pub fn of(records: &[Record]) -> Self {
-		let mut decided: Vec<(DateTime<Utc>, Decision)> = records
-			.iter()
-			.filter_map(|record| {
-				let at = serde_json::from_value(record.data.get("decided_at")?.clone()).ok()?;
-				Some((at, Decision::of(record)?))
+		Self::from_data(records.iter().map(|record| &record.data))
+	}
+
+	/// [`Self::of`] over the `data` of approval records, for a store that reads
+	/// only what the counts need: `decided_at`, `given_by`, `refused_by` and
+	/// `approval_mode`.
+	pub fn from_data<'a>(data: impl IntoIterator<Item = &'a Value>) -> Self {
+		let mut decided: Vec<(DateTime<Utc>, Decision)> = data
+			.into_iter()
+			.filter_map(|data| {
+				let at = serde_json::from_value(data.get("decided_at")?.clone()).ok()?;
+				Some((at, Decision::of(data)?))
 			})
 			.collect();
 		decided.sort_by_key(|(at, _)| *at);
@@ -289,6 +301,10 @@ impl AutoBlocks {
 					trailing: counts.trailing.saturating_add(1),
 					since_person: counts.since_person.saturating_add(1),
 				},
+				Decision::NoVerdict => Self {
+					since_person: counts.since_person.saturating_add(1),
+					..counts
+				},
 			})
 	}
 }
@@ -298,17 +314,23 @@ enum Decision {
 	Person,
 	Allowed,
 	Blocked,
+	/// The Decider refused for want of a verdict.
+	NoVerdict,
 }
 
 impl Decision {
-	fn of(record: &Record) -> Option<Self> {
-		let data = &record.data;
+	fn of(data: &Value) -> Option<Self> {
 		if data["given_by"]["mode"] == "auto" {
 			return Some(Self::Allowed);
 		}
 		if data["refused_by"]["mode"] == "auto" {
-			return (data["refused_by"]["reason"] != BlockReason::Unavailable.id())
-				.then_some(Self::Blocked);
+			return Some(
+				if data["refused_by"]["reason"] == BlockReason::Unavailable.id() {
+					Self::NoVerdict
+				} else {
+					Self::Blocked
+				},
+			);
 		}
 		// What a person's decision records; a rule or a mode records `advance`.
 		matches!(

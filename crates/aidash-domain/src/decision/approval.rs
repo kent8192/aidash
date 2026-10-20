@@ -257,6 +257,11 @@ impl ApprovalEvidence {
 		}
 		Ok(())
 	}
+	/// The label an evidence store keeps beside the outcome: the block reason the
+	/// verdict names, or `clear` for a call no category flagged.
+	pub fn reason(&self) -> &'static str {
+		self.verdict.reason().map_or("clear", BlockReason::id)
+	}
 	/// What the record keeps of the decision: acted on in Enforce mode, only
 	/// recorded in Shadow.
 	pub fn outcome(&self) -> ApprovalOutcome {

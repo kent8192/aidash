@@ -7053,7 +7053,7 @@
               "format": "date-time"
             },
             "given_by": {
-              "description": "What gave the approval in advance, under its owner's name: `{\"rule\": id}`\nfor one of their Approval Rules, `{\"mode\": \"bypass\"}` for the Bypass\nmode, and none when a person decided it."
+              "description": "What gave the approval in advance, under its owner's name: `{\"rule\": id}`\nfor one of their Approval Rules, `{\"mode\": \"bypass\"}` for the Bypass\nmode, `{\"mode\": \"auto\", \"decision\": id}` for the approval Decider and its\nDecision Evidence, and none when a person decided it."
             },
             "grant_id": {
               "type": ["string", "null"],
@@ -7076,6 +7076,9 @@
             },
             "query": {
               "description": "The validated search query in provider-independent form."
+            },
+            "refused_by": {
+              "description": "What refused the approval in advance, with no one asked: `{\"rule\": id}`\nfor one of the owner's Approval Rules, `{\"mode\": \"dont_ask\"}` for the\nDon't ask mode, and `{\"mode\": \"auto\", \"reason\": ...}` for the approval\nDecider, whose reason names a block category or `unavailable`. None when\na person decided it or it is still open."
             },
             "requester": {
               "type": "string"
@@ -18954,9 +18957,9 @@
         },
         "Restrictions": {
           "type": "object",
-          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
           "required": [
-            "keep_threshold",
+            "threshold",
             "preserve_recent",
             "forbid_apply",
             "max_calls_per_run"
@@ -18965,10 +18968,6 @@
             "forbid_apply": {
               "type": "boolean",
               "default": false
-            },
-            "keep_threshold": {
-              "type": "string",
-              "default": "3fe0000000000000"
             },
             "max_calls_per_run": {
               "type": ["integer", "null"],
@@ -18982,6 +18981,11 @@
               "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
+            },
+            "threshold": {
+              "type": "string",
+              "description": "The probability at which an answer takes the conservative action; lower\nis stricter. A Route's own threshold is intersected in when it is asked.",
+              "default": "3fe0000000000000"
             }
           },
           "additionalProperties": false
@@ -35419,16 +35423,52 @@
         },
         "ApprovalModeChoice": {
           "type": "object",
-          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
-          "required": ["mode", "allowed"],
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
           "properties": {
             "allowed": {
               "type": "boolean"
             },
             "mode": {
               "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
             }
           }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
         },
         "ApprovalPreferences": {
           "type": "object",
@@ -35511,16 +35551,52 @@
         },
         "ApprovalModeChoice": {
           "type": "object",
-          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
-          "required": ["mode", "allowed"],
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
           "properties": {
             "allowed": {
               "type": "boolean"
             },
             "mode": {
               "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
             }
           }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
         },
         "ApprovalPreferences": {
           "type": "object",
@@ -35866,6 +35942,132 @@
   },
   {
     "method": "GET",
+    "path": "/api/tenants/{tenant}/approval-decider",
+    "name": "approval-decider",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalDecider"
+      },
+      "definitions": {
+        "ApprovalDecider": {
+          "type": "object",
+          "description": "The approval Decider that judges the Tenant's Auto Approval Mode.",
+          "required": [
+            "decider",
+            "built_in",
+            "registered",
+            "approved",
+            "revision"
+          ],
+          "properties": {
+            "approved": {
+              "type": "boolean",
+              "description": "The exact version holds a Catalog Approval on this Node, which Auto needs."
+            },
+            "built_in": {
+              "type": "boolean",
+              "description": "The Tenant has named no other, so the built-in Decider judges."
+            },
+            "decider": {
+              "$ref": "#/components/schemas/ApprovalDeciderReference"
+            },
+            "registered": {
+              "type": "boolean",
+              "description": "The Decider is registered in the Tenant as one of hook `approval`."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the Tenant first names a Decider or resets to the built-in."
+            }
+          }
+        },
+        "ApprovalDeciderReference": {
+          "type": "object",
+          "description": "A Decider by its Registry identity.",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/approval-decider",
+    "name": "approval-decider-update",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalDecider"
+      },
+      "definitions": {
+        "ApprovalDecider": {
+          "type": "object",
+          "description": "The approval Decider that judges the Tenant's Auto Approval Mode.",
+          "required": [
+            "decider",
+            "built_in",
+            "registered",
+            "approved",
+            "revision"
+          ],
+          "properties": {
+            "approved": {
+              "type": "boolean",
+              "description": "The exact version holds a Catalog Approval on this Node, which Auto needs."
+            },
+            "built_in": {
+              "type": "boolean",
+              "description": "The Tenant has named no other, so the built-in Decider judges."
+            },
+            "decider": {
+              "$ref": "#/components/schemas/ApprovalDeciderReference"
+            },
+            "registered": {
+              "type": "boolean",
+              "description": "The Decider is registered in the Tenant as one of hook `approval`."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the Tenant first names a Decider or resets to the built-in."
+            }
+          }
+        },
+        "ApprovalDeciderReference": {
+          "type": "object",
+          "description": "A Decider by its Registry identity.",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
     "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
     "name": "thread-approval-mode",
     "source": "server/src/apps/identity/views/approval_preferences.rs",
@@ -35904,16 +36106,52 @@
         },
         "ApprovalModeChoice": {
           "type": "object",
-          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
-          "required": ["mode", "allowed"],
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
           "properties": {
             "allowed": {
               "type": "boolean"
             },
             "mode": {
               "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
             }
           }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
         },
         "ThreadApprovalModeView": {
           "type": "object",
@@ -35985,16 +36223,52 @@
         },
         "ApprovalModeChoice": {
           "type": "object",
-          "description": "One Approval Mode and whether the Tenant's policy lets this person use it.",
-          "required": ["mode", "allowed"],
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
           "properties": {
             "allowed": {
               "type": "boolean"
             },
             "mode": {
               "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
             }
           }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
         },
         "ThreadApprovalModeView": {
           "type": "object",

@@ -37,6 +37,7 @@ fn settings(mode: ApprovalMode, rules: Vec<ApprovalRule>) -> Settings {
 		mode,
 		rules,
 		bypass_accepted: true,
+		auto_available: true,
 	}
 }
 
@@ -278,6 +279,32 @@ fn a_rule_covers_only_its_kind_and_its_target(
 	);
 }
 
+#[test]
+fn auto_needs_a_decider_that_can_judge_on_the_node_besides_the_policy() {
+	let person = |auto_available| Settings {
+		mode: Auto,
+		rules: vec![],
+		bypass_accepted: false,
+		auto_available,
+	};
+	let standing = Standing {
+		approver: true,
+		advance: true,
+		mode: true,
+	};
+
+	assert!(person(true).ceiling(standing).mode_allowed);
+	assert!(!person(false).ceiling(standing).mode_allowed);
+	assert!(
+		!person(true)
+			.ceiling(Standing {
+				mode: false,
+				..standing
+			})
+			.mode_allowed
+	);
+}
+
 #[rstest]
 #[case::manual_needs_no_policy(Manual, true, true, true)]
 #[case::dont_ask_needs_no_policy(DontAsk, true, true, true)]
@@ -296,6 +323,7 @@ fn the_ceiling_follows_the_policy_and_the_recorded_acceptance(
 		mode,
 		rules: vec![],
 		bypass_accepted: accepted,
+		auto_available: true,
 	};
 
 	let ceiling = person.ceiling(Standing {
@@ -506,12 +534,25 @@ fn records_are_counted_in_the_order_they_were_decided_whatever_the_order_given()
 }
 
 #[test]
-fn a_decision_with_no_verdict_neither_counts_nor_ends_the_blocks_in_a_row() {
-	assert_eq!(counts(&[blocked(1), unavailable(2), blocked(3)]), (2, 2));
+fn a_refusal_with_no_verdict_counts_in_all_but_neither_adds_to_nor_ends_the_blocks_in_a_row() {
+	assert_eq!(counts(&[blocked(1), unavailable(2), blocked(3)]), (2, 3));
 	assert_eq!(
 		counts(&[unavailable(1), unavailable(2), unavailable(3)]),
-		(0, 0)
+		(0, 3)
 	);
+	assert!(!AutoBlocks::of(&[unavailable(1), unavailable(2), unavailable(3)]).suspended());
+}
+
+#[test]
+fn a_long_outage_returns_the_run_to_asking_a_person_and_a_person_ends_it() {
+	let outage: Vec<Record> = (1..=20).map(unavailable).collect();
+	assert_eq!(counts(&outage), (0, 20));
+	assert!(AutoBlocks::of(&outage).suspended());
+	assert!(!AutoBlocks::of(&outage[..19]).suspended());
+
+	let mut resolved = outage;
+	resolved.push(approved_by_a_person(21));
+	assert!(!AutoBlocks::of(&resolved).suspended());
 }
 
 #[rstest]

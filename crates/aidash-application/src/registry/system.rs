@@ -62,6 +62,15 @@ pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entr
 		.collect()
 }
 
+/// Every definition the Node declares to every Tenant's Registry: the built-in
+/// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
+/// Catalog Approval before anything may use it.
+pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let mut declared = entries(validation, node)?;
+	declared.push(approval_decider()?);
+	Ok(declared)
+}
+
 /// The built-in approval Decider. Its Routes follow ADR 0042's addendum: Jev
 /// through System One, then Clef through OpenRouter's Decisions API on the three
 /// hosts the Tenant's Catalog Approval names. Approving the version approves

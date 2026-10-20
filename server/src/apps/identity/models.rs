@@ -29,7 +29,9 @@ pub use authorization_task_origins::AuthorizationTaskOrigin;
 mod authorization_workspaces;
 pub use authorization_workspaces::AuthorizationWorkspace;
 mod approval_preferences;
-pub use approval_preferences::{ApprovalPreference, ApprovalRuleRecord, ThreadApprovalMode};
+pub use approval_preferences::{
+	ApprovalPreference, ApprovalRuleRecord, TenantApprovalSettings, ThreadApprovalMode,
+};
 mod dashboard_administration_history;
 pub use dashboard_administration_history::DashboardAdministrationHistory;
 mod dashboard_execution_origins;

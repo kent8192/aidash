@@ -75,3 +75,25 @@ pub struct ThreadApprovalMode {
 	#[field]
 	pub updated_at: DateTime<Utc>,
 }
+
+/// The approval Decider a Tenant chose for the Auto Approval Mode (ADR 0077). A
+/// Tenant without a row, or with no Decider in it, uses the built-in one.
+#[model(
+	app_label = "identity",
+	table_name = "identity_tenant_approval_settings"
+)]
+#[derive(Serialize, Deserialize)]
+pub struct TenantApprovalSettings {
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
+	/// A `decider` of hook `approval` in the Tenant Registry; `None` with its
+	/// version for the built-in.
+	#[field(null = true, field_type = "text")]
+	pub decider_id: Option<String>,
+	#[field(null = true, field_type = "text")]
+	pub decider_version: Option<String>,
+	#[field]
+	pub revision: i64,
+	#[field]
+	pub updated_at: DateTime<Utc>,
+}

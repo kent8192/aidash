@@ -5,12 +5,79 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// One Approval Mode and whether the Tenant's policy lets this person use it.
+/// What stands in the way of an Approval Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "ApprovalModeReason")]
+pub enum ModeReason {
+	/// The Tenant's policy does not let this person use the mode.
+	Policy,
+	/// The mode is the person's to choose, yet takes effect only once they
+	/// accept its risk (Bypass).
+	NotAccepted,
+	/// The Tenant's approval Decider has no Catalog Approval on this Node (Auto).
+	DeciderUnapproved,
+	/// The Tenant's approval Decider is not registered as one (Auto).
+	NoDecider,
+}
+
+/// One Approval Mode and whether the Tenant's policy and this Node let this
+/// person use it.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "ApprovalModeChoice")]
 pub struct ModeChoice {
 	pub mode: ApprovalMode,
 	pub allowed: bool,
+	/// Why the mode is not available, or not yet in effect; none when it is
+	/// simply available.
+	pub reason: Option<ModeReason>,
+}
+
+/// A Decider by its Registry identity.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ApprovalDeciderReference")]
+pub struct DeciderReference {
+	pub id: String,
+	pub version: String,
+}
+
+/// The approval Decider that judges the Tenant's Auto Approval Mode.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "ApprovalDecider")]
+pub struct ApprovalDecider {
+	pub decider: DeciderReference,
+	/// The Tenant has named no other, so the built-in Decider judges.
+	pub built_in: bool,
+	/// The Decider is registered in the Tenant as one of hook `approval`.
+	pub registered: bool,
+	/// The exact version holds a Catalog Approval on this Node, which Auto needs.
+	pub approved: bool,
+	/// `0` until the Tenant first names a Decider or resets to the built-in.
+	pub revision: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ApprovalDeciderUpdate")]
+pub struct ApprovalDeciderUpdate {
+	pub expected_revision: i64,
+	/// A Decider of hook `approval` in the Tenant Registry; `null` resets to the
+	/// built-in.
+	pub decider: Option<DeciderReference>,
+}
+
+impl ApprovalDeciderUpdate {
+	pub fn validate(&self) -> Result<()> {
+		if self.expected_revision < 0 {
+			return Err(Error::Invalid("expected_revision is negative".into()));
+		}
+		if let Some(decider) = &self.decider {
+			aidash_domain::policy::identifier(&decider.id)?;
+			aidash_domain::policy::identifier(&decider.version)?;
+		}
+		Ok(())
+	}
 }
 
 /// One person's default Approval Mode, Answer Deadline and acceptance of Bypass.

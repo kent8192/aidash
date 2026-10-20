@@ -1,9 +1,11 @@
 //! The approval Decider's decision (ADR 0077). It judges one pending call of a
-//! Run, asking each Decider Route in order as compaction does, and always ends
-//! in recorded evidence: a Route's verdict, or `Blocked(Unavailable)` when no
-//! Route gave one. It never fails the Run or pauses it for the Decider's sake.
+//! Run, asking each Decider Route in order as compaction does. It ends in
+//! recorded evidence: a Route's verdict, or `Blocked(Unavailable)` when the
+//! Routes could not be asked. The one exception is a spent call allowance, which
+//! leaves the call to a person. It never fails the Run or pauses it for the
+//! Decider's sake.
 use super::*;
-use aidash_domain::{provider::ToolCall, run_input::RunInput};
+use aidash_domain::{context::recovery::Failure, provider::ToolCall, run_input::RunInput};
 
 /// One pending call and everything the approval Decider is asked about it.
 pub struct Judgement<'a> {
@@ -69,6 +71,16 @@ pub fn settlement_of(
 	}
 }
 
+/// How judging a pending call ended.
+#[derive(Debug)]
+pub enum Ruling {
+	/// The Decider decided, or could not be asked; the evidence is recorded.
+	Decided(Box<ApprovalEvidence>),
+	/// The Run has spent the Decider's call allowance. That is no outage and no
+	/// verdict: nothing is recorded, and the call is left to a person.
+	AllowanceSpent,
+}
+
 /// A Route's answers to every approval question.
 struct Answered {
 	index: u32,
@@ -112,8 +124,8 @@ impl DecisionGate<'_> {
 	/// Judge a pending call and record the decision. An error means the
 	/// decision could not be recorded or the Decider was misconfigured; a
 	/// Decider that is merely unavailable yields evidence that blocks the call
-	/// as `Unavailable`.
-	pub async fn judge_approval(&self, judged: &Judgement<'_>) -> Result<ApprovalEvidence> {
+	/// as `Unavailable`, and a spent call allowance yields no decision at all.
+	pub async fn judge_approval(&self, judged: &Judgement<'_>) -> Result<Ruling> {
 		judged.boundary.validate()?;
 		let config = judged.decider.pin.check(judged.definition)?;
 		if config != judged.decider.config || config.hook != Hook::Approval {
@@ -150,7 +162,8 @@ impl DecisionGate<'_> {
 				Ok(answered) => {
 					return self
 						.conclude(judged, &config, failed_routes, Ok(answered))
-						.await;
+						.await
+						.map(|evidence| Ruling::Decided(Box::new(evidence)));
 				}
 				Err(unanswered) => {
 					tracing::warn!(
@@ -174,8 +187,15 @@ impl DecisionGate<'_> {
 			stop: true,
 			error: Error::Invalid("approval Decider lists no Route".into()),
 		});
+		if matches!(
+			unanswered.error,
+			Error::Context(Failure::DeciderCallsExhausted)
+		) {
+			return Ok(Ruling::AllowanceSpent);
+		}
 		self.conclude(judged, &config, failed_routes, Err(unanswered))
 			.await
+			.map(|evidence| Ruling::Decided(Box::new(evidence)))
 	}
 
 	async fn conclude(
@@ -300,9 +320,7 @@ impl DecisionGate<'_> {
 				// Nothing was sent: the state is larger than this Route accepts,
 				// or the questions do not fit its provider.
 				let error = match unplanned {
-					None => Error::Context(
-						aidash_domain::context::recovery::Failure::DeciderUnavailable,
-					),
+					None => Error::Context(Failure::DeciderUnavailable),
 					Some(_) => {
 						Error::Invalid("decision cannot plan complete provider requests".into())
 					}

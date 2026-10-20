@@ -106,6 +106,22 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 }
 
 #[test]
+fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let builtins = entries(&validation, NODE).unwrap();
+
+	let declared = declarations(&validation, NODE).unwrap();
+
+	assert_eq!(declared.len(), builtins.len() + 1);
+	assert_eq!(declared[..builtins.len()], builtins);
+	assert_eq!(declared.last(), Some(&approval_decider().unwrap()));
+	assert!(
+		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
+		"only a built-in tool is admitted without a Catalog Approval"
+	);
+}
+
+#[test]
 fn the_approval_decider_is_a_valid_immutable_deployment_definition() {
 	let entry = approval_decider().unwrap();
 	assert_eq!(

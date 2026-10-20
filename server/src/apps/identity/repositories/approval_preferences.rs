@@ -5,6 +5,7 @@
 use super::super::models::{
 	ApprovalPreference, ApprovalRuleRecord, ThreadApprovalMode, database_time,
 };
+use super::approval_decider::{self, Availability};
 use aidash_domain::RunMetadata;
 use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, RuleEffect, RuleTarget, Settings,
@@ -493,11 +494,27 @@ pub(crate) async fn settings_for_run(
 		return Ok(None);
 	};
 	let rules = rules(tx, tenant, &covering.subject).await?;
+	let auto_available = auto_available(tx, tenant, covering.mode).await?;
 	Ok(Some(Settings {
 		mode: covering.mode,
 		rules: rules.into_iter().map(|(rule, _)| rule).collect(),
 		bypass_accepted: covering.bypass_accepted,
+		auto_available,
 	}))
+}
+
+/// Whether the Tenant's approval Decider can judge on this Node, which only
+/// Auto needs to know.
+async fn auto_available(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	mode: ApprovalMode,
+) -> crate::Result<bool> {
+	if mode != ApprovalMode::Auto {
+		return Ok(false);
+	}
+	let chosen = approval_decider::chosen(tx, tenant).await?;
+	Ok(approval_decider::availability(tx, tenant, &chosen).await? == Availability::Usable)
 }
 
 /// The settings of `root` without a Run: their default mode and rules. `None`
@@ -513,9 +530,12 @@ pub(crate) async fn settings_for_root(
 	}
 	let preference = preference(tx, tenant, root).await?;
 	let rules = rules(tx, tenant, root).await?;
+	let mode = default_mode(preference.as_ref())?;
+	let auto_available = auto_available(tx, tenant, mode).await?;
 	Ok(Some(Settings {
-		mode: default_mode(preference.as_ref())?,
+		mode,
 		rules: rules.into_iter().map(|(rule, _)| rule).collect(),
 		bypass_accepted: preference.is_some_and(|row| row.bypass_accepted_at.is_some()),
+		auto_available,
 	}))
 }

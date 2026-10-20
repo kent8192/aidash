@@ -3,7 +3,9 @@
 //! cache may keep it.
 use super::super::{
 	oidc::BrowserOrigin,
-	serializers::approval_preferences::{PreferencesUpdate, RuleInput, ThreadModeUpdate},
+	serializers::approval_preferences::{
+		ApprovalDeciderUpdate, PreferencesUpdate, RuleInput, ThreadModeUpdate,
+	},
 	services::approval_preferences::ApprovalPreferences,
 };
 use crate::{authorization::identity::Actor, http::json::Json};
@@ -144,4 +146,33 @@ pub async fn set_thread_mode(
 			.set_thread_mode(actor, origin, workspace, thread, input)
 			.await,
 	)
+}
+
+#[get(
+	"/api/tenants/{tenant}/approval-decider",
+	name = "approval-decider",
+	auth = "protected"
+)]
+pub async fn decider(
+	#[inject] service: Depends<ApprovalPreferences>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	json(service.decider(actor, origin, tenant).await)
+}
+
+#[put(
+	"/api/tenants/{tenant}/approval-decider",
+	name = "approval-decider-update",
+	auth = "protected"
+)]
+pub async fn set_decider(
+	#[inject] service: Depends<ApprovalPreferences>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Json(input): Json<ApprovalDeciderUpdate>,
+) -> ViewResult<Response> {
+	json(service.set_decider(actor, origin, tenant, input).await)
 }

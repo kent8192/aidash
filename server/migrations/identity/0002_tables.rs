@@ -503,6 +503,24 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		// The approval Decider a Tenant chose for the Auto Approval Mode (#412, ADR 0077).
+		.add_operation(Operation::CreateTable {
+			name: "identity_tenant_approval_settings".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("decider_id", FieldType::Text),
+				ColumnDefinition::new("decider_version", FieldType::Text),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "identity_tenant_approval_settings_values".to_owned(),
+				expression: r#"((decider_id IS NULL) = (decider_version IS NULL) AND revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
 		.add_operation(Operation::CreateTable {
 			name: "tenants".into(),
 			columns: vec![

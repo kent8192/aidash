@@ -335,6 +335,56 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	/// The pending approval of `run` that the approval Decider is to judge, read
+	/// under the worker's current authority lease (ADR 0077).
+	pub async fn approval_judgement(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<Option<aidash_application::capabilities::approvals::JudgeRequest>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::judgement(
+				&mut scope,
+				&run.metadata(),
+				approval,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// Record how the approval Decider settled `approval`, in the name of the
+	/// person the Run's chain starts at.
+	pub async fn settle_judgement(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+		settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<()> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::settle(
+				&mut scope,
+				&run.metadata(),
+				approval,
+				settlement,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
 	/// is reserved.
 	pub async fn consume_web_disclosure(
@@ -722,6 +772,17 @@ impl Guard {
 	) -> Result<crate::registry::Entry> {
 		let mut access = self.access.write().await;
 		catalog::entry(&mut access, reference, aidash_domain::decision::INVOKE).await
+	}
+	/// The approval Decider the Run's Tenant chose for Auto, or the built-in one
+	/// (ADR 0077).
+	pub(crate) async fn approval_decider_reference(&self) -> Result<EntityRef> {
+		let mut access = self.access.write().await;
+		let tenant = access.identity.tenant.clone();
+		Ok(
+			crate::apps::identity::repositories::approval_decider::chosen(&mut *access.tx, &tenant)
+				.await?
+				.reference,
+		)
 	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.

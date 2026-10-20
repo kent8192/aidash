@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 329,
+  "endpoint_count": 331,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -13711,8 +13711,135 @@
       ]
     },
     {
-      "name": "1253 thread-approval-mode - Anonymous request is rejected",
-      "file": "contracts/1253-thread-approval-mode.bru",
+      "name": "1253 approval-decider - Anonymous request is rejected",
+      "file": "contracts/1253-approval-decider.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-decider",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1254 approval-decider - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1254-approval-decider.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-decider",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1255 approval-decider - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1255-approval-decider.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-decider",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1256 approval-decider - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1256-approval-decider.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-decider",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1257 approval-decider-update - Anonymous request is rejected",
+      "file": "contracts/1257-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1258 approval-decider-update - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1258-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Forged bearer cannot reach a person's approval settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1259 approval-decider-update - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1259-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Deployment Administrator bearer owns no approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1260 approval-decider-update - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1260-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Subject Credential bearer never reaches approval settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1261 approval-decider-update - Wrong JSON media type is rejected",
+      "file": "contracts/1261-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1262 approval-decider-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1262-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1263 approval-decider-update - Unknown approval fields are rejected",
+      "file": "contracts/1263-approval-decider-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-decider",
+      "scenario": "Unknown approval fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1264 thread-approval-mode - Anonymous request is rejected",
+      "file": "contracts/1264-thread-approval-mode.bru",
       "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13722,8 +13849,8 @@
       ]
     },
     {
-      "name": "1254 thread-approval-mode - Forged bearer cannot reach a person's approval settings",
-      "file": "contracts/1254-thread-approval-mode.bru",
+      "name": "1265 thread-approval-mode - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1265-thread-approval-mode.bru",
       "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Forged bearer cannot reach a person's approval settings",
       "status": 401,
@@ -13733,8 +13860,8 @@
       ]
     },
     {
-      "name": "1255 thread-approval-mode - Deployment Administrator bearer owns no approval settings",
-      "file": "contracts/1255-thread-approval-mode.bru",
+      "name": "1266 thread-approval-mode - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1266-thread-approval-mode.bru",
       "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Deployment Administrator bearer owns no approval settings",
       "status": 403,
@@ -13744,8 +13871,8 @@
       ]
     },
     {
-      "name": "1256 thread-approval-mode - Subject Credential bearer never reaches approval settings",
-      "file": "contracts/1256-thread-approval-mode.bru",
+      "name": "1267 thread-approval-mode - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1267-thread-approval-mode.bru",
       "endpoint": "GET /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Subject Credential bearer never reaches approval settings",
       "status": 403,
@@ -13755,8 +13882,8 @@
       ]
     },
     {
-      "name": "1257 thread-approval-mode-update - Anonymous request is rejected",
-      "file": "contracts/1257-thread-approval-mode-update.bru",
+      "name": "1268 thread-approval-mode-update - Anonymous request is rejected",
+      "file": "contracts/1268-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13767,8 +13894,8 @@
       ]
     },
     {
-      "name": "1258 thread-approval-mode-update - Forged bearer cannot reach a person's approval settings",
-      "file": "contracts/1258-thread-approval-mode-update.bru",
+      "name": "1269 thread-approval-mode-update - Forged bearer cannot reach a person's approval settings",
+      "file": "contracts/1269-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Forged bearer cannot reach a person's approval settings",
       "status": 401,
@@ -13778,8 +13905,8 @@
       ]
     },
     {
-      "name": "1259 thread-approval-mode-update - Deployment Administrator bearer owns no approval settings",
-      "file": "contracts/1259-thread-approval-mode-update.bru",
+      "name": "1270 thread-approval-mode-update - Deployment Administrator bearer owns no approval settings",
+      "file": "contracts/1270-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Deployment Administrator bearer owns no approval settings",
       "status": 403,
@@ -13790,8 +13917,8 @@
       ]
     },
     {
-      "name": "1260 thread-approval-mode-update - Subject Credential bearer never reaches approval settings",
-      "file": "contracts/1260-thread-approval-mode-update.bru",
+      "name": "1271 thread-approval-mode-update - Subject Credential bearer never reaches approval settings",
+      "file": "contracts/1271-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Subject Credential bearer never reaches approval settings",
       "status": 403,
@@ -13802,8 +13929,8 @@
       ]
     },
     {
-      "name": "1261 thread-approval-mode-update - Wrong JSON media type is rejected",
-      "file": "contracts/1261-thread-approval-mode-update.bru",
+      "name": "1272 thread-approval-mode-update - Wrong JSON media type is rejected",
+      "file": "contracts/1272-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -13814,8 +13941,8 @@
       ]
     },
     {
-      "name": "1262 thread-approval-mode-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1262-thread-approval-mode-update.bru",
+      "name": "1273 thread-approval-mode-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1273-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -13826,8 +13953,8 @@
       ]
     },
     {
-      "name": "1263 thread-approval-mode-update - Unknown approval fields are rejected",
-      "file": "contracts/1263-thread-approval-mode-update.bru",
+      "name": "1274 thread-approval-mode-update - Unknown approval fields are rejected",
+      "file": "contracts/1274-thread-approval-mode-update.bru",
       "endpoint": "PUT /api/workspaces/{workspace}/threads/{thread}/approval-mode",
       "scenario": "Unknown approval fields are rejected",
       "status": 422,
@@ -13838,8 +13965,8 @@
       ]
     },
     {
-      "name": "1264 run-evidence - Anonymous request is rejected",
-      "file": "contracts/1264-run-evidence.bru",
+      "name": "1275 run-evidence - Anonymous request is rejected",
+      "file": "contracts/1275-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13849,8 +13976,8 @@
       ]
     },
     {
-      "name": "1265 run-evidence - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1265-run-evidence.bru",
+      "name": "1276 run-evidence - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1276-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -13860,8 +13987,8 @@
       ]
     },
     {
-      "name": "1266 run-evidence - Application read preserves the typed response contract",
-      "file": "contracts/1266-run-evidence.bru",
+      "name": "1277 run-evidence - Application read preserves the typed response contract",
+      "file": "contracts/1277-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Application read preserves the typed response contract",
       "status": 404,
@@ -13872,8 +13999,8 @@
       ]
     },
     {
-      "name": "1267 run-research-revocation - Anonymous request is rejected",
-      "file": "contracts/1267-run-research-revocation.bru",
+      "name": "1278 run-research-revocation - Anonymous request is rejected",
+      "file": "contracts/1278-run-research-revocation.bru",
       "endpoint": "POST /api/runs/{id}/research-revocation",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13884,8 +14011,8 @@
       ]
     },
     {
-      "name": "1268 run-research-revocation - Wrong JSON media type is rejected",
-      "file": "contracts/1268-run-research-revocation.bru",
+      "name": "1279 run-research-revocation - Wrong JSON media type is rejected",
+      "file": "contracts/1279-run-research-revocation.bru",
       "endpoint": "POST /api/runs/{id}/research-revocation",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -13896,8 +14023,8 @@
       ]
     },
     {
-      "name": "1269 run-research-revocation - Malformed JSON cannot reach the use case",
-      "file": "contracts/1269-run-research-revocation.bru",
+      "name": "1280 run-research-revocation - Malformed JSON cannot reach the use case",
+      "file": "contracts/1280-run-research-revocation.bru",
       "endpoint": "POST /api/runs/{id}/research-revocation",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -13908,8 +14035,8 @@
       ]
     },
     {
-      "name": "1270 run-research-revocation-read - Anonymous request is rejected",
-      "file": "contracts/1270-run-research-revocation-read.bru",
+      "name": "1281 run-research-revocation-read - Anonymous request is rejected",
+      "file": "contracts/1281-run-research-revocation-read.bru",
       "endpoint": "GET /api/runs/{id}/research-revocation",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13919,8 +14046,8 @@
       ]
     },
     {
-      "name": "1271 run-research-revocation-read - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1271-run-research-revocation-read.bru",
+      "name": "1282 run-research-revocation-read - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1282-run-research-revocation-read.bru",
       "endpoint": "GET /api/runs/{id}/research-revocation",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -13930,8 +14057,8 @@
       ]
     },
     {
-      "name": "1272 run-research-revocation-read - Application read preserves the typed response contract",
-      "file": "contracts/1272-run-research-revocation-read.bru",
+      "name": "1283 run-research-revocation-read - Application read preserves the typed response contract",
+      "file": "contracts/1283-run-research-revocation-read.bru",
       "endpoint": "GET /api/runs/{id}/research-revocation",
       "scenario": "Application read preserves the typed response contract",
       "status": 404,
@@ -13942,8 +14069,8 @@
       ]
     },
     {
-      "name": "1273 research-revocation-list - Anonymous request is rejected",
-      "file": "contracts/1273-research-revocation-list.bru",
+      "name": "1284 research-revocation-list - Anonymous request is rejected",
+      "file": "contracts/1284-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13953,8 +14080,8 @@
       ]
     },
     {
-      "name": "1274 research-revocation-list - Malformed bearer syntax is rejected",
-      "file": "contracts/1274-research-revocation-list.bru",
+      "name": "1285 research-revocation-list - Malformed bearer syntax is rejected",
+      "file": "contracts/1285-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13964,8 +14091,8 @@
       ]
     },
     {
-      "name": "1275 research-revocation-list - Application read preserves the typed response contract",
-      "file": "contracts/1275-research-revocation-list.bru",
+      "name": "1286 research-revocation-list - Application read preserves the typed response contract",
+      "file": "contracts/1286-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13976,8 +14103,8 @@
       ]
     },
     {
-      "name": "1276 research-revocation-list - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1276-research-revocation-list.bru",
+      "name": "1287 research-revocation-list - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1287-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -13987,8 +14114,8 @@
       ]
     },
     {
-      "name": "1277 tenant-retention - Anonymous request is rejected",
-      "file": "contracts/1277-tenant-retention.bru",
+      "name": "1288 tenant-retention - Anonymous request is rejected",
+      "file": "contracts/1288-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13998,8 +14125,8 @@
       ]
     },
     {
-      "name": "1278 tenant-retention - Malformed bearer syntax is rejected",
-      "file": "contracts/1278-tenant-retention.bru",
+      "name": "1289 tenant-retention - Malformed bearer syntax is rejected",
+      "file": "contracts/1289-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -14009,8 +14136,8 @@
       ]
     },
     {
-      "name": "1279 tenant-retention - Application read preserves the typed response contract",
-      "file": "contracts/1279-tenant-retention.bru",
+      "name": "1290 tenant-retention - Application read preserves the typed response contract",
+      "file": "contracts/1290-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -14021,8 +14148,8 @@
       ]
     },
     {
-      "name": "1280 tenant-retention-update - Anonymous request is rejected",
-      "file": "contracts/1280-tenant-retention-update.bru",
+      "name": "1291 tenant-retention-update - Anonymous request is rejected",
+      "file": "contracts/1291-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14033,8 +14160,8 @@
       ]
     },
     {
-      "name": "1281 tenant-retention-update - Wrong JSON media type is rejected",
-      "file": "contracts/1281-tenant-retention-update.bru",
+      "name": "1292 tenant-retention-update - Wrong JSON media type is rejected",
+      "file": "contracts/1292-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -14045,8 +14172,8 @@
       ]
     },
     {
-      "name": "1282 tenant-retention-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1282-tenant-retention-update.bru",
+      "name": "1293 tenant-retention-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1293-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -14057,8 +14184,8 @@
       ]
     },
     {
-      "name": "1283 tenant-retention-history - Anonymous request is rejected",
-      "file": "contracts/1283-tenant-retention-history.bru",
+      "name": "1294 tenant-retention-history - Anonymous request is rejected",
+      "file": "contracts/1294-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14068,8 +14195,8 @@
       ]
     },
     {
-      "name": "1284 tenant-retention-history - Malformed bearer syntax is rejected",
-      "file": "contracts/1284-tenant-retention-history.bru",
+      "name": "1295 tenant-retention-history - Malformed bearer syntax is rejected",
+      "file": "contracts/1295-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -14079,8 +14206,8 @@
       ]
     },
     {
-      "name": "1285 tenant-retention-history - Application read preserves the typed response contract",
-      "file": "contracts/1285-tenant-retention-history.bru",
+      "name": "1296 tenant-retention-history - Application read preserves the typed response contract",
+      "file": "contracts/1296-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -14091,8 +14218,8 @@
       ]
     },
     {
-      "name": "1286 tenant-retention-history - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1286-tenant-retention-history.bru",
+      "name": "1297 tenant-retention-history - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1297-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,

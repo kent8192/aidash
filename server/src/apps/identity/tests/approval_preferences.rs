@@ -23,6 +23,9 @@ const ORIGIN: &str = "http://127.0.0.1:8080";
 const TENANT: &str = "alpha";
 const PREFERENCES: &str = "/api/tenants/alpha/approval-preferences/mine";
 const RULES: &str = "/api/tenants/alpha/approval-rules/mine";
+const DECIDER: &str = "/api/tenants/alpha/approval-decider";
+/// The built-in approval Decider every Tenant Registry holds.
+const BUILT_IN: &str = "aidash.approval-decider";
 /// The tool call a member's rule names.
 const TOOL: &str = "tool:crm#invoke";
 
@@ -324,6 +327,94 @@ fn allowed(body: &Value, mode: &str) -> bool {
 		.unwrap()
 }
 
+/// Why a mode is unavailable or not yet in effect, or `null`.
+fn reason(body: &Value, mode: &str) -> Value {
+	body["modes"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|choice| choice["mode"] == mode)
+		.unwrap_or_else(|| panic!("{mode} is offered: {body}"))["reason"]
+		.clone()
+}
+
+/// Gives the Tenant's Catalog Approval to version 1.0.0 of `id`.
+async fn approve(f: &Federation, id: &str) {
+	Policies {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		TENANT,
+		&aidash_domain::registry::EntityRef {
+			id: id.into(),
+			version: "1.0.0".into(),
+		},
+		0,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.expect("the Decider is approved");
+}
+
+/// Registers an entry of the Tenant's Registry: a copy of the built-in approval
+/// Decider under `id`, or a compaction Decider when `hook` says so.
+async fn register_decider(f: &Federation, id: &str, hook: &str) {
+	let mut entry = aidash_application::registry::system::approval_decider().unwrap();
+	entry.id = id.into();
+	entry.tags.clear();
+	if hook == "compaction" {
+		entry.config = json!({
+			"hook": "compaction", "answer_type": "noul", "description": "Keep needed history",
+			"provider_credential": "openrouter",
+			"routes": [{"provider_contract": "typesafe.jev/1", "model": "typesafe/jev-1.14", "threshold": "3fe0000000000000"}],
+			"builder": "aidash.compaction/2", "option_source": "history_event/1",
+			"rule": "compaction.keep/1", "mode": "enforce", "max_calls_per_run": 20
+		});
+	}
+	// A Decider that names a Provider Credential registers only where the Node
+	// keeps Provider Credentials.
+	f.registry
+		.clone()
+		.with_provider_credentials(true)
+		.register(
+			&aidash_domain::tenancy::TenantName::new(TENANT).unwrap(),
+			entry,
+		)
+		.await
+		.expect("the Decider is registered");
+}
+
+/// Stores `id` as the Tenant's approval Decider, whatever the Registry holds.
+async fn name_decider(f: &Federation, id: &str) {
+	execute(
+		f,
+		Query::insert()
+			.into_table(Alias::new("identity_tenant_approval_settings"))
+			.columns(
+				[
+					"tenant",
+					"decider_id",
+					"decider_version",
+					"revision",
+					"updated_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::val(TENANT))
+					.expr(Expr::val(id))
+					.expr(Expr::val("1.0.0"))
+					.expr(Expr::val(1_i64))
+					.expr(Expr::cust("clock_timestamp()"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_person_reads_and_saves_their_own_preferences(
@@ -352,8 +443,10 @@ async fn a_person_reads_and_saves_their_own_preferences(
 	assert_eq!(body["revision"], 0);
 	assert_eq!(body["answer_deadline_seconds"], Value::Null);
 	assert_eq!(body["bypass_accepted_at"], Value::Null);
-	assert!(allowed(&body, "manual") && allowed(&body, "dont_ask") && allowed(&body, "auto"));
+	assert!(allowed(&body, "manual") && allowed(&body, "dont_ask"));
 	assert!(!allowed(&body, "bypass"));
+	assert_eq!(reason(&body, "bypass"), "policy");
+	assert_eq!(reason(&body, "manual"), Value::Null);
 
 	let saved = send(
 		&fixture,
@@ -1122,5 +1215,211 @@ async fn a_thread_mode_is_the_callers_own_and_needs_read_access_to_the_thread(
 	)
 	.await;
 	assert_eq!(missing.status(), 404);
+	fixture.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn auto_is_offered_only_while_the_tenants_approval_decider_has_a_catalog_approval(
+	#[future(awt)]
+	#[from(approval_application)]
+	application: common::ApplicationFixture,
+) {
+	// Arrange
+	let fixture = Fixture::new(application);
+	let people = people(&fixture).await;
+	let read = async || {
+		let response = send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"GET",
+			PREFERENCES,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(response.status(), 200);
+		json_body(&response)
+	};
+
+	// Act + Assert: the policy names Auto, yet nobody approved the Decider.
+	let body = read().await;
+	assert!(!allowed(&body, "auto"), "{body}");
+	assert_eq!(reason(&body, "auto"), "decider_unapproved");
+
+	approve(&fixture.f, BUILT_IN).await;
+	let body = read().await;
+	assert!(allowed(&body, "auto"), "{body}");
+	assert_eq!(reason(&body, "auto"), Value::Null);
+
+	// A Decider the Registry does not hold leaves Auto without one.
+	name_decider(&fixture.f, "gone").await;
+	let body = read().await;
+	assert!(!allowed(&body, "auto"), "{body}");
+	assert_eq!(reason(&body, "auto"), "no_decider");
+
+	// Bypass is the member's to choose once the policy names it, and takes
+	// effect after the person accepts its risk.
+	allow_bypass(&fixture.f).await;
+	let body = read().await;
+	assert!(allowed(&body, "bypass"));
+	assert_eq!(reason(&body, "bypass"), "not_accepted");
+	fixture.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_member_reads_the_tenants_approval_decider(
+	#[future(awt)]
+	#[from(approval_application)]
+	application: common::ApplicationFixture,
+) {
+	// Arrange
+	let fixture = Fixture::new(application);
+	let people = people(&fixture).await;
+	let read = async |person: Person, context: &str| {
+		send(&fixture, person, context, "GET", DECIDER, Value::Null).await
+	};
+
+	// Act
+	let fresh = read(Person::Member, &people.member).await;
+
+	// Assert: the built-in Decider judges until the Tenant names another.
+	let body = json_body(&fresh);
+	assert_eq!(fresh.status(), 200, "{body}");
+	assert_eq!(fresh.headers()["cache-control"], "no-store");
+	assert_eq!(body["decider"], json!({"id": BUILT_IN, "version": "1.0.0"}));
+	assert_eq!(body["built_in"], true);
+	assert_eq!(body["registered"], true, "{body}");
+	assert_eq!(body["approved"], false);
+	assert_eq!(body["revision"], 0);
+	approve(&fixture.f, BUILT_IN).await;
+	let approved = json_body(&read(Person::Other, &people.other).await);
+	assert_eq!(approved["approved"], true);
+	fixture.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn only_tenant_update_changes_the_decider_and_it_must_be_an_approval_decider(
+	#[future(awt)]
+	#[from(approval_application)]
+	application: common::ApplicationFixture,
+) {
+	// Arrange
+	let fixture = Fixture::new(application);
+	let people = people(&fixture).await;
+	register_decider(&fixture.f, "strict-approval", "approval").await;
+	register_decider(&fixture.f, "plain-compaction", "compaction").await;
+	let put = async |person: Person, context: &str, body: Value| {
+		send(&fixture, person, context, "PUT", DECIDER, body).await
+	};
+
+	// Act + Assert: a member lacks `tenant.update`.
+	let refused = put(
+		Person::Member,
+		&people.member,
+		json!({"expected_revision": 0, "decider": {"id": "strict-approval", "version": "1.0.0"}}),
+	)
+	.await;
+	assert_eq!(refused.status(), 403, "{}", json_body(&refused));
+
+	// Only a Decider of hook approval can be named.
+	for (target, why) in [
+		(
+			json!({"id": "plain-compaction", "version": "1.0.0"}),
+			"a compaction Decider",
+		),
+		(
+			json!({"id": "gone", "version": "1.0.0"}),
+			"an unknown entry",
+		),
+		(
+			json!({"id": "strict-approval", "version": "9.9.9"}),
+			"an unknown version",
+		),
+	] {
+		let response = put(
+			Person::Owner,
+			&people.owner,
+			json!({"expected_revision": 0, "decider": target}),
+		)
+		.await;
+		assert_eq!(response.status(), 400, "{why}: {}", json_body(&response));
+	}
+	let shape = put(
+		Person::Owner,
+		&people.owner,
+		json!({"expected_revision": 0, "decider": {"id": "strict-approval", "version": "1.0.0"}, "unexpected": true}),
+	)
+	.await;
+	assert!(matches!(shape.status().as_u16(), 400 | 422));
+
+	// The owner names it; the read follows.
+	let named = put(
+		Person::Owner,
+		&people.owner,
+		json!({"expected_revision": 0, "decider": {"id": "strict-approval", "version": "1.0.0"}}),
+	)
+	.await;
+	let body = json_body(&named);
+	assert_eq!(named.status(), 200, "{body}");
+	assert_eq!(
+		body["decider"],
+		json!({"id": "strict-approval", "version": "1.0.0"})
+	);
+	assert_eq!(
+		(
+			&body["built_in"],
+			&body["registered"],
+			&body["approved"],
+			&body["revision"]
+		),
+		(&json!(false), &json!(true), &json!(false), &json!(1))
+	);
+	let read = send(
+		&fixture,
+		Person::Member,
+		&people.member,
+		"GET",
+		DECIDER,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(json_body(&read)["decider"]["id"], "strict-approval");
+
+	// A stale write conflicts; the reset to the built-in keeps counting.
+	let stale = put(
+		Person::Owner,
+		&people.owner,
+		json!({"expected_revision": 0, "decider": null}),
+	)
+	.await;
+	assert_eq!(stale.status(), 409, "{}", json_body(&stale));
+	let reset = put(
+		Person::Owner,
+		&people.owner,
+		json!({"expected_revision": 1, "decider": null}),
+	)
+	.await;
+	let body = json_body(&reset);
+	assert_eq!(reset.status(), 200, "{body}");
+	assert_eq!(body["decider"]["id"], BUILT_IN);
+	assert_eq!(
+		(&body["built_in"], &body["revision"]),
+		(&json!(true), &json!(2))
+	);
+
+	// The Tenant of the path is the caller's own.
+	let elsewhere = send(
+		&fixture,
+		Person::Owner,
+		&people.owner,
+		"PUT",
+		"/api/tenants/beta/approval-decider",
+		json!({"expected_revision": 0, "decider": null}),
+	)
+	.await;
+	assert_eq!(elsewhere.status(), 403, "{}", json_body(&elsewhere));
 	fixture.cleanup().await;
 }

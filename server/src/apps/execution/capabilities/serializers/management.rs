@@ -69,9 +69,17 @@ pub struct ApprovalCard {
 	pub decided_at: Option<DateTime<Utc>>,
 	/// What gave the approval in advance, under its owner's name: `{"rule": id}`
 	/// for one of their Approval Rules, `{"mode": "bypass"}` for the Bypass
-	/// mode, and none when a person decided it.
+	/// mode, `{"mode": "auto", "decision": id}` for the approval Decider and its
+	/// Decision Evidence, and none when a person decided it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub given_by: Option<serde_json::Value>,
+	/// What refused the approval in advance, with no one asked: `{"rule": id}`
+	/// for one of the owner's Approval Rules, `{"mode": "dont_ask"}` for the
+	/// Don't ask mode, and `{"mode": "auto", "reason": ...}` for the approval
+	/// Decider, whose reason names a block category or `unavailable`. None when
+	/// a person decided it or it is still open.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refused_by: Option<serde_json::Value>,
 	/// Whether the reader may choose "Always allow": they are the person the
 	/// Run's delegation chain starts at, the approval is still pending and its
 	/// kind can have a rule.

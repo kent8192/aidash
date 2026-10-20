@@ -150,7 +150,7 @@ impl DecisionJournal for Fixture {
 	async fn reserve(&self, record: &DispatchRecord) -> Result<Reservation> {
 		let mut saved = self.saved.lock().unwrap();
 		if saved.permits.len() >= self.allowance {
-			return Err(Error::Forbidden);
+			return Err(Error::Context(Failure::DeciderCallsExhausted));
 		}
 		let permit = DispatchPermit {
 			record: record.clone(),
@@ -333,11 +333,7 @@ impl Case {
 	}
 }
 
-async fn judge_as(
-	fixture: &Fixture,
-	case: Case,
-	binding: Restrictions,
-) -> Result<ApprovalEvidence> {
+async fn rule_as(fixture: &Fixture, case: Case, binding: Restrictions) -> Result<Ruling> {
 	let context = context();
 	let people = [person(
 		1,
@@ -392,6 +388,16 @@ async fn judge_as(
 			tool: &tool,
 		})
 		.await
+}
+async fn judge_as(
+	fixture: &Fixture,
+	case: Case,
+	binding: Restrictions,
+) -> Result<ApprovalEvidence> {
+	match rule_as(fixture, case, binding).await? {
+		Ruling::Decided(evidence) => Ok(*evidence),
+		Ruling::AllowanceSpent => panic!("the call allowance is spent"),
+	}
 }
 async fn judge(fixture: &Fixture) -> ApprovalEvidence {
 	judge_as(fixture, Case::new(), fixture.binding.clone())
@@ -573,16 +579,42 @@ async fn a_withdrawn_decider_gives_no_verdict_and_no_other_route_is_asked() {
 }
 
 #[tokio::test]
-async fn an_exhausted_call_allowance_gives_no_verdict() {
+async fn a_spent_call_allowance_is_no_outage_and_records_no_decision() {
 	let fixture = Fixture {
 		allowance: 0,
 		..Fixture::new(Mode::Enforce)
 	};
 
-	let evidence = judge(&fixture).await;
+	let ruling = rule_as(&fixture, Case::new(), Restrictions::default())
+		.await
+		.unwrap();
 
-	assert_eq!(evidence.verdict, Verdict::Blocked(BlockReason::Unavailable));
+	assert!(matches!(ruling, Ruling::AllowanceSpent), "{ruling:?}");
 	assert!(fixture.dispatched().is_empty());
+	assert!(fixture.recorded().is_empty());
+}
+
+#[tokio::test]
+async fn an_allowance_spent_on_a_later_route_still_leaves_the_call_to_a_person() {
+	// Arrange: the first Route is down, and its attempt used the last call.
+	let fixture = Fixture {
+		allowance: 1,
+		..Fixture::routed(
+			Mode::Enforce,
+			vec![DeciderRoute::jev("typesafe/jev-1.14"), clef()],
+		)
+	}
+	.replying(0, Reply::Transport);
+
+	// Act
+	let ruling = rule_as(&fixture, Case::new(), Restrictions::default())
+		.await
+		.unwrap();
+
+	// Assert
+	assert!(matches!(ruling, Ruling::AllowanceSpent), "{ruling:?}");
+	assert_eq!(fixture.dispatched(), [0]);
+	assert!(fixture.recorded().is_empty());
 }
 
 #[tokio::test]

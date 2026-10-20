@@ -873,6 +873,7 @@ pub(crate) async fn approval_list(
 				"decided_by": data["decided_by"],
 				"decided_at": data["decided_at"],
 				"given_by": data["given_by"],
+				"refused_by": data["refused_by"],
 				"allow_always": allow_always,
 				"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
 			}));

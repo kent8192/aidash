@@ -1,10 +1,13 @@
 //! Auto: the Run's approval Decider judges a pending approval before the Run
-//! waits for a person (ADR 0077). A Decider that cannot answer blocks the call
-//! and tells the model; it never fails the Run or pauses it.
+//! waits for a person (ADR 0077). A Decider that cannot be asked blocks the call
+//! and tells the model; one whose call allowance is spent leaves the call to a
+//! person. Neither fails the Run or pauses it.
 use super::*;
 use aidash_application::{
 	capabilities::approvals::Settlement,
-	decision::{ApprovalTool, DecisionGate, Judgement, approval_input_digest, settlement_of},
+	decision::{
+		ApprovalTool, DecisionGate, Judgement, Ruling, approval_input_digest, settlement_of,
+	},
 };
 use aidash_domain::{
 	decision::{BlockReason, Boundary},
@@ -28,8 +31,8 @@ pub(super) enum Judged {
 	/// The approval is refused for this reason, which the model receives.
 	Blocked(BlockReason),
 	/// Nobody decided, so a person is asked as in Manual: Auto is not available
-	/// to the Run, the Decider ran in Shadow mode, or the approval is not the
-	/// Decider's to judge.
+	/// to the Run, the Decider ran in Shadow mode, the Run has spent the
+	/// Decider's call allowance, or the approval is not the Decider's to judge.
 	Undecided,
 }
 
@@ -92,7 +95,7 @@ impl Executor<'_> {
 			journal: ports.journal.as_ref(),
 			provider: ports.provider.as_ref(),
 		};
-		let evidence = gate
+		let ruling = gate
 			.judge_approval(&Judgement {
 				boundary: &boundary,
 				decider: &ports.decider,
@@ -106,6 +109,9 @@ impl Executor<'_> {
 				tool: &tool,
 			})
 			.await?;
+		let Ruling::Decided(evidence) = ruling else {
+			return Ok(Judged::Undecided);
+		};
 		let settlement = settlement_of(&evidence);
 		guard.settle_judgement(run, approval, settlement).await?;
 		Ok(match settlement {

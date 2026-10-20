@@ -1068,6 +1068,7 @@ fn advising(scope: &mut Scope, mode: ApprovalMode, rules: Vec<ApprovalRule>) {
 		mode,
 		rules,
 		bypass_accepted: true,
+		auto_available: true,
 	});
 }
 fn policy_rule(effect: RuleEffect) -> ApprovalRule {

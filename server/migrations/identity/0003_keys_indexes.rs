@@ -481,6 +481,13 @@ pub(super) fn migration() -> Migration {
 				],
 			},
 		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "identity_tenant_approval_settings".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "identity_tenant_approval_settings_pkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+			},
+		})
 		// One owner's rules are read by their prefix on every approval; the
 		// whole key also refuses a rule stored twice.
 		.add_operation(Operation::CreateNamedIndex {

@@ -46,6 +46,8 @@ pub(super) enum Reply {
 	Answers([f64; 5]),
 	/// The provider fails.
 	Outage,
+	/// The Run has spent the Decider's call allowance.
+	AllowanceSpent,
 }
 /// The Tenant's approval Decider, in the mode it runs in.
 #[derive(Clone, Copy)]
@@ -76,6 +78,12 @@ impl ApprovalDecider {
 		Self {
 			mode: Mode::Enforce,
 			reply: Reply::Outage,
+		}
+	}
+	pub(super) fn allowance_spent() -> Self {
+		Self {
+			mode: Mode::Enforce,
+			reply: Reply::AllowanceSpent,
 		}
 	}
 }
@@ -187,6 +195,17 @@ impl DecisionJournal for FixtureDecision {
 		Ok(vec![])
 	}
 	async fn reserve(&self, record: &DispatchRecord) -> Result<Reservation> {
+		if self.approval
+			&& self
+				.backend
+				.0
+				.approval_decider
+				.is_some_and(|decider| matches!(decider.reply, Reply::AllowanceSpent))
+		{
+			return Err(Error::Context(
+				aidash_domain::context::recovery::Failure::DeciderCallsExhausted,
+			));
+		}
 		Ok(Reservation::Fresh(DispatchPermit {
 			record: record.clone(),
 			owner_receipts: BTreeMap::from([("run".into(), Uuid::new_v4())]),

@@ -804,6 +804,37 @@ async fn shadow_records_what_the_decider_would_do_and_leaves_the_call_waiting(
 
 #[rstest]
 #[tokio::test]
+async fn a_spent_call_allowance_leaves_the_call_waiting_for_a_person(mut fixture: Fixture) {
+	// Arrange
+	let tool = tenant_tool(&mut fixture);
+	auto(
+		&mut fixture,
+		ApprovalDecider::allowance_spent(),
+		1,
+		ApprovalKind::ToolCall,
+	);
+	let approval = Uuid::from_u128(0xa1);
+	approvals(&fixture, [pending(approval)]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.waiting_for_tool_approval");
+	assert!(matches!(
+		waiting(&saved),
+		WaitingState::Approval { approval: ApprovalRef::Capability { approval_id }, .. }
+			if *approval_id == approval
+	));
+	assert_eq!(tool.invocations(), 0);
+	assert!(settlements(&fixture).is_empty(), "nothing was refused");
+	assert!(evidence(&fixture).is_empty(), "nothing was decided");
+}
+
+#[rstest]
+#[tokio::test]
 async fn without_an_approval_decider_auto_waits_for_a_person(mut fixture: Fixture) {
 	// Arrange
 	let tool = tenant_tool(&mut fixture);

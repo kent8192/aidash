@@ -16,7 +16,9 @@ mod judge;
 mod state;
 pub use approval_state::{ApprovalState, ApprovalTool, build_approval_state};
 pub use dispatch::{attempt_identity, decision_identity};
-pub use judge::{Judgement, approval_evidence_identity, approval_input_digest, settlement_of};
+pub use judge::{
+	Judgement, Ruling, approval_evidence_identity, approval_input_digest, settlement_of,
+};
 pub use state::{BuiltState, build_compaction_state, compaction_disclosure};
 
 /// Digest the complete inference input before redacting its classification view.

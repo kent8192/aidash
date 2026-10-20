@@ -987,6 +987,8 @@ def render():
             body = (
                 json.dumps({"expected_revision": 0, "default_mode": "manual"})
                 if path.endswith("/approval-preferences/mine")
+                else json.dumps({"expected_revision": 0, "decider": None})
+                if path.endswith("/approval-decider")
                 else json.dumps({"kind": "tool_call", "target": "every", "effect": "ask"})
                 if method == "POST"
                 else json.dumps({"mode": None})

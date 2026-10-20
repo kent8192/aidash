@@ -33,6 +33,8 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 }
 /// Approval records of outbound reads.
 const OUTBOUND: &str = "outbound";
+/// The kind of every approval record a Run can hold.
+pub const KINDS: [&str; 3] = [OUTBOUND, DISCLOSURE, TOOL_CALL];
 /// Approval records of Web disclosures share the capability approval flow.
 pub const DISCLOSURE: &str = "disclosure";
 /// Approval records of Tenant tool calls share it too (ADR 0075).
@@ -44,9 +46,6 @@ pub const DONT_ASK_HUMAN_REQUEST: &str =
 /// What the model is told while the person's Approval Mode is Auto, so a Run
 /// the Decider approves is not held up by questions.
 pub const AUTO_MODE_INSTRUCTION: &str = "\nThe person has chosen the Auto Approval Mode. Do not stop to ask clarifying questions unless the person's input relies on one; make a reasonable assumption and continue.";
-/// The sender of an input a person at a Deployment or a Home Node wrote, which
-/// no Tenant subject stands for.
-const HUMAN_SENDER: &str = "human";
 /// The policy action that lets a call proceed without a Tool call approval
 /// (direct permission).
 pub const CALL_UNAPPROVED: &str = "tool.call_unapproved";
@@ -1098,14 +1097,14 @@ async fn recorded_tool_call(
 	}
 }
 
-/// Whether the sender of a Run input is a person: a User of the Tenant's policy,
-/// or a person at a Deployment or Home Node.
-fn is_person(bundle: &PolicyBundle, sender: &str) -> bool {
-	sender == HUMAN_SENDER
-		|| bundle
-			.subjects
-			.get(sender)
-			.is_some_and(|subject| subject.enabled && subject.kind == SubjectKind::User)
+/// Whether the author of a Run input is a person: an enabled User subject of the
+/// Tenant's policy. A label another Node's agent or a Federation message
+/// carries, such as `human`, names no subject, so it is never a person here.
+fn is_person(bundle: &PolicyBundle, author: &str) -> bool {
+	bundle
+		.subjects
+		.get(author)
+		.is_some_and(|subject| subject.enabled && subject.kind == SubjectKind::User)
 }
 
 /// Whether the person's Auto mode still leaves `record` to the approval Decider,
