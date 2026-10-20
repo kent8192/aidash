@@ -138,6 +138,12 @@ generates the Store's Master Key and fingerprint key once, in the
 `provider-credentials` volume. `docker compose --profile dev down -v` deletes
 them together with the database that holds the encrypted credentials.
 
+The Compose backend admits core work through a [capability execution profile](docs/operations/core-capabilities.md)
+with the default limits, so Goals for Agents with core capabilities run instead
+of failing with `CAPABILITIES_DISABLED`. Working files live in the
+`capabilities` volume. The stack has no isolated Runner, so Sandboxed tools
+such as shell and Python stay unavailable.
+
 The Compose backend also turns on Personal Tenants (`[tenancy] personal_tenants = true`,
 mounted as its `local.toml`), so your first Google sign-in gets a Personal
 Tenant without approval. Other Self-hosted deployments keep the Offering's default, `false`

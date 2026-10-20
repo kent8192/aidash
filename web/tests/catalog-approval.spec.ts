@@ -226,15 +226,26 @@ test("every version shows its approval state and newest-first history", async ({
   ]);
   await routeTenantActions(page, []);
   await page.goto("/settings?view=registry");
-  for (const [name, state] of [
-    ["search", "Approved"],
-    ["model", "Not approved"],
-    ["notes", "Withdrawn"],
-    ["aidash.file_read", "Built-in"],
-  ])
+  // The list opens on the first kind present and hides the others.
+  await expect(page.locator('[data-registry-kind="model"]')).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(row(page, "model")).toHaveCount(1);
+  await expect(row(page, "search")).toHaveCount(0);
+  await page.locator('[data-registry-kind="all"]').click();
+  await expect(page.locator(".entity-card")).toHaveCount(4);
+  for (const [name, state, kind] of [
+    ["search", "Approved", "tool"],
+    ["model", "Not approved", "model"],
+    ["notes", "Withdrawn", "skill"],
+    ["aidash.file_read", "Built-in", "tool"],
+  ]) {
+    await page.locator(`[data-registry-kind="${kind}"]`).click();
     await expect(row(page, name).locator(".badge:visible")).toContainText([
       state,
     ]);
+  }
   await row(page, "search").click();
   await expect(approval(page).locator(".catalog-history")).toHaveText([
     /Approved.*Revision 3 · carol/,
@@ -243,6 +254,7 @@ test("every version shows its approval state and newest-first history", async ({
   ]);
   await expect(approval(page).getByRole("button")).toHaveCount(0);
   await page.keyboard.press("Escape");
+  await page.locator('[data-registry-kind="model"]').click();
   await row(page, "model").click();
   await expect(approval(page)).toContainText("No approval decisions yet.");
   await expect(approval(page).getByRole("button")).toHaveCount(0);
