@@ -9,6 +9,7 @@ import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
 import { useRef, useState } from "react";
 import { MemoryRegistryFields } from "./memory-registry";
+import { replayAfterHint, replayAfterQueryChange, sameQuery } from "./mcp-hint";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
 
@@ -292,6 +293,13 @@ export function EntityConfiguration({
   const [hint, setHint] = useState<ServerHint | null>(null);
   const [checkingHint, setCheckingHint] = useState(false);
   const hintRequest = useRef(0);
+  // The response arrives after more edits can happen, so the answer and the
+  // automatic prefill it may cause are compared with these, not with the
+  // values captured when the request started.
+  const endpointRef = useRef(endpoint);
+  const toolNameRef = useRef(toolName);
+  const replayRef = useRef(replay);
+  const replayPrefilled = useRef(false);
   const [instructions, setInstructions] = useState("");
   const [skillFiles, setSkillFiles] = useState<SkillPayload["files"]>([]);
   const [skillSource, setSkillSource] = useState<string>();
@@ -327,25 +335,51 @@ export function EntityConfiguration({
 
   // The server's word only prefills the choice; it applies to the endpoint and
   // tool it was read for, and to nothing the person edits afterwards.
-  const shownHint =
-    hint && hint.endpoint === endpoint && hint.toolName === toolName
-      ? hint
-      : null;
+  const shownHint = hint && sameQuery(hint, endpoint, toolName) ? hint : null;
+  // A queried field changed: the pending answer is for another tool, and an
+  // automatic read-only prefill no longer describes this one.
+  const queryChanged = () => {
+    hintRequest.current += 1;
+    setCheckingHint(false);
+    const next = replayAfterQueryChange(
+      replayRef.current,
+      replayPrefilled.current,
+    );
+    replayPrefilled.current = false;
+    if (next !== replayRef.current) {
+      replayRef.current = next;
+      setReplay(next);
+    }
+  };
   const checkHint = async () => {
     const current = ++hintRequest.current;
-    const asked = { endpoint, toolName };
+    const asked = {
+      endpoint: endpointRef.current,
+      toolName: toolNameRef.current,
+    };
     setCheckingHint(true);
     setHint(null);
     try {
       const { read_only_hint } = await registryMcpToolHint({
-        endpoint,
-        tool_name: toolName,
+        endpoint: asked.endpoint,
+        tool_name: asked.toolName,
       });
       if (current !== hintRequest.current) return;
+      if (!sameQuery(asked, endpointRef.current, toolNameRef.current)) return;
       setHint({ ...asked, readOnly: read_only_hint ?? null });
-      if (read_only_hint === true) setReplay("read_only");
+      const next = replayAfterHint(
+        replayRef.current,
+        read_only_hint,
+        replayPrefilled.current,
+      );
+      replayPrefilled.current = next.prefilled;
+      if (next.replay !== replayRef.current) {
+        replayRef.current = next.replay;
+        setReplay(next.replay);
+      }
     } catch (cause) {
       if (current !== hintRequest.current) return;
+      if (!sameQuery(asked, endpointRef.current, toolNameRef.current)) return;
       setHint({
         ...asked,
         error: cause instanceof Error ? cause.message : String(cause),
@@ -622,7 +656,11 @@ export function EntityConfiguration({
                   type="url"
                   required
                   value={endpoint}
-                  onChange={(event) => setEndpoint(event.target.value)}
+                  onChange={(event) => {
+                    endpointRef.current = event.target.value;
+                    queryChanged();
+                    setEndpoint(event.target.value);
+                  }}
                 />
               </Field>
               {transport === "mcp" && (
@@ -630,14 +668,22 @@ export function EntityConfiguration({
                   <Input
                     required
                     value={toolName}
-                    onChange={(event) => setToolName(event.target.value)}
+                    onChange={(event) => {
+                      toolNameRef.current = event.target.value;
+                      queryChanged();
+                      setToolName(event.target.value);
+                    }}
                   />
                 </Field>
               )}
               <Field label={t("toolReplay")}>
                 <NativeSelect
                   value={replay}
-                  onChange={(event) => setReplay(event.target.value)}
+                  onChange={(event) => {
+                    replayPrefilled.current = false;
+                    replayRef.current = event.target.value;
+                    setReplay(event.target.value);
+                  }}
                 >
                   {["read_only", "unsafe"].map((value) => (
                     <option key={value} value={value}>

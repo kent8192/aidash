@@ -324,12 +324,11 @@ impl ApprovalScope for Scope<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()> {
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<Uuid> {
 		let tenant = self.access.identity.tenant.clone();
 		let tx = &mut *self.access.tx;
 		identity::lock_owner(tx, &tenant, owner).await?;
-		identity::add_rule(tx, &tenant, owner, &rule).await?;
-		Ok(())
+		Ok(identity::add_rule(tx, &tenant, owner, &rule).await?)
 	}
 	async fn approval_records(&mut self, run: &RunMetadata) -> Result<Vec<Record>> {
 		let result: NativeResult<Vec<NativeRecord>> = async {

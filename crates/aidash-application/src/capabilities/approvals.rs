@@ -517,7 +517,19 @@ pub async fn decide(
 				return Err(Error::Invalid("allow_always has no reusable scope".into()));
 			}
 			// Only the person the chain starts at can give an approval in advance.
-			if record.data["subjects"][0].as_str() != Some(scope.principal()) {
+			let owner = scope.principal().to_owned();
+			if record.data["subjects"][0].as_str() != Some(owner.as_str()) {
+				return Err(Error::Forbidden);
+			}
+			// A rule approves in advance only within the ceiling `resolve`
+			// applies to it. Without `approval.advance` on this resource the
+			// rule would be stored and ignored, so "Always allow" cannot mean
+			// what it says: refuse it and leave "Allow once" available.
+			let settings = scope
+				.approval_settings(&run)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if !ceiling(scope, &settings, &owner, &target).may_approve {
 				return Err(Error::Forbidden);
 			}
 			let (kind, name) = rule_of(&record)?;
@@ -527,9 +539,9 @@ pub async fn decide(
 				target: RuleTarget::Exact(name),
 				effect: RuleEffect::Allow,
 			};
-			record.data["rule_id"] = json!(rule.id);
-			let owner = scope.principal().to_owned();
-			scope.create_rule(&owner, rule).await?;
+			// Two pending approvals can name one rule. Record the rule the
+			// store actually holds, which an equal one may already be.
+			record.data["rule_id"] = json!(scope.create_rule(&owner, rule).await?);
 			record.state = "approved".into();
 			record.data["approval_mode"] = json!("allow_once");
 		}

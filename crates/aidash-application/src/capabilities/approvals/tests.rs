@@ -174,12 +174,19 @@ impl ApprovalScope for Fake {
 	async fn approval_settings(&mut self, _: &Run) -> Result<Option<Settings>> {
 		Ok(self.settings.clone())
 	}
-	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()> {
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<Uuid> {
 		if let Some(settings) = &mut self.settings {
+			if let Some(existing) = settings.rules.iter().find(|existing| {
+				existing.kind == rule.kind
+					&& existing.effect == rule.effect
+					&& existing.target == rule.target
+			}) {
+				return Ok(existing.id);
+			}
 			settings.rules.push(rule.clone());
 		}
-		self.created_rules.push((owner.into(), rule));
-		Ok(())
+		self.created_rules.push((owner.into(), rule.clone()));
+		Ok(rule.id)
 	}
 	async fn approval_records(&mut self, run: &Run) -> Result<Vec<Record>> {
 		Ok(self
@@ -2215,6 +2222,66 @@ async fn always_allow_by_the_chain_root_approves_once_and_creates_their_rule() {
 		panic!("the new rule approves");
 	};
 	assert_eq!(given_by(&scope, later), json!({"rule":rule.id}));
+}
+
+#[tokio::test]
+async fn always_allow_needs_advance_authority_not_only_the_right_to_approve_once() {
+	// Alice may approve her own tool call, but the Tenant does not let her
+	// advance approvals: a rule would be stored and then ignored.
+	let mut scope = advising(tool_scope(Value::Null), ApprovalMode::Manual, vec![]);
+	allow_alice(&mut scope, &["capability.approve"], &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
+
+	let refused = decide_as(
+		&mut scope,
+		"alice",
+		approval_id,
+		ApprovalChoice::AllowAlways,
+	)
+	.await;
+
+	assert!(matches!(refused, Err(Error::Forbidden)));
+	assert!(scope.created_rules.is_empty());
+	assert_eq!(scope.records[&approval_id].state, "pending");
+	// Allowing this call once remains available.
+	decide_as(&mut scope, "alice", approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+}
+
+#[tokio::test]
+async fn always_allow_records_the_existing_rule_when_the_rule_already_exists() {
+	let mut scope = advising(empowered(), ApprovalMode::Manual, vec![]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	// Elsewhere another pending approval for the same target already created
+	// this rule.
+	let existing = tool_rule(42, RuleEffect::Allow);
+	scope
+		.settings
+		.as_mut()
+		.unwrap()
+		.rules
+		.push(existing.clone());
+
+	let decided = decide_as(
+		&mut scope,
+		"alice",
+		approval_id,
+		ApprovalChoice::AllowAlways,
+	)
+	.await
+	.unwrap();
+
+	assert_eq!(decided["state"], "approved");
+	assert_eq!(
+		scope.records[&approval_id].data["rule_id"],
+		json!(existing.id)
+	);
+	assert!(
+		scope.created_rules.is_empty(),
+		"the equal rule is reused, not stored twice"
+	);
 }
 
 #[tokio::test]

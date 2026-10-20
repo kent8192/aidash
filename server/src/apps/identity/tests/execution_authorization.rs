@@ -3693,4 +3693,67 @@ mod approval_modes {
 		drop(t.server);
 		cleanup(f, &url, &schema).await;
 	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn always_allow_reuses_an_equal_rule_and_records_the_rule_it_holds(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange: two approvals for the same target are pending at once, as
+		// two Runs' cards can be. The second also receives "Always allow".
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		let app = &t.application.application;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+		let (approval, _) = awaited_tool_call(&waiting).unwrap();
+		// Copy the pending record under a new id: the same target, judged by
+		// the same rule.
+		let duplicate: Uuid = sqlx::query_scalar(
+			"INSERT INTO core_records (id, tenant, owner, area_id, kind, state, revision, data, expires_at) \
+			 SELECT gen_random_uuid(), tenant, owner, area_id, kind, state, revision, data, expires_at \
+			 FROM core_records WHERE id = $1 RETURNING id",
+		)
+		.bind(approval)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+
+		// Act: the first decision stores a rule, the second finds it equal.
+		let (first, decided) = decide_tool_call(app, &token, approval, "allow_always").await;
+		let (second, again) = decide_tool_call(app, &token, duplicate, "allow_always").await;
+
+		// Assert: both records name the one rule that exists.
+		assert_eq!(first, 200, "{decided}");
+		assert_eq!(second, 200, "{again}");
+		let records = records(&f).await;
+		let rule_id = |id: Uuid| {
+			records
+				.iter()
+				.find(|record| record.0 == id)
+				.unwrap_or_else(|| panic!("approval {id} is recorded: {records:?}"))
+				.clone()
+				.2["rule_id"]
+				.clone()
+		};
+		let stored = rule_id(approval);
+		assert!(
+			stored.is_string(),
+			"the decision records its rule: {stored}"
+		);
+		assert_eq!(rule_id(duplicate), stored);
+		let rules: i64 = sqlx::query_scalar(
+			"SELECT count(*) FROM identity_approval_rules WHERE tenant = 'acme'",
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(rules, 1, "the equal rule is stored once");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
 }

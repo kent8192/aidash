@@ -11,6 +11,7 @@ use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, RuleEffect, RuleTarget, Settings,
 };
 use aidash_domain::policy::{PolicyBundle, SubjectKind};
+use aidash_domain::registry::Entry;
 use chrono::{DateTime, Utc};
 use reinhardt::db::{
 	backends::TransactionExecutor,
@@ -102,13 +103,14 @@ pub(crate) async fn rules(
 }
 
 /// Stores `new` for the owner unless the owner already holds an equal rule.
-/// Returns whether it was stored. The caller holds [`lock_owner`].
+/// Returns the id of the rule the owner holds: `new.id`, or the id of the
+/// equal rule already there. The caller holds [`lock_owner`].
 pub(crate) async fn add_rule(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	subject: &str,
 	new: &ApprovalRule,
-) -> crate::Result<bool> {
+) -> crate::Result<Uuid> {
 	let held = ApprovalRuleRecord::objects()
 		.filter(ApprovalRuleRecord::field_tenant().eq(tenant))
 		.filter(ApprovalRuleRecord::field_subject().eq(subject))
@@ -153,11 +155,52 @@ pub(crate) async fn add_rule(
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
-	Ok(crate::database::native::query(&sql)
+	if crate::database::native::query(&sql)
 		.execute(&mut *tx)
 		.await?
 		.rows_affected()
-		== 1)
+		== 1
+	{
+		return Ok(new.id);
+	}
+	// The unique columns deduplicated the insert. Report the rule that is
+	// already held, so a caller such as "Always allow" never records an id
+	// that no row has.
+	rules(tx, tenant, subject)
+		.await?
+		.into_iter()
+		.find(|(stored, _)| {
+			stored.kind == new.kind && stored.effect == new.effect && stored.target == new.target
+		})
+		.map(|(stored, _)| stored.id)
+		.ok_or_else(|| crate::Error::Invalid("the Approval Rule is unavailable".into()))
+}
+
+/// The generated definition of every Generation Policy of `tenant`, by policy
+/// id. A generation approval rule names a policy; its catalog-approval ceiling
+/// is judged on the template that policy would generate.
+pub(crate) async fn generation_templates(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> crate::Result<Vec<(String, Entry)>> {
+	let sql = Query::select()
+		.expr(Expr::col(Alias::new("id")))
+		.expr(Expr::col(Alias::new("spec")))
+		.from(Alias::new("generation_policies"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
+		.to_string(PostgresQueryBuilder);
+	let rows: Vec<(String, Value)> = crate::database::native::query_as(&sql)
+		.columns(&["id", "spec"])
+		.fetch_all(&mut *tx)
+		.await?;
+	rows.into_iter()
+		.map(|(id, spec)| {
+			let template = spec.get("template").cloned().ok_or_else(|| {
+				crate::Error::Invalid("the Generation Policy has no template".into())
+			})?;
+			Ok((id, serde_json::from_value(template)?))
+		})
+		.collect()
 }
 
 /// Deletes one of the owner's rules. Returns whether it existed.

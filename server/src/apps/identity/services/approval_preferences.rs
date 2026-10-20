@@ -29,8 +29,10 @@ use aidash_domain::identity::tenancy::TENANT_UPDATE;
 use aidash_domain::identity::tenant_administration::APPROVAL_READ;
 use aidash_domain::policy::{Evaluation, PolicyBundle, Resource, identifier};
 use aidash_domain::registry::EntityRef;
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::injectable;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -143,29 +145,33 @@ const REPRESENTATIVE: &str = "any";
 /// The resource a rule's approval would be judged on, and the policy action
 /// that approving it needs, as far as the rule alone tells. A rule for every
 /// target of a kind, and a search rule (whose destination only a Run knows),
-/// are judged on a representative resource of the kind.
-fn judged(bundle: &PolicyBundle, rule: &ApprovalRule) -> (Resource, &'static str) {
+/// are judged on `id`: a real target the policy names, or [`REPRESENTATIVE`]
+/// when the policy allows the whole kind.
+fn judged(bundle: &PolicyBundle, rule: &ApprovalRule, id: &str) -> (Resource, &'static str) {
 	let exact = match &rule.target {
 		RuleTarget::Exact(target) => Some(target.as_str()),
 		RuleTarget::Every => None,
 	};
 	match rule.kind {
 		ApprovalKind::ToolCall => {
-			let (id, operation) = exact
-				.and_then(|target| target.strip_prefix("tool:"))
-				.and_then(|target| target.split_once('#'))
-				.unwrap_or((REPRESENTATIVE, ""));
+			let (tool, operation) = match exact {
+				Some(target) => target
+					.strip_prefix("tool:")
+					.and_then(|target| target.split_once('#'))
+					.unwrap_or((REPRESENTATIVE, "")),
+				None => (id, ""),
+			};
 			let mut attributes = json!({"action": CALL_UNAPPROVED});
 			if !operation.is_empty() {
 				attributes["operation"] = json!(operation);
 			}
 			(
-				resource(bundle, "tool", id, attributes),
+				resource(bundle, "tool", tool, attributes),
 				"capability.approve",
 			)
 		}
 		ApprovalKind::Outbound => {
-			let origin = exact.unwrap_or(REPRESENTATIVE);
+			let origin = exact.unwrap_or(id);
 			(
 				resource(
 					bundle,
@@ -176,17 +182,17 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule) -> (Resource, &'static str
 				"capability.approve",
 			)
 		}
-		ApprovalKind::WebSearch => (
-			resource(
-				bundle,
-				"research",
-				REPRESENTATIVE,
-				json!({"action": DISCLOSE}),
-			),
-			"capability.approve",
-		),
+		ApprovalKind::WebSearch => {
+			// A search rule names its provider, while its ceiling is judged on
+			// the destination a Run chooses.
+			let destination = if exact.is_some() { REPRESENTATIVE } else { id };
+			(
+				resource(bundle, "research", destination, json!({"action": DISCLOSE})),
+				"capability.approve",
+			)
+		}
 		ApprovalKind::PageReading => {
-			let host = exact.unwrap_or(REPRESENTATIVE);
+			let host = exact.unwrap_or(id);
 			(
 				resource(
 					bundle,
@@ -198,9 +204,11 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule) -> (Resource, &'static str
 			)
 		}
 		ApprovalKind::Generation => {
-			let attributes = match exact {
-				Some(policy) => json!({"policy_id": policy}),
-				None => json!({}),
+			let policy = exact.unwrap_or(id);
+			let attributes = if policy == REPRESENTATIVE {
+				json!({})
+			} else {
+				json!({"policy_id": policy})
 			};
 			(
 				resource(bundle, "generation", REPRESENTATIVE, attributes),
@@ -210,54 +218,144 @@ fn judged(bundle: &PolicyBundle, rule: &ApprovalRule) -> (Resource, &'static str
 	}
 }
 
+/// The real target ids the Tenant's policy names for a rule that covers every
+/// target of its kind. The placeholder is not one of them.
+fn named_targets(bundle: &PolicyBundle, kind: ApprovalKind) -> BTreeSet<String> {
+	let resource_kind = match kind {
+		ApprovalKind::ToolCall => "tool",
+		ApprovalKind::Outbound => "outbound",
+		ApprovalKind::WebSearch | ApprovalKind::PageReading => "research",
+		ApprovalKind::Generation => "generation",
+	};
+	bundle
+		.policies
+		.iter()
+		.filter(|policy| {
+			policy.resources.kinds.contains("*") || policy.resources.kinds.contains(resource_kind)
+		})
+		.flat_map(|policy| policy.resources.ids.iter())
+		.filter(|id| id.as_str() != REPRESENTATIVE)
+		.cloned()
+		.collect()
+}
+
 /// Whether `rule` still has its effect. A deny or ask rule relaxes nothing, so
 /// the ceiling never reaches it. An allow rule is an approval given in advance:
 /// `owner` could approve what it names themselves and the policy lets them
 /// advance approvals (ADR 0076).
-fn effective(bundle: &PolicyBundle, owner: &str, rule: &ApprovalRule) -> bool {
+///
+/// A rule for every target of a kind is judged on each real target the policy
+/// names as well as on [`REPRESENTATIVE`]: a policy that permits approval only
+/// for selected ids still lets the rule approve those, so it is not inactive
+/// merely because the invented id is not one of them.
+fn effective(
+	bundle: &PolicyBundle,
+	owner: &str,
+	rule: &ApprovalRule,
+	templates: &[(String, aidash_domain::registry::Entry)],
+) -> bool {
 	if rule.effect != RuleEffect::Allow {
 		return true;
 	}
-	let (target, action) = judged(bundle, rule);
+	let mut candidates = BTreeSet::new();
+	match &rule.target {
+		RuleTarget::Exact(_) => {
+			candidates.insert(REPRESENTATIVE.to_owned());
+		}
+		RuleTarget::Every => {
+			candidates.insert(REPRESENTATIVE.to_owned());
+			candidates.extend(named_targets(bundle, rule.kind));
+			if rule.kind == ApprovalKind::Generation {
+				candidates.extend(templates.iter().map(|(id, _)| id.clone()));
+			}
+		}
+	}
+	candidates
+		.into_iter()
+		.any(|target| effective_for(bundle, owner, rule, &target, templates))
+}
+
+fn effective_for(
+	bundle: &PolicyBundle,
+	owner: &str,
+	rule: &ApprovalRule,
+	target: &str,
+	templates: &[(String, aidash_domain::registry::Entry)],
+) -> bool {
+	let (protected, action) = judged(bundle, rule, target);
 	let eligible = if action == "capability.approve" {
 		approver_eligible(
 			bundle,
 			&Evaluation {
 				subject: owner.into(),
 				action: action.into(),
-				resource: target.clone(),
+				resource: protected.clone(),
 				environment: json!({"transport": "api"}),
 			},
 			owner,
 		)
 	} else {
-		permits(bundle, owner, target.clone(), action)
+		permits(bundle, owner, protected.clone(), action)
 	};
-	eligible
-		&& permits(
+	if !eligible
+		|| !permits(
 			bundle,
 			owner,
-			target,
+			protected,
 			aidash_domain::approval_rules::APPROVAL_ADVANCE,
-		)
+		) {
+		return false;
+	}
+	if rule.kind != ApprovalKind::Generation {
+		return true;
+	}
+	// Generation admission approves the request and the definition the policy
+	// would generate: `catalog.approve` on that exact template is required too.
+	let policy = match &rule.target {
+		RuleTarget::Exact(policy) => policy.as_str(),
+		RuleTarget::Every => target,
+	};
+	let Some((_, template)) = templates.iter().find(|(id, _)| id == policy) else {
+		return false;
+	};
+	permits(
+		bundle,
+		owner,
+		resource(
+			bundle,
+			"registry",
+			&format!("{}/{}@{}", template.kind, template.id, template.version),
+			aidash_application::authorization::catalog::attributes(template),
+		),
+		"catalog.approve",
+	)
 }
 
-fn view_rules(
+async fn view_rules(
+	tx: &mut dyn TransactionExecutor,
 	bundle: &PolicyBundle,
 	owner: &str,
 	rules: Vec<(ApprovalRule, chrono::DateTime<chrono::Utc>)>,
-) -> Vec<Rule> {
-	rules
+) -> Result<Vec<Rule>> {
+	let templates = if rules
+		.iter()
+		.any(|(rule, _)| rule.kind == ApprovalKind::Generation && rule.effect == RuleEffect::Allow)
+	{
+		repository::generation_templates(tx, &bundle.tenant).await?
+	} else {
+		Vec::new()
+	};
+	Ok(rules
 		.into_iter()
 		.map(|(rule, created_at)| Rule {
-			effective: effective(bundle, owner, &rule),
+			effective: effective(bundle, owner, &rule, &templates),
 			id: rule.id,
 			kind: rule.kind,
 			target: rule.target,
 			effect: rule.effect,
 			created_at,
 		})
-		.collect()
+		.collect())
 }
 
 fn view_preferences(
@@ -390,7 +488,7 @@ impl ApprovalPreferences {
 				let subject = &administrator.identity.subject;
 				let rules = repository::rules(tx, &tenant, subject).await?;
 				Ok(Rules {
-					rules: view_rules(&snapshot.bundle, subject, rules),
+					rules: view_rules(tx, &snapshot.bundle, subject, rules).await?,
 				})
 			})
 			.await;
@@ -423,15 +521,17 @@ impl ApprovalPreferences {
 					target: input.target,
 					effect: input.effect,
 				};
-				if !repository::add_rule(tx, &tenant, subject, &rule).await? {
+				let stored_id = repository::add_rule(tx, &tenant, subject, &rule).await?;
+				if stored_id != rule.id {
 					return Err(Error::Conflict("the Approval Rule already exists".into()));
 				}
 				let stored = repository::rules(tx, &tenant, subject)
 					.await?
 					.into_iter()
-					.find(|(stored, _)| stored.id == rule.id)
+					.find(|(stored, _)| stored.id == stored_id)
 					.ok_or_else(|| Error::Invalid("the Approval Rule is unavailable".into()))?;
-				view_rules(&snapshot.bundle, subject, vec![stored])
+				view_rules(tx, &snapshot.bundle, subject, vec![stored])
+					.await?
 					.pop()
 					.ok_or_else(|| Error::Invalid("the Approval Rule is unavailable".into()))
 			})
@@ -503,7 +603,7 @@ impl ApprovalPreferences {
 					answer_deadline_seconds: preferences.answer_deadline_seconds,
 					bypass_accepted_at: preferences.bypass_accepted_at,
 					revision: preferences.revision,
-					rules: view_rules(&snapshot.bundle, &subject, rules),
+					rules: view_rules(tx, &snapshot.bundle, &subject, rules).await?,
 					subject,
 				})
 			})

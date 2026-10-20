@@ -749,6 +749,134 @@ async fn rules_are_the_owners_and_report_their_ceiling(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn an_every_allow_rule_is_effective_on_the_real_targets_the_policy_names(
+	#[future(awt)]
+	#[from(approval_application)]
+	application: common::ApplicationFixture,
+) {
+	// Arrange: members may approve only the real tool `crm`, not the
+	// representative id a wildcard rule used to be judged on alone.
+	let fixture = Fixture::new(application);
+	let people = people(&fixture).await;
+	amend(&fixture.f, |bundle| {
+		let approval = bundle["policies"]
+			.as_array_mut()
+			.unwrap()
+			.iter_mut()
+			.find(|policy| policy["id"] == "members-tool-call-approval")
+			.expect("members approve their tool calls");
+		approval["resources"]["ids"] = json!(["crm"]);
+	})
+	.await;
+
+	// Act
+	let created = send(
+		&fixture,
+		Person::Member,
+		&people.member,
+		"POST",
+		RULES,
+		json!({"kind": "tool_call", "target": "every", "effect": "allow"}),
+	)
+	.await;
+
+	// Assert: the rule applies to `crm`, so it is not reported disabled.
+	let body = json_body(&created);
+	assert_eq!(created.status(), 201, "{body}");
+	assert_eq!(body["effective"], true, "{body}");
+	fixture.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_template(
+	#[future(awt)]
+	#[from(approval_application)]
+	application: common::ApplicationFixture,
+) {
+	// Arrange: a Generation Policy and a member who may approve generation
+	// requests but not the definition it would generate.
+	let fixture = Fixture::new(application);
+	let people = people(&fixture).await;
+	let template = json!({
+		"id": "generated",
+		"version": "1.0.0",
+		"kind": "agent",
+		"name": {"en": "Generated"},
+		"description": {"en": "Generated from a policy"}
+	});
+	execute(
+		&fixture.f,
+		Query::insert()
+			.into_table(Alias::new("generation_policies"))
+			.columns(["tenant", "id", "revision", "spec"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::val(TENANT))
+					.expr(Expr::val("gen"))
+					.expr(Expr::val(1i64))
+					.expr(Expr::val(json!({"template": template})))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.await;
+	amend(&fixture.f, |bundle| {
+		bundle["policies"].as_array_mut().unwrap().push(policy(
+			"member-generation",
+			"allow",
+			json!({"ids": ["member"]}),
+			"generation.approve",
+			"generation",
+		));
+	})
+	.await;
+
+	// Act
+	let created = send(
+		&fixture,
+		Person::Member,
+		&people.member,
+		"POST",
+		RULES,
+		json!({"kind": "generation", "target": {"exact": "gen"}, "effect": "allow"}),
+	)
+	.await;
+
+	// Assert: generation admission also requires `catalog.approve` on the
+	// generated definition, so the rule does not yet take effect.
+	let body = json_body(&created);
+	assert_eq!(created.status(), 201, "{body}");
+	assert_eq!(body["effective"], false, "{body}");
+
+	// Granting catalog approval on that definition makes the rule effective.
+	amend(&fixture.f, |bundle| {
+		bundle["policies"].as_array_mut().unwrap().push(policy(
+			"member-catalog",
+			"allow",
+			json!({"ids": ["member"]}),
+			"catalog.approve",
+			"registry",
+		));
+	})
+	.await;
+	let listed = json_body(
+		&send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"GET",
+			RULES,
+			Value::Null,
+		)
+		.await,
+	);
+	assert_eq!(listed["rules"][0]["effective"], true, "{listed}");
+	fixture.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn subject_credentials_and_deployment_administrators_never_reach_them(
 	#[future(awt)]
 	#[from(approval_application)]

@@ -161,8 +161,10 @@ pub trait ApprovalScope: Send {
 	/// evaluation fixture is never covered. Read now, so a lowered ceiling or a
 	/// removed rule applies to a running Run.
 	async fn approval_settings(&mut self, run: &RunMetadata) -> Result<Option<Settings>>;
-	/// Store `rule` for `owner`, who reads and writes their own rules.
-	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()>;
+	/// Store `rule` for `owner`, who reads and writes their own rules. Returns
+	/// the id of the rule the owner holds: `rule.id`, or the id of the equal
+	/// rule that already exists.
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<Uuid>;
 	/// Every approval record of `run`, of every kind and state.
 	async fn approval_records(&mut self, run: &RunMetadata) -> Result<Vec<Record>>;
 	/// Every input the Run received, in sequence order, whoever sent it.

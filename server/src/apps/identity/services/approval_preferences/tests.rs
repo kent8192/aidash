@@ -1,6 +1,6 @@
 use super::*;
 use aidash_domain::approval_rules::{APPROVAL_ADVANCE, MODE_BYPASS, RuleEffect};
-use aidash_domain::identity::tenancy::{MEMBERS, OWNER, initial_policy};
+use aidash_domain::identity::tenancy::{MEMBER_TOOL_APPROVAL, MEMBERS, OWNER, initial_policy};
 use aidash_domain::policy::{
 	Effect, Policy, ResourceSelector, Subject, SubjectKind, SubjectSelector,
 };
@@ -164,10 +164,27 @@ fn a_rule_is_effective_where_the_owner_could_approve_in_advance() {
 	);
 
 	// Act + Assert: members approve tool calls themselves, never outbound reads.
-	assert!(effective(&bundle, "alice", &tool));
-	assert!(effective(&bundle, "alice", &every_tool));
-	assert!(!effective(&bundle, "alice", &origin));
-	assert!(effective(&bundle, OWNER, &origin));
+	assert!(effective(&bundle, "alice", &tool, &[]));
+	assert!(effective(&bundle, "alice", &every_tool, &[]));
+	assert!(!effective(&bundle, "alice", &origin, &[]));
+	assert!(effective(&bundle, OWNER, &origin, &[]));
+}
+
+#[test]
+fn a_rule_for_every_target_applies_to_the_real_ids_the_policy_names() {
+	// Arrange: members may approve only the real tool `crm`, not the
+	// representative id alone.
+	let mut bundle = bundle();
+	let approval = bundle
+		.policies
+		.iter_mut()
+		.find(|policy| policy.id == MEMBER_TOOL_APPROVAL)
+		.expect("members approve their tool calls");
+	approval.resources.ids = ["crm".to_owned()].into();
+	let every = rule(ApprovalKind::ToolCall, RuleTarget::Every);
+
+	// Act + Assert
+	assert!(effective(&bundle, "alice", &every, &[]));
 }
 
 #[test]
@@ -178,7 +195,7 @@ fn a_rule_loses_its_effect_when_the_ceiling_is_lowered() {
 		ApprovalKind::ToolCall,
 		RuleTarget::Exact("tool:crm#invoke".into()),
 	);
-	assert!(effective(&bundle, "alice", &tool));
+	assert!(effective(&bundle, "alice", &tool, &[]));
 
 	// Act: a deny of advancing approvals, as a Tenant Administrator would write.
 	bundle.policies.push(Policy {
@@ -197,7 +214,7 @@ fn a_rule_loses_its_effect_when_the_ceiling_is_lowered() {
 	});
 
 	// Assert
-	assert!(!effective(&bundle, "alice", &tool));
+	assert!(!effective(&bundle, "alice", &tool, &[]));
 }
 
 #[test]
@@ -213,14 +230,24 @@ fn a_deny_or_ask_rule_holds_whatever_the_ceiling() {
 	};
 
 	// Act + Assert
-	assert!(!effective(&bundle, "alice", &origin(RuleEffect::Allow)));
-	assert!(effective(&bundle, "alice", &origin(RuleEffect::Deny)));
-	assert!(effective(&bundle, "alice", &origin(RuleEffect::Ask)));
-	assert!(effective(&bundle, "mallory", &origin(RuleEffect::Deny)));
+	assert!(!effective(
+		&bundle,
+		"alice",
+		&origin(RuleEffect::Allow),
+		&[]
+	));
+	assert!(effective(&bundle, "alice", &origin(RuleEffect::Deny), &[]));
+	assert!(effective(&bundle, "alice", &origin(RuleEffect::Ask), &[]));
+	assert!(effective(
+		&bundle,
+		"mallory",
+		&origin(RuleEffect::Deny),
+		&[]
+	));
 }
 
 #[test]
 fn a_subject_the_policy_does_not_list_has_no_effective_rule() {
 	let tool = rule(ApprovalKind::ToolCall, RuleTarget::Every);
-	assert!(!effective(&bundle(), "mallory", &tool));
+	assert!(!effective(&bundle(), "mallory", &tool, &[]));
 }

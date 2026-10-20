@@ -432,7 +432,8 @@ test("an MCP server's read-only hint prefills the choice and never decides it", 
   expect(asked).toEqual([
     { endpoint: "https://example.com/mcp", tool_name: "search" },
   ]);
-  await replay.selectOption("unsafe");
+  // Changing the queried tool undoes the automatic prefill and hides the old
+  // answer, so submitting another tool never inherits "read_only".
   await dialog.getByLabel("MCP tool name").fill("search-more");
   await expect(
     dialog.getByText(/The server hints that this tool only reads/),
