@@ -1,11 +1,12 @@
 //! Durable agent execution use case. All effects cross application ports.
 use aidash_application::{
 	Error, Result,
-	capabilities::approvals::{INVOKE, ToolCallApproval, ToolCallRequest},
+	capabilities::approvals::{DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest},
 	execution::*,
 	ports::execution::*,
 };
 use aidash_domain::{
+	approval_rules::ApprovalMode,
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
 	media::ModelMedia,
@@ -17,7 +18,7 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
+	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -2474,6 +2475,14 @@ impl<'a> Executor<'a> {
 						Err(error) => return Err(error),
 					}
 				}
+				// A person who asked not to be asked is not asked by the model either.
+				if contract.behavior.continuation == Continuation::Human
+					&& home.local()
+					&& let Some(guard) = guard
+					&& guard.approval_mode(run).await? == Some(ApprovalMode::DontAsk)
+				{
+					return self.tool_error(run, token, &call, cursor, DONT_ASK_HUMAN_REQUEST.into()).await;
+				}
 				let mut prepared_result = None;
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
 					let (range, saved) = match tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor) {
@@ -2522,8 +2531,12 @@ impl<'a> Executor<'a> {
 					Some(approval) => format!("{call_key}:approval:{approval}"),
 					None => call_key.clone(),
 				};
-				// Approval follows the admitted provider contract for every Agent.
-				if contract.behavior.tool_call_approval {
+				// Approval follows the admitted provider contract for every Agent. A
+				// Read-only operation needs none, yet only the Tenant's own authority
+				// can tell whether its policy forbids the call outright.
+				if contract.behavior.tool_call_approval
+					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
+				{
 					let (reference_id, reference_version) = match &contract.identity {
 						ToolIdentity::Descriptor(reference) => (&reference.id, &reference.version),
 						ToolIdentity::Registry(reference) => (&reference.id, &reference.version),
@@ -2544,6 +2557,7 @@ impl<'a> Executor<'a> {
 							operation: INVOKE.into(),
 							call: call.clone(),
 							area: None,
+							read_only: contract.behavior.read_only_operation,
 						};
 						match guard.tool_call_approval(run, request).await? {
 							ToolCallApproval::Approved { .. } => {}
@@ -2735,7 +2749,7 @@ impl<'a> Executor<'a> {
 				};
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
-				let framework = if contract.behavior.tool_call_approval {
+				let framework = if contract.behavior.tenant_tool_call() {
 					FrameworkResult::Ordinary
 				} else {
 					FrameworkResult::decode(&contract, &output)?

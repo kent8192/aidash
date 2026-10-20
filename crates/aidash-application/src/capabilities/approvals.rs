@@ -6,6 +6,10 @@ use crate::{
 };
 use aidash_domain::{
 	RunControl, RunMetadata as Run,
+	approval_rules::{
+		APPROVAL_ADVANCE, ApprovalKind, ApprovalRule, Ceiling, GivenBy, MODE_RESOURCE, RefusedBy,
+		Resolution, RuleEffect, RuleTarget, Settings, Standing, TenantStance, resolve,
+	},
 	capabilities::{
 		approvals::{self, ApprovalChoice, ApprovalDecision, Outbound, Revoke},
 		operations::MountedFile as FileEntry,
@@ -30,6 +34,10 @@ const OUTBOUND: &str = "outbound";
 pub const DISCLOSURE: &str = "disclosure";
 /// Approval records of Tenant tool calls share it too (ADR 0075).
 pub const TOOL_CALL: &str = "tool_call";
+/// What the model is told when it asks a question of a person who asked not
+/// to be asked (Approval Mode Don't ask).
+pub const DONT_ASK_HUMAN_REQUEST: &str =
+	"the person asked not to be asked; continue on your own judgment";
 /// The policy action that lets a call proceed without a Tool call approval
 /// (direct permission).
 pub const CALL_UNAPPROVED: &str = "tool.call_unapproved";
@@ -56,6 +64,134 @@ fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) 
 /// a tool. It cannot collide with an outbound origin or a disclosure destination.
 pub fn tool_target(tool: &aidash_domain::registry::EntityRef, operation: &str) -> String {
 	format!("tool:{}@{}#{operation}", tool.id, tool.version)
+}
+/// The target of an Approval Rule for one operation of a tool. A rule names
+/// the tool, never one of its versions.
+pub fn tool_rule_target(tool: &str, operation: &str) -> String {
+	format!("tool:{tool}#{operation}")
+}
+/// The `approval_mode` of a record whose approval a person's Approval Rule or
+/// Approval Mode gave in advance. Like "allow_once", it covers one use.
+const ADVANCE: &str = "advance";
+/// Whether `record` is an approval of one use: a person's "allow once", or what
+/// their rule or mode gave in advance.
+fn once(record: &Record) -> bool {
+	matches!(
+		record.data["approval_mode"].as_str(),
+		Some("allow_once" | ADVANCE)
+	)
+}
+
+/// What the person the Run's delegation chain starts at decided in advance
+/// about an approval the Tenant's policy leaves to a person.
+enum Advice {
+	/// Their rule or mode gave the approval.
+	Approve { by: GivenBy, person: String },
+	/// Their rule or mode refused it.
+	Refuse { by: RefusedBy, person: String },
+	/// Nothing decides it in advance.
+	Ask,
+}
+
+impl Advice {
+	/// The state of a new record: `approved` for what is given, `denied` for
+	/// what is refused, `None` when a person has yet to decide.
+	fn state(&self, approved: &'static str) -> Option<&'static str> {
+		match self {
+			Self::Approve { .. } => Some(approved),
+			Self::Refuse { .. } => Some("denied"),
+			Self::Ask => None,
+		}
+	}
+	/// Record under whose name, and by which rule or mode, the decision was made.
+	fn record(&self, data: &mut Value) {
+		let person = match self {
+			Self::Approve { by, person } => {
+				data["approver"] = json!(person);
+				data["approval_mode"] = json!(ADVANCE);
+				data["given_by"] = by.data();
+				person
+			}
+			Self::Refuse { by, person } => {
+				data["refused_by"] = by.data();
+				data["error"] = json!(by.code());
+				person
+			}
+			Self::Ask => return,
+		};
+		data["decided_by"] = json!(person);
+		data["decided_at"] = json!(Utc::now());
+	}
+}
+
+/// The Approval Rule kind and target a Web disclosure is judged by.
+fn disclosure_rule(
+	operation: aidash_domain::research::Operation,
+	provider: &str,
+	destination: &str,
+) -> (ApprovalKind, String) {
+	match operation {
+		aidash_domain::research::Operation::Search => (ApprovalKind::WebSearch, provider.into()),
+		_ => (ApprovalKind::PageReading, destination.into()),
+	}
+}
+
+/// What the Tenant's policy lets `root`, judged alone, approve in advance.
+fn ceiling(
+	scope: &dyn ApprovalScope,
+	settings: &Settings,
+	root: &str,
+	target: &Resource,
+) -> Ceiling {
+	let allows = |resource: &Resource, action: &str| {
+		scope
+			.bundle()
+			.evaluate(&scope.evaluation(root, resource, action))
+			.allowed
+	};
+	settings.ceiling(Standing {
+		approver: eligible(scope, root, scope.principal(), target),
+		advance: allows(target, APPROVAL_ADVANCE),
+		mode: settings
+			.mode
+			.policy_requirement()
+			.is_none_or(|(action, id)| {
+				allows(&scope.resource(MODE_RESOURCE, id, json!({})), action)
+			}),
+	})
+}
+
+/// Decide, by the Run's person's Approval Rules and Approval Mode, an approval
+/// of `kind` for `name` that neither the Tenant's policy nor a Run grant
+/// already covers. `target` is the resource the approval protects.
+async fn advise(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	kind: ApprovalKind,
+	name: &str,
+	target: &Resource,
+) -> Result<Advice> {
+	let settings = scope.approval_settings(run).await?;
+	let root = scope.chain_root().map(str::to_owned);
+	let (Some(settings), Some(person)) = (settings, root) else {
+		return Ok(Advice::Ask);
+	};
+	let ceiling = ceiling(scope, &settings, &person, target);
+	Ok(
+		match resolve(
+			TenantStance::NeedsApproval,
+			Some(&settings),
+			ceiling,
+			kind,
+			name,
+			false,
+		) {
+			Resolution::Approve(by) => Advice::Approve { by, person },
+			Resolution::Refuse(by) => Advice::Refuse { by, person },
+			Resolution::Judge => Advice::Ask,
+			Resolution::Ask | Resolution::Proceed => Advice::Ask,
+		},
+	)
 }
 fn tool_resource(
 	scope: &dyn ApprovalScope,
@@ -203,8 +339,15 @@ pub async fn prepare(
 		.as_ref()
 		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
 		.or(designated);
+	let advice = if direct || grant.is_some() {
+		Advice::Ask
+	} else {
+		advise(scope, run, ApprovalKind::Outbound, &origin, &target).await?
+	};
 	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
-	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),"url":input.url,"targets":[origin],"action":"network.get","digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	let state = advice.state("approved").unwrap_or(state);
+	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),"url":input.url,"targets":[origin],"action":"network.get","digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	advice.record(&mut data);
 	let record = scope
 		.insert(Creation {
 			id,
@@ -233,6 +376,12 @@ pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> 
 			result[field] = record.data[field].clone();
 		}
 	}
+	// Which rule or mode gave or refused the approval, when one did.
+	for field in ["given_by", "refused_by"] {
+		if let Some(decision) = record.data.get(field) {
+			result[field] = decision.clone();
+		}
+	}
 	if let Some(file) = record.data.get("output_file") {
 		let entry: FileEntry = serde_json::from_value(file.clone())?;
 		let bytes = scope.read(&entry).await?;
@@ -247,6 +396,31 @@ pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> 
 		result["http_status"] = record.data["http_status"].clone();
 	}
 	Ok(result)
+}
+/// The Approval Rule kind and target that "always allow" creates for `record`.
+fn rule_of(record: &Record) -> Result<(ApprovalKind, String)> {
+	let data = &record.data;
+	let text = |value: &Value| {
+		value
+			.as_str()
+			.map(str::to_owned)
+			.ok_or_else(|| Error::Invalid("approval record is missing its target".into()))
+	};
+	Ok(match record.kind.as_str() {
+		OUTBOUND => (ApprovalKind::Outbound, text(&data["targets"][0])?),
+		DISCLOSURE => {
+			let operation = serde_json::from_value(data["operation"].clone())?;
+			disclosure_rule(
+				operation,
+				&text(&data["provider"])?,
+				&text(&data["destination"])?,
+			)
+		}
+		_ => (
+			ApprovalKind::ToolCall,
+			tool_rule_target(&text(&data["tool"])?, &text(&data["operation"])?),
+		),
+	})
 }
 /// Approval records of every kind share one decision API.
 async fn load_approval(scope: &mut dyn ApprovalScope, id: Uuid) -> Result<Record> {
@@ -316,6 +490,27 @@ pub async fn decide(
 			if input.targets.is_some() || input.expires_at.is_some() {
 				return Err(Error::Invalid("allow_once has no reusable scope".into()));
 			}
+			record.state = "approved".into();
+			record.data["approval_mode"] = json!("allow_once");
+		}
+		ApprovalChoice::AllowAlways => {
+			if input.targets.is_some() || input.expires_at.is_some() {
+				return Err(Error::Invalid("allow_always has no reusable scope".into()));
+			}
+			// Only the person the chain starts at can give an approval in advance.
+			if record.data["subjects"][0].as_str() != Some(scope.principal()) {
+				return Err(Error::Forbidden);
+			}
+			let (kind, name) = rule_of(&record)?;
+			let rule = ApprovalRule {
+				id: Uuid::new_v4(),
+				kind,
+				target: RuleTarget::Exact(name),
+				effect: RuleEffect::Allow,
+			};
+			record.data["rule_id"] = json!(rule.id);
+			let owner = scope.principal().to_owned();
+			scope.create_rule(&owner, rule).await?;
 			record.state = "approved".into();
 			record.data["approval_mode"] = json!("allow_once");
 		}
@@ -449,7 +644,7 @@ pub async fn authorize(scope: &mut dyn ApprovalScope, record: &Record) -> Result
 			{
 				return Err(Error::Forbidden);
 			}
-		} else if record.data["approval_mode"] != "allow_once" {
+		} else if !once(record) {
 			return Err(Error::Forbidden);
 		}
 	}
@@ -547,7 +742,7 @@ async fn still_approved(scope: &mut dyn ApprovalScope, run: &Run, record: &Recor
 		return Ok(false);
 	}
 	let Some(grant) = record.data["grant_id"].as_str() else {
-		return Ok(record.data["approval_mode"] == "allow_once");
+		return Ok(once(record));
 	};
 	let Ok(grant) = grant.parse() else {
 		return Ok(false);
@@ -649,11 +844,20 @@ pub async fn disclose(
 		.as_ref()
 		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
 		.or_else(|| approver(scope, &target));
+	let advice = if direct || grant.is_some() {
+		Advice::Ask
+	} else {
+		let (kind, name) =
+			disclosure_rule(request.operation, &request.provider, &request.destination);
+		advise(scope, run, kind, &name, &target).await?
+	};
 	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let state = advice.state("approved").unwrap_or(state);
 	let id = Uuid::new_v4();
-	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
+	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
 		"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,"attribution":request.attribution,"query":request.query,
 		"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	advice.record(&mut data);
 	let record = scope
 		.insert(Creation {
 			id,
@@ -748,6 +952,11 @@ pub async fn tool_call(
 		Err(Error::Forbidden) => return Ok(ToolCallApproval::Refused(Refusal::Forbidden)),
 		other => other?,
 	};
+	// A Read-only operation needs no approval and leaves no record; only the
+	// Tenant's policy can still forbid the call.
+	if request.read_only {
+		return Ok(ToolCallApproval::Approved { approval_id: None });
+	}
 	// Unlike a Web disclosure's, a tool grant outlives new user input: the tool's
 	// destination is fixed by the Tenant, not chosen from the conversation.
 	let grant = scope.grants(run.id).await?.into_iter().find(|g| {
@@ -767,11 +976,19 @@ pub async fn tool_call(
 		.as_ref()
 		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
 		.or_else(|| approver(scope, &target));
+	let advice = if direct || grant.is_some() {
+		Advice::Ask
+	} else {
+		let name = tool_rule_target(&request.tool.id, &request.operation);
+		advise(scope, run, ApprovalKind::ToolCall, &name, &target).await?
+	};
 	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let state = advice.state("approved").unwrap_or(state);
 	let id = Uuid::new_v4();
-	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
+	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
 		"tool":request.tool.id,"version":request.tool.version,"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,
 		"digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	advice.record(&mut data);
 	let record = scope
 		.insert(Creation {
 			id,
@@ -794,6 +1011,18 @@ pub async fn tool_call(
 	Ok(settled_tool_call(&record))
 }
 
+/// Why a denied approval refuses its call: a person's rule or mode, or its approver.
+fn refusal_of(record: &Record) -> Refusal {
+	let by = &record.data["refused_by"];
+	if by.get("rule").is_some() {
+		Refusal::Rule
+	} else if by["mode"] == "dont_ask" {
+		Refusal::DontAsk
+	} else {
+		Refusal::Denied
+	}
+}
+
 /// What a recorded approval says about its call, once nothing is left to decide
 /// or consume. An `approved` record is not settled: see [`recorded_tool_call`].
 fn settled_tool_call(record: &Record) -> ToolCallApproval {
@@ -806,7 +1035,7 @@ fn settled_tool_call(record: &Record) -> ToolCallApproval {
 			expires_at,
 		},
 		("pending", _) => ToolCallApproval::Refused(Refusal::Expired),
-		("denied", _) => ToolCallApproval::Refused(Refusal::Denied),
+		("denied", _) => ToolCallApproval::Refused(refusal_of(record)),
 		("revoked", _) => ToolCallApproval::Refused(Refusal::Revoked),
 		("closed", _) => ToolCallApproval::Refused(Refusal::Closed),
 		_ => ToolCallApproval::Refused(Refusal::Blocked),

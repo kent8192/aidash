@@ -159,6 +159,8 @@ struct State {
 	tool_call_approvals: Mutex<VecDeque<ToolCallApproval>>,
 	/// The requests `tool_call_approval` received.
 	tool_call_requests: Mutex<Vec<ToolCallRequest>>,
+	/// The Approval Mode of the person the Run's chain starts at.
+	approval_mode: Option<aidash_domain::approval_rules::ApprovalMode>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -833,6 +835,13 @@ impl ExecutionAuthority for Backend {
 			.pop_front()
 			.expect("scripted tool call approval"))
 	}
+	async fn approval_mode(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		self.record("authority.approval_mode");
+		Ok(self.0.approval_mode)
+	}
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],
@@ -1402,6 +1411,7 @@ fn fixture() -> Fixture {
 		permit_tools: false,
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
+		approval_mode: None,
 	}));
 	Fixture { backend, run }
 }
@@ -3676,6 +3686,26 @@ impl Scripted {
 				&aidash_domain::tool::ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: "unsafe".into(),
+				},
+			),
+			outputs: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
+		})
+	}
+	/// A Tenant's HTTP tool whose version declares its operation read-only.
+	fn tenant_read_only(name: &str) -> Arc<Self> {
+		let tool = Self::tenant(name);
+		Arc::new(Self {
+			specification: tool.specification.clone(),
+			contract: aidash_domain::tool::ToolContract::registry(
+				EntityRef {
+					id: name.into(),
+					version: "1.0.0".into(),
+				},
+				&aidash_domain::tool::ToolConfig::Http {
+					endpoint: "https://example.invalid".into(),
+					replay: "read_only".into(),
 				},
 			),
 			outputs: Mutex::new(Default::default()),

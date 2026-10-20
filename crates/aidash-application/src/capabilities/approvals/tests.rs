@@ -7,6 +7,7 @@ use crate::ports::{
 };
 use aidash_domain::{
 	RunPhase,
+	approval_rules::{ApprovalMode, MODE_AUTO, MODE_BYPASS, MODE_RESOURCE},
 	capabilities::{approvals::ApprovalChoice, operations::MountedFile},
 	policy::{Evaluation, PolicyBundle},
 	research::Operation,
@@ -26,6 +27,10 @@ struct Fake {
 	close_before_update: bool,
 	/// Outbound reads are admitted, to `https://example.com`.
 	admission: bool,
+	/// The Approval Mode and Approval Rules of the person the chain starts at;
+	/// `None` for a Run no person of the Tenant started.
+	settings: Option<Settings>,
+	created_rules: Vec<(String, ApprovalRule)>,
 }
 
 #[async_trait]
@@ -162,6 +167,16 @@ impl ApprovalScope for Fake {
 	async fn read(&mut self, _: &MountedFile) -> Result<Vec<u8>> {
 		unreachable!("disclosures have no output files")
 	}
+	async fn approval_settings(&mut self, _: &Run) -> Result<Option<Settings>> {
+		Ok(self.settings.clone())
+	}
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()> {
+		if let Some(settings) = &mut self.settings {
+			settings.rules.push(rule.clone());
+		}
+		self.created_rules.push((owner.into(), rule));
+		Ok(())
+	}
 }
 
 /// Alice runs research; Bob is the designated capability approver.
@@ -191,6 +206,8 @@ fn scope(extra: Value) -> Fake {
 		cache: BTreeMap::new(),
 		close_before_update: false,
 		admission: false,
+		settings: None,
+		created_rules: vec![],
 		run: Run {
 			id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(2),
@@ -756,6 +773,7 @@ fn tool_request(key: &str, arguments: Value) -> ToolCallRequest {
 			arguments,
 		},
 		area: None,
+		read_only: false,
 	}
 }
 
@@ -1195,4 +1213,737 @@ async fn a_cancelled_run_asks_for_no_approval() {
 
 	assert!(matches!(result, Err(Error::Conflict(reason)) if reason == "RUN_NOT_ACTIVE"));
 	assert!(scope.records.is_empty());
+}
+
+/// Alice, who runs the Run, may also approve and advance approvals of the
+/// given kinds herself.
+fn allow_alice(scope: &mut Fake, actions: &[&str], kinds: &[&str]) {
+	let id = format!("alice-{}", scope.bundle.policies.len());
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({"id":id,"effect":"allow","subjects":{"ids":["alice"]},"actions":actions,"resources":{"kinds":kinds}}))
+			.unwrap(),
+	);
+}
+
+/// Alice approves and advances her own tool, outbound and Research approvals
+/// and may use the Auto and Bypass modes.
+fn empowered() -> Fake {
+	let mut scope = tool_scope(Value::Null);
+	allow_alice(
+		&mut scope,
+		&["capability.approve", APPROVAL_ADVANCE],
+		&["tool", "outbound", "research"],
+	);
+	allow_alice(&mut scope, &[MODE_AUTO, MODE_BYPASS], &[MODE_RESOURCE]);
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({"id":"outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["outbound"]}}))
+			.unwrap(),
+	);
+	scope.admission = true;
+	scope
+}
+
+fn advising(mut scope: Fake, mode: ApprovalMode, rules: Vec<ApprovalRule>) -> Fake {
+	scope.settings = Some(Settings {
+		mode,
+		rules,
+		bypass_accepted: true,
+	});
+	scope
+}
+
+fn tool_rule(n: u128, effect: RuleEffect) -> ApprovalRule {
+	ApprovalRule {
+		id: Uuid::from_u128(n),
+		kind: ApprovalKind::ToolCall,
+		target: RuleTarget::Exact("tool:crm#invoke".into()),
+		effect,
+	}
+}
+
+fn given_by(scope: &Fake, approval_id: Uuid) -> Value {
+	scope.records[&approval_id].data["given_by"].clone()
+}
+
+#[tokio::test]
+async fn an_allow_rule_approves_a_tool_call_in_its_owners_name_and_names_the_rule() {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::Manual,
+		vec![tool_rule(5, RuleEffect::Allow)],
+	);
+
+	let approved = ask(
+		&mut scope,
+		tool_request("run:0:0", json!({"customer":"c-1"})),
+	)
+	.await;
+
+	let ToolCallApproval::Approved {
+		approval_id: Some(approval_id),
+	} = approved
+	else {
+		panic!("the rule gives the approval");
+	};
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.kind, TOOL_CALL);
+	assert_eq!(record.state, "consumed");
+	assert_eq!(record.data["approver"], "alice");
+	assert_eq!(record.data["decided_by"], "alice");
+	assert_eq!(record.data["given_by"], json!({"rule":Uuid::from_u128(5)}));
+	assert_eq!(record.data["call"]["arguments"], json!({"customer":"c-1"}));
+	// Asking again after a restart maps to the same approval.
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		approved
+	);
+	assert_eq!(scope.records.len(), 1);
+	// Another call is decided again, by the rules as they are now.
+	scope.settings.as_mut().unwrap().rules.clear();
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:1", json!({}))).await,
+		ToolCallApproval::Pending { .. }
+	));
+}
+
+#[tokio::test]
+async fn a_rule_names_a_tool_and_never_one_of_its_versions() {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::Manual,
+		vec![tool_rule(5, RuleEffect::Allow)],
+	);
+	let mut newer = tool_request("run:0:0", json!({}));
+	newer.tool.version = "9.0.0".into();
+	let mut other_tool = tool_request("run:0:1", json!({}));
+	other_tool.tool.id = "billing".into();
+	let mut other_operation = tool_request("run:0:2", json!({}));
+	other_operation.operation = "other".into();
+
+	assert!(matches!(
+		ask(&mut scope, newer).await,
+		ToolCallApproval::Approved {
+			approval_id: Some(_)
+		}
+	));
+	for request in [other_tool, other_operation] {
+		assert!(matches!(
+			ask(&mut scope, request).await,
+			ToolCallApproval::Pending { .. }
+		));
+	}
+}
+
+#[tokio::test]
+async fn a_rule_for_every_tool_covers_each_one() {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::Manual,
+		vec![ApprovalRule {
+			target: RuleTarget::Every,
+			..tool_rule(5, RuleEffect::Allow)
+		}],
+	);
+	let mut other_tool = tool_request("run:0:0", json!({}));
+	other_tool.tool.id = "billing".into();
+
+	assert!(matches!(
+		ask(&mut scope, other_tool).await,
+		ToolCallApproval::Approved {
+			approval_id: Some(_)
+		}
+	));
+}
+
+#[rstest::rstest]
+#[case::not_an_approver(&[APPROVAL_ADVANCE])]
+#[case::advance_not_allowed(&["capability.approve"])]
+#[tokio::test]
+async fn an_allow_rule_beyond_the_ceiling_asks_a_designated_approver(#[case] actions: &[&str]) {
+	let mut scope = tool_scope(Value::Null);
+	allow_alice(&mut scope, actions, &["tool"]);
+	let mut scope = advising(
+		scope,
+		ApprovalMode::Manual,
+		vec![tool_rule(5, RuleEffect::Allow)],
+	);
+
+	let ToolCallApproval::Pending { approval_id, .. } =
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await
+	else {
+		panic!("a rule beyond the ceiling has no effect");
+	};
+
+	assert_eq!(scope.records[&approval_id].state, "pending");
+	assert!(scope.records[&approval_id].data.get("given_by").is_none());
+}
+
+#[tokio::test]
+async fn a_deny_rule_refuses_the_tool_call_and_the_record_says_why() {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::Auto,
+		vec![tool_rule(8, RuleEffect::Deny)],
+	);
+
+	let refused = ask(&mut scope, tool_request("run:0:0", json!({}))).await;
+
+	assert_eq!(refused, ToolCallApproval::Refused(Refusal::Rule));
+	let record = scope.records.values().next().unwrap();
+	assert_eq!(record.state, "denied");
+	assert_eq!(
+		record.data["refused_by"],
+		json!({"rule":Uuid::from_u128(8)})
+	);
+	assert_eq!(record.data["decided_by"], "alice");
+	// The refusal holds when the call is asked about again.
+	assert_eq!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		refused
+	);
+	assert_eq!(scope.records.len(), 1);
+	assert_eq!(
+		Refusal::Rule.message(),
+		"tool call was refused by an Approval Rule"
+	);
+}
+
+#[tokio::test]
+async fn dont_ask_refuses_a_tool_call_so_the_run_never_waits() {
+	let mut scope = advising(empowered(), ApprovalMode::DontAsk, vec![]);
+
+	let refused = ask(&mut scope, tool_request("run:0:0", json!({}))).await;
+
+	assert_eq!(refused, ToolCallApproval::Refused(Refusal::DontAsk));
+	let record = scope.records.values().next().unwrap();
+	assert_eq!(record.state, "denied");
+	assert_eq!(record.data["refused_by"], json!({"mode":"dont_ask"}));
+	assert_eq!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		refused
+	);
+	assert_eq!(
+		Refusal::DontAsk.message(),
+		"tool call was refused: the person asked not to be asked"
+	);
+}
+
+#[tokio::test]
+async fn an_explicit_ask_rule_asks_even_in_bypass_and_is_refused_in_dont_ask() {
+	let mut bypass = advising(
+		empowered(),
+		ApprovalMode::Bypass,
+		vec![tool_rule(1, RuleEffect::Ask)],
+	);
+	let mut quiet = advising(
+		empowered(),
+		ApprovalMode::DontAsk,
+		vec![tool_rule(1, RuleEffect::Ask)],
+	);
+
+	assert!(matches!(
+		ask(&mut bypass, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Pending { .. }
+	));
+	assert_eq!(
+		ask(&mut quiet, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Refused(Refusal::DontAsk)
+	);
+}
+
+#[tokio::test]
+async fn bypass_approves_within_the_ceiling_and_names_the_mode() {
+	let mut scope = advising(empowered(), ApprovalMode::Bypass, vec![]);
+
+	let ToolCallApproval::Approved {
+		approval_id: Some(approval_id),
+	} = ask(&mut scope, tool_request("run:0:0", json!({}))).await
+	else {
+		panic!("bypass approves");
+	};
+
+	assert_eq!(given_by(&scope, approval_id), json!({"mode":"bypass"}));
+	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
+	assert_eq!(scope.records[&approval_id].state, "consumed");
+}
+
+#[tokio::test]
+async fn bypass_beyond_the_ceiling_asks() {
+	let mut scope = tool_scope(Value::Null);
+	// Alice may use Bypass, yet may not approve tool calls herself.
+	allow_alice(&mut scope, &[APPROVAL_ADVANCE], &["tool"]);
+	allow_alice(&mut scope, &[MODE_BYPASS], &[MODE_RESOURCE]);
+	let mut scope = advising(scope, ApprovalMode::Bypass, vec![]);
+
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Pending { .. }
+	));
+	assert!(
+		scope
+			.records
+			.values()
+			.all(|record| record.state == "pending")
+	);
+}
+
+#[rstest::rstest]
+#[case::policy_does_not_name_bypass(true, false)]
+#[case::acceptance_not_recorded(false, true)]
+#[tokio::test]
+async fn bypass_needs_the_policy_and_the_recorded_acceptance(
+	#[case] accepted: bool,
+	#[case] named: bool,
+) {
+	let mut scope = tool_scope(Value::Null);
+	allow_alice(
+		&mut scope,
+		&["capability.approve", APPROVAL_ADVANCE],
+		&["tool"],
+	);
+	if named {
+		allow_alice(&mut scope, &[MODE_BYPASS], &[MODE_RESOURCE]);
+	}
+	scope.settings = Some(Settings {
+		mode: ApprovalMode::Bypass,
+		rules: vec![],
+		bypass_accepted: accepted,
+	});
+
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Pending { .. }
+	));
+}
+
+#[tokio::test]
+async fn a_run_no_person_of_the_tenant_started_is_asked_as_before() {
+	// Rules and policy are in place, but the server reports no covering person.
+	let mut scope = empowered();
+	scope.settings = None;
+
+	let ToolCallApproval::Pending { approval_id, .. } =
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await
+	else {
+		panic!("a designated approver must decide first");
+	};
+
+	assert_eq!(scope.records[&approval_id].state, "pending");
+}
+
+#[tokio::test]
+async fn auto_asks_a_person_until_a_decider_judges() {
+	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
+
+	assert!(matches!(
+		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Pending { .. }
+	));
+}
+
+#[tokio::test]
+async fn direct_permission_and_run_grants_come_before_rules_and_modes() {
+	let mut direct = advising(
+		empowered(),
+		ApprovalMode::DontAsk,
+		vec![tool_rule(1, RuleEffect::Deny)],
+	);
+	direct.bundle.policies.push(
+		serde_json::from_value(json!({"id":"unapproved","effect":"allow","subjects":{"ids":["alice"]},"actions":[CALL_UNAPPROVED],"resources":{"kinds":["tool"]}}))
+			.unwrap(),
+	);
+	assert_eq!(
+		ask(&mut direct, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Approved { approval_id: None }
+	);
+
+	let mut granted = advising(
+		empowered(),
+		ApprovalMode::DontAsk,
+		vec![tool_rule(1, RuleEffect::Deny)],
+	);
+	let grant = Uuid::new_v4();
+	granted.records.insert(
+		grant,
+		Record {
+			id: grant,
+			tenant: "tenant".into(),
+			owner: "alice".into(),
+			area_id: None,
+			kind: "grant".into(),
+			state: "active".into(),
+			revision: 1,
+			data: json!({"run_id":granted.run.id,"subjects":["alice"],"targets":[TOOL_TARGET],"actions":[CALL_UNAPPROVED],"approver":"alice"}),
+			expires_at: Some(Utc::now() + Duration::minutes(30)),
+		},
+	);
+	assert!(matches!(
+		ask(&mut granted, tool_request("run:0:0", json!({}))).await,
+		ToolCallApproval::Approved {
+			approval_id: Some(_)
+		}
+	));
+}
+
+#[tokio::test]
+async fn an_explicit_deny_of_unapproved_calls_refuses_a_read_only_operation() {
+	let mut scope = tool_scope(
+		json!({"id":"never","effect":"deny","subjects":{"any":true},"actions":[CALL_UNAPPROVED],"resources":{"kinds":["tool"]}}),
+	);
+	let mut request = tool_request("run:0:0", json!({}));
+	request.read_only = true;
+
+	assert_eq!(
+		ask(&mut scope, request).await,
+		ToolCallApproval::Refused(Refusal::Forbidden)
+	);
+	assert!(scope.records.is_empty());
+}
+
+#[tokio::test]
+async fn a_read_only_operation_needs_no_approval_and_leaves_no_record() {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::DontAsk,
+		vec![tool_rule(1, RuleEffect::Deny)],
+	);
+	let mut request = tool_request("run:0:0", json!({}));
+	request.read_only = true;
+
+	assert_eq!(
+		ask(&mut scope, request).await,
+		ToolCallApproval::Approved { approval_id: None }
+	);
+	assert!(scope.records.is_empty());
+}
+
+async fn decide_as(scope: &mut Fake, who: &str, id: Uuid, choice: ApprovalChoice) -> Result<Value> {
+	let principal = std::mem::replace(&mut scope.principal, who.into());
+	let revision = scope.records[&id].revision;
+	let result = decide(
+		scope,
+		id,
+		ApprovalDecision {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+			choice,
+			targets: None,
+			expires_at: None,
+		},
+	)
+	.await;
+	scope.principal = principal;
+	result
+}
+
+#[tokio::test]
+async fn always_allow_by_the_chain_root_approves_once_and_creates_their_rule() {
+	let mut scope = advising(empowered(), ApprovalMode::Manual, vec![]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
+
+	let decided = decide_as(
+		&mut scope,
+		"alice",
+		approval_id,
+		ApprovalChoice::AllowAlways,
+	)
+	.await
+	.unwrap();
+
+	assert_eq!(decided["state"], "approved");
+	assert_eq!(scope.created_rules.len(), 1);
+	let (owner, rule) = scope.created_rules[0].clone();
+	assert_eq!(owner, "alice");
+	assert_eq!(rule.kind, ApprovalKind::ToolCall);
+	assert_eq!(rule.target, RuleTarget::Exact("tool:crm#invoke".into()));
+	assert_eq!(rule.effect, RuleEffect::Allow);
+	assert_eq!(scope.records[&approval_id].data["rule_id"], json!(rule.id));
+	// The decision approves this call once.
+	assert_eq!(
+		ask(
+			&mut scope,
+			tool_request("run:0:0", json!({"customer":"c-1"}))
+		)
+		.await,
+		ToolCallApproval::Approved {
+			approval_id: Some(approval_id)
+		}
+	);
+	// The rule approves later calls of the tool, whatever their arguments.
+	let ToolCallApproval::Approved {
+		approval_id: Some(later),
+	} = ask(
+		&mut scope,
+		tool_request("run:0:1", json!({"customer":"c-9"})),
+	)
+	.await
+	else {
+		panic!("the new rule approves");
+	};
+	assert_eq!(given_by(&scope, later), json!({"rule":rule.id}));
+}
+
+#[tokio::test]
+async fn always_allow_is_offered_only_to_the_person_the_chain_starts_at() {
+	let mut scope = advising(tool_scope(Value::Null), ApprovalMode::Manual, vec![]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	assert_eq!(scope.records[&approval_id].data["approver"], "bob");
+
+	let refused = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::AllowAlways).await;
+
+	assert!(matches!(refused, Err(Error::Forbidden)));
+	assert!(scope.created_rules.is_empty());
+	assert_eq!(scope.records[&approval_id].state, "pending");
+	// Bob may still allow it once.
+	decide_as(&mut scope, "bob", approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+}
+
+#[tokio::test]
+async fn always_allow_on_a_web_search_names_the_research_provider() {
+	let mut scope = advising(scope(Value::Null), ApprovalMode::Manual, vec![]);
+	allow_alice(
+		&mut scope,
+		&["capability.approve", APPROVAL_ADVANCE],
+		&["research"],
+	);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+
+	decide_as(
+		&mut scope,
+		"alice",
+		approval_id,
+		ApprovalChoice::AllowAlways,
+	)
+	.await
+	.unwrap();
+
+	let [(_, rule)] = scope.created_rules.as_slice() else {
+		panic!("one rule is created");
+	};
+	assert_eq!(rule.kind, ApprovalKind::WebSearch);
+	assert_eq!(rule.target, RuleTarget::Exact("research.brave@1".into()));
+}
+
+fn disclosure_rule_for(kind: ApprovalKind, target: &str, effect: RuleEffect) -> ApprovalRule {
+	ApprovalRule {
+		id: Uuid::from_u128(11),
+		kind,
+		target: RuleTarget::Exact(target.into()),
+		effect,
+	}
+}
+
+#[rstest::rstest]
+#[case::web_search_provider(Operation::Search, ApprovalKind::WebSearch, "research.brave@1")]
+#[case::page_host(Operation::Fetch, ApprovalKind::PageReading, "api.search.brave.com")]
+#[tokio::test]
+async fn an_allow_rule_permits_a_disclosure_by_its_provider_or_host(
+	#[case] operation: Operation,
+	#[case] kind: ApprovalKind,
+	#[case] target: &str,
+) {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::Manual,
+		vec![disclosure_rule_for(kind, target, RuleEffect::Allow)],
+	);
+	let run = scope.run.clone();
+	let disclosure = DisclosureRequest {
+		operation,
+		..request()
+	};
+
+	assert_eq!(
+		disclose(&mut scope, &run, &disclosure).await.unwrap(),
+		DisclosureState::Permitted
+	);
+
+	let record = scope.records.values().next().unwrap();
+	assert_eq!(record.kind, DISCLOSURE);
+	assert_eq!(record.state, "consumed");
+	assert_eq!(record.data["approver"], "alice");
+	assert_eq!(record.data["given_by"], json!({"rule":Uuid::from_u128(11)}));
+}
+
+#[rstest::rstest]
+#[case::another_provider(ApprovalKind::WebSearch, "research.other@1")]
+#[case::the_host_is_not_the_provider(ApprovalKind::PageReading, "api.search.brave.com")]
+#[tokio::test]
+async fn a_rule_for_another_target_or_kind_does_not_cover_a_search(
+	#[case] kind: ApprovalKind,
+	#[case] target: &str,
+) {
+	let mut scope = advising(
+		empowered(),
+		ApprovalMode::Manual,
+		vec![disclosure_rule_for(kind, target, RuleEffect::Allow)],
+	);
+	let run = scope.run.clone();
+
+	assert!(matches!(
+		disclose(&mut scope, &run, &request()).await.unwrap(),
+		DisclosureState::Pending { .. }
+	));
+}
+
+#[rstest::rstest]
+#[case::deny_rule(ApprovalMode::Manual, vec![disclosure_rule_for(ApprovalKind::WebSearch, "research.brave@1", RuleEffect::Deny)], json!({"rule":Uuid::from_u128(11)}))]
+#[case::dont_ask(ApprovalMode::DontAsk, vec![], json!({"mode":"dont_ask"}))]
+#[tokio::test]
+async fn a_refused_disclosure_stays_denied_and_names_who_refused(
+	#[case] mode: ApprovalMode,
+	#[case] rules: Vec<ApprovalRule>,
+	#[case] refused_by: Value,
+) {
+	let mut scope = advising(empowered(), mode, rules);
+	let run = scope.run.clone();
+
+	assert_eq!(
+		disclose(&mut scope, &run, &request()).await.unwrap(),
+		DisclosureState::Denied
+	);
+	assert_eq!(
+		disclose(&mut scope, &run, &request()).await.unwrap(),
+		DisclosureState::Denied
+	);
+
+	let [record] = scope.records.values().collect::<Vec<_>>()[..] else {
+		panic!("one record");
+	};
+	assert_eq!(record.state, "denied");
+	assert_eq!(record.data["refused_by"], refused_by);
+}
+
+#[tokio::test]
+async fn bypass_permits_each_disclosure_and_records_the_mode() {
+	let mut scope = advising(empowered(), ApprovalMode::Bypass, vec![]);
+	let run = scope.run.clone();
+
+	for _ in 0..2 {
+		assert_eq!(
+			disclose(&mut scope, &run, &request()).await.unwrap(),
+			DisclosureState::Permitted
+		);
+	}
+
+	assert_eq!(scope.records.len(), 2);
+	assert!(scope.records.values().all(|record| {
+		record.state == "consumed" && record.data["given_by"] == json!({"mode":"bypass"})
+	}));
+}
+
+fn outbound_input() -> aidash_domain::capabilities::approvals::Outbound {
+	aidash_domain::capabilities::approvals::Outbound {
+		idempotency_key: Uuid::new_v4(),
+		url: "https://example.com/page".into(),
+	}
+}
+
+#[tokio::test]
+async fn an_allow_rule_approves_an_outbound_read_that_its_driver_may_then_start() {
+	let origin = ApprovalRule {
+		id: Uuid::from_u128(12),
+		kind: ApprovalKind::Outbound,
+		target: RuleTarget::Exact("https://example.com".into()),
+		effect: RuleEffect::Allow,
+	};
+	let mut scope = advising(empowered(), ApprovalMode::Manual, vec![origin]);
+	let run = scope.run.clone();
+
+	let view = prepare(&mut scope, &run, Uuid::new_v4(), outbound_input())
+		.await
+		.unwrap();
+
+	assert_eq!(view["approval_state"], "approved");
+	assert_eq!(view["given_by"], json!({"rule":Uuid::from_u128(12)}));
+	let id: Uuid = serde_json::from_value(view["approval_id"].clone()).unwrap();
+	assert_eq!(scope.records[&id].data["approver"], "alice");
+	// The driver attempts it, and the approval still authorizes the attempt.
+	scope.records.get_mut(&id).unwrap().state = "attempted".into();
+	let record = scope.records[&id].clone();
+	authorize(&mut scope, &record).await.unwrap();
+}
+
+#[rstest::rstest]
+#[case::deny_rule(ApprovalMode::Manual, vec![ApprovalRule {
+	id: Uuid::from_u128(13),
+	kind: ApprovalKind::Outbound,
+	target: RuleTarget::Every,
+	effect: RuleEffect::Deny,
+}], json!({"rule":Uuid::from_u128(13)}), "REFUSED_BY_APPROVAL_RULE")]
+#[case::dont_ask(ApprovalMode::DontAsk, vec![], json!({"mode":"dont_ask"}), "REFUSED_BY_DONT_ASK")]
+#[tokio::test]
+async fn a_refused_outbound_read_is_blocked_with_its_reason(
+	#[case] mode: ApprovalMode,
+	#[case] rules: Vec<ApprovalRule>,
+	#[case] refused_by: Value,
+	#[case] error: &str,
+) {
+	let mut scope = advising(empowered(), mode, rules);
+	let run = scope.run.clone();
+
+	let view = prepare(&mut scope, &run, Uuid::new_v4(), outbound_input())
+		.await
+		.unwrap();
+
+	assert_eq!(view["status"], "blocked");
+	assert_eq!(view["approval_state"], "denied");
+	assert_eq!(view["refused_by"], refused_by);
+	assert_eq!(view["error"], error);
+}
+
+#[tokio::test]
+async fn bypass_approves_an_outbound_read_within_the_ceiling_and_asks_beyond_it() {
+	let mut within = advising(empowered(), ApprovalMode::Bypass, vec![]);
+	let run = within.run.clone();
+	let view = prepare(&mut within, &run, Uuid::new_v4(), outbound_input())
+		.await
+		.unwrap();
+	assert_eq!(view["given_by"], json!({"mode":"bypass"}));
+
+	let mut beyond = tool_scope(
+		json!({"id":"outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["outbound"]}}),
+	);
+	beyond.admission = true;
+	beyond.bundle.policies.push(
+		serde_json::from_value(json!({"id":"approve-outbound","effect":"allow","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}))
+			.unwrap(),
+	);
+	allow_alice(&mut beyond, &[APPROVAL_ADVANCE], &["outbound"]);
+	allow_alice(&mut beyond, &[MODE_BYPASS], &[MODE_RESOURCE]);
+	let mut beyond = advising(beyond, ApprovalMode::Bypass, vec![]);
+	let view = prepare(&mut beyond, &run, Uuid::new_v4(), outbound_input())
+		.await
+		.unwrap();
+	assert_eq!(view["status"], "approval_required");
+}
+
+#[tokio::test]
+async fn the_approver_sees_which_rule_or_mode_gave_an_approval() {
+	let mut scope = advising(empowered(), ApprovalMode::Bypass, vec![]);
+	let run = scope.run.clone();
+	let ToolCallApproval::Approved {
+		approval_id: Some(approval_id),
+	} = ask(&mut scope, tool_request("run:0:0", json!({}))).await
+	else {
+		panic!("bypass approves");
+	};
+
+	let record = scope.records[&approval_id].clone();
+	let card = view(&mut scope, &run, &record).await.unwrap();
+
+	assert_eq!(card["given_by"], json!({"mode":"bypass"}));
+	assert!(card.get("refused_by").is_none());
 }

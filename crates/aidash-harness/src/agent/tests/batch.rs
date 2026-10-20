@@ -746,6 +746,12 @@ impl ExecutionAuthority for Bench {
 	) -> Result<ToolCallApproval> {
 		unexpected("ExecutionAuthority.tool_call_approval")
 	}
+	async fn approval_mode(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		unexpected("ExecutionAuthority.approval_mode")
+	}
 	async fn model_media(
 		&self,
 		_selections: &[aidash_domain::media::ModelMedia],

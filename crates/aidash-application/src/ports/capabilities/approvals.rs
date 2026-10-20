@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	RunMetadata,
+	approval_rules::{ApprovalRule, Settings},
 	capabilities::{operations::MountedFile, records::Record},
 	policy::{Evaluation, PolicyBundle, Resource},
 	provider::ToolCall,
@@ -36,6 +37,9 @@ pub struct ToolCallRequest {
 	pub call: ToolCall,
 	/// The Run's Working Area, so the approval appears in its Thread.
 	pub area: Option<Uuid>,
+	/// The operation is a declared Read-only operation: it needs no approval,
+	/// and the Tenant's policy may still forbid the call outright.
+	pub read_only: bool,
 }
 
 /// Why a Tool call approval refuses the call.
@@ -43,6 +47,10 @@ pub struct ToolCallRequest {
 pub enum Refusal {
 	/// The Tenant's policy forbids the call outright.
 	Forbidden,
+	/// An Approval Rule of the person the Run's chain starts at denies it.
+	Rule,
+	/// The person the Run's chain starts at asked not to be asked.
+	DontAsk,
 	/// No eligible person can decide, so the call cannot be approved.
 	Blocked,
 	Denied,
@@ -57,6 +65,8 @@ impl Refusal {
 	pub fn message(self) -> &'static str {
 		match self {
 			Self::Forbidden => "tool call was refused by the Tenant's policy",
+			Self::Rule => "tool call was refused by an Approval Rule",
+			Self::DontAsk => "tool call was refused: the person asked not to be asked",
 			Self::Blocked => "tool call approval was refused: no person is eligible to approve it",
 			Self::Denied => "tool call approval was denied",
 			Self::Expired => "tool call approval expired",
@@ -86,6 +96,11 @@ pub trait ApprovalScope: Send {
 	fn principal(&self) -> &str;
 	fn credential(&self) -> Uuid;
 	fn subjects(&self) -> &[String];
+	/// The person the Run's delegation chain starts at. Delegates are
+	/// appended, so the root is the first subject.
+	fn chain_root(&self) -> Option<&str> {
+		self.subjects().first().map(String::as_str)
+	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) -> Vec<String>;
 	fn policy_revision(&self) -> i64;
 	fn bundle(&self) -> &PolicyBundle;
@@ -106,4 +121,13 @@ pub trait ApprovalScope: Send {
 	async fn cache(&mut self, key: Uuid, digest: &str, value: &Value) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn read(&mut self, file: &MountedFile) -> Result<Vec<u8>>;
+	/// The Approval Mode and Approval Rules that cover `run`: those of the
+	/// person its chain starts at, for the Run's Thread. `None` unless that
+	/// person is an enabled User subject of this Tenant, so a Run that arrived
+	/// through Federation or Tenant maintenance, a Workbench test or an
+	/// evaluation fixture is never covered. Read now, so a lowered ceiling or a
+	/// removed rule applies to a running Run.
+	async fn approval_settings(&mut self, run: &RunMetadata) -> Result<Option<Settings>>;
+	/// Store `rule` for `owner`, who reads and writes their own rules.
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()>;
 }

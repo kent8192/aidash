@@ -137,6 +137,11 @@ pub struct ToolBehavior {
 	pub yields_model_media: bool,
 	/// A call waits for a Tool call approval unless policy permits it directly.
 	pub tool_call_approval: bool,
+	/// A declared Read-only operation of a Tenant's HTTP or MCP tool. Its calls
+	/// need no Tool call approval, yet the Tenant's policy may still forbid
+	/// them outright (ADR 0076).
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub read_only_operation: bool,
 	/// Omitted while Sequential so contracts pinned before this field keep their digest.
 	#[serde(skip_serializing_if = "Concurrency::is_sequential")]
 	pub concurrency: Concurrency,
@@ -165,6 +170,12 @@ pub enum Yield {
 	Citations,
 }
 impl ToolBehavior {
+	/// A call of a Tenant's HTTP or MCP tool, whose result is external data: it
+	/// passes the Tool call gate, which asks or only checks, and it can never
+	/// raise an approval of its own.
+	pub fn tenant_tool_call(&self) -> bool {
+		self.tool_call_approval || self.read_only_operation
+	}
 	pub fn permits(&self, mode: ToolUseMode) -> bool {
 		match mode {
 			ToolUseMode::Ordinary => true,
@@ -266,6 +277,7 @@ impl ToolContract {
 				},
 			),
 		};
+		let read_only_operation = config.declares_read_only();
 		Self {
 			identity: ToolIdentity::Registry(reference),
 			authorization: ToolAuthorization {
@@ -283,6 +295,7 @@ impl ToolContract {
 			behavior: ToolBehavior {
 				effect,
 				tool_call_approval: approval,
+				read_only_operation,
 				fitting: None,
 				continuation: Continuation::Ordinary,
 				catch_up: false,
@@ -318,6 +331,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			media_pending: false,
 			yields_model_media: false,
 			tool_call_approval: false,
+			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
 			yields: vec![],
@@ -738,6 +752,32 @@ mod tests {
 			PINNED_WORKSPACE_READ_DIGEST
 		);
 	}
+	#[test]
+	fn only_a_tenants_http_or_mcp_tool_passes_the_tool_call_gate() {
+		let reference = EntityRef {
+			id: "tool".into(),
+			version: "1".into(),
+		};
+		for config in [
+			ToolConfig::Agent {
+				node_id: "node".into(),
+				agent: reference.clone(),
+			},
+			ToolConfig::Native {
+				operation: "http_get".into(),
+				allowed_hosts: vec![],
+			},
+		] {
+			let contract = ToolContract::registry(reference.clone(), &config);
+			assert!(!contract.behavior.tenant_tool_call());
+		}
+		assert!(
+			!builtin_contract("human_request")
+				.unwrap()
+				.behavior
+				.tenant_tool_call()
+		);
+	}
 	const PINNED_WORKSPACE_READ_DIGEST: &str =
 		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
 	#[test]
@@ -771,6 +811,14 @@ mod tests {
 				assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
 				assert_eq!(contract.behavior.effect, effect, "{replay:?}");
 				assert_eq!(contract.behavior.tool_call_approval, approval, "{replay:?}");
+				// Either way the call passes the Tool call gate: asked, or only
+				// checked against the Tenant's policy.
+				assert_eq!(
+					contract.behavior.read_only_operation,
+					effect == ToolEffect::ReadOnly,
+					"{replay:?}"
+				);
+				assert!(contract.behavior.tenant_tool_call(), "{replay:?}");
 				assert_eq!(contract.replay_safe(), safe, "{replay:?}");
 				assert_eq!(contract.disclosure, DisclosureBoundary::External);
 				assert!(contract.remote_exposure);

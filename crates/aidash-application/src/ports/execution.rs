@@ -410,6 +410,14 @@ pub trait ExecutionAuthority: Send + Sync {
 		run: &Run,
 		request: crate::ports::capabilities::approvals::ToolCallRequest,
 	) -> Result<crate::ports::capabilities::approvals::ToolCallApproval>;
+	/// The Approval Mode that covers `run` now: the one of the person its
+	/// delegation chain starts at. `None` when no person's mode covers it,
+	/// such as a Run that arrived through Federation or Tenant maintenance, a
+	/// Workbench test or an evaluation fixture (ADR 0076).
+	async fn approval_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>>;
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],

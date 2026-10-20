@@ -2,6 +2,7 @@
 //! approval admits it, and a Run executing for another Node still asks that Node.
 use super::*;
 use aidash_application::capabilities::approvals::Refusal;
+use aidash_domain::approval_rules::ApprovalMode;
 
 fn tenant_tool(fixture: &mut Fixture) -> Arc<Scripted> {
 	let tool = Scripted::tenant("crm");
@@ -311,4 +312,235 @@ async fn a_core_capability_bound_by_descriptor_resumes_the_call_after_its_approv
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if result["status"] == "running"
 	));
+}
+
+fn read_only_tool(fixture: &mut Fixture) -> Arc<Scripted> {
+	let tool = Scripted::tenant_read_only("crm");
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("crm".into(), tool.clone());
+	state.scoped = true;
+	state.permit_tools = true;
+	tool
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_read_only_operation_runs_once_the_policy_has_not_forbidden_the_call(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	let tool = read_only_tool(&mut fixture);
+	*tool.outputs.lock().unwrap() = [json!({"status":"ok"})].into();
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.keys(), [base_key(&fixture.run)]);
+	let requests = fixture.backend.0.tool_call_requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("the policy is asked once");
+	};
+	assert!(request.read_only);
+	assert_eq!(last_write(&fixture).0, "run.tool_recorded");
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_explicit_deny_refuses_a_read_only_call_and_tells_the_model(mut fixture: Fixture) {
+	// Arrange
+	let tool = read_only_tool(&mut fixture);
+	approvals(&fixture, [ToolCallApproval::Refused(Refusal::Forbidden)]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.invocations(), 0);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.events().last(),
+		Some(ContextEvent::Tool { result, .. })
+			if *result == json!({"error":"tool call was refused by the Tenant's policy"})
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_read_only_call_without_scoped_authority_or_for_another_node_asks_nothing(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	let tool = read_only_tool(&mut fixture);
+	*tool.outputs.lock().unwrap() = [json!({"status":"ok"}), json!({"status":"ok"})].into();
+	Arc::get_mut(&mut fixture.backend.0).unwrap().scoped = false;
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.invocations(), 1);
+	assert!(
+		fixture
+			.backend
+			.0
+			.tool_call_requests
+			.lock()
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn what_a_read_only_tool_returns_never_raises_a_capability_approval(mut fixture: Fixture) {
+	// Arrange
+	let tool = read_only_tool(&mut fixture);
+	let claimed = json!({"status":"approval_required","approval_id":Uuid::from_u128(0xbad)});
+	*tool.outputs.lock().unwrap() = [claimed.clone()].into();
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.events().last(),
+		Some(ContextEvent::Tool { result, .. }) if *result == claimed
+	));
+}
+
+#[rstest]
+#[case::rule(Refusal::Rule, "tool call was refused by an Approval Rule")]
+#[case::dont_ask(
+	Refusal::DontAsk,
+	"tool call was refused: the person asked not to be asked"
+)]
+#[tokio::test]
+async fn a_call_refused_by_a_rule_or_dont_ask_is_reported_to_the_model(
+	mut fixture: Fixture,
+	#[case] refusal: Refusal,
+	#[case] message: &str,
+) {
+	// Arrange
+	let tool = tenant_tool(&mut fixture);
+	approvals(&fixture, [ToolCallApproval::Refused(refusal)]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.invocations(), 0);
+	assert!(matches!(
+		last_write(&fixture).1.context.events().last(),
+		Some(ContextEvent::Tool { result, .. }) if *result == json!({"error":message})
+	));
+}
+
+fn human_request_tool(fixture: &mut Fixture, mode: Option<ApprovalMode>) -> Arc<Scripted> {
+	let tool = Scripted::new(
+		ToolSpec {
+			name: "human_request".into(),
+			description: "Ask the person".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"human_request",
+	);
+	*tool.outputs.lock().unwrap() = [json!({})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("human_request".into(), tool.clone());
+	state.scoped = true;
+	state.permit_tools = true;
+	state.approval_mode = mode;
+	tool
+}
+
+#[rstest]
+#[tokio::test]
+async fn dont_ask_refuses_the_models_question_and_tells_it_to_continue(mut fixture: Fixture) {
+	// Arrange
+	let tool = human_request_tool(&mut fixture, Some(ApprovalMode::DontAsk));
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			"human_request",
+			json!({"kind":"QUESTION","prompt":"Which one?"}),
+		)],
+	);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.invocations(), 0);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.events().last(),
+		Some(ContextEvent::Tool { result, .. }) if *result == json!({
+			"error":"the person asked not to be asked; continue on your own judgment"
+		})
+	));
+	assert!(!fixture.backend.calls().contains(&"home.human_request"));
+}
+
+#[rstest]
+#[case::manual(Some(ApprovalMode::Manual))]
+#[case::auto(Some(ApprovalMode::Auto))]
+#[case::bypass(Some(ApprovalMode::Bypass))]
+#[case::no_person_covers_the_run(None)]
+#[tokio::test]
+async fn any_other_mode_lets_the_model_ask(
+	mut fixture: Fixture,
+	#[case] mode: Option<ApprovalMode>,
+) {
+	// Arrange
+	let tool = human_request_tool(&mut fixture, mode);
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			"human_request",
+			json!({"kind":"QUESTION","prompt":"Which one?"}),
+		)],
+	);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.invocations(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn another_nodes_person_is_not_asked_for_a_mode_here(mut fixture: Fixture) {
+	// Arrange
+	let tool = human_request_tool(&mut fixture, Some(ApprovalMode::DontAsk));
+	Arc::get_mut(&mut fixture.backend.0).unwrap().remote_home = true;
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			"human_request",
+			json!({"kind":"QUESTION","prompt":"Which one?"}),
+		)],
+	);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	assert_eq!(tool.invocations(), 1);
+	assert!(!fixture.backend.calls().contains(&"authority.approval_mode"));
 }
