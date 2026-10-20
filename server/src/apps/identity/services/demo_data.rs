@@ -9,9 +9,15 @@ use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::db::orm::Model;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+mod approvals;
 mod input;
+mod people;
+mod registry;
+mod subjects;
+mod tenants;
 pub use input::{Inputs, People, Person, Role, Structure};
 
 fn scope() -> TenancyScope {
@@ -39,8 +45,14 @@ async fn run(structure: &Path, people: Option<&Path>) -> Result<Outcome> {
 	// Loading never changes the schema; `migrate` runs first as its owner.
 	crate::bootstrap::require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
-	let database = crate::database::runtime::connect(&config.database_url, 8).await?;
-	let pool = Pool::from(database.into_postgres().ok_or(Error::Forbidden)?);
+	// The migration Job runs this command with the migration owner's login,
+	// which the server's own connection refuses. `FORCE ROW LEVEL SECURITY`
+	// binds the owner, and every write below opens a tenancy scope.
+	let database = crate::database::runtime::connect_maintenance(&config.database_url, 8).await?;
+	// The sign-in policy decides whether a person's existing External
+	// Identity is mapped at once (ADR 0079).
+	let pool = Pool::from(database.into_postgres().ok_or(Error::Forbidden)?)
+		.with_dashboard_policy(config.dashboard_policy());
 	let outcome = if loaded(&pool, &inputs.digest).await? {
 		Outcome::Unchanged
 	} else {
@@ -78,10 +90,53 @@ async fn loaded(pool: &Pool, digest: &str) -> Result<bool> {
 }
 
 /// Loads the structure and the people. Each step is idempotent and nothing is
-/// ever deleted. The steps are added next; until then a load changes nothing,
-/// and `record` below stays the last write of a run.
-async fn load(_pool: &Pool, _config: &Config, _inputs: &Inputs) -> Result<()> {
-	Ok(())
+/// ever deleted. `record` stays the last write of a run.
+///
+/// A Tenant that a reviewer deleted is left deleted: it gets nothing more,
+/// and nobody is mapped into it.
+async fn load(pool: &Pool, config: &Config, inputs: &Inputs) -> Result<()> {
+	let node = &config.node_id;
+	let named = tenants::ensure(pool, node, &inputs.structure).await?;
+	let mut live = BTreeMap::new();
+	for tenant in &inputs.structure.tenants {
+		let name = &named[&tenant.key];
+		let wanted = wanted_subjects(tenant, inputs);
+		if !subjects::add(pool, name, &wanted).await? {
+			tracing::warn!(key = %tenant.key, "demo-data skips a deleted Tenant");
+			continue;
+		}
+		registry::register(pool, node, &tenant.key, name, &tenant.registry).await?;
+		approvals::approve(pool, node, &tenant.key, name, &tenant.approvals).await?;
+		live.insert(tenant.key.clone(), name.clone());
+	}
+	let people: Vec<Person> = inputs
+		.people
+		.iter()
+		.flat_map(|people| people.people.iter())
+		.filter(|person| live.contains_key(&person.tenant))
+		.cloned()
+		.collect();
+	people::load(pool, &live, &people).await
+}
+
+/// The user subjects one Tenant should hold: the structure's fictional
+/// subjects, then the subject of every person that names the Tenant, in the
+/// group their role gives. A subject the structure lists keeps its groups.
+fn wanted_subjects(tenant: &input::StructureTenant, inputs: &Inputs) -> Vec<subjects::Wanted> {
+	let mut wanted: Vec<subjects::Wanted> = tenant
+		.subjects
+		.iter()
+		.map(|subject| (subject.id.clone(), subject.groups.clone()))
+		.collect();
+	for person in inputs.people_of(&tenant.key) {
+		if !wanted.iter().any(|(id, _)| *id == person.subject) {
+			wanted.push((
+				person.subject.clone(),
+				BTreeSet::from([person.role.group().to_owned()]),
+			));
+		}
+	}
+	wanted
 }
 
 /// Records that the inputs with `digest` were loaded to completion. It is its

@@ -48,6 +48,8 @@ mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
 mod demo_data;
 pub use demo_data::{DemoDataLoad, DemoReservation, DemoTenant};
+mod demo_reservations;
+pub use demo_reservations::{Fulfilment, Skip};
 mod personal_tenants;
 pub use personal_tenants::PersonalTenantLink;
 mod tenant_invitations;

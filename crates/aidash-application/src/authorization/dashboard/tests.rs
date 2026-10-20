@@ -28,6 +28,8 @@ struct Scope {
 	/// The issuer reports no Account Status, as generic OIDC does.
 	statusless: bool,
 	personal_tenants: bool,
+	/// The Deployment loads Demo data.
+	demo_data: bool,
 	/// Issuers whose identities are restricted to one Tenant each.
 	restrictions: Option<std::collections::BTreeMap<String, String>>,
 	result: ProviderResult,
@@ -60,6 +62,7 @@ fn scope() -> Scope {
 		active: true,
 		statusless: false,
 		personal_tenants: false,
+		demo_data: false,
 		restrictions: None,
 		result: ProviderResult::Enabled,
 		newer_validity: false,
@@ -121,7 +124,7 @@ impl Accounts for Scope {
 				None => Arc::new(Issuer("issuer".into())),
 			},
 			personal_tenants: self.personal_tenants,
-			demo_data: false,
+			demo_data: self.demo_data,
 		})
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -336,6 +339,14 @@ async fn active_identity_cannot_be_restored_without_a_disabled_state(scope: Scop
 
 #[async_trait]
 impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
+	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()> {
+		self.0
+			.lock()
+			.unwrap()
+			.trace
+			.push(format!("demo:{identity}:{email}"));
+		Ok(())
+	}
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
 		self.0
 			.lock()
@@ -359,6 +370,14 @@ impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
 struct ExistingLogin(Arc<Mutex<State>>);
 #[async_trait]
 impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
+	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()> {
+		self.0
+			.lock()
+			.unwrap()
+			.trace
+			.push(format!("demo:{identity}:{email}"));
+		Ok(())
+	}
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
 		self.0
 			.lock()
@@ -455,6 +474,111 @@ async fn login_skips_personal_tenants_when_the_rules_do_not_cover_the_identity(
 			.trace
 			.iter()
 			.any(|step| step.starts_with("personal:"))
+	);
+}
+
+/// Whether a sign-in of `email` fulfilled Demo Reservations, and whether the
+/// Personal Tenant followed, as the trace of one login.
+async fn demo_login(mut scope: Scope, email: Option<&str>) -> Vec<String> {
+	scope.personal_tenants = true;
+	let scope = Arc::new(scope);
+	let mut login = ExistingLogin(scope.state.clone());
+	let sign_in = SignIn {
+		verified_email: email.map(str::to_owned),
+		..sign_in()
+	};
+	authority(scope.clone())
+		.admit_login(&mut login, &sign_in)
+		.await
+		.unwrap();
+	scope.state.lock().unwrap().trace.clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn login_fulfils_demo_reservations_before_provisioning_the_personal_tenant(mut scope: Scope) {
+	scope.demo_data = true;
+	let id = scope.state.lock().unwrap().account.id;
+	let trace = demo_login(scope, Some("dana@example.com")).await;
+	assert_eq!(
+		trace,
+		[
+			"lookup:subject".to_owned(),
+			"register".to_owned(),
+			format!("demo:{id}:dana@example.com"),
+			format!("personal:{id}"),
+			"record".to_owned()
+		]
+	);
+}
+
+#[rstest]
+#[case::demo_data_off(false, None, Some("dana@example.com"))]
+#[case::no_verified_email(true, None, None)]
+#[case::bound_pool(true, Some("pool-a"), Some("dana@example.com"))]
+#[tokio::test]
+async fn login_does_not_fulfil_demo_reservations_outside_their_conditions(
+	mut scope: Scope,
+	#[case] demo_data: bool,
+	#[case] pool: Option<&str>,
+	#[case] email: Option<&str>,
+) {
+	scope.demo_data = demo_data;
+	if let Some(pool) = pool {
+		scope.restrictions = Some([(pool.to_owned(), "acme".to_owned())].into());
+		scope.state.lock().unwrap().account.issuer = pool.into();
+	}
+	scope.personal_tenants = true;
+	let scope = Arc::new(scope);
+	let mut login = ExistingLogin(scope.state.clone());
+	let sign_in = SignIn {
+		issuer: pool.unwrap_or("issuer").to_owned(),
+		verified_email: email.map(str::to_owned),
+		..sign_in()
+	};
+	authority(scope.clone())
+		.admit_login(&mut login, &sign_in)
+		.await
+		.unwrap();
+	assert!(
+		!scope
+			.state
+			.lock()
+			.unwrap()
+			.trace
+			.iter()
+			.any(|step| step.starts_with("demo:"))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_disabled_account_fulfils_no_demo_reservation(mut scope: Scope) {
+	scope.demo_data = true;
+	{
+		let mut state = scope.state.lock().unwrap();
+		state.account.disabled_at = Some(state.now);
+	}
+	let scope = Arc::new(scope);
+	let mut login = ExistingLogin(scope.state.clone());
+	let sign_in = SignIn {
+		verified_email: Some("dana@example.com".into()),
+		..sign_in()
+	};
+	assert!(matches!(
+		authority(scope.clone())
+			.admit_login(&mut login, &sign_in)
+			.await,
+		Err(Error::Forbidden)
+	));
+	assert!(
+		!scope
+			.state
+			.lock()
+			.unwrap()
+			.trace
+			.iter()
+			.any(|step| step.starts_with("demo:"))
 	);
 }
 

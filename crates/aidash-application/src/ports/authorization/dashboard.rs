@@ -92,6 +92,11 @@ pub trait AccountStatus: Send + Sync {
 pub trait LoginAccounts: Send {
 	async fn find(&mut self, sign_in: &SignIn) -> Result<Option<Account>>;
 	async fn register(&mut self, sign_in: &SignIn) -> Result<Account>;
+	/// Fulfil the Demo Reservations held for `email`, a GCIP-verified address,
+	/// by mapping `identity` into each reserved Tenant (ADR 0079). A
+	/// Reservation that is already spent, whose Tenant is deleted or whose
+	/// subject no longer exists is skipped. It adds Mappings only.
+	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()>;
 	/// Create a Personal Tenant once; never restore withdrawn authority.
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()>;
 }

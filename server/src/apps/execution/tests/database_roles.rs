@@ -24,6 +24,32 @@ async fn server_refuses_a_login_that_bypasses_row_level_security(
 	assert!(error.to_string().contains(reason), "{error}");
 }
 
+/// The migration Job runs maintenance commands such as `demo-data` as the
+/// owner. Row-level security is forced on the owner too, so those commands may
+/// connect as it, but a login that bypasses the policy is refused as before.
+#[rstest]
+#[tokio::test]
+async fn maintenance_accepts_the_owner_but_not_a_login_that_bypasses_row_level_security(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let f = database.await;
+	let owner = with_login(&f.url, OWNER);
+	// Act / Assert: the server's own connection refuses the owner.
+	let refused = runtime::connect(&owner, 2).await;
+	assert!(refused.is_err());
+	// Act / Assert: the maintenance connection accepts it. Row-level security
+	// binding the owner is proved in `row_level_security`.
+	let connection = runtime::connect_maintenance(&owner, 2)
+		.await
+		.expect("the migration owner may run maintenance commands");
+	drop(connection);
+	// Act / Assert: a superuser bypasses the policy and is refused.
+	let refused = runtime::connect_maintenance(&with_login(&f.url, ADMIN), 2).await;
+	let error = refused.err().expect("a superuser is refused");
+	assert!(error.to_string().contains("is a superuser"), "{error}");
+}
+
 /// A login that owns no table but owns a schema can still create and drop
 /// objects in it, so it is refused as well.
 #[rstest]

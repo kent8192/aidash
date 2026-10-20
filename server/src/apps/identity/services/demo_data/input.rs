@@ -32,7 +32,9 @@ pub struct StructureTenant {
 	/// Fictional user subjects. They never sign in.
 	#[serde(default)]
 	pub subjects: Vec<StructureSubject>,
-	/// The Tenant's Registry entries, dependencies first.
+	/// The Tenant's Registry entries, dependencies first. A string in an
+	/// entry's `config` that is exactly `$node` stands for the Deployment's
+	/// node id, which Tool descriptors and binding targets must name.
 	#[serde(default)]
 	pub registry: Vec<Entry>,
 	/// Catalog Approvals to grant on the Deployment's Node.
@@ -70,7 +72,7 @@ pub struct People {
 	pub people: Vec<Person>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Person {
 	/// The verified email address; validation lowercases it.

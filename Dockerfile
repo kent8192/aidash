@@ -44,6 +44,7 @@ COPY --from=rust /out/aidash /usr/local/bin/aidash
 COPY --from=rust /out/manage /usr/local/bin/manage
 COPY --from=rust /out/local-dev-db /usr/local/bin/local-dev-db
 COPY server/migrations /app/server/migrations
+COPY deploy/demo-data /app/deploy/demo-data
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
 RUN mkdir -p /var/lib/aidash/memory-recovery /var/lib/aidash/provider-credentials && chown -R 10001:10001 /var/lib/aidash
@@ -60,6 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=rust /out/aidash /usr/local/bin/aidash
 COPY --from=rust /out/manage /usr/local/bin/manage
 COPY server/migrations /app/server/migrations
+COPY deploy/demo-data/structure.json /app/deploy/demo-data/structure.json
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
 COPY --from=web /build/web/dist /app/web

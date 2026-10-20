@@ -3,7 +3,10 @@
 //! Migrations run as the role that owns every table. Servers and workers log in
 //! as a separate role that row-level security binds (#223), so they refuse a
 //! login that would bypass it. Management commands, including the migration
-//! Job's maintenance steps, keep Reinhardt's ordinary connection.
+//! Job's maintenance steps, keep Reinhardt's ordinary connection. The `demo-data`
+//! command runs in that Job under the migration owner and so opens
+//! [`connect_maintenance`], which accepts the owner but nothing else that
+//! bypasses row-level security.
 use crate::{Error, Result};
 use reinhardt::db::backends::{DatabaseConnection, PostgresBackend};
 use reinhardt::db::orm::execution::convert_values;
@@ -21,6 +24,27 @@ use std::{sync::Arc, time::Duration};
 /// mistake cannot reach the next borrower; derived pools clone these options
 /// and inherit the reset.
 pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
+	let connection = open(url, max_connections).await?;
+	require_unprivileged(&connection).await?;
+	Ok(connection)
+}
+
+/// Open a pool for a maintenance command that the migration Job runs under the
+/// migration owner (`aidash_owner`), such as `demo-data`. The owner is accepted
+/// because `FORCE ROW LEVEL SECURITY` binds it like any other login: a
+/// statement that scans a Tenant-owned table fails without a scope (`TS001`),
+/// and every write through [`Pool`](super::native::Pool) opens one. The
+/// command's code issues no DDL. Everything that would bypass the policy is
+/// still refused: a superuser, `BYPASSRLS`, `REPLICATION`, a session that
+/// switched roles, a role that can `SET ROLE` to one of those, and membership
+/// in a role that reaches the server's files or programs.
+pub async fn connect_maintenance(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
+	let connection = open(url, max_connections).await?;
+	refuse_bypass(&connection, Login::Maintenance).await?;
+	Ok(connection)
+}
+
+async fn open(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
 	let pool = sqlx::postgres::PgPoolOptions::new()
 		.max_connections(max_connections)
 		.min_connections(1)
@@ -39,9 +63,19 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 		})
 		.connect(url)
 		.await?;
-	let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(pool)));
-	require_unprivileged(&connection).await?;
-	Ok(connection)
+	Ok(DatabaseConnection::new(Arc::new(PostgresBackend::new(
+		pool,
+	))))
+}
+
+/// Which logins a check accepts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Login {
+	/// The server and its workers: no privilege beyond row-level DML.
+	Server,
+	/// A maintenance command under the migration owner, which owns objects but
+	/// stays bound by `FORCE ROW LEVEL SECURITY`.
+	Maintenance,
 }
 
 /// Whether the session's role is, or is a member of, the role in `owner`.
@@ -62,6 +96,10 @@ fn member_of(owner: &str) -> SimpleExpr {
 /// and `TRIGGER` are checked for every role the login is a member of, because
 /// `SET ROLE` reaches a role whose privileges are not inherited.
 pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()> {
+	refuse_bypass(connection, Login::Server).await
+}
+
+async fn refuse_bypass(connection: &DatabaseConnection, login: Login) -> Result<()> {
 	let role = Alias::new("r");
 	let class = Alias::new("c");
 	let namespace = Alias::new("n");
@@ -227,6 +265,8 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		"can SET ROLE to a superuser, BYPASSRLS or REPLICATION role"
 	} else if flag("server_access")? {
 		"is a member of a role that reaches the server's files or programs"
+	} else if login == Login::Maintenance {
+		return Ok(());
 	} else if flag("database_owner")? {
 		"owns the database"
 	} else if flag("schema_owner")? {
@@ -243,8 +283,12 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		return Ok(());
 	};
 	Err(Error::Invalid(format!(
-		"the server's database login {reason}, so row-level security would not apply to it; \
+		"the {} database login {reason}, so row-level security would not apply to it; \
 		 connect as the server role (aidash_server) and run migrations as the owner role \
-		 (aidash_owner)"
+		 (aidash_owner)",
+		match login {
+			Login::Server => "server's",
+			Login::Maintenance => "maintenance",
+		}
 	)))
 }
