@@ -14,4 +14,5 @@ npm ci --prefix web
 # prebuild generates the ignored Rust-owned OpenAPI contract and TypeScript client.
 AIDASH_MANAGE_BINARY="$release/manage" npm run build --prefix web
 scripts/install-browser.sh
-python3 scripts/golden_path.py --binary "$release/aidash" --dashboard
+# No argument runs the golden path with its @golden-path browser specs; --browser-suite runs the rest of the browser suite after the setup alone.
+python3 scripts/golden_path.py --binary "$release/aidash" "${@:---dashboard}"

@@ -77,57 +77,60 @@ test("reinitializes an open tab after its shared session is replaced", async ({
     .toBeNull();
 });
 
-test("observes the two-node execution and all management screens", async ({
-  page,
-}) => {
-  const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  await expect(page.locator(".stream-status")).toHaveText("接続中");
-  await expect(page.locator(".collab-rail")).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "新しい依頼", exact: true }),
-  ).toBeVisible();
-  await page.goto("/graph");
-  await page
-    .getByLabel("グラフの視点", { exact: true })
-    .selectOption("neighborhood");
-  await page
-    .getByRole("button", { name: "ノード構成と通信", exact: true })
-    .click();
-  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
-  await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
-  for (const view of [
-    "agents",
-    "clusters",
-    "registry",
-    "marketplace",
-    "node",
-  ]) {
-    await page.goto(`/settings?view=${view}`);
-    await expect(page.locator(".collab-settings-select select")).toHaveValue(
-      view,
-    );
-    await expect(page.locator(".collab-settings h1")).toHaveText("設定");
-  }
-  await page.goto("/settings?view=generation");
-  await expect(page).toHaveURL(/\/creator\?.*view=generation/);
-  await expect(page.locator(".generation-page")).toBeVisible();
-  await page.goto("/collaboration");
-  await selectDashboardLanguage(page, "en-US");
-  await expect(
-    page.getByRole("button", { name: "New request", exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: "../private/dashboard-overview.png",
-    fullPage: true,
-  });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({
-    path: "../private/dashboard-mobile.png",
-    fullPage: true,
-  });
-  expect(errors).toEqual([]);
-});
+// Needs the golden path's two-node mesh and existing runs.
+test(
+  "observes the two-node execution and all management screens",
+  { tag: "@golden-path" },
+  async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await expect(page.locator(".stream-status")).toHaveText("接続中");
+    await expect(page.locator(".collab-rail")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "新しい依頼", exact: true }),
+    ).toBeVisible();
+    await page.goto("/graph");
+    await page
+      .getByLabel("グラフの視点", { exact: true })
+      .selectOption("neighborhood");
+    await page
+      .getByRole("button", { name: "ノード構成と通信", exact: true })
+      .click();
+    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
+    await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+    for (const view of [
+      "agents",
+      "clusters",
+      "registry",
+      "marketplace",
+      "node",
+    ]) {
+      await page.goto(`/settings?view=${view}`);
+      await expect(page.locator(".collab-settings-select select")).toHaveValue(
+        view,
+      );
+      await expect(page.locator(".collab-settings h1")).toHaveText("設定");
+    }
+    await page.goto("/settings?view=generation");
+    await expect(page).toHaveURL(/\/creator\?.*view=generation/);
+    await expect(page.locator(".generation-page")).toBeVisible();
+    await page.goto("/collaboration");
+    await selectDashboardLanguage(page, "en-US");
+    await expect(
+      page.getByRole("button", { name: "New request", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: "../private/dashboard-overview.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: "../private/dashboard-mobile.png",
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+  },
+);
 
 test("creates a workspace and task and receives live assignment changes", async ({
   page,

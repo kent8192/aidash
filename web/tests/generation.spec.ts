@@ -503,7 +503,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByRole("button", { name: "生成を承認", exact: true })
       .click();
     await expect(dialog).toHaveCount(0);
-    await expect(completed).toContainText("完了", { timeout: 20000 });
+    // A deferred activation reaches the Run through recovery, ~10 s later.
+    await expect(completed).toContainText("完了", { timeout: 60000 });
     await completed.click();
     await expect(dialog).toContainText("26 / 200,000");
     expect(semanticContexts).toEqual([

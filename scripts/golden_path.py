@@ -473,7 +473,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=os.environ.get("AIDASH_BINARY", "target/debug/aidash"))
     parser.add_argument("--keep", action="store_true", help="Keep the completed local demo running until interrupted")
-    parser.add_argument("--dashboard", action="store_true", help="Submit the golden path goal through Chromium instead of the API")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dashboard", action="store_true", help="Submit the golden path goal through Chromium instead of the API")
+    mode.add_argument("--browser-suite", action="store_true", help="Run the browser suite, except @golden-path specs, after the setup alone")
     args = parser.parse_args()
     revision = runpy.run_path(str(ROOT / "scripts/core-capability-evidence.py"))["revision"]
     source = revision()
@@ -602,6 +604,13 @@ def main():
             subprocess.run([args.binary, "migrate"], cwd=ROOT, env=node_env(node, database, port, OWNER_LOGIN),
                            stdout=log, stderr=log, check=True, timeout=600)
 
+    def browser(grep_args):
+        for proxy in browser_provider_proxies:
+            proxy.start()
+        browser_report = logs / "browser-report.json"
+        subprocess.run(["npx", "playwright", "test", *grep_args, "--reporter=list,json"], cwd=ROOT / "web", check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"})
+        return json.loads(browser_report.read_text())["stats"]["expected"]
+
     def launch(node, database, port, mode):
         env = node_env(node, database, port, SERVER_LOGIN)
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")
@@ -663,6 +672,16 @@ def main():
         remote_worker = launch(node_b, db_b, port_b, "worker")
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
         threading.Thread(target=watch_slow_sessions, daemon=True).start()
+        if args.browser_suite:
+            nats_proxy.restore()
+            browser_scenarios = browser(["--grep-invert", "@golden-path"])
+            assert not approval_errors, approval_errors
+            assert source == revision(), "Source changed while the browser suite was running"
+            assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed while the browser suite was running"
+            report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "browser_scenarios": browser_scenarios, "source": source, "binary_sha256": binary_sha256}
+            (logs / "browser-suite.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+            print("Browser suite passed:", json.dumps(report, ensure_ascii=False), flush=True)
+            return
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
@@ -751,16 +770,7 @@ def main():
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()
         if args.dashboard:
-            browser_report = logs / "browser-report.json"
-            for proxy in browser_provider_proxies:
-                proxy.start()
-            # Live specs do Tenant work as alice in Node A's research Tenant
-            # (#371). Her first credential may have expired during the scenarios.
-            browser = api_request(base_a, f"/api/authorization/{tenant_a}/credentials", {"subject": "alice", "expires_in_seconds": 3600})
-            # The fixture approver swallows OSError, so an expired token would stop approvals silently.
-            tokens[base_a] = browser["token"]
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": browser["token"], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"})
-            report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
+            report["browser_scenarios"] = browser(["--grep", "@golden-path"])
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
         assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed while Golden Path was running"
