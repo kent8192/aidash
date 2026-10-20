@@ -127,6 +127,16 @@ pub fn key_file(f: &Federation) -> Option<PathBuf> {
 		.map(|file| file.path.clone())
 }
 
+/// Points `[deployment.key] file` of `settings` at `key` and turns Federation on.
+pub fn configure_key(
+	settings: &mut aidash_server::config::settings::ProjectSettings,
+	key: &KeyFile,
+) {
+	settings.deployment.federation = true;
+	settings.deployment.key =
+		Some(serde_json::from_value(json!({ "file": key.path })).expect("a [deployment.key] file"));
+}
+
 /// Points a process's `[deployment.key] file` at `f`'s key and keeps its switch.
 pub fn configure_process(
 	settings: &mut aidash_server::config::settings::ProjectSettings,
