@@ -6,6 +6,7 @@ locals {
     var.production_backup_enabled || var.production_backup_agent_enabled ? ["gkebackup.googleapis.com"] : [],
     var.production_monitoring_enabled ? ["monitoring.googleapis.com"] : [],
   ))
+  production_protected_application = { namespace = "aidash-production", name = "aidash" }
   production_workload_alerts = var.production_monitoring_enabled ? {
     volume_capacity = {
       display_name = "Aidash production retained volume capacity"
@@ -42,7 +43,7 @@ resource "google_gke_backup_backup_plan" "production" {
   location        = var.production_backup_location
   cluster         = local.production_cluster_id
   deletion_policy = "PREVENT"
-  description     = "Production namespace/PVC crash-consistent backup. Configuration is not restore verification; PostgreSQL and Home ledger acceptance are separate."
+  description     = "Production crash-consistent backup of the aidash ProtectedApplication, which leaves out the Home recovery ledger claim. Configuration is not restore verification; PostgreSQL and Home ledger acceptance are separate."
   labels          = { application = "aidash", lifecycle = "production" }
   retention_policy {
     backup_retain_days      = var.production_backup_retain_days
@@ -57,7 +58,12 @@ resource "google_gke_backup_backup_plan" "production" {
     include_volume_data = true
     include_secrets     = true
     permissive_mode     = false
-    selected_namespaces { namespaces = ["aidash-production"] }
+    selected_applications {
+      namespaced_names {
+        namespace = local.production_protected_application.namespace
+        name      = local.production_protected_application.name
+      }
+    }
   }
   lifecycle {
     prevent_destroy = true
@@ -67,6 +73,77 @@ resource "google_gke_backup_backup_plan" "production" {
     }
   }
   depends_on = [google_project_service.production_operations]
+}
+// The update controller creates one Backup per update after sealing writers and
+// before any change, so the plan has no schedule.
+resource "google_gke_backup_backup_plan" "pre_update" {
+  count           = var.production_backup_enabled ? 1 : 0
+  project         = var.project_id
+  name            = "aidash-production-pre-update"
+  location        = var.production_backup_location
+  cluster         = local.production_cluster_id
+  deletion_policy = "PREVENT"
+  description     = "On-demand backup the production update controller takes after sealing writers and before changing anything. The Home recovery ledger claim is left out."
+  labels          = { application = "aidash", lifecycle = "production" }
+  retention_policy {
+    backup_retain_days      = var.production_pre_update_backup_retain_days
+    backup_delete_lock_days = var.production_pre_update_backup_delete_lock_days
+    locked                  = false
+  }
+  backup_config {
+    include_volume_data = true
+    include_secrets     = true
+    permissive_mode     = false
+    selected_applications {
+      namespaced_names {
+        namespace = local.production_protected_application.namespace
+        name      = local.production_protected_application.name
+      }
+    }
+  }
+  lifecycle {
+    prevent_destroy = true
+    precondition {
+      condition     = try(data.google_container_cluster.production_operations[0].addons_config[0].gke_backup_agent_config[0].enabled, false)
+      error_message = "Enable and observe the Backup for GKE agent on the existing production cluster before applying its backup plan."
+    }
+  }
+  depends_on = [google_project_service.production_operations]
+}
+// DELETE_AND_RESTORE removes the resources a ProtectedApplication selects. A
+// namespace scope would also delete the Home recovery ledger claim.
+resource "google_gke_backup_restore_plan" "pre_update_in_place" {
+  count           = var.production_backup_enabled ? 1 : 0
+  project         = var.project_id
+  name            = "aidash-production-pre-update-in-place"
+  location        = var.production_backup_location
+  backup_plan     = google_gke_backup_backup_plan.pre_update[0].id
+  cluster         = local.production_cluster_id
+  deletion_policy = "PREVENT"
+  description     = "Run by a person from the release runbook, only for an update that failed before writers started again."
+  labels          = { application = "aidash", lifecycle = "production" }
+  restore_config {
+    namespaced_resource_restore_mode = "DELETE_AND_RESTORE"
+    volume_data_restore_policy       = "RESTORE_VOLUME_DATA_FROM_BACKUP"
+    selected_applications {
+      namespaced_names {
+        namespace = local.production_protected_application.namespace
+        name      = local.production_protected_application.name
+      }
+    }
+    cluster_resource_restore_scope { no_group_kinds = true }
+  }
+  lifecycle { prevent_destroy = true }
+}
+// The deploy identity may only create and read Pre-update Backups. Restoring
+// stays with people.
+resource "google_gke_backup_backup_plan_iam_member" "pre_update_deploy" {
+  count    = var.production_backup_enabled ? 1 : 0
+  project  = var.project_id
+  location = google_gke_backup_backup_plan.pre_update[0].location
+  name     = google_gke_backup_backup_plan.pre_update[0].name
+  role     = "roles/gkebackup.backupAdmin"
+  member   = "serviceAccount:${google_service_account.automation["deploy"].email}"
 }
 resource "google_monitoring_notification_channel" "production" {
   count        = var.production_monitoring_enabled ? 1 : 0

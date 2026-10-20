@@ -29,6 +29,8 @@ run "initial_bootstrap_does_not_start_operational_services" {
     condition = (
       length(google_project_service.production_operations) == 0 &&
       length(google_gke_backup_backup_plan.production) == 0 &&
+      length(google_gke_backup_backup_plan.pre_update) == 0 &&
+      length(google_gke_backup_restore_plan.pre_update_in_place) == 0 &&
       length(google_monitoring_uptime_check_config.production) == 0 &&
       length(google_monitoring_alert_policy.production_workload) == 0 &&
       output.delivery_configuration == null &&
@@ -82,7 +84,8 @@ run "production_backup_and_monitoring_are_scoped" {
   assert {
     condition = (
       google_gke_backup_backup_plan.production[0].cluster == "projects/aidash-fixture/locations/us-central1/clusters/aidash" &&
-      google_gke_backup_backup_plan.production[0].backup_config[0].selected_namespaces[0].namespaces == tolist(["aidash-production"]) &&
+      length(google_gke_backup_backup_plan.production[0].backup_config[0].selected_namespaces) == 0 &&
+      google_gke_backup_backup_plan.production[0].backup_config[0].selected_applications[0].namespaced_names == tolist([{ namespace = "aidash-production", name = "aidash" }]) &&
       google_gke_backup_backup_plan.production[0].backup_config[0].include_volume_data &&
       google_gke_backup_backup_plan.production[0].backup_config[0].include_secrets &&
       !google_gke_backup_backup_plan.production[0].backup_config[0].permissive_mode &&
@@ -91,7 +94,46 @@ run "production_backup_and_monitoring_are_scoped" {
       !google_gke_backup_backup_plan.production[0].retention_policy[0].locked &&
       google_gke_backup_backup_plan.production[0].deletion_policy == "PREVENT"
     )
-    error_message = "Only production namespace/config/PVCs are backed up with explicit retention and deletion protection."
+    error_message = "Only the production application (not the whole namespace) is backed up with explicit retention and deletion protection."
+  }
+  assert {
+    condition = (
+      google_gke_backup_backup_plan.pre_update[0].cluster == "projects/aidash-fixture/locations/us-central1/clusters/aidash" &&
+      length(google_gke_backup_backup_plan.pre_update[0].backup_schedule) == 0 &&
+      length(google_gke_backup_backup_plan.pre_update[0].backup_config[0].selected_namespaces) == 0 &&
+      google_gke_backup_backup_plan.pre_update[0].backup_config[0].selected_applications[0].namespaced_names == tolist([{ namespace = "aidash-production", name = "aidash" }]) &&
+      google_gke_backup_backup_plan.pre_update[0].backup_config[0].include_volume_data &&
+      google_gke_backup_backup_plan.pre_update[0].backup_config[0].include_secrets &&
+      !google_gke_backup_backup_plan.pre_update[0].backup_config[0].permissive_mode &&
+      google_gke_backup_backup_plan.pre_update[0].retention_policy[0].backup_retain_days == 14 &&
+      google_gke_backup_backup_plan.pre_update[0].retention_policy[0].backup_delete_lock_days == 2 &&
+      google_gke_backup_backup_plan.pre_update[0].deletion_policy == "PREVENT"
+    )
+    error_message = "The Pre-update Backup plan is unscheduled, scoped to the application, and keeps backups 14 days with a 2 day lock."
+  }
+  assert {
+    condition = (
+      google_gke_backup_restore_plan.pre_update_in_place[0].backup_plan == google_gke_backup_backup_plan.pre_update[0].id &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].cluster == "projects/aidash-fixture/locations/us-central1/clusters/aidash" &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].restore_config[0].selected_applications[0].namespaced_names == tolist([{ namespace = "aidash-production", name = "aidash" }]) &&
+      length(google_gke_backup_restore_plan.pre_update_in_place[0].restore_config[0].selected_namespaces) == 0 &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].restore_config[0].namespaced_resource_restore_mode == "DELETE_AND_RESTORE" &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].restore_config[0].volume_data_restore_policy == "RESTORE_VOLUME_DATA_FROM_BACKUP" &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].restore_config[0].cluster_resource_restore_scope[0].no_group_kinds &&
+      google_gke_backup_restore_plan.pre_update_in_place[0].deletion_policy == "PREVENT"
+    )
+    error_message = "The in-place restore plan must delete and restore only the application, never the namespace that holds the Home recovery ledger."
+  }
+  assert {
+    condition = (
+      google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].name == google_gke_backup_backup_plan.pre_update[0].name &&
+      google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].role == "roles/gkebackup.backupAdmin" &&
+      google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].member == "serviceAccount:${google_service_account.automation["deploy"].email}" &&
+      output.operations_configuration.pre_update_backup_plan == google_gke_backup_backup_plan.pre_update[0].id &&
+      output.operations_configuration.pre_update_restore_plan == google_gke_backup_restore_plan.pre_update_in_place[0].id &&
+      output.delivery_configuration.pre_update_backup_plan == google_gke_backup_backup_plan.pre_update[0].id
+    )
+    error_message = "The deploy identity may only create Pre-update Backups on their own plan, and both plans are published."
   }
   assert {
     condition = (
@@ -131,7 +173,7 @@ run "backup_requires_existing_enabled_agent" {
     target = data.google_container_cluster.production_operations[0]
     values = { addons_config = [{ gke_backup_agent_config = [{ enabled = false }] }] }
   }
-  expect_failures = [google_gke_backup_backup_plan.production[0]]
+  expect_failures = [google_gke_backup_backup_plan.production[0], google_gke_backup_backup_plan.pre_update[0]]
 }
 run "nonproduction_cannot_enable_production_operations" {
   command = plan
@@ -148,6 +190,14 @@ run "delete_lock_cannot_outlive_backup_retention" {
     production_backup_delete_lock_days = 8
   }
   expect_failures = [var.production_backup_delete_lock_days]
+}
+run "pre_update_delete_lock_cannot_outlive_retention" {
+  command = plan
+  variables {
+    production_pre_update_backup_retain_days      = 2
+    production_pre_update_backup_delete_lock_days = 3
+  }
+  expect_failures = [var.production_pre_update_backup_delete_lock_days]
 }
 run "delivery_cannot_publish_missing_preview_tls_secret" {
   command = plan

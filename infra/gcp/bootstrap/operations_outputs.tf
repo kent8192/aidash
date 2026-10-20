@@ -6,6 +6,8 @@ output "operations_configuration" {
     gke_backup_enabled            = var.production_backup_enabled || var.production_backup_agent_enabled
     cluster                       = var.deployment_tier == "production" ? local.production_cluster_id : null
     backup_plan                   = try(google_gke_backup_backup_plan.production[0].id, null)
+    pre_update_backup_plan        = try(google_gke_backup_backup_plan.pre_update[0].id, null)
+    pre_update_restore_plan       = try(google_gke_backup_restore_plan.pre_update_in_place[0].id, null)
     backup_location               = var.production_backup_location
     backup_retain_days            = var.production_backup_retain_days
     backup_delete_lock_days       = var.production_backup_delete_lock_days
@@ -52,6 +54,7 @@ output "delivery_configuration" {
     publish_service_account         = google_service_account.automation["publish"].email
     acme_state_secret               = var.deployment_tier == "nonproduction" ? var.preview_acme_state_secret_id : ""
     gke_backup_enabled              = var.production_backup_enabled || var.production_backup_agent_enabled
+    pre_update_backup_plan          = try(google_gke_backup_backup_plan.pre_update[0].id, null)
     node_count                      = var.deployment_tier == "production" ? tomap({ production = 1 }) : tomap({ develop = 1, test = 1, pr = 1 })
   })
 }

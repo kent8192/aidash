@@ -376,3 +376,34 @@ run "cross_tier_broker_is_rejected" {
   }
   expect_failures = [terraform_data.contract]
 }
+run "production_pre_update_backup_plan_reaches_controller_config" {
+  command = plan
+  variables {
+    production_config_json = jsonencode(merge(jsondecode(var.production_config_json), {
+      gke_backup_enabled     = true
+      pre_update_backup_plan = "projects/aidash-production/locations/us-central1/backupPlans/aidash-production-pre-update"
+    }))
+  }
+  assert {
+    condition     = jsondecode(github_actions_variable.delivery["AIDASH_GCP_PRODUCTION_CONFIG"].value).pre_update_backup_plan == "projects/aidash-production/locations/us-central1/backupPlans/aidash-production-pre-update"
+    error_message = "Without the plan name the production controller refuses every update."
+  }
+}
+run "pre_update_backup_plan_must_belong_to_its_project" {
+  command = plan
+  variables {
+    production_config_json = jsonencode(merge(jsondecode(var.production_config_json), {
+      pre_update_backup_plan = "projects/another-project/locations/us-central1/backupPlans/aidash-production-pre-update"
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}
+run "nonproduction_cannot_name_a_pre_update_backup_plan" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      pre_update_backup_plan = "projects/aidash-nonproduction/locations/us-central1/backupPlans/aidash-production-pre-update"
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}
