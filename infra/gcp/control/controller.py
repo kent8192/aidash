@@ -848,25 +848,32 @@ def take_pre_update_backup_before_shared(config, store, terraform, managed, seal
     reopens admission, so the backup must be taken first. If production was not
     already drained by the broker preflight or GCIP quiescence, seal it here. A
     seal that cannot be confirmed stops reconciliation before any shared change.
-    Failure restores the admissions this function drained, records any writers it
-    started as started, and parks the update behind the same durable generation
+    Failures restore the admissions this run drained, record any writers they
+    started as started, and park the update behind the same durable generation
     fence as a failed deployment.
     """
-    entry = pending_production_update(config, store, terraform, managed)
+    try:
+        entry = pending_production_update(config, store, terraform, managed)
+    except (Exception, OperationDeadline):
+        # Discovery runs after the broker preflight sealed running hosts.
+        restore_broker_admission(terraform, sealed, store)
+        raise
     if entry is None:
         return sealed, False, True
-    if entry.get("pre_update_backup"):
-        return sealed, True, True
     identity = "production"
     generation = entry["generation"]
     try:
+        # A resumed generation still has to prove its retained source is current
+        # before the shared apply may change Terraform.
+        verify_source(config, identity, entry)
+        if entry.get("pre_update_backup"):
+            return sealed, True, True
         if identity not in sealed:
             if not kube.seal(terraform.cluster(), identity):
                 update_entry(store, identity, generation, status="waiting_for_active_work")
                 restore_broker_admission(terraform, sealed, store)
                 return sealed, True, False
             sealed = sealed | {identity}
-        verify_source(config, identity, entry)
         pre_update_backup(config, store, terraform, identity, generation, entry)
     except (Exception, OperationDeadline) as error:
         update_entry(
@@ -938,7 +945,24 @@ def reconcile_locked(config, store, terraform, managed):
             return
         try:
             gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True)
-        except (Exception, OperationDeadline):
+        except (Exception, OperationDeadline) as error:
+            if deploy_pending:
+                state, _ = store.read("lifecycle/state.json")
+                entry = state["environments"].get("production")
+                if entry and entry.get("pre_update_backup"):
+                    # Restoring admission starts writers, so the recorded backup
+                    # is no longer restorable. Retry only through the explicit
+                    # retry_failed fence and a new generation/backup.
+                    update_entry(
+                        store,
+                        "production",
+                        entry["generation"],
+                        status="failed",
+                        diagnostic=type(error).__name__,
+                        failed_deployment_generation=entry["generation"],
+                        start_pending=False,
+                    )
+                    print(f"Deferred/failed: production: {type(error).__name__}")
             if presealed:
                 restore_broker_admission(terraform, presealed, store)
             raise

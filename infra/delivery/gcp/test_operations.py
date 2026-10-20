@@ -69,7 +69,7 @@ class OperationalObservationTests(unittest.TestCase):
             "retentionPolicy": {"backupRetainDays": 14, "backupDeleteLockDays": 2},
         }
         self.restore = {
-            "name": restore, "backupPlan": pre_update, "cluster": cluster,
+            "name": restore, "backupPlan": pre_update, "cluster": cluster, "state": "READY",
             "restoreConfig": {
                 "selectedApplications": {"namespacedNames": [APPLICATION]},
                 "namespacedResourceRestoreMode": "DELETE_AND_RESTORE", "volumeDataRestorePolicy": "RESTORE_VOLUME_DATA_FROM_BACKUP",
@@ -141,6 +141,40 @@ class OperationalObservationTests(unittest.TestCase):
                 mutate()
                 with self.assertRaisesRegex(Refused, "Pre-update Backup plan"):
                     self.observe()
+
+    def test_the_pre_update_plan_must_not_have_a_smart_rpo_schedule(self):
+        for schedule in ({"rpoConfig": {}}, {"rpoConfig": {"targetRpoMinutes": 60}}):
+            with self.subTest(schedule=schedule):
+                self.setUp()
+                self.pre_update["backupSchedule"] = schedule
+                with self.assertRaisesRegex(Refused, "Pre-update Backup plan"):
+                    self.observe()
+
+    def test_the_restore_plan_must_be_ready(self):
+        for state in (None, "CREATING", "CLUSTER_PENDING", "FAILED", "DELETING"):
+            with self.subTest(state=state):
+                self.setUp()
+                if state is None:
+                    self.restore.pop("state")
+                else:
+                    self.restore["state"] = state
+                with self.assertRaisesRegex(Refused, "could delete more"):
+                    self.observe()
+
+    def test_the_restore_plan_must_not_override_the_volume_restore_policy(self):
+        for policy in ("NO_VOLUME_DATA_RESTORATION", "REUSE_VOLUME_HANDLE_FROM_BACKUP"):
+            with self.subTest(policy=policy):
+                self.setUp()
+                self.restore["restoreConfig"]["volumeDataRestorePolicyBindings"] = [
+                    {"volumeType": "GCE_PERSISTENT_DISK", "policy": policy}
+                ]
+                with self.assertRaisesRegex(Refused, "could delete more"):
+                    self.observe()
+        self.setUp()
+        self.restore["restoreConfig"]["volumeDataRestorePolicyBindings"] = [
+            {"volumeType": "GCE_PERSISTENT_DISK", "policy": "RESTORE_VOLUME_DATA_FROM_BACKUP"}
+        ]
+        self.assertTrue(self.observe()["pre_update_plans_verified"])
 
     def test_the_restore_plan_must_leave_cluster_resources_untouched(self):
         for scope in (

@@ -15,11 +15,23 @@ from policy import Refused
 
 API = "https://gkebackup.googleapis.com/v1/"
 PLAN = re.compile(r"projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/backupPlans/[a-z][a-z0-9-]{0,62}")
+APPLICATION = [{"namespace": "aidash-production", "name": "aidash"}]
 MAX_WAIT = 30 * 60
 DEPLOY_RESERVE = 20 * 60
 POLL = 15
 # A Backup created a moment ago may not be readable yet.
 NOT_FOUND_GRACE = 60
+
+
+def application_scope(backup):
+    """The completed Backup selected exactly the protected application."""
+    return (
+        backup.get("selectedApplications", {}).get("namespacedNames") == APPLICATION
+        and not any(
+            field in backup
+            for field in ("selectedNamespaces", "excludedNamespaces", "allNamespaces")
+        )
+    )
 
 
 def call(method, resource, body=None):
@@ -85,6 +97,10 @@ def take(plan, generation, sha):
             # configuration the application needs, so it is not a restore point.
             if not backup.get("containsSecrets"):
                 raise Refused("The Pre-update Backup contains no Secrets")
+            # A plan that drifted to another application or namespace scope
+            # would still produce a SUCCEEDED backup; it is not ours to restore.
+            if not application_scope(backup):
+                raise Refused("The Pre-update Backup does not select the protected application")
             return name
         if state in {"FAILED", "DELETING"}:
             raise Refused(f"The Pre-update Backup ended {state}")

@@ -1660,7 +1660,11 @@ class BackupApi:
 
     @staticmethod
     def fresh(state):
-        return {"state": state, "containsVolumeData": True, "containsSecrets": True, "resourceCount": 12, "volumeCount": 4}
+        return {
+            "state": state, "containsVolumeData": True, "containsSecrets": True,
+            "resourceCount": 12, "volumeCount": 4,
+            "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+        }
 
     def seed(self, generation, sha, state="SUCCEEDED"):
         name = f"{PLAN}/backups/{backup.backup_id(generation, sha)}"
@@ -1858,6 +1862,43 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertTrue(entry.get("pre_update_backup"))
         self.assertTrue(entry.get("writers_started"))
         self.assertFalse(backup.restorable(entry))
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(entry["start_pending"])
+        with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+            self.retry_request(retry=False)
+        self.assertIsNone(controller.pending_production_update(
+            self.config, self.store, self.cloud, self.cloud.managed
+        ))
+
+    def test_update_discovery_failure_restores_the_preflight_seals(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with patch.object(controller, "pending_production_update", side_effect=RuntimeError("outputs unavailable")), \
+                patch.object(controller.kube, "unseal") as unseal:
+            with self.assertRaisesRegex(RuntimeError, "outputs unavailable"):
+                controller.take_pre_update_backup_before_shared(
+                    self.config, self.store, terraform, self.cloud.managed, {"production"}
+                )
+        self.assertTrue(unseal.called)
+        self.assertNotEqual(self.entry()["status"], "failed")
+
+    def test_a_resumed_update_revalidates_its_source_before_the_shared_apply(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.entry()["pre_update_backup"] = "recorded"
+        baseline = len(self.cloud.plans)
+        with self.shared_change(), patch.object(
+            controller, "verify_source", side_effect=controller.Refused("source superseded")
+        ):
+            with self.assertRaisesRegex(controller.Refused, "source superseded"):
+                self.reconcile()
+        self.assertEqual(len(self.cloud.plans), baseline)
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertTrue(entry.get("writers_started"))
         self.assertEqual(self.writers(), 1)
 
     def test_restoring_admission_after_a_backup_records_the_started_writers(self):
@@ -2115,6 +2156,26 @@ class BackupTests(unittest.TestCase):
                     del succeeded["containsSecrets"]
                 with patch.object(backup, "call", lambda method, resource, body=None, succeeded=succeeded: succeeded):
                     with self.assertRaisesRegex(controller.Refused, "no Secrets"):
+                        backup.take(PLAN, 2, UPDATE)
+
+    def test_a_successful_backup_must_select_the_protected_application(self):
+        succeeded = {
+            "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True,
+            "resourceCount": 12, "volumeCount": 4,
+            "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+        }
+        mutations = (
+            lambda value: value.update(selectedApplications={"namespacedNames": [{"namespace": "other", "name": "x"}]}),
+            lambda value: value.update(selectedNamespaces={"namespaces": ["aidash-production"]}),
+            lambda value: value.update(allNamespaces=True),
+            lambda value: value.pop("selectedApplications"),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                value = deepcopy(succeeded)
+                mutate(value)
+                with patch.object(backup, "call", lambda method, resource, body=None, value=value: value):
+                    with self.assertRaisesRegex(controller.Refused, "protected application"):
                         backup.take(PLAN, 2, UPDATE)
 
     def test_an_invalid_plan_name_is_refused_before_any_request(self):

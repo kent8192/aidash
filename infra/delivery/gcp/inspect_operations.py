@@ -42,6 +42,7 @@ def application_scope(scope):
 
 
 CLUSTER_SCOPES = ("allGroupKinds", "selectedGroupKinds", "excludedGroupKinds")
+RESTORE_POLICY = "RESTORE_VOLUME_DATA_FROM_BACKUP"
 
 
 def excludes_cluster_resources(restore_config):
@@ -51,6 +52,15 @@ def excludes_cluster_resources(restore_config):
         isinstance(scope, dict)
         and scope.get("noGroupKinds") is True
         and not any(scope.get(field) for field in CLUSTER_SCOPES)
+    )
+
+
+def restores_every_volume(restore_config):
+    """No per-volume binding may override the restore policy."""
+    bindings = restore_config.get("volumeDataRestorePolicyBindings") or []
+    return isinstance(bindings, list) and all(
+        isinstance(binding, dict) and binding.get("policy") == RESTORE_POLICY
+        for binding in bindings
     )
 
 
@@ -64,15 +74,18 @@ def inspect_pre_update(operations, expected_cluster, plan, restore):
             or plan.get("state") != "READY" or plan.get("deactivated", False)
             or not backup_config.get("includeVolumeData") or not backup_config.get("includeSecrets")
             or backup_config.get("permissiveMode", False) or plan.get("backupSchedule", {}).get("cronSchedule")
+            or "rpoConfig" in plan.get("backupSchedule", {})
             or retention.get("backupRetainDays") != operations.get("pre_update_backup_retain_days")
             or retention.get("backupDeleteLockDays") != operations.get("pre_update_backup_delete_lock_days")):
         raise Refused("The Pre-update Backup plan differs from configuration")
     restore_config = restore.get("restoreConfig", {})
     if (restore.get("name") != operations.get("pre_update_restore_plan") or restore.get("backupPlan") != name
-            or restore.get("cluster") != expected_cluster or not application_scope(restore_config)
+            or restore.get("cluster") != expected_cluster or restore.get("state") != "READY"
+            or not application_scope(restore_config)
             or not excludes_cluster_resources(restore_config)
+            or not restores_every_volume(restore_config)
             or restore_config.get("namespacedResourceRestoreMode") != "DELETE_AND_RESTORE"
-            or restore_config.get("volumeDataRestorePolicy") != "RESTORE_VOLUME_DATA_FROM_BACKUP"
+            or restore_config.get("volumeDataRestorePolicy") != RESTORE_POLICY
             or "allNamespaces" in restore_config or "noNamespaces" in restore_config):
         raise Refused("The in-place restore plan could delete more than the protected application")
 
