@@ -1797,6 +1797,22 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertEqual(actions[-1], ("admission", "production", "close"))
         self.assertEqual(self.entry()["status"], "ready")
 
+    def test_a_resumed_update_reseals_after_a_shared_apply_without_a_new_backup(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        # A previous run recorded the backup and stopped before deploying.
+        self.entry()["pre_update_backup"] = "recorded"
+        with self.shared_change():
+            self.reconcile()
+        self.assertEqual(self.entry()["pre_update_backup"], "recorded")
+        self.assertNotIn("backup_create", [call[0] for call in self.calls])
+        self.assertIn(("admission", "production", "open"), self.calls)
+        helms = [index for index, call in enumerate(self.calls) if call == ("helm", "production", "app")]
+        self.assertGreaterEqual(len(helms), 2)
+        actions = [call for call in self.calls[:helms[1]] if call[0] == "admission" and call[1] == "production"]
+        self.assertEqual(actions[-1], ("admission", "production", "close"))
+        self.assertEqual(self.entry()["status"], "ready")
+
     def test_a_failed_shared_apply_after_the_backup_records_the_started_writers(self):
         self.running_production()
         self.production_request(UPDATE)

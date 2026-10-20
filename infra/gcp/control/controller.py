@@ -839,22 +839,25 @@ def mark_started_writers(store, identities):
 def take_pre_update_backup_before_shared(config, store, terraform, managed, sealed):
     """Take a production update's backup before broker/GCIP changes reach Terraform.
 
-    The shared apply reloads a running release and reopens admission, so the
-    backup must be taken first. If production was not already drained by the
-    broker preflight or GCIP quiescence, seal it here. Failure restores the
-    admissions this function drained, records any writers it started as started,
-    and parks the update as failed.
+    Returns the seals plus whether this reconciliation has a production update
+    that will deploy. The shared apply reloads a running release and reopens
+    admission, so the backup must be taken first. If production was not already
+    drained by the broker preflight or GCIP quiescence, seal it here. Failure
+    restores the admissions this function drained, records any writers it
+    started as started, and parks the update as failed.
     """
     entry = pending_production_update(config, store, terraform, managed)
-    if entry is None or entry.get("pre_update_backup"):
-        return sealed
+    if entry is None:
+        return sealed, False
+    if entry.get("pre_update_backup"):
+        return sealed, True
     identity = "production"
     generation = entry["generation"]
     try:
         if identity not in sealed:
             if not kube.seal(terraform.cluster(), identity):
                 update_entry(store, identity, generation, status="waiting_for_active_work")
-                return sealed
+                return sealed, True
             sealed = sealed | {identity}
         verify_source(config, identity, entry)
         pre_update_backup(config, store, terraform, identity, generation, entry)
@@ -869,7 +872,7 @@ def take_pre_update_backup_before_shared(config, store, terraform, managed, seal
         restore_broker_admission(terraform, sealed, store)
         print(f"Deferred/failed: {identity}: {type(error).__name__}")
         raise
-    return sealed | {identity}
+    return sealed | {identity}, True
 
 
 def reconcile_locked(config, store, terraform, managed):
@@ -913,8 +916,9 @@ def reconcile_locked(config, store, terraform, managed):
     # drained so no plan can replace a live broker first.
     gcip_failures = []
     shared_apply = broker_changed or bool(affected)
+    deploy_pending = False
     if shared_apply:
-        presealed = take_pre_update_backup_before_shared(
+        presealed, deploy_pending = take_pre_update_backup_before_shared(
             config, store, terraform, managed, presealed
         )
         try:
@@ -924,7 +928,7 @@ def reconcile_locked(config, store, terraform, managed):
                 restore_broker_admission(terraform, presealed, store)
             raise
     state, _ = store.read("lifecycle/state.json")
-    if shared_apply:
+    if shared_apply and deploy_pending:
         entry = state["environments"].get("production")
         if entry and entry.get("pre_update_backup"):
             # The shared apply's GCIP refresh reloads the release and reopens
