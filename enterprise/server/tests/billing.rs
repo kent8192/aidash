@@ -635,6 +635,87 @@ async fn records_older_than_the_retention_period_are_swept_and_the_rest_survive(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn accounts_and_subscriptions_past_the_retention_period_are_swept_and_the_rest_survive(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let now = Utc::now();
+	let old = cutoff(now, 7) - Duration::days(1);
+	let recent = cutoff(now, 7) + Duration::days(1);
+	let created_long_ago = old - Duration::days(30);
+	let ended_long_ago = d.account(&alice, None).await;
+	let ended_recently = d.account(&alice, None).await;
+	let never_subscribed = d.account(&alice, None).await;
+	let attached = d.account(&alice, None).await;
+	let consenting = d.account(&alice, None).await;
+	d.subscribe(ended_long_ago, "team", Status::Canceled).await;
+	d.subscribe(ended_recently, "team", Status::Canceled).await;
+	let pool = d.federation.store.pool.fixture_driver();
+	for (account, created, ended) in [
+		(ended_long_ago, created_long_ago, Some(old)),
+		(ended_recently, created_long_ago, Some(recent)),
+		(never_subscribed, old, None),
+		(attached, old, None),
+		(consenting, old, None),
+	] {
+		sqlx::query("UPDATE billing_accounts SET created_at = $2 WHERE id = $1")
+			.bind(account)
+			.bind(created)
+			.execute(pool)
+			.await
+			.unwrap();
+		if let Some(ended) = ended {
+			sqlx::query("UPDATE billing_subscriptions SET updated_at = $2 WHERE account_id = $1")
+				.bind(account)
+				.bind(ended)
+				.execute(pool)
+				.await
+				.unwrap();
+		}
+	}
+	sqlx::query(
+		"INSERT INTO billing_attachments (tenant, account_id, attached_at, consented_by_administrator, consented_by_owner) VALUES ($1, $2, clock_timestamp(), $3, $3)",
+	)
+	.bind(&tenant)
+	.bind(attached)
+	.bind(alice.identity)
+	.execute(pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO billing_attachment_consents (id, tenant, account_id, party, identity_id, created_at, expires_at) VALUES ($1, $2, $3, 'tenant_administrator', $4, clock_timestamp(), clock_timestamp() + interval '7 days')",
+	)
+	.bind(Uuid::new_v4())
+	.bind(&tenant)
+	.bind(consenting)
+	.bind(alice.identity)
+	.execute(pool)
+	.await
+	.unwrap();
+	store::sweep(d.control(), cutoff(now, 7), now)
+		.await
+		.unwrap();
+	let mut accounts: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM billing_accounts")
+		.fetch_all(pool)
+		.await
+		.unwrap();
+	accounts.sort();
+	let mut expected = vec![ended_recently, attached, consenting];
+	expected.sort();
+	assert_eq!(accounts, expected);
+	let subscriptions: Vec<Uuid> =
+		sqlx::query_scalar("SELECT account_id FROM billing_subscriptions")
+			.fetch_all(pool)
+			.await
+			.unwrap();
+	assert_eq!(subscriptions, vec![ended_recently]);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_tenant_is_attached_only_with_both_consents_and_within_its_tiers_limits(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
