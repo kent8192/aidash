@@ -16,7 +16,7 @@ four Decider Routes in `routes`, tried in order (ADR 0066). A System One Route
 such as `typesafe/jev-1.14` (aliases are refused) and names no hosts. A Decisions
 Route (`"openrouter.decisions/1"`) requires an exact model ID such as
 `cloudflare/clef` (no `~` alias, no `:` variant), one to eight host slugs in
-`hosts`, and no long-context mode. Each Route has its own `keep_threshold`
+`hosts`, and no long-context mode. Each Route has its own `threshold`
 (above 0 and at most 0.5) and `state_budget`: the bytes of state and request
 its default mode takes, the long-context limits (System One only), and the
 tool-input abridging stages. A version also declares its per-Run call limit
@@ -51,9 +51,9 @@ Run pauses with `decider_unavailable` until a resume. A state no Route accepts
 pauses at once.
 
 `DeciderConfig::digest()` commits to the canonical JSON object containing
-`models` (the Route models in order), `thresholds` (their keep thresholds),
+`models` (the Route models in order), `thresholds` (their thresholds),
 `mode` and `parameters_digest`. The latter hashes the complete serialized
-configuration with every Route `model` and `keep_threshold` and the `mode`
+configuration with every Route `model` and `threshold` and the `mode`
 replaced by JSON `null`, so evidence that
 sent no request still proves the mode its Decider ran in. Historical `Evidence` retains that hash as
 `configuration_parameters_digest` with `route_models` and `route_thresholds`,
@@ -136,6 +136,20 @@ Rust adapters must update `Evaluation::decider` to accept `&BoundDecider`, inclu
 attempt by `attempt_identity`, implement `DecisionJournal::recover`, and return
 `Reservation` from `reserve`. Handle `AttemptStatus::NotDispatched`, the failure
 reasons and the required `Evidence::state_retention` field.
+
+## Approval hook
+
+The approval Decider judges one pending Tool call of a Run for the Auto Approval Mode (ADR 0077). It is a Decider of hook `approval`. It uses the same gate as compaction, but it never pauses a Run for its own sake. The Tenant chooses its version. Until the Tenant names another `decider` of hook `approval`, the version is the built-in `aidash.approval-decider@1.0.0`, which Aidash seeds into every Tenant Registry. Auto needs a Catalog Approval of the exact version on the Node. The routes that read and set the choice are in [Approval Rules and Modes](authorization.md#approval-rules-and-modes).
+
+The built-in version runs in `enforce` mode with `max_calls_per_run` of 200. It tries two Routes in order. `typesafe/jev-1.14` runs through System One. `cloudflare/clef` runs through OpenRouter's Decisions API on `cloudflare`, `deepinfra` and `primeintellect`. Both Routes block at `threshold` 0.3, which is not yet calibrated for approvals. A changed threshold is a new version. Approving the version approves sending a Run's state to each Route.
+
+The Decider asks five questions about the call, one for each block reason: `data_exfiltration`, `destructive`, `beyond_request`, `injected` and `boundary`. A category blocks the call when its probability reaches the effective `threshold`. The most probable blocking category names the reason, and on a tie the category listed first wins. A call that no category reaches is allowed. A lower `threshold` is stricter. An Agent's Binding can lower a Route's threshold, but it never raises one.
+
+The state holds the inputs people sent to the Run's Thread, the Agent's instructions, the Run's earlier tool calls without their results, and the pending call with its tool's definition. It never holds tool results or the model's own text. Only inputs whose author is an enabled user subject of the Run's Tenant count as people's inputs, so a message another Node's agent sent never does. Text a tool returned reaches the Decider only where the model copied it into a call's arguments.
+
+An allowed call runs at once, without another model response. A blocked call is refused, and the model receives `tool call was blocked by Auto: <reason>` as its error. The reason is one of the five block reasons, or `unavailable` when no Route answered. Unlike compaction, an unavailable approval Decider never pauses the Run. A version in `shadow` mode records its verdict and settles nothing, so the person is asked as in Manual. A spent `max_calls_per_run` allowance records no decision and leaves the call to a person.
+
+Each decision records an `ApprovalEvidence`. It holds the `verdict`, the `answers`, the Route that answered (`route`), the Routes that were unavailable before it (`failed_routes`), the effective `restrictions` and the `binding_restrictions`, the `mode`, and the `attempts`. It keeps the digest of the state, not the state. A verdict from the Route asked can be checked again from its answers and the effective threshold.
 
 ## Native persistence
 

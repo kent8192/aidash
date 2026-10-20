@@ -345,13 +345,17 @@ Aidash decides each approval when the Run needs it, in this order:
 | Mode      | What it does with an approval the Run would otherwise wait for                                        |
 | --------- | ----------------------------------------------------------------------------------------------------- |
 | Manual    | Asks the Designated approver.                                                                         |
-| Auto      | Is decided by the Tenant's approval Decider. Until that Decider ships (#412), Auto asks like Manual.  |
+| Auto      | Is decided by the Tenant's approval Decider, unless the Auto fallbacks below ask a person.            |
 | Don't ask | Is refused, so the Run never waits. The model's `human_request` is refused too.                       |
 | Bypass    | Is approved, within what the Tenant's policy lets the person approve. Deny and ask rules still apply. |
 
 A person has a default mode and can override it for any Thread. A change applies to running Runs at their next approval. The API refuses a mode the Tenant's policy does not allow. If the policy later withdraws a mode, it acts as Manual.
 
 Bypass needs a recorded acceptance, given once with `accept_bypass: true` on the preferences update. Until then Bypass acts as Manual, and a Thread cannot set it.
+
+Auto needs the `approval.mode.auto` action and a Catalog Approval of the Tenant's chosen approval Decider version on the Node. Without both, Auto acts as Manual. Each mode choice in the preferences and Thread responses carries a `reason` when the mode is not allowed or not ready. The reasons are `policy` when the Tenant's policy does not allow the mode, `not_accepted` when Bypass awaits acceptance, `decider_unapproved` when the approval Decider has no Catalog Approval on the Node, and `no_decider` when the Tenant's approval Decider is not registered as one. Until the Tenant names another, its approval Decider is the built-in `aidash.approval-decider@1.0.0`. The Tenant names another with the route below. The decision itself is in [Approval hook](decision-gate.md#approval-hook).
+
+Auto returns a Run to asking a person when the Decider refuses too often. Three blocks in a row, or twenty refusals since a person last approved, in one Run, return that Run to asking until a person approves a call. An allowed call ends a streak of blocks, and a person's approval clears both counts. A refusal for want of a verdict, `unavailable`, counts toward the twenty but neither extends nor ends a streak. A spent call allowance leaves that one call to a person and records no decision.
 
 The policy actions that govern these settings are checked on the approval's own resource or on a mode resource:
 
@@ -365,6 +369,8 @@ A rule names an approval kind, an effect (allow, ask or deny) and a target. The 
 
 An approval that a rule or mode gives records `given_by` as `{"rule": id}` or `{"mode": "bypass"}`. `allow_always` approves once and creates an allow rule for the person. Only the person the Run's delegation chain starts at is offered it.
 
+An approval the Auto Decider allows records `given_by` as `{"mode":"auto","decision":id}`, where the id is its Decision Evidence. An approval that Auto refuses records `refused_by` as `{"mode":"auto","reason":"<block reason>"}`, and its `error` is `REFUSED_BY_AUTO`. The other refusals record `{"policy":"tenant"}`, `{"rule":id}` or `{"mode":"dont_ask"}`.
+
 The routes below read and change these settings. The `mine` routes and the Thread routes take the owner's own browser or desktop session, and a Subject Credential gets 403.
 
 | Method | Path                                                         | Body or result                                                                                      |
@@ -377,6 +383,8 @@ The routes below read and change these settings. The `mine` routes and the Threa
 | GET    | `/api/tenants/{tenant}/subjects/{subject}/approval-settings` | Needs `approval.read`. Shows a member's default mode, Bypass acceptance and rules.                  |
 | GET    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | The caller's mode for the Thread, `null` when the default applies, the default mode, and the modes. |
 | PUT    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | Body: `mode`. `null` clears the Thread's mode.                                                      |
+| GET    | `/api/tenants/{tenant}/approval-decider`                     | Any Tenant subject. Returns `decider` (`id`, `version`), `built_in`, `registered`, `approved`.      |
+| PUT    | `/api/tenants/{tenant}/approval-decider`                     | Body: `expected_revision`, and `decider` or `null` to reset to the built-in. Needs `tenant.update`. |
 
 ## Scoped conversations and human interaction
 
