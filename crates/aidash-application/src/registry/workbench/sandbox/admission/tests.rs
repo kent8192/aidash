@@ -36,7 +36,7 @@ struct State {
 	order: Vec<&'static str>,
 }
 struct Repository {
-	state: Mutex<State>,
+	state: Arc<Mutex<State>>,
 	failure: Option<&'static str>,
 	pause: bool,
 	skill_source: Option<Value>,
@@ -51,7 +51,7 @@ struct Repository {
 impl Repository {
 	fn new() -> Self {
 		Self {
-			state: Mutex::new(State::default()),
+			state: Arc::new(Mutex::new(State::default())),
 			failure: None,
 			pause: false,
 			skill_source: None,
@@ -119,10 +119,14 @@ impl Repository {
 struct Scope<'a> {
 	repository: &'a Repository,
 	pending: Option<Value>,
+	/// A scope that only reads the draft before admission, holding none of its locks.
+	reading: bool,
 }
 impl Drop for Scope<'_> {
 	fn drop(&mut self) {
-		self.repository.state.lock().unwrap().active = false;
+		if !self.reading {
+			self.repository.state.lock().unwrap().active = false;
+		}
 	}
 }
 fn reference(id: &str) -> EntityRef {
@@ -226,7 +230,14 @@ impl SandboxRepository for Repository {
 		Ok(())
 	}
 	async fn begin(&self) -> Result<Box<dyn SandboxScope + '_>> {
-		panic!("admission scope required")
+		let mut s = self.state.lock().unwrap();
+		assert!(!s.active, "a draft is read before admission begins");
+		s.order.push("read_begin");
+		Ok(Box::new(Scope {
+			repository: self,
+			pending: None,
+			reading: true,
+		}))
 	}
 	async fn purge(&self) -> Result<u64> {
 		panic!("admission uses atomic abandoned-slot expiry")
@@ -263,6 +274,7 @@ impl AdmissionRepository for Repository {
 		Ok(Box::new(Scope {
 			repository: self,
 			pending: None,
+			reading: false,
 		}))
 	}
 }
@@ -270,14 +282,14 @@ impl AdmissionRepository for Repository {
 impl SandboxScope for Scope<'_> {
 	async fn draft(&mut self, id: Uuid, lock: bool) -> Result<Draft> {
 		assert_eq!(id, draft().id);
-		assert!(lock);
-		self.repository
-			.state
-			.lock()
-			.unwrap()
-			.order
-			.push("draft_update_lock");
+		assert_eq!(lock, !self.reading);
+		self.repository.state.lock().unwrap().order.push(if lock {
+			"draft_update_lock"
+		} else {
+			"draft_read"
+		});
 		let mut row = draft();
+		row.entry = json!(self.repository.agent());
 		if self.repository.failure == Some("revision") {
 			row.revision = 8;
 		}
@@ -292,7 +304,11 @@ impl SandboxScope for Scope<'_> {
 			.lock()
 			.unwrap()
 			.order
-			.push("current_authority");
+			.push(if self.reading {
+				"read_authority"
+			} else {
+				"current_authority"
+			});
 		if self.repository.pause {
 			std::future::pending::<()>().await;
 		}
@@ -358,6 +374,10 @@ impl SandboxScope for Scope<'_> {
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		let mut s = self.repository.state.lock().unwrap();
+		if self.reading {
+			s.order.push("read_commit");
+			return Ok(());
+		}
 		assert!(s.active);
 		assert!(s.limits_locked);
 		s.admitted = self.pending.take();
@@ -1091,4 +1111,98 @@ fn skipped(stored: &Value) -> Vec<String> {
 			)
 		})
 		.collect()
+}
+
+/// Records where in the admission sequence a listing runs.
+struct Watched {
+	inner: Arc<crate::test_support::FakeSessions>,
+	state: Arc<Mutex<State>>,
+}
+#[async_trait]
+impl PluginSessions for Watched {
+	async fn list(
+		&self,
+		run: Uuid,
+		server: &crate::ports::tools::PluginServer,
+		config: &aidash_domain::agent_plugin::RemoteServer,
+	) -> Result<Vec<aidash_domain::agent_plugin::ListedTool>> {
+		{
+			let mut state = self.state.lock().unwrap();
+			assert!(
+				!state.active && !state.limits_locked,
+				"a listing may wait 30 s, so it holds no admission lock"
+			);
+			state.order.push("plugin_listing");
+		}
+		self.inner.list(run, server, config).await
+	}
+	async fn call(
+		&self,
+		_: Uuid,
+		_: &crate::ports::tools::PluginServer,
+		_: &aidash_domain::agent_plugin::RemoteServer,
+		_: &str,
+		_: &str,
+		_: Value,
+		_: &str,
+	) -> Result<Value> {
+		panic!("admission must not call a plugin tool")
+	}
+	async fn close(&self, run: Uuid) {
+		self.inner.close(run).await;
+	}
+}
+
+#[tokio::test]
+async fn listing_runs_after_the_caller_is_authorized_and_before_admission_takes_its_locks() {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.sessions = Some(Arc::new(Watched {
+		inner: sessions.clone(),
+		state: repository.state.clone(),
+	}));
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	assert!(offered(&admitted.job.request, PLUGIN_TOOL));
+	let state = repository.state.lock().unwrap();
+	assert_eq!(
+		&state.order[..8],
+		[
+			"read_begin",
+			"draft_read",
+			"read_authority",
+			"read_commit",
+			"plugin_listing",
+			"begin",
+			"draft_update_lock",
+			"current_authority",
+		]
+	);
+	assert!(state.order.ends_with(&["admit", "commit"]));
+}
+
+#[tokio::test]
+async fn a_caller_who_may_not_test_the_draft_makes_no_server_answer() {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.failure = Some("authority");
+	let refused = admit(&repository.admission(), draft().id, input()).await;
+	assert!(matches!(refused, Err(Error::Forbidden)));
+	assert!(sessions.listings().is_empty());
+	assert!(!repository.state.lock().unwrap().order.contains(&"begin"));
+}
+
+#[tokio::test]
+async fn an_agent_without_remote_plugin_servers_lists_nothing_and_admits_as_before() {
+	let sessions = serving("search");
+	let mut repository = Repository::new();
+	let port: Arc<dyn PluginSessions> = sessions.clone();
+	repository.sessions = Some(port);
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	assert!(sessions.listings().is_empty());
+	assert!(admitted.job.plugin_tools.servers.is_empty());
+	assert!(admitted.job.plugin_tools.findings.is_empty());
 }

@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
 	Error, Result,
+	plugin_tools::{Listings, pin_listed},
 	ports::{
 		registry::workbench::sandbox::admission::{AdmissionRepository, SandboxModels},
 		tools::PluginSessions,
@@ -25,6 +26,28 @@ use aidash_domain::{
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
+/// What the draft's remote plugin servers list, read before admission takes its locks. A
+/// continuation keeps the tools its first request pinned, so it lists nothing. Only a caller who
+/// may test the draft makes the servers answer; admission checks the draft again under its locks.
+async fn listings(admission: &Admission<'_>, id: Uuid, input: &TestInput) -> Result<Listings> {
+	let Some(sessions) = &admission.plugin_sessions else {
+		return Ok(Listings::new());
+	};
+	if input.continue_from.is_some() {
+		return Ok(Listings::new());
+	}
+	let mut scope = admission.repository.begin().await?;
+	let draft = scope.draft(id, false).await?;
+	scope
+		.authorize_draft(&draft, "agent_draft.test", true)
+		.await?;
+	scope.commit().await?;
+	let Some(agent) = plugins::remote_plugins(&draft) else {
+		return Ok(Listings::new());
+	};
+	Ok(plugins::list(sessions, &agent).await)
+}
+
 pub struct Admission<'a> {
 	pub repository: &'a dyn AdmissionRepository,
 	pub models: &'a dyn SandboxModels,
@@ -95,6 +118,7 @@ fn skill_source_context(
 
 pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Result<Admitted> {
 	sandbox::validate_request(&input)?;
+	let listed = listings(admission, id, &input).await?;
 	let mut scope = admission.repository.begin_admission().await?;
 	let draft = scope.draft(id, true).await?;
 	scope
@@ -157,7 +181,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	// A continued session keeps what its first request pinned and never lists again.
 	let plugin_tools = match continued_tools {
 		Some(saved) => serde_json::from_value(saved)?,
-		None => plugins::pin(admission.plugin_sessions.as_ref(), &snapshot).await?,
+		None => pin_listed(&snapshot, &listed)?,
 	};
 	let tool_references = snapshot
 		.bindings
