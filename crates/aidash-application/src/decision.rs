@@ -10,8 +10,10 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+mod approval_state;
 mod dispatch;
 mod state;
+pub use approval_state::{ApprovalState, ApprovalTool, build_approval_state};
 pub use dispatch::{attempt_identity, decision_identity};
 pub use state::{BuiltState, build_compaction_state, compaction_disclosure};
 
@@ -413,7 +415,7 @@ impl DecisionGate<'_> {
 				branch(
 					evidence.answers[&option.keep_call],
 					evidence.answers[&option.keep_result],
-					restrictions.keep_threshold,
+					restrictions.threshold,
 				)
 			};
 			selected.insert(option.history_index, choice);
