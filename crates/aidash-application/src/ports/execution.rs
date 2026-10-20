@@ -423,6 +423,25 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>>;
+	/// The pending approval of `run` that the approval Decider is to judge, or
+	/// `None` when it is not one: unknown, decided, expired, another Run's, or
+	/// asked of a person (Manual, a rule that asks, Auto suspended).
+	async fn approval_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<Option<crate::ports::capabilities::approvals::JudgeRequest>>;
+	/// Record how the approval Decider settled `approval`, in the name of the
+	/// person the Run's chain starts at: given, or refused with the reason the
+	/// model receives. Only a pending judged approval settles; asking again with
+	/// the same decision settles nothing more, and one a person decided
+	/// meanwhile is left as they decided it.
+	async fn settle_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+		settlement: crate::ports::capabilities::approvals::Settlement,
+	) -> Result<()>;
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],
@@ -495,6 +514,17 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// The Run's compaction Decider and the ports its decisions use under the
 	/// current lease, or `None` when the Run has no compaction Decider.
 	async fn compaction_decider(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
+		Ok(None)
+	}
+	/// The approval Decider the Tenant chose for `run`, with the Agent Binding's
+	/// narrowing of its thresholds, and the ports its decisions use under the
+	/// current lease. `None` when Auto is not available to the Run, which then
+	/// asks a person as in Manual.
+	async fn approval_decider(
 		&self,
 		_run: &Run,
 		_token: Uuid,

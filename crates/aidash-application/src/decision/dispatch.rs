@@ -13,7 +13,7 @@ pub(super) struct BatchResult {
 	pub next_route: bool,
 }
 
-fn stable_id(value: &Value) -> Uuid {
+pub(super) fn stable_id(value: &Value) -> Uuid {
 	// A deterministic 128-bit identity from the canonical SHA-256 commitment.
 	Uuid::parse_str(&digest(value)[7..39]).expect("canonical digest contains 32 hex digits")
 }

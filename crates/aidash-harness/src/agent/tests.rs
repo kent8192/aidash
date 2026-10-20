@@ -1,5 +1,6 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
+use aidash_application::capabilities::approvals::JudgeRequest;
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_domain::capabilities::skills::SkillMetadata;
 use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
@@ -167,6 +168,18 @@ struct State {
 	tool_call_requests: Mutex<Vec<ToolCallRequest>>,
 	/// The Approval Mode of the person the Run's chain starts at.
 	approval_mode: Option<aidash_domain::approval_rules::ApprovalMode>,
+	/// Answers of `approval_judgement` in call order; once empty, nothing is the
+	/// approval Decider's to judge.
+	approval_judgements: Mutex<VecDeque<Option<JudgeRequest>>>,
+	/// What `settle_judgement` was asked to record.
+	settlements: Mutex<Vec<aidash_application::capabilities::approvals::Settlement>>,
+	/// How the Tenant's approval Decider answers; `None` when Auto is not
+	/// available to the Run.
+	approval_decider: Option<decider::ApprovalDecider>,
+	/// The decisions the approval Decider recorded.
+	approval_evidence: Mutex<Vec<aidash_domain::decision::ApprovalEvidence>>,
+	/// The state of every question batch the approval Decider was asked.
+	judged_states: Mutex<Vec<Value>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -858,6 +871,29 @@ impl ExecutionAuthority for Backend {
 		self.record("authority.approval_mode");
 		Ok(self.0.approval_mode)
 	}
+	async fn approval_judgement(
+		&self,
+		_run: &Run,
+		_approval: Uuid,
+	) -> Result<Option<JudgeRequest>> {
+		self.record("authority.approval_judgement");
+		Ok(self
+			.0
+			.approval_judgements
+			.lock()
+			.unwrap()
+			.pop_front()
+			.flatten())
+	}
+	async fn settle_judgement(
+		&self,
+		_run: &Run,
+		_approval: Uuid,
+		settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<()> {
+		self.0.settlements.lock().unwrap().push(settlement);
+		Ok(())
+	}
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],
@@ -1166,6 +1202,13 @@ impl ExecutionEnvironment for Backend {
 	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
 		Ok(decider::ports(self, self.node_id(), run))
 	}
+	async fn approval_decider(
+		&self,
+		run: &Run,
+		_token: Uuid,
+	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
+		Ok(decider::approval_ports(self, self.node_id(), run))
+	}
 	async fn summary_dependencies_current(
 		&self,
 		run: &Run,
@@ -1446,6 +1489,11 @@ fn fixture() -> Fixture {
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
 		approval_mode: None,
+		approval_judgements: Mutex::new(VecDeque::new()),
+		settlements: Mutex::new(vec![]),
+		approval_decider: None,
+		approval_evidence: Mutex::new(vec![]),
+		judged_states: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }
 }
@@ -1654,6 +1702,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 		boundary,
 		[
 			"authority.inference",
+			"authority.approval_mode",
 			"save",
 			"authority.inference",
 			"reservation.admit",

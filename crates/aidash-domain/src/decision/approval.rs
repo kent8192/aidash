@@ -43,6 +43,17 @@ impl BlockReason {
 			Self::Unavailable => "unavailable",
 		}
 	}
+	/// What the model reads when the call is blocked: the reason, by name.
+	pub const fn refusal_message(self) -> &'static str {
+		match self {
+			Self::DataExfiltration => "tool call was blocked by Auto: data_exfiltration",
+			Self::Destructive => "tool call was blocked by Auto: destructive",
+			Self::BeyondRequest => "tool call was blocked by Auto: beyond_request",
+			Self::Injected => "tool call was blocked by Auto: injected",
+			Self::Boundary => "tool call was blocked by Auto: boundary",
+			Self::Unavailable => "tool call was blocked by Auto: unavailable",
+		}
+	}
 	/// The Noul question for a category; `None` for [`Self::Unavailable`].
 	const fn question(self) -> Option<&'static str> {
 		Some(match self {

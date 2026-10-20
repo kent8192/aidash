@@ -1,6 +1,8 @@
 //! Approval Modes and Approval Rules are a person's own approvals, given in
 //! advance and never beyond what the Tenant's policy lets that person approve
 //! (ADR 0076). [`resolve`] is the one place that orders them.
+use crate::{capabilities::records::Record, decision::BlockReason};
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -182,6 +184,8 @@ impl Settings {
 pub enum GivenBy {
 	Rule(Uuid),
 	Bypass,
+	/// The approval Decider allowed it; the id is its decision evidence.
+	Auto(Uuid),
 }
 
 impl GivenBy {
@@ -190,6 +194,7 @@ impl GivenBy {
 		match self {
 			Self::Rule(id) => json!({"rule":id}),
 			Self::Bypass => json!({"mode":"bypass"}),
+			Self::Auto(decision) => json!({"mode":"auto","decision":decision}),
 		}
 	}
 }
@@ -199,6 +204,7 @@ impl fmt::Display for GivenBy {
 		match self {
 			Self::Rule(id) => write!(f, "Approval Rule {id}"),
 			Self::Bypass => f.write_str("the Bypass Approval Mode"),
+			Self::Auto(decision) => write!(f, "the Auto Approval Mode (decision {decision})"),
 		}
 	}
 }
@@ -209,6 +215,8 @@ pub enum RefusedBy {
 	Tenant,
 	Rule(Uuid),
 	DontAsk,
+	/// The approval Decider blocked it, or gave no verdict.
+	Auto(BlockReason),
 }
 
 impl RefusedBy {
@@ -218,6 +226,7 @@ impl RefusedBy {
 			Self::Tenant => json!({"policy":"tenant"}),
 			Self::Rule(id) => json!({"rule":id}),
 			Self::DontAsk => json!({"mode":"dont_ask"}),
+			Self::Auto(reason) => json!({"mode":"auto","reason":reason}),
 		}
 	}
 
@@ -227,7 +236,86 @@ impl RefusedBy {
 			Self::Tenant => "REFUSED_BY_POLICY",
 			Self::Rule(_) => "REFUSED_BY_APPROVAL_RULE",
 			Self::DontAsk => "REFUSED_BY_DONT_ASK",
+			Self::Auto(_) => "REFUSED_BY_AUTO",
 		}
+	}
+}
+
+/// How often the approval Decider has blocked a Run's calls since a person last
+/// approved one. A person's approval clears both counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AutoBlocks {
+	/// Blocks in a row, none of the Run's later calls having been allowed by
+	/// the Decider.
+	pub trailing: u32,
+	/// Blocks in all.
+	pub since_person: u32,
+}
+
+impl AutoBlocks {
+	/// Blocks in a row that return the Run to asking.
+	pub const TRAILING_LIMIT: u32 = 3;
+	/// Blocks in all that return the Run to asking.
+	pub const RUN_LIMIT: u32 = 20;
+
+	/// Whether the Run asks a person again until one approves a call.
+	pub const fn suspended(self) -> bool {
+		self.trailing >= Self::TRAILING_LIMIT || self.since_person >= Self::RUN_LIMIT
+	}
+
+	/// Counts the blocks recorded on a Run's approvals, in the order they were
+	/// decided. A person's approval clears both counts and a call the Decider
+	/// allowed ends the blocks in a row. A decision with no verdict is neither a
+	/// block nor an allowance, so an outage never suspends Auto. Records decided
+	/// at the same instant keep the order given.
+	pub fn of(records: &[Record]) -> Self {
+		let mut decided: Vec<(DateTime<Utc>, Decision)> = records
+			.iter()
+			.filter_map(|record| {
+				let at = serde_json::from_value(record.data.get("decided_at")?.clone()).ok()?;
+				Some((at, Decision::of(record)?))
+			})
+			.collect();
+		decided.sort_by_key(|(at, _)| *at);
+		decided
+			.into_iter()
+			.fold(Self::default(), |counts, (_, decision)| match decision {
+				Decision::Person => Self::default(),
+				Decision::Allowed => Self {
+					trailing: 0,
+					..counts
+				},
+				Decision::Blocked => Self {
+					trailing: counts.trailing.saturating_add(1),
+					since_person: counts.since_person.saturating_add(1),
+				},
+			})
+	}
+}
+
+/// What decided an approval record, as far as [`AutoBlocks`] counts.
+enum Decision {
+	Person,
+	Allowed,
+	Blocked,
+}
+
+impl Decision {
+	fn of(record: &Record) -> Option<Self> {
+		let data = &record.data;
+		if data["given_by"]["mode"] == "auto" {
+			return Some(Self::Allowed);
+		}
+		if data["refused_by"]["mode"] == "auto" {
+			return (data["refused_by"]["reason"] != BlockReason::Unavailable.id())
+				.then_some(Self::Blocked);
+		}
+		// What a person's decision records; a rule or a mode records `advance`.
+		matches!(
+			data["approval_mode"].as_str(),
+			Some("allow_once" | "allow_run")
+		)
+		.then_some(Self::Person)
 	}
 }
 

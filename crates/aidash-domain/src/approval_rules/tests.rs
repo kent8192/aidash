@@ -3,6 +3,7 @@ use ApprovalKind::{Generation, Outbound, PageReading, ToolCall, WebSearch};
 use ApprovalMode::{Auto, Bypass, DontAsk, Manual};
 use Resolution::{Approve, Ask, Judge, Proceed, Refuse};
 use rstest::rstest;
+use serde_json::Value;
 
 const TOOL: &str = "tool:crm#invoke";
 const OPEN: Ceiling = Ceiling {
@@ -386,4 +387,154 @@ fn records_name_what_gave_or_refused_an_approval() {
 		format!("Approval Rule {}", id(1))
 	);
 	assert_eq!(GivenBy::Bypass.to_string(), "the Bypass Approval Mode");
+}
+
+#[test]
+fn the_approval_decider_leaves_its_decision_and_its_reason_on_the_record() {
+	assert_eq!(
+		GivenBy::Auto(id(7)).data(),
+		json!({"mode":"auto","decision":id(7)})
+	);
+	assert_eq!(
+		RefusedBy::Auto(BlockReason::DataExfiltration).data(),
+		json!({"mode":"auto","reason":"data_exfiltration"})
+	);
+	assert_eq!(
+		RefusedBy::Auto(BlockReason::Unavailable).data(),
+		json!({"mode":"auto","reason":"unavailable"})
+	);
+	assert_eq!(
+		RefusedBy::Auto(BlockReason::Injected).code(),
+		"REFUSED_BY_AUTO"
+	);
+}
+
+#[rstest]
+#[case::nothing_blocked(0, 0, false)]
+#[case::two_in_a_row(2, 2, false)]
+#[case::three_in_a_row(3, 3, true)]
+#[case::three_in_a_row_among_many(3, 4, true)]
+#[case::scattered_but_nineteen(1, 19, false)]
+#[case::scattered_twenty(0, 20, true)]
+fn three_blocks_in_a_row_or_twenty_in_all_return_the_run_to_asking(
+	#[case] trailing: u32,
+	#[case] since_person: u32,
+	#[case] suspended: bool,
+) {
+	assert_eq!(
+		AutoBlocks {
+			trailing,
+			since_person
+		}
+		.suspended(),
+		suspended
+	);
+}
+
+fn decided(second: u32, state: &str, how: Value) -> Record {
+	let mut data = json!({"decided_at": format!("2026-10-20T10:00:{second:02}Z")});
+	for (key, value) in how.as_object().unwrap() {
+		data[key] = value.clone();
+	}
+	Record {
+		id: Uuid::from_u128(u128::from(second)),
+		tenant: "tenant".into(),
+		owner: "alice".into(),
+		area_id: None,
+		kind: "tool_call".into(),
+		state: state.into(),
+		revision: 2,
+		data,
+		expires_at: None,
+	}
+}
+fn blocked(second: u32) -> Record {
+	decided(
+		second,
+		"denied",
+		json!({"refused_by":{"mode":"auto","reason":"destructive"}}),
+	)
+}
+fn unavailable(second: u32) -> Record {
+	decided(
+		second,
+		"denied",
+		json!({"refused_by":{"mode":"auto","reason":"unavailable"}}),
+	)
+}
+fn allowed(second: u32) -> Record {
+	decided(
+		second,
+		"consumed",
+		json!({"given_by":{"mode":"auto","decision":id(9)},"approval_mode":"advance"}),
+	)
+}
+fn approved_by_a_person(second: u32) -> Record {
+	decided(
+		second,
+		"consumed",
+		json!({"decided_by":"alice","approval_mode":"allow_once"}),
+	)
+}
+
+fn counts(records: &[Record]) -> (u32, u32) {
+	let blocks = AutoBlocks::of(records);
+	(blocks.trailing, blocks.since_person)
+}
+
+#[test]
+fn blocks_count_in_a_row_and_in_all_until_a_person_approves() {
+	assert_eq!(counts(&[]), (0, 0));
+	assert_eq!(counts(&[blocked(1), blocked(2)]), (2, 2));
+	assert_eq!(counts(&[blocked(1), allowed(2), blocked(3)]), (1, 2));
+	assert_eq!(
+		counts(&[blocked(1), blocked(2), approved_by_a_person(3)]),
+		(0, 0)
+	);
+	assert_eq!(
+		counts(&[blocked(1), approved_by_a_person(2), blocked(3), blocked(4)]),
+		(2, 2)
+	);
+	assert!(AutoBlocks::of(&[blocked(1), blocked(2), blocked(3)]).suspended());
+	assert!(!AutoBlocks::of(&[blocked(1), blocked(2), allowed(3), blocked(4)]).suspended());
+}
+
+#[test]
+fn records_are_counted_in_the_order_they_were_decided_whatever_the_order_given() {
+	let records = [blocked(3), approved_by_a_person(2), blocked(1)];
+	assert_eq!(counts(&records), (1, 1));
+}
+
+#[test]
+fn a_decision_with_no_verdict_neither_counts_nor_ends_the_blocks_in_a_row() {
+	assert_eq!(counts(&[blocked(1), unavailable(2), blocked(3)]), (2, 2));
+	assert_eq!(
+		counts(&[unavailable(1), unavailable(2), unavailable(3)]),
+		(0, 0)
+	);
+}
+
+#[rstest]
+#[case::pending(decided(1, "pending", json!({})))]
+#[case::denied_by_a_person(decided(1, "denied", json!({"decided_by":"alice"})))]
+#[case::approved_by_a_rule(decided(
+	1,
+	"consumed",
+	json!({"given_by":{"rule":Uuid::from_u128(1)},"approval_mode":"advance"})
+))]
+#[case::refused_by_dont_ask(decided(1, "denied", json!({"refused_by":{"mode":"dont_ask"}})))]
+fn no_other_record_counts_or_clears_anything(#[case] other: Record) {
+	assert_eq!(counts(&[blocked(0), other]), (1, 1));
+}
+
+#[test]
+fn twenty_blocks_suspend_auto_however_many_calls_it_allowed_between_them() {
+	let mut records = vec![];
+	for n in 0..20 {
+		records.push(blocked(2 * n));
+		records.push(allowed(2 * n + 1));
+	}
+	let blocks = AutoBlocks::of(&records);
+	assert_eq!((blocks.trailing, blocks.since_person), (0, 20));
+	assert!(blocks.suspended());
 }

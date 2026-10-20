@@ -460,6 +460,9 @@ impl DecisionJournal for Fixture {
 		saved.evidence.push(committed);
 		Ok(())
 	}
+	async fn commit_approval(&self, _: &ApprovalEvidence) -> Result<()> {
+		unreachable!("compaction decisions commit no approval evidence")
+	}
 	async fn expire_states(&self, _: DateTime<Utc>) -> Result<usize> {
 		Ok(0)
 	}

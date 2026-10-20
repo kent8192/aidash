@@ -1173,6 +1173,29 @@ async fn a_deny_rule_or_dont_ask_refuses_the_request_without_reserving_anything(
 }
 #[rstest]
 #[tokio::test]
+async fn auto_leaves_a_generation_request_to_a_person_as_it_has_no_step_to_judge(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	empowered(&mut scope);
+	advising(&mut scope, ApprovalMode::Auto, vec![]);
+
+	let job = generated(
+		assign_in(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+		)
+		.await
+		.unwrap(),
+	);
+
+	assert_eq!(job.status, "PENDING_APPROVAL");
+}
+#[rstest]
+#[tokio::test]
 async fn a_request_without_a_person_of_the_tenant_is_never_covered(
 	validation: DefinitionValidation,
 ) {

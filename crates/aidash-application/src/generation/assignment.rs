@@ -331,8 +331,7 @@ pub async fn create_in(
 	let given = match resolution {
 		Resolution::Refuse(by) => return Err(refusal(by)),
 		Resolution::Approve(by) => Some(by),
-		Resolution::Judge => None,
-		Resolution::Ask | Resolution::Proceed => None,
+		Resolution::Ask | Resolution::Judge | Resolution::Proceed => None,
 	};
 	let status = if !policy.spec.approval_required || given.is_some() {
 		"QUEUED"

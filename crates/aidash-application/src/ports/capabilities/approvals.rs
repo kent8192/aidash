@@ -2,11 +2,13 @@
 use crate::Result;
 use aidash_domain::{
 	RunMetadata,
-	approval_rules::{ApprovalRule, Settings},
+	approval_rules::{ApprovalKind, ApprovalRule, AutoBlocks, Settings},
 	capabilities::{operations::MountedFile, records::Record},
+	decision::BlockReason,
 	policy::{Evaluation, PolicyBundle, Resource},
 	provider::ToolCall,
 	registry::EntityRef,
+	run_input::RunInput,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -59,6 +61,8 @@ pub enum Refusal {
 	Revoked,
 	/// The approval ended with its Run.
 	Closed,
+	/// The approval Decider blocked the call, or gave no verdict.
+	Auto(BlockReason),
 }
 impl Refusal {
 	/// What the model is told when the call is refused.
@@ -72,6 +76,7 @@ impl Refusal {
 			Self::Expired => "tool call approval expired",
 			Self::Revoked => "tool call approval was revoked",
 			Self::Closed => "tool call approval was closed",
+			Self::Auto(reason) => reason.refusal_message(),
 		}
 	}
 }
@@ -89,6 +94,34 @@ pub enum ToolCallApproval {
 		expires_at: DateTime<Utc>,
 	},
 	Refused(Refusal),
+}
+
+/// A pending approval that the Run's approval Decider is to judge. The harness
+/// adds the call and the definition of its tool, which it holds for every kind
+/// of tool, Agent Plugin tools included.
+#[derive(Debug, Clone)]
+pub struct JudgeRequest {
+	pub kind: ApprovalKind,
+	/// Where the approved call goes: a tool's target, an origin or a disclosure
+	/// destination.
+	pub target: String,
+	/// The inputs people sent to the Run's Thread, in sequence order. Inputs
+	/// from other Agents, peers and tools are left out, so nothing a Run read
+	/// reaches the judge as a person's words.
+	pub people: Vec<RunInput>,
+}
+
+/// How the approval Decider settled an approval, with the decision evidence it
+/// recorded first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settlement {
+	/// The call may run: the approval is given in the person's name.
+	Allowed { evidence: Uuid },
+	/// The call is refused with a reason the model receives.
+	Blocked { reason: BlockReason, evidence: Uuid },
+	/// The Decider ran in Shadow mode: only its evidence exists, and the
+	/// approval stays pending for a person.
+	Shadow { evidence: Uuid },
 }
 
 #[async_trait]
@@ -130,4 +163,14 @@ pub trait ApprovalScope: Send {
 	async fn approval_settings(&mut self, run: &RunMetadata) -> Result<Option<Settings>>;
 	/// Store `rule` for `owner`, who reads and writes their own rules.
 	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<()>;
+	/// Every approval record of `run`, of every kind and state.
+	async fn approval_records(&mut self, run: &RunMetadata) -> Result<Vec<Record>>;
+	/// Every input the Run received, in sequence order, whoever sent it.
+	async fn run_inputs(&mut self, run: &RunMetadata) -> Result<Vec<RunInput>>;
+	/// What the approval Decider has blocked of `run`'s calls since a person
+	/// last approved one. An implementation that can count in its store may
+	/// override this.
+	async fn auto_blocks(&mut self, run: &RunMetadata) -> Result<AutoBlocks> {
+		Ok(AutoBlocks::of(&self.approval_records(run).await?))
+	}
 }

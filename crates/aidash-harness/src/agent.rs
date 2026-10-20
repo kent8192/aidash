@@ -1,7 +1,9 @@
 //! Durable agent execution use case. All effects cross application ports.
 use aidash_application::{
 	Error, Result,
-	capabilities::approvals::{DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest},
+	capabilities::approvals::{
+		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
+	},
 	execution::*,
 	ports::execution::*,
 };
@@ -1339,6 +1341,13 @@ impl<'a> Executor<'a> {
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
+				if !run_message_catchup
+					&& home.local()
+					&& let Some(guard) = guard
+					&& guard.approval_mode(run).await? == Some(ApprovalMode::Auto)
+				{
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(AUTO_MODE_INSTRUCTION);
+				}
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"agent_state":{"phase":run.phase(),"step":run.step}});
 				if let Some(deferred_read) = &thinking.deferred_workspace_read {
 					pinned["deferred_workspace_read"] = json!(deferred_read);
@@ -2608,7 +2617,15 @@ impl<'a> Executor<'a> {
 							area: None,
 							read_only: contract.behavior.read_only_operation,
 						};
-						match guard.tool_call_approval(run, request).await? {
+						let mut outcome = guard.tool_call_approval(run, request.clone()).await?;
+						if let ToolCallApproval::Pending { approval_id, .. } = outcome {
+							let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
+							// Asked again, the approval answers as the Decider settled it.
+							if self.judge_approval(run, token, guard, &pending, approval_id).await?.settled() {
+								outcome = guard.tool_call_approval(run, request).await?;
+							}
+						}
+						match outcome {
 							ToolCallApproval::Approved { .. } => {}
 							ToolCallApproval::Pending { approval_id, .. } => {
 								run.state = RunState::Waiting(Box::new(WaitingState::Approval {
@@ -2806,6 +2823,21 @@ impl<'a> Executor<'a> {
 				// An approval raised inside the call is not its result. The Run waits,
 				// then makes the same call again under the approval's own key.
 				if let FrameworkResult::Approval(approval_id) = framework {
+					if let Some(guard) = guard {
+						let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
+						match self.judge_approval(run, token, guard, &pending, approval_id).await? {
+							// The call runs again at once under the approval's own key.
+							approval::Judged::Allowed => {
+								run.state.tool_mut()?.approval = Some(approval_id);
+								store.save_run(run, token, "run.approved_by_auto").await?;
+								return Ok(());
+							}
+							approval::Judged::Blocked(reason) => {
+								return self.tool_error(run, token, call, cursor, reason.refusal_message().into()).await;
+							}
+							approval::Judged::Undecided => {}
+						}
+					}
 					let mut resume = run.state.tool()?.clone();
 					resume.approval = Some(approval_id);
 					run.state = RunState::Waiting(Box::new(WaitingState::Approval {
@@ -3510,6 +3542,7 @@ fn summary_dependencies(
 	dependencies
 }
 
+mod approval;
 mod completion;
 mod progress;
 #[cfg(test)]

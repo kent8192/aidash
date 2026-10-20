@@ -63,6 +63,19 @@ fn every_category_has_one_fixed_question_named_after_its_reason() {
 }
 
 #[test]
+fn a_blocked_call_is_refused_with_a_message_naming_its_reason() {
+	for reason in BlockReason::CATEGORIES
+		.into_iter()
+		.chain([BlockReason::Unavailable])
+	{
+		assert_eq!(
+			reason.refusal_message(),
+			format!("tool call was blocked by Auto: {}", reason.id())
+		);
+	}
+}
+
+#[test]
 fn a_category_at_or_above_the_threshold_blocks_and_the_most_probable_names_the_reason() {
 	let half = Probability::half();
 	assert_eq!(
