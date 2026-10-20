@@ -128,6 +128,7 @@ impl PeerTransport for PeerHttp {
 mod tests;
 
 mod dependencies;
+pub mod directory;
 pub mod key;
 
 mod registry_reads;

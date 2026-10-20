@@ -227,6 +227,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "aidash-application",
+ "aidash-capability",
  "aidash-domain",
  "aidash-harness",
  "aidash-integrations",

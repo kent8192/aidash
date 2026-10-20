@@ -147,6 +147,24 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registration_history".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "node_registration_history_pkey".to_owned(),
+				columns: vec!["sequence".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registrations".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "node_registrations_pkey".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
+					"source_node".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "peer_events".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "peer_events_pkey".to_owned(),
@@ -210,6 +228,18 @@ pub(super) fn migration() -> Migration {
 			unique: false,
 			index_type: Some(IndexType::BTree),
 			where_clause: Some(r#"(NOT delivered)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "node_registration_history".to_owned(),
+			name: "node_registration_history_tenant_sequence".to_owned(),
+			columns: vec!["tenant".to_owned(), "sequence".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

@@ -1312,5 +1312,7 @@ async fn display_retention_follows_the_request_that_ended_last(
 mod deletion;
 #[path = "tenancy/nodes.rs"]
 mod nodes;
+#[path = "tenancy/registrations.rs"]
+mod registrations;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;

@@ -40,3 +40,5 @@ pub mod authority;
 pub mod run_messages;
 
 pub mod peers;
+
+pub mod registrations;

@@ -18,7 +18,7 @@ impl TierLimits for OneNode {
 }
 
 impl Deployment {
-	async fn node_tenant(&self, person: &Person, label: &str) -> (String, String) {
+	pub(super) async fn node_tenant(&self, person: &Person, label: &str) -> (String, String) {
 		let (status, created) = self
 			.as_person(person, "POST", "/api/tenants", None, json!({"label":label}))
 			.await;
@@ -28,7 +28,12 @@ impl Deployment {
 		(tenant, context)
 	}
 
-	async fn nodes_of(&self, person: &Person, context: &str, tenant: &str) -> Vec<Value> {
+	pub(super) async fn nodes_of(
+		&self,
+		person: &Person,
+		context: &str,
+		tenant: &str,
+	) -> Vec<Value> {
 		let (status, nodes) = self
 			.as_person(
 				person,
@@ -42,7 +47,7 @@ impl Deployment {
 		nodes.as_array().unwrap().clone()
 	}
 
-	async fn create_node(
+	pub(super) async fn create_node(
 		&self,
 		person: &Person,
 		context: &str,

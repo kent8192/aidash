@@ -383,5 +383,7 @@ pub fn check_creation(limit: u32, count: u32) -> std::result::Result<(), NodeLim
 	Ok(())
 }
 
+pub mod registration;
+
 #[cfg(test)]
 mod tests;

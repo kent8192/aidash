@@ -24,6 +24,9 @@ pub enum Error {
 	Conflict(String),
 	#[error("{0}")]
 	NotFound(String),
+	/// The request is well formed and the facts it names do not hold (422).
+	#[error("{0}")]
+	Unprocessable(String),
 	#[error("unauthorized")]
 	Unauthorized,
 	#[error("forbidden")]
@@ -94,6 +97,7 @@ impl Error {
 				(StatusCode::CONFLICT, s.clone())
 			}
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
+			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
@@ -309,6 +313,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Invalid(message) => Self::Invalid(message),
 			ApplicationError::Conflict(message) => Self::Conflict(message),
 			ApplicationError::NotFound(message) => Self::NotFound(message),
+			ApplicationError::Unprocessable(message) => Self::Unprocessable(message),
 			ApplicationError::Refused(code) => Self::Refused(code),
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
@@ -347,6 +352,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::NotFound(message) => Self::NotFound(message),
+			Error::Unprocessable(message) => Self::Unprocessable(message),
 			// Work stopped by a Tenant Deletion pauses like any refused authority.
 			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
 			Error::Refused(code) => Self::Refused(code),

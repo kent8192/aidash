@@ -34,6 +34,10 @@ pub enum Error {
 	Conflict(String),
 	#[error("{0}")]
 	NotFound(String),
+	/// The request is well formed and the facts it names do not hold, such as a
+	/// Deployment that does not publish the key it was registered with.
+	#[error("{0}")]
+	Unprocessable(String),
 	/// The build's admission gate refused new work; the code is shown to the caller.
 	#[error("{0}")]
 	Refused(String),

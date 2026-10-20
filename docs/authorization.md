@@ -50,32 +50,34 @@ The tenant-scoped effect of `firebaseauth.users.get`, applicability of the confi
 
 A Tenant Administrator approves Registration Requests, manages Mappings, and reads and replaces the policy of its own Tenant, without a Deployment Administrator. It is not a separate account or grant record. It is an External Identity acting through one of its Mappings, whose subject the Tenant's policy permits to perform these actions:
 
-| Action                          | Resource kind  | Allows                                                                                                         |
-| ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `registration.read`             | `registration` | List pending Registration Requests addressed to the Tenant, with Display Attributes                            |
-| `registration.approve`          | `registration` | Approve a request into a new user subject                                                                      |
-| `registration.reject`           | `registration` | Reject a request                                                                                               |
-| `mapping.read`                  | `mapping`      | List the Tenant's Mappings with Assignable Group memberships (and, under a Tenant Binding, Display Attributes) |
-| `mapping.disable`               | `mapping`      | Disable another External Identity's Mapping                                                                    |
-| `subject.group.update`          | `subject`      | Replace a user subject's Assignable Group memberships                                                          |
-| `invitation.create`             | `invitation`   | Issue an Invitation link for the Tenant                                                                        |
-| `invitation.read`               | `invitation`   | List the Tenant's Invitations and their state                                                                  |
-| `invitation.revoke`             | `invitation`   | Revoke an Invitation that has not been used                                                                    |
-| `policy.read`                   | `policy`       | Read the policy and its revisions, and simulate a decision                                                     |
-| `policy.update`                 | `policy`       | Replace the whole policy                                                                                       |
-| `decision.read`                 | `decision`     | Read the decision log                                                                                          |
-| `credential.issue`              | `subject`      | Issue a Subject Credential for a service or agent subject no Mapping ever named                                |
-| `credential.read`               | `credential`   | List every Subject Credential of the Tenant                                                                    |
-| `credential.revoke`             | `credential`   | Revoke any Subject Credential of the Tenant                                                                    |
-| `peer_mapping.read`             | `peer_mapping` | List the Tenant's Peer Mappings and their history                                                              |
-| `peer_mapping.update`           | `peer_mapping` | Create, update and disable a Peer Mapping                                                                      |
-| `node.read`                     | `node`         | List the Tenant's Nodes (members hold it)                                                                      |
-| `node.use`                      | `node`         | Work in a Node, such as creating a Workspace there (members hold it)                                           |
-| `node.create`                   | `tenant`       | Create a Node within "Nodes per Tenant"                                                                        |
-| `node.update`                   | `node`         | Change a Node's label                                                                                          |
-| `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
-| `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
-| `billing.attach`                | `tenant`       | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
+| Action                          | Resource kind       | Allows                                                                                                         |
+| ------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `registration.read`             | `registration`      | List pending Registration Requests addressed to the Tenant, with Display Attributes                            |
+| `registration.approve`          | `registration`      | Approve a request into a new user subject                                                                      |
+| `registration.reject`           | `registration`      | Reject a request                                                                                               |
+| `mapping.read`                  | `mapping`           | List the Tenant's Mappings with Assignable Group memberships (and, under a Tenant Binding, Display Attributes) |
+| `mapping.disable`               | `mapping`           | Disable another External Identity's Mapping                                                                    |
+| `subject.group.update`          | `subject`           | Replace a user subject's Assignable Group memberships                                                          |
+| `invitation.create`             | `invitation`        | Issue an Invitation link for the Tenant                                                                        |
+| `invitation.read`               | `invitation`        | List the Tenant's Invitations and their state                                                                  |
+| `invitation.revoke`             | `invitation`        | Revoke an Invitation that has not been used                                                                    |
+| `policy.read`                   | `policy`            | Read the policy and its revisions, and simulate a decision                                                     |
+| `policy.update`                 | `policy`            | Replace the whole policy                                                                                       |
+| `decision.read`                 | `decision`          | Read the decision log                                                                                          |
+| `credential.issue`              | `subject`           | Issue a Subject Credential for a service or agent subject no Mapping ever named                                |
+| `credential.read`               | `credential`        | List every Subject Credential of the Tenant                                                                    |
+| `credential.revoke`             | `credential`        | Revoke any Subject Credential of the Tenant                                                                    |
+| `peer_mapping.read`             | `peer_mapping`      | List the Tenant's Peer Mappings and their history                                                              |
+| `peer_mapping.update`           | `peer_mapping`      | Create, update and disable a Peer Mapping                                                                      |
+| `node.read`                     | `node`              | List the Tenant's Nodes (members hold it)                                                                      |
+| `node.use`                      | `node`              | Work in a Node, such as creating a Workspace there (members hold it)                                           |
+| `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"                                                                        |
+| `node.update`                   | `node`              | Change a Node's label                                                                                          |
+| `node_registration.read`        | `node_registration` | List the Node Registrations of one of the Tenant's Nodes and their history                                     |
+| `node_registration.update`      | `node_registration` | Register a Node of another Tenant at one of the Tenant's Nodes, change that registration or disable it         |
+| `workbench.test_limits.update`  | `test_limits`       | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
+| `workbench.test_profile.update` | `test_profile`      | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
+| `billing.attach`                | `tenant`            | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 
@@ -130,6 +132,8 @@ The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's po
 - Subject Credentials, agents and peers never create Tenants (403).
 
 Every Tenant starts with one default Node, labelled `Default`, which `tenants::create` writes with the root record for every creator, Personal Tenants included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`, unique in the Deployment, never changed and never reused, so `node_names` outlives a purge) and a label of 1 to 64 characters that its Tenant Administrators change. Its address is `aidash://<deployment>/<name>`. `GET /api/tenants/{tenant}/nodes` lists the Tenant's Nodes under `node.read`, the default first. `POST /api/tenants/{tenant}/nodes` with `{"label":…}` creates a Node under `node.create`, answers 201, and answers 403 `node_limit_reached` when the Tenant holds `nodes_per_tenant` Nodes or the Tier's limit, whichever is lower; an advisory lock per Tenant serializes concurrent creations. The Community build has no Tier limit. `PATCH /api/tenants/{tenant}/nodes/{node}` with `{"label":…}` changes the label under `node.update`. Nodes are created here and never stopped; #388 decides how a Node stops. Creations are appended to `dashboard_administration_history` as `node.create`.
+
+A Node Registration is a Tenant Administrator's decision that one of its Nodes accepts one named Node of another Tenant, and addresses outbound exchange to it. `POST /api/tenants/{tenant}/nodes/{node}/registrations` takes `{source_node, endpoint?, key_id?, atomic_transactions, enabled, expected_revision}` under `node_registration.update` and answers the registration. `expected_revision` is 0 to create and the revision being replaced otherwise; a stale revision, or creating one that exists, answers 409. For a Node of this Deployment, `endpoint` and `key_id` must be absent and `source_node` must hold a name some Tenant holds; a Node of the owning Tenant answers 422, because the Tenant's policy decides within the Tenant. For a Node of another Deployment, both are required: the server fetches `{endpoint}/.well-known/aidash` with a 5 second timeout and requires its `id` to be the Node's Deployment, its `protocol_version` to be `0.4`, and its `key.id` to be the key ID typed, and the PEM to hash to that key ID. Anything else answers 422 with the reason. The registration stores the fetched public key, so a key that changes later fails every signature until the registration is replaced with the new key ID; the key ID the administrator types is the trust anchor, not the endpoint. Disabling needs no answer from the other Deployment and keeps what the registration pinned. `GET` on the same path lists the Node's registrations (`offset`, `limit` as for Peer Mappings), and `GET /api/tenants/{tenant}/nodes/{node}/registration-history?after=0&limit=100` lists every revision in order, under `node_registration.read`. Every write is appended to `dashboard_administration_history` as `node_registration.update`.
 
 `GET /api/tenants?offset=0` lists root records for Deployment Administrators, newest first, 200 per page, each with its current `deletion`, if any. `PUT /api/tenants/{tenant}/label` changes the label under `tenant.update`, through a browser Mapping of that Tenant.
 

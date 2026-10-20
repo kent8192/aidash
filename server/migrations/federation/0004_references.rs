@@ -216,6 +216,42 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registration_history".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_registration_history_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registrations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_registrations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registrations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_registrations_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "remote_run_message_fences".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "remote_run_message_fences_tenant_root_fkey".to_owned(),

@@ -78,6 +78,44 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 				"application/json",
 			)?;
 			contracts.path(document, views::nodes::relabel, &["String", "String"])?;
+			{
+				use super::node_registrations as r;
+				contracts.response::<_, Vec<r::RegistrationRecord>>(
+					document,
+					views::node_registrations::list,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::list,
+					&["String", "String"],
+				)?;
+				contracts.response::<_, Vec<r::RegistrationRevision>>(
+					document,
+					views::node_registrations::history,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::history,
+					&["String", "String"],
+				)?;
+				contracts
+					.request::<_, r::RegistrationInput>(document, views::node_registrations::set)?;
+				contracts.response::<_, r::RegistrationRecord>(
+					document,
+					views::node_registrations::set,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::set,
+					&["String", "String"],
+				)?;
+			}
 		}
 		contracts.response::<_, t::CreatedTenant>(
 			document,

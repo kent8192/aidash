@@ -119,6 +119,15 @@ pub async fn mint(claims: &Claims, signer: &dyn TokenSigner) -> Result<SecretStr
 	jws::mint(claims, TOKEN_TYPE, &claims.kid, signer).await
 }
 
+/// The 32 raw bytes of an Ed25519 public key in SubjectPublicKeyInfo PEM, which
+/// a Deployment Key ID digests.
+pub fn public_key_bytes(pem: &str) -> Result<[u8; 32], SignError> {
+	use ed25519_dalek::pkcs8::DecodePublicKey;
+	Ok(VerifyingKey::from_public_key_pem(pem)
+		.map_err(|_| SignError)?
+		.to_bytes())
+}
+
 /// The broker uses only injected public keys. Verification makes no network call.
 #[derive(Clone, Default)]
 pub struct PublicKeys(BTreeMap<String, VerifyingKey>);
@@ -235,6 +244,14 @@ impl InMemorySigner {
 	}
 	pub fn public_key(&self) -> VerifyingKey {
 		self.key.verifying_key()
+	}
+	/// The public key as a Deployment publishes it: SubjectPublicKeyInfo PEM.
+	pub fn public_key_pem(&self) -> String {
+		use ed25519_dalek::pkcs8::{EncodePublicKey, spki::der::pem::LineEnding};
+		self.key
+			.verifying_key()
+			.to_public_key_pem(LineEnding::LF)
+			.expect("an Ed25519 public key always encodes")
 	}
 }
 #[async_trait::async_trait]

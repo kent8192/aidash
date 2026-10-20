@@ -355,6 +355,14 @@ migration that creates each table, because Aidash is undeployed:
   keeps a Node name taken after a purge, and it names the Tenant of a receiving
   Node before any Tenant scope opens. `nodes` references it with
   `(name, tenant)`. Both are created in `identity/0002_tables` after `tenants`.
+- A Node Registration is a Tenant-owned row in `federation/node_registrations`,
+  keyed by `(tenant, node, source_node)`, with `(tenant, node)` referencing
+  `nodes` (#241). The registered Node is an address, and a Node of another
+  Deployment pins that Deployment's endpoint, public key and key ID in three
+  columns that are all set or all null. `node_registration_history` keeps every
+  revision under a sequence, like `authorization_peer_mapping_history`. Both
+  tables are purged with the Tenant. They are created in
+  `federation/0002_tables` and enforced by `federation/0011`.
 - Inserts name `tenant`. Statements built for a Tenant scope write the scope's
   Tenant with `crate::database::scope::tenant()`, a child of a row reads its
   parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant

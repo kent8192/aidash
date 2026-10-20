@@ -20,6 +20,7 @@ pub(crate) mod desktop_cors;
 
 pub mod credential_store_recovery;
 pub mod invitations;
+pub mod node_registrations;
 pub mod nodes;
 pub mod plan_connections;
 pub mod provider_authorizations;

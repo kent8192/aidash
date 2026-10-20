@@ -306,6 +306,80 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		// Every revision of a Node Registration, in order (#241).
+		.add_operation(Operation::CreateTable {
+			name: "node_registration_history".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("sequence", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some(r#"nextval('public.node_registration_history_sequence_seq'::regclass)"#.to_owned())),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_endpoint", FieldType::Text),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text),
+				ColumnDefinition::new("source_key_id", FieldType::Text),
+				ColumnDefinition::new("atomic_transactions", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+			],
+			constraints: vec![
+				Constraint::Check {
+					name: "node_registration_history_revision_check".to_owned(),
+					expression: r#"(revision > 0)"#.to_owned(),
+				},
+				Constraint::Check {
+					name: "node_registration_history_counterpart_check".to_owned(),
+					expression: r#"(((source_endpoint IS NULL) = (source_public_key_pem IS NULL)) AND ((source_public_key_pem IS NULL) = (source_key_id IS NULL)))"#.to_owned(),
+				},
+			],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		// A Tenant Administrator's decision that one of its Nodes accepts one
+		// named Node of another Tenant, pinning the key of another Deployment (#241).
+		.add_operation(Operation::CreateTable {
+			name: "node_registrations".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_endpoint", FieldType::Text),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text),
+				ColumnDefinition::new("source_key_id", FieldType::Text),
+				ColumnDefinition::new("atomic_transactions", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+			],
+			constraints: vec![
+				Constraint::Check {
+					name: "node_registrations_revision_check".to_owned(),
+					expression: r#"(revision > 0)"#.to_owned(),
+				},
+				Constraint::Check {
+					name: "node_registrations_counterpart_check".to_owned(),
+					expression: r#"(((source_endpoint IS NULL) = (source_public_key_pem IS NULL)) AND ((source_public_key_pem IS NULL) = (source_key_id IS NULL)))"#.to_owned(),
+				},
+			],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
 		.add_operation(Operation::CreateTable {
 			name: "peer_events".to_owned(),
 			columns: vec![

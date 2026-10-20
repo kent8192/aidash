@@ -215,6 +215,10 @@ pub const TABLES: &[Table] = &[
 	),
 	table("federation", "authorization_remote_grants", TenantOwned),
 	table("federation", "delegations", TenantOwned),
+	// Node Registrations and their revisions: the receiving Node's Tenant
+	// decides whom its Node accepts (#241)
+	table("federation", "node_registration_history", TenantOwned),
+	table("federation", "node_registrations", TenantOwned),
 	table("federation", "peer_events", Pending(241)),
 	table("federation", "peers", Pending(241)),
 	table("federation", "remote_run_message_fences", TenantOwned),
