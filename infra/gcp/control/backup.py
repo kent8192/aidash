@@ -18,6 +18,8 @@ PLAN = re.compile(r"projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/b
 MAX_WAIT = 30 * 60
 DEPLOY_RESERVE = 20 * 60
 POLL = 15
+# A Backup created a moment ago may not be readable yet.
+NOT_FOUND_GRACE = 60
 
 
 def call(method, resource, body=None):
@@ -58,6 +60,7 @@ def take(plan, generation, sha):
     identifier = backup_id(generation, sha)
     name = f"{plan}/backups/{identifier}"
     give_up = time.monotonic() + wait_window()
+    created = time.monotonic()
     try:
         call("POST", f"{plan}/backups?backupId={identifier}", {})
     except urllib.error.HTTPError as error:
@@ -68,9 +71,11 @@ def take(plan, generation, sha):
         try:
             backup = call("GET", name)
         except urllib.error.HTTPError as error:
-            if error.code == 404:
+            if error.code != 404:
+                raise
+            if time.monotonic() - created >= NOT_FOUND_GRACE:
                 raise Refused("The Pre-update Backup is missing") from error
-            raise
+            backup = {}
         state = backup.get("state")
         if state == "SUCCEEDED":
             # A scope that selected nothing also succeeds; that is no backup.

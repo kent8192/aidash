@@ -1802,6 +1802,7 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
             self.api.states = ["DELETING"]
             self.production_request(UPDATE)
             with ExitStack() as stack:
+                stack.enter_context(patch.object(backup, "NOT_FOUND_GRACE", 0))
                 if replacement:
                     stack.enter_context(patch.object(backup, "call", replacement))
                 with self.assertRaises(RuntimeError):
@@ -1820,6 +1821,22 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertNotIn("pre_update_backup", self.entry())
         self.assertNotIn("helm", [call[0] for call in self.calls])
         self.assertEqual(self.writers(), 1)
+
+    def test_a_backup_not_yet_readable_after_creation_is_polled_again(self):
+        self.running_production()
+        unread = []
+
+        def eventually(method, resource, body=None):
+            if method == "GET" and not unread:
+                unread.append(resource)
+                raise urllib.error.HTTPError(resource, 404, "NOT_FOUND", {}, None)
+            return self.api(method, resource, body)
+
+        self.production_request(UPDATE)
+        with patch.object(backup, "call", eventually), patch.object(backup, "POLL", 0):
+            self.reconcile()
+        self.assertEqual(unread, [f"{PLAN}/backups/pre-update-g2-{'b' * 12}"])
+        self.assertEqual(self.entry()["pre_update_backup"], unread[0])
 
     def test_an_existing_backup_of_the_same_generation_is_resumed(self):
         self.running_production()

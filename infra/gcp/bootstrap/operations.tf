@@ -142,7 +142,7 @@ resource "google_gke_backup_backup_plan_iam_member" "pre_update_deploy" {
   project  = var.project_id
   location = google_gke_backup_backup_plan.pre_update[0].location
   name     = google_gke_backup_backup_plan.pre_update[0].name
-  role     = "roles/gkebackup.backupAdmin"
+  role     = "roles/gkebackup.delegatedBackupAdmin"
   member   = "serviceAccount:${google_service_account.automation["deploy"].email}"
 }
 resource "google_monitoring_notification_channel" "production" {

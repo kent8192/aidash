@@ -127,7 +127,7 @@ run "production_backup_and_monitoring_are_scoped" {
   assert {
     condition = (
       google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].name == google_gke_backup_backup_plan.pre_update[0].name &&
-      google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].role == "roles/gkebackup.backupAdmin" &&
+      google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].role == "roles/gkebackup.delegatedBackupAdmin" &&
       google_gke_backup_backup_plan_iam_member.pre_update_deploy[0].member == "serviceAccount:${google_service_account.automation["deploy"].email}" &&
       output.operations_configuration.pre_update_backup_plan == google_gke_backup_backup_plan.pre_update[0].id &&
       output.operations_configuration.pre_update_restore_plan == google_gke_backup_restore_plan.pre_update_in_place[0].id &&
