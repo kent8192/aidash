@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	HumanRequest, RunMetadata, Task,
+	agent_plugin::PluginTools,
 	policy::Resource,
 	registry::{EntityRef, Entry, bindings::BindingSnapshot},
 };
@@ -14,6 +15,8 @@ pub trait AgentToolRepository: Send + Sync {
 	fn is_remote(&self) -> bool;
 	/// The admitted Binding snapshot of the Run being authorized.
 	fn binding_snapshot(&self) -> Option<&BindingSnapshot>;
+	/// The plugin tools the Run pinned at its first step; `None` before it pinned any.
+	fn plugin_tools(&self) -> Option<&PluginTools>;
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>>;
 }
 #[async_trait]

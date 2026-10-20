@@ -25,6 +25,8 @@ import {
 } from "./capabilities/configuration";
 import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
+import { AgentPluginImport } from "./agent-plugin-import";
+import { agentPlugins } from "./agent-plugins";
 import type { ReferenceDocument } from "./generated/models";
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -340,6 +342,7 @@ export function EntityForm({
   const models = data.registry.filter((e) => e.kind === "model");
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
   const [core, setCore] = useState(emptyCore);
+  const [pluginConfig, setPluginConfig] = useState<Record<string, unknown>>({});
   const [cluster, setCluster] = useState("");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
@@ -363,6 +366,7 @@ export function EntityForm({
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
                   ...core,
+                  ...pluginConfig,
                 }
               : kind === "model"
                 ? {
@@ -446,7 +450,12 @@ export function EntityForm({
           if (
             kind === "agent" &&
             !s("instructions").trim() &&
-            !hasInstructionalBinding(core.bindings, data.registry, data.node.id)
+            !hasInstructionalBinding(
+              core.bindings,
+              data.registry,
+              data.node.id,
+              agentPlugins({ kind, config: pluginConfig }) ?? [],
+            )
           )
             throw new Error(t("agentNeedsSkill"));
           if (readingDocuments) return;
@@ -582,6 +591,7 @@ export function EntityForm({
               node={data.node.id}
               entries={data.registry}
             />
+            <AgentPluginImport config={pluginConfig} change={setPluginConfig} />
             <AgentDocuments
               documents={documents}
               change={setDocuments}

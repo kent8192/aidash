@@ -24,13 +24,13 @@ fn call(name: &str, arguments: Value) -> ToolCall {
 fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_request() {
 	// Arrange
 	let snapshot = snapshot();
-	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
 	let digest = binding(&snapshot, "workspace_observe").digest.clone();
 	let mut state = ExposureState::default();
 	let evaluate = |name: &str, arguments: Value, state: &mut ExposureState| {
 		deferred
 			.evaluate(
-				binding(&snapshot, name),
+				Some(binding(&snapshot, name)),
 				&call(name, arguments),
 				state,
 				0,
@@ -96,12 +96,12 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
 	// Arrange: the next test request carries at most `limit` result bytes.
 	let snapshot = snapshot();
-	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
 	let evaluate = |name: &str, arguments: Value, limit: usize| {
 		let fits = |result: &Value, reserve: usize| result.to_string().len() + reserve <= limit;
 		deferred
 			.evaluate(
-				binding(&snapshot, name),
+				Some(binding(&snapshot, name)),
 				&call(name, arguments),
 				&mut ExposureState::default(),
 				0,
@@ -186,4 +186,26 @@ fn replay_uses_only_results_the_session_evaluated() {
 	);
 	assert!(state.unloaded_eager.contains("evaluated"));
 	assert!(state.pending.is_empty());
+}
+
+#[test]
+fn plugin_skills_are_discoverable_in_a_deferred_draft() {
+	let plugin = crate::test_support::stored_plugin("acme-tools", &[("lint", "Lint it.")]);
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["exposure"] = json!({"version":"deferred@1"});
+	agent.config["agent_plugins"] = json!([crate::test_support::plugin_reference(&plugin)]);
+	let snapshot = crate::test_support::resolve_with_plugins(
+		"aidash://local",
+		&agent,
+		false,
+		vec![],
+		vec![plugin],
+	);
+	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
+
+	let (resident, _) = deferred
+		.request(&snapshot, &ExposureState::default())
+		.unwrap();
+
+	assert!(resident.contains("Does lint."), "{resident}");
 }

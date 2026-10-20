@@ -1389,6 +1389,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,
+			sessions: None,
 		}
 		.tools(run)
 		.await

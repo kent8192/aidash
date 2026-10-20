@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	Run,
+	agent_plugin::LoadedPlugin,
 	registry::{
 		Entry, Projection,
 		bindings::{QualifiedRef, ResolvedBinding},
@@ -11,10 +12,22 @@ use aidash_domain::{
 use async_trait::async_trait;
 use std::sync::Arc;
 
+/// A stored Agent Plugin copy: the validated plugin and the commit-pinned source it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAgentPlugin {
+	pub source: String,
+	pub plugin: LoadedPlugin,
+}
+
 /// Implementations retain the caller's current catalog/subject authority scope.
 #[async_trait]
 pub trait BindingCatalog: Send {
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry>;
+	/// The Tenant's copy of the plugin whose tree digest is `digest`, or `None` when it has none.
+	/// A catalog that never sees plugins refuses instead of reporting a missing copy.
+	async fn agent_plugin(&mut self, _digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		Err(crate::Error::Invalid("AGENT_PLUGIN_UNAVAILABLE".into()))
+	}
 	async fn foreign_agent(
 		&mut self,
 		_: &QualifiedRef,

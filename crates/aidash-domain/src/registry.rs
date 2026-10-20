@@ -151,6 +151,8 @@ pub struct AgentConfig {
 	pub prompt_cache: Option<crate::projection::PromptCache>,
 	/// As written in the definition; `None` requires no verification.
 	pub completion: Option<crate::completion::CompletionPolicy>,
+	pub agent_plugins: Vec<crate::agent_plugin::AgentPluginRef>,
+	pub agent_plugin_settings: crate::agent_plugin::PluginSettings,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,

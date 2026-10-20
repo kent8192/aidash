@@ -90,3 +90,5 @@ pub mod execution;
 pub mod admission;
 
 mod deferred;
+
+mod plugins;

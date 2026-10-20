@@ -1,5 +1,7 @@
 use super::*;
-use serde_json::json;
+use serde_json::{Value, json};
+
+mod agent_plugins;
 
 fn agent() -> AgentBindings {
 	serde_json::from_value(json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."})).unwrap()

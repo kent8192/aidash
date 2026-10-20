@@ -64,6 +64,10 @@ TENANT_ROUTES = {
         "body": {"url": "https://github.com/bruno/skills"},
         "refusal": "Subject without registry.create cannot import a Skill",
     },
+    "POST /api/agent-plugins/import": {
+        "body": {"url": "https://github.com/bruno/plugins"},
+        "refusal": "Subject without registry.create cannot import an Agent Plugin",
+    },
     "POST /api/authorization/{tenant}/catalog": {
         "body": APPROVAL,
         "refusal": "Subject without catalog.approve cannot approve a version",
