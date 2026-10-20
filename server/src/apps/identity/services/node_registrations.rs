@@ -294,6 +294,27 @@ impl NodeRegistrations {
 				}
 			}
 			Requested::OtherDeployment { endpoint, key_id } => {
+				// Changing what the registration allows leaves its pin alone, and
+				// must not depend on the other Deployment answering.
+				let current = f
+					.store
+					.pool
+					.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+						records::get(tx, tenant, node.as_str(), &input.source_node).await
+					})
+					.await?;
+				if let Some(Counterpart::OtherDeployment {
+					endpoint: pinned,
+					key,
+				}) = current.map(|current| current.counterpart)
+					&& pinned == *endpoint
+					&& key.key_id == *key_id
+				{
+					return Ok(Counterpart::OtherDeployment {
+						endpoint: pinned,
+						key,
+					});
+				}
 				let key = aidash_application::federation::registrations::pin(
 					&HttpDirectory::new(f.store.keyless.clone())?,
 					&input.source_node.deployment,
