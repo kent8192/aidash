@@ -1,4 +1,4 @@
-"""Verify that CI Success is cancellable yet still rejects every unsuccessful prerequisite."""
+"""Verify that CI Success runs after cancellation and rejects every unsuccessful prerequisite."""
 import json
 from pathlib import Path
 import re
@@ -25,9 +25,11 @@ def run_aggregate(results):
 
 
 class CancellableAggregateTests(unittest.TestCase):
-    def test_guard_lets_a_cancelled_workflow_release_its_concurrency_group(self):
-        # always() stays true after cancellation and keeps a superseded run queued.
-        self.assertEqual(re.findall(r"^    if: (.*)$", JOB, re.MULTILINE), ["${{ !cancelled() }}"])
+    def test_guard_runs_after_cancellation_so_the_required_check_fails(self):
+        # A skipped required check counts as satisfied. always() runs the gate
+        # after cancellation and the result check below rejects the cancelled
+        # prerequisites; a superseded run fails rather than disappearing.
+        self.assertEqual(re.findall(r"^    if: (.*)$", JOB, re.MULTILINE), ["${{ always() }}"])
 
     def test_every_successful_prerequisite_keeps_the_aggregate_green(self):
         completed = run_aggregate({"lint": "success", "rust-tests": "success"})
