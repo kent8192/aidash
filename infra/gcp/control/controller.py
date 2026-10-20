@@ -776,11 +776,18 @@ def validate_staging_publication(config, store, terraform):
 
 
 def require_backup_covers_retained_volumes(cluster, identity):
-    """The ledger is the only retained volume the Backup may leave out."""
+    """Every required claim exists, and the ledger is the only excluded one."""
     namespace = kube.namespace_of(identity)
+    claims = cluster.items("persistentvolumeclaim", namespace)
+    observed = {claim["metadata"]["name"] for claim in claims}
+    missing = sorted(set(kube.CLAIMS) - observed)
+    if missing:
+        raise Refused(
+            "Retained volumes are missing before the Pre-update Backup: " + ", ".join(missing)
+        )
     unexpected = sorted(
         claim["metadata"]["name"]
-        for claim in cluster.items("persistentvolumeclaim", namespace)
+        for claim in claims
         if claim.get("metadata", {}).get("labels", {}).get(kube.BACKUP_LABEL) == kube.BACKUP_EXCLUDE
         and claim["metadata"]["name"] != kube.LEDGER_CLAIM
     )
@@ -1136,6 +1143,14 @@ def reconcile_locked(config, store, terraform, managed):
                 previous and previous["running"] and previous["published"]
                 and entry.get("provider_credentials") != output.get("provider_credentials")
                 and (identity in presealed or not release)
+                # A pending deployment applies the new descriptor to the new
+                # release. Reloading the old one would start writers after the
+                # recorded Pre-update Backup.
+                and not (
+                    release
+                    and entry.get("pre_update_backup")
+                    and backup.restorable(entry)
+                )
             ):
                 if not sealed:
                     # Recover a prior successful apply whose controller

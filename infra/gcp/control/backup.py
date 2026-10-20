@@ -93,6 +93,10 @@ def take(plan, generation, sha, cluster):
             # A scope that selected nothing also succeeds; that is no backup.
             if not backup.get("containsVolumeData") or not backup.get("resourceCount") or not backup.get("volumeCount"):
                 raise Refused("The Pre-update Backup contains no volume data")
+            # Permissive mode relaxes the plan for the backup and needs extra
+            # restore setup; a backup taken that way is not the supported point.
+            if backup.get("permissiveMode", False):
+                raise Refused("The Pre-update Backup was created in permissive mode")
             # Without Secrets the restore cannot recreate the runtime
             # configuration the application needs, so it is not a restore point.
             if not backup.get("containsSecrets"):

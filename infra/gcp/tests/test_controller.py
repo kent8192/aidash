@@ -1824,6 +1824,23 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertEqual(actions[-1], ("admission", "production", "close"))
         self.assertEqual(self.entry()["status"], "ready")
 
+    def test_a_provider_credential_change_does_not_reload_before_a_pending_update(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.config["credential_brokers"] = {"production": {"enabled": True}}
+        expected = descriptor("production")
+        with self.managed_outputs(
+            lambda identity: expected if self.cloud.brokers.get(identity, {}).get("enabled") else None
+        ):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["provider_credentials"], expected)
+        helms = [index for index, call in enumerate(self.calls) if call == ("helm", "production", "app")]
+        self.assertEqual(len(helms), 1)
+        self.assertNotIn(("admission", "production", "open"), self.calls[:helms[0]])
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(entry["status"], "ready")
+
     def test_a_shared_refresh_does_not_start_writers_before_a_failed_migration(self):
         self.running_production()
         self.production_request(UPDATE)
@@ -1919,6 +1936,19 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
             "persistentvolumeclaim", "capability-objects",
             {"metadata": {"labels": {"aidash.run/backup": "exclude"}}}, "aidash-production",
         )
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+
+    def test_a_missing_retained_volume_refuses_the_update(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.kube.objects.pop(("pvc", "aidash-production", "capability-objects"))
         self.production_request(UPDATE)
         with self.assertRaises(RuntimeError):
             self.reconcile()
@@ -2233,6 +2263,17 @@ class BackupTests(unittest.TestCase):
                 with patch.object(backup, "call", lambda method, resource, body=None, succeeded=succeeded: succeeded):
                     with self.assertRaisesRegex(controller.Refused, "no Secrets"):
                         backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
+
+    def test_a_permissive_mode_backup_is_not_a_restore_point(self):
+        succeeded = {
+            "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True,
+            "resourceCount": 12, "volumeCount": 4, "permissiveMode": True,
+            "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+            "clusterMetadata": {"cluster": EXPECTED_CLUSTER},
+        }
+        with patch.object(backup, "call", lambda method, resource, body=None, value=succeeded: value):
+            with self.assertRaisesRegex(controller.Refused, "permissive mode"):
+                backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
 
     def test_a_successful_backup_must_select_the_protected_application(self):
         succeeded = {
