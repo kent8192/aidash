@@ -1337,6 +1337,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		common::pending(aidash_server::domain::RunState::Waiting(Box::new(
 			aidash_server::domain::WaitingState::Human {
 				request_id: id,
+				answer_by: None,
 				resume: aidash_server::domain::ResumeState::Thinking(Default::default()),
 			},
 		)))

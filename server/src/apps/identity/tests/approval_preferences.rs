@@ -494,10 +494,28 @@ async fn a_person_reads_and_saves_their_own_preferences(
 		(&json!("auto"), &json!(2), &Value::Null)
 	);
 
+	// The Answer Deadline may be as short as a minute and as long as 30 days.
+	for (revision, seconds) in [(2, 60), (3, 30 * 24 * 60 * 60)] {
+		let kept = send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"PUT",
+			PREFERENCES,
+			json!({"expected_revision": revision, "default_mode": "manual", "answer_deadline_seconds": seconds}),
+		)
+		.await;
+		let body = json_body(&kept);
+		assert_eq!(kept.status(), 200, "{body}");
+		assert_eq!(body["answer_deadline_seconds"], seconds);
+	}
+
 	// Bounds and shapes are refused before anything is stored.
 	for refused in [
-		json!({"expected_revision": 2, "default_mode": "manual", "answer_deadline_seconds": 0}),
-		json!({"expected_revision": 2, "default_mode": "manual", "unexpected": true}),
+		json!({"expected_revision": 4, "default_mode": "manual", "answer_deadline_seconds": 0}),
+		json!({"expected_revision": 4, "default_mode": "manual", "answer_deadline_seconds": 59}),
+		json!({"expected_revision": 4, "default_mode": "manual", "answer_deadline_seconds": 30 * 24 * 60 * 60 + 1}),
+		json!({"expected_revision": 4, "default_mode": "manual", "unexpected": true}),
 		json!({"expected_revision": -1, "default_mode": "manual"}),
 	] {
 		let response = send(
@@ -515,6 +533,20 @@ async fn a_person_reads_and_saves_their_own_preferences(
 			response.status()
 		);
 	}
+	let unchanged = send(
+		&fixture,
+		Person::Member,
+		&people.member,
+		"GET",
+		PREFERENCES,
+		Value::Null,
+	)
+	.await;
+	let body = json_body(&unchanged);
+	assert_eq!(
+		(&body["answer_deadline_seconds"], &body["revision"]),
+		(&json!(30 * 24 * 60 * 60), &json!(4))
+	);
 
 	// Another person's preferences are their own.
 	let other = send(

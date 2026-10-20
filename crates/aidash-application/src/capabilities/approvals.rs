@@ -43,6 +43,25 @@ pub const TOOL_CALL: &str = "tool_call";
 /// to be asked (Approval Mode Don't ask).
 pub const DONT_ASK_HUMAN_REQUEST: &str =
 	"the person asked not to be asked; continue on your own judgment";
+/// What the system answers a model's question with once the person's Answer
+/// Deadline passed before anyone answered it.
+pub fn answer_deadline_response() -> Value {
+	json!({"answered": false, "reason": "answer_deadline"})
+}
+/// What the model reads when its question went unanswered until the person's
+/// Answer Deadline.
+pub const ANSWER_DEADLINE_PASSED: &str =
+	"no answer arrived within the person's Answer Deadline; continue on your own judgment";
+/// The answer to a model's question as the model reads it: one the system gave
+/// at the Answer Deadline also tells the model to go on.
+pub fn answer_for_model(response: Value) -> Value {
+	if response != answer_deadline_response() {
+		return response;
+	}
+	let mut told = response;
+	told["message"] = json!(ANSWER_DEADLINE_PASSED);
+	told
+}
 /// What the model is told while the person's Approval Mode is Auto, so a Run
 /// the Decider approves is not held up by questions.
 pub const AUTO_MODE_INSTRUCTION: &str = "\nThe person has chosen the Auto Approval Mode. Do not stop to ask clarifying questions unless the person's input relies on one; make a reasonable assumption and continue.";

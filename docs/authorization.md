@@ -351,6 +351,8 @@ Aidash decides each approval when the Run needs it, in this order:
 
 A person has a default mode and can override it for any Thread. A change applies to running Runs at their next approval. The API refuses a mode the Tenant's policy does not allow. If the policy later withdraws a mode, it acts as Manual.
 
+A person can also set an Answer Deadline, `answer_deadline_seconds`, from 60 seconds to 30 days (2592000), or `null` for none, which is the default. It is how long their Runs wait for an answer to the model's own question (`human_request`) before continuing on the model's judgment. It covers the same Runs as the settings above. It never applies to a Completion Review, a failed subtask's intervention or the Reconciliation of an uncertain tool call, which keep waiting for a person. A Run that asks such a question records `answer_by` in its waiting state, and `GET /api/state` shows it on the question. If nobody has answered by then, the system answers the request as `system` with `{"answered": false, "reason": "answer_deadline"}`. The model reads that no answer arrived within the person's Answer Deadline and that it should continue on its own judgment. An answer that arrives first wins, and one that arrives after the system's is refused with 409 because the request is already answered. A new deadline applies to questions asked after the change. Don't ask refuses the question outright, so no deadline applies.
+
 Bypass needs a recorded acceptance, given once with `accept_bypass: true` on the preferences update. Until then Bypass acts as Manual, and a Thread cannot set it.
 
 Auto needs the `approval.mode.auto` action and a Catalog Approval of the Tenant's chosen approval Decider version on the Node. Without both, Auto acts as Manual. Each mode choice in the preferences and Thread responses carries a `reason` when the mode is not allowed or not ready. The reasons are `policy` when the Tenant's policy does not allow the mode, `not_accepted` when Bypass awaits acceptance, `decider_unapproved` when the approval Decider has no Catalog Approval on the Node, and `no_decider` when the Tenant's approval Decider is not registered as one. Until the Tenant names another, its approval Decider is the built-in `aidash.approval-decider@1.0.0`. The Tenant names another with the route below. The decision itself is in [Approval hook](decision-gate.md#approval-hook).
@@ -375,12 +377,12 @@ The routes below read and change these settings. The `mine` routes and the Threa
 
 | Method | Path                                                         | Body or result                                                                                      |
 | ------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| GET    | `/api/tenants/{tenant}/approval-preferences/mine`            | The default mode, Bypass acceptance, revision, and each mode with whether the policy allows it.     |
-| PUT    | `/api/tenants/{tenant}/approval-preferences/mine`            | Body: `expected_revision`, `default_mode`, and optionally `accept_bypass`.                          |
+| GET    | `/api/tenants/{tenant}/approval-preferences/mine`            | The default mode, Answer Deadline, Bypass acceptance, revision, and each mode's availability.       |
+| PUT    | `/api/tenants/{tenant}/approval-preferences/mine`            | Body: `expected_revision`, `default_mode`, optional `accept_bypass`, `answer_deadline_seconds`.     |
 | GET    | `/api/tenants/{tenant}/approval-rules/mine`                  | The person's rules, each with `effective`.                                                          |
 | POST   | `/api/tenants/{tenant}/approval-rules/mine`                  | Body: `kind`, `target` and `effect`.                                                                |
 | DELETE | `/api/tenants/{tenant}/approval-rules/mine/{id}`             | Deletes one of the person's rules.                                                                  |
-| GET    | `/api/tenants/{tenant}/subjects/{subject}/approval-settings` | Needs `approval.read`. Shows a member's default mode, Bypass acceptance and rules.                  |
+| GET    | `/api/tenants/{tenant}/subjects/{subject}/approval-settings` | Needs `approval.read`. Shows a member's default mode, Answer Deadline, Bypass acceptance, rules.    |
 | GET    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | The caller's mode for the Thread, `null` when the default applies, the default mode, and the modes. |
 | PUT    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | Body: `mode`. `null` clears the Thread's mode.                                                      |
 | GET    | `/api/tenants/{tenant}/approval-decider`                     | Any Tenant subject. Returns `decider` (`id`, `version`), `built_in`, `registered`, `approved`.      |

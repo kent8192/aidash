@@ -589,6 +589,16 @@ impl ExecutionAuthority for Authority<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn answer_deadline(&self, run: &Run) -> Result<Option<i64>> {
+		// A Run executing for another Node is covered by nobody's settings here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.answer_deadline(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn approval_judgement(
 		&self,
 		run: &Run,

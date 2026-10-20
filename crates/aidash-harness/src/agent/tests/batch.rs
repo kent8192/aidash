@@ -752,6 +752,9 @@ impl ExecutionAuthority for Bench {
 	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
 		unexpected("ExecutionAuthority.approval_mode")
 	}
+	async fn answer_deadline(&self, _run: &Run) -> Result<Option<i64>> {
+		unexpected("ExecutionAuthority.answer_deadline")
+	}
 	async fn approval_judgement(
 		&self,
 		_run: &Run,

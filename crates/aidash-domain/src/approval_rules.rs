@@ -21,6 +21,8 @@ pub const MODE_AUTO: &str = "approval.mode.auto";
 pub const MODE_BYPASS: &str = "approval.mode.bypass";
 /// The resource kind a mode is judged on.
 pub const MODE_RESOURCE: &str = "approval_mode";
+/// The Answer Deadlines a person may set, in seconds: one minute to 30 days.
+pub const ANSWER_DEADLINE_SECONDS: std::ops::RangeInclusive<i64> = 60..=30 * 24 * 60 * 60;
 
 /// What an approval is for. The target strings below are what a rule names and
 /// what [`resolve`] compares them with.

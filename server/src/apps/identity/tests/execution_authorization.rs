@@ -2683,10 +2683,24 @@ mod approval_modes {
 
 	/// Stores alice's default Approval Mode, with or without her acceptance of Bypass.
 	async fn prefer(f: &aidash_server::federation::Federation, mode: &str, accepted_bypass: bool) {
+		prefer_waiting(f, mode, accepted_bypass, None).await;
+	}
+
+	/// Stores alice's preferences with the Answer Deadline, in seconds, her Runs wait for an answer.
+	async fn prefer_waiting(
+		f: &aidash_server::federation::Federation,
+		mode: &str,
+		accepted_bypass: bool,
+		answer_deadline_seconds: Option<i64>,
+	) {
 		let accepted = if accepted_bypass {
 			Expr::cust("clock_timestamp()")
 		} else {
 			Expr::cust("NULL::timestamptz")
+		};
+		let deadline = match answer_deadline_seconds {
+			Some(seconds) => Expr::val(seconds),
+			None => Expr::cust("NULL::bigint"),
 		};
 		execute(
 			f,
@@ -2698,6 +2712,7 @@ mod approval_modes {
 						"subject",
 						"default_mode",
 						"bypass_accepted_at",
+						"answer_deadline_seconds",
 						"revision",
 						"updated_at",
 					]
@@ -2709,6 +2724,7 @@ mod approval_modes {
 						.expr(Expr::val("alice"))
 						.expr(Expr::val(mode))
 						.expr(accepted)
+						.expr(deadline)
 						.expr(Expr::val(1_i64))
 						.expr(Expr::cust("clock_timestamp()"))
 						.to_owned(),
@@ -3043,6 +3059,248 @@ mod approval_modes {
 			"{results:?}"
 		);
 		assert_eq!(finished.phase().as_str(), "COMPLETED");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	/// The question the Run waits on and when it continues without an answer.
+	fn waiting_question(
+		run: &aidash_server::domain::Run,
+	) -> Option<(Uuid, Option<chrono::DateTime<chrono::Utc>>)> {
+		let aidash_server::domain::RunState::Waiting(waiting) = &run.state else {
+			return None;
+		};
+		match waiting.as_ref() {
+			aidash_server::domain::WaitingState::Human {
+				request_id,
+				answer_by,
+				..
+			} => Some((*request_id, *answer_by)),
+			_ => None,
+		}
+	}
+
+	/// Moves the Answer Deadline of the question the Run waits on into the past,
+	/// as if the person's time to answer had run out.
+	async fn let_the_deadline_pass(f: &aidash_server::federation::Federation, run: Uuid) {
+		execute(
+			f,
+			Query::update()
+				.table(Alias::new("runs"))
+				.value_expr(
+					Alias::new("pending"),
+					Expr::cust(
+						"jsonb_set(pending, '{data,answer_by}', to_jsonb(clock_timestamp() - interval '1 second'))",
+					),
+				)
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::val(run)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+	}
+
+	/// The stored answer to the Run's question and who gave it.
+	async fn stored_answer(
+		f: &aidash_server::federation::Federation,
+		run: Uuid,
+	) -> (Option<Value>, Option<String>) {
+		let sql = Query::select()
+			.expr_as(Expr::cust("response::text"), Alias::new("response"))
+			.column(Alias::new("answered_by"))
+			.from(Alias::new("human_requests"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::val(run)))
+			.to_string(PostgresQueryBuilder);
+		let (response, answered_by) = sqlx::query_as::<_, (Option<String>, Option<String>)>(&sql)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		(
+			response.map(|text| serde_json::from_str(&text).unwrap()),
+			answered_by,
+		)
+	}
+
+	/// What the model read of the answer to its question, once the Run went on.
+	fn heard(run: &aidash_server::domain::Run) -> Value {
+		run.context
+			.events()
+			.find_map(|event| match event {
+				aidash_server::context::ContextEvent::Human { response, .. } => {
+					Some(response.clone())
+				}
+				_ => None,
+			})
+			.expect("the answer is in the Context")
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn a_question_nobody_answers_by_the_answer_deadline_is_answered_by_the_system_and_the_run_goes_on(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange: alice gives her Runs a minute to answer, and her model asks.
+		let t = tool_call_approvals;
+		t.question.store(true, Ordering::SeqCst);
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		prefer_waiting(&f, "manual", false, Some(60)).await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		let before = chrono::Utc::now();
+
+		// Act: the Run waits for her, and her minute has not run out.
+		let waiting = step_until(&harness, &f, run.id, |run| waiting_question(run).is_some()).await;
+
+		// Assert: it continues a minute from the question, and says so on the dashboard.
+		let (question, by) = waiting_question(&waiting).unwrap();
+		let by = by.expect("her Answer Deadline applies to the question");
+		assert!(by >= before + chrono::Duration::seconds(60), "{by}");
+		assert!(
+			by <= chrono::Utc::now() + chrono::Duration::seconds(60),
+			"{by}"
+		);
+		let (status, state) = request(
+			&t.application.application,
+			&token,
+			"GET",
+			"/api/state",
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{state}");
+		let shown = state["human_requests"].as_array().unwrap();
+		assert_eq!(shown.len(), 1, "{shown:?}");
+		assert_eq!(shown[0]["id"], json!(question));
+		assert_eq!(shown[0]["answer_by"], json!(by));
+		harness.worker_once().await.unwrap();
+		let still = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert_eq!(
+			waiting_question(&still).map(|(id, _)| id),
+			Some(question),
+			"the Run does not go on before its deadline"
+		);
+		assert_eq!(t.inferences.load(Ordering::SeqCst), 1);
+
+		// Act: the minute runs out.
+		let_the_deadline_pass(&f, run.id).await;
+		let finished = step_until(&harness, &f, run.id, |run| {
+			run.phase().as_str() == "COMPLETED"
+		})
+		.await;
+
+		// Assert: the system answered, the model heard it and went on by itself.
+		let (response, answered_by) = stored_answer(&f, run.id).await;
+		assert_eq!(
+			response,
+			Some(json!({"answered": false, "reason": "answer_deadline"}))
+		);
+		assert_eq!(answered_by.as_deref(), Some("system"));
+		let heard = heard(&finished);
+		assert_eq!(heard["answered"], false);
+		assert!(
+			heard["message"]
+				.as_str()
+				.is_some_and(|message| message.contains("continue on your own judgment")),
+			"{heard}"
+		);
+		assert_eq!(t.inferences.load(Ordering::SeqCst), 2);
+		let (status, late) = request(
+			&t.application.application,
+			&token,
+			"POST",
+			&format!("/api/human-requests/{question}/answer"),
+			json!({"answer": "too late"}),
+		)
+		.await;
+		assert_eq!(
+			status, 409,
+			"an answer after the system's is refused: {late}"
+		);
+		assert_eq!(stored_answer(&f, run.id).await.1.as_deref(), Some("system"));
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn an_answer_given_before_the_deadline_passes_wins(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		t.question.store(true, Ordering::SeqCst);
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		prefer_waiting(&f, "manual", false, Some(60)).await;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		let waiting = step_until(&harness, &f, run.id, |run| waiting_question(run).is_some()).await;
+		let (question, _) = waiting_question(&waiting).unwrap();
+
+		// Act: alice answers, and her deadline passes before the Run looks again.
+		let (status, answered) = request(
+			&t.application.application,
+			&token,
+			"POST",
+			&format!("/api/human-requests/{question}/answer"),
+			json!({"answer": "the second"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{answered}");
+		let_the_deadline_pass(&f, run.id).await;
+		let finished = step_until(&harness, &f, run.id, |run| {
+			run.phase().as_str() == "COMPLETED"
+		})
+		.await;
+
+		// Assert
+		let (response, answered_by) = stored_answer(&f, run.id).await;
+		assert_eq!(response, Some(json!({"answer": "the second"})));
+		assert_eq!(answered_by.as_deref(), Some("alice"));
+		assert_eq!(heard(&finished), json!({"answer": "the second"}));
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
+	#[rstest::rstest]
+	#[case::no_preferences_saved(None)]
+	#[case::preferences_without_a_deadline(Some(None))]
+	#[tokio::test]
+	async fn without_an_answer_deadline_the_question_waits_for_its_answer(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+		#[case] preferences: Option<Option<i64>>,
+	) {
+		// Arrange
+		let t = tool_call_approvals;
+		t.question.store(true, Ordering::SeqCst);
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		if let Some(deadline) = preferences {
+			prefer_waiting(&f, "manual", false, deadline).await;
+		}
+		let harness = Harness {
+			federation: f.clone(),
+		};
+
+		// Act
+		let waiting = step_until(&harness, &f, run.id, |run| waiting_question(run).is_some()).await;
+
+		// Assert
+		let (question, by) = waiting_question(&waiting).unwrap();
+		assert_eq!(by, None);
+		let (_, state) = request(
+			&t.application.application,
+			&token,
+			"GET",
+			"/api/state",
+			Value::Null,
+		)
+		.await;
+		let shown = &state["human_requests"][0];
+		assert_eq!(shown["id"], json!(question));
+		assert!(shown.get("answer_by").is_none_or(Value::is_null), "{shown}");
 		drop(t.server);
 		cleanup(f, &url, &schema).await;
 	}
