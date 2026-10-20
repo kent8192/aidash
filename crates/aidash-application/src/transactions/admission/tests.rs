@@ -11,20 +11,23 @@ use uuid::Uuid;
 fn manifest() -> Manifest {
 	Manifest {
 		id: Uuid::from_u128(1),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T01:00:00Z".parse().unwrap(),
-		participants: ["aidash://home", "aidash://peer"]
-			.into_iter()
-			.map(|node| Participant {
-				node_id: node.into(),
-				mutations: vec![Mutation::WorkspaceState {
-					workspace_id: Uuid::from_u128(2),
-					expected_revision: 0,
-					state: json!({}),
-				}],
-			})
-			.collect(),
+		participants: [
+			"aidash://home/airy-hawk-2lu4as22",
+			"aidash://peer/airy-hawk-2lu4as22",
+		]
+		.into_iter()
+		.map(|node| Participant {
+			node_id: node.into(),
+			mutations: vec![Mutation::WorkspaceState {
+				workspace_id: Uuid::from_u128(2),
+				expected_revision: 0,
+				state: json!({}),
+			}],
+		})
+		.collect(),
 	}
 }
 
@@ -86,7 +89,7 @@ impl Adapter {
 #[async_trait]
 impl AdmissionScope for Adapter {
 	fn node_id(&self) -> &str {
-		"aidash://home"
+		"aidash://home/airy-hawk-2lu4as22"
 	}
 	fn now(&self) -> DateTime<Utc> {
 		"2030-01-01T00:00:00Z".parse().unwrap()
@@ -107,7 +110,7 @@ impl AdmissionScope for Adapter {
 		}
 		Ok(())
 	}
-	async fn trusted(&mut self, _node: &str, _origin: Option<&Origin>) -> Result<bool> {
+	async fn trusted(&mut self, _: &str, _node: &str, _origin: Option<&Origin>) -> Result<bool> {
 		self.event("trusted")?;
 		Ok(self.0.lock().unwrap().trusted)
 	}
@@ -278,7 +281,7 @@ async fn invalid_submission_never_reads_storage(mut manifest: Manifest, #[case] 
 	if invalid {
 		manifest.id = Uuid::nil();
 	} else {
-		manifest.coordinator = "aidash://peer".into();
+		manifest.coordinator = "aidash://peer/airy-hawk-2lu4as22".into();
 	}
 	assert!(matches!(
 		submit_in(&mut adapter, &manifest, None).await,

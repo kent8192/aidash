@@ -365,6 +365,12 @@ impl From<DeploymentKeyId> for String {
 
 /// The Deployment part of a Node address. A bare Deployment id, which a peer
 /// that predates Node addresses still sends, is its own Deployment.
+/// Whether two Node addresses, or a Node address and a Deployment id, name the
+/// same Deployment.
+pub fn same_deployment(a: &str, b: &str) -> bool {
+	deployment_of(a) == deployment_of(b)
+}
+
 pub fn deployment_of(address: &str) -> &str {
 	let rest = address.strip_prefix(SCHEME).unwrap_or(address);
 	let end = rest.find('/').unwrap_or(rest.len());

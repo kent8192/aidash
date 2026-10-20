@@ -107,9 +107,15 @@ impl MutationScope for Scope<'_> {
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
-		event_records::append(self.0, workspace, kind, data)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+		// An event with no Workspace is a Run's end on a Node that is not its Home,
+		// and belongs to the Run's Tenant.
+		match (
+			workspace,
+			data.get("run_id").and_then(Value::as_str).map(str::parse),
+		) {
+			(None, Some(Ok(run))) => event_records::append_for_run(self.0, run, kind, data).await,
+			_ => event_records::append(self.0, workspace, kind, data).await,
+		}
+		.map_err(Into::into)
 	}
 }

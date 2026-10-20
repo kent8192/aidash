@@ -187,7 +187,7 @@ pub(crate) async fn mapped(
 	admitted: Option<&aidash_application::federation::inbound::Admitted>,
 	input: &Preflight,
 ) -> Result<Access> {
-	if input.coordinator == f.config.deployment {
+	if aidash_domain::nodes::same_deployment(&input.coordinator, f.config.deployment.as_str()) {
 		return access(f, &input.origin).await;
 	}
 	let admitted = admitted.ok_or(Error::Forbidden)?;

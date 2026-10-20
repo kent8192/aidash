@@ -74,7 +74,9 @@ pub async fn submit(
 	manifest: &Manifest,
 ) -> Result<Status> {
 	repository.validate(manifest)?;
-	if manifest.coordinator != repository.node_id() {
+	if aidash_domain::nodes::deployment_of(&manifest.coordinator)
+		!= aidash_domain::nodes::deployment_of(repository.node_id())
+	{
 		return Err(Error::Invalid("submit to the named coordinator".into()));
 	}
 	let origin = Origin::from(identity);
@@ -119,7 +121,9 @@ pub async fn submit(
 			manifest
 				.participants
 				.iter()
-				.filter(|node| node.node_id != repository.node_id())
+				.filter(|node| {
+					!aidash_domain::nodes::same_deployment(&node.node_id, repository.node_id())
+				})
 				.map(Ok::<_, Error>),
 		)
 		.try_for_each_concurrent(8, |node| {
@@ -156,7 +160,7 @@ pub async fn issue(
 	let mut scope = repository.source(&origin).await?;
 	let result = async {
 		source_checks(scope.authority(), manifest, &origin, "transaction.submit").await?;
-		if node != repository.node_id() {
+		if !aidash_domain::nodes::same_deployment(node, repository.node_id()) {
 			scope.trusted(node).await?;
 		}
 		scope.insert_attempt(manifest.id, node).await
@@ -222,7 +226,7 @@ pub async fn check_admission(
 	if Origin::from(&scope.identity()) != bound.local || scope.subjects() != bound.subjects {
 		return Err(Error::Forbidden);
 	}
-	if caller != repository.node_id()
+	if !aidash_domain::nodes::same_deployment(caller, repository.node_id())
 		&& repository.remote_ticket(caller, bound.request.id).await? != bound.request
 	{
 		return Err(Error::Forbidden);
@@ -268,7 +272,7 @@ pub async fn manage(
 			authority.require(&resource, action).await?;
 		}
 		for node in &manifest.participants {
-			if node.node_id != repository.node_id() {
+			if !aidash_domain::nodes::same_deployment(&node.node_id, repository.node_id()) {
 				let input = request(&manifest, &origin, &node.node_id)?;
 				repository.remote_access(&node.node_id, &input).await?;
 			}

@@ -45,13 +45,14 @@ impl ManagementRepository for Repository {
 		// can be sent. Suspend new cross-node scoped submissions until the
 		// disclosure protocol binds revocation to delivery. Existing durable
 		// transactions remain available to the recovery coordinator.
-		if manifest
-			.participants
-			.iter()
-			.any(|participant| participant.node_id != self.runtime.config.deployment)
-			&& AuthorityRepository::origin(&repository, manifest.id)
-				.await?
-				.is_none()
+		if manifest.participants.iter().any(|participant| {
+			!aidash_domain::nodes::same_deployment(
+				&participant.node_id,
+				self.runtime.config.deployment.as_str(),
+			)
+		}) && AuthorityRepository::origin(&repository, manifest.id)
+			.await?
+			.is_none()
 		{
 			return Err(aidash_application::Error::Forbidden);
 		}

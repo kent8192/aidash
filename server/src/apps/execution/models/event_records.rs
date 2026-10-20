@@ -33,6 +33,22 @@ pub(crate) async fn append_for_tenant(
 	Ok(())
 }
 
+/// An event with no Workspace that concerns the Run `run`, such as the end of a
+/// Run whose Home is another Node: it belongs to the Run's Tenant.
+pub(crate) async fn append_for_run(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	kind: &str,
+	data: Value,
+) -> Result<()> {
+	let tenant = SimpleExpr::CustomWithExpr(
+		"(SELECT tenant FROM runs WHERE id = ?)".to_owned(),
+		vec![Expr::value(run).into()],
+	);
+	insert(tx, None, tenant, kind, data).await?;
+	Ok(())
+}
+
 pub(crate) async fn create(
 	tx: &mut AtomicTransaction,
 	workspace: Option<Uuid>,

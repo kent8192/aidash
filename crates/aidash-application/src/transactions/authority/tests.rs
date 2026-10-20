@@ -12,20 +12,23 @@ use uuid::Uuid;
 
 #[fixture]
 fn run() -> RunMetadata {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE","step":0,"revision":0,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/airy-hawk-2lu4as22","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE","step":0,"revision":0,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
 }
 #[fixture]
 fn input() -> Preflight {
 	Preflight {
 		id: Uuid::from_u128(9),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		digest: "manifest".into(),
 		origin: Origin {
 			credential_id: Uuid::from_u128(5),
 			tenant: "source".into(),
 			subject: "origin".into(),
 		},
-		recipients: vec!["aidash://home".into(), "aidash://peer".into()],
+		recipients: vec![
+			"aidash://home/airy-hawk-2lu4as22".into(),
+			"aidash://peer/airy-hawk-2lu4as22".into(),
+		],
 		targets: vec![
 			Target {
 				kind: "workspace".into(),
@@ -85,7 +88,7 @@ impl TransactionAuthorityScope for Scope {
 		}
 	}
 	fn source_node(&self) -> Option<&str> {
-		self.remote.then_some("aidash://home")
+		self.remote.then_some("aidash://home/airy-hawk-2lu4as22")
 	}
 	fn subjects(&self) -> &[String] {
 		&self.subjects
@@ -138,7 +141,7 @@ impl TransactionAuthorityScope for Scope {
 		run: &RunMetadata,
 		coordinator: &str,
 	) -> Result<Option<SourceAdmission>> {
-		assert_eq!(coordinator, "aidash://home");
+		assert_eq!(coordinator, "aidash://home/airy-hawk-2lu4as22");
 		self.call("source_admission".into())?;
 		if self.missing {
 			return Ok(None);
@@ -213,20 +216,20 @@ async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_orde
 			"workspace",
 			"workspace.read",
 			"workspace.update",
-			"transaction.disclose:workspace:aidash://home",
-			"transaction.disclose:workspace:aidash://peer",
+			"transaction.disclose:workspace:aidash://home/airy-hawk-2lu4as22",
+			"transaction.disclose:workspace:aidash://peer/airy-hawk-2lu4as22",
 			"task",
 			"task_resource",
 			"task.complete",
 			"artifact_resource",
 			"artifact.create",
-			"transaction.disclose:task:aidash://home",
-			"transaction.disclose:task:aidash://peer",
+			"transaction.disclose:task:aidash://home/airy-hawk-2lu4as22",
+			"transaction.disclose:task:aidash://peer/airy-hawk-2lu4as22",
 			"run",
 			"run.read",
 			"run.finish",
-			"transaction.disclose:run:aidash://home",
-			"transaction.disclose:run:aidash://peer"
+			"transaction.disclose:run:aidash://home/airy-hawk-2lu4as22",
+			"transaction.disclose:run:aidash://peer/airy-hawk-2lu4as22"
 		]
 	);
 	assert_eq!(scope.subjects, vec!["root", "agent"]);
@@ -263,7 +266,7 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 #[case::run("run")]
 #[case::inherit("inherit_local_run")]
 #[case::workspace("workspace.update")]
-#[case::disclosure("transaction.disclose:workspace:aidash://peer")]
+#[case::disclosure("transaction.disclose:workspace:aidash://peer/airy-hawk-2lu4as22")]
 #[case::artifact("artifact.create")]
 #[tokio::test]
 async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_identity(
@@ -396,7 +399,7 @@ fn source_manifest(input: &Preflight) -> Manifest {
 				}],
 			},
 			Participant {
-				node_id: "aidash://peer".into(),
+				node_id: "aidash://peer/airy-hawk-2lu4as22".into(),
 				mutations: vec![Mutation::WorkspaceState {
 					workspace_id: Uuid::from_u128(7),
 					expected_revision: 0,
@@ -420,7 +423,7 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 	source_checks(&mut scope, &manifest, &input.origin, action)
 		.await
 		.unwrap();
-	let qualified = format!("{action}:workspace:aidash://peer");
+	let qualified = format!("{action}:workspace:aidash://peer/airy-hawk-2lu4as22");
 	let start = scope
 		.calls
 		.iter()
@@ -429,8 +432,8 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 	let expected = if disclosures {
 		vec![
 			qualified,
-			"transaction.disclose:workspace:aidash://home".into(),
-			"transaction.disclose:workspace:aidash://peer".into(),
+			"transaction.disclose:workspace:aidash://home/airy-hawk-2lu4as22".into(),
+			"transaction.disclose:workspace:aidash://peer/airy-hawk-2lu4as22".into(),
 		]
 	} else {
 		vec![qualified]
@@ -441,7 +444,7 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 #[tokio::test]
 async fn denied_source_permission_stops_remote_disclosure(mut scope: Scope, input: Preflight) {
 	let manifest = source_manifest(&input);
-	let failure = "transaction.submit:workspace:aidash://peer";
+	let failure = "transaction.submit:workspace:aidash://peer/airy-hawk-2lu4as22";
 	scope.failure = Some(failure.into());
 	assert!(
 		matches!(source_checks(&mut scope,&manifest,&input.origin,"transaction.submit").await,Err(Error::External(message)) if message==format!("fault:{failure}"))

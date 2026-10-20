@@ -16,7 +16,16 @@ pub trait AdmissionScope: Send {
 	async fn match_origin(&mut self, id: Uuid, origin: Option<&Origin>) -> Result<()>;
 	/// Whether the submitting Node's Tenant registered `node` for atomic
 	/// transactions. A submission with no origin has no Tenant and so no Node.
-	async fn trusted(&mut self, node: &str, origin: Option<&Origin>) -> Result<bool>;
+	/// Whether the transaction's coordinator Node may hold reservations on
+	/// `node`: its Tenant allows atomic transactions with that Node. A
+	/// submission with no origin is the Deployment Administrator's, and acts as
+	/// the coordinator Node's own Tenant.
+	async fn trusted(
+		&mut self,
+		coordinator: &str,
+		node: &str,
+		origin: Option<&Origin>,
+	) -> Result<bool>;
 	/// Admission is serialized by transaction ID and checks the immutable manifest
 	/// again under its lock, then inserts participant votes and history atomically.
 	async fn admit(&mut self, manifest: &Manifest) -> Result<Status>;

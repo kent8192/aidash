@@ -1,5 +1,5 @@
 //! Immutable transaction manifests and monotonic coordinator decisions.
-use crate::{ArtifactInput, Error, nodes::DeploymentId};
+use crate::{ArtifactInput, Error, nodes::NodeAddress};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ impl Manifest {
 	where
 		E: From<Error> + From<serde_json::Error>,
 	{
-		DeploymentId::parse(&self.coordinator)?;
+		NodeAddress::parse(&self.coordinator)?;
 		if self.id.is_nil() || self.participants.is_empty() || self.participants.len() > 16 {
 			return Err(
 				Error::Invalid("transaction requires an ID and 1..16 participants".into()).into(),
@@ -69,7 +69,7 @@ impl Manifest {
 		let mut previous: Option<&str> = None;
 		let mut count = 0;
 		for participant in &self.participants {
-			DeploymentId::parse(&participant.node_id)?;
+			NodeAddress::parse(&participant.node_id)?;
 			if previous.is_some_and(|p| p >= participant.node_id.as_str())
 				|| participant.mutations.len() > 64
 			{
@@ -141,10 +141,18 @@ impl Manifest {
 	pub fn digest(&self) -> std::result::Result<String, serde_json::Error> {
 		Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
 	}
+	/// The participant that runs on `node`: the Node itself, or the one a
+	/// Deployment hosts when `node` names the Deployment. A transaction names
+	/// at most one Node of each Deployment.
 	pub fn local(&self, node: &str) -> std::result::Result<&Participant, MissingParticipant> {
 		self.participants
 			.iter()
 			.find(|p| p.node_id == node)
+			.or_else(|| {
+				self.participants
+					.iter()
+					.find(|p| crate::nodes::same_deployment(&p.node_id, node))
+			})
 			.ok_or(MissingParticipant)
 	}
 }

@@ -25,11 +25,11 @@ fn identity() -> ExecutionPrincipal {
 fn manifest(id: Uuid) -> Manifest {
 	Manifest {
 		id,
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T00:00:00Z".parse().unwrap(),
 		participants: vec![Participant {
-			node_id: "aidash://peer".into(),
+			node_id: "aidash://peer/airy-hawk-2lu4as22".into(),
 			mutations: vec![],
 		}],
 	}
@@ -192,7 +192,7 @@ impl ManagementRepository for Repository {
 		self.event("history")?;
 		Ok((
 			vec![Vote {
-				node_id: "aidash://peer".into(),
+				node_id: "aidash://peer/airy-hawk-2lu4as22".into(),
 				phase: "PREPARED".into(),
 			}],
 			vec![History {
@@ -365,7 +365,7 @@ async fn authorized_details_preserve_vote_and_audit_facts(
 	assert_eq!(
 		details.participants,
 		[Vote {
-			node_id: "aidash://peer".into(),
+			node_id: "aidash://peer/airy-hawk-2lu4as22".into(),
 			phase: "PREPARED".into()
 		}]
 	);
@@ -403,8 +403,8 @@ async fn abort_returns_the_new_decision_after_its_existing_authority_workflow(
 }
 
 #[rstest]
-#[case::participant(Some("aidash://peer"), false)]
-#[case::outsider(Some("aidash://other"), true)]
+#[case::participant(Some("aidash://peer/airy-hawk-2lu4as22"), false)]
+#[case::outsider(Some("aidash://other/airy-hawk-2lu4as22"), true)]
 #[case::missing(None, true)]
 #[tokio::test]
 async fn immutable_decision_is_disclosed_only_to_a_named_participant(

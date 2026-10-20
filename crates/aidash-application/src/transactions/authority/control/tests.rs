@@ -27,20 +27,23 @@ fn origin() -> Origin {
 fn manifest() -> Manifest {
 	Manifest {
 		id: Uuid::from_u128(1),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T00:00:00Z".parse().unwrap(),
-		participants: ["aidash://home", "aidash://peer"]
-			.into_iter()
-			.map(|node| Participant {
-				node_id: node.into(),
-				mutations: vec![Mutation::WorkspaceState {
-					workspace_id: Uuid::from_u128(3),
-					expected_revision: 0,
-					state: json!({"ready":true}),
-				}],
-			})
-			.collect(),
+		participants: [
+			"aidash://home/airy-hawk-2lu4as22",
+			"aidash://peer/airy-hawk-2lu4as22",
+		]
+		.into_iter()
+		.map(|node| Participant {
+			node_id: node.into(),
+			mutations: vec![Mutation::WorkspaceState {
+				workspace_id: Uuid::from_u128(3),
+				expected_revision: 0,
+				state: json!({"ready":true}),
+			}],
+		})
+		.collect(),
 	}
 }
 
@@ -94,7 +97,7 @@ struct Repository {
 impl Repository {
 	fn new(origin: Origin) -> Self {
 		Self {
-			node: "aidash://home".into(),
+			node: "aidash://home/airy-hawk-2lu4as22".into(),
 			state: Arc::new(Mutex::new(State {
 				log: vec![],
 				origin: Some(origin),
@@ -524,7 +527,7 @@ async fn submission_holds_admission_until_remote_preflight_then_commits_before_w
 			"transfer",
 			"submit",
 			"bind:submission",
-			"preflight:aidash://peer",
+			"preflight:aidash://peer/airy-hawk-2lu4as22",
 			"coordinator.submit.before",
 			"commit:submission",
 			"coordinator.submit.after",
@@ -535,7 +538,11 @@ async fn submission_holds_admission_until_remote_preflight_then_commits_before_w
 
 #[rstest]
 #[case("require:transaction.submit:workspace", true, "rollback:denied")]
-#[case("preflight:aidash://peer", false, "rollback:submission")]
+#[case(
+	"preflight:aidash://peer/airy-hawk-2lu4as22",
+	false,
+	"rollback:submission"
+)]
 #[case("commit:submission", false, "commit:submission")]
 #[tokio::test]
 async fn failed_submission_keeps_no_record_and_never_wakes(
@@ -659,7 +666,7 @@ async fn ticket_requires_an_undecided_record_and_a_pending_attempt(
 		state.pending = pending;
 	}
 	assert!(matches!(
-		ticket(&repository, manifest.id, "aidash://peer").await,
+		ticket(&repository, manifest.id, "aidash://peer/airy-hawk-2lu4as22").await,
 		Err(Error::Forbidden)
 	));
 	let calls = repository.log();
@@ -685,14 +692,14 @@ async fn issue_faults_preserve_only_committed_attempts(
 	let repository = Repository::new(origin);
 	repository.state.lock().unwrap().failure = Some(fault.into());
 	assert!(matches!(
-		issue(&repository, &manifest, "aidash://peer").await,
+		issue(&repository, &manifest, "aidash://peer/airy-hawk-2lu4as22").await,
 		Err(Error::External(_))
 	));
 	let state = repository.state.lock().unwrap();
 	assert_eq!(
 		state.attempts,
 		if durable {
-			vec![(manifest.id, "aidash://peer".into())]
+			vec![(manifest.id, "aidash://peer/airy-hawk-2lu4as22".into())]
 		} else {
 			vec![]
 		}
@@ -708,7 +715,7 @@ async fn deployment_administrator_recovery_does_not_invent_subject_authority(
 ) {
 	let repository = Repository::new(origin);
 	repository.state.lock().unwrap().origin = None;
-	issue(&repository, &manifest, "aidash://peer")
+	issue(&repository, &manifest, "aidash://peer/airy-hawk-2lu4as22")
 		.await
 		.unwrap();
 	assert_eq!(repository.log(), Vec::<String>::new());
@@ -755,7 +762,11 @@ async fn immutable_owner_survives_rotation_but_reads_use_the_current_credential(
 		vec![identity.credential_id]
 	);
 	assert!(calls.iter().any(|call| call == "audit:false"));
-	assert!(calls.iter().any(|call| call == "access:aidash://peer"));
+	assert!(
+		calls
+			.iter()
+			.any(|call| call == "access:aidash://peer/airy-hawk-2lu4as22")
+	);
 	assert!(!calls.iter().any(|call| call == "abort"));
 	identity.subject = "other".into();
 	assert!(matches!(
@@ -774,7 +785,7 @@ async fn admission_requires_the_reserved_subject_chain_and_exact_remote_proof(
 	#[case] changed_chain: bool,
 ) {
 	let mut repository = Repository::new(origin.clone());
-	repository.node = "aidash://peer".into();
+	repository.node = "aidash://peer/airy-hawk-2lu4as22".into();
 	let bound = Binding {
 		request: request(&manifest, &origin, &repository.node).unwrap(),
 		local: origin.clone(),
@@ -846,7 +857,7 @@ async fn submission_fanout_is_bounded_to_eight_independent_participants(
 	manifest.participants = vec![local.clone()];
 	for index in 0..15 {
 		manifest.participants.push(Participant {
-			node_id: format!("aidash://peer{index:02}"),
+			node_id: format!("aidash://peer{index:02}/airy-hawk-2lu4as22"),
 			mutations: local.mutations.clone(),
 		});
 	}
@@ -905,10 +916,10 @@ async fn live_trust_revocation_blocks_ticket_even_when_an_attempt_remains_pendin
 	let repository = Repository::new(origin.clone());
 	repository.state.lock().unwrap().status = Some(status(&manifest));
 	assert_eq!(
-		ticket(&repository, manifest.id, "aidash://peer")
+		ticket(&repository, manifest.id, "aidash://peer/airy-hawk-2lu4as22")
 			.await
 			.unwrap(),
-		request(&manifest, &origin, "aidash://peer").unwrap()
+		request(&manifest, &origin, "aidash://peer/airy-hawk-2lu4as22").unwrap()
 	);
 	assert_eq!(
 		&repository.log()[repository.log().len() - 2..],
@@ -920,7 +931,7 @@ async fn live_trust_revocation_blocks_ticket_even_when_an_attempt_remains_pendin
 		state.denial = Some("trusted".into());
 	}
 	assert!(matches!(
-		ticket(&repository, manifest.id, "aidash://peer").await,
+		ticket(&repository, manifest.id, "aidash://peer/airy-hawk-2lu4as22").await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(repository.log(), ["source", "trusted", "rollback:denied"]);
@@ -943,7 +954,7 @@ async fn abort_requires_both_live_subject_permission_and_remote_read_access(
 		if denied_locally {
 			state.denial = Some("require:transaction.abort:transaction".into());
 		} else {
-			state.failure = Some("access:aidash://peer".into());
+			state.failure = Some("access:aidash://peer/airy-hawk-2lu4as22".into());
 		}
 	}
 	assert!(
