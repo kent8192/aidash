@@ -206,7 +206,7 @@ Provider Credential Store. Catalog metadata never exposes either.
 1. Define entities, schema validation, PostgreSQL migrations and task transitions.
 2. Implement providers, tool adapters, context compaction and the durable worker.
 3. Connect event delivery, federation, interaction and marketplace APIs.
-4. Build the localized dashboard on those APIs, including task ownership, mesh, execution and human controls.
+4. Build the localized dashboard on those APIs, including task ownership, Graph View, execution and human controls.
 5. Verify with real PostgreSQL and NATS, scripted provider protocol fixtures, two independent nodes, concurrent claims, redelivery and worker process termination/restart. Live commercial model quality is separate from protocol and recovery testing.
 
 ## Required architecture extensions
