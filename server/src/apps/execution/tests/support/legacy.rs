@@ -168,6 +168,69 @@ pub async fn register_sender_only(
 	assert_eq!(status, 200, "{body}");
 }
 
+/// Replaces the registration at `local`'s default Node of `tenant` for `other`'s
+/// default Node, which currently holds `revision`, with one that is `enabled`.
+/// A disabling request keeps what the registration pinned; an enabling one
+/// pins what `other` publishes now.
+#[allow(dead_code)]
+pub async fn set_node_enabled(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+	enabled: bool,
+	revision: i64,
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	let mut body = peering::registration(
+		&other_node.to_string(),
+		Some((&other.config.endpoint, &peering::key_id(other))),
+	);
+	body["enabled"] = json!(enabled);
+	body["expected_revision"] = json!(revision);
+	let (status, response) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		body,
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+}
+
+/// Replaces the registration at `local`'s default Node of `tenant` for `other`'s
+/// default Node, which currently holds `revision`, so it addresses `endpoint`.
+/// The Deployment at `endpoint` must publish `other`'s key.
+#[allow(dead_code)]
+pub async fn repoint_node(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+	endpoint: &str,
+	revision: i64,
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	peering::permit(f, endpoint);
+	let mut body = peering::registration(
+		&other_node.to_string(),
+		Some((endpoint, &peering::key_id(other))),
+	);
+	body["expected_revision"] = json!(revision);
+	let (status, response) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		body,
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+}
+
 /// Both fixture Deployments register the other's default Node, so each accepts
 /// and addresses the other. Both serve their routes.
 #[allow(dead_code)]

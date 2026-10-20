@@ -98,6 +98,13 @@ pub fn enable(f: &Federation, context: &reinhardt::InjectionContext) -> Federati
 	keyed
 }
 
+/// A Federation whose Store was rebuilt from a new pool keeps the Deployment's
+/// egress and permitted origins, which `Store::from_pool` leaves empty.
+pub fn carry_over(rebuilt: &mut Federation, original: &Federation) {
+	rebuilt.store.egress = original.store.egress.clone();
+	rebuilt.store.keyless = original.store.keyless.clone();
+}
+
 /// The Deployment Key file of `f`.
 pub fn key_of(f: &Federation) -> Arc<KeyFile> {
 	let id = key_id(f);
