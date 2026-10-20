@@ -50,6 +50,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0039_agent_plugin_copies_state"),
 	("registry", "0040_agent_plugin_copies_row_level_security"),
 	("registry", "0041_agent_plugins_definition"),
+	("registry", "0042_agent_plugin_settings"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -2175,6 +2176,175 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 	);
 	assert!(
 		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![referenced]).await,
+		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	fixture.tenant_root("acme").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |settings: serde_json::Value| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"agent_plugin_settings":settings})
+	};
+	let digest = format!("sha256:{}", "ab01".repeat(16));
+	// Assert: the contract mirrors PluginSettings' shape: plugin to server to settings.
+	for valid in [
+		json!({}),
+		json!({"acme":{}}),
+		json!({"acme":{"docs":{}}}),
+		json!({"acme":{"docs":{"tools":["search","fetch"]}}}),
+		json!({"acme":{"docs":{"tools":[]}}}),
+		json!({"acme":{"docs":{"tools":null,"exposure":null}}}),
+		json!({"acme":{"docs":{"exposure":"eager"},"wiki":{"exposure":"deferred"}}}),
+		json!({"acme":{"docs":{"read_only":[]}}}),
+		json!({"acme":{"docs":{"tools":["search"],"exposure":"eager",
+			"read_only":[{"name":"search","schema_digest":digest}]}}}),
+		json!({"acme":{"docs":{}},"globex":{"api":{"exposure":"eager"}}}),
+	] {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(valid.clone())]
+			)
+			.await,
+			"{valid}"
+		);
+	}
+	for invalid in [
+		json!(null),
+		json!([]),
+		json!("settings"),
+		json!({"acme":null}),
+		json!({"acme":[]}),
+		json!({"acme":"docs"}),
+		json!({"acme":{"docs":null}}),
+		json!({"acme":{"docs":[]}}),
+		json!({"acme":{"docs":{"tool":["search"]}}}),
+		json!({"acme":{"docs":{"tools":"search"}}}),
+		json!({"acme":{"docs":{"tools":{}}}}),
+		json!({"acme":{"docs":{"tools":[1]}}}),
+		json!({"acme":{"docs":{"exposure":{"mode":"eager"}}}}),
+		json!({"acme":{"docs":{"exposure":"lazy"}}}),
+		json!({"acme":{"docs":{"exposure":true}}}),
+		json!({"acme":{"docs":{"read_only":null}}}),
+		json!({"acme":{"docs":{"read_only":{}}}}),
+		json!({"acme":{"docs":{"read_only":["search"]}}}),
+		json!({"acme":{"docs":{"read_only":[{"name":"search"}]}}}),
+		json!({"acme":{"docs":{"read_only":[{"schema_digest":digest}]}}}),
+		json!({"acme":{"docs":{"read_only":[{"name":1,"schema_digest":digest}]}}}),
+		json!({"acme":{"docs":{"read_only":[{"name":"search","schema_digest":7}]}}}),
+		json!({"acme":{"docs":{"read_only":[{"name":"search","schema_digest":digest,"note":"x"}]}}}),
+	] {
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(invalid.clone())]
+			)
+			.await,
+			"{invalid}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0042_agent_plugin_settings")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without stored settings the reverse restores the 0041 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(json!({"acme":{"docs":{}}}))]
+		)
+		.await
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![
+				json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","agent_plugins":[]})
+			]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path stores a definition with settings.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Plugin fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let stored = agent(json!({"acme":{"docs":{"tools":["search"]}}}));
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("tooled")
+				.version("1.0.0")
+				.kind(DefinitionKind::Agent)
+				.metadata(
+					json!({"id":"tooled","version":"1.0.0","kind":"agent",
+						"name":{"en":"Plugin agent"},"description":{"en":"Migration test"},
+						"config":stored.clone()})
+					.into(),
+				)
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored settings refuse the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains(
+			"registry 0042_agent_plugin_settings cannot be reversed: Agent definitions declare agent_plugin_settings"
+		),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![stored]).await,
 		"the denied rollback must retain the upgraded contract"
 	);
 }
