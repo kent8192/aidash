@@ -10,6 +10,7 @@ import {
   httpsLink,
   isAgentPluginRef,
   readImport,
+  skippedServers,
   withPlugin,
   withoutPlugin,
 } from "../src/agent-plugins.ts";
@@ -302,4 +303,20 @@ test("an import answer that is not the documented shape is refused", () => {
     }),
     null,
   );
+});
+
+test("a pin event names each unreachable plugin server once and ignores other skips", () => {
+  const data = {
+    skipped: [
+      { plugin: "acme", server: "docs", reason: "server_unavailable" },
+      { plugin: "acme", server: "docs", reason: "tool_invalid" },
+      { plugin: "acme", server: "wiki", reason: "server_unavailable" },
+      { plugin: "acme", server: "wiki", reason: "server_unavailable" },
+      { plugin: 7, server: "x", reason: "server_unavailable" },
+    ],
+  };
+  assert.deepEqual(skippedServers(data), ["acme/docs", "acme/wiki"]);
+  assert.deepEqual(skippedServers({ skipped: [] }), []);
+  assert.deepEqual(skippedServers({}), []);
+  assert.deepEqual(skippedServers(null), []);
 });
