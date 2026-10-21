@@ -99,7 +99,8 @@ jobs:
       TF_IN_AUTOMATION: "true"
     steps:
       # Use the controller/charts that built the staged privileged images.
-      # Prepare verified this commit is an approved main ancestor; no rebuild.
+      # Prepare verified this commit is the release source S, whose tree equals
+      # the human-merged main commit; no rebuild.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.trusted }}
