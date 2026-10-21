@@ -447,70 +447,6 @@ fn agent_versions_fit_the_authorization_identity_limit() {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn mesh_rejects_a_peer_substituting_another_node_identity(
-	#[future(awt)]
-	#[from(common::native_application)]
-	application_fixture: common::ApplicationFixture,
-
-	#[future(awt)]
-	#[from(mesh_rejects_a_peer_substituting_another_node_identity_provider)]
-	fixture: MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider,
-) {
-	let server = fixture.server;
-
-	use reinhardt::query::{Alias, PostgresQueryBuilder, Query};
-	let (f, url, schema) = application_fixture.runtime.parts();
-
-	let endpoint = server.url.clone();
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("peers"))
-			.columns(
-				[
-					"node_id",
-					"endpoint",
-					"credential_env",
-					"protocol_version",
-					"enabled",
-				]
-				.map(Alias::new),
-			)
-			.values_panic([
-				IntoValue::into_value("aidash://expected"),
-				IntoValue::into_value(endpoint),
-				IntoValue::into_value("AIDASH_SECRET_TEST_PEER"),
-				IntoValue::into_value("0.2"),
-				IntoValue::into_value(true),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let (status, mesh) = request(
-		&application_fixture.application,
-		&f.config.api_token,
-		"GET",
-		"/api/mesh",
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200);
-	assert_eq!(mesh["nodes"], json!([]));
-	assert_eq!(mesh["errors"][0]["node_id"], "aidash://expected");
-	assert!(
-		mesh["errors"][0]["error"]
-			.as_str()
-			.unwrap()
-			.contains("identity mismatch")
-	);
-	drop(server);
-
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registration(
 	#[future(awt)]
 	#[from(common::native_application)]
@@ -671,12 +607,11 @@ async fn malformed_broker_messages_do_not_stop_valid_delivery(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
+async fn registry_replays_emit_once(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
 ) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let token = tenant_token(&f.store, "acme").await;
@@ -700,76 +635,6 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 			.filter(|e| e.kind == "registry.registered")
 			.count(),
 		1
-	);
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("peers"))
-			.columns(
-				[
-					"node_id",
-					"endpoint",
-					"credential_env",
-					"protocol_version",
-					"enabled",
-				]
-				.map(Alias::new),
-			)
-			.values_panic([
-				IntoValue::into_value("aidash://disabled"),
-				IntoValue::into_value("http://127.0.0.1:9"),
-				IntoValue::into_value("AIDASH_SECRET_TEST_PEER"),
-				IntoValue::into_value("0.2"),
-				IntoValue::into_value(false),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("atomic_peer_trust"))
-			.columns(["node_id", "enabled"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value("aidash://disabled"),
-				IntoValue::into_value(true),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.control_pool.fixture_driver())
-	.await
-	.unwrap();
-	let (status, body) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/transactions/trust",
-		json!({"node_id":"aidash://disabled", "enabled":false}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-	let enabled: bool = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("enabled"))
-			.from(Alias::new("atomic_peer_trust"))
-			.and_where(Expr::col(Alias::new("node_id")).eq("aidash://disabled"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(f.store.control_pool.fixture_driver())
-	.await
-	.unwrap();
-	assert!(!enabled);
-	assert_ne!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/transactions/trust",
-			json!({"node_id":"aidash://disabled", "enabled":true})
-		)
-		.await
-		.0,
-		200
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -977,43 +842,7 @@ use reinhardt::query::QueryStatementBuilder;
 
 use reinhardt::query::ExprTrait;
 
-use reinhardt::query::IntoValue;
-
 use reinhardt::query::SimpleExpr;
-
-#[fixture]
-fn mesh_rejects_a_peer_substituting_another_node_identity_router() -> std::sync::Arc<Router> {
-	std::sync::Arc::new(
-		reinhardt::test::stub::StubRouter::new()
-			.route(
-				"/federation/v0.1/observe",
-				http::Method::GET,
-				reply(|_request: reinhardt::Request| async {
-					reinhardt::Response::ok()
-						.with_json(
-							&json!({"node_id":"aidash://substituted","runs":[],"human_requests":[],"invocations":[]}),
-						)
-						.unwrap()
-				}),
-			)
-			.into_server_router(),
-	)
-}
-struct MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider {
-	server: reinhardt::test::fixtures::server::TestServerGuard,
-}
-#[fixture]
-async fn mesh_rejects_a_peer_substituting_another_node_identity_provider(
-	#[from(mesh_rejects_a_peer_substituting_another_node_identity_router)] _router: std::sync::Arc<
-		Router,
-	>,
-	#[future(awt)]
-	#[from(upstream::upstream)]
-	#[with(_router.clone())]
-	server: reinhardt::test::fixtures::server::TestServerGuard,
-) -> MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider {
-	MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider { server }
-}
 
 #[derive(Clone)]
 struct PluginControlShapedDataDoesNotSuspendExecutionState {

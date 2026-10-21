@@ -160,8 +160,8 @@ async fn described<R: PeerAdmissionRepository>(
 	Ok(reply)
 }
 /// Lease the receiver authority Home describes, keeping the Workspace corpus
-/// digest the same reply reports (#191). `None` when Home's protocol predates
-/// the digest or the grant carries no Home semantic access.
+/// digest the same reply reports (#191). `None` when the grant carries no Home
+/// semantic access.
 async fn described_lease<R: PeerAdmissionRepository>(
 	repository: &R,
 	receiver: &NodeName,

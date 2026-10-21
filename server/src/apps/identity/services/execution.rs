@@ -741,7 +741,7 @@ impl Guard {
 			};
 			// The Home's corpus is not observable here: its digest arrives with the
 			// describe reply that refreshed this worker's authority, and is absent
-			// from a Home whose protocol predates it or that grants no semantic access.
+			// from a Home that grants no semantic access.
 			let corpus_digest = self.access.read().await.home_corpus_digest.clone();
 			return Ok(aidash_domain::context::sources::RetrievalScope {
 				tenant: description.source_tenant,

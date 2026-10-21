@@ -155,16 +155,6 @@ pub fn secret(name: &str) -> Result<String> {
 		.map_err(|_| Error::Invalid(format!("credential reference {name} is not configured")))
 }
 
-/// Peer bearer tokens must remain strong after environment-based rotation too.
-pub fn peer_secret(name: &str) -> Result<String> {
-	let value = secret(name)?;
-	validate_peer_credential(&value)?;
-	Ok(value)
-}
-pub fn validate_peer_credential(value: &str) -> Result<()> {
-	aidash_domain::configuration::validate_peer_credential(value).map_err(Into::into)
-}
-
 pub(crate) use aidash_domain::configuration::same_secret;
 
 pub use crate::apps::federation::peer::serializers::identity::{
