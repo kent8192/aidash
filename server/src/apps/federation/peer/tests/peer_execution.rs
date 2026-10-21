@@ -141,7 +141,10 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	}
 	let (status, result) = inspect(app, signed(), "bob", input.clone()).await;
 	assert_eq!(status, 200, "{result}");
-	assert_eq!(result["node_id"], f.config.deployment);
+	assert_eq!(
+		result["node_id"],
+		f.config.deployment.node(receiving.clone()).to_string()
+	);
 	assert_eq!(result["agent"]["id"], "research");
 	let definitions = result["definitions"].as_array().unwrap();
 	assert_eq!(
@@ -168,7 +171,11 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let mut mismatch = input.clone();
 	mismatch["requirements"] = json!({"capability":"missing-capability"});
 	assert_eq!(inspect(app, signed(), "bob", mismatch).await.0, 400);
-	let executor = aidash_domain::agent_subject(f.config.deployment.as_str(), "research", "1.0.0");
+	let executor = aidash_domain::agent_subject(
+		&f.config.deployment.node(receiving.clone()).to_string(),
+		"research",
+		"1.0.0",
+	);
 	// Every denied action is tested for both the mapped root and the receiver's
 	// executor. An allow on one must never override the other's explicit deny.
 	let mut revision = 1;
