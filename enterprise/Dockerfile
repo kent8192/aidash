@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=rust /out/aidash /usr/local/bin/aidash
 COPY --from=rust /out/manage /usr/local/bin/manage
 COPY server/migrations /app/server/migrations
+COPY deploy/demo-data/structure.json /app/deploy/demo-data/structure.json
 COPY enterprise/server/migrations /app/enterprise/server/migrations
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 # Aidash's Environments run the Cloud Offering; a Dedicated Deployment

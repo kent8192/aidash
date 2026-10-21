@@ -227,6 +227,9 @@ configs:
     content: |
       [tenancy]
       personal_tenants = true
+
+      [demo_data]
+      enabled = true
 volumes:
   postgres:
   memory-recovery:
