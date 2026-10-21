@@ -20,13 +20,32 @@ impl Deployment {
 		Self::with_tier_limits(runtime, rules, None).await
 	}
 
+	/// A Deployment that holds no Deployment Key, so it cannot federate with
+	/// another Deployment.
+	async fn without_key(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
+		Self::build(runtime, rules, None, false).await
+	}
+
 	async fn with_tier_limits(
 		runtime: common::RuntimeFuture,
 		rules: TenancyRules,
 		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
 	) -> Self {
+		Self::build(runtime, rules, tier_limits, true).await
+	}
+
+	async fn build(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
+		keyed: bool,
+	) -> Self {
 		let runtime = runtime.await;
 		let (mut federation, url, database) = runtime.parts();
+		if !keyed {
+			federation.config.deployment_key = None;
+			federation.store.egress = Default::default();
+		}
 		federation.config.oidc = Some(OidcConfig {
 			issuer: "https://accounts.google.com".into(),
 			client_id: "aidash".into(),
