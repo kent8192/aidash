@@ -20,6 +20,13 @@ use rstest::rstest;
 use serde_json::json;
 use uuid::Uuid;
 
+/// The Tenant's default Node address, which a manifest names as coordinator and participant.
+async fn node(runtime: &aidash_server::federation::Federation) -> String {
+	crate::endpoint::default_node(&runtime.store, "acme")
+		.await
+		.to_string()
+}
+
 #[rstest]
 #[tokio::test]
 async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revocation(
@@ -98,9 +105,9 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	);
 	let id = Uuid::new_v4();
 	let manifest: Manifest = serde_json::from_value(json!({
-		"id":id,"coordinator":app.runtime.config.deployment,"isolation":"serializable",
+		"id":id,"coordinator":node(&app.runtime).await,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),
-		"participants":[{"node_id":app.runtime.config.deployment,"mutations":[
+		"participants":[{"node_id":node(&app.runtime).await,"mutations":[
 			{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,
 			 "artifact":{"kind":"text","name":"Atomic output","content":"derived protected result"}},
 			{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}
@@ -193,7 +200,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 			participant::finish(
 				&app.runtime,
 				None,
-				app.runtime.config.deployment.as_str(),
+				node(&app.runtime).await.as_str(),
 				&manifest
 			)
 			.await

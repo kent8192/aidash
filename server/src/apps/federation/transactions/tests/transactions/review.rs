@@ -26,7 +26,7 @@ async fn abort_honors_manifest_attribute_denies(
 		.await
 		.unwrap()
 		.workspace_id;
-	let manifest = manifest(f.config.deployment.as_str(), workspace);
+	let manifest = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", manifest.clone())
 			.await
@@ -34,9 +34,9 @@ async fn abort_honors_manifest_attribute_denies(
 		202
 	);
 	let expected = if attribute == "coordinator" {
-		json!(f.config.deployment)
+		json!(node(&f).await)
 	} else {
-		json!([f.config.deployment])
+		json!([node(&f).await])
 	};
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-abort","effect":"deny","subjects":{"any":true},"actions":["transaction.abort"],"resources":{"kinds":["transaction"]},
@@ -140,7 +140,7 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		.0,
 		200
 	);
-	let manifest = manifest(f.config.deployment.as_str(), workspace);
+	let manifest = manifest(node(&f).await.as_str(), workspace);
 	for _ in 0..2 {
 		let (status, body) =
 			request(&app, &token, "POST", "/api/transactions", manifest.clone()).await;
@@ -203,7 +203,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 		.await
 		.unwrap()
 		.workspace_id;
-	let oldest = manifest(f.config.deployment.as_str(), workspace);
+	let oldest = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", oldest.clone())
 			.await
@@ -212,7 +212,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	);
 	let mut hidden = Vec::new();
 	for _ in 0..201 {
-		let next = manifest(f.config.deployment.as_str(), workspace);
+		let next = manifest(node(&f).await.as_str(), workspace);
 		hidden.push(next["id"].clone());
 		let (status, body) = request(&app, &token, "POST", "/api/transactions", next).await;
 		assert_eq!(status, 202, "{body}");
@@ -307,14 +307,14 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 		.await
 		.unwrap()
 		.workspace_id;
-	let own = manifest(f.config.deployment.as_str(), workspace);
+	let own = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", own.clone())
 			.await
 			.0,
 		202
 	);
-	let deployment_administrator = manifest(f.config.deployment.as_str(), workspace);
+	let deployment_administrator = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(
 			&app,
@@ -329,7 +329,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	);
 	// The foreign subject's binding is immutable fixture state. Its transaction
 	// exists and is visible to the Deployment Administrator, but must look absent to Alice.
-	let foreign = manifest(f.config.deployment.as_str(), workspace);
+	let foreign = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(
 			&app,

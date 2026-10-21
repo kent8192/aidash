@@ -3,23 +3,15 @@ use crate::{Error, Result, ports::transactions::mutation::MutationScope};
 use aidash_domain::transactions::{Manifest, Mutation, Participant, mutation as rules};
 use serde_json::json;
 
-/// The participant for a Node address. Manifests still name this Deployment's
-/// participant by the Deployment id until Node Registrations (#241) name Nodes.
+/// The participant for a Node address.
 fn participant<'a>(manifest: &'a Manifest, address: &str) -> Result<&'a Participant> {
-	manifest
-		.local(address)
-		.or_else(|_| manifest.local(aidash_domain::nodes::deployment_of(address)))
-		.map_err(|_| Error::Forbidden)
+	manifest.local(address).map_err(|_| Error::Forbidden)
 }
 
 /// Preparation and commit invoke this same workflow; storage alone owns the
 /// rollback-only savepoint and the visibility gate around the caller's transaction.
 pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifest) -> Result<()> {
-	for mutation in &manifest
-		.local(node)
-		.map_err(|_| Error::Forbidden)?
-		.mutations
-	{
+	for mutation in &participant(manifest, node)?.mutations {
 		match mutation {
 			Mutation::WorkspaceState {
 				workspace_id,
@@ -79,7 +71,7 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 				let run = &raw.metadata;
 				rules::validate_home_completion(participant(manifest, &run.home_node)?, *task_id)?;
 				scope.complete_run(*run_id).await?;
-				scope.append_event(run.is_local(node).then_some(run.workspace_id), "run.completed", json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
+				scope.append_event(run.is_local(aidash_domain::nodes::deployment_of(node)).then_some(run.workspace_id), "run.completed", json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
 			}
 		}
 	}

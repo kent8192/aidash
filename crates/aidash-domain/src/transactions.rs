@@ -66,6 +66,24 @@ impl Manifest {
 				Error::Invalid("transaction requires an ID and 1..16 participants".into()).into(),
 			);
 		}
+		// A Deployment takes part with one Node, so a Deployment-level answer to
+		// "does this transaction run here" names exactly one Node.
+		let mut hosts = std::collections::BTreeMap::new();
+		for node in std::iter::once(&self.coordinator).chain(
+			self.participants
+				.iter()
+				.map(|participant| &participant.node_id),
+		) {
+			if hosts
+				.insert(crate::nodes::deployment_of(node), node)
+				.is_some_and(|other| other != node)
+			{
+				return Err(Error::Invalid(
+					"a transaction names at most one Node of each Deployment".into(),
+				)
+				.into());
+			}
+		}
 		let mut previous: Option<&str> = None;
 		let mut count = 0;
 		for participant in &self.participants {
@@ -141,18 +159,13 @@ impl Manifest {
 	pub fn digest(&self) -> std::result::Result<String, serde_json::Error> {
 		Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
 	}
-	/// The participant that runs on `node`: the Node itself, or the one a
-	/// Deployment hosts when `node` names the Deployment. A transaction names
-	/// at most one Node of each Deployment.
-	pub fn local(&self, node: &str) -> std::result::Result<&Participant, MissingParticipant> {
+	/// The participant that is exactly the Node at `address`. Another Node of
+	/// the same Deployment, such as another Tenant's, is never the same
+	/// participant.
+	pub fn local(&self, address: &str) -> std::result::Result<&Participant, MissingParticipant> {
 		self.participants
 			.iter()
-			.find(|p| p.node_id == node)
-			.or_else(|| {
-				self.participants
-					.iter()
-					.find(|p| crate::nodes::same_deployment(&p.node_id, node))
-			})
+			.find(|p| p.node_id == address)
 			.ok_or(MissingParticipant)
 	}
 }

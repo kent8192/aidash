@@ -82,6 +82,8 @@ struct State {
 	source_credentials: Vec<Uuid>,
 	attempts: Vec<(Uuid, String)>,
 	pause_remote: bool,
+	/// The Tenant of each Node of this Deployment.
+	tenants: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -112,6 +114,7 @@ impl Repository {
 				source_credentials: vec![],
 				attempts: vec![],
 				pause_remote: false,
+				tenants: vec![("aidash://home/airy-hawk-2lu4as22".into(), "tenant".into())],
 			})),
 			concurrent: Arc::new(AtomicUsize::new(0)),
 			peak: Arc::new(AtomicUsize::new(0)),
@@ -432,6 +435,19 @@ impl Drop for RemoteLease {
 impl AuthorityRepository for Repository {
 	fn node_id(&self) -> &str {
 		&self.node
+	}
+	fn receiver(&self) -> Option<&str> {
+		Some(&self.node)
+	}
+	async fn node_tenant(&self, node: &str) -> Result<Option<String>> {
+		Ok(self
+			.state
+			.lock()
+			.unwrap()
+			.tenants
+			.iter()
+			.find(|(address, _)| address == node)
+			.map(|(_, tenant)| tenant.clone()))
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		manifest.validate::<Error>()
@@ -1102,4 +1118,80 @@ async fn subject_abort_faults_preserve_the_native_commit_boundary(
 	);
 	let calls = repository.log();
 	assert_eq!(&calls[calls.len() - suffix.len()..], suffix);
+}
+
+#[rstest]
+#[tokio::test]
+async fn only_the_coordinator_and_nodes_of_the_submitting_tenant_skip_the_remote_preflight(
+	origin: Origin,
+) {
+	let repository = Repository::new(origin.clone());
+	{
+		let mut state = repository.state.lock().unwrap();
+		state
+			.tenants
+			.push(("aidash://home/same-tenant-node".into(), "tenant".into()));
+		state
+			.tenants
+			.push(("aidash://home/other-tenant-node".into(), "other".into()));
+	}
+	let coordinator = "aidash://home/airy-hawk-2lu4as22";
+	let needs = |node: &'static str| {
+		let repository = &repository;
+		let tenant = origin.tenant.clone();
+		async move {
+			remote_node(repository, &tenant, coordinator, node)
+				.await
+				.unwrap()
+		}
+	};
+	assert!(!needs(coordinator).await, "the coordinator's own Node");
+	assert!(
+		!needs("aidash://home/same-tenant-node").await,
+		"a Node of the submitting Tenant"
+	);
+	assert!(
+		needs("aidash://home/other-tenant-node").await,
+		"another Tenant's Node on this Deployment is remote"
+	);
+	assert!(
+		needs("aidash://peer/airy-hawk-2lu4as22").await,
+		"a Node elsewhere"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_participant_admits_only_the_binding_made_for_its_own_targets(
+	origin: Origin,
+	mut manifest: Manifest,
+) {
+	// The participants mutate different Workspaces, so a binding for the
+	// coordinator's targets is not the participant's.
+	manifest.participants[1].mutations = vec![Mutation::WorkspaceState {
+		workspace_id: Uuid::from_u128(5),
+		expected_revision: 0,
+		state: json!({"ready":true}),
+	}];
+	let mut repository = Repository::new(origin.clone());
+	repository.node = "aidash://peer/airy-hawk-2lu4as22".into();
+	let binding = |node: &str| Binding {
+		request: request(&manifest, &origin, node).unwrap(),
+		local: origin.clone(),
+		subjects: vec!["owner".into()],
+	};
+
+	repository.state.lock().unwrap().binding = Some(binding(&repository.node));
+	assert!(
+		prepare_admission(&repository, &manifest.coordinator, &manifest)
+			.await
+			.unwrap()
+			.is_some()
+	);
+
+	repository.state.lock().unwrap().binding = Some(binding(&manifest.coordinator));
+	assert!(matches!(
+		prepare_admission(&repository, &manifest.coordinator, &manifest).await,
+		Err(Error::Forbidden)
+	));
 }

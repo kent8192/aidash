@@ -59,10 +59,7 @@ impl Preflight {
 			&& self.targets.len() <= 64
 			&& !self.recipients.is_empty()
 			&& self.recipients.len() <= 16
-			&& self
-				.recipients
-				.iter()
-				.any(|recipient| crate::nodes::same_deployment(recipient, node))
+			&& self.recipients.iter().any(|recipient| recipient == node)
 			&& self.digest.len() == 64
 	}
 }

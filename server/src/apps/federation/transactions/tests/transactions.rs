@@ -10,6 +10,11 @@ use common::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+/// The Tenant's default Node, which a manifest names as coordinator and participant.
+async fn node(f: &aidash_server::federation::Federation) -> String {
+	common::default_node(&f.store, "acme").await.to_string()
+}
+
 #[rstest::rstest]
 #[case::accepted(false)]
 #[case::agent_denied(true)]
@@ -74,8 +79,8 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 			200
 		);
 	}
-	let manifest: Manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":f.config.deployment,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-		"participants":[{"node_id":f.config.deployment,"mutations":[
+	let manifest: Manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
+		"participants":[{"node_id":node(&f).await,"mutations":[
 			{"kind":"complete_task","task_id":task_id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic answer"}},
 			{"kind":"finish_run","run_id":run.id,"task_id":task_id,"expected_revision":run.revision}]}]})).unwrap();
 	let (status, body) = request(&app, &token, "POST", "/api/transactions", json!(manifest)).await;
@@ -116,7 +121,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		assert!(outcome.complete, "{outcome:?}");
 		assert_eq!(outcome.decision.as_deref(), Some("COMMIT"), "{outcome:?}");
 		for _ in 0..2 {
-			participant::finish(&f, None, f.config.deployment.as_str(), &manifest)
+			participant::finish(&f, None, node(&f).await.as_str(), &manifest)
 				.await
 				.unwrap();
 		}
@@ -173,9 +178,9 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 		.unwrap()
 		.workspace_id;
 	let manifest: Manifest = serde_json::from_value(json!({
-		"id": Uuid::new_v4(), "coordinator": f.config.deployment,
+		"id": Uuid::new_v4(), "coordinator":node(&f).await,
 		"isolation": "serializable", "deadline": Utc::now() + Duration::minutes(5),
-		"participants": [{"node_id": f.config.deployment, "mutations": [{
+		"participants": [{"node_id":node(&f).await, "mutations": [{
 			"kind": "workspace_state", "workspace_id": workspace,
 			"expected_revision": 0, "state": {"accepted": true}
 		}]}]
@@ -285,7 +290,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.await
 		.unwrap();
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":f.config.deployment,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":f.config.deployment,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
 	let (status, response) = request(
 		&app,
 		&f.config.api_token,
@@ -404,8 +409,8 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 		.unwrap()
 		.workspace_id;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":f.config.deployment,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":f.config.deployment,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"private":"do not disclose"}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"private":"do not disclose"}}]}]});
 	let (status, body) = request(&app, &token, "POST", "/api/transactions", manifest).await;
 	assert_eq!(status, 403, "{body}");
 	assert!(matches!(
@@ -441,8 +446,8 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 		.unwrap()
 		.workspace_id;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":f.config.deployment,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":f.config.deployment,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]});
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", manifest.clone())
 			.await
@@ -549,8 +554,8 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 		.await
 		.unwrap()
 		.workspace_id;
-	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":f.config.deployment,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":f.config.deployment,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]})).unwrap();
+	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]})).unwrap();
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", json!(manifest))
 			.await

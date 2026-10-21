@@ -20,6 +20,8 @@ pub trait AdmissionScope: Send {
 	/// `node`: its Tenant allows atomic transactions with that Node. A
 	/// submission with no origin is the Deployment Administrator's, and acts as
 	/// the coordinator Node's own Tenant.
+	/// The Tenant that holds `node`, when `node` is a Node of this Deployment.
+	async fn node_tenant(&mut self, node: &str) -> Result<Option<String>>;
 	async fn trusted(
 		&mut self,
 		coordinator: &str,

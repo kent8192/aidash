@@ -38,6 +38,11 @@ pub trait PendingParticipants: Send + Sync {
 #[async_trait]
 pub trait ParticipantRepository: Send + Sync {
 	fn node_id(&self) -> &str;
+	/// The Node an inbound request is for, once the transport admitted it.
+	/// Work the coordinator does for itself has none.
+	fn receiver(&self) -> Option<&str> {
+		None
+	}
 	/// Open a native SERIALIZABLE transaction with physical connection affinity.
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>>;
 	/// Retain current authority locks in the returned scope's original transaction.

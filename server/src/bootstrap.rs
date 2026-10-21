@@ -1440,6 +1440,7 @@ pub(crate) fn transaction_authority_repository(
 	crate::apps::federation::transactions::repositories::authority::control::Repository {
 		runtime: runtime.clone(),
 		admitted: None,
+		receiver: None,
 	}
 }
 
@@ -1451,6 +1452,7 @@ pub(crate) fn transaction_authority_repository_as(
 	crate::apps::federation::transactions::repositories::authority::control::Repository {
 		runtime: runtime.clone(),
 		admitted: Some(admitted.clone()),
+		receiver: Some(admitted.receiver.to_string()),
 	}
 }
 
@@ -1511,6 +1513,7 @@ pub(crate) fn transaction_participant(
 			crate::apps::federation::transactions::repositories::participation::Repository {
 				runtime: runtime.clone(),
 				admitted: None,
+				receiver: None,
 			},
 		),
 		transaction_coordinator(runtime),
@@ -1527,6 +1530,7 @@ pub(crate) fn transaction_participant_as(
 			crate::apps::federation::transactions::repositories::participation::Repository {
 				runtime: runtime.clone(),
 				admitted: Some(admitted.clone()),
+				receiver: Some(admitted.receiver.to_string()),
 			},
 		),
 		transaction_coordinator(runtime),

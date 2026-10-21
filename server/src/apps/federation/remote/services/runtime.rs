@@ -184,6 +184,26 @@ impl Federation {
 			.ok_or_else(|| Error::NotFound("node not found".into()))?;
 		Ok(aidash_domain::tenancy::TenantName::new(holder)?)
 	}
+	/// The Tenant that holds the Node at `address`, or `None` when the address
+	/// is not a Node of this Deployment.
+	pub(crate) async fn tenant_of_node_address(&self, address: &str) -> Result<Option<String>> {
+		let Ok(address) = aidash_domain::nodes::NodeAddress::parse(address) else {
+			return Ok(None);
+		};
+		if address.deployment != self.config.deployment {
+			return Ok(None);
+		}
+		self.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				crate::apps::identity::repositories::node_registrations::name_tenant(
+					tx,
+					address.node.as_str(),
+				)
+				.await
+			})
+			.await
+	}
 	/// The sender's way to `node`, or `Unauthorized` when it has none.
 	pub async fn route(&self, sender: &Sender, node: &str) -> Result<Route> {
 		self.store

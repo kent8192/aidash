@@ -59,6 +59,8 @@ struct State {
 	log: Vec<String>,
 	trusted: bool,
 	failure: Option<String>,
+	/// The Tenant that holds the coordinator's Node, if it is a Node here.
+	coordinator_tenant: Option<String>,
 }
 
 #[derive(Clone)]
@@ -71,6 +73,7 @@ impl Adapter {
 			log: vec![],
 			trusted: true,
 			failure: None,
+			coordinator_tenant: Some("tenant".into()),
 		})))
 	}
 	fn event(&self, event: &str) -> Result<()> {
@@ -109,6 +112,9 @@ impl AdmissionScope for Adapter {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
+	}
+	async fn node_tenant(&mut self, _node: &str) -> Result<Option<String>> {
+		Ok(self.0.lock().unwrap().coordinator_tenant.clone())
 	}
 	async fn trusted(&mut self, _: &str, _node: &str, _origin: Option<&Origin>) -> Result<bool> {
 		self.event("trusted")?;
@@ -325,4 +331,33 @@ async fn failed_submission_preserves_its_commit_boundary(
 	let log = adapter.log();
 	assert_eq!(log.contains(&"rollback".into()), !committed);
 	assert!(!log.contains(&"wake".into()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_coordinator_of_another_tenant_is_refused_whatever_the_participants_are(
+	manifest: Manifest,
+	origin: Origin,
+) {
+	let mut adapter = Adapter::new();
+	adapter.0.lock().unwrap().coordinator_tenant = Some("other".into());
+	let result = submit_in(&mut adapter, &manifest, Some(&origin)).await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!adapter.log().contains(&"admit".to_owned()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_coordinator_that_is_no_node_of_this_deployment_is_refused(
+	manifest: Manifest,
+	origin: Origin,
+) {
+	let mut adapter = Adapter::new();
+	adapter.0.lock().unwrap().coordinator_tenant = None;
+	for origin in [None, Some(&origin)] {
+		let result = submit_in(&mut adapter, &manifest, origin).await;
+		assert!(
+			matches!(result, Err(Error::Invalid(message)) if message == "submit to the named coordinator")
+		);
+	}
 }

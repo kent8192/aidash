@@ -43,6 +43,20 @@ impl AdmissionScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn node_tenant(&mut self, node: &str) -> Result<Option<String>> {
+		let Ok(address) = aidash_domain::nodes::NodeAddress::parse(node) else {
+			return Ok(None);
+		};
+		if address.deployment != self.runtime.config.deployment {
+			return Ok(None);
+		}
+		crate::apps::identity::repositories::node_registrations::name_tenant(
+			self.tx,
+			address.node.as_str(),
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn trusted(
 		&mut self,
 		coordinator: &str,

@@ -38,6 +38,14 @@ pub async fn submit_in(
 	{
 		return Err(Error::Invalid("submit to the named coordinator".into()));
 	}
+	// The coordinator is a Node of this Deployment, and of the submitter's
+	// Tenant whatever the participants are.
+	let holder = scope.node_tenant(&manifest.coordinator).await?;
+	match (holder, origin) {
+		(None, _) => return Err(Error::Invalid("submit to the named coordinator".into())),
+		(Some(holder), Some(origin)) if holder != origin.tenant => return Err(Error::Forbidden),
+		_ => {}
+	}
 	match scope.status(manifest.id).await {
 		Ok(existing) => {
 			scope.match_origin(manifest.id, origin).await?;

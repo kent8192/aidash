@@ -29,6 +29,8 @@ pub(crate) struct Repository {
 	pub(crate) runtime: Federation,
 	/// The Node that called, when this serves an inbound request.
 	pub(crate) admitted: Option<aidash_application::federation::inbound::Admitted>,
+	/// `admitted`'s receiving Node, as text.
+	pub(crate) receiver: Option<String>,
 }
 
 struct Control {
@@ -64,6 +66,15 @@ impl Repository {
 impl AuthorityRepository for Repository {
 	fn node_id(&self) -> &str {
 		self.runtime.config.deployment.as_str()
+	}
+	fn receiver(&self) -> Option<&str> {
+		self.receiver.as_deref()
+	}
+	async fn node_tenant(&self, node: &str) -> Result<Option<String>> {
+		self.runtime
+			.tenant_of_node_address(node)
+			.await
+			.map_err(Into::into)
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		aidash_application::transactions::validate(manifest)
