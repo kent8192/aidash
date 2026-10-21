@@ -1,73 +1,40 @@
-//! Peer configuration, uniqueness, and audit events through native HTTP and ORM.
-use crate::endpoint::{EndpointFixture, assert_json, endpoint};
-use crate::isolated;
-use aidash_server::{
-	Error,
-	apps::{execution::models::Event, federation::peer::models::Peer},
-	routes,
-};
-use reinhardt::db::orm::Model;
+//! Node Registrations through native HTTP: pinning the other Deployment's key,
+//! replacing and disabling a registration, and its revision history.
+use crate::endpoint::{EndpointFixture, assert_json, default_node, endpoint, tenant_root};
+use crate::peering;
+use aidash_server::routes;
 use reinhardt::test::fixtures::server::test_server_guard;
-use rstest::{fixture, rstest};
+use rstest::rstest;
 use serde_json::{Value, json};
-use std::future::Future;
 
-const PEER_ENV: &str = "AIDASH_SECRET_PEER_REGISTRATION_FIXTURE";
-const PEER_SECRET: &str = "peer-registration-fixture-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-fn input(remote: &EndpointFixture) -> Value {
-	json!({"node_id":remote.runtime.config.deployment,"endpoint":remote.server.url,
-        "credential_env":PEER_ENV,"protocol_version":"0.2","enabled":true})
-}
-async fn register(local: &EndpointFixture, input: &Value, status: u16) -> Value {
-	assert_json(
-		local
-			.deployment_administrator
-			.post("/api/peers", input, "json")
-			.await
-			.unwrap(),
-		status,
-	)
-}
-
-struct RegistrationNodes {
-	local: EndpointFixture,
-	first: EndpointFixture,
-	second: EndpointFixture,
-}
-
-#[fixture]
-fn registration_nodes(
-	#[future]
-	#[from(endpoint)]
-	#[with("aidash://local")]
-	local: EndpointFixture,
-	#[future]
-	#[from(endpoint)]
-	#[with("aidash://first")]
-	first: EndpointFixture,
-	#[future]
-	#[from(endpoint)]
-	#[with("aidash://second")]
-	second: EndpointFixture,
-) -> impl Future<Output = RegistrationNodes> {
-	// Box before constructing the test future; three native bootstraps otherwise
-	// exceed the default libtest thread stack when moved into an async test.
-	let local = Box::pin(local);
-	let first = Box::pin(first);
-	let second = Box::pin(second);
-	async move {
-		RegistrationNodes {
-			local: local.await,
-			first: first.await,
-			second: second.await,
-		}
+/// Gives `app` a Deployment Key, as `[deployment.key] file` does at startup,
+/// and lets it reach the loopback origins of the other fixtures.
+fn federate(app: &EndpointFixture, reachable: &[&str]) -> aidash_server::federation::Federation {
+	let runtime = peering::enable(&app.runtime, &app.context);
+	for origin in reachable {
+		peering::permit(&runtime, origin);
 	}
+	runtime
+}
+
+async fn post(app: &EndpointFixture, node: &str, body: &Value, status: u16) -> Value {
+	let response = app
+		.deployment_administrator
+		.post(&peering::registration_path("acme", node), body, "json")
+		.await
+		.unwrap();
+	assert_eq!(
+		response.status_code(),
+		status,
+		"{body}: {}",
+		response.text()
+	);
+	response.json_value().unwrap_or(Value::Null)
 }
 
 #[rstest]
 #[tokio::test]
-async fn registration_updates_disable_and_reenable_one_peer_with_atomic_audit_events(
+async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_revision(
 	#[future]
 	#[from(endpoint)]
 	#[with("aidash://local")]
@@ -77,9 +44,6 @@ async fn registration_updates_disable_and_reenable_one_peer_with_atomic_audit_ev
 	#[with("aidash://remote")]
 	remote: EndpointFixture,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	// Arrange
 	let local = Box::pin(local).await;
 	let remote = Box::pin(remote).await;
@@ -89,127 +53,195 @@ async fn registration_updates_disable_and_reenable_one_peer_with_atomic_audit_ev
 			.into_server(),
 	)
 	.await;
-	let original = input(&remote);
-	// Act
-	let created = register(&local, &original, 200).await;
-	let mut updated = original.clone();
-	updated["endpoint"] = json!(relocated.url);
-	let replaced = register(&local, &updated, 200).await;
-	let mut disabled = updated.clone();
-	disabled["enabled"] = json!(false);
-	// Disabling preserves the stored endpoint and does not require a live peer or secret.
-	disabled["endpoint"] = json!("http://127.0.0.1:1");
-	disabled["credential_env"] = json!("AIDASH_SECRET_MISSING_FIXTURE");
-	let stopped = register(&local, &disabled, 200).await;
-	// Assert
-	assert_eq!(created, original);
-	assert_eq!(replaced, updated);
-	let mut expected = updated.clone();
-	expected["enabled"] = json!(false);
-	assert_eq!(stopped, expected);
-	assert!(matches!(
-		local
-			.runtime
-			.peer(remote.runtime.config.deployment.as_str())
-			.await,
-		Err(Error::Unauthorized)
-	));
-	assert_eq!(register(&local, &updated, 200).await, updated);
-	for invalid in [
-		{
-			let mut value = updated.clone();
-			value["node_id"] = json!("aidash://local");
-			value
-		},
-		{
-			let mut value = updated.clone();
-			value["protocol_version"] = json!("99");
-			value
-		},
-		{
-			let mut value = updated.clone();
-			value["node_id"] = json!("aidash://different-identity");
-			value
-		},
-	] {
-		register(&local, &invalid, 400).await;
-	}
-	let mut missing = updated.clone();
-	missing["node_id"] = json!("aidash://missing");
-	missing["enabled"] = json!(false);
-	register(&local, &missing, 404).await;
-	let mut db = local.database.lease.handle();
-	let records = Peer::objects().all().all_with_db(&mut db).await.unwrap();
-	assert_eq!(records.len(), 1);
-	assert_eq!(records[0].node_id, remote.runtime.config.deployment);
-	assert_eq!(records[0].endpoint, relocated.url);
-	assert_eq!(records[0].credential_env, PEER_ENV);
-	assert!(records[0].enabled);
-	let events = Event::objects()
-		.filter(Event::field_kind().eq("peer.registered".to_owned()))
-		.order_by(&["sequence"])
-		.all_with_db(&mut db)
+	let remote_runtime = federate(&remote, &[]);
+	let local_runtime = federate(&local, &[&remote.server.url, &relocated.url]);
+	tenant_root(&local_runtime, "acme").await;
+	tenant_root(&remote_runtime, "other").await;
+	let owner = default_node(&local_runtime.store, "acme").await.node;
+	let source = default_node(&remote_runtime.store, "other")
 		.await
-		.unwrap();
-	assert_eq!(
-		events
-			.iter()
-			.map(|event| event.data.0["enabled"].clone())
-			.collect::<Vec<_>>(),
-		[json!(true), json!(true), json!(false), json!(true)]
+		.to_string();
+	let key_id = peering::key_id(&remote_runtime);
+	let original = peering::registration(&source, Some((&remote.server.url, &key_id)));
+	// Act
+	let created = post(&local, owner.as_str(), &original, 200).await;
+	let mut moved = original.clone();
+	moved["endpoint"] = json!(relocated.url);
+	moved["expected_revision"] = json!(1);
+	let replaced = post(&local, owner.as_str(), &moved, 200).await;
+	// Disabling keeps what the registration pinned and asks no one.
+	let mut disabled = moved.clone();
+	disabled["enabled"] = json!(false);
+	disabled["expected_revision"] = json!(2);
+	disabled["endpoint"] = json!("http://127.0.0.1:1");
+	disabled["key_id"] = Value::Null;
+	let stopped = post(&local, owner.as_str(), &disabled, 200).await;
+	let mut enabled = moved.clone();
+	enabled["expected_revision"] = json!(3);
+	let restored = post(&local, owner.as_str(), &enabled, 200).await;
+	// Assert
+	assert_eq!(created["node"], owner.as_str());
+	assert_eq!(created["source_node"], source);
+	assert_eq!(created["endpoint"], remote.server.url);
+	assert_eq!(created["key_id"], key_id);
+	assert_eq!(created["revision"], 1);
+	assert_eq!(created["actor"], "deployment_administrator");
+	assert_eq!(replaced["endpoint"], relocated.url);
+	assert_eq!(replaced["revision"], 2);
+	assert_eq!(stopped["enabled"], false);
+	assert_eq!(stopped["endpoint"], relocated.url);
+	assert_eq!(stopped["key_id"], key_id);
+	assert_eq!(restored["enabled"], true);
+	assert_eq!(restored["revision"], 4);
+	let listed = assert_json(
+		local
+			.deployment_administrator
+			.get(&format!(
+				"/api/tenants/acme/nodes/{}/registrations",
+				owner.as_str()
+			))
+			.await
+			.unwrap(),
+		200,
 	);
-	assert!(
-		events
+	assert_eq!(listed.as_array().unwrap().len(), 1);
+	assert_eq!(listed[0]["revision"], 4);
+	let history = assert_json(
+		local
+			.deployment_administrator
+			.get(&format!(
+				"/api/tenants/acme/nodes/{}/registration-history",
+				owner.as_str()
+			))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(
+		history
+			.as_array()
+			.unwrap()
 			.iter()
-			.all(|event| event.data.0["node_id"] == remote.runtime.config.deployment)
+			.map(|row| (row["sequence"].clone(), row["enabled"].clone()))
+			.collect::<Vec<_>>(),
+		[
+			(json!(1), json!(true)),
+			(json!(2), json!(true)),
+			(json!(3), json!(false)),
+			(json!(4), json!(true))
+		]
 	);
 }
 
 #[rstest]
 #[tokio::test]
-async fn concurrent_registration_cannot_reuse_one_credential_for_two_node_identities(
-	#[future] registration_nodes: RegistrationNodes,
+async fn a_registration_refuses_a_stranger_a_stale_revision_and_a_self_registration(
+	#[future]
+	#[from(endpoint)]
+	#[with("aidash://local")]
+	local: EndpointFixture,
+	#[future]
+	#[from(endpoint)]
+	#[with("aidash://remote")]
+	remote: EndpointFixture,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	// Arrange
-	let RegistrationNodes {
-		local,
-		first,
-		second,
-	} = registration_nodes.await;
-	let first_input = input(&first);
-	let second_input = input(&second);
-	// Act
-	let (first_response, second_response) = tokio::join!(
-		local
-			.deployment_administrator
-			.post("/api/peers", &first_input, "json"),
-		local
-			.deployment_administrator
-			.post("/api/peers", &second_input, "json"),
-	);
-	let first_response = first_response.unwrap();
-	let second_response = second_response.unwrap();
-	// Assert
-	let mut statuses = [first_response.status_code(), second_response.status_code()];
-	statuses.sort_unstable();
-	assert_eq!(statuses, [200, 400]);
-	let winner = if first_response.status_code() == 200 {
-		&first_input
-	} else {
-		&second_input
-	};
-	let mut db = local.database.lease.handle();
-	let records = Peer::objects().all().all_with_db(&mut db).await.unwrap();
-	assert_eq!(records.len(), 1);
-	assert_eq!(records[0].node_id, winner["node_id"]);
-	let events = Event::objects()
-		.filter(Event::field_kind().eq("peer.registered".to_owned()))
-		.all_with_db(&mut db)
+	let local = Box::pin(local).await;
+	let remote = Box::pin(remote).await;
+	let remote_runtime = federate(&remote, &[]);
+	let local_runtime = federate(&local, &[&remote.server.url]);
+	tenant_root(&local_runtime, "acme").await;
+	tenant_root(&remote_runtime, "other").await;
+	let owner = default_node(&local_runtime.store, "acme").await;
+	let source = default_node(&remote_runtime.store, "other")
 		.await
-		.unwrap();
-	assert_eq!(events.len(), 1);
-	assert_eq!(events[0].data.0["node_id"], winner["node_id"]);
+		.to_string();
+	let key_id = peering::key_id(&remote_runtime);
+	let valid = peering::registration(&source, Some((&remote.server.url, &key_id)));
+	let name = owner.node.as_str();
+	// Act and assert
+	let mut wrong_key = valid.clone();
+	wrong_key["key_id"] = json!(peering::key_id(&local_runtime));
+	post(&local, name, &wrong_key, 422).await;
+	let mut other_deployment = valid.clone();
+	other_deployment["source_node"] = json!("aidash://different-identity/some-node");
+	post(&local, name, &other_deployment, 422).await;
+	let mut without_key = valid.clone();
+	without_key["key_id"] = Value::Null;
+	post(&local, name, &without_key, 400).await;
+	post(
+		&local,
+		name,
+		&peering::registration(&owner.to_string(), None),
+		400,
+	)
+	.await;
+	let nobody = aidash_domain::nodes::NodeName::derived("nobody");
+	post(
+		&local,
+		name,
+		&peering::registration(&format!("aidash://local/{nobody}"), None),
+		422,
+	)
+	.await;
+	let mut disabled_first = valid.clone();
+	disabled_first["enabled"] = json!(false);
+	post(&local, name, &disabled_first, 400).await;
+	post(&local, nobody.as_str(), &valid, 404).await;
+	post(&local, name, &valid, 200).await;
+	let mut stale = valid.clone();
+	stale["expected_revision"] = json!(7);
+	post(&local, name, &stale, 409).await;
+	post(&local, name, &valid, 409).await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn concurrent_first_registrations_of_one_node_create_exactly_one_revision(
+	#[future]
+	#[from(endpoint)]
+	#[with("aidash://local")]
+	local: EndpointFixture,
+	#[future]
+	#[from(endpoint)]
+	#[with("aidash://remote")]
+	remote: EndpointFixture,
+) {
+	// Arrange
+	let local = Box::pin(local).await;
+	let remote = Box::pin(remote).await;
+	let remote_runtime = federate(&remote, &[]);
+	let local_runtime = federate(&local, &[&remote.server.url]);
+	tenant_root(&local_runtime, "acme").await;
+	tenant_root(&remote_runtime, "other").await;
+	let owner = default_node(&local_runtime.store, "acme").await.node;
+	let source = default_node(&remote_runtime.store, "other")
+		.await
+		.to_string();
+	let body = peering::registration(
+		&source,
+		Some((&remote.server.url, &peering::key_id(&remote_runtime))),
+	);
+	let path = peering::registration_path("acme", owner.as_str());
+	// Act
+	let (first, second) = tokio::join!(
+		local.deployment_administrator.post(&path, &body, "json"),
+		local.deployment_administrator.post(&path, &body, "json"),
+	);
+	// Assert
+	let mut statuses = [first.unwrap().status_code(), second.unwrap().status_code()];
+	statuses.sort_unstable();
+	assert_eq!(statuses, [200, 409]);
+	let history = assert_json(
+		local
+			.deployment_administrator
+			.get(&format!(
+				"/api/tenants/acme/nodes/{}/registration-history",
+				owner.as_str()
+			))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(history.as_array().unwrap().len(), 1);
 }

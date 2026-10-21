@@ -43,8 +43,12 @@ async fn inspect_in(
 	// Receiving external execution is separate from advertising metadata.
 	let resource = access.resource("node", access.node_id(), json!({}));
 	access.require(&resource, "federation.execute").await?;
-	let executor =
-		aidash_domain::agent_subject(access.node_id(), &input.agent.id, &input.agent.version);
+	// The agent runs on the receiving Node, whose address names its subject.
+	let executor = aidash_domain::agent_subject(
+		&access.receiver_address(),
+		&input.agent.id,
+		&input.agent.version,
+	);
 	if access
 		.bundle()
 		.subjects
@@ -132,7 +136,7 @@ async fn inspect_in(
 		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,
-		node_id: access.node_id().to_owned(),
+		node_id: access.receiver_address(),
 		authority_digest: digest(
 			&json!({"source_node":node,"source_subject":source_subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
 		),

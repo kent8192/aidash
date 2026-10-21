@@ -151,7 +151,7 @@ async fn described<R: PeerAdmissionRepository>(
 	)?;
 	let description = &reply.description;
 	if description.source_node != source
-		|| description.target_node != repository.node_id()
+		|| description.target_node != format!("{}/{receiver}", repository.node_id())
 		|| description.grant_id != grant
 		|| description.task.status != TaskStatus::Open
 	{
@@ -160,8 +160,8 @@ async fn described<R: PeerAdmissionRepository>(
 	Ok(reply)
 }
 /// Lease the receiver authority Home describes, keeping the Workspace corpus
-/// digest the same reply reports (#191). `None` when Home's protocol predates
-/// the digest or the grant carries no Home semantic access.
+/// digest the same reply reports (#191). `None` when the grant carries no Home
+/// semantic access.
 async fn described_lease<R: PeerAdmissionRepository>(
 	repository: &R,
 	receiver: &NodeName,
@@ -301,7 +301,7 @@ pub async fn leaf_lease<R: PeerAdmissionRepository>(
 		.ok_or(Error::Forbidden)?;
 	let description: Description = serde_json::from_value(record.description.clone())?;
 	if description.source_node != source
-		|| description.target_node != repository.node_id()
+		|| description.target_node != format!("{}/{receiver}", repository.node_id())
 		|| description.grant_id != grant
 	{
 		return Err(Error::Forbidden);

@@ -260,8 +260,9 @@ impl Store {
 				"failure delivery lease or revision lost".into(),
 			));
 		}
-		self.event(
+		self.run_event(
 			&mut tx,
+			m.id,
 			m.is_local(self.deployment.as_str())
 				.then_some(m.workspace_id),
 			kind,

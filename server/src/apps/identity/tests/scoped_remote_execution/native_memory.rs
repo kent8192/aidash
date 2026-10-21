@@ -2,6 +2,26 @@
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 
+/// The receiver's check at Home that the Run's admitted reads stay disclosable.
+async fn verify_dependencies(p: &Pair, deadline: std::time::Duration) -> reqwest::RequestBuilder {
+	let home = common::default_node(&p.a.store, "acme").await;
+	let executor = common::default_node(&p.b.store, "acme").await;
+	common::peering::signed(
+		&p.a.client,
+		&p.a.config.endpoint,
+		"/scoped/dependencies/verify",
+		(&p.b, &executor),
+		&home,
+		"",
+		&json!({"tenant":"acme","subject":"alice","reference":{
+			"kind":"grant","node_id":home.to_string(),"execution_node":executor.to_string(),
+			"grant_id":p.grant,"admission_id":p.admission,
+		}}),
+	)
+	.await
+	.timeout(deadline)
+}
+
 async fn first_native_context(p: &Pair) -> Value {
 	for _ in 0..4 {
 		p.step().await;
@@ -404,7 +424,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 	assert_eq!(banks.len(), 2, "{receipt}");
 	let ids = ["private", "shared"];
 	for (bank, key) in banks.iter().zip(ids) {
-		assert_eq!(bank["bank"]["home"], p.a.config.deployment);
+		assert_eq!(bank["bank"]["home"], node_of(&p.a));
 		assert_eq!(bank["recall"]["status"], "ready", "{receipt}");
 		let units = bank["recall"]["units"].as_array().unwrap();
 		assert_eq!(units.len(), 1);
@@ -704,24 +724,11 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	.unwrap();
 	// Exercise the Home peer verifier directly: a deliberate >1024-visit DAG
 	// isolates the policy boundary from the receiver's ten-second transport cap.
-	let response =
-		p.a.client
-			.clone()
-			.post(format!(
-				"{}/federation/v0.1/scoped/dependencies/verify",
-				p.a.config.endpoint
-			))
-			.timeout(deadline)
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", p.b.config.deployment.as_str())
-			.header("x-aidash-protocol", "0.2")
-			.json(&json!({"tenant":"acme","subject":"alice","reference":{
-				"kind":"grant","node_id":p.a.config.deployment,"execution_node":p.b.config.deployment,
-				"grant_id":p.grant,"admission_id":p.admission,
-			}}))
-			.send()
-			.await
-			.unwrap();
+	let response = verify_dependencies(&p, deadline)
+		.await
+		.send()
+		.await
+		.unwrap();
 	let status = response.status();
 	let body: Value = response.json().await.unwrap();
 	assert_eq!(status.as_u16(), 200, "{body}");
@@ -813,22 +820,14 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 		count > 1024,
 		"the policy admits more dependencies than the old fixed ceiling"
 	);
-	let verify = || {
-		p.a.client
-			.clone()
-			.post(format!(
-				"{}/federation/v0.1/scoped/dependencies/verify",
-				p.a.config.endpoint
-			))
-			.timeout(deadline)
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", p.b.config.deployment.as_str())
-			.header("x-aidash-protocol", "0.2")
-			.json(&json!({"tenant":"acme","subject":"alice","reference":{
-            "kind":"grant","node_id":p.a.config.deployment,"execution_node":p.b.config.deployment,
-            "grant_id":p.grant,"admission_id":p.admission}}))
-	};
-	let body: Value = verify().send().await.unwrap().json().await.unwrap();
+	let body: Value = verify_dependencies(&p, deadline)
+		.await
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
 	assert_eq!(body["visible"], true, "{body}");
 	let last: &Unit = selected.last().unwrap();
 	memory::mutate(
@@ -850,7 +849,14 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 	)
 	.await
 	.unwrap();
-	let body: Value = verify().send().await.unwrap().json().await.unwrap();
+	let body: Value = verify_dependencies(&p, deadline)
+		.await
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
 	assert_eq!(
 		body["visible"], false,
 		"a corrected later-page revision invalidates the grant: {body}"

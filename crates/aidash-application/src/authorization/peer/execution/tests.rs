@@ -20,7 +20,7 @@ struct Scope {
 }
 impl Scope {
 	fn new() -> Self {
-		let executor = aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0");
+		let executor = aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0");
 		Self {
 			bundle: serde_json::from_value(
 				json!({"tenant":"local","subjects":{executor:{"kind":"agent","delegated_by":null}}}),
@@ -38,10 +38,16 @@ impl Scope {
 		self.calls.push((name.into(), self.subjects.clone()));
 	}
 }
+fn receiver_address() -> String {
+	aidash_domain::nodes::NodeAddress::derived("aidash://receiver", "receiver").to_string()
+}
 #[async_trait]
 impl PeerInspectionScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://receiver"
+	}
+	fn receiver_address(&self) -> String {
+		receiver_address()
 	}
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
@@ -130,7 +136,7 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 	let inspection = inspect(&mut scope, "aidash://home", &input())
 		.await
 		.unwrap();
-	let executor = aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0");
+	let executor = aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0");
 	assert_eq!(
 		scope.calls[0],
 		("federation.execute".into(), vec!["mapped".into()])
@@ -215,7 +221,7 @@ async fn denied_bound_tool_invocation_prevents_remote_preflight() {
 		subjects,
 		&[
 			"mapped".to_owned(),
-			aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0")
+			aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0")
 		]
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));

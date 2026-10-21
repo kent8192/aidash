@@ -326,7 +326,7 @@ pub async fn activate<R: HomeRepository>(
 		)
 		.await?;
 	if admission.grant_id != id
-		|| admission.source_node != repository.node_id()
+		|| admission.source_node != repository.node_address().await?
 		|| admission.task_id != task
 	{
 		return Err(Error::Forbidden);

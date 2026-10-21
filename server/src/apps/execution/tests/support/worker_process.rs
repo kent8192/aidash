@@ -49,6 +49,8 @@ pub fn worker_command(
 		settings.deployment.lease_seconds = runtime.config.lease_seconds;
 		settings.deployment.background_enabled = true;
 		settings.deployment.worker_count = 1;
+		// The process signs with the Deployment's own key.
+		crate::common::peering::configure_process(&mut settings, &runtime);
 		// A worker process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins =
 			runtime.store.keyless.permitted_origins();
@@ -91,7 +93,6 @@ pub fn worker_command(
 			.env("PATH", std::env::var_os("PATH").unwrap_or_default())
 			.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
 			.env("REINHARDT_ENV", "test")
-			.env("AIDASH_SECRET_TEST_PEER", "local-peer-regression-test-token-0123456789")
 			.env("RUST_BACKTRACE", "0")
 			.current_dir(env!("CARGO_MANIFEST_DIR"))
 			.stdin(Stdio::null())
@@ -172,6 +173,8 @@ impl WorkerProcess {
 		settings.deployment.lease_seconds = runtime.config.lease_seconds;
 		settings.deployment.background_enabled = true;
 		settings.deployment.worker_count = 1;
+		// The process signs with the Deployment's own key.
+		crate::common::peering::configure_process(&mut settings, runtime);
 		// A worker process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins =
 			runtime.store.keyless.permitted_origins();
@@ -198,10 +201,6 @@ impl WorkerProcess {
 			.env("PATH", std::env::var_os("PATH").unwrap_or_default())
 			.env("REINHARDT_SETTINGS_DIR", directory.path())
 			.env("REINHARDT_ENV", "test")
-			.env(
-				"AIDASH_SECRET_TEST_PEER",
-				"local-peer-regression-test-token-0123456789",
-			)
 			.env("RUST_BACKTRACE", "0")
 			.current_dir(env!("CARGO_MANIFEST_DIR"))
 			.stdin(Stdio::null())

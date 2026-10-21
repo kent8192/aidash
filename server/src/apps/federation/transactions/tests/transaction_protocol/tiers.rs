@@ -13,8 +13,9 @@ async fn independent_database_tiers_converge_after_partial_partition(
 ) {
 	let mut nodes = tier_nodes;
 	let mut workspaces = Vec::new();
-	for node in &nodes {
-		let scope = common::tenant_scope(&node.f.store, "atomic").await;
+	for node in &mut nodes {
+		node.join().await;
+		let scope = common::tenant_scope(&node.f.store, "acme").await;
 		workspaces.push(
 			node.f
 				.store
@@ -24,36 +25,18 @@ async fn independent_database_tiers_converge_after_partial_partition(
 				.id,
 		);
 	}
+	// The first Node coordinates, so it and each other Node register one another.
 	for index in 1..count {
-		for (local, remote) in [(&nodes[0], &nodes[index]), (&nodes[index], &nodes[0])] {
-			local
-				.f
-				.register_peer(Peer {
-					node_id: remote.f.config.deployment.to_string(),
-					endpoint: remote.f.config.endpoint.clone(),
-					credential_env: format!("AIDASH_SECRET_TRANSACTION_{index:02}"),
-					protocol_version: "0.2".into(),
-					enabled: true,
-				})
-				.await
-				.unwrap();
-			assert_eq!(
-				local
-					.request(
-						reqwest::Method::POST,
-						"/api/transactions/trust",
-						Some(json!({"node_id":remote.f.config.deployment,"enabled":true}))
-					)
-					.await
-					.0,
-				200
-			);
-		}
+		common::register_pair(
+			(&nodes[0].f, &nodes[0].application, "acme"),
+			(&nodes[index].f, &nodes[index].application, "acme"),
+		)
+		.await;
 	}
 	for repetition in 0..3 {
-		let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":nodes[0].f.config.deployment,
+		let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":nodes[0].address,
             "isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-            "participants":nodes.iter().zip(&workspaces).map(|(node,workspace)|json!({"node_id":node.f.config.deployment,
+            "participants":nodes.iter().zip(&workspaces).map(|(node,workspace)|json!({"node_id":node.address,
                 "mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":if abort {0}else{repetition},"state":{"repetition":repetition}}]})).collect::<Vec<_>>() })).unwrap();
 		coordinator::submit(&nodes[0].f, &manifest).await.unwrap();
 		steps(&nodes[0], manifest.id, count * 2).await;

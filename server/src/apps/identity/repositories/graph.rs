@@ -10,12 +10,15 @@ pub(crate) struct Projection<'a, 'scope> {
 	pub f: &'a Federation,
 	pub authority: &'a mut GraphAuthority<'scope>,
 	pub source_node: &'a str,
+	/// What a page names as its own: the receiving Node's address, or the
+	/// Deployment id for a Peer Graph Grant's viewer.
+	pub node: &'a str,
 	pub revision: &'a str,
 }
 #[async_trait]
 impl GraphProjectionScope for Projection<'_, '_> {
 	fn node_id(&self) -> &str {
-		self.f.config.deployment.as_str()
+		self.node
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -27,15 +30,9 @@ impl GraphProjectionScope for Projection<'_, '_> {
 		graph::decode_cursor(self.f, token).map_err(Into::into)
 	}
 	async fn generation(&mut self, options: &GraphOptions) -> Result<String> {
-		graph::graph_generation(
-			self.f,
-			self.authority,
-			self.revision,
-			options,
-			self.source_node,
-		)
-		.await
-		.map_err(Into::into)
+		graph::graph_generation(self.authority, self.revision, options, self.source_node)
+			.await
+			.map_err(Into::into)
 	}
 	async fn candidates(
 		&mut self,
@@ -79,12 +76,11 @@ impl GraphProjectionScope for Projection<'_, '_> {
 		window_end: i64,
 	) -> Result<Vec<GraphActivity>> {
 		graph::project_activity(
-			self.f,
 			self.authority,
 			options,
 			nodes,
 			window_end,
-			self.source_node,
+			(self.source_node, self.node),
 		)
 		.await
 		.map_err(Into::into)

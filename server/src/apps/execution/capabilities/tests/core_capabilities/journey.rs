@@ -274,7 +274,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	};
 	assert!(answered_approval);
 	assert_eq!(j.effects.load(Ordering::SeqCst), 1);
-	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
+	let secret = j.c.f.config.api_token.clone();
 	assert!(!finished.context.to_string().contains(&secret));
 	let requests = j.requests.lock().unwrap().clone();
 	assert!(requests.len() > 10);
@@ -445,7 +445,7 @@ fn journey_router(
 .route("/effect", http::Method::POST, reply(move |request: reinhardt::Request| {let headers = request.headers.clone();let _body = request.json::<Value>().unwrap();
 		let counter = counter.clone();
 		async move {
-			// A Tool never forwards a Deployment secret such as the Peer Credential (#296).
+			// A Tool never forwards a Deployment secret such as the Deployment Administrator token (#296).
 			assert!(headers.get("authorization").is_none());
 			counter.fetch_add(1, Ordering::SeqCst);
 			reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()

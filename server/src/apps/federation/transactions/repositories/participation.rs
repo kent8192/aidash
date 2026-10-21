@@ -30,6 +30,20 @@ use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
 
+/// The Node of this Deployment that `manifest` names. A transaction names at
+/// most one, and an inbound request was checked to be for exactly that Node.
+fn local_node(runtime: &Federation, manifest: &Manifest) -> String {
+	manifest
+		.participants
+		.iter()
+		.map(|participant| participant.node_id.as_str())
+		.find(|node| {
+			aidash_domain::nodes::same_deployment(node, runtime.config.deployment.as_str())
+		})
+		.unwrap_or_default()
+		.to_owned()
+}
+
 enum Transaction {
 	Standalone(Box<dyn TransactionExecutor>),
 	Admitted(Box<NativeAccess>),
@@ -147,7 +161,7 @@ impl ParticipantScope for Scope {
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
 			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			self.runtime.store.deployment.as_str(),
+			&local_node(&self.runtime, manifest),
 			manifest,
 		)
 		.await?;
@@ -168,7 +182,7 @@ impl ParticipantScope for Scope {
 		let mut scope = crate::bootstrap::transaction_mutation_scope(tx);
 		let applied = aidash_application::transactions::mutation::apply(
 			&mut scope,
-			self.runtime.store.deployment.as_str(),
+			&local_node(&self.runtime, manifest),
 			manifest,
 		)
 		.await;
@@ -215,12 +229,17 @@ pub(crate) struct Repository {
 	pub runtime: Federation,
 	/// The Node that called, when this serves an inbound request.
 	pub(crate) admitted: Option<aidash_application::federation::inbound::Admitted>,
+	/// `admitted`'s receiving Node, as text.
+	pub(crate) receiver: Option<String>,
 }
 
 #[async_trait]
 impl ParticipantRepository for Repository {
 	fn node_id(&self) -> &str {
 		self.runtime.config.deployment.as_str()
+	}
+	fn receiver(&self) -> Option<&str> {
+		self.receiver.as_deref()
 	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
 		let tx = AtomicParticipant::begin(&self.runtime.store.control_pool).await?;

@@ -1,45 +1,66 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
-use aidash_server::federation::Peer;
+use aidash_server::federation::Federation;
 use common::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
-async fn verify(app: &common::TestApplication, node: &str, grant: Uuid) -> (u16, Value) {
-	grant_request(app, node, grant, "verify").await
+/// `from`'s default Node calls `to`'s, acting as itself, with a token signed
+/// by `from`'s Deployment Key.
+async fn verify(
+	app: &common::TestApplication,
+	nodes: (&Federation, &Federation),
+	grant: Uuid,
+) -> (u16, Value) {
+	grant_request(app, nodes, grant, "verify").await
 }
 async fn grant_request(
 	app: &common::TestApplication,
+	nodes: (&Federation, &Federation),
+	grant: Uuid,
+	operation: &str,
+) -> (u16, Value) {
+	let (to, from) = nodes;
+	let receiver = default_node(&to.store, "acme").await;
+	common::peer_request(
+		app,
+		(from, "acme"),
+		&receiver,
+		"",
+		&format!("/federation/v0.1/scoped/execution/grants/{operation}"),
+		json!({"grant_id":grant}),
+	)
+	.await
+}
+/// The same request from a Node of a stand-in Deployment that `to` registered.
+async fn grant_request_from(
+	app: &common::TestApplication,
+	to: &Federation,
+	remote: &common::peering::Remote,
 	node: &str,
 	grant: Uuid,
 	operation: &str,
 ) -> (u16, Value) {
-	let authorization = format!(
-		"Bearer {}",
-		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
-	);
-	let response = async {
-		let client = &(app.client());
-		let mut request = client
-			.request(
-				http::Method::POST,
-				&format!("/federation/v0.1/scoped/execution/grants/{operation}"),
-			)
-			.body(bytes::Bytes::copy_from_slice(
-				json!({"grant_id":grant}).to_string().as_bytes(),
-			))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &[
-			("authorization", authorization.as_str()),
-			("x-aidash-node", node),
-			("x-aidash-protocol", "0.2"),
-		] {
-			request = request.header(*name, *value);
-		}
-		request.send().await
+	let receiver = default_node(&to.store, "acme").await;
+	let path = format!("/scoped/execution/grants/{operation}");
+	let body = json!({"grant_id":grant}).to_string();
+	let headers = remote
+		.headers(
+			node,
+			&receiver.to_string(),
+			"",
+			("POST", &path, body.as_bytes()),
+		)
+		.await;
+	let client = app.client();
+	let mut request = client
+		.request(http::Method::POST, &format!("/federation/v0.1{path}"))
+		.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
+		.header(http::header::CONTENT_TYPE, "application/json");
+	for (name, value) in &headers {
+		request = request.header(*name, value.as_str());
 	}
-	.await
-	.unwrap();
+	let response = request.send().await.unwrap();
 	(
 		response.status_code(),
 		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
@@ -62,7 +83,11 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let ba = second.application;
 	let (mut policy, token, task) = bootstrap(&a, &aa, "http://localhost:1").await;
 	bootstrap(&b, &ba, "http://localhost:1").await;
-	let executor = aidash_domain::agent_subject(b.config.deployment.as_str(), "research", "1.0.0");
+	let executor = aidash_domain::agent_subject(
+		&default_node(&b.store, "acme").await.to_string(),
+		"research",
+		"1.0.0",
+	);
 	policy["subjects"][&executor] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
@@ -76,46 +101,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	{
-		let query_bind_1 = a.config.deployment.as_str();
-		sqlx::query(
-			&reinhardt::query::Query::insert()
-				.into_table(reinhardt::query::Alias::new("peers"))
-				.columns([
-					reinhardt::query::Alias::new("node_id"),
-					reinhardt::query::Alias::new("endpoint"),
-					reinhardt::query::Alias::new("credential_env"),
-					reinhardt::query::Alias::new("protocol_version"),
-					reinhardt::query::Alias::new("enabled"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
-						.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(reinhardt::query::Expr::cust("'0.2'"))
-						.expr(reinhardt::query::Expr::cust("TRUE"))
-						.to_owned(),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-
-	a.register_peer(Peer {
-		node_id: b.config.deployment.to_string(),
-		endpoint: b.config.endpoint.clone(),
-		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.2".into(),
-		enabled: true,
-	})
-	.await
-	.unwrap();
+	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
 	let (_, issued) = request(
 		&ba,
 		&b.config.api_token,
@@ -124,10 +110,10 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		json!({"subject":"alice"}),
 	)
 	.await;
-	assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 	let path = format!("/api/tasks/{task}/remote-grants");
 	let id = Uuid::new_v4();
-	let input = json!({"id":id,"node_id":b.config.deployment,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
+	let input = json!({"id":id,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
 	assert_eq!(
 		request(&aa, &a.config.api_token, "POST", &path, input.clone())
 			.await
@@ -141,10 +127,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		(200, prepared.clone()),
 		"retry must preserve id and expiry"
 	);
-	assert_eq!(
-		verify(&aa, b.config.deployment.as_str(), id).await,
-		(200, json!(true))
-	);
+	assert_eq!(verify(&aa, (&a, &b), id).await, (200, json!(true)));
 	// A newly constructed store/router must use the persisted grant, not memory.
 	let mut fresh = a.clone();
 	fresh.store = aidash_server::store::Store::from_pool(
@@ -159,12 +142,10 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	)
 	.await
 	.unwrap();
+	common::peering::carry_over(&mut fresh, &a);
 	// Act: rebuild the application after replacing the durable store connection.
 	let fresh_app = common::application(fresh.clone()).await;
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		200
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
 	let mut different = input.clone();
 	different["agent"]["id"] = json!("nonexistent");
 	assert_ne!(request(&aa, &token, "POST", &path, different).await.0, 200);
@@ -213,8 +194,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	let (status, snapshot) =
-		grant_request(&fresh_app, b.config.deployment.as_str(), id, "snapshot").await;
+	let (status, snapshot) = grant_request(&fresh_app, (&a, &b), id, "snapshot").await;
 	assert_eq!(status, 200, "{snapshot}");
 	assert!(!snapshot.to_string().contains("Sibling secret"));
 	assert!(!snapshot.to_string().contains(sibling_id));
@@ -256,8 +236,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	let (status, snapshot) =
-		grant_request(&fresh_app, b.config.deployment.as_str(), id, "snapshot").await;
+	let (status, snapshot) = grant_request(&fresh_app, (&a, &b), id, "snapshot").await;
 	assert_eq!(status, 200, "{snapshot}");
 	assert!(snapshot.to_string().contains("Sibling secret"));
 	let tracked: i64 = {
@@ -295,17 +274,13 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	assert_eq!(verify(&aa, b.config.deployment.as_str(), id).await.0, 403);
+	assert_eq!(verify(&aa, (&a, &b), id).await.0, 403);
 	assert_eq!(
-		grant_request(&fresh_app, b.config.deployment.as_str(), id, "snapshot")
-			.await
-			.0,
+		grant_request(&fresh_app, (&a, &b), id, "snapshot").await.0,
 		403
 	);
 	assert_eq!(
-		grant_request(&fresh_app, b.config.deployment.as_str(), id, "describe")
-			.await
-			.0,
+		grant_request(&fresh_app, (&a, &b), id, "describe").await.0,
 		403
 	);
 	assert_eq!(
@@ -320,10 +295,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		200
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
 	// Receiver model metadata changes invalidate the exact execution snapshot,
 	// even when the Agent's public definition remains unchanged.
 	let metadata: Value = sqlx::query_scalar(
@@ -359,10 +331,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		403
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 403);
 	{
 		let query_bind_1 = metadata;
 		sqlx::query(
@@ -382,10 +351,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		200
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
 	let mut denied = policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-model","effect":"deny","subjects":{"ids":[executor]},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/config/provider"},"right":{"source":"literal","value":"openrouter"}}}));
 	assert_eq!(
@@ -400,11 +366,8 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		403
-	);
-	assert_eq!(request(&aa,&token,"POST",&path,json!({"id":Uuid::new_v4(),"node_id":b.config.deployment,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await.0,403);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 403);
+	assert_eq!(request(&aa,&token,"POST",&path,json!({"id":Uuid::new_v4(),"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await.0,403);
 	assert_eq!(
 		request(
 			&aa,
@@ -417,10 +380,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		200
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
 	let mut denied_read = policy.clone();
 	denied_read["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task.to_string()]}}));
 	assert_eq!(
@@ -453,92 +413,44 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	// The fixture has one peer secret. Disable its original binding while
-	// testing an authenticated different node, then restore it.
-	{
-		let query_bind_1 = b.config.deployment.as_str();
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("peers"))
-				.value_expr(
-					reinhardt::query::Alias::new("enabled"),
-					reinhardt::query::Expr::cust("FALSE"),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(a.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	sqlx::query(
-		&reinhardt::query::Query::insert()
-			.into_table(reinhardt::query::Alias::new("peers"))
-			.columns([
-				reinhardt::query::Alias::new("node_id"),
-				reinhardt::query::Alias::new("endpoint"),
-				reinhardt::query::Alias::new("credential_env"),
-				reinhardt::query::Alias::new("protocol_version"),
-				reinhardt::query::Alias::new("enabled"),
-			])
-			.from_subquery(
-				reinhardt::query::Query::select()
-					.expr(reinhardt::query::Expr::cust("'aidash://unrelated'"))
-					.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
-					.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-					.expr(reinhardt::query::Expr::cust("'0.2'"))
-					.expr(reinhardt::query::Expr::cust("TRUE"))
-					.to_owned(),
-			)
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.execute(a.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	// A Node of another Deployment that `a` registers is authenticated, yet no
+	// grant names it. The grant's own Node stays registered, but disabled.
+	let unrelated = common::peering::Remote::start("aidash://unrelated").await;
+	let unrelated_node = aidash_domain::nodes::NodeName::derived("unrelated").to_string();
+	common::peering::permit(&a, &unrelated.endpoint);
+	let owner = default_node(&a.store, "acme").await.node;
 	assert_eq!(
-		verify(&aa, "aidash://unrelated", id).await.0,
+		request(
+			&aa,
+			&a.config.api_token,
+			"POST",
+			&common::peering::registration_path("acme", owner.as_str()),
+			unrelated.registration(&unrelated_node)
+		)
+		.await
+		.0,
+		200
+	);
+	common::set_node_enabled((&a, &aa, "acme"), (&b, "acme"), false, 1).await;
+	assert_eq!(
+		grant_request_from(&aa, &a, &unrelated, &unrelated_node, id, "verify")
+			.await
+			.0,
 		403,
 		"an authenticated unrelated peer must not use the grant"
 	);
 	assert_eq!(
-		grant_request(&aa, "aidash://unrelated", id, "snapshot")
+		grant_request_from(&aa, &a, &unrelated, &unrelated_node, id, "snapshot")
 			.await
 			.0,
 		403
 	);
-	sqlx::query(
-		&reinhardt::query::Query::delete()
-			.from_table(reinhardt::query::Alias::new("peers"))
-			.and_where(reinhardt::query::Expr::cust(
-				"node_id = 'aidash://unrelated'",
-			))
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.execute(a.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	{
-		let query_bind_1 = b.config.deployment.as_str();
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("peers"))
-				.value_expr(
-					reinhardt::query::Alias::new("enabled"),
-					reinhardt::query::Expr::cust("TRUE"),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(a.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	assert_eq!(
+		verify(&aa, (&a, &b), id).await.0,
+		401,
+		"a disabled registration admits nothing"
+	);
+	common::set_node_enabled((&a, &aa, "acme"), (&b, "acme"), true, 2).await;
 	let revoke = format!("{path}/{id}/revoke");
 	let (status, revoked) = request(&aa, &token, "POST", &revoke, json!({})).await;
 	assert_eq!(status, 200);
@@ -547,10 +459,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		request(&aa, &token, "POST", &revoke, json!({})).await,
 		(200, revoked)
 	);
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), id).await.0,
-		403
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 403);
 	assert_eq!(
 		request(&aa, &token, "POST", &path, input.clone()).await.0,
 		409
@@ -578,14 +487,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
+	assert_eq!(verify(&fresh_app, (&a, &b), expiry).await.0, 403);
 	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), expiry)
-			.await
-			.0,
-		403
-	);
-	assert_eq!(
-		grant_request(&fresh_app, b.config.deployment.as_str(), expiry, "snapshot")
+		grant_request(&fresh_app, (&a, &b), expiry, "snapshot")
 			.await
 			.0,
 		403
@@ -613,12 +517,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), current)
-			.await
-			.0,
-		403
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), current).await.0, 403);
 	{
 		let query_bind_1 = task;
 		sqlx::query(
@@ -638,12 +537,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), current)
-			.await
-			.0,
-		200
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), current).await.0, 200);
 	let (_, replacement) = request(
 		&aa,
 		&a.config.api_token,
@@ -690,12 +584,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), current)
-			.await
-			.0,
-		403
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), current).await.0, 403);
 	let replacement_id = Uuid::new_v4();
 	let mut next = input.clone();
 	next["id"] = json!(replacement_id);
@@ -703,12 +592,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		request(&aa, replacement_token, "POST", &path, next).await.0,
 		200
 	);
-	assert_eq!(
-		verify(&fresh_app, b.config.deployment.as_str(), replacement_id)
-			.await
-			.0,
-		200
-	);
+	assert_eq!(verify(&fresh_app, (&a, &b), replacement_id).await.0, 200);
 	let (_, receiver_replacement) = request(
 		&ba,
 		&b.config.api_token,
@@ -721,11 +605,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		(1, &receiver_replacement["credential"]["id"], 403),
 		(2, &issued["credential"]["id"], 200),
 	] {
-		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
+		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
 		assert_eq!(
-			verify(&fresh_app, b.config.deployment.as_str(), replacement_id)
-				.await
-				.0,
+			verify(&fresh_app, (&a, &b), replacement_id).await.0,
 			expected,
 			"receiver credential rebinding must invalidate the prepared authority"
 		);
@@ -745,12 +627,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.0,
 		200
 	);
-	assert_ne!(
-		verify(&fresh_app, b.config.deployment.as_str(), replacement_id)
-			.await
-			.0,
-		200
-	);
+	assert_ne!(verify(&fresh_app, (&a, &b), replacement_id).await.0, 200);
 	let count: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))

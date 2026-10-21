@@ -15,7 +15,7 @@ use aidash_domain::{
 		Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
 		home::PreparationAuthority,
 	},
-	nodes::DeploymentId,
+	nodes::NodeAddress,
 	policy::SubjectKind,
 	registry::{EntityRef, Search},
 	semantic::{Failure, remote::Binding},
@@ -48,7 +48,7 @@ async fn inspect<R: GrantRepository>(
 		.await?;
 	require_peer(scope, node).await?;
 	let identity = scope.identity();
-	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity.subject).await?;
+	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity).await?;
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,
@@ -82,12 +82,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 	input: aidash_domain::federation::execution::AgentInspectionInput,
 ) -> Result<aidash_domain::federation::execution::AgentMemoryRequirements> {
 	repository.source_identity().ok_or(Error::Forbidden)?;
-	DeploymentId::parse(&input.node_id)?;
-	if input.node_id == repository.source_node_id() {
-		return Err(Error::Invalid(
-			"inspection requires a remote destination".into(),
-		));
-	}
+	NodeAddress::parse(&input.node_id)?;
 	let mut scope = repository.source_begin().await?;
 	let result = async {
 		scope.inherit_task_origin(task_id).await?;
@@ -133,15 +128,12 @@ pub async fn prepare<R: GrantRepository>(
 	input: PrepareInput,
 ) -> Result<Prepared> {
 	let identity = repository.source_identity().ok_or(Error::Forbidden)?;
-	if input.id.is_nil()
-		|| input.node_id == repository.source_node_id()
-		|| !(1..=3600).contains(&input.ttl_seconds)
-	{
+	if input.id.is_nil() || !(1..=3600).contains(&input.ttl_seconds) {
 		return Err(Error::Invalid(
 			"invalid remote grant destination or lifetime".into(),
 		));
 	}
-	DeploymentId::parse(&input.node_id)?;
+	NodeAddress::parse(&input.node_id)?;
 	let mut scope = repository.source_begin().await?;
 	let result=async {
   scope.inherit_task_origin(task_id).await?;
@@ -253,6 +245,7 @@ pub async fn description_mode<R: GrantRepository>(
 		}
 		scope.replace_subjects(current.subject_chain.clone());
 		let task = scope.task_read(current.task_id).await?;
+		scope.workspace(task.workspace_id).await?;
 		let locked = scope.locked_task(task.id).await?;
 		if locked.revision != task.revision {
 			*revision_race = true;
@@ -291,7 +284,7 @@ pub async fn description_mode<R: GrantRepository>(
 		}
 		Ok(Description {
 			grant_id: current.id,
-			source_node: repository.source_node_id().into(),
+			source_node: scope.home_address(),
 			target_node: current.node_id,
 			source_tenant: current.tenant,
 			source_subject: current.root_subject,

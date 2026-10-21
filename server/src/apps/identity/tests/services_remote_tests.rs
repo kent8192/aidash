@@ -11,7 +11,9 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 	use aidash_domain::registry::bindings::{
 		BindingOrigin, BindingSnapshot, QualifiedRef, ResolvedBinding, ResolvedDefinition,
 	};
+	// The registry is the Deployment's; the inspection names the receiving Node.
 	let node = "aidash://host";
+	let host = "aidash://host/airy-hawk-2lu4as22";
 	let mut entries = vec![entry.clone(), model];
 	entries.extend(
 		aidash_application::registry::system::entries(
@@ -71,12 +73,12 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		foreign_agents: vec![],
 		agent_plugins: vec![],
 	};
-	let mut inspection: Inspection = serde_json::from_value(json!({"node_id":node,"authority_digest":digest(&json!({})),"agent":entry,"binding_snapshot":snapshot,"definitions":definitions.iter().map(|d| json!({"entry":d.identity.local(),"kind":d.definition.kind,"digest":d.digest,"metadata":d.definition})).collect::<Vec<_>>()})).unwrap();
-	assert!(validate(&inspection, "aidash://host", &reference, &Search::default()).is_ok());
+	let mut inspection: Inspection = serde_json::from_value(json!({"node_id":host,"authority_digest":digest(&json!({})),"agent":entry,"binding_snapshot":snapshot,"definitions":definitions.iter().map(|d| json!({"entry":d.identity.local(),"kind":d.definition.kind,"digest":d.digest,"metadata":d.definition})).collect::<Vec<_>>()})).unwrap();
+	assert!(validate(&inspection, host, &reference, &Search::default()).is_ok());
 	assert!(
 		validate(
 			&inspection,
-			"aidash://other",
+			"aidash://other/airy-hawk-2lu4as22",
 			&reference,
 			&Search::default()
 		)
@@ -84,17 +86,17 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 	);
 	let original = inspection.clone();
 	inspection.definitions.pop();
-	assert!(validate(&inspection, "aidash://host", &reference, &Search::default()).is_err());
+	assert!(validate(&inspection, host, &reference, &Search::default()).is_err());
 	inspection = original.clone();
 	inspection.definitions[1] = inspection.definitions[0].clone();
-	assert!(validate(&inspection, "aidash://host", &reference, &Search::default()).is_err());
+	assert!(validate(&inspection, host, &reference, &Search::default()).is_err());
 	inspection = original.clone();
 	inspection
 		.agent
 		.description
 		.insert("en".into(), "Substituted".into());
-	assert!(validate(&inspection, "aidash://host", &reference, &Search::default()).is_err());
+	assert!(validate(&inspection, host, &reference, &Search::default()).is_err());
 	inspection = original;
 	inspection.definitions[1].digest = format!("sha256:{}", "é".repeat(32));
-	assert!(validate(&inspection, "aidash://host", &reference, &Search::default()).is_err());
+	assert!(validate(&inspection, host, &reference, &Search::default()).is_err());
 }

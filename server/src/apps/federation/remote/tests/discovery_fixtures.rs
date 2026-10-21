@@ -1,18 +1,17 @@
 //! Controlled native peer responses and an observer around the production routes.
 use crate::endpoint::EndpointFixture;
 use crate::execution_fixtures::{ExecutionFixture, execution};
-use aidash_server::{apps::federation::peer::models::Peer, registry::Entry, routes};
+use aidash_server::{federation::Federation, registry::Entry, routes};
 use async_trait::async_trait;
 use futures_util::{
 	FutureExt,
 	future::{LocalBoxFuture, Shared},
 };
-use reinhardt::db::orm::Model;
 use reinhardt::di::{DiError, DiResult, Injectable};
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::test::fixtures::injection_context;
 use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
-use reinhardt::{InjectionContext, Request, Response, ServerRouter, post};
+use reinhardt::{InjectionContext, Request, Response, ServerRouter, get, post};
 use rstest::fixture;
 use serde_json::Value;
 use std::sync::{
@@ -21,14 +20,12 @@ use std::sync::{
 };
 use tokio::sync::{Mutex, Notify, mpsc};
 
-pub const PEER_ENV: &str = "AIDASH_SECRET_OUTBOUND_DISCOVERY_FIXTURE";
-pub const PEER_SECRET: &str = "outbound-discovery-fixture-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
 pub struct ObservedRequest {
 	pub authorization: String,
-	pub source: String,
 	pub protocol: String,
 	pub body: Value,
+	/// The exact bytes of the body, which the token's digest covers.
+	pub raw: String,
 }
 
 struct ObserveDiscovery(mpsc::UnboundedSender<ObservedRequest>);
@@ -48,9 +45,9 @@ impl Middleware for ObserveDiscovery {
 			self.0
 				.send(ObservedRequest {
 					authorization: header("authorization"),
-					source: header("x-aidash-node"),
 					protocol: header("x-aidash-protocol"),
 					body: serde_json::from_slice(request.body()).unwrap(),
+					raw: String::from_utf8(request.body().to_vec()).unwrap(),
 				})
 				.unwrap();
 		}
@@ -58,23 +55,30 @@ impl Middleware for ObserveDiscovery {
 	}
 }
 
-pub async fn persist_peer(app: &EndpointFixture, node: &str, url: &str) {
-	let record = Peer::build()
-		.node_id(node)
-		.endpoint(url)
-		.credential_env(PEER_ENV)
-		.protocol_version("0.2")
-		.enabled(true)
-		.finish();
-	Peer::objects()
-		.create_with_conn(&mut app.database.lease.handle(), &record)
+/// Registers the Node `source_node` of another Deployment at `app`'s default
+/// Node of its Tenant `acme`, through the registration route.
+pub async fn register(app: &EndpointFixture, source_node: &str, endpoint: &str, key_id: &str) {
+	let owner = crate::endpoint::default_node(&app.runtime.store, "acme")
+		.await
+		.node;
+	let response = app
+		.deployment_administrator
+		.post(
+			&crate::peering::registration_path("acme", owner.as_str()),
+			&crate::peering::registration(source_node, Some((endpoint, key_id))),
+			"json",
+		)
 		.await
 		.unwrap();
+	crate::endpoint::assert_json(response, 200);
 }
 
 pub struct DiscoveryPair {
 	pub source: ExecutionFixture,
 	pub destination: ExecutionFixture,
+	/// The Federation each side serves, which holds its Deployment Key.
+	pub source_runtime: Federation,
+	pub destination_runtime: Federation,
 	pub observed: mpsc::UnboundedReceiver<ObservedRequest>,
 	pub _peer_server: Arc<TestServerGuard>,
 }
@@ -163,21 +167,33 @@ pub fn discovery_pair(
 		let destination = destination_execution.await;
 		let server = server.await;
 		let destination = destination.lock().await.take().unwrap();
-		persist_peer(
+		let source_runtime = crate::peering::enable(&source.app.runtime, &source.app.context);
+		let destination_runtime =
+			crate::peering::enable(&destination.app.runtime, &destination.app.context);
+		crate::peering::permit(&source_runtime, &server.url);
+		crate::peering::permit(&destination_runtime, &source.app.server.url);
+		let source_node = crate::endpoint::default_node(&source_runtime.store, "acme").await;
+		let destination_node =
+			crate::endpoint::default_node(&destination_runtime.store, "acme").await;
+		register(
 			&source.app,
-			destination.app.runtime.config.deployment.as_str(),
+			&destination_node.to_string(),
 			&server.url,
+			&crate::peering::key_id(&destination_runtime),
 		)
 		.await;
-		persist_peer(
+		register(
 			&destination.app,
-			source.app.runtime.config.deployment.as_str(),
+			&source_node.to_string(),
 			&source.app.server.url,
+			&crate::peering::key_id(&source_runtime),
 		)
 		.await;
 		DiscoveryPair {
 			source,
 			destination,
+			source_runtime,
+			destination_runtime,
 			observed: observation.received.lock().await.take().unwrap(),
 			_peer_server: server,
 		}
@@ -188,6 +204,7 @@ pub fn discovery_pair(
 #[derive(Clone)]
 pub struct DiscoveryReply {
 	entry: Entry,
+	key: Arc<crate::peering::KeyFile>,
 	mode: Arc<AtomicUsize>,
 	pause: Arc<AtomicBool>,
 	started: Arc<Notify>,
@@ -202,6 +219,17 @@ impl Injectable for DiscoveryReply {
 			.ok_or_else(|| DiError::NotFound("discovery fixture reply".into()))
 	}
 }
+/// The stand-in Deployment's identity, so a Tenant Administrator can register it.
+#[get("/.well-known/aidash")]
+async fn identity(#[inject] state: DiscoveryReply) -> ViewResult<Response> {
+	Response::ok().with_json(&serde_json::json!({
+		"id": MOCK_DEPLOYMENT, "endpoint": "http://127.0.0.1:1",
+		"protocol_version": aidash_server::config::PROTOCOL_VERSION,
+		"key": {"id": state.key.key_id(), "public_key_pem": state.key.public_key_pem()},
+	}))
+}
+pub const MOCK_DEPLOYMENT: &str = "aidash://untrusted-peer";
+
 #[post("/federation/v0.1/scoped/discover")]
 async fn discover(#[inject] state: DiscoveryReply) -> ViewResult<Response> {
 	state.started.notify_one();
@@ -245,6 +273,7 @@ fn discovery_reply(ready_execution: ExecutionFuture) -> ReplyFuture {
 		let execution = ready_execution.await;
 		let execution = execution.lock().await;
 		DiscoveryReply {
+			key: crate::peering::KeyFile::generate(),
 			entry: execution
 				.as_ref()
 				.unwrap()
@@ -275,6 +304,7 @@ fn mock_router(
 	async move {
 		injection_context.set_singleton(discovery_reply.await);
 		ServerRouter::new()
+			.endpoint(identity)
 			.endpoint(discover)
 			.with_di_context(Arc::new(injection_context))
 	}
@@ -303,7 +333,16 @@ pub fn mock_discovery(
 		let state = state.await;
 		let server = server.await;
 		let execution = ready_execution.await.lock().await.take().unwrap();
-		persist_peer(&execution.app, "aidash://untrusted-peer", &server.url).await;
+		crate::peering::enable(&execution.app.runtime, &execution.app.context);
+		crate::peering::permit(&execution.app.runtime, &server.url);
+		let node = aidash_domain::nodes::NodeName::derived("untrusted");
+		register(
+			&execution.app,
+			&format!("{MOCK_DEPLOYMENT}/{node}"),
+			&server.url,
+			&state.key.key_id(),
+		)
+		.await;
 		MockDiscovery {
 			execution,
 			mode: state.mode,

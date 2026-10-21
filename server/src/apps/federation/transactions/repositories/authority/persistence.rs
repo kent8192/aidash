@@ -5,6 +5,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	federation::Federation,
 };
+use aidash_application::federation::inbound::Acting;
 use aidash_application::tenancy::TenancyScope;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, IntoValue, OnConflict, PostgresQueryBuilder, Query, SimpleExpr,
@@ -187,11 +188,25 @@ pub(crate) async fn mapped(
 	admitted: Option<&aidash_application::federation::inbound::Admitted>,
 	input: &Preflight,
 ) -> Result<Access> {
-	if input.coordinator == f.config.deployment {
+	if aidash_domain::nodes::same_deployment(&input.coordinator, f.config.deployment.as_str()) {
 		return access(f, &input.origin).await;
 	}
 	let admitted = admitted.ok_or(Error::Forbidden)?;
-	let mut access = crate::authorization::peer::access(&control_federation(f), admitted).await?;
+	let control_runtime = control_federation(f);
+	let mut access = match admitted.acting {
+		// A coordinator reserves, prepares and finishes as its Node. The subject
+		// is the one the submission's preflight bound, which its Tenant mapped.
+		Acting::Node => {
+			crate::apps::identity::services::peer::mapped_access(
+				&control_runtime,
+				&admitted.receiver.node,
+				&admitted.sender.to_string(),
+				&input.origin.subject,
+			)
+			.await?
+		}
+		_ => crate::authorization::peer::access(&control_runtime, admitted).await?,
+	};
 	control(&mut access.tx).await?;
 	Ok(access)
 }

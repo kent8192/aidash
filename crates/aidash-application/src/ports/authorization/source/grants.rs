@@ -19,6 +19,9 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
+	/// The address of the Home Node that issued the grant, known once the
+	/// task's Workspace has been read in this scope.
+	fn home_address(&self) -> String;
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn append_subject(&mut self, subject: String);
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()>;
@@ -61,6 +64,6 @@ pub trait GrantRepository: Send + Sync {
 		node: &str,
 		path: &str,
 		input: &Value,
-		subject: &str,
+		identity: &ExecutionPrincipal,
 	) -> Result<T>;
 }

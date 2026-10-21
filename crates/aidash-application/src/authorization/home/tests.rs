@@ -104,7 +104,7 @@ fn grant(required: bool) -> Grant {
 fn description() -> Description {
 	Description {
 		grant_id: Uuid::from_u128(4),
-		source_node: "aidash://home".into(),
+		source_node: "aidash://home/airy-hawk-2lu4as22".into(),
 		target_node: "aidash://receiver".into(),
 		source_tenant: "tenant".into(),
 		source_subject: "requester".into(),
@@ -134,8 +134,8 @@ impl Repository {
 #[async_trait]
 impl HomeRepository for Repository {
 	type Scope = Scope;
-	fn node_id(&self) -> &str {
-		"aidash://home"
+	async fn node_address(&self) -> Result<String> {
+		Ok("aidash://home/airy-hawk-2lu4as22".into())
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
 		(!self.deployment_administrator).then(principal)
@@ -188,7 +188,7 @@ impl HomeRepository for Repository {
 			if !state.replies.is_empty() {
 				state.replies.remove(0)
 			} else if path.ends_with("/admissions") {
-				json!({"id":Uuid::from_u128(5),"source_node":"aidash://home","grant_id":Uuid::from_u128(4),"task_id":task().id,"expires_at":grant(false).expires_at})
+				json!({"id":Uuid::from_u128(5),"source_node":"aidash://home/airy-hawk-2lu4as22","grant_id":Uuid::from_u128(4),"task_id":task().id,"expires_at":grant(false).expires_at})
 			} else if path.ends_with("/messages") {
 				json!({"id":input["message"]["id"],"run_id":Uuid::from_u128(5),"accepted":true})
 			} else if path.ends_with("/status") {
@@ -512,7 +512,7 @@ async fn changed_initial_task_binding_blocks_receiver_activation() {
 #[tokio::test]
 async fn unrelated_admission_is_rejected_before_creating_home_binding(#[case] field: &str) {
 	let repository = Repository::default();
-	let mut value = json!({"id":Uuid::from_u128(5),"source_node":"aidash://home","grant_id":Uuid::from_u128(4),"task_id":task().id,"expires_at":grant(false).expires_at});
+	let mut value = json!({"id":Uuid::from_u128(5),"source_node":"aidash://home/airy-hawk-2lu4as22","grant_id":Uuid::from_u128(4),"task_id":task().id,"expires_at":grant(false).expires_at});
 	value[field] = if field == "source_node" {
 		json!("aidash://foreign")
 	} else {

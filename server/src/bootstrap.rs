@@ -1168,12 +1168,14 @@ pub(crate) fn graph_projection_scope<'a, 'scope>(
 	f: &'a Federation,
 	authority: &'a mut crate::apps::identity::services::peer::graph::GraphAuthority<'scope>,
 	source_node: &'a str,
+	node: &'a str,
 	revision: &'a str,
 ) -> crate::apps::identity::repositories::graph::Projection<'a, 'scope> {
 	crate::apps::identity::repositories::graph::Projection {
 		f,
 		authority,
 		source_node,
+		node,
 		revision,
 	}
 }
@@ -1438,6 +1440,7 @@ pub(crate) fn transaction_authority_repository(
 	crate::apps::federation::transactions::repositories::authority::control::Repository {
 		runtime: runtime.clone(),
 		admitted: None,
+		receiver: None,
 	}
 }
 
@@ -1449,6 +1452,7 @@ pub(crate) fn transaction_authority_repository_as(
 	crate::apps::federation::transactions::repositories::authority::control::Repository {
 		runtime: runtime.clone(),
 		admitted: Some(admitted.clone()),
+		receiver: Some(admitted.receiver.to_string()),
 	}
 }
 
@@ -1509,6 +1513,7 @@ pub(crate) fn transaction_participant(
 			crate::apps::federation::transactions::repositories::participation::Repository {
 				runtime: runtime.clone(),
 				admitted: None,
+				receiver: None,
 			},
 		),
 		transaction_coordinator(runtime),
@@ -1525,6 +1530,7 @@ pub(crate) fn transaction_participant_as(
 			crate::apps::federation::transactions::repositories::participation::Repository {
 				runtime: runtime.clone(),
 				admitted: Some(admitted.clone()),
+				receiver: Some(admitted.receiver.to_string()),
 			},
 		),
 		transaction_coordinator(runtime),

@@ -18,8 +18,11 @@ fn manifest_encoding_and_digest_preserve_the_original_wire_bytes(manifest: Manif
 #[rstest]
 fn local_participant_lookup_preserves_absence_as_a_distinct_authority_failure(manifest: Manifest) {
 	assert_eq!(
-		manifest.local("aidash://alpha").unwrap().node_id,
-		"aidash://alpha"
+		manifest
+			.local("aidash://alpha/airy-hawk-2lu4as22")
+			.unwrap()
+			.node_id,
+		"aidash://alpha/airy-hawk-2lu4as22"
 	);
 	assert_eq!(
 		manifest.local("aidash://missing").unwrap_err().to_string(),
@@ -56,7 +59,7 @@ fn ordering_unique_nodes_and_per_participant_mutation_capacity_remain_strict(
 		"duplicate" => manifest.participants.push(manifest.participants[0].clone()),
 		"unsorted" => {
 			let mut second = manifest.participants[0].clone();
-			second.node_id = "aidash://aardvark".into();
+			second.node_id = "aidash://aardvark/airy-hawk-2lu4as22".into();
 			manifest.participants.push(second);
 		}
 		"mutations" => {
@@ -98,7 +101,7 @@ fn duplicate_mutation_identity_is_checked_per_participant_and_not_across_nodes(
 	);
 	manifest.participants[0].mutations.pop();
 	let mut peer = manifest.participants[0].clone();
-	peer.node_id = "aidash://beta".into();
+	peer.node_id = "aidash://beta/airy-hawk-2lu4as22".into();
 	manifest.participants.push(peer);
 	check(&manifest).unwrap();
 }
@@ -112,7 +115,7 @@ fn manifests_keep_the_original_completeness_and_size_gate(
 ) {
 	match invalid {
 		"effects" => manifest.participants[0].mutations.clear(),
-		"coordinator" => manifest.coordinator = "aidash://beta".into(),
+		"coordinator" => manifest.coordinator = "aidash://beta/airy-hawk-2lu4as22".into(),
 		"size" => {
 			manifest.participants[0].mutations = vec![Mutation::WorkspaceState {
 				workspace_id: Uuid::from_u128(2),
@@ -219,5 +222,37 @@ fn aborted_decisions_can_complete_without_publishing_visible_effects() {
 	assert_eq!(CoordinatorTransition::Publish.phase(), "VISIBLE");
 	assert_eq!(CoordinatorTransition::Complete.phase(), "COMPLETE");
 }
-const GOLDEN: &str = r#"{"id":"00000000-0000-0000-0000-000000000001","coordinator":"aidash://alpha","isolation":"serializable","deadline":"2030-01-01T00:00:00Z","participants":[{"node_id":"aidash://alpha","mutations":[{"kind":"workspace_state","workspace_id":"00000000-0000-0000-0000-000000000002","expected_revision":0,"state":{"count":1}}]}]}"#;
-const GOLDEN_DIGEST: &str = "650ef295266e86b21e72bbf41b7b6e3e9c4acca60ae248c5581e984c2105b9c2";
+const GOLDEN: &str = r#"{"id":"00000000-0000-0000-0000-000000000001","coordinator":"aidash://alpha/airy-hawk-2lu4as22","isolation":"serializable","deadline":"2030-01-01T00:00:00Z","participants":[{"node_id":"aidash://alpha/airy-hawk-2lu4as22","mutations":[{"kind":"workspace_state","workspace_id":"00000000-0000-0000-0000-000000000002","expected_revision":0,"state":{"count":1}}]}]}"#;
+const GOLDEN_DIGEST: &str = "517ef332f3744542f78960651a8b8b89e238c86d320e391db76a60535044b064";
+
+#[rstest]
+fn a_manifest_naming_two_nodes_of_one_deployment_is_refused(mut manifest: Manifest) {
+	let mut second = manifest.participants[0].clone();
+	second.node_id = "aidash://alpha/brave-otter-k3m9q2xa".into();
+	manifest.participants.push(second);
+	manifest
+		.participants
+		.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+	assert!(
+		matches!(check(&manifest), Err(Error::Invalid(message)) if message == "a transaction names at most one Node of each Deployment")
+	);
+}
+
+#[rstest]
+fn a_coordinator_beside_a_participant_of_the_same_deployment_must_be_that_node(
+	mut manifest: Manifest,
+) {
+	manifest.coordinator = "aidash://alpha/brave-otter-k3m9q2xa".into();
+	assert!(check(&manifest).is_err());
+}
+
+#[rstest]
+fn local_finds_exactly_the_named_node_and_never_another_node_of_its_deployment(manifest: Manifest) {
+	assert!(manifest.local("aidash://alpha/airy-hawk-2lu4as22").is_ok());
+	assert!(
+		manifest
+			.local("aidash://alpha/brave-otter-k3m9q2xa")
+			.is_err()
+	);
+	assert!(manifest.local("aidash://alpha").is_err());
+}

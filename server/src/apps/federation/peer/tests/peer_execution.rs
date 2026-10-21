@@ -4,26 +4,27 @@
 mod endpoint;
 #[path = "../../../execution/tests/support/execution.rs"]
 mod execution_fixtures;
-#[path = "../../../execution/tests/support/isolated.rs"]
-mod isolated;
 #[path = "../../../execution/tests/support/native_database.rs"]
 mod native_database;
+#[path = "../../../execution/tests/support/federation.rs"]
+mod peering;
 // This suite needs the successful provider fixture; adapter tests use the other modes.
 #[allow(dead_code)]
 #[path = "../../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
-use aidash_server::{
-	apps::{execution::models::Run, federation::peer::models::Peer},
-	registry::digest,
-};
+use aidash_server::{apps::execution::models::Run, registry::digest};
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
+use peering::{Bearer, Remote};
 use reinhardt::db::orm::Model;
 use reinhardt::test::TestResponse;
 use serde_json::{Value, json};
 
-const PEER_ENV: &str = "AIDASH_SECRET_PEER_EXECUTION_FIXTURE";
-const PEER_SECRET: &str = "peer-execution-fixture-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const SOURCE: &str = "aidash://source";
+
+fn sender() -> String {
+	aidash_domain::nodes::NodeName::derived("source").to_string()
+}
 
 fn decoded(response: TestResponse) -> (u16, Value) {
 	assert_eq!(
@@ -74,29 +75,23 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Valu
 	)
 }
 
-async fn inspect(app: &EndpointFixture, token: &str, input: Value) -> (u16, Value) {
-	let authorization = format!("Bearer {token}");
+async fn inspect(
+	app: &EndpointFixture,
+	bearer: Bearer<'_>,
+	subject: &str,
+	input: Value,
+) -> (u16, Value) {
+	let receiver = endpoint::default_node(&app.runtime.store, "acme").await;
 	decoded(
-		async {
-			let client = &(app.anonymous);
-			let mut request = client
-				.request(
-					http::Method::POST,
-					"/federation/v0.1/scoped/execution/inspect",
-				)
-				.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
-				.header(http::header::CONTENT_TYPE, "application/json");
-			for (name, value) in &[
-				("Authorization", authorization.as_str()),
-				("x-aidash-node", "aidash://source"),
-				("x-aidash-protocol", "0.2"),
-			] {
-				request = request.header(*name, *value);
-			}
-			request.send().await
-		}
-		.await
-		.unwrap(),
+		peering::post_as(
+			&app.anonymous,
+			&receiver.to_string(),
+			bearer,
+			subject,
+			"/federation/v0.1/scoped/execution/inspect",
+			&input,
+		)
+		.await,
 	)
 }
 
@@ -105,26 +100,26 @@ async fn inspect(app: &EndpointFixture, token: &str, input: Value) -> (u16, Valu
 async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_run(
 	#[future] execution: ExecutionFixture,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	let execution = Box::pin(execution).await;
 	let app = &execution.app;
-	let f = &app.runtime;
 	let policy = execution.policy;
-	let record = Peer::build()
-		.node_id("aidash://source")
-		.endpoint("http://127.0.0.1:1")
-		.credential_env(PEER_ENV)
-		.protocol_version("0.2")
-		.enabled(true)
-		.finish();
-	Peer::objects()
-		.create_with_conn(&mut app.database.lease.handle(), &record)
+	let remote = Remote::start(SOURCE).await;
+	let f = &peering::enable(&app.runtime, &app.context);
+	peering::permit(f, &remote.endpoint);
+	let receiving = endpoint::default_node(&f.store, "acme").await.node;
+	let registered = app
+		.deployment_administrator
+		.post(
+			&peering::registration_path("acme", receiving.as_str()),
+			&remote.registration(&sender()),
+			"json",
+		)
 		.await
 		.unwrap();
-	let input = json!({"tenant":"remote","subject":"bob","agent":{"id":"research","version":"1.0.0"},"requirements":{}});
-	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
+	assert_eq!(decoded(registered).0, 200);
+	let signed = || Bearer::Signed(&remote, sender());
+	let input = json!({"agent":{"id":"research","version":"1.0.0"},"requirements":{}});
+	assert_eq!(inspect(app, signed(), "bob", input.clone()).await.0, 403);
 	let (_, issued) = deployment_administrator(
 		app,
 		"/api/authorization/acme/credentials",
@@ -132,16 +127,24 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	)
 	.await;
 	let credential = &issued["credential"]["id"];
-	assert_eq!(deployment_administrator(app,"/api/authorization/acme/peer-mappings",json!({"source_node":"aidash://source","source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0})).await.0,200);
+	assert_eq!(deployment_administrator(app,"/api/authorization/acme/peer-mappings",json!({"node":receiving,"source_node":remote.node(&sender()),"source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0})).await.0,200);
 	for rejected in [
 		issued["token"].as_str().unwrap(),
 		f.config.api_token.as_str(),
 	] {
-		assert_eq!(inspect(app, rejected, input.clone()).await.0, 401);
+		assert_eq!(
+			inspect(app, Bearer::Raw(rejected), "bob", input.clone())
+				.await
+				.0,
+			401
+		);
 	}
-	let (status, result) = inspect(app, PEER_SECRET, input.clone()).await;
+	let (status, result) = inspect(app, signed(), "bob", input.clone()).await;
 	assert_eq!(status, 200, "{result}");
-	assert_eq!(result["node_id"], f.config.deployment);
+	assert_eq!(
+		result["node_id"],
+		f.config.deployment.node(receiving.clone()).to_string()
+	);
 	assert_eq!(result["agent"]["id"], "research");
 	let definitions = result["definitions"].as_array().unwrap();
 	assert_eq!(
@@ -167,8 +170,12 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	}
 	let mut mismatch = input.clone();
 	mismatch["requirements"] = json!({"capability":"missing-capability"});
-	assert_eq!(inspect(app, PEER_SECRET, mismatch).await.0, 400);
-	let executor = aidash_domain::agent_subject(f.config.deployment.as_str(), "research", "1.0.0");
+	assert_eq!(inspect(app, signed(), "bob", mismatch).await.0, 400);
+	let executor = aidash_domain::agent_subject(
+		&f.config.deployment.node(receiving.clone()).to_string(),
+		"research",
+		"1.0.0",
+	);
 	// Every denied action is tested for both the mapped root and the receiver's
 	// executor. An allow on one must never override the other's explicit deny.
 	let mut revision = 1;
@@ -195,7 +202,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			);
 			revision += 1;
 			assert_eq!(
-				inspect(app, PEER_SECRET, input.clone()).await.0,
+				inspect(app, signed(), "bob", input.clone()).await.0,
 				403,
 				"{subject} {action} {kind}"
 			);
@@ -222,7 +229,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			.0,
 			200
 		);
-		assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
+		assert_eq!(inspect(app, signed(), "bob", input.clone()).await.0, 403);
 		assert_eq!(
 			deployment_administrator(
 				app,
@@ -234,7 +241,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			200
 		);
 	}
-	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 200);
+	assert_eq!(inspect(app, signed(), "bob", input.clone()).await.0, 200);
 	assert_eq!(
 		deployment_administrator(
 			app,
@@ -248,7 +255,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.0,
 		200
 	);
-	assert_eq!(inspect(app, PEER_SECRET, input).await.0, 403);
+	assert_eq!(inspect(app, signed(), "bob", input).await.0, 403);
 	assert!(
 		Run::objects()
 			.all()
@@ -271,25 +278,32 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 	#[with("aidash://inspection-child")]
 	child: EndpointFixture,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	let home = home.await;
 	let child = child.await;
 	endpoint::register_fixture_agent(&home, "parent").await;
 	endpoint::register_fixture_agent(&child, "public-child").await;
-	for (owner, peer) in [(&home, &child), (&child, &home)] {
-		let record = Peer::build()
-			.node_id(peer.runtime.config.deployment.as_str())
-			.endpoint(&peer.server.url)
-			.credential_env(PEER_ENV)
-			.protocol_version("0.2")
-			.enabled(true)
-			.finish();
-		Peer::objects()
-			.create_with_conn(&mut owner.database.lease.handle(), &record)
+	let home_runtime = peering::enable(&home.runtime, &home.context);
+	let child_runtime = peering::enable(&child.runtime, &child.context);
+	for (owner, runtime, peer, peer_runtime) in [
+		(&home, &home_runtime, &child, &child_runtime),
+		(&child, &child_runtime, &home, &home_runtime),
+	] {
+		peering::permit(runtime, &peer.server.url);
+		let node = endpoint::default_node(&runtime.store, "acme").await;
+		let remote = endpoint::default_node(&peer_runtime.store, "acme").await;
+		let registered = owner
+			.deployment_administrator
+			.post(
+				&peering::registration_path("acme", node.node.as_str()),
+				&peering::registration(
+					&remote.to_string(),
+					Some((&peer.server.url, &peering::key_id(peer_runtime))),
+				),
+				"json",
+			)
 			.await
 			.unwrap();
+		assert_eq!(decoded(registered).0, 200);
 	}
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_deployment":home.runtime.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.deployment,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
@@ -315,22 +329,4 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 			.await
 			.is_err()
 	);
-}
-
-#[rstest::fixture]
-fn closure_peer_client(
-	#[from(endpoint::endpoint)] endpoint: endpoint::EndpointFuture,
-) -> futures_util::future::BoxFuture<'static, reinhardt::test::APIClient> {
-	Box::pin(async move {
-		let app = endpoint.await;
-		let client = reinhardt::test::fixtures::api_client_from_url(&app.server.url);
-		for (name, value) in [
-			("authorization", format!("Bearer {PEER_SECRET}")),
-			("x-aidash-node", "aidash://source".into()),
-			("x-aidash-protocol", "0.2".into()),
-		] {
-			client.set_header(name, &value).await.unwrap();
-		}
-		client
-	})
 }

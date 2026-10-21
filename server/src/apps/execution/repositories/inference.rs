@@ -237,8 +237,9 @@ async fn marker(
 		data["reason"] = json!(reason);
 	}
 	// The same workspace rule as the Run's own events keeps run-scoped visibility.
-	event_records::append(
+	event_records::append_run(
 		tx,
+		run.id,
 		run.is_local(node).then_some(run.workspace_id),
 		kind,
 		data,

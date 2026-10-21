@@ -136,12 +136,10 @@ impl Transactions {
 	}
 	pub async fn prepare(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
-		require_atomic(&f, &admitted).await?;
 		participant::prepare(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
 	pub async fn finish(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
-		require_atomic(&f, &admitted).await?;
 		participant::finish(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
 	pub async fn decision(&self, admitted: Admitted, id: Uuid) -> Result<Status> {
@@ -169,9 +167,11 @@ fn principal(actor: &Actor) -> Option<ExecutionPrincipal> {
 	}
 }
 
-/// Taking part in an atomic transaction is a Tenant's decision about the
+/// Taking part in a new atomic transaction is a Tenant's decision about the
 /// sending Node (ADR 0064): its registration allows it, or the sender is
-/// another Node of the same Tenant.
+/// another Node of the same Tenant. Only a reservation asks: a participant that
+/// admitted the transaction prepares, commits and aborts it even after the
+/// registration changed, so recovery completes.
 async fn require_atomic(f: &Federation, admitted: &Admitted) -> Result<()> {
 	use crate::apps::identity::repositories::node_registrations as registrations;
 	let tenancy = aidash_application::tenancy::TenancyScope::Tenant(admitted.tenant.clone());

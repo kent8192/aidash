@@ -43,14 +43,36 @@ impl AdmissionScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn trusted(&mut self, node: &str, origin: Option<&Origin>) -> Result<bool> {
-		// A submission with no origin has no Tenant, so no Node to send from.
-		let Some(origin) = origin else {
-			return Ok(false);
+	async fn node_tenant(&mut self, node: &str) -> Result<Option<String>> {
+		let Ok(address) = aidash_domain::nodes::NodeAddress::parse(node) else {
+			return Ok(None);
+		};
+		if address.deployment != self.runtime.config.deployment {
+			return Ok(None);
+		}
+		crate::apps::identity::repositories::node_registrations::name_tenant(
+			self.tx,
+			address.node.as_str(),
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn trusted(
+		&mut self,
+		coordinator: &str,
+		node: &str,
+		origin: Option<&Origin>,
+	) -> Result<bool> {
+		let coordinator = aidash_domain::nodes::NodeAddress::parse(coordinator)?;
+		// A submitter with no origin is the Deployment Administrator, who acts as
+		// the Tenant of the coordinator Node.
+		let tenant = match origin {
+			Some(origin) => aidash_domain::tenancy::TenantName::new(origin.tenant.clone())?,
+			None => self.runtime.node_tenant_of(&coordinator.node).await?,
 		};
 		let sender = aidash_domain::federation::route::Sender {
-			tenant: aidash_domain::tenancy::TenantName::new(origin.tenant.clone())?,
-			node: None,
+			tenant,
+			node: Some(coordinator.node),
 			subject: None,
 		};
 		Ok(self

@@ -148,8 +148,10 @@ async fn manage_runworker_recovers_durable_work_and_exposes_only_probes(
 	// Arrange: recovery must find a durable, undecided transaction without an HTTP wake-up.
 	let mut app = native_worker.await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":"aidash://manage-fixture","isolation":"serializable",
-		"deadline":Utc::now()-Duration::seconds(1),"participants":[{"node_id":"aidash://manage-fixture",
+	let node =
+		aidash_domain::nodes::NodeAddress::derived("aidash://manage-fixture", "manage").to_string();
+	let manifest = json!({"id":id,"coordinator":node,"isolation":"serializable",
+		"deadline":Utc::now()-Duration::seconds(1),"participants":[{"node_id":node,
 		"mutations":[{"kind":"workspace_state","workspace_id":Uuid::new_v4(),"expected_revision":0,"state":{}}]}]});
 	let typed: aidash_server::transactions::Manifest =
 		serde_json::from_value(manifest.clone()).unwrap();

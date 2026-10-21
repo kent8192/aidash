@@ -4,10 +4,10 @@
 mod endpoint;
 #[path = "../../../execution/tests/support/execution.rs"]
 mod execution_fixtures;
-#[path = "../../../execution/tests/support/isolated.rs"]
-mod isolated;
 #[path = "../../../execution/tests/support/native_database.rs"]
 mod native_database;
+#[path = "../../../execution/tests/support/federation.rs"]
+mod peering;
 // The successful provider fixture also serves other adapter test variants.
 mod discovery_fixtures;
 #[allow(dead_code)]
@@ -15,9 +15,7 @@ mod discovery_fixtures;
 mod provider_fixtures;
 
 use aidash_server::apps::identity::models::AuthorizationCredential;
-use discovery_fixtures::{
-	DiscoveryPair, MockDiscovery, PEER_ENV, PEER_SECRET, discovery_pair, mock_discovery,
-};
+use discovery_fixtures::{DiscoveryPair, MockDiscovery, discovery_pair, mock_discovery};
 use endpoint::{EndpointFixture, assert_json};
 use reinhardt::db::orm::Model;
 use reinhardt::test::APIClient;
@@ -47,9 +45,6 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, body: Value
 async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	#[future] discovery_pair: DiscoveryPair,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	// Arrange
 	let mut pair = Box::pin(discovery_pair).await;
 	let a = &pair.source.app;
@@ -64,6 +59,8 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		result["errors"][0]["error"],
 		"authorized peer discovery unavailable"
 	);
+	let source_node = endpoint::default_node(&pair.source_runtime.store, "acme").await;
+	let destination_node = endpoint::default_node(&pair.destination_runtime.store, "acme").await;
 	let issued = deployment_administrator(
 		b,
 		"/api/authorization/acme/credentials",
@@ -74,7 +71,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		b,
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":a.runtime.config.deployment,"source_tenant":"acme","source_subject":"alice",
+			"node":destination_node.node,"source_node":source_node,"source_subject":"alice",
 			"credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true,
 		}),
 	)
@@ -85,7 +82,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	// Identical local IDs must still be authorized within the remote namespace.
 	policy["policies"].as_array_mut().unwrap().push(json!({
         "id":"hide-remote","effect":"deny","subjects":{"any":true},"actions":["registry.read"],
-        "resources":{"kinds":["agent"],"ids":[aidash_domain::agent_subject(b.runtime.config.deployment.as_str(),"research","1.0.0")]},
+        "resources":{"kinds":["agent"],"ids":[aidash_server::domain::qualified_agent(&destination_node,"research","1.0.0")]},
     }));
 	deployment_administrator(
 		a,
@@ -101,14 +98,38 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		observed.push(request);
 	}
 	assert_eq!(observed.len(), 3);
+	let sender_keys = std::collections::BTreeMap::from([(
+		peering::key_id(&pair.source_runtime),
+		pair.source_runtime
+			.config
+			.deployment_key
+			.as_ref()
+			.unwrap()
+			.public_key_pem()
+			.to_owned(),
+	)]);
+	let sender_keys = aidash_capability::PublicKeys::from_pems(sender_keys).unwrap();
 	for request in observed {
-		assert_eq!(request.authorization, format!("Bearer {PEER_SECRET}"));
-		assert_ne!(
-			request.authorization,
-			format!("Bearer {}", pair.source.subject_token)
-		);
-		assert_eq!(request.source, a.runtime.config.deployment);
-		assert_eq!(request.protocol, "0.2");
+		let token = request.authorization.strip_prefix("Bearer ").unwrap();
+		assert_ne!(token, pair.source.subject_token);
+		// The token is the source Deployment's, bound to this one request.
+		let claims = aidash_capability::federation::FederationClaims::verify(
+			token,
+			&sender_keys,
+			chrono::Utc::now().timestamp() as u64,
+			&aidash_capability::federation::RequestBinding {
+				protocol: "0.4",
+				method: "POST",
+				path: "/scoped/discover",
+				body: request.raw.as_bytes(),
+			},
+		)
+		.expect("a Federation token signed with the source's Deployment Key");
+		assert_eq!(claims.iss, a.runtime.config.deployment.as_str());
+		assert_eq!(claims.sub, source_node.to_string());
+		assert_eq!(claims.aud, destination_node.to_string());
+		assert_eq!(claims.subject, "alice");
+		assert_eq!(request.protocol, "0.4");
 		let mut keys: Vec<_> = request
 			.body
 			.as_object()
@@ -117,9 +138,8 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 			.map(String::as_str)
 			.collect();
 		keys.sort_unstable();
-		assert_eq!(keys, ["search", "subject", "tenant"]);
-		assert_eq!(request.body["tenant"], "acme");
-		assert_eq!(request.body["subject"], "alice");
+		// Tenant and subject travel in the signed token, never in the body.
+		assert_eq!(keys, ["search"]);
 		assert_eq!(request.body["search"]["kind"], "agent");
 	}
 	policy["policies"].as_array_mut().unwrap().pop();
@@ -184,9 +204,6 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_honor_revocation(
 	#[future] mock_discovery: MockDiscovery,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	// Arrange
 	let fixture = Box::pin(mock_discovery).await;
 	let app = &fixture.execution.app;
@@ -260,9 +277,6 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 async fn source_filters_search_results_and_rejects_invalid_peer_metadata(
 	#[future] mock_discovery: MockDiscovery,
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
 	// Arrange
 	let fixture = Box::pin(mock_discovery).await;
 	let subject = &fixture.execution.subject;

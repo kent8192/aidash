@@ -25,9 +25,10 @@ impl PeerDependencies {
 pub(crate) async fn verify(f: Federation, admitted: Admitted, input: Input) -> Result<Checked> {
 	aidash_application::federation::dependencies::require_local_target(
 		&input.reference,
-		f.config.deployment.as_str(),
+		&admitted.receiver.to_string(),
 	)?;
 	let mut access = super::access(&f, &admitted).await?;
+	access.set_node(admitted.receiver.node.clone());
 	let result = aidash_application::federation::dependencies::verify_peer(
 		&mut crate::bootstrap::dependency_scope(&mut access),
 		&input.reference,

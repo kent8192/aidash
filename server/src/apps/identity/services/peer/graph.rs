@@ -227,6 +227,7 @@ pub(crate) async fn project(
 async fn project_in(
 	f: &Federation,
 	source_node: &str,
+	receiver: &str,
 	viewer: &GraphViewer,
 	options: &GraphOptions,
 	authority: &mut GraphAuthority<'_>,
@@ -237,6 +238,7 @@ async fn project_in(
 			f,
 			authority,
 			source_node,
+			receiver,
 			authority_revision,
 		),
 		source_node,
@@ -278,6 +280,7 @@ async fn project_page(
 				project_in(
 					f,
 					&node,
+					&admitted.receiver.to_string(),
 					&input.viewer,
 					&input.options,
 					&mut GraphAuthority::Subject(&mut access),
@@ -303,6 +306,7 @@ async fn project_page(
 			let result = project_in(
 				f,
 				&node,
+				f.config.deployment.as_str(),
 				&input.viewer,
 				&input.options,
 				&mut GraphAuthority::DeploymentAdministrator {

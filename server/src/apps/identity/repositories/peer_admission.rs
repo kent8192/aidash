@@ -114,6 +114,14 @@ where
 	fn node_id(&self) -> &str {
 		self.runtime.borrow().config.deployment.as_str()
 	}
+	fn receiver_address(&self) -> String {
+		self.runtime
+			.borrow()
+			.config
+			.deployment
+			.node(self.receiver.clone())
+			.to_string()
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		let id = &self.access.identity;
 		ExecutionPrincipal {

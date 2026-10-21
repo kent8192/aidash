@@ -3,7 +3,7 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use http::Method;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
-use aidash_server::{federation::Peer, harness::Harness};
+use aidash_server::harness::Harness;
 use common::upstream_fixtures;
 use common::*;
 use futures_util::StreamExt;
@@ -74,36 +74,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		.0,
 		200
 	);
-	{
-		let query_bind_1 = a.config.deployment.as_str();
-		sqlx::query(
-			&reinhardt::query::Query::insert()
-				.into_table(reinhardt::query::Alias::new("peers"))
-				.columns([
-					reinhardt::query::Alias::new("node_id"),
-					reinhardt::query::Alias::new("endpoint"),
-					reinhardt::query::Alias::new("credential_env"),
-					reinhardt::query::Alias::new("protocol_version"),
-					reinhardt::query::Alias::new("enabled"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
-						.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(reinhardt::query::Expr::cust("'0.2'"))
-						.expr(reinhardt::query::Expr::cust("TRUE"))
-						.to_owned(),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	common::register_sender_only((&b, &b_app, "acme"), (&a, "acme")).await;
 	let (_, issued) = request(
 		&b_app,
 		&b.config.api_token,
@@ -112,17 +83,10 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		json!({"subject":"alice"}),
 	)
 	.await;
-	assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
-
-	a.register_peer(Peer {
-		node_id: b.config.deployment.to_string(),
-		endpoint: b.config.endpoint.clone(),
-		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.2".into(),
-		enabled: true,
-	})
-	.await
-	.unwrap();
+	let b_node = common::default_node(&b.store, "acme").await;
+	let a_node = common::default_node(&a.store, "acme").await;
+	assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":b_node.node,"source_node":a_node,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	common::register_default_node((&a, &a_app, "acme"), (&b, "acme")).await;
 	assert_eq!(
 		request(
 			&a_app,
@@ -235,7 +199,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		(
 			&a,
 			&a_policy,
-			aidash_domain::agent_subject(b.config.deployment.as_str(), "remote-only", "1.0.0"),
+			aidash_domain::agent_subject(&b_node.to_string(), "remote-only", "1.0.0"),
 		),
 		(&b, &b_policy, "remote-only".to_owned()),
 	] {

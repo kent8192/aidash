@@ -28,6 +28,12 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+/// The address of `f`'s default Node of the fixture Tenant, where its Runs
+/// execute and its Workspaces live.
+fn node_of(f: &Federation) -> String {
+	aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme").to_string()
+}
+
 #[derive(Clone)]
 struct ModelScript {
 	requests: Arc<Mutex<Vec<Value>>>,
@@ -294,7 +300,8 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 	let mut store = aidash_server::store::Store::from_pool(pool, f.config.deployment.clone())
 		.await
 		.unwrap();
-	// A restarted node keeps its Deployment's permitted Keyless origins.
+	// A restarted node keeps its Deployment's egress and permitted Keyless origins.
+	store.egress = f.store.egress.clone();
 	store.keyless = f.store.keyless.clone();
 	f.registry =
 		aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment).unwrap();
@@ -400,8 +407,7 @@ mod scoped_pair_composition {
 			200
 		);
 		source_policy["subjects"]
-			[aidash_domain::agent_subject(b.config.deployment.as_str(), "research", "1.0.0")] =
-			json!({"kind":"agent"});
+			[aidash_domain::agent_subject(&node_of(&b), "research", "1.0.0")] = json!({"kind":"agent"});
 		assert_eq!(
 			request(
 				&aa,
@@ -414,45 +420,9 @@ mod scoped_pair_composition {
 			.0,
 			200
 		);
-		for (local, other) in [(&a, &b), (&b, &a)] {
-			{
-				let query_bind_1 = other.config.deployment.as_str();
-				let query_bind_2 = &other.config.endpoint;
-				sqlx::query(
-					&Query::insert()
-						.into_table(Alias::new("peers"))
-						.columns(
-							[
-								"node_id",
-								"endpoint",
-								"credential_env",
-								"protocol_version",
-								"enabled",
-							]
-							.map(Alias::new),
-						)
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-								.expr(Expr::cust("'0.2'"))
-								.expr(Expr::cust("TRUE"))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(local.store.pool.fixture_driver())
-				.await
-			}
-			.unwrap();
-		}
+		// Each Deployment registers the other's default Node, and keeps the
+		// Tenant policy it just wrote.
+		common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
 		let (_, credential) = request(
 			&ba,
 			&b.config.api_token,
@@ -461,7 +431,7 @@ mod scoped_pair_composition {
 			json!({"subject":"alice"}),
 		)
 		.await;
-		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
+		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&a),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
 		if semantic {
 			let (_, home_reader) = request(
 				&aa,
@@ -471,7 +441,7 @@ mod scoped_pair_composition {
 				json!({"subject":"alice"}),
 			)
 			.await;
-			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&b),"source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 			assert_eq!(status, 200, "{body}");
 		}
 		let servers = vec![_aserver, _bserver];
@@ -488,7 +458,7 @@ mod scoped_pair_composition {
 				&aa,
 				&token,
 				workspace,
-				b.config.deployment.as_str(),
+				&node_of(&b),
 				(native, large_native_journal),
 				embedding_provider.await,
 				tenant_embedding.as_ref(),
@@ -521,11 +491,9 @@ mod scoped_pair_composition {
 				),
 			)
 			.await;
-			source_policy["subjects"][aidash_domain::agent_subject(
-				b.config.deployment.as_str(),
-				"research-native",
-				"1.0.0",
-			)] = json!({"kind":"agent"});
+			source_policy["subjects"]
+				[aidash_domain::agent_subject(&node_of(&b), "research-native", "1.0.0")] =
+				json!({"kind":"agent"});
 			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
 			Some(data)
 		} else {
@@ -574,7 +542,7 @@ mod scoped_pair_composition {
 				&token,
 				"POST",
 				&format!("/api/tasks/{task}/remote-grants"),
-				json!({"id":grant,"node_id":b.config.deployment,"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
+				json!({"id":grant,"node_id":node_of(&b),"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
 			)
 			.await;
 			assert_eq!(status, 200, "{prepared}");
@@ -673,8 +641,7 @@ async fn ordered_receiver_agent(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let subject =
-		aidash_domain::agent_subject(b.config.deployment.as_str(), "research-ordered", "1.0.0");
+	let subject = aidash_domain::agent_subject(&node_of(b), "research-ordered", "1.0.0");
 	for (runtime, app) in [(b, ba), (a, aa)] {
 		let (_, mut policy) = request(
 			app,
@@ -828,11 +795,9 @@ async fn native_remote_fixture(
 			)
 			.await;
 			let revision = policy["revision"].clone();
-			policy["bundle"]["subjects"][aidash_domain::agent_subject(
-				b.config.deployment.as_str(),
-				"research-native",
-				"1.0.0",
-			)] = json!({"kind":"agent"});
+			policy["bundle"]["subjects"]
+				[aidash_domain::agent_subject(&node_of(b), "research-native", "1.0.0")] =
+				json!({"kind":"agent"});
 			let (status, body) = request(
 				app,
 				&runtime.config.api_token,
@@ -1111,7 +1076,7 @@ async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
-	assert_eq!(semantic["home_node"], p.a.config.deployment, "{context}");
+	assert_eq!(semantic["home_node"], node_of(&p.a), "{context}");
 	let encoded = serde_json::to_string(semantic).unwrap();
 	assert!(encoded.contains("ochre falcon"));
 	assert!(encoded.contains("silver fern"));
@@ -1168,10 +1133,10 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
-	assert_eq!(semantic["home_node"], p.a.config.deployment, "{context}");
+	assert_eq!(semantic["home_node"], node_of(&p.a), "{context}");
 	assert_eq!(
 		semantic["executor"],
-		aidash_domain::agent_subject(p.b.config.deployment.as_str(), "research", "1.0.0")
+		aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0")
 	);
 	assert_eq!(semantic["grant_id"], p.grant.to_string());
 	let encoded = serde_json::to_string(semantic).unwrap();
@@ -1343,37 +1308,21 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 
 /// A remote Ordered Run reuses its Home retrieval while the Home corpus is
 /// unchanged and retrieves again after an entry is inserted or edited, as a
-/// local Ordered Run does. A receiver that registered its Home at protocol
-/// `0.3` sees the change in the corpus digest and retrieves before it infers.
-/// One that registered it at `0.2` gets no digest and cites the earlier
-/// retrieval; a current Home refuses that citation as stale (#222), so the Run
-/// retrieves again as well.
+/// local Ordered Run does. The receiver sees the change in the corpus digest
+/// and retrieves before it infers.
 ///
 /// The edited entry is one this executor never received: editing a disclosed
 /// source invalidates the Run instead (see
 /// `consumed_home_semantic_revision_blocks_next_remote_inference`).
 #[rstest::rstest]
-#[case::current_protocol("0.3")]
-#[case::older_protocol("0.2")]
 #[tokio::test]
 async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
-	#[case] protocol: &str,
 	#[with(true, false, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
-	// Arrange: the receiver reaches its Home at the protocol under test.
+	// Arrange
 	let p = scoped_pair;
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("peers"))
-			.value(Alias::new("protocol_version"), protocol)
-			.and_where(Expr::col("node_id").eq(Expr::value(p.a.config.deployment.as_str())))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(p.b.store.pool.fixture_driver())
-	.await
-	.unwrap();
 	p.model.extra_tool_rounds.store(3, Ordering::Release);
 
 	// Act and assert: the first inference retrieves; the second reuses it.
@@ -1413,11 +1362,11 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 	p.close().await;
 }
 
-/// The Home reports its corpus digest only to a peer whose protocol carries it,
-/// and only for a grant that gives the receiver Home semantic access.
+/// The Home reports its corpus digest, and only for a grant that gives the
+/// receiver Home semantic access.
 #[rstest::rstest]
 #[tokio::test]
-async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
+async fn home_describe_reports_the_corpus_digest_and_it_changes_with_the_corpus(
 	#[with(true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -1430,24 +1379,10 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 			.await
 			.unwrap()
 			.workspace_id;
-	let describe = |protocol: &'static str| {
-		let p = &p;
-		async move {
-			let response = reqwest::Client::new()
-				.post(format!(
-					"{}/federation/v0.1/scoped/execution/grants/describe",
-					p.a.config.endpoint
-				))
-				.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-				.header("x-aidash-node", p.b.config.deployment.as_str())
-				.header("x-aidash-protocol", protocol)
-				.json(&json!({"grant_id":p.grant}))
-				.send()
-				.await
-				.unwrap();
-			assert_eq!(response.status(), 200);
-			response.json::<Value>().await.unwrap()
-		}
+	let describe = || async {
+		let (status, body) = describe_from_receiver(&p).await;
+		assert_eq!(status, 200, "{body}");
+		body
 	};
 	let expected = || async {
 		aidash_server::semantic::services::corpus_digest(&p.a.store, &TEST_FIXTURE, workspace, None)
@@ -1456,24 +1391,35 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 	};
 
 	// Act
-	let older = describe("0.2").await;
-	let current = describe("0.3").await;
-	let again = describe("0.3").await;
+	let current = describe().await;
+	let again = describe().await;
 	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
-	let changed = describe("0.3").await;
+	let changed = describe().await;
 
-	// Assert: an older peer gets exactly the Description it always did.
-	assert!(older.get("corpus_digest").is_none(), "{older}");
-	serde_json::from_value::<aidash_domain::federation::execution::Description>(older.clone())
-		.expect("a 0.2 reply must parse as a plain Description");
+	// Assert
 	assert_eq!(current["corpus_digest"], again["corpus_digest"]);
 	assert_ne!(current["corpus_digest"], changed["corpus_digest"]);
 	assert_eq!(changed["corpus_digest"], json!(expected().await));
 	// The digest is not part of the Description a receiver pins and compares.
 	let mut without = changed.clone();
 	without.as_object_mut().unwrap().remove("corpus_digest");
-	assert_eq!(without, older);
+	serde_json::from_value::<aidash_domain::federation::execution::Description>(without)
+		.expect("a reply must parse as a plain Description");
 	p.close().await;
+}
+
+/// The receiver's request to describe the grant, as its Node sends it to Home.
+async fn describe_from_receiver(p: &Pair) -> (u16, Value) {
+	let home = common::default_node(&p.a.store, "acme").await;
+	common::peer_request(
+		&p.aa,
+		(&p.b, "acme"),
+		&home,
+		"",
+		"/federation/v0.1/scoped/execution/grants/describe",
+		json!({"grant_id":p.grant}),
+	)
+	.await
 }
 
 /// A grant without Home semantic access must not disclose corpus changes.
@@ -1483,20 +1429,8 @@ async fn home_describe_omits_the_corpus_digest_without_semantic_access(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
-	let response = reqwest::Client::new()
-		.post(format!(
-			"{}/federation/v0.1/scoped/execution/grants/describe",
-			p.a.config.endpoint
-		))
-		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-		.header("x-aidash-node", p.b.config.deployment.as_str())
-		.header("x-aidash-protocol", "0.3")
-		.json(&json!({"grant_id":p.grant}))
-		.send()
-		.await
-		.unwrap();
-	assert_eq!(response.status(), 200);
-	let body: Value = response.json().await.unwrap();
+	let (status, body) = describe_from_receiver(&p).await;
+	assert_eq!(status, 200, "{body}");
 	assert!(body.get("corpus_digest").is_none(), "{body}");
 	p.close().await;
 }
@@ -1953,7 +1887,7 @@ async fn semantic_journal_reads_require_the_current_viewer_at_home(
 		json!({"subject":"bob"}),
 	)
 	.await;
-	let (status,body)=request(&p.aa,&p.a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":p.b.config.deployment,"source_tenant":"acme","source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+	let (status,body)=request(&p.aa,&p.a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(&p.ba, token, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{body}");
@@ -1994,8 +1928,7 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 			.workspace_id;
 	let ids: Vec<Uuid> = {
 		let query_bind_1 = workspace;
-		let query_bind_2 =
-			aidash_domain::agent_subject(p.b.config.deployment.as_str(), "research", "1.0.0");
+		let query_bind_2 = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
@@ -2465,7 +2398,6 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 		.map(ToString::to_string)
 		.collect::<String>();
 	assert!(!input.contains(&p.token));
-	assert!(!input.contains(&std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()));
 	let (status, replay) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(replay["phase"], "COMPLETED");
@@ -2479,20 +2411,6 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 ) {
 	use aidash_server::transactions::{Manifest, coordinator};
 	let p = scoped_pair;
-	for (local, app, remote) in [(&p.a, &p.aa, &p.b), (&p.b, &p.ba, &p.a)] {
-		assert_eq!(
-			request(
-				app,
-				&local.config.api_token,
-				"POST",
-				"/api/transactions/trust",
-				json!({"node_id":remote.config.deployment,"enabled":true})
-			)
-			.await
-			.0,
-			200
-		);
-	}
 	for _ in 0..4 {
 		if p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status
 			== aidash_server::domain::TaskStatus::Running
@@ -2508,9 +2426,9 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 		.value(Alias::new("phase"),"TOOL_CALL").value_expr(Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
 		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
-	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":p.a.config.deployment,"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
-		"participants":[{"node_id":p.a.config.deployment,"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
-		{"node_id":p.b.config.deployment,"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
+	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
+		{"node_id":node_of(&p.b),"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
 	manifest
 		.participants
 		.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -2579,14 +2497,9 @@ async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operati
 	// under Q23 or turn its descriptor into a broader remote contract.
 	for _ in 0..2 {
 		assert!(
-			home.delegate_with_key(
-				"scoped-child-delegate",
-				child.id,
-				p.a.config.deployment.as_str(),
-				&agent
-			)
-			.await
-			.is_err()
+			home.delegate_with_key("scoped-child-delegate", child.id, &node_of(&p.a), &agent)
+				.await
+				.is_err()
 		);
 	}
 	assert!(
@@ -2714,7 +2627,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 		}
 		"receiver_mapping" => {
 			let id: Uuid = {
-				let query_bind_1 = p.a.config.deployment.as_str();
+				let query_bind_1 = node_of(&p.a);
 				sqlx::query_scalar(
 					&Query::select()
 						.column(Alias::new("credential_id"))
@@ -2729,7 +2642,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 				.await
 			}
 			.unwrap();
-			assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":p.a.config.deployment,"source_tenant":"acme","source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
+			assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.a),"source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
 		}
 		"task_revision" => {
 			{
@@ -3086,7 +2999,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	let runs = p.b.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(
 		runs.iter()
-			.filter(|run| run.home_node == p.a.config.deployment && run.task_id == p.task)
+			.filter(|run| run.home_node == node_of(&p.a) && run.task_id == p.task)
 			.count(),
 		1
 	);
@@ -3412,7 +3325,7 @@ async fn prepare_generated_pair(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let input = json!({"id":Uuid::new_v4(),"node_id":b.config.deployment,"policy_id":"remote-child","policy_revision":1,"ttl_seconds":600,"reason":"foreign task specialist"});
+	let input = json!({"id":Uuid::new_v4(),"node_id":node_of(b),"policy_id":"remote-child","policy_revision":1,"ttl_seconds":600,"reason":"foreign task specialist"});
 	let route = format!("/api/tasks/{task}/remote-generation");
 	let (status, prepared) = request(aa, token, "POST", &route, input.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
@@ -3444,7 +3357,7 @@ async fn prepare_generated_pair(
 		"foreign preparation cannot create a fake local task"
 	);
 	let count: i64 = {
-		let query_bind_1 = a.config.deployment.as_str();
+		let query_bind_1 = node_of(a);
 		let query_bind_2 = task;
 		sqlx::query_scalar(
 			&Query::select()
@@ -3486,7 +3399,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body, *pending);
 	}
-	let grant = json!({"id":p.grant,"node_id":p.b.config.deployment,"agent":pending["agent"],"ttl_seconds":300,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}});
+	let grant = json!({"id":p.grant,"node_id":node_of(&p.b),"agent":pending["agent"],"ttl_seconds":300,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}});
 	let grant_route = format!("/api/tasks/{}/remote-grants", p.task);
 	let mut nil_grant = grant.clone();
 	nil_grant["id"] = json!(Uuid::nil());
@@ -3524,7 +3437,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		assert_eq!(body["request_id"], pending["request_id"]);
 	}
 	let count: i64 = {
-		let query_bind_1 = p.a.config.deployment.as_str();
+		let query_bind_1 = node_of(&p.a);
 		let query_bind_2 = p.task;
 		sqlx::query_scalar(
 			&Query::select()
@@ -3563,7 +3476,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed["admission_id"], activated["admission_id"]);
 	let rows: (i64, i64) = {
-		let query_bind_1 = p.a.config.deployment.as_str();
+		let query_bind_1 = node_of(&p.a);
 		let query_bind_2 = p.task;
 		sqlx::query_as(
 			&Query::select()
@@ -3731,7 +3644,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 	assert_eq!(status, 200, "{fresh}");
 	assert_ne!(fresh["request_id"], pending["request_id"]);
 	let retained: i64 = {
-		let query_bind_1 = p.a.config.deployment.as_str();
+		let query_bind_1 = node_of(&p.a);
 		let query_bind_2 = p.task;
 		sqlx::query_scalar(
 			&Query::select()
@@ -3875,19 +3788,22 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 		assert_eq!(records.len(), 1);
 		for (usage, finalization) in records {
 			let client = dispatcher.client.clone();
+			let sender = common::default_node(&dispatcher.store, "acme").await;
+			let receiver = common::default_node(&owner.store, "acme").await;
 			for _ in 0..3 {
-				let response = client
-					.post(format!(
-						"{}/federation/v0.1/scoped/usage/finalize",
-						owner.config.endpoint
-					))
-					.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-					.header("x-aidash-node", dispatcher.config.deployment.as_str())
-					.header("x-aidash-protocol", "0.2")
-					.json(&json!({"usage":usage,"result":finalization}))
-					.send()
-					.await
-					.unwrap();
+				let response = common::peering::signed(
+					&client,
+					&owner.config.endpoint,
+					"/scoped/usage/finalize",
+					(dispatcher, &sender),
+					&receiver,
+					"",
+					&json!({"usage":usage,"result":finalization}),
+				)
+				.await
+				.send()
+				.await
+				.unwrap();
 				assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
 			}
 		}
@@ -4024,20 +3940,19 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 	assert_eq!(usage["reserved_tokens"], exact);
 	usage["reserved_tokens"] = json!(exact + delta);
 	usage["attempt_id"] = json!(Uuid::new_v4());
-	let response =
-		p.a.client
-			.clone()
-			.post(format!(
-				"{}/federation/v0.1/scoped/usage/reserve",
-				p.b.config.endpoint
-			))
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", p.a.config.deployment.as_str())
-			.header("x-aidash-protocol", "0.2")
-			.json(&json!({"usage":usage,"boundary":boundary}))
-			.send()
-			.await
-			.unwrap();
+	let response = common::peering::signed(
+		&p.a.client,
+		&p.b.config.endpoint,
+		"/scoped/usage/reserve",
+		(&p.a, &common::default_node(&p.a.store, "acme").await),
+		&common::default_node(&p.b.store, "acme").await,
+		"",
+		&json!({"usage":usage,"boundary":boundary}),
+	)
+	.await
+	.send()
+	.await
+	.unwrap();
 	assert_eq!(response.status(), 403, "{}", response.text().await.unwrap());
 	let count: i64 = {
 		let query_bind_1 = usage["attempt_id"]
@@ -4545,7 +4460,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	let mut denied = serde_json::to_value(&snapshot.bundle).unwrap();
 	denied["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-retired-agent-model", "effect":"deny",
-		"subjects":{"ids":[aidash_domain::agent_subject(p.b.config.deployment.as_str(), &run.agent_id,&run.agent_version)]},
+		"subjects":{"ids":[aidash_domain::agent_subject(&node_of(&p.b), &run.agent_id,&run.agent_version)]},
 		"actions":["model.infer"], "resources":{"kinds":["model"]}
 	}));
 	let (status, policy) = request(
@@ -4865,30 +4780,25 @@ async fn reconciliation_provider(
 ) {
 	(entered, release, Arc::new(server))
 }
+/// Points the registration of the Node `node` at `endpoint`, which the Deployment
+/// permits like any fixture origin. The registration keeps what it pinned.
 async fn redirect_peer(f: &Federation, node: &str, endpoint: &str) {
-	{
-		let query_bind_1 = node;
-		let query_bind_2 = endpoint;
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("peers"))
-				.value_expr(
-					Alias::new("endpoint"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id=?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-	}
+	common::peering::permit(f, endpoint);
+	let mut tx =
+		aidash_server::database::scope::begin_fixture_deployment(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_registrations"))
+			.value(Alias::new("source_endpoint"), endpoint)
+			.and_where(Expr::col(Alias::new("source_node")).eq(node))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
 	.unwrap();
+	tx.commit().await.unwrap();
 }
 
 #[rstest::rstest]
@@ -4907,7 +4817,7 @@ async fn remote_status_uses_one_deadline_and_skips_unavailable_dependencies(
 	),
 ) {
 	let (p, inspections, server) = status_scenario;
-	redirect_peer(&p.a, p.b.config.deployment.as_str(), &server.url).await;
+	redirect_peer(&p.a, &node_of(&p.b), &server.url).await;
 	let start = tokio::time::Instant::now();
 	let response = tokio::time::timeout(
 		std::time::Duration::from_secs(3),
@@ -5011,7 +4921,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 	};
 	let remote = if kind == "finalization" { &p.a } else { &p.b };
 	let (entered, release, server) = reconciliation_provider;
-	redirect_peer(local, remote.config.deployment.as_str(), &server.url).await;
+	redirect_peer(local, &node_of(remote), &server.url).await;
 	let f = local.clone();
 	let reconcile =
 		tokio::spawn(async move { aidash_server::generation::provision::reconcile(&f).await });
@@ -5241,7 +5151,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 		let query_bind_1 = attempt;
 		let query_bind_2 = &usage;
 		let query_bind_3 = aidash_server::registry::digest(&usage);
-		let query_bind_4 = p.a.config.deployment.as_str();
+		let query_bind_4 = node_of(&p.a);
 		let query_bind_5 = &boundary;
 		sqlx::query(
 			&Query::insert()
@@ -5320,20 +5230,19 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let response =
-		p.a.client
-			.clone()
-			.post(format!(
-				"{}/federation/v0.1/scoped/usage/reserve",
-				p.a.config.endpoint
-			))
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", p.b.config.deployment.as_str())
-			.header("x-aidash-protocol", "0.2")
-			.json(&json!({"usage":usage,"boundary":boundary}))
-			.send()
-			.await
-			.unwrap();
+	let response = common::peering::signed(
+		&p.a.client,
+		&p.a.config.endpoint,
+		"/scoped/usage/reserve",
+		(&p.b, &common::default_node(&p.b.store, "acme").await),
+		&common::default_node(&p.a.store, "acme").await,
+		"",
+		&json!({"usage":usage,"boundary":boundary}),
+	)
+	.await
+	.send()
+	.await
+	.unwrap();
 	let status = response.status();
 	let body = response.text().await.unwrap();
 	assert_eq!(status, 403, "{body}");

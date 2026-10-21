@@ -142,7 +142,7 @@ async fn another_tenants_node_is_reached_only_through_registrations_on_both_side
 async fn two_nodes_of_one_tenant_need_no_registration_and_it_works_without_a_deployment_key(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let d = Deployment::new(runtime, open_rules()).await;
+	let d = Deployment::without_key(runtime, open_rules()).await;
 	let (alice, tenant, context, default) = d.nodes_tenant("Alice").await;
 	assert!(d.federation.config.deployment_key.is_none());
 	let (status, second) = d.create_node(&alice, &context, &tenant, "Second").await;
