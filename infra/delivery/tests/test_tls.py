@@ -246,15 +246,16 @@ class CertificateTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
-    def test_only_configured_default_ref_and_protected_main_supply_trusted_sha(self):
+    def test_only_configured_default_ref_and_protected_automation_branch_supply_trusted_sha(self):
         def github(path):
             if "/branches/" not in path:
                 return {"default_branch": "develop/0.1.0"}
+            self.assertNotIn("/branches/main", path)
             return {"protected": True, "commit": {"sha": "a" * 40 if path.endswith("main") else "b" * 40}}
 
         env = {"GITHUB_REPOSITORY": "kent8192/aidash", "GITHUB_REF": "refs/heads/develop/0.1.0"}
         with patch.dict(os.environ, env), patch("tls.github", side_effect=github):
-            self.assertEqual(tls.preflight(CONFIG), "a" * 40)
+            self.assertEqual(tls.preflight(CONFIG), "b" * 40)
             with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/feature/arbitrary"}), self.assertRaises(Refused):
                 tls.preflight(CONFIG)
         with patch.dict(os.environ, env), patch("tls.github", side_effect=[{"default_branch": "develop/0.1.0"}, {"protected": False}]), self.assertRaises(Refused):

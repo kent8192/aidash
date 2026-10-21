@@ -61,7 +61,7 @@ class ProductionAuthorizationTests(unittest.TestCase):
         self.store = ObjectStore()
         self.receipt = {
             "protocol": "aidash-staging-receipt/1", "source_sha": SOURCE,
-            "trusted_sha": TRUSTED, "status": "ready", "images": IMAGES,
+            "trusted_sha": SOURCE, "status": "ready", "images": IMAGES,
             "generation": 1, "run_id": 123, "occurred_at": 900,
         }
         self.store.write(f"deployments/develop/{SOURCE}.json", self.receipt, "0")
@@ -83,6 +83,7 @@ class ProductionAuthorizationTests(unittest.TestCase):
             prefix + f"/git/commits/{MAIN}": {"tree": {"sha": "tree"}, "parents": [{"sha": BASE}]},
             prefix + f"/git/commits/{SOURCE}": {"tree": {"sha": "tree"}},
             prefix + f"/compare/{BASE}...{SOURCE}": {"status": "ahead"},
+            # An approved main ancestor must still be refused as the staged controller.
             prefix + f"/compare/{TRUSTED}...{MAIN}": {"status": "ahead"},
             prefix + "/actions/workflows/gcp-environments.yml": {"id": 45},
             prefix + "/actions/runs/123": {"workflow_id": 45, "status": "completed", "conclusion": "success", "head_branch": "develop/0.1.0"},
@@ -99,8 +100,18 @@ class ProductionAuthorizationTests(unittest.TestCase):
     def test_human_merge_preserves_original_bundle_and_records_actual_main(self):
         candidate = self.authorize()
         self.assertEqual((candidate["sha"], candidate["main_sha"]), (SOURCE, MAIN))
-        self.assertEqual(candidate["release"], {"source_sha": SOURCE, "trusted_sha": TRUSTED, "images": IMAGES})
+        self.assertEqual(candidate["release"], {"source_sha": SOURCE, "trusted_sha": SOURCE, "images": IMAGES})
         self.assertEqual(self.ci, [MAIN, SOURCE])
+
+    def test_bundle_built_from_another_commit_is_refused_even_when_it_is_a_main_ancestor(self):
+        self.store.objects[f"deployments/develop/{SOURCE}.json"] = (dict(self.receipt, trusted_sha=TRUSTED), 1)
+        with self.assertRaises(Refused):
+            self.authorize()
+        accepted = {"source_sha": SOURCE, "trusted_sha": TRUSTED, "images": IMAGES}
+        with self.assertRaises(Refused):
+            delivery.authorize_production(CONFIG, MAIN, lambda config, sha: None, accepted=accepted)
+        accepted["trusted_sha"] = SOURCE
+        self.assertEqual(delivery.authorize_production(CONFIG, MAIN, lambda config, sha: None, accepted=accepted)["release"], accepted)
 
     def test_accepted_bundle_continues_when_a_new_staging_index_is_not_ready(self):
         accepted = self.authorize()["release"]

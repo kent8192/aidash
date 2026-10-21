@@ -461,8 +461,8 @@ def verify_source(config, identity, entry):
         # Keep the original accepted images when staging publishes a new index.
         release = entry["release"]
         delivery.valid_images(release["images"], config["staging_project_id"])
-        if release["source_sha"] != entry["sha"] or not delivery.SHA.fullmatch(release["trusted_sha"]) or github(f"repos/{config['repository']}/compare/{release['trusted_sha']}...{entry['main_sha']}").get("status") not in {"ahead", "identical"}:
-            raise Refused("The retained bundle is outside its accepted main provenance")
+        if release["source_sha"] != entry["sha"] or release["trusted_sha"] != entry["sha"]:
+            raise Refused("The retained bundle was not built from the release source")
         return
     if identity == "develop" and config.get("release_flow_enabled"):
         current = github(f"repos/{config['repository']}/branches/{urllib.parse.quote(config['develop_branch'], safe='')}")

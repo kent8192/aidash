@@ -98,9 +98,11 @@ WIF trusts numeric repository/owner IDs and exact workflow, execution branch
 and GitHub Environment claims (see
 [Deploy pipeline boundary](#deploy-pipeline-boundary)). Nonproduction automation executes on the
 protected configured `automation_branch`; production cloud jobs execute the
-production workflow on `main`. Both check out privileged code and charts from
-protected `main`, pinned to the one commit the first job resolved, so every build,
-publish and apply job of a run uses the same trusted code. Source images
+production workflow on `main`. Nonproduction check out privileged code and
+charts from the protected `automation_branch`, pinned to the one commit the first
+job resolved, so every build, publish and apply job of a run uses the same
+trusted code. Production applies the checkout of the release source S, which the
+staged bundle was built from, after its `main` dispatcher and admission checks. Source images
 (`app`, `postgres`, `sandbox`) are built from an exact SHA
 in a separate job without cloud credentials, using trusted Dockerfiles. A
 `sandbox` source whose `runner/probe.py` does not emit the trusted Runner's
@@ -114,8 +116,8 @@ A publisher job copies all eight image archives to digest-addressed private
 registry entries without executing them; `release.json` records each digest and
 the trusted commit that built them. A retained release is deployed only by a
 controller running from that commit; production promotes the complete staged
-bundle and its original controller revision after main CI, human release merge
-and Git tree equality checks; after the default branch advances, a
+bundle and its original controller revision (the release source S) after main
+CI, human release merge and Git tree equality checks; after the default branch advances, a
 resume of the same source rebuilds it instead of mixing image and chart
 revisions, while running Environments keep their deployed images.
 Fork heads require explicit write-collaborator authorization for that exact SHA;
@@ -152,10 +154,10 @@ configured. The project is never inferred from a developer's `gcloud` default.
    names. Use an identity allowed to enable APIs, create the bootstrap
    resources and grant their IAM roles. Authenticate Terraform using ADC, for
    example `gcloud auth application-default login`. Select `develop_branch`.
-2. Publish the reviewed implementation to protected `main` and the configured
-   default `automation_branch` (`develop/0.1.0`) through the normal review process.
-   Privileged jobs pin the reviewed controller on `main`, independently of their
-   execution branch. Select a deployable source containing Google OAuth,
+2. Publish the reviewed implementation to the configured default
+   `automation_branch` (`develop/0.1.0`) and, with the first release, to protected
+   `main` through the normal review process. Nonproduction privileged jobs pin
+   the reviewed controller on `automation_branch`; production jobs use `main`. Select a deployable source containing Google OAuth,
    trusted-proxy authentication rate limits, the existing runtime contract and
    successful `ci.yml` for its **exact SHA**. The app build explicitly refuses
    sources missing either HTTP integration. Enable production only after its
@@ -267,17 +269,18 @@ runtime secrets, and secret values do not enter Terraform state.
 
 ## Operation
 
-Run **GCP environments** using workflow ref `main`; `source_ref` separately
-selects the deployed source. A manual create/resume first checks CI. Examples:
+Run **GCP environments** using workflow ref `develop/0.1.0`, the protected
+`automation_branch` that the nonproduction WIF provider trusts; `source_ref`
+separately selects the deployed source. A manual create/resume first checks CI. Examples:
 
 ```sh
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=create -f environment=develop
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=create -f environment=test -f source_ref=develop/0.1.0
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=resume -f environment=test
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=stop -f environment=test
 ```
 
@@ -592,7 +595,8 @@ not prevented:
   Terraform derives `us-central1-docker.pkg.dev/<project>/aidash/broker@<digest>`
   from it and refuses an enabled broker without an approved digest or with a
   different image. A broker change is therefore a digest change in a pull
-  request to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
+  request to the protected `automation_branch`, which production receives only
+  through the release PR to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
   override the digest: the controller refuses a `credential_brokers.<id>.image`
   key.
 - Credentialed jobs run in protected GitHub Environments named by the WIF
@@ -650,8 +654,9 @@ Environment cannot obtain credentials. The `intake` and `build` jobs and
 What the production reviewer gate covers: every production deployment, which only
 promotes the staged, already validated image bundle. Nonproduction builds and
 deploys CI-approved commits without an Environment approval; all of its runs use
-privileged code from the protected `main` checkout, so the broker digest and IAM
-changes are gated by review of the pull request to `main`.
+privileged code from the protected `automation_branch` checkout, so the broker
+digest and IAM changes are gated by review of the pull request to that branch
+and reach production only through the release PR to `main`.
 
 #### Human steps
 
@@ -691,7 +696,7 @@ us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.
 The Dockerfile pins its base images by digest, but the build is not bit-for-bit
 reproducible: `apt-get update` and Cargo cache mounts are not pinned. A reviewer can
 rebuild and compare behavior, not the digest. The registry also accepts pushes from
-the deploy identity; only the digest in `main` is ever deployed, and a revision
+the deploy identity; only the reviewed digest in the protected anchor branch is ever deployed, and a revision
 deployed outside Terraform triggers the revision alert.
 
 #### Evidence still required from #152 (sandbox)

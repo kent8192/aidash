@@ -31,11 +31,12 @@ jobs:
       contents: read
       actions: read
     steps:
-      # Privileged orchestration always comes from protected main. Never check
-      # out source_sha, the release branch, or downloaded artifact code here.
+      # Privileged orchestration comes from the commit of the protected default
+      # branch whose workflow is running. Never check out source_sha, the
+      # release branch, or downloaded artifact code here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
