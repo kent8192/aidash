@@ -36,6 +36,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
+	/// The address of the Home Node the search arrived at.
+	pub(crate) home: String,
 	pub(crate) journal: Journal<'a>,
 	pub(crate) dispatch: NativeDispatch,
 	pub(crate) settlement: NativeSettlement,
@@ -55,6 +57,9 @@ impl SemanticSearchRepository for Repository<'_> {
 	type Scope = Scope;
 	fn home_node_id(&self) -> &str {
 		self.runtime.config.deployment.as_str()
+	}
+	fn home_address(&self) -> &str {
+		&self.home
 	}
 	fn journal(&self) -> &dyn JournalRepository {
 		&self.journal

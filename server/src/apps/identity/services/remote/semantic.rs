@@ -51,7 +51,7 @@ pub(crate) async fn search(
 		.remote_tenancy(operation.admission_id, operation.grant_id)
 		.await?;
 	aidash_application::authorization::source::search::search(
-		&crate::bootstrap::source_semantic_search_repository(&f, scope),
+		&crate::bootstrap::source_semantic_search_repository(&f, &admitted.receiver, scope),
 		node,
 		operation,
 	)

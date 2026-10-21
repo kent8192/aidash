@@ -569,6 +569,9 @@ impl SemanticSearchRepository for Repository {
 	fn home_node_id(&self) -> &str {
 		"aidash://home"
 	}
+	fn home_address(&self) -> &str {
+		"aidash://home"
+	}
 	fn journal(&self) -> &dyn JournalRepository {
 		&self.journal
 	}

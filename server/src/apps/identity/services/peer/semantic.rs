@@ -83,7 +83,10 @@ pub(crate) async fn context(
 	journal::prepare(&f.store, tenancy, &operation, &description.semantic).await?;
 	let receipt: Receipt = super::authority_request(
 		f,
-		&super::scope_sender(tenancy)?,
+		&aidash_domain::federation::route::Sender {
+			node: Some(run.node.clone()),
+			..super::scope_sender(tenancy)?
+		},
 		&run.home_node,
 		"/scoped/semantic/query",
 		&serde_json::to_value(&operation)?,

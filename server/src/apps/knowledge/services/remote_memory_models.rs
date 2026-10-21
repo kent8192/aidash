@@ -76,7 +76,12 @@ pub(crate) async fn reserve(
 		.store
 		.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
 		.await?;
-	let sender = crate::authorization::peer::scope_sender(&scope)?;
+	let sender = crate::authorization::peer::usage_sender(
+		&origin.runtime,
+		input.usage.admission_id,
+		input.usage.grant_id,
+	)
+	.await?;
 	let dispatch = crate::bootstrap::generation_dispatch_repository(&origin.runtime.store, scope);
 	let settlement = crate::bootstrap::generation_dispatch_settlement(&origin.runtime);
 	aidash_application::generation::dispatch::prepare(&dispatch, &input, &origin.receiver).await?;

@@ -1975,12 +1975,14 @@ pub(crate) fn source_semantic_provenance_scope(
 }
 
 /// Home semantic disclosure shares the production journal, dispatch, settlement and provider ports.
-pub(crate) fn source_semantic_search_repository(
-	runtime: &Federation,
+pub(crate) fn source_semantic_search_repository<'a>(
+	runtime: &'a Federation,
+	home: &aidash_domain::nodes::NodeAddress,
 	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::identity::repositories::remote_grants::search::Repository<'_> {
+) -> crate::apps::identity::repositories::remote_grants::search::Repository<'a> {
 	crate::apps::identity::repositories::remote_grants::search::Repository {
 		runtime,
+		home: home.to_string(),
 		journal: semantic_journal_repository(&runtime.store, scope.clone()),
 		dispatch: crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 			store: runtime.store.clone(),

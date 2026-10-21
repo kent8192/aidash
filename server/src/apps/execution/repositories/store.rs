@@ -360,6 +360,44 @@ impl Store {
 		}
 	}
 
+	/// The Node that acts for the operation `remote_tenancy` found: the Node a
+	/// remote Run executes at, the Node a remote grant was issued from, or the
+	/// Node of a local Run.
+	pub(crate) async fn remote_node(
+		&self,
+		scope: &TenancyScope,
+		admission: Uuid,
+		grant: Uuid,
+	) -> Result<aidash_domain::nodes::NodeName> {
+		let name: Option<String> = self
+			.pool
+			.scoped(scope, async |tx| {
+				for (table, column, id) in [
+					("runs", "id", admission),
+					("authorization_remote_admissions", "id", admission),
+					("authorization_remote_grants", "id", grant),
+				] {
+					let node = crate::database::native::query_scalar::<String>(
+						&Query::select()
+							.column(Alias::new("node"))
+							.from(Alias::new(table))
+							.and_where(Expr::col(Alias::new(column)).eq(Expr::value(id)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_optional(&mut **tx)
+					.await?;
+					if node.is_some() {
+						return Ok(node);
+					}
+				}
+				Ok(None)
+			})
+			.await?;
+		Ok(aidash_domain::nodes::NodeName::parse(
+			&name.ok_or_else(|| Error::NotFound("remote Run".into()))?,
+		)?)
+	}
+
 	/// Run creation re-checks the Projection Version pinned by the Binding
 	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
 	/// pinned model and, when salted, backed by this node's Cache Salt Key.

@@ -63,7 +63,12 @@ pub(crate) async fn usage_sender(
 	admission: uuid::Uuid,
 	grant: uuid::Uuid,
 ) -> Result<aidash_domain::federation::route::Sender> {
-	scope_sender(&f.store.remote_tenancy(admission, grant).await?)
+	let scope = f.store.remote_tenancy(admission, grant).await?;
+	let node = f.store.remote_node(&scope, admission, grant).await?;
+	Ok(aidash_domain::federation::route::Sender {
+		node: Some(node),
+		..scope_sender(&scope)?
+	})
 }
 
 /// The same for the Tenant a scope is opened in.
