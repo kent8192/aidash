@@ -30,7 +30,6 @@ import tool_call_approvals
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "acceptance-access-token"
-PEER_TOKEN = "acceptance-peer-token-for-local-tests"
 
 
 # A Tenant subject's /api/state waits about 15 s before it is served on a
@@ -48,15 +47,24 @@ def api_request(base, path, body=None, token=TOKEN, headers=None):
         return json.load(response)
 
 
+def default_node(base, tenant, token=TOKEN):
+    """The name and the address of the Tenant's default Node, which new Workspaces and Runs use."""
+    node = next(node for node in api_request(base, f"/api/tenants/{tenant}/nodes", token=token) if node["default"])
+    return node["name"], node["address"]
+
+
 def tenant_subject(base, label, subject, agents=()):
     """Create a Tenant whose policy lets its subjects do anything, and issue `subject` a credential.
 
     Only Tenant subjects register definitions and run work (#371); the
     Deployment Administrator creates the Tenant, writes its first policy and
-    issues the credential.
+    issues the credential. `agents` name Agents as subjects: `id@version` for
+    one that executes on the Tenant's default Node, or the full subject of one
+    that executes elsewhere.
     """
     tenant = api_request(base, "/api/tenants", {"label": label})["name"]
-    subjects = {subject: {"kind": "user"}, **{agent: {"kind": "agent"} for agent in agents}}
+    _, address = default_node(base, tenant)
+    subjects = {subject: {"kind": "user"}, **{(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent"} for agent in agents}}
     bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
     api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 1, "bundle": bundle})
     credential = api_request(base, f"/api/authorization/{tenant}/credentials", {"subject": subject, "expires_in_seconds": 3600})
@@ -65,8 +73,43 @@ def tenant_subject(base, label, subject, agents=()):
 
 def approve(base, tenant, token, entries):
     """Approve definitions in the Tenant's catalog as one dependency closure, so its subjects may run them."""
+    node, _ = default_node(base, tenant)
     approvals = [{"entry": {"id": entry["id"], "version": entry["version"]}, "enabled": True, "expected_revision": 0} for entry in entries]
-    api_request(base, f"/api/authorization/{tenant}/catalog/approvals", {"approvals": approvals}, token=token)
+    api_request(base, f"/api/authorization/{tenant}/catalog/approvals", {"node": node, "approvals": approvals}, token=token)
+
+
+def deployment_key_id(endpoint):
+    """The key ID the Deployment at `endpoint` publishes at `/.well-known/aidash`."""
+    return api_request(endpoint, "/.well-known/aidash")["key"]["id"]
+
+
+def register_node(base, tenant, source_address, endpoint, reachable=None):
+    """Let the Tenant's default Node accept `source_address`, reached at `endpoint`.
+
+    The registration pins the key the Deployment at `endpoint` publishes now,
+    and allows atomic transactions. A registration that exists is replaced.
+    `reachable` is where this script can read the key from when `endpoint` is
+    only reachable from inside the cluster.
+    """
+    node, _ = default_node(base, tenant)
+    path = f"/api/tenants/{tenant}/nodes/{node}/registrations"
+    existing = [row for row in api_request(base, path) if row["source_node"] == source_address]
+    return api_request(base, path, {"source_node": source_address, "endpoint": endpoint, "key_id": deployment_key_id(reachable or endpoint),
+                                    "atomic_transactions": True, "enabled": True, "expected_revision": existing[0]["revision"] if existing else 0})
+
+
+def generate_deployment_key(binary, directory, env):
+    """Create a Deployment Key in `directory` and return the settings directory that names it.
+
+    Federation is on unless the settings turn it off; a Deployment federates
+    once its `[deployment.key]` file exists.
+    """
+    directory = pathlib.Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "base.toml").write_text(f'[deployment.key]\nfile = "{directory / "deployment-key.pem"}"\n')
+    subprocess.run([str(pathlib.Path(binary).resolve().parent / "manage"), "deployment-key", "generate"], cwd=ROOT,
+                   env={**env, "REINHARDT_SETTINGS_DIR": str(directory)}, stdout=subprocess.DEVNULL, check=True, timeout=120)
+    return directory
 
 
 def wait_for(fn, timeout=120, label="condition"):
@@ -548,7 +591,16 @@ def main():
         held.bind(("127.0.0.1", 0))
         browser_provider_proxies.append(KeylessFixtureProxy(held, pathlib.Path(keyless_upstreams.name) / str(index)))
     browser_provider_ports = [proxy.server_address[1] for proxy in browser_provider_proxies]
-    keyless_origins = ",".join([fixture_url, f"http://127.0.0.1:{scoped_provider_port}",
+    # Registering a Node of another Deployment at a loopback endpoint needs that
+    # origin permitted too: both Nodes, and the two ports scoped_golden_path
+    # puts its observing proxies on (each held until its proxy takes it over).
+    scoped_proxy_sockets = []
+    for _ in range(2):
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        scoped_proxy_sockets.append(held)
+    keyless_origins = ",".join([fixture_url, f"http://127.0.0.1:{scoped_provider_port}", base_a, base_b,
+                                *(f"http://127.0.0.1:{socket_.getsockname()[1]}" for socket_ in scoped_proxy_sockets),
                                 *(f"http://127.0.0.1:{port}" for port in browser_provider_ports)])
     stream_events = []
     nats_proxy = NatsProxy()
@@ -603,11 +655,16 @@ def main():
                     reported.add((fields[0], fields[6]))
                     print(f"--- slow session (pid|state|wait|query s|xact s|blockers|started|query): {row}", flush=True)
 
-    def node_env(node, database, port, login):
-        env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_DEPLOYMENT_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
+    key_directories = {}
+
+    def node_env(node, database, port, login, keyed=True):
+        env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_DEPLOYMENT_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
         env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
+        # Each Deployment holds its own Deployment Key, which it signs Federation tokens with.
+        if keyed:
+            env["REINHARDT_SETTINGS_DIR"] = str(key_directories[node])
         env.update(provider_credential_keys)
         # These disposable Node IDs own their JetStream streams and consumers.
         # When the outage proxy opens, recover real activation delivery as well
@@ -653,6 +710,9 @@ def main():
         # history, which only the owner applies before the servers start.
         provision(db_a)
         provision(db_b)
+        for node, database, port in [(node_a, db_a, port_a), (node_b, db_b, port_b)]:
+            key_directories[node] = generate_deployment_key(
+                args.binary, pathlib.Path(profile_directory.name) / f"deployment-key-{port}", node_env(node, database, port, OWNER_LOGIN, keyed=False))
         migrate(node_a, db_a, port_a)
         migrate(node_b, db_b, port_b)
         launch(node_a, db_a, port_a, "server")
@@ -781,7 +841,8 @@ def main():
         scoped = verify(base_a, base_b, node_a, node_b, remote_worker, scoped_provider_socket,
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
-                                 "bindings": int(psql(db_a, queries["remote_bindings"]))})
+                                 "bindings": int(psql(db_a, queries["remote_bindings"]))},
+                        scoped_proxy_sockets)
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()

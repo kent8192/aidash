@@ -38,19 +38,17 @@ class TransactionPartitionTests(unittest.TestCase):
                         for count in (3, 16)
                         for phase, abort in (("coordinator.commit", False), ("coordinator.abort", True))
                         for repetition in (1, 2, 3))
-        expected.update((2, "coordinator.commit", "before", False, repetition, "peer-recovery")
-                        for repetition in (1, 2, 3))
 
         actual = transaction_cases([2, 3, 16])
 
-        self.assertEqual(len(expected), 105)
-        self.assertEqual(len(actual), 105)
+        self.assertEqual(len(expected), 102)
+        self.assertEqual(len(actual), 102)
         self.assertEqual(set(actual), expected)
 
     def test_ci_partitions_are_disjoint_complete_and_keep_case_order(self):
         complete = transaction_cases([2, 3, 16])
         selected = set()
-        for partition, count in (("coordinator", 42), ("participant", 30), ("lifecycle", 33)):
+        for partition, count in (("coordinator", 42), ("participant", 30), ("lifecycle", 30)):
             with self.subTest(partition=partition):
                 cases = transaction_cases([2, 3, 16], partition=partition)
                 self.assertEqual(len(cases), count)
@@ -60,16 +58,13 @@ class TransactionPartitionTests(unittest.TestCase):
                 selected.update(cases)
         self.assertEqual(selected, set(complete))
 
-    def test_individual_selectors_preserve_both_completion_outcomes_and_peer_recovery(self):
+    def test_individual_selectors_preserve_both_completion_outcomes(self):
         completion = transaction_cases([2, 3, 16], phase="coordinator.complete")
         self.assertEqual(len(completion), 36)
         self.assertEqual({case[0] for case in completion}, {2, 3, 16})
         self.assertEqual({case[2:4] for case in completion},
                          {("before", False), ("after", False), ("before", True), ("after", True)})
         self.assertTrue(all(case[5] is None for case in completion))
-        self.assertEqual(transaction_cases([2, 3, 16], lifecycle=["peer-recovery"]),
-                         [(2, "coordinator.commit", "before", False, repetition, "peer-recovery")
-                          for repetition in (1, 2, 3)])
 
     def test_unknown_partitions_and_mixed_selectors_fail_closed(self):
         for arguments in ({"partition": "missing"},
@@ -80,7 +75,7 @@ class TransactionPartitionTests(unittest.TestCase):
 
     def test_cli_rejects_empty_or_ambiguous_selection_before_creating_resources(self):
         required = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused"]
-        for arguments, message in ((["--nodes", "3", "--lifecycle", "peer-recovery"], "no transaction cases"),
+        for arguments, message in ((["--nodes", "2", "--lifecycle", "partition"], "no transaction cases"),
                                    (["--partition", "lifecycle", "--phase", "coordinator.commit"], "select a partition"),
                                    (["--partition", "participant", "--lifecycle", "rolling"], "select a partition"),
                                    (["--phase", "coordinator.commit", "--lifecycle", "rolling"], "select either phase")):
