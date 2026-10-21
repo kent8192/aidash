@@ -13,5 +13,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.request::<_, Search>(document, views::management::discover)?;
+	contracts.query::<_, views::management::SendingNode>(document, views::management::discover)?;
 	Ok(())
 }

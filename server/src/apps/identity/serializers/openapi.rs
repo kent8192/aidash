@@ -91,6 +91,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 					views::node_registrations::list,
 					&["String", "String"],
 				)?;
+				contracts.query::<_, MappingPage>(document, views::node_registrations::list)?;
 				contracts.response::<_, Vec<r::RegistrationRevision>>(
 					document,
 					views::node_registrations::history,
@@ -102,6 +103,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 					views::node_registrations::history,
 					&["String", "String"],
 				)?;
+				contracts.query::<_, HistoryPage>(document, views::node_registrations::history)?;
 				contracts
 					.request::<_, r::RegistrationInput>(document, views::node_registrations::set)?;
 				contracts.response::<_, r::RegistrationRecord>(
@@ -348,6 +350,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::policies::catalog, &["String"])?;
+	contracts.query::<_, super::policies::CatalogQuery>(document, views::policies::catalog)?;
 	contracts.response::<_, Binding>(
 		document,
 		views::policies::set_catalog,
@@ -494,6 +497,10 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::graph::peers,
 		200,
 		"application/json",
+	)?;
+	contracts.query::<_, crate::apps::federation::peer::views::management::SendingNode>(
+		document,
+		views::graph::peers,
 	)?;
 	contracts.response::<_, crate::apps::identity::serializers::peer_graph::GraphPage>(
 		document,

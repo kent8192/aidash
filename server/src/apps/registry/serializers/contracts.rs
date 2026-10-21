@@ -53,6 +53,8 @@ pub struct RegistryVersions {
 /// One page of the Tenant's Registry versions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct VersionPage {
+	/// The Node whose Catalog Approvals and Agent subjects the page reports.
+	pub node: aidash_domain::nodes::NodeName,
 	#[serde(default)]
 	pub offset: u64,
 }

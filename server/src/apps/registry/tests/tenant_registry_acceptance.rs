@@ -110,6 +110,13 @@ fn agent(id: &str, version: &str, model: &str) -> Value {
 fn node_approval(tenant: &str, id: &str, version: &str, enabled: bool) -> Value {
 	json!({"node":aidash_domain::nodes::NodeName::derived(tenant),"entry":{"id":id,"version":version},"enabled":enabled,"expected_revision":0})
 }
+/// The versions list, with the approvals of the default Node of `tenant`.
+fn versions_path(tenant: &str) -> String {
+	format!(
+		"/api/registry/versions?node={}",
+		aidash_domain::nodes::NodeName::derived(tenant)
+	)
+}
 fn approval(id: &str, version: &str, enabled: bool) -> Value {
 	json!({"entry":{"id":id,"version":version},"enabled":enabled,"expected_revision":0})
 }
@@ -210,7 +217,7 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		"{subject}"
 	);
 	assert_eq!(response.status_code(), 200, "{}", response.text());
-	let versions = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
+	let versions = assert_json(owner.get(&versions_path("acme")).await.unwrap(), 200);
 	let unapproved = versions["versions"]
 		.as_array()
 		.unwrap()
@@ -221,6 +228,64 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		.unwrap();
 	assert_eq!(unapproved["approval"], Value::Null);
 	assert_eq!(unapproved["needs_approval"], true);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_versions_list_reports_the_approvals_of_the_node_it_names(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	let owner = credential(&fixture, "acme", "owner").await;
+	assert_eq!(register(&owner, &model("model")).await.0, 200);
+	assert_eq!(
+		approve(&owner, "acme", json!([approval("model", "1.0.0", true)]))
+			.await
+			.0,
+		200
+	);
+	let second = assert_json(
+		fixture
+			.deployment_administrator
+			.post(
+				"/api/tenants/acme/nodes",
+				&json!({"label":"Second"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		201,
+	);
+	let second = second["name"].as_str().unwrap();
+	let approval_of = |listed: &Value| {
+		listed["versions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|version| version["entry"]["id"] == "model")
+			.unwrap_or_else(|| panic!("the model is listed: {listed}"))["approval"]
+			.clone()
+	};
+	// Act
+	let default = assert_json(owner.get(&versions_path("acme")).await.unwrap(), 200);
+	let other = assert_json(
+		owner
+			.get(&format!("/api/registry/versions?node={second}"))
+			.await
+			.unwrap(),
+		200,
+	);
+	let missing = owner.get("/api/registry/versions").await.unwrap();
+	// Assert
+	assert_eq!(approval_of(&default)["enabled"], true, "{default}");
+	assert_eq!(
+		approval_of(&other),
+		Value::Null,
+		"a new Node starts without approvals: {other}"
+	);
+	assert_eq!(missing.status_code(), 400, "{}", missing.text());
 }
 
 #[rstest]
@@ -259,7 +324,7 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 		.await
 		.unwrap()
 		.status_code();
-	let listed = assert_json(globex.get("/api/registry/versions").await.unwrap(), 200);
+	let listed = assert_json(globex.get(&versions_path("globex")).await.unwrap(), 200);
 	// Assert
 	assert_ne!(read, 200);
 	assert_ne!(reference, 200);
@@ -398,7 +463,7 @@ async fn a_sandboxed_built_in_is_usable_only_after_the_tenant_approves_it(
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	let owner = credential(&fixture, "acme", "owner").await;
-	let versions = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
+	let versions = assert_json(owner.get(&versions_path("acme")).await.unwrap(), 200);
 	let bundle = versions["versions"]
 		.as_array()
 		.unwrap()
@@ -583,9 +648,9 @@ async fn the_versions_list_decides_each_version_and_shows_agent_subjects_to_appr
 	let reader = credential(&fixture, "acme", "reader").await;
 	let member = credential(&fixture, "acme", "member").await;
 	// Act
-	let read = assert_json(reader.get("/api/registry/versions").await.unwrap(), 200);
-	let approving = assert_json(member.get("/api/registry/versions").await.unwrap(), 200);
-	let administered = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
+	let read = assert_json(reader.get(&versions_path("acme")).await.unwrap(), 200);
+	let approving = assert_json(member.get(&versions_path("acme")).await.unwrap(), 200);
+	let administered = assert_json(owner.get(&versions_path("acme")).await.unwrap(), 200);
 	// Assert
 	let find = |page: &Value, id: &str| {
 		page["versions"]

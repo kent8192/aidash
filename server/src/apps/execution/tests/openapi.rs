@@ -200,6 +200,56 @@ fn openapi_retains_current_management_endpoints(
 		&& parameter["schema"]["format"] == "uuid"));
 }
 
+/// The Node a read is made for and the paging of the Node Registration reads
+/// are part of the contract, so the generated web client sends them.
+#[rstest]
+#[case("/api/discover", "post", &[("node", false)])]
+#[case("/api/federation/graph/peers", "get", &[("node", false)])]
+#[case("/api/authorization/{tenant}/catalog", "get", &[("node", true)])]
+#[case("/api/registry/versions", "get", &[("node", true), ("offset", false)])]
+#[case(
+	"/api/tenants/{tenant}/nodes/{node}/registrations",
+	"get",
+	&[("offset", false), ("limit", false)]
+)]
+#[case(
+	"/api/tenants/{tenant}/nodes/{node}/registration-history",
+	"get",
+	&[("after", false), ("limit", false)]
+)]
+fn openapi_declares_the_node_and_paging_queries(
+	document: Value,
+	#[case] path: &str,
+	#[case] method: &str,
+	#[case] queries: &[(&str, bool)],
+) {
+	let parameters = document["paths"][path][method]["parameters"]
+		.as_array()
+		.expect("parameters");
+	for (name, required) in queries {
+		let parameter = parameters
+			.iter()
+			.find(|parameter| parameter["name"] == *name && parameter["in"] == "query")
+			.unwrap_or_else(|| panic!("{method} {path} declares the query {name}"));
+		assert_eq!(parameter["required"], *required, "{method} {path} {name}");
+	}
+}
+
+#[rstest]
+fn the_state_names_its_deployment_and_no_node(document: Value) {
+	let state = &document["components"]["schemas"]["StateResponse"];
+	assert_eq!(
+		state["properties"]["deployment"]["$ref"],
+		"#/components/schemas/DeploymentIdentity"
+	);
+	assert!(state["properties"].get("node").is_none());
+	assert!(
+		document["components"]["schemas"]
+			.get("NodeIdentity")
+			.is_none()
+	);
+}
+
 #[rstest]
 fn openapi_retains_dashboard_component_names(document: Value) {
 	let schemas = &document["components"]["schemas"];

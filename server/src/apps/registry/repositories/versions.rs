@@ -7,12 +7,18 @@ use crate::apps::registry::serializers::contracts::{
 };
 use crate::authorization::access::Access;
 use crate::{Error, Result};
+use aidash_domain::nodes::NodeName;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::Model;
 
 const PAGE: usize = 100;
 
-pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result<RegistryVersions> {
+pub(crate) async fn page(
+	access: &mut Access,
+	deployment: &str,
+	node_name: NodeName,
+	offset: u64,
+) -> Result<RegistryVersions> {
 	let resource = access.resource(
 		"registry",
 		aidash_domain::identity::tenant_administration::COLLECTION,
@@ -20,10 +26,11 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 	);
 	access.require(&resource, "registry.read").await?;
 	let tenant = access.identity.tenant.clone();
-	// Approvals and agent subjects are per Node; the Access names the Node.
-	let node_name = access.catalog_node().await?;
+	// Approvals and agent subjects are per Node, and the caller names the Node.
+	// Like the catalog read, a name no Node of the Tenant holds has no approvals.
+	access.set_node(node_name.clone());
 	let address = aidash_domain::nodes::NodeAddress {
-		deployment: aidash_domain::nodes::DeploymentId::parse(node)?,
+		deployment: aidash_domain::nodes::DeploymentId::parse(deployment)?,
 		node: node_name.clone(),
 	};
 	let rows = Definition::objects()

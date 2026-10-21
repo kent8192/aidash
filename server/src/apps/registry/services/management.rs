@@ -59,6 +59,7 @@ impl RegistryManagement {
 		let result = crate::apps::registry::repositories::versions::page(
 			&mut access,
 			f.config.deployment.as_str(),
+			page.node,
 			page.offset,
 		)
 		.await;
