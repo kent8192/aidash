@@ -547,8 +547,26 @@ impl HomeScope for Scope {
 #[async_trait]
 impl HomeRepository for Repository {
 	type Scope = Scope;
-	fn node_id(&self) -> &str {
-		self.runtime.config.deployment.as_str()
+	async fn node_address(&self) -> Result<String> {
+		let Some(Actor::Subject(identity)) = &self.actor else {
+			return Err(NativeError::Forbidden.into());
+		};
+		let tenant = aidash_domain::tenancy::TenantName::new(identity.tenant.clone())
+			.map_err(NativeError::from)?;
+		let node = self
+			.runtime
+			.store
+			.pool
+			.atomic(
+				&aidash_application::tenancy::TenancyScope::Tenant(tenant.clone()),
+				async |tx| {
+					crate::apps::identity::repositories::nodes::default_of(tx, tenant.as_str())
+						.await
+				},
+			)
+			.await?
+			.name;
+		Ok(self.runtime.config.deployment.node(node).to_string())
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
 		match &self.actor {

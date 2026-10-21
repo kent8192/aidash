@@ -89,7 +89,9 @@ pub trait HomeScope: Send + Sized {
 #[async_trait]
 pub trait HomeRepository: Send + Sync {
 	type Scope: HomeScope;
-	fn node_id(&self) -> &str;
+	/// The address of the Node Home sends its requests as: its Tenant's default
+	/// Node, until a Task names the Node it runs on.
+	async fn node_address(&self) -> Result<String>;
 	fn identity(&self) -> Option<ExecutionPrincipal>;
 	async fn begin(&self) -> Result<Self::Scope>;
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Self::Scope, Description)>;
