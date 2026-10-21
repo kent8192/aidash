@@ -317,6 +317,41 @@ pub async fn post_graph(
 	)
 }
 
+/// `local`'s Tenant maps `subject` of the Node `source` (a Tenant of `other`'s
+/// Deployment) to a new credential of its own `subject`.
+#[allow(dead_code)]
+pub async fn map_subject(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+	subject: &str,
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let (status, issued) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/authorization/{tenant}/credentials"),
+		json!({"subject":subject}),
+	)
+	.await;
+	assert_eq!(status, 200, "{issued}");
+	let (status, mapping) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/authorization/{tenant}/peer-mappings"),
+		json!({
+			"node":default_node(&f.store, tenant).await.node,
+			"source_node":default_node(&other.store, other_tenant).await,
+			"source_subject":subject,"credential_id":issued["credential"]["id"],
+			"enabled":true,"expected_revision":0,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+}
+
 /// Both fixture Deployments register the other's default Node, so each accepts
 /// and addresses the other. Both serve their routes.
 #[allow(dead_code)]
@@ -559,12 +594,20 @@ async fn bootstrap_with_policy(
 ) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
 	tenant_root(f, "acme").await;
+	// A fixture that already wrote the Tenant's policy, such as a federated
+	// pair, is replaced at the revision it holds.
+	let revision: i64 =
+		sqlx::query_scalar("SELECT revision FROM authorization_bundles WHERE tenant = 'acme'")
+			.fetch_optional(f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+			.unwrap_or(0);
 	let (status, snapshot) = request(
 		app,
 		deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
-		json!({"expected_revision":0,"bundle":policy}),
+		json!({"expected_revision":revision,"bundle":policy}),
 	)
 	.await;
 	assert_eq!(status, 200, "initial policy: {snapshot}");
@@ -696,6 +739,7 @@ pub fn native_process_environment(
 	settings.dashboard.oidc = f.config.oidc.clone();
 	// A child process must reach the same Keyless fixtures (ADR 0036).
 	settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
+	peering::configure_process(&mut settings, f);
 	let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 	std::fs::create_dir_all(&destination).unwrap();
 	std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();

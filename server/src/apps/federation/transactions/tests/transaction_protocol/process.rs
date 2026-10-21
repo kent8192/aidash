@@ -57,10 +57,6 @@ impl Server {
 				directory.path(),
 				0,
 			))
-			.env(
-				"AIDASH_SECRET_TEST_PEER",
-				"local-peer-regression-test-token-0123456789",
-			)
 			.env("RUST_LOG", "off")
 			.env("AIDASH_API_RATE_BURST", "100000")
 			.env("AIDASH_AUTH_RATE_BURST", "100000")
