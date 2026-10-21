@@ -12,8 +12,8 @@ async fn verify_dependencies(p: &Pair, deadline: std::time::Duration) -> reqwest
 		"/scoped/dependencies/verify",
 		(&p.b, &executor),
 		&home,
-		"",
-		&json!({"tenant":"acme","subject":"alice","reference":{
+		"alice",
+		&json!({"reference":{
 			"kind":"grant","node_id":home.to_string(),"execution_node":executor.to_string(),
 			"grant_id":p.grant,"admission_id":p.admission,
 		}}),

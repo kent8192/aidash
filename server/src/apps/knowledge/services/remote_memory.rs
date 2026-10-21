@@ -31,7 +31,7 @@ pub(crate) fn descriptor(home: &str, entry: &Entry) -> Result<Provider> {
 }
 
 pub(crate) async fn bind(
-	home: &str,
+	deployment: &str,
 	lease: &mut Lease<'_>,
 	workspace: Uuid,
 	selection: &NativeRequest,
@@ -52,6 +52,18 @@ pub(crate) async fn bind(
 	)
 	.scalar_one(&mut **lease.tx())
 	.await?;
+	// The Workspace's memory lives at the Node the Workspace belongs to.
+	let node: String = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("node"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **lease.tx())
+	.await?;
+	let home = format!("{deployment}/{node}");
+	let home = home.as_str();
 	let mut bank = Bank {
 		home: home.into(),
 		tenant,
@@ -86,7 +98,7 @@ pub(crate) async fn bind(
 		lease,
 		&bank.tenant,
 		&agent,
-		aidash_domain::nodes::deployment_of(home),
+		deployment,
 	)
 	.await?;
 	if config.memory.as_ref() != Some(&selection.provider)
@@ -97,7 +109,7 @@ pub(crate) async fn bind(
 		));
 	}
 	if let Some(origin) = generation {
-		aidash_domain::nodes::DeploymentId::parse(&origin.node_id)?;
+		aidash_domain::nodes::NodeAddress::parse(&origin.node_id)?;
 		if origin.node_id == home || origin.intent_id.is_nil() {
 			return Err(Error::Forbidden);
 		}
@@ -156,18 +168,18 @@ pub(crate) async fn bind(
 					serde_json::from_value(entry.config.clone())?
 			{
 				roles.push(descriptor(
-					home,
+					deployment,
 					&memory::definition(lease, &bank.tenant, &model, "model").await?,
 				)?);
 			}
-			let descriptor = descriptor(home, &entry)?;
+			let descriptor = descriptor(deployment, &entry)?;
 			if !roles.contains(&descriptor) {
 				roles.push(descriptor);
 			}
 		}
 		banks.push(NativeBank {
 			bank,
-			provider: descriptor(home, &definition)?,
+			provider: descriptor(deployment, &definition)?,
 			roles,
 			max_model_tokens: policy.bounds.max_model_tokens,
 			max_context_tokens: tokens.min(policy.bounds.max_context_tokens),
@@ -194,7 +206,7 @@ pub(crate) async fn bind(
 			agent: reference,
 			provider: selection.provider.clone(),
 		},
-		agent: descriptor(home, &agent)?,
+		agent: descriptor(deployment, &agent)?,
 		banks,
 	})
 }

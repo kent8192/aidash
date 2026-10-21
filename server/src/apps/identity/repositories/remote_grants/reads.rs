@@ -165,13 +165,14 @@ impl SourceReadScope for Scope<'_> {
 		}))
 	}
 	fn record_admission(&mut self, node: &str, grant: Uuid, admission: Uuid) -> Result<()> {
+		let home_node = self.access.node_reference().to_owned();
 		self.access
 			.dependency_frontier
 			.as_mut()
 			.ok_or(NativeError::Forbidden)?
 			.push(Reference::Admission {
 				node_id: node.into(),
-				home_node: self.access.node_id.clone(),
+				home_node,
 				grant_id: grant,
 				admission_id: admission,
 			});

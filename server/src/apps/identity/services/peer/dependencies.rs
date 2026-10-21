@@ -42,12 +42,12 @@ impl Access {
 	/// Append an edge even when the local graph has already visited a source.
 	/// Deduplication happens at the coordinator, after each edge's authority is checked.
 	pub(crate) async fn received_semantic_visible(&mut self, run: Uuid) -> Result<bool> {
-		let bound: Option<(String, Uuid)> = {
+		let bound: Option<(String, Uuid, String)> = {
 			let query_bind_1 = run;
 			let query_bind_2 = &self.identity.tenant;
 			crate::database::native::query_as(
 				&Query::select()
-					.columns(["source_node", "grant_id"].map(Alias::new))
+					.columns(["source_node", "grant_id", "node"].map(Alias::new))
 					.from(Alias::new("authorization_remote_admissions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id=? AND tenant=? AND description->'semantic'->>'mode'='required_home')"
@@ -59,16 +59,17 @@ impl Access {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.columns(&["source_node", "grant_id"])
+			.columns(&["source_node", "grant_id", "node"])
 			.fetch_optional(&mut **self.tx)
 			.await?
 		};
-		let Some((node_id, grant_id)) = bound else {
+		let Some((node_id, grant_id, node)) = bound else {
 			return Ok(true);
 		};
 		let reference = Reference::Grant {
 			node_id,
-			execution_node: self.node_id.clone(),
+			// The Node this Run executes at, which the Home's grant names.
+			execution_node: format!("{}/{node}", self.node_id),
 			grant_id,
 			admission_id: run,
 		};
