@@ -281,7 +281,7 @@ pub(crate) async fn scoped(f: &Federation, id: Uuid) -> Result<bool> {
 pub(crate) async fn trusted(f: &Federation, access: &mut Access, node: &str) -> Result<()> {
 	let sender = aidash_domain::federation::route::Sender {
 		tenant: aidash_domain::tenancy::TenantName::new(access.identity.tenant.clone())?,
-		node: None,
+		node: access.node.clone(),
 		subject: None,
 	};
 	let route = crate::apps::federation::remote::repositories::routes::route_to(

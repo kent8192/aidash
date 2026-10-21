@@ -89,15 +89,16 @@ pub trait HomeScope: Send + Sized {
 #[async_trait]
 pub trait HomeRepository: Send + Sync {
 	type Scope: HomeScope;
-	/// The address of the Node Home sends its requests as: its Tenant's default
-	/// Node, until a Task names the Node it runs on.
-	async fn node_address(&self) -> Result<String>;
+	/// The address of the Node Home sends its requests as: the Node the
+	/// Workspace belongs to.
+	async fn node_address(&self, workspace: Uuid) -> Result<String>;
 	fn identity(&self) -> Option<ExecutionPrincipal>;
 	async fn begin(&self) -> Result<Self::Scope>;
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Self::Scope, Description)>;
 	/// Deserialize directly from bounded response bytes to preserve strict wire decoding.
 	async fn request<T: DeserializeOwned + Send>(
 		&self,
+		workspace: Uuid,
 		node: &str,
 		path: &str,
 		input: &Value,

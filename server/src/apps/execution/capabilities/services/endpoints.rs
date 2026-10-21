@@ -1261,6 +1261,7 @@ pub(crate) async fn transfer_recipients(
 			)
 			.await?;
 		let sender = aidash_domain::federation::route::Sender {
+			node: access.node.clone(),
 			subject: Some(access.identity.subject.clone()),
 			..crate::authorization::peer::node_sender(&access.identity.tenant)?
 		};

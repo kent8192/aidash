@@ -134,7 +134,7 @@ impl Repository {
 #[async_trait]
 impl HomeRepository for Repository {
 	type Scope = Scope;
-	async fn node_address(&self) -> Result<String> {
+	async fn node_address(&self, _: Uuid) -> Result<String> {
 		Ok("aidash://home/airy-hawk-2lu4as22".into())
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
@@ -161,6 +161,7 @@ impl HomeRepository for Repository {
 	}
 	async fn request<T: DeserializeOwned + Send>(
 		&self,
+		_: Uuid,
 		_: &str,
 		path: &str,
 		input: &Value,

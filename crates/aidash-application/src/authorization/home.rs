@@ -98,6 +98,7 @@ pub async fn message<R: HomeRepository>(
 	let admission = finish(scope, result).await?;
 	let receipt: MessageReceipt = repository
 		.request(
+			grant.workspace_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/messages"),
 			&json!({"grant_id":id,"message":input}),
@@ -154,6 +155,7 @@ pub async fn control<R: HomeRepository>(
 	}
 	let result = repository
 		.request(
+			grant.workspace_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/control"),
 			&json!({"grant_id":id,"action":action}),
@@ -232,6 +234,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		let mut status: Result<Option<Activation>> = tokio::time::timeout_at(
 			deadline,
 			repository.request(
+				grant.workspace_id,
 				&grant.node_id,
 				"/scoped/execution/status",
 				&json!({"grant_id":grant.id}),
@@ -320,13 +323,14 @@ pub async fn activate<R: HomeRepository>(
 	// Admission performs fresh source and receiver checks after the first scope is completed.
 	let admission: Admission = repository
 		.request(
+			grant.workspace_id,
 			&grant.node_id,
 			"/scoped/execution/admissions",
 			&json!({"grant_id":id}),
 		)
 		.await?;
 	if admission.grant_id != id
-		|| admission.source_node != repository.node_address().await?
+		|| admission.source_node != repository.node_address(grant.workspace_id).await?
 		|| admission.task_id != task
 	{
 		return Err(Error::Forbidden);
@@ -349,6 +353,7 @@ pub async fn activate<R: HomeRepository>(
 	finish(scope, result).await?;
 	let activation: Activation = repository
 		.request(
+			grant.workspace_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{}/activate", admission.id),
 			&json!({"grant_id":id}),

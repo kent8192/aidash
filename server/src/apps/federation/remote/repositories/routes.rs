@@ -13,7 +13,10 @@ use reinhardt::db::backends::TransactionExecutor;
 /// unknown Node is, so a sender cannot speak as a Node it does not hold. A
 /// sender that names no Node is its Tenant's default Node: the one seam that
 /// stands in until Workspaces carry their own Node.
-async fn sending_node(tx: &mut dyn TransactionExecutor, sender: &Sender) -> Result<NodeName> {
+pub(crate) async fn sending_node(
+	tx: &mut dyn TransactionExecutor,
+	sender: &Sender,
+) -> Result<NodeName> {
 	match &sender.node {
 		Some(node) => {
 			let holder = registrations::name_tenant(tx, node.as_str()).await?;
@@ -132,7 +135,7 @@ impl crate::authorization::access::Access {
 	pub(crate) async fn route_to(&mut self, node: &str) -> Result<Option<Route>> {
 		let sender = Sender {
 			tenant: aidash_domain::tenancy::TenantName::new(self.identity.tenant.clone())?,
-			node: None,
+			node: self.node.clone(),
 			subject: Some(self.identity.subject.clone()),
 		};
 		let own = DeploymentId::parse(&self.node_id)?;

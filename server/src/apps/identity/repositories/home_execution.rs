@@ -40,6 +40,34 @@ pub(crate) struct Repository {
 	/// which has no local actor.
 	pub(crate) actor: Option<Actor>,
 }
+impl Repository {
+	/// The Node a Workspace of the acting subject's Tenant belongs to.
+	async fn workspace_node(
+		&self,
+		workspace: Uuid,
+	) -> NativeResult<aidash_domain::nodes::NodeName> {
+		let Some(Actor::Subject(identity)) = &self.actor else {
+			return Err(NativeError::Forbidden);
+		};
+		let name: String = self
+			.runtime
+			.store
+			.pool
+			.scoped(&identity.tenancy()?, async |tx| {
+				crate::database::native::query_scalar::<String>(
+					&Query::select()
+						.column(Alias::new("node"))
+						.from(Alias::new("workspaces"))
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **tx)
+				.await
+			})
+			.await?;
+		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
+	}
+}
 pub(crate) struct Scope {
 	pub(crate) runtime: Federation,
 	pub(crate) access: Box<Access>,
@@ -547,26 +575,13 @@ impl HomeScope for Scope {
 #[async_trait]
 impl HomeRepository for Repository {
 	type Scope = Scope;
-	async fn node_address(&self) -> Result<String> {
-		let Some(Actor::Subject(identity)) = &self.actor else {
-			return Err(NativeError::Forbidden.into());
-		};
-		let tenant = aidash_domain::tenancy::TenantName::new(identity.tenant.clone())
-			.map_err(NativeError::from)?;
-		let node = self
+	async fn node_address(&self, workspace: Uuid) -> Result<String> {
+		Ok(self
 			.runtime
-			.store
-			.pool
-			.atomic(
-				&aidash_application::tenancy::TenancyScope::Tenant(tenant.clone()),
-				async |tx| {
-					crate::apps::identity::repositories::nodes::default_of(tx, tenant.as_str())
-						.await
-				},
-			)
-			.await?
-			.name;
-		Ok(self.runtime.config.deployment.node(node).to_string())
+			.config
+			.deployment
+			.node(self.workspace_node(workspace).await?)
+			.to_string())
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
 		match &self.actor {
@@ -600,17 +615,22 @@ impl HomeRepository for Repository {
 	}
 	async fn request<T: DeserializeOwned + Send>(
 		&self,
+		workspace: Uuid,
 		node: &str,
 		path: &str,
 		input: &Value,
 	) -> Result<T> {
-		// Home calls as its own Node for the Tenant of the subject that acts.
+		// Home calls as the Node the Workspace belongs to, for the Tenant of the
+		// subject that acts.
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
 		};
 		crate::authorization::peer::authority_request(
 			&self.runtime,
-			&crate::authorization::peer::node_sender(&identity.tenant)?,
+			&aidash_domain::federation::route::Sender {
+				node: Some(self.workspace_node(workspace).await?),
+				..crate::authorization::peer::node_sender(&identity.tenant)?
+			},
 			node,
 			path,
 			input,
