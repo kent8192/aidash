@@ -174,7 +174,7 @@ impl WorkerProcess {
 		settings.deployment.background_enabled = true;
 		settings.deployment.worker_count = 1;
 		// The process signs with the Deployment's own key.
-		crate::common::peering::configure_process(&mut settings, &runtime);
+		crate::common::peering::configure_process(&mut settings, runtime);
 		// A worker process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins =
 			runtime.store.keyless.permitted_origins();
