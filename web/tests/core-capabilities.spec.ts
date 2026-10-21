@@ -399,9 +399,9 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
     "memory:conversation-memory@1.0.0",
     "bundle:approved-shell@1.0.0",
   ]) {
-    await config.getByLabel("Definition to bind").selectOption(target);
+    await config.getByLabel("Item to add").selectOption(target);
     await config
-      .getByRole("button", { name: "Add binding", exact: true })
+      .getByRole("button", { name: "Add to this Agent", exact: true })
       .click();
   }
   await config
@@ -462,7 +462,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
   ])
     expect(saved).not.toHaveProperty(field);
   await config
-    .getByRole("button", { name: "Remove binding", exact: true })
+    .getByRole("button", { name: "Remove from this Agent", exact: true })
     .nth(0)
     .click();
   await config.getByLabel("New immutable version").fill("1.2.0");

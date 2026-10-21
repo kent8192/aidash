@@ -1,7 +1,7 @@
 import type { Artifact } from "../src/generated/models";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
-import { registryVersion } from "./registry-fixture";
+import { defaultNode, registryVersion } from "./registry-fixture";
 
 function fixture(reference = false) {
   const deployment = {
@@ -29,6 +29,7 @@ function fixture(reference = false) {
   const workspaces = [
     {
       id: "workspace-one",
+      node: defaultNode.name,
       title: "Research",
       goal: "Find reliable evidence",
       state: {},
@@ -37,6 +38,7 @@ function fixture(reference = false) {
     },
     {
       id: "workspace-two",
+      node: defaultNode.name,
       title: "Planning",
       goal: "Plan the next release",
       state: {},
@@ -60,9 +62,10 @@ function fixture(reference = false) {
   }));
   const runs = tasks.map((task, index) => ({
     id: `run-${index}`,
+    node: defaultNode.name,
     task_id: task.id,
     workspace_id: task.workspace_id,
-    home_node: node.id,
+    home_node: `${deployment.id}/${defaultNode.name}`,
     agent_id: "researcher",
     agent_version: "1.0.0",
     phase: "THINKING",
@@ -287,6 +290,7 @@ export async function setup(
         kind,
         created_at: `2026-09-24T${time}Z`,
         data: payload,
+        node: defaultNode.name,
         node_id: data.deployment.id,
         sequence: index + 1,
         workspace_id: "workspace-one",
@@ -548,6 +552,15 @@ export async function setup(
       return route.fulfill({ json: { access, node_id: data.deployment.id } });
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
+    if (path === "/api/tenants/acme/nodes")
+      return route.fulfill({
+        json: [
+          {
+            ...defaultNode,
+            address: `${data.deployment.id}/${defaultNode.name}`,
+          },
+        ],
+      });
     if (path === "/api/tenants/acme/administration")
       return route.fulfill({
         json: {

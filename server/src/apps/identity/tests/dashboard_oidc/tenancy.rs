@@ -23,7 +23,7 @@ impl Deployment {
 	/// A Deployment that holds no Deployment Key, so it cannot federate with
 	/// another Deployment.
 	async fn without_key(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
-		Self::build(runtime, rules, None, false).await
+		Self::build(runtime, rules, None, false, false).await
 	}
 
 	async fn with_tier_limits(
@@ -31,7 +31,16 @@ impl Deployment {
 		rules: TenancyRules,
 		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
 	) -> Self {
-		Self::build(runtime, rules, tier_limits, true).await
+		Self::build(runtime, rules, tier_limits, true, false).await
+	}
+
+	/// Like [`Self::new`], with `[demo_data] enabled` as given.
+	async fn with_demo_data(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		demo_data: bool,
+	) -> Self {
+		Self::build(runtime, rules, None, true, demo_data).await
 	}
 
 	async fn build(
@@ -39,6 +48,7 @@ impl Deployment {
 		rules: TenancyRules,
 		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
 		keyed: bool,
+		demo_data: bool,
 	) -> Self {
 		let runtime = runtime.await;
 		let (mut federation, url, database) = runtime.parts();
@@ -58,6 +68,7 @@ impl Deployment {
 		if let Some(tier_limits) = tier_limits {
 			federation.config.tier_limits = tier_limits;
 		}
+		federation.config.demo_data = demo_data;
 		let app = common::application(federation.clone()).await;
 		Self {
 			federation,
@@ -1333,6 +1344,8 @@ async fn display_retention_follows_the_request_that_ended_last(
 #[path = "tenancy/deletion.rs"]
 mod deletion;
 
+#[path = "tenancy/demo_data.rs"]
+mod demo_data;
 #[path = "tenancy/exchange.rs"]
 mod exchange;
 #[path = "tenancy/nodes.rs"]

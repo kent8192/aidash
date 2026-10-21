@@ -144,6 +144,16 @@ fn values_with_oidc(
 			json!({"permitted_private_origins": origins}),
 		);
 	}
+	if let Some(value) = read("AIDASH_DEMO_DATA_ENABLED") {
+		// A value that is not a boolean stays text, so settings deserialization
+		// refuses it instead of this layer reading it as false.
+		let enabled = match value.trim().to_ascii_lowercase().as_str() {
+			"true" | "1" => Value::Bool(true),
+			"false" | "0" => Value::Bool(false),
+			_ => Value::String(value),
+		};
+		result.insert("demo_data".into(), json!({"enabled": enabled}));
+	}
 	Ok(result)
 }
 
@@ -324,6 +334,38 @@ mod tests {
 		assert_eq!(db["options"]["application_name"], "worker");
 		assert_eq!(data["deployment"]["worker_count"], "2");
 		assert!(!data.contains_key("dashboard"));
+	}
+
+	#[rstest::rstest]
+	#[case::true_text(Some("true"), Some(true))]
+	#[case::one(Some("1"), Some(true))]
+	#[case::false_text(Some("false"), Some(false))]
+	#[case::absent(None, None)]
+	fn demo_data_enabled_participates_in_settings_composition(
+		#[case] variable: Option<&str>,
+		#[case] expected: Option<bool>,
+	) {
+		use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
+		// Arrange: the migration Job exports AIDASH_DEMO_DATA_ENABLED.
+		let data = values(|name| match name {
+			"AIDASH_DEMO_DATA_ENABLED" => variable.map(str::to_owned),
+			_ => None,
+		})
+		.unwrap();
+		// Act: deserialize the fragment the composed settings consume.
+		let settings = data
+			.get("demo_data")
+			.map(|value| serde_json::from_value::<DemoDataSettings>(value.clone()).unwrap());
+		// Assert: only an explicit value overrides the default, which is off.
+		assert_eq!(settings.map(|settings| settings.enabled), expected);
+	}
+
+	#[rstest::rstest]
+	fn malformed_demo_data_enabled_fails_settings_deserialization() {
+		use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
+		let data =
+			values(|name| (name == "AIDASH_DEMO_DATA_ENABLED").then(|| "maybe".into())).unwrap();
+		assert!(serde_json::from_value::<DemoDataSettings>(data["demo_data"].clone()).is_err());
 	}
 
 	#[rstest::rstest]

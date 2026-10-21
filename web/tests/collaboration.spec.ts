@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
+import { defaultNode } from "./registry-fixture";
 import type { ChannelMessagePage } from "../src/generated/models";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
@@ -892,6 +893,7 @@ test("new request preserves the Japanese conversation creation contract", async 
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(/channel=workspace-two/);
   expect(payload).toEqual({
+    node: defaultNode.name,
     title: "競合調査",
     goal: "Rustフレームワークを比較して",
     target: { id: "researcher", version: "1.0.0" },
@@ -1002,7 +1004,11 @@ test("graph renders with Cytoscape and offers current related channel first", as
 test("graph focus survives contextual selection, reload, and history", async ({
   page,
 }) => {
-  const { errors } = await setup(page, { extraGraphAgent: true });
+  const { errors } = await setup(page, {
+    extraGraphAgent: true,
+    subject: true,
+  });
+  const node = `aidash://home/${defaultNode.name}`;
   await page.goto("/collaboration?channel=workspace-one");
   await page.getByRole("button", { name: "Tasks and results" }).click();
   await page
@@ -1014,14 +1020,14 @@ test("graph focus survives contextual selection, reload, and history", async ({
   const selector = page.getByLabel("Focus agent");
   const original = JSON.stringify([
     "entity",
-    "aidash://home",
+    node,
     "agent",
     "researcher",
     "1.0.0",
   ]);
   const focused = JSON.stringify([
     "entity",
-    "aidash://home",
+    node,
     "agent",
     'review/"[special]:/agent',
     "1.0.0",
@@ -1043,7 +1049,7 @@ test("graph focus survives contextual selection, reload, and history", async ({
 
   const unavailable = JSON.stringify([
     "entity",
-    "aidash://home",
+    node,
     "agent",
     "unavailable",
     "1.0.0",
@@ -1213,7 +1219,7 @@ test("older message pages are prepended without losing the latest messages", asy
 });
 
 test("local run details retain execution memory", async ({ page }) => {
-  const { errors } = await setup(page, { runMemory: true });
+  const { errors } = await setup(page, { subject: true, runMemory: true });
   await page.goto("/collaboration?channel=workspace-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
@@ -1233,7 +1239,7 @@ test("local run details retain execution memory", async ({ page }) => {
 test("run message attachments stay fixed while an upload is pending", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page);
+  const { submissions, errors } = await setup(page, { subject: true });
   let uploadStarted!: () => void;
   let finishUpload!: () => void;
   const started = new Promise<void>((resolve) => (uploadStarted = resolve));
@@ -1290,6 +1296,7 @@ test("run media picker follows the effective model route before uploads", async 
   page,
 }) => {
   const { submissions, errors, setRunMediaRoutes } = await setup(page, {
+    subject: true,
     runMediaRoutes: [],
   });
   await page.goto("/collaboration?channel=workspace-one");
@@ -1459,7 +1466,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
   }) => {
     const ja = locale === "ja-JP";
     if (ja) await page.setViewportSize({ width: 390, height: 1000 });
-    const { errors } = await setup(page, { locale });
+    const { errors } = await setup(page, { subject: true, locale });
     await page.goto("/collaboration?channel=workspace-one");
     const open = page.getByRole("button", {
       name: ja ? "状況を表示" : "Show channel status",
@@ -1659,7 +1666,10 @@ test("upload failures retain their key and file limits apply before network use"
 test("channel controls scope run changes and persist approval responses", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page, { approval: true });
+  const { submissions, errors } = await setup(page, {
+    subject: true,
+    approval: true,
+  });
   await page.goto("/");
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
@@ -1829,6 +1839,7 @@ test("workspace reference renders light, dark and thread layouts", async ({
 }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const { errors } = await setup(page, {
+    subject: true,
     referenceLayout: true,
     locale: "ja-JP",
   });
@@ -2085,7 +2096,10 @@ for (const width of [1440, 390]) {
 test("invalid execution remains inspectable and cancellable with resume disabled", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page, { invalidRun: true });
+  const { submissions, errors } = await setup(page, {
+    subject: true,
+    invalidRun: true,
+  });
   await page.goto("/collaboration?channel=workspace-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
@@ -2120,6 +2134,7 @@ test("paused failure delivery can resume while retaining its invalid Context dia
   page,
 }) => {
   const { submissions, errors } = await setup(page, {
+    subject: true,
     failureDeliveryRun: true,
   });
   await page.goto("/collaboration?channel=workspace-one");
@@ -2154,6 +2169,7 @@ test("channel controls resume a validated failure delivery with an invalid Conte
   page,
 }) => {
   const { submissions, errors } = await setup(page, {
+    subject: true,
     failureDeliveryRun: true,
   });
   await page.goto("/collaboration?channel=workspace-one");

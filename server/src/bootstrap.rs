@@ -48,6 +48,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::credential_store_recovery::Command,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::demo_data::Command,
+	));
 	registry
 }
 

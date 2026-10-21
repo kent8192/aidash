@@ -831,7 +831,11 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			// Recovery never changes the schema; `migrate` runs first as its owner.
 			crate::bootstrap::require_migrated(&settings).await?;
 			let config = crate::config::Config::from_settings(&settings)?;
-			let database = crate::database::runtime::connect(&config.database_url, 8).await?;
+			// The migration Job runs `init-if-missing` as the owner that owns every
+			// table, so this maintenance command accepts that login. The server role
+			// passes the same check, as it does for a manually run action.
+			let database =
+				crate::database::runtime::connect_maintenance(&config.database_url, 8).await?;
 			let directory = matches
 				.get_one::<PathBuf>("directory")
 				.ok_or(Error::Forbidden)?;

@@ -730,5 +730,11 @@
   "nodeRegistrationDisable": "無効にする",
   "nodeRegistrationHistory": "登録履歴",
   "nodeRegistrationEnabled": "有効",
-  "nodeRegistrationDisabled": "無効"
+  "nodeRegistrationDisabled": "無効",
+  "bundle": "バンドル",
+  "source": "ソース",
+  "decider": "Decider",
+  "embedding": "埋め込み",
+  "reranker": "再順位付け",
+  "tokenizer": "トークナイザー"
 }

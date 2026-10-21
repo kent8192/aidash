@@ -301,6 +301,7 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 			api_token: "fixture-deployment-administrator".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			demo_data: false,
 			oidc: None,
 			federation: true,
 			deployment_key: None,

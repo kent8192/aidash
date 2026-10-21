@@ -15,7 +15,8 @@ pub struct DashboardAdministrationHistory {
 	#[field]
 	pub occurred_at: DateTime<Utc>,
 	/// `registration.approve`, `registration.reject`, `mapping.disable`,
-	/// `subject.group.update`, `tenant.create`, `tenant.update`, `node.create` or `invitation.*`.
+	/// `subject.group.update`, `tenant.create`, `tenant.update`, `node.create`,
+	/// `demo_reservation.fulfil` or `invitation.*`.
 	#[field(field_type = "text")]
 	pub action: String,
 	/// The External Identity the event concerns, if any.
@@ -29,7 +30,8 @@ pub struct DashboardAdministrationHistory {
 	pub tenant: Option<String>,
 	#[field(field_type = "text", null = true)]
 	pub subject: Option<String>,
-	/// `deployment_administrator` or `tenant_administrator`.
+	/// `deployment_administrator`, `tenant_administrator`, `identity` or
+	/// `demo_data`.
 	#[field(field_type = "text")]
 	pub actor_kind: String,
 	/// The acting External Identity; absent for the Deployment Administrator bearer token.

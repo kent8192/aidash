@@ -98,11 +98,16 @@ async function registry(page: Page, actions: string[]) {
   return decisions;
 }
 
-const open = (page: Page, name: string) =>
-  page
+// The Registry list shows one kind at a time once it holds several kinds.
+async function open(page: Page, name: string) {
+  await expect(page.locator(".entity-card").first()).toBeVisible();
+  const all = page.locator('[data-registry-kind="all"]');
+  if (await all.count()) await all.click();
+  await page
     .locator(".entity-card")
     .filter({ has: page.getByRole("heading", { name, exact: true }) })
     .click();
+}
 const approval = (page: Page) =>
   page.getByRole("dialog").getByRole("region", { name: "Catalog Approval" });
 

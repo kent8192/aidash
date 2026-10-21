@@ -730,5 +730,11 @@
   "nodeRegistrationDisable": "Disable",
   "nodeRegistrationHistory": "Registration history",
   "nodeRegistrationEnabled": "Enabled",
-  "nodeRegistrationDisabled": "Disabled"
+  "nodeRegistrationDisabled": "Disabled",
+  "bundle": "Bundle",
+  "source": "Source",
+  "decider": "Decider",
+  "embedding": "Embedding",
+  "reranker": "Reranker",
+  "tokenizer": "Tokenizer"
 }

@@ -144,10 +144,10 @@ for (const context of [
     for (const name of ["skill_list", "skill_load", "skill_read"])
       await dialog.getByLabel(name, { exact: true }).uncheck();
     await dialog
-      .getByLabel("追加する定義")
+      .getByLabel("追加するもの")
       .selectOption(`${context.kind}:fixture-skill@1.0.0`);
     await dialog
-      .getByRole("button", { name: "Bindingを追加", exact: true })
+      .getByRole("button", { name: "このエージェントに追加", exact: true })
       .click();
     for (const name of ["skill_list", "skill_load", "skill_read"]) {
       const checkbox = dialog.getByLabel(name, { exact: true });

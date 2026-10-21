@@ -102,6 +102,7 @@ for (const locale of ["en-US", "ja-JP"]) {
     const japanese = locale === "ja-JP";
     const register = japanese ? "エンティティを登録" : "Register entity";
     await page.goto("/settings?view=registry");
+    await page.locator('[data-registry-kind="all"]').click();
     for (const id of ids)
       await expect(page.locator("body")).not.toContainText(id);
     await page.getByRole("button", { name: register, exact: true }).click();
@@ -134,10 +135,10 @@ for (const locale of ["en-US", "ja-JP"]) {
       .getByLabel(japanese ? "説明" : "Description", { exact: true })
       .fill("Uses named references");
     const binding = dialog.getByLabel(
-      japanese ? "追加する定義" : "Definition to bind",
+      japanese ? "追加するもの" : "Item to add",
     );
     const add = dialog.getByRole("button", {
-      name: japanese ? "Bindingを追加" : "Add binding",
+      name: japanese ? "このエージェントに追加" : "Add to this Agent",
       exact: true,
     });
     await binding.selectOption(`skill:${ids[2]}@1.0.0`);

@@ -356,6 +356,24 @@ def current_entry(store, identity, generation):
     return entry
 
 
+def demo_people():
+    """The Demo data people file from the nonproduction Environment secret, or None.
+
+    Its value holds real people's addresses, so neither it nor any part of
+    it appears in a message.
+    """
+    raw = os.environ.get("AIDASH_DEMO_DATA")
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise Refused("AIDASH_DEMO_DATA must be a JSON object")
+    return json.dumps(value, sort_keys=True)
+
+
 def provision_secret(config, output, kind):
     secret = output["runtime_secret"]
     all_versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
@@ -443,8 +461,8 @@ def verify_source(config, identity, entry):
         # Keep the original accepted images when staging publishes a new index.
         release = entry["release"]
         delivery.valid_images(release["images"], config["staging_project_id"])
-        if release["source_sha"] != entry["sha"] or not delivery.SHA.fullmatch(release["trusted_sha"]) or github(f"repos/{config['repository']}/compare/{release['trusted_sha']}...{entry['main_sha']}").get("status") not in {"ahead", "identical"}:
-            raise Refused("The retained bundle is outside its accepted main provenance")
+        if release["source_sha"] != entry["sha"] or release["trusted_sha"] != entry["sha"]:
+            raise Refused("The retained bundle was not built from the release source")
         return
     if identity == "develop" and config.get("release_flow_enabled"):
         current = github(f"repos/{config['repository']}/branches/{urllib.parse.quote(config['develop_branch'], safe='')}")
@@ -1127,7 +1145,10 @@ def reconcile_locked(config, store, terraform, managed):
             # GCIP digest fences: enforce it before the edge reopens admission.
             reconcile_gcip_mfa(store, identity, generation, output)
             current_entry(store, identity, generation)
-            kube.deploy(cluster, identity, output, entry["release"], entry["sha"], settings)
+            kube.deploy(
+                cluster, identity, output, entry["release"], entry["sha"], settings,
+                demo_people=demo_people(), fork=bool(entry.get("fork")),
+            )
             kube.start_writers(cluster, identity)
             if kube.health(cluster, identity) != entry["sha"]:
                 raise Refused("Running source differs from the authorized release")

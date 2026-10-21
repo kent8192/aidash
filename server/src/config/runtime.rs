@@ -20,6 +20,9 @@ pub struct Config {
 	/// network. Without one this Deployment cannot federate with others.
 	pub deployment_key:
 		Option<std::sync::Arc<dyn aidash_application::federation::key::DeploymentKey>>,
+	/// `[demo_data] enabled`: this Deployment may load Demo data and fulfil its
+	/// Demo Reservations at sign-in.
+	pub demo_data: bool,
 	pub oidc: Option<OidcConfig>,
 	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
@@ -48,11 +51,13 @@ impl Config {
 			.map(|sign_in| AccountPolicy {
 				issuers: sign_in.issuers(),
 				personal_tenants: self.tenancy.personal_tenants,
+				demo_data: self.demo_data,
 			})
 			.or_else(|| {
 				self.oidc.as_ref().map(|oidc| AccountPolicy {
 					issuers: std::sync::Arc::new(Issuer(oidc.issuer.clone())),
 					personal_tenants: self.tenancy.personal_tenants,
+					demo_data: self.demo_data,
 				})
 			})
 	}
@@ -101,6 +106,7 @@ impl Config {
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
 			federation: node.federation,
 			deployment_key: None,
+			demo_data: settings.demo_data.enabled,
 			sign_in,
 			tier_limits: extension.tier_limits(),
 			oidc: settings
