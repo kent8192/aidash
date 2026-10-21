@@ -275,7 +275,7 @@ The 39 peer-authenticated routes stay at their paths. `AccessBoundary::peer()` (
 }
 ```
 
-`key` is `null` when the Deployment has no Deployment Key. `capabilities` and `clusters` are dropped. They described Nodes, and the document names no Node. The dashboard's `StateResponse.node` still carries `NodeIdentity` with both fields, because the web reads `node.id` and `node.endpoint` throughout; `NodeIdentity` goes with the dashboard step (section 9, step 9).
+`key` is `null` when the Deployment has no Deployment Key. `capabilities` and `clusters` are dropped. They described Nodes, and the document names no Node. `StateResponse.deployment` carries the same `DeploymentIdentity`, and the dashboard derives the Node it works in from the Tenant's Node list (section 11, last bullets).
 
 New Tenant routes, all under `AccessBoundary::subject()` with the actions of section 4.3:
 
@@ -534,3 +534,13 @@ The coordinator's review of 2026-10-19 settled each item as recommended, except 
 - `node_registration.read` and `node_registration.update` are not added by step 2. They arrive with their routes in step 6.
 - Participants of a transaction manifest, the node strings of peer requests and peer Delegations still name Deployments or whatever string the peer sent. Peer flows call `agent_subject(text, ...)` with that string, so a peer-executed agent authorizes only once step 6 and 7 name the receiving Node. `NodeName::derived` and `NodeAddress::derived` give fixtures a stable Node name for a Tenant name.
 - Peer file transfer names the recipient by Node address. `recipient.node_id` and `target.node_id` are Node addresses, the sender finds the peer through `deployment_of(node)`, and the receiver checks the Deployment part, finds the recipient Area by its exact home Node address and builds the agent subject from that address. `Federation::peer` resolves by the Deployment part until Node Registrations replace `peers` in step 6.
+
+## 12. Corrections found while porting the remaining paths
+
+- A usage reservation names two things by Deployment. The dispatcher and the provider's `node_id` are the Deployment of the registry that holds the provider (`Usage::validate` requires them equal), and the Peer compares them with `deployment_of` of the Node address it authenticated. The Run, the grant, the admission and the intent name Nodes by address.
+- A generation intent's `home_node` is the address of the Node the Task's Workspace belongs to. The Home sends `prepare` and `cancel` as that Node, and a peer's `describe` and `cancel` are accepted only at the Node the intent names. The lineage of an intent still names the Deployment, because the accounting rows do.
+- A callback that a remote Run or a grant sends comes from the Node the Run executes at or the grant was issued from: `Store::remote_node` finds it from the Run, the admission or the grant, and `usage_sender` returns it. The Home port takes the Workspace a grant belongs to and sends as that Workspace's Node.
+- A Workspace's native memory banks are bound at `<deployment>/<workspace node>`, and a generated Agent's origin is a Node address. The providers a binding pins keep the receiver's Deployment.
+- A remote Run's input keys are `<executing Node address>:<task>:<key>`, on both sides.
+- Discovery names the agents it finds for the sending Node by that Node's address, and its Catalog Approvals decide them. `GET /api/registry/versions` takes the Node as a required `node` query.
+- Transactions still send from the submitting Tenant's default Node when no Access names one. One transaction naming more than one Node of a Deployment stays refused by `Manifest::validate`.
