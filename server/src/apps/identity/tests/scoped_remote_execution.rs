@@ -4001,7 +4001,11 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	// An event that concerns no Workspace takes the Tenant of its transaction.
+	let tenant = aidash_application::tenancy::TenancyScope::Tenant(
+		aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+	);
+	let mut tx = p.a.store.pool.begin(&tenant).await.unwrap();
 	p.a.store
 		.event(
 			&mut tx,
@@ -4063,7 +4067,7 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 
 	// A full visible page may span hidden candidate pages. Its cursor must
 	// retain visible events beyond the response limit for the next request.
-	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let mut tx = p.a.store.pool.begin(&tenant).await.unwrap();
 	for index in 0..600 {
 		p.a.store
 			.event(&mut tx, None, "test.visible", json!({"index": index}))
