@@ -89,6 +89,9 @@ impl RunMessages for Scope {
 	fn node(&self) -> &str {
 		"executor"
 	}
+	fn executor(&self) -> &str {
+		"executor"
+	}
 	fn run(&self) -> &RunMetadata {
 		&self.run
 	}

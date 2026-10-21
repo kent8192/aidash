@@ -24,6 +24,9 @@ impl Messages<'_> {
 #[async_trait]
 impl RunMessages for Messages<'_> {
 	fn node(&self) -> &str {
+		self.federation.config.deployment.as_str()
+	}
+	fn executor(&self) -> &str {
 		&self.node
 	}
 	fn run(&self) -> &RunMetadata {

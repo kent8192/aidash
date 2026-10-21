@@ -7,7 +7,11 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait RunMessages: Send + Sync {
+	/// The Deployment this scope runs in.
 	fn node(&self) -> &str;
+	/// The address of the Node the Run executes at, which names the Run's input
+	/// keys at its Home.
+	fn executor(&self) -> &str;
 	fn run(&self) -> &RunMetadata;
 	fn local(&self) -> bool {
 		self.run().is_local(self.node())
