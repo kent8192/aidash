@@ -1062,16 +1062,19 @@ pub(crate) fn generation_home_repository(
 		federation: f.clone(),
 		actor: Some(actor),
 		principal: Some(principal),
+		receiver: None,
 	}
 }
 /// A peer-authenticated request has no local actor; its authority is the intent it names.
 pub(crate) fn peer_generation_home_repository(
 	f: &Federation,
+	receiver: &aidash_domain::nodes::NodeAddress,
 ) -> crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 	crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 		federation: f.clone(),
 		actor: None,
 		principal: None,
+		receiver: Some(receiver.to_string()),
 	}
 }
 

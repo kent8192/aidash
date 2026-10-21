@@ -35,7 +35,7 @@ pub(crate) async fn describe(
 ) -> Result<Intent> {
 	let source = &admitted.sender.to_string();
 	aidash_application::generation::foreign::home::describe(
-		&crate::bootstrap::peer_generation_home_repository(&f),
+		&crate::bootstrap::peer_generation_home_repository(&f, &admitted.receiver),
 		source,
 		input.intent_id,
 	)

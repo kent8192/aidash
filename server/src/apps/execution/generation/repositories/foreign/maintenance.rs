@@ -67,9 +67,25 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 		)
 		.scalar_one(self.federation.store.pool.in_scope(&reconcile()))
 		.await?;
+		let home: String = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("binding->>'home_node'"))
+				.from(Alias::new("generation_remote_intents"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(id.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(self.federation.store.pool.in_scope(&reconcile()))
+		.await?;
+		let home = aidash_domain::nodes::NodeAddress::parse(&home)?;
 		crate::authorization::peer::authority_request(
 			&self.federation,
-			&crate::authorization::peer::node_sender(&tenant)?,
+			&aidash_domain::federation::route::Sender {
+				node: Some(home.node),
+				..crate::authorization::peer::node_sender(&tenant)?
+			},
 			target,
 			"/scoped/generation/cancel",
 			&json!({"intent_id":id}),

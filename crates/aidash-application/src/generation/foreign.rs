@@ -102,7 +102,11 @@ pub async fn check_home(
 	) {
 		return Err(Error::Forbidden);
 	}
-	if scope.lineage(&intent.home_node).await? != intent.lineage {
+	if scope
+		.lineage(aidash_domain::nodes::deployment_of(&intent.home_node))
+		.await?
+		!= intent.lineage
+	{
 		return Err(Error::Forbidden);
 	}
 	home_authority(scope, task, node, &intent.policy_id).await
