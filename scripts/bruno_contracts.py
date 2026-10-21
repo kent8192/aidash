@@ -124,9 +124,11 @@ TENANT_ROUTES = {
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
     "GET /api/registry/versions": [
-        ("Tenant subject lists only the versions it may read", 200, SUBJECT, None,
+        ("Tenant subject lists only the versions it may read", 200, SUBJECT,
+         "/api/registry/versions?node=" + NODE,
          "expect(res.getBody().versions).to.eql([]);"),
-        ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT, None, ""),
+        ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT,
+         "/api/registry/versions?node=" + NODE, ""),
     ],
     "GET /api/authorization/{tenant}/catalog": [
         ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT,

@@ -13,11 +13,13 @@ import {
   RowList,
 } from "./components/patterns";
 import {
+  tenantNodeRegistrationHistory,
   tenantNodeRegistrationSet,
+  tenantNodeRegistrations,
   tenantNodeUpdate,
   tenantNodesCreate,
 } from "./generated/aidash";
-import { registrationHistoryPage, registrationsPage, useNodes } from "./nodes";
+import { useNodes } from "./nodes";
 import {
   changedRegistration,
   inOtherDeployment,
@@ -223,12 +225,14 @@ function Registrations({
   const after = cursors[cursors.length - 1];
   const registrations = useQuery({
     queryKey: ["node-registrations", tenant, node, offset],
-    queryFn: () => registrationsPage(tenant, node, offset, PAGE_SIZE),
+    queryFn: () =>
+      tenantNodeRegistrations(tenant, node, { offset, limit: PAGE_SIZE }),
     refetchInterval: 5000,
   });
   const history = useQuery({
     queryKey: ["node-registration-history", tenant, node, after],
-    queryFn: () => registrationHistoryPage(tenant, node, after, PAGE_SIZE),
+    queryFn: () =>
+      tenantNodeRegistrationHistory(tenant, node, { after, limit: PAGE_SIZE }),
     refetchInterval: 5000,
   });
   const rows = registrations.isError ? undefined : registrations.data;

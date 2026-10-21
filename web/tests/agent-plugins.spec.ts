@@ -91,12 +91,11 @@ async function dashboard(page: Page, registry: unknown[]) {
       return route.fulfill({
         json: {
           access: tenantSubject,
-          node: {
+          deployment: {
             id: "aidash://node",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry,
           workspaces: [],

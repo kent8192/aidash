@@ -243,12 +243,11 @@ async function trust(
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],

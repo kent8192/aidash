@@ -63,12 +63,11 @@ async function registry(page: Page, actions: string[]) {
       return route.fulfill({
         json: {
           access: tenantSubject,
-          node: {
+          deployment: {
             id: "aidash://node",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: versions()
             .filter((version) => version.approval?.enabled)

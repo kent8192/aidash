@@ -25,12 +25,11 @@ test.beforeEach(async ({ page }) => {
       return route.fulfill({
         json: {
           access: tenantSubject,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [
             {

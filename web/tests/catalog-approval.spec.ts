@@ -57,12 +57,11 @@ async function dashboard(
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://node",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: versions()
             .filter(

@@ -382,7 +382,7 @@ function NodeView({
               ? ([[t("node"), selected.label]] as [string, string][])
               : []),
             [t("endpoint"), data.node.endpoint, true],
-            [t("protocol"), data.node.protocol_version, true],
+            [t("protocol"), data.deployment.protocol_version, true],
           ]}
         />
       </Panel>

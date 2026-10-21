@@ -177,12 +177,11 @@ export function meshScene(now = Date.now()) {
   return {
     data: {
       access: { kind: "deployment_administrator" },
-      node: {
+      deployment: {
         id: home,
         endpoint: "http://localhost",
         protocol_version: "0.1",
-        capabilities: [],
-        clusters: [],
+        key: null,
       },
       registry,
       workspaces,

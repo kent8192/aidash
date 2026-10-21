@@ -63,7 +63,7 @@ async function setup(
     if (path === "/api/events/stream") return route.abort();
     const json =
       path === "/api/session"
-        ? { access: data.access, node_id: data.node.id }
+        ? { access: data.access, node_id: data.deployment.id }
         : path === "/api/state"
           ? data
           : path === "/api/discover"

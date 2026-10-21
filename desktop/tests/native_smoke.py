@@ -147,7 +147,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.reply(
                 value={
                     "access": {"kind": "deployment_administrator"},
-                    "node_id": SCENE["data"]["node"]["id"],
+                    "node_id": SCENE["data"]["deployment"]["id"],
                 }
             )
         elif path.path == "/api/state":

@@ -146,7 +146,7 @@ test("Deployment Administrator tenant input distinguishes invalid IDs from overs
     return route.fulfill({
       json:
         path === "/api/session"
-          ? { access: scene.data.access, node_id: scene.data.node.id }
+          ? { access: scene.data.access, node_id: scene.data.deployment.id }
           : path === "/api/state"
             ? scene.data
             : path === "/api/discover"
@@ -222,7 +222,7 @@ test("subject expands only direct authorized peers and clears remote details on 
     return route.fulfill({
       json:
         path === "/api/session"
-          ? { access: scene.data.access, node_id: scene.data.node.id }
+          ? { access: scene.data.access, node_id: scene.data.deployment.id }
           : path === "/api/state"
             ? scene.data
             : path === "/api/discover"
@@ -406,7 +406,7 @@ test("three authorized execution Nodes share one Home Workspace without merging 
     return route.fulfill({
       json:
         path === "/api/session"
-          ? { access: scene.data.access, node_id: scene.data.node.id }
+          ? { access: scene.data.access, node_id: scene.data.deployment.id }
           : path === "/api/state"
             ? scene.data
             : path === "/api/discover"
@@ -421,7 +421,7 @@ test("three authorized execution Nodes share one Home Workspace without merging 
   await page.getByRole("button", { name: "Expand node" }).first().click();
   await page.getByRole("button", { name: "Expand node" }).click();
   await expect(page.locator(".mesh-region-execution-label")).toHaveCount(3);
-  for (const node of [scene.data.node.id, firstPeer, secondPeer])
+  for (const node of [scene.data.deployment.id, firstPeer, secondPeer])
     await expect(
       page.locator(".mesh-region-execution-label").filter({ hasText: node }),
     ).toBeVisible();
@@ -599,7 +599,7 @@ test("compact Japanese view replaces page windows and clears outages and forged 
     return route.fulfill({
       json:
         path === "/api/session"
-          ? { access: scene.data.access, node_id: scene.data.node.id }
+          ? { access: scene.data.access, node_id: scene.data.deployment.id }
           : path === "/api/state"
             ? scene.data
             : path === "/api/discover"

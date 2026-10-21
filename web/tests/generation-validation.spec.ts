@@ -72,12 +72,11 @@ for (const context of [
         await route.fulfill({
           json: {
             access: subject,
-            node: {
+            deployment: {
               id: "aidash://test",
               endpoint: "http://localhost",
               protocol_version: "0.1",
-              capabilities: [],
-              clusters: [],
+              key: null,
             },
             registry: [
               model,

@@ -78,12 +78,11 @@ async function setup(
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: deployment,
             endpoint: "http://localhost",
             protocol_version: "0.4",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [

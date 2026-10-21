@@ -10,11 +10,12 @@ import {
   meshPositions,
   nodeEvents,
 } from "../src/collaboration/mesh-model.ts";
+import { nodeView } from "../src/node-selection.ts";
 import { meshScene } from "../tests/mesh-scene.mjs";
 const now = Date.parse("2026-09-24T09:00:00Z");
 const scene = () => meshScene(now);
 const project = (s) =>
-  buildMeshGraph(s.data, {
+  buildMeshGraph(nodeView(s.data, undefined), {
     channel: "product-lab",
     now,
   });
@@ -228,7 +229,10 @@ test("subject views cannot join discovery or remote runs, and renderers receive 
 });
 test("an unavailable workspace never falls back to another workspace's activity", () => {
   const s = scene();
-  const g = buildMeshGraph(s.data, { channel: "revoked", now });
+  const g = buildMeshGraph(nodeView(s.data, undefined), {
+    channel: "revoked",
+    now,
+  });
   assert.ok(
     !g.nodes.some((n) =>
       [
@@ -307,7 +311,7 @@ test("time windows filter completed activity, retain active execution and match 
   const s = scene();
   s.data.runs[1].updated_at = "2020-01-01T00:00:00Z";
   s.data.runs[0].updated_at = "2020-01-01T00:00:00Z";
-  const g = buildMeshGraph(s.data, { hours: 24, now });
+  const g = buildMeshGraph(nodeView(s.data, undefined), { hours: 24, now });
   assert.equal(node(g, "researcher").status, undefined);
   assert.equal(node(g, "planner").status, "THINKING");
   s.data.events.push({
@@ -316,7 +320,7 @@ test("time windows filter completed activity, retain active execution and match 
     data: { task_id: "t-1010" },
   });
   assert.ok(
-    !nodeEvents(node(g, "t-101"), g, s.data, 1, now).some(
+    !nodeEvents(node(g, "t-101"), g, nodeView(s.data, undefined), 1, now).some(
       (e) => e.id === "wrong-task",
     ),
   );
@@ -345,9 +349,14 @@ test("inspector events stay within the selected workspace for agents and the loc
   ]) {
     assert.ok(selected);
     assert.ok(
-      !nodeEvents(selected, graph, s.data, 24, now, "product-lab").some(
-        (e) => e.id === "other-event",
-      ),
+      !nodeEvents(
+        selected,
+        graph,
+        nodeView(s.data, undefined),
+        24,
+        now,
+        "product-lab",
+      ).some((e) => e.id === "other-event"),
     );
   }
 });
@@ -403,7 +412,13 @@ test("matches server event envelopes for task creation, completion, publication 
     { ...event, id: "dependency", kind: "task.created", data: s.data.tasks[1] },
   ];
   assert.deepEqual(
-    nodeEvents(node(graph, task.id), graph, s.data, 24, now).map((e) => e.id),
+    nodeEvents(
+      node(graph, task.id),
+      graph,
+      nodeView(s.data, undefined),
+      24,
+      now,
+    ).map((e) => e.id),
     ["created"],
   );
 });
@@ -428,9 +443,13 @@ test("conversation creation events appear only in the matching conversation insp
     conversation.id,
   );
   assert.deepEqual(
-    nodeEvents(node(graph, conversation.id), graph, s.data, 24, now).map(
-      (e) => e.id,
-    ),
+    nodeEvents(
+      node(graph, conversation.id),
+      graph,
+      nodeView(s.data, undefined),
+      24,
+      now,
+    ).map((e) => e.id),
     ["created"],
   );
 });
@@ -468,7 +487,7 @@ test("Run inspector excludes sibling executions and task-only events", () => {
     nodeEvents(
       node(graph, selected.id),
       graph,
-      s.data,
+      nodeView(s.data, undefined),
       24,
       now,
       "product-lab",

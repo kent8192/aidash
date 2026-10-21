@@ -128,7 +128,7 @@ export async function startFixture() {
         case "/api/session":
           return reply(200, {
             access: { kind: "deployment_administrator" },
-            node_id: scene.data.node.id,
+            node_id: scene.data.deployment.id,
           });
         case "/api/state":
           return reply(200, scene.data);

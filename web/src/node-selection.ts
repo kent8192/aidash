@@ -1,5 +1,5 @@
 import type { NodeRecord } from "./generated/models";
-import type { State } from "./types";
+import type { State, TenantState } from "./types";
 
 /** What the dashboard knows about one Node of the signed-in Tenant. */
 export type TenantNode = Pick<
@@ -37,21 +37,22 @@ export function chooseNode<Node extends Pick<TenantNode, "name" | "default">>(
  * address, because every comparison of a Run's Home with the local Node means
  * that Node. The Registry belongs to the Tenant and stays whole.
  *
- * Without a Node (a Deployment Administrator has no Tenant) State is returned
- * unchanged.
+ * Without a Node (a Deployment Administrator has no Tenant) nothing is
+ * filtered, and `node.id` is the Deployment's.
  */
 export function nodeView(
-  state: State,
+  state: TenantState,
   node: Pick<TenantNode, "name" | "address"> | undefined,
 ): State {
-  if (!node) return state;
+  const { id: deployment, endpoint } = state.deployment;
+  if (!node) return { ...state, node: { id: deployment, endpoint } };
   const workspaces = state.workspaces.filter(
     (workspace) => workspace.node === node.name,
   );
   const ids = new Set(workspaces.map((workspace) => workspace.id));
   return {
     ...state,
-    node: { ...state.node, id: node.address },
+    node: { id: node.address, endpoint },
     workspaces,
     tasks: state.tasks.filter((task) => ids.has(task.workspace_id)),
     runs: state.runs.filter((run) => run.node === node.name),
@@ -66,27 +67,6 @@ export function nodeView(
     ),
     artifacts: state.artifacts.filter((artifact) =>
       ids.has(artifact.workspace_id),
-    ),
-  };
-}
-
-/**
- * Discovery names this Deployment's own agents by the Deployment (`node_id` is
- * `aidash://<deployment>`) and every other Node by its address. Sent from
- * `node`, the agents of the Deployment are that Node's, so they take its
- * address, the identity the dashboard compares with `State.node.id`.
- */
-export function localizeDiscovery<
-  Found extends { agents: readonly { node_id: string }[] },
->(found: Found, node: Pick<TenantNode, "address"> | undefined): Found {
-  if (!node) return found;
-  const deployment = deploymentId(node.address);
-  return {
-    ...found,
-    agents: found.agents.map((agent) =>
-      agent.node_id === deployment
-        ? { ...agent, node_id: node.address }
-        : agent,
     ),
   };
 }

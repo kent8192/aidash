@@ -13,6 +13,7 @@ import {
   marketplaceShare,
   marketplaceConsent,
   marketplaceActivate,
+  authorizationCatalog,
 } from "./generated/aidash";
 import type {
   MarketplaceAudience,
@@ -26,7 +27,7 @@ import {
   authenticatedFetch,
   dashboardContext,
 } from "./transport";
-import { useNodes, catalogBindings } from "./nodes";
+import { useNodes } from "./nodes";
 import { Badge as StatusBadge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import {
@@ -300,7 +301,9 @@ export function ScopedMarketplace({
   const activate = (item: MarketplaceInstallationRevision, enabled: boolean) =>
     run(async () => {
       if (!home) throw new Error(t("nodeUnavailable"));
-      const binding = (await catalogBindings(tenant, home.name)).find(
+      const binding = (
+        await authorizationCatalog(tenant, { node: home.name })
+      ).find(
         (value) =>
           value.entry_id === item.entry.id &&
           value.entry_version === item.entry.version,

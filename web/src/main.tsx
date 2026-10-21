@@ -804,7 +804,7 @@ function Dashboard({
       request,
       node:
         nodes.nodes.find((value) => value.name === owner?.node)?.address ??
-        everything?.node.id ??
+        everything?.deployment.id ??
         "",
       workspace:
         owner && nodes.nodes.length > 1

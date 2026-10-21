@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   chooseNode,
-  localizeDiscovery,
   nodeLabel,
   nodeStorageKey,
   nodeView,
@@ -36,7 +35,12 @@ test("each Tenant remembers its own Node", () => {
 
 const state = () => ({
   access: { kind: "subject", tenant: "acme", subject: "ryota" },
-  node: { id: "aidash://home", endpoint: "http://home", clusters: [] },
+  deployment: {
+    id: "aidash://home",
+    endpoint: "http://home",
+    protocol_version: "0.4",
+    key: null,
+  },
   registry: [{ id: "agent" }],
   workspaces: [
     { id: "w1", node: "first" },
@@ -98,9 +102,12 @@ test("a Node's view holds only what its Workspaces own, and names the Node", () 
   assert.deepEqual(view.registry, [{ id: "agent" }]);
 });
 
-test("a Deployment Administrator has no Node, so State stays whole", () => {
+test("a Deployment Administrator has no Node, so State stays whole and names the Deployment", () => {
   const whole = state();
-  assert.equal(nodeView(whole, undefined), whole);
+  const view = nodeView(whole, undefined);
+  assert.deepEqual(view.node, { id: "aidash://home", endpoint: "http://home" });
+  assert.deepEqual(view.workspaces, whole.workspaces);
+  assert.deepEqual(view.runs, whole.runs);
 });
 
 test("a Node is shown by its label, or by its name until the list arrives", () => {
@@ -117,22 +124,4 @@ test("a Node address splits into its Deployment and Node name", () => {
   assert.equal(parseNodeAddress("aidash://home"), null);
   assert.equal(parseNodeAddress("aidash://home/a/b"), null);
   assert.equal(parseNodeAddress("https://home/a"), null);
-});
-
-test("sent from a Node, the Deployment's own agents are that Node's", () => {
-  const found = {
-    agents: [
-      { node_id: "aidash://home", entity: { id: "local" } },
-      { node_id: "aidash://home/sibling", entity: { id: "sibling" } },
-      { node_id: "aidash://away/other", entity: { id: "away" } },
-    ],
-    errors: [{ node_id: "aidash://away/down", error: "refused" }],
-  };
-  const localized = localizeDiscovery(found, nodes[1]);
-  assert.deepEqual(
-    localized.agents.map((agent) => agent.node_id),
-    ["aidash://home/second", "aidash://home/sibling", "aidash://away/other"],
-  );
-  assert.deepEqual(localized.errors, found.errors);
-  assert.equal(localizeDiscovery(found, undefined), found);
 });

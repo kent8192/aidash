@@ -7,6 +7,7 @@ import {
   authorizationPeerMappings,
   authorizationPeerMappingHistory,
   authorizationSetPeerMapping,
+  tenantNodeRegistrations,
 } from "./generated/aidash";
 import type {
   Credential,
@@ -15,7 +16,7 @@ import type {
 } from "./generated/models";
 import { ApiError } from "./transport";
 import { nodeLabel } from "./node-selection";
-import { registrationsPage, useNodes, useTenantNodes } from "./nodes";
+import { useNodes, useTenantNodes } from "./nodes";
 import { Badge, Field, Modal, Panel, useI18n } from "./ui";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -56,7 +57,8 @@ function NodeFields({
   const node = chosen ?? (creating ? selected?.name : editing.node) ?? "";
   const registrations = useQuery({
     queryKey: ["node-registrations", tenant, node, "choices"],
-    queryFn: () => registrationsPage(tenant, node, 0, 200),
+    queryFn: () =>
+      tenantNodeRegistrations(tenant, node, { offset: 0, limit: 200 }),
     enabled: creating && node !== "",
     retry: false,
   });

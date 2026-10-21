@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
-import { marketplaceApproveSet } from "./generated/aidash";
+import {
+  authorizationCatalog,
+  marketplaceApproveSet,
+} from "./generated/aidash";
 import type {
   ApprovalSet,
   MarketplaceInstallationRevision,
 } from "./generated/models";
 import { Button } from "./components/ui/button";
 import { ApiError } from "./transport";
-import { catalogBindings, useNodes } from "./nodes";
+import { useNodes } from "./nodes";
 import { Panel, useI18n } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
@@ -45,7 +48,7 @@ export function ApprovalSetReview({
   const { home } = useNodes();
   const catalog = useQuery({
     queryKey: [...context, "review-catalog", home?.name],
-    queryFn: () => catalogBindings(tenant, home!.name),
+    queryFn: () => authorizationCatalog(tenant, { node: home!.name }),
     enabled: home !== undefined,
     retry: false,
     staleTime: 0,

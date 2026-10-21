@@ -76,12 +76,11 @@ for (const locale of ["en-US", "ja-JP"]) {
       route.fulfill({
         json: {
           access: tenantSubject,
-          node: {
+          deployment: {
             id: "aidash://home",
             endpoint: "http://localhost",
             protocol_version: "0.2",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry,
           workspaces: [],

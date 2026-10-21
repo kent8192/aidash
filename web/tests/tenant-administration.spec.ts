@@ -43,12 +43,11 @@ test("a Tenant Administrator is not offered controls the server marks as its own
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -145,12 +144,11 @@ test("an approval submits only the proposed groups that are still assignable", a
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -250,12 +248,11 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
       return route.fulfill({
         json: {
           access: administrator,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -375,12 +372,11 @@ test("deleting the Tenant needs its name typed, and leaving asks to confirm", as
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -492,12 +488,11 @@ test("a Deployment Administrator restores what the server marks restorable and l
       return route.fulfill({
         json: {
           access: administrator,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -583,12 +578,11 @@ test("a member issues its own API token, and a policy reader simulates without r
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -692,12 +686,11 @@ test("a policy reader allowed to issue credentials but not to list them can stil
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],

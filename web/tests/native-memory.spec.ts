@@ -60,12 +60,11 @@ async function fixture(
   };
   const state = {
     access,
-    node: {
+    deployment: {
       id: bank.home,
       endpoint: "http://localhost",
       protocol_version: "0.1",
-      capabilities: [],
-      clusters: [],
+      key: null,
     },
     workspaces: [
       {

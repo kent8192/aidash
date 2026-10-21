@@ -6,20 +6,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { tenantNodes } from "./generated/aidash";
-import type {
-  Binding,
-  Discovery,
-  NodeRegistrationRevision,
-  RegistrationRecord,
-  RequestSearch,
-} from "./generated/models";
-import {
-  chooseNode,
-  localizeDiscovery,
-  nodeStorageKey,
-  type TenantNode,
-} from "./node-selection";
+import { discover, tenantNodes } from "./generated/aidash";
+import { chooseNode, nodeStorageKey, type TenantNode } from "./node-selection";
 import { ApiError, apiFetch } from "./transport";
 
 /** The Nodes of the signed-in Tenant and the one this browser works in. */
@@ -108,67 +96,11 @@ export function useNodes(): NodeSelection {
   return useContext(NodeSelectionContext);
 }
 
-/**
- * `POST /api/discover`, sent from `node`: a Tenant's Node discovers what it
- * reaches, so the Node the person works in is the sending one. The contract
- * does not describe this query parameter, which is why the generated client
- * cannot send it.
- */
-export function discoverFrom(
-  node: string | undefined,
-  search: RequestSearch = {},
-): Promise<Discovery> {
-  return apiFetch<Discovery>(
-    `/api/discover${node ? `?node=${encodeURIComponent(node)}` : ""}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(search),
-    },
-  );
-}
-
 /** The query that reads discovery for the sending Node, so every view of it
- *  shares one cache entry per Node. */
+ *  shares one cache entry per Node. Its local agents carry that Node's address. */
 export function discoveryQuery(node: TenantNode | undefined) {
   return {
     queryKey: ["discovery", node?.name ?? null] as const,
-    queryFn: async () =>
-      localizeDiscovery(await discoverFrom(node?.name), node),
+    queryFn: () => discover({}, node ? { node: node.name } : undefined),
   };
-}
-
-/** `GET /api/authorization/{tenant}/catalog`: the Catalog Approvals of one
- *  Node. The contract does not describe the required `node` parameter. */
-export function catalogBindings(
-  tenant: string,
-  node: string,
-): Promise<Binding[]> {
-  return apiFetch<Binding[]>(
-    `/api/authorization/${encodeURIComponent(tenant)}/catalog?node=${encodeURIComponent(node)}`,
-  );
-}
-
-/** The generated client leaves out the paging parameters of the two reads of
- *  Node Registrations. `limit` is at most 200. */
-export function registrationsPage(
-  tenant: string,
-  node: string,
-  offset: number,
-  limit: number,
-): Promise<RegistrationRecord[]> {
-  return apiFetch<RegistrationRecord[]>(
-    `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registrations?offset=${offset}&limit=${limit}`,
-  );
-}
-
-export function registrationHistoryPage(
-  tenant: string,
-  node: string,
-  after: number,
-  limit: number,
-): Promise<NodeRegistrationRevision[]> {
-  return apiFetch<NodeRegistrationRevision[]>(
-    `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registration-history?after=${after}&limit=${limit}`,
-  );
 }

@@ -4,12 +4,11 @@ import { installBearerDashboard } from "./auth-fixture";
 import { registryVersion } from "./registry-fixture";
 
 function fixture(reference = false) {
-  const node = {
+  const deployment = {
     id: "aidash://home",
     endpoint: "http://localhost",
     protocol_version: "0.2",
-    capabilities: [],
-    clusters: [],
+    key: null,
   };
   const component = (id: string, kind: string, name: string, config = {}) => ({
     id,
@@ -95,7 +94,7 @@ function fixture(reference = false) {
   }));
   const data = {
     access: { kind: "deployment_administrator" },
-    node,
+    deployment,
     workspaces,
     tasks,
     runs,
@@ -288,7 +287,7 @@ export async function setup(
         kind,
         created_at: `2026-09-24T${time}Z`,
         data: payload,
-        node_id: data.node.id,
+        node_id: data.deployment.id,
         sequence: index + 1,
         workspace_id: "workspace-one",
       }))
@@ -327,7 +326,7 @@ export async function setup(
         {
           kind: "memory",
           target: {
-            registry_deployment: data.node.id,
+            registry_deployment: data.deployment.id,
             id: "native-memory",
             version: "1.0.0",
           },
@@ -361,7 +360,7 @@ export async function setup(
         {
           kind: "bundle",
           target: {
-            registry_deployment: data.node.id,
+            registry_deployment: data.deployment.id,
             id: "approved-host-tools",
             version: "1.0.0",
           },
@@ -546,7 +545,7 @@ export async function setup(
       ? { kind: "subject", tenant: "acme", subject: "alice" }
       : data.access;
     if (path === "/api/session")
-      return route.fulfill({ json: { access, node_id: data.node.id } });
+      return route.fulfill({ json: { access, node_id: data.deployment.id } });
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
     if (path === "/api/tenants/acme/administration")
@@ -595,7 +594,7 @@ export async function setup(
             .map((entity) => ({
               node_id: options.remoteAssignment
                 ? "aidash://remote"
-                : data.node.id,
+                : data.deployment.id,
               entity:
                 options.remoteAssignment && options.nativeMemory
                   ? {

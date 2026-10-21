@@ -36,17 +36,19 @@ import {
 import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
 
-/** Every version in the signed-in subject's Tenant that it may read, approved
- *  or not. A Deployment Administrator reads no Tenant's Registry (ADR 0029). */
+/** Every version in the signed-in subject's Tenant that it may read, with the
+ *  approvals of the Node it works in. A Deployment Administrator reads no
+ *  Tenant's Registry (ADR 0029). */
 export function useRegistryVersions(access: State["access"]) {
   const subject = access.kind === "subject" ? access : null;
+  const node = useNodes().selected?.name;
   return useQuery({
-    queryKey: ["registry-versions", subject?.tenant, subject?.subject],
+    queryKey: ["registry-versions", subject?.tenant, subject?.subject, node],
     queryFn: async () => {
       const all: RegistryVersion[] = [];
       let offset: number | null = 0;
       while (offset != null) {
-        const page = await registryVersions({ offset });
+        const page = await registryVersions({ node: node!, offset });
         if (!Array.isArray(page.versions))
           throw new Error("Unexpected Registry page");
         all.push(...page.versions);
@@ -54,7 +56,7 @@ export function useRegistryVersions(access: State["access"]) {
       }
       return all;
     },
-    enabled: subject !== null,
+    enabled: subject !== null && node !== undefined,
   });
 }
 
@@ -163,9 +165,9 @@ export function CatalogApprovalSection({
   const client = useQueryClient();
   const label = useEntryLabel(versions.map((item) => item.entry));
   const { tenant, can, assignable } = useTenantActions(access);
-  // The versions list reports the default Node's approvals, so that is the
+  // The versions list reports the selected Node's approvals, so that is the
   // Node a decision here applies to.
-  const { home } = useNodes();
+  const { selected } = useNodes();
   const [chosen, setChosen] = useState<string[]>();
   const [closure, setClosure] = useState<Closure>();
   const [busy, setBusy] = useState(false);
@@ -178,7 +180,7 @@ export function CatalogApprovalSection({
   const installed = !!entry.installation;
   const decides =
     tenant !== null &&
-    home !== undefined &&
+    selected !== undefined &&
     can("catalog.approve") &&
     version.needs_approval &&
     !installed;
@@ -221,14 +223,14 @@ export function CatalogApprovalSection({
     decide(() =>
       authorizationSetCatalog(path, {
         ...approvalRequest(version, true, sentGroups),
-        node: home!.name,
+        node: selected!.name,
       }),
     );
   const withdraw = () =>
     decide(() =>
       authorizationSetCatalog(path, {
         ...approvalRequest(version, false),
-        node: home!.name,
+        node: selected!.name,
       }),
     );
   const approveClosure = (needed: Closure) =>
@@ -238,7 +240,7 @@ export function CatalogApprovalSection({
           ...needed.dependencies.map((item) => approvalRequest(item, true)),
           approvalRequest(version, true, sentGroups),
         ],
-        node: home!.name,
+        node: selected!.name,
       }),
     );
   const subheading = "text-xs font-semibold text-foreground";

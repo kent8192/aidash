@@ -28,7 +28,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "./components/ui/sheet";
-import type { State } from "./types";
+import type { TenantState } from "./types";
 import type { ApprovalCard } from "./generated/models";
 import { approvalNotice } from "./research";
 import type { Locale } from "./ui";
@@ -84,22 +84,22 @@ const iconTone = {
   failed: "text-destructive",
 };
 function frame(
-  data: State | undefined,
+  data: TenantState | undefined,
   approvals: ApprovalCard[] | undefined,
   ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
   const scopes = data.workspaces.map((workspace) =>
-    JSON.stringify([data.node.id, workspace.id]),
+    JSON.stringify([data.deployment.id, workspace.id]),
   );
   scopes.push(
     ...data.human_requests.map((request) =>
-      JSON.stringify([data.node.id, request.workspace_id]),
+      JSON.stringify([data.deployment.id, request.workspace_id]),
     ),
   );
   const entries: NoticeEntry[] = data.tasks.map((task) => ({
-    key: JSON.stringify([data.node.id, "task", task.id]),
-    scope: JSON.stringify([data.node.id, task.workspace_id]),
+    key: JSON.stringify([data.deployment.id, "task", task.id]),
+    scope: JSON.stringify([data.deployment.id, task.workspace_id]),
     signature: `${task.revision}:${task.status}`,
     kind:
       task.status === "FAILED"
@@ -114,13 +114,13 @@ function frame(
     target: {
       kind: "task",
       id: task.id,
-      node: data.node.id,
+      node: data.deployment.id,
       workspace: task.workspace_id,
     },
   }));
   const requests = data.human_requests.map((request) => ({
     request,
-    node: data.node.id,
+    node: data.deployment.id,
   }));
   for (const { request, node } of requests)
     entries.push({
@@ -135,7 +135,7 @@ function frame(
             : "input",
       detail: request.prompt.slice(0, 180),
       workspaceTitle:
-        node === data.node.id
+        node === data.deployment.id
           ? (data.workspaces.find(
               (workspace) => workspace.id === request.workspace_id,
             )?.title ?? node)
@@ -150,11 +150,11 @@ function frame(
   // Capability approvals addressed to this person. Their scope appears only
   // once the inbox has loaded, so approvals already waiting stay quiet.
   if (approvals) {
-    const scope = JSON.stringify([data.node.id, "approvals"]);
+    const scope = JSON.stringify([data.deployment.id, "approvals"]);
     scopes.push(scope);
     for (const approval of approvals)
       entries.push({
-        key: JSON.stringify([data.node.id, "approval", approval.id]),
+        key: JSON.stringify([data.deployment.id, "approval", approval.id]),
         scope,
         signature: `${approval.revision}:${approval.state}`,
         kind: approval.state === "pending" ? "approval" : null,
@@ -163,7 +163,7 @@ function frame(
         target: {
           kind: "approval",
           id: approval.id,
-          node: data.node.id,
+          node: data.deployment.id,
           workspace: "",
         },
       });
@@ -212,7 +212,7 @@ export function NotificationProvider({
   onSelect,
   children,
 }: {
-  data: State | undefined;
+  data: TenantState | undefined;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
   locale: Locale;

@@ -27,12 +27,11 @@ function entity(
 function fixture() {
   return {
     access: tenantSubject,
-    node: {
+    deployment: {
       id: "aidash://test",
       endpoint: "http://localhost",
       protocol_version: "0.1",
-      capabilities: [],
-      clusters: [],
+      key: null,
     },
     registry: [
       entity("researcher", "agent", "Researcher", {
@@ -116,7 +115,7 @@ async function setup(page: Page, locale = "en-US") {
     if (path === "/api/events/stream") return route.abort();
     const json =
       path === "/api/session"
-        ? { access: data.access, node_id: data.node.id }
+        ? { access: data.access, node_id: data.deployment.id }
         : path === "/api/state"
           ? data
           : path === "/api/registry/versions"
