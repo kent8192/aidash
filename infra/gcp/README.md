@@ -252,17 +252,18 @@ runtime secrets, and secret values do not enter Terraform state.
 
 ## Operation
 
-Run **GCP environments** using workflow ref `main`; `source_ref` separately
-selects the deployed source. A manual create/resume first checks CI. Examples:
+Run **GCP environments** using workflow ref `develop/0.1.0`, the protected
+`automation_branch` that the nonproduction WIF provider trusts; `source_ref`
+separately selects the deployed source. A manual create/resume first checks CI. Examples:
 
 ```sh
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=create -f environment=develop
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=create -f environment=test -f source_ref=develop/0.1.0
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=resume -f environment=test
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=stop -f environment=test
 ```
 
