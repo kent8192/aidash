@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import controller
 from cloud import Terraform as NativeTerraform
 from kubefake import PROJECT, FakeCluster
-from policy import IMAGE_KINDS, transition
+from policy import IMAGE_KINDS, Refused, transition
 
 
 SHA = "a" * 40
@@ -74,6 +74,20 @@ class ConfigurationTests(unittest.TestCase):
                     value["byok_project_id"] = byok
                 with patch.dict(os.environ, {"AIDASH_GCP_CONFIG": json.dumps(value)}):
                     self.assertEqual(controller.load_config(), value)
+
+
+class ProductionSourceTests(unittest.TestCase):
+    def verify(self, trusted_sha):
+        entry = {"sha": SHA, "main_sha": "b" * 40,
+                 "release": {"source_sha": SHA, "trusted_sha": trusted_sha, "images": deepcopy(IMAGES)}}
+        config = dict(CONFIG, staging_project_id=PROJECT)
+        with patch.object(controller.delivery, "authorize_production", return_value={"sha": SHA}):
+            controller.verify_source(config, "production", entry)
+
+    def test_retained_bundle_must_be_built_from_the_release_source(self):
+        self.verify(SHA)
+        with self.assertRaises(Refused):
+            self.verify(TRUSTED)
 
 
 class MemoryStore:
