@@ -2236,6 +2236,7 @@ pub(crate) fn run_message_scope<'a>(
 ) -> crate::apps::federation::remote::repositories::run_messages::Messages<'a> {
 	crate::apps::federation::remote::repositories::run_messages::Messages {
 		federation,
+		node: format!("{}/{}", federation.config.deployment, run.node),
 		run: run.clone(),
 		execution: None,
 	}

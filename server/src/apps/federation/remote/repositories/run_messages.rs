@@ -12,6 +12,9 @@ pub(crate) struct Messages<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) run: RunMetadata,
 	pub(crate) execution: Option<&'a Run>,
+	/// The address of the Node the Run executes at, which names the Run's input
+	/// keys at its Home.
+	pub(crate) node: String,
 }
 impl Messages<'_> {
 	fn home(&self) -> Home {
@@ -21,7 +24,7 @@ impl Messages<'_> {
 #[async_trait]
 impl RunMessages for Messages<'_> {
 	fn node(&self) -> &str {
-		self.federation.config.deployment.as_str()
+		&self.node
 	}
 	fn run(&self) -> &RunMetadata {
 		&self.run
