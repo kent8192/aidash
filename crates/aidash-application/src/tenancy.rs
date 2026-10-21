@@ -135,6 +135,9 @@ pub enum DeploymentScopeReason {
 	/// Purging a deleted Tenant's data after its grace period, and deleting the
 	/// audit history that outlived a purge (ADR 0061).
 	TenantPurge,
+	/// The `demo-data` command and the sign-in step that fulfils Demo
+	/// Reservations. Each Tenant it fills is entered in that Tenant's own scope.
+	DemoData,
 	/// Test fixtures that span Tenants.
 	#[cfg(feature = "test-support")]
 	TestFixture,
@@ -171,6 +174,7 @@ impl DeploymentScopeReason {
 			Self::MarketplaceDistribution => "marketplace-distribution",
 			Self::UsageSampling => "usage-sampling",
 			Self::TenantPurge => "tenant-purge",
+			Self::DemoData => "demo-data",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
 		}
@@ -197,6 +201,7 @@ impl DeploymentScopeReason {
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
 			| Self::TenantPurge
+			| Self::DemoData
 			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -258,6 +263,7 @@ mod tests {
 			DeploymentScopeReason::MarketplaceDistribution,
 			DeploymentScopeReason::UsageSampling,
 			DeploymentScopeReason::TenantPurge,
+			DeploymentScopeReason::DemoData,
 		];
 		let labels = reasons
 			.iter()

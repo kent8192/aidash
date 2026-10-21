@@ -50,6 +50,7 @@ use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
 use crate::apps::execution::serializers::research_providers::ResearchProviderSettings;
 use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
+use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
 use crate::apps::identity::serializers::plan_connections::PlanConnectionSettings;
 use crate::apps::identity::serializers::provider_credentials::ManagedSource;
@@ -68,7 +69,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -182,6 +183,7 @@ fn file_settings_builder(
                 .with_value("keyless_endpoints", serde_json::json!({}))
                 // The Offering supplies each Tenancy Rule left out.
                 .with_value("tenancy", serde_json::json!({}))
+                .with_value("demo_data", serde_json::json!({}))
                 .with_value("plan_connections", serde_json::json!({}))
                 .with_value("research_providers", serde_json::json!({}))
                 .with_value("research_retention", serde_json::json!({}))
