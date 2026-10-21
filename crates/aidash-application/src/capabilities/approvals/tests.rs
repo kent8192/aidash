@@ -62,7 +62,7 @@ impl ApprovalScope for Fake {
 			subject: subject.into(),
 			action: action.into(),
 			resource: target.clone(),
-			environment: json!({}),
+			environment: json!({"transport": "worker"}),
 		}
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
@@ -1493,6 +1493,55 @@ async fn bypass_approves_within_the_ceiling_and_names_the_mode() {
 	assert_eq!(given_by(&scope, approval_id), json!({"mode":"bypass"}));
 	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
 	assert_eq!(scope.records[&approval_id].state, "consumed");
+}
+
+#[rstest::rstest]
+#[case::rule(ApprovalMode::Manual)]
+#[case::bypass(ApprovalMode::Bypass)]
+#[case::auto(ApprovalMode::Auto)]
+#[tokio::test]
+async fn advance_permissions_use_the_same_api_context_as_settings(
+	#[case] mode: ApprovalMode,
+	#[values("api", "worker")] transport: &str,
+) {
+	let mut scope = tool_scope(Value::Null);
+	allow_alice(&mut scope, &["capability.approve"], &["tool"]);
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({
+			"id": "advance-in-transport", "effect": "allow",
+			"subjects": {"ids": ["alice"]},
+			"actions": [APPROVAL_ADVANCE, MODE_AUTO, MODE_BYPASS],
+			"resources": {"kinds": ["tool", MODE_RESOURCE]},
+			"condition": {"op": "eq", "left": {"source": "environment", "path": "/transport"},
+				"right": {"source": "literal", "value": transport}}
+		}))
+		.unwrap(),
+	);
+	let rules = if mode == ApprovalMode::Manual {
+		vec![tool_rule(5, RuleEffect::Allow)]
+	} else {
+		vec![]
+	};
+	let mut scope = advising(scope, mode, rules);
+
+	let result = ask(&mut scope, tool_request("run:0:0", json!({}))).await;
+
+	let allowed = transport == "api";
+	assert_eq!(
+		matches!(result, ToolCallApproval::Approved { .. }),
+		allowed && mode != ApprovalMode::Auto
+	);
+	assert_eq!(
+		scope
+			.records
+			.values()
+			.any(|record| record.data["judge"] == true),
+		allowed && mode == ApprovalMode::Auto
+	);
+	if mode == ApprovalMode::Auto {
+		let run = scope.run.clone();
+		assert_eq!(auto_judging(&mut scope, &run).await.unwrap(), allowed);
+	}
 }
 
 #[tokio::test]

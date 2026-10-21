@@ -36,7 +36,13 @@ test("a hint answer belongs only to the transport, endpoint and tool it was read
 test("a read-only hint prefills the choice and a later answer undoes the prefill", () => {
   const prefilled = replayAfterHint("unsafe", true, false);
   assert.deepEqual(prefilled, { replay: "read_only", prefilled: true });
-  assert.deepEqual(replayAfterHint("read_only", false, prefilled.prefilled), {
+  const refreshed = replayAfterHint(
+    prefilled.replay,
+    true,
+    prefilled.prefilled,
+  );
+  assert.deepEqual(refreshed, { replay: "read_only", prefilled: true });
+  assert.deepEqual(replayAfterHint("read_only", false, refreshed.prefilled), {
     replay: "unsafe",
     prefilled: false,
   });
@@ -47,6 +53,12 @@ test("a read-only hint prefills the choice and a later answer undoes the prefill
 });
 
 test("a person's own read-only choice is never undone by a hint", () => {
+  const confirmed = replayAfterHint("read_only", true, false);
+  assert.deepEqual(confirmed, { replay: "read_only", prefilled: false });
+  assert.equal(
+    replayAfterQueryChange(confirmed.replay, confirmed.prefilled),
+    "read_only",
+  );
   assert.deepEqual(replayAfterHint("read_only", null, false), {
     replay: "read_only",
     prefilled: false,

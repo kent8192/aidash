@@ -3506,6 +3506,42 @@ mod approval_modes {
 		cleanup(f, &url, &schema).await;
 	}
 
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn always_allow_is_hidden_when_the_current_advance_ceiling_forbids_it(
+		#[future(awt)] tool_call_approvals: ToolCallApprovals,
+	) {
+		let t = tool_call_approvals;
+		let (f, url, schema) = t.application.runtime.parts();
+		let (token, run) = claimed_run(&t, &f, |_| {}).await;
+		let app = &t.application.application;
+		let harness = Harness {
+			federation: f.clone(),
+		};
+		let waiting =
+			step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+		let (approval, _) = awaited_tool_call(&waiting).unwrap();
+		amend(&f, |bundle| {
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id": "no-advance", "effect": "deny", "subjects": {"ids": ["alice"]},
+				"actions": ["approval.advance"], "resources": {"kinds": ["tool"]}
+			}));
+		})
+		.await;
+
+		let pending = approval_cards(app, &token, "?state=pending&role=approver").await;
+
+		assert_eq!(pending.len(), 1, "{pending:?}");
+		assert_eq!(pending[0]["viewer_is_approver"], true);
+		assert_eq!(pending[0]["allow_always"], false, "{pending:?}");
+		let (status, refused) = decide_tool_call(app, &token, approval, "allow_always").await;
+		assert_eq!(status, 403, "{refused}");
+		let (status, decided) = decide_tool_call(app, &token, approval, "allow_once").await;
+		assert_eq!(status, 200, "{decided}");
+		drop(t.server);
+		cleanup(f, &url, &schema).await;
+	}
+
 	/// The id of the built-in approval Decider every Tenant Registry holds.
 	const BUILT_IN: &str = aidash_application::registry::system::APPROVAL_DECIDER_ID;
 

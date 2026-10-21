@@ -844,7 +844,8 @@ pub(crate) async fn approval_list(
 			// only the person the Run's delegation chain starts at may make one.
 			let allow_always = state == "pending"
 				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
-				&& data["subjects"][0] == json!(subject);
+				&& data["subjects"][0] == json!(subject)
+				&& super::approvals::can_allow_always(&f.store, &mut access, &row).await?;
 			// Designated approvers see only the scoped card, never Run output.
 			items.push(json!({
 				"id": row.id,

@@ -29,7 +29,11 @@ export function replayAfterHint(
   readOnly: boolean | null | undefined,
   prefilled: boolean,
 ): { replay: string; prefilled: boolean } {
-  if (readOnly === true) return { replay: "read_only", prefilled: true };
+  if (readOnly === true)
+    return {
+      replay: "read_only",
+      prefilled: replay !== "read_only" || prefilled,
+    };
   if (prefilled) return { replay: "unsafe", prefilled: false };
   return { replay, prefilled };
 }

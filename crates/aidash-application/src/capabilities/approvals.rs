@@ -19,7 +19,7 @@ use aidash_domain::{
 		outbound::permitted_origin,
 		records::Record,
 	},
-	policy::{PolicyBundle, Resource, SubjectKind},
+	policy::{Evaluation, PolicyBundle, Resource, SubjectKind},
 };
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
@@ -172,6 +172,19 @@ fn disclosure_rule(
 	}
 }
 
+/// A person's approval authority is evaluated as an API decision, including
+/// when a worker applies their saved rules or mode.
+fn api_evaluation(
+	scope: &dyn ApprovalScope,
+	subject: &str,
+	target: &Resource,
+	action: &str,
+) -> Evaluation {
+	let mut evaluation = scope.evaluation(subject, target, action);
+	evaluation.environment["transport"] = json!("api");
+	evaluation
+}
+
 /// What the Tenant's policy lets `root`, judged alone, approve in advance.
 fn ceiling(
 	scope: &dyn ApprovalScope,
@@ -182,7 +195,7 @@ fn ceiling(
 	let allows = |resource: &Resource, action: &str| {
 		scope
 			.bundle()
-			.evaluate(&scope.evaluation(root, resource, action))
+			.evaluate(&api_evaluation(scope, root, resource, action))
 			.allowed
 	};
 	settings.ceiling(Standing {
@@ -251,7 +264,8 @@ pub async fn auto_judging(scope: &mut dyn ApprovalScope, run: &Run) -> Result<bo
 		.is_none_or(|(action, id)| {
 			scope
 				.bundle()
-				.evaluate(&scope.evaluation(
+				.evaluate(&api_evaluation(
+					scope,
 					root,
 					&scope.resource(MODE_RESOURCE, id, json!({})),
 					action,
@@ -320,8 +334,7 @@ fn ordinary(scope: &dyn ApprovalScope, target: &Resource, action: &str) -> Resul
 	Ok(all)
 }
 fn eligible(scope: &dyn ApprovalScope, subject: &str, requester: &str, target: &Resource) -> bool {
-	let mut evaluation = scope.evaluation(subject, target, "capability.approve");
-	evaluation.environment["transport"] = json!("api");
+	let evaluation = api_evaluation(scope, subject, target, "capability.approve");
 	approvals::approver_eligible(scope.bundle(), &evaluation, requester)
 }
 fn approver(scope: &dyn ApprovalScope, target: &Resource) -> Option<String> {
@@ -506,6 +519,35 @@ async fn load_approval(scope: &mut dyn ApprovalScope, id: Uuid) -> Result<Record
 	}
 	scope.load(id, TOOL_CALL).await
 }
+/// Whether the current reader can turn this pending approval into an allow
+/// rule. The dashboard and decision path share the live advance ceiling.
+pub async fn can_allow_always(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	record: &Record,
+) -> Result<bool> {
+	let owner = scope.principal().to_owned();
+	if record.state != "pending"
+		|| !KINDS.contains(&record.kind.as_str())
+		|| record.data["subjects"][0].as_str() != Some(owner.as_str())
+		|| record.data["approver"] != owner
+		|| record.data["run_id"] != json!(run.id)
+		|| record.expires_at.is_none_or(|t| t <= Utc::now())
+		|| run.control == RunControl::Cancelled
+		|| run.phase.is_terminal()
+	{
+		return Ok(false);
+	}
+	let Some(origin) = record.data["targets"][0].as_str() else {
+		return Ok(false);
+	};
+	let (target, _) = target_of(scope, record, origin, run.id);
+	let Some(settings) = scope.approval_settings(run).await? else {
+		return Ok(false);
+	};
+	Ok(ceiling(scope, &settings, &owner, &target).may_approve)
+}
+
 pub async fn decide(
 	scope: &mut dyn ApprovalScope,
 	id: Uuid,
@@ -571,18 +613,11 @@ pub async fn decide(
 			}
 			// Only the person the chain starts at can give an approval in advance.
 			let owner = scope.principal().to_owned();
-			if record.data["subjects"][0].as_str() != Some(owner.as_str()) {
-				return Err(Error::Forbidden);
-			}
 			// A rule approves in advance only within the ceiling `resolve`
 			// applies to it. Without `approval.advance` on this resource the
 			// rule would be stored and ignored, so "Always allow" cannot mean
 			// what it says: refuse it and leave "Allow once" available.
-			let settings = scope
-				.approval_settings(&run)
-				.await?
-				.ok_or(Error::Forbidden)?;
-			if !ceiling(scope, &settings, &owner, &target).may_approve {
+			if !can_allow_always(scope, &run, &record).await? {
 				return Err(Error::Forbidden);
 			}
 			let (kind, name) = rule_of(&record)?;

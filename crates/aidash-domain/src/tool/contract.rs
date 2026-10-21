@@ -266,16 +266,30 @@ impl ToolContract {
 		Ok(crate::registry::rules::digest(&serde_json::to_value(self)?))
 	}
 	/// The contract a Run pinned under `digest`, if any. A Run admitted before
-	/// its provider declared Concurrency safety keeps that operation Sequential.
+	/// its provider declared Concurrency safety keeps that operation Sequential;
+	/// a legacy Read-only definition keeps its approval-gated Unsafe contract.
 	pub fn pinned(mut self, digest: &str) -> crate::Result<Option<Self>> {
 		if self.digest()? == digest {
 			return Ok(Some(self));
 		}
-		if self.behavior.concurrency.is_sequential() {
-			return Ok(None);
+		if !self.behavior.concurrency.is_sequential() {
+			self.behavior.concurrency = Concurrency::Sequential;
+			if self.digest()? == digest {
+				return Ok(Some(self));
+			}
 		}
-		self.behavior.concurrency = Concurrency::Sequential;
-		Ok((self.digest()? == digest).then_some(self))
+		// Existing HTTP/MCP versions could already declare `replay: read_only`
+		// before that declaration changed their effect and approval gate. Only
+		// restore this older contract when the Run pinned its exact digest.
+		if matches!(self.identity, ToolIdentity::Registry(_)) && self.behavior.read_only_operation {
+			self.behavior.effect = ToolEffect::Unsafe;
+			self.behavior.tool_call_approval = true;
+			self.behavior.read_only_operation = false;
+			if self.digest()? == digest {
+				return Ok(Some(self));
+			}
+		}
+		Ok(None)
 	}
 	/// A pinned plugin tool is Unsafe, Sequential and never exposed remotely. Declaring it
 	/// Read-only removes the approval only; the effect stays Unsafe like a Tenant tool's.
@@ -882,6 +896,53 @@ mod tests {
 	}
 	const PINNED_WORKSPACE_READ_DIGEST: &str =
 		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
+	#[test]
+	fn admitted_read_only_definitions_keep_their_approval_gated_contract() {
+		// Persisted contract shape before Read-only declarations changed approval
+		// behavior. Both HTTP and MCP definitions pinned these same bytes.
+		let legacy = serde_json::json!({
+			"identity": {"Registry": {"id": "tool", "version": "1"}},
+			"authorization": {"flag": null, "core": null, "requirements": []},
+			"behavior": {
+				"effect": "Unsafe", "fitting": null, "continuation": "Ordinary",
+				"catch_up": false, "media_pending": false, "yields_model_media": false,
+				"tool_call_approval": true
+			},
+			"disclosure": "External", "remote_exposure": true
+		});
+		let digest = crate::registry::rules::digest(&legacy);
+		for config in [
+			ToolConfig::Http {
+				endpoint: "https://example.invalid".into(),
+				replay: "read_only".into(),
+			},
+			ToolConfig::Mcp {
+				endpoint: "https://example.invalid".into(),
+				tool_name: "lookup".into(),
+				replay: "read_only".into(),
+				idempotency_argument: None,
+			},
+		] {
+			let current = ToolContract::registry(
+				EntityRef {
+					id: "tool".into(),
+					version: "1".into(),
+				},
+				&config,
+			);
+			let pinned = current
+				.clone()
+				.pinned(&digest)
+				.unwrap()
+				.expect("the admitted Run keeps its contract");
+			assert_eq!(serde_json::to_value(pinned).unwrap(), legacy);
+			assert_eq!(
+				current.clone().pinned(&current.digest().unwrap()).unwrap(),
+				Some(current.clone())
+			);
+			assert!(current.pinned("sha256:unknown").unwrap().is_none());
+		}
+	}
 	#[test]
 	fn only_a_declared_read_only_operation_needs_no_tool_call_approval() {
 		let reference = EntityRef {
