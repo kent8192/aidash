@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 /// The Tenant's default Node address, which a manifest names as coordinator and participant.
 async fn node(app: &EndpointFixture) -> String {
-	crate::endpoint::default_node(&app.runtime.store, "acme")
+	crate::endpoint::tenant_root(&app.runtime, "endpoint").await;
+	crate::endpoint::default_node(&app.runtime.store, "endpoint")
 		.await
 		.to_string()
 }
