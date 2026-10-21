@@ -47,7 +47,7 @@ COPY server/migrations /app/server/migrations
 COPY deploy/demo-data /app/deploy/demo-data
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
-RUN mkdir -p /var/lib/aidash/memory-recovery /var/lib/aidash/provider-credentials && chown -R 10001:10001 /var/lib/aidash
+RUN mkdir -p /var/lib/aidash/memory-recovery /var/lib/aidash/provider-credentials /var/lib/aidash/capabilities && chown -R 10001:10001 /var/lib/aidash
 WORKDIR /app/server
 USER 10001:10001
 ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_BASE_DIR=/app/server REINHARDT_SETTINGS_DIR=/app/server/settings
