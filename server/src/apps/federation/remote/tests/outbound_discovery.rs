@@ -92,7 +92,13 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	.await;
 	let result = discover(subject, json!({})).await;
 	assert_eq!(result["agents"].as_array().unwrap().len(), 1);
-	assert_eq!(result["agents"][0]["node_id"], a.runtime.config.deployment);
+	// The Deployment's own agents are the sending Node's, named by its address.
+	assert_eq!(
+		result["agents"][0]["node_id"],
+		endpoint::default_node(&a.runtime.store, "acme")
+			.await
+			.to_string()
+	);
 	let mut observed = Vec::new();
 	while let Ok(request) = pair.observed.try_recv() {
 		observed.push(request);
@@ -201,6 +207,58 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 
 #[rstest]
 #[tokio::test]
+async fn discovery_from_a_named_node_reports_agents_by_node_addresses(
+	#[future] discovery_pair: DiscoveryPair,
+) {
+	// Arrange
+	let pair = Box::pin(discovery_pair).await;
+	let a = &pair.source.app;
+	let subject = &pair.source.subject;
+	let created = assert_json(
+		a.deployment_administrator
+			.post(
+				"/api/tenants/acme/nodes",
+				&json!({"label":"Second"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		201,
+	);
+	let second = created["name"].as_str().unwrap();
+	let default = endpoint::default_node(&a.runtime.store, "acme").await;
+	let discover_from = |node: String| async move {
+		assert_json(
+			subject
+				.post(&format!("/api/discover?node={node}"), &json!({}), "json")
+				.await
+				.unwrap(),
+			200,
+		)
+	};
+	let named = |result: &Value| -> Vec<String> {
+		result["agents"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|agent| agent["node_id"].as_str().unwrap().to_owned())
+			.collect()
+	};
+	// Act
+	let from_default = discover_from(default.node.to_string()).await;
+	let from_second = discover_from(second.to_owned()).await;
+	// Assert
+	assert!(
+		named(&from_default).contains(&default.to_string()),
+		"the sending Node's own agents carry its address: {from_default}"
+	);
+	// The second Node holds no approvals, and its sibling's agents carry the
+	// sibling's address.
+	assert_eq!(named(&from_second), [default.to_string()], "{from_second}");
+}
+
+#[rstest]
+#[tokio::test]
 async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_honor_revocation(
 	#[future] mock_discovery: MockDiscovery,
 ) {
@@ -291,7 +349,9 @@ async fn source_filters_search_results_and_rejects_invalid_peer_metadata(
 		assert_eq!(result["agents"].as_array().unwrap().len(), 1);
 		assert_eq!(
 			result["agents"][0]["node_id"],
-			fixture.execution.app.runtime.config.deployment
+			endpoint::default_node(&fixture.execution.app.runtime.store, "acme")
+				.await
+				.to_string()
 		);
 		assert_eq!(
 			result["errors"][0]["error"],

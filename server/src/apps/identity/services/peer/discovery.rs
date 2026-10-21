@@ -33,21 +33,25 @@ pub(crate) async fn discover_in(
 ) -> Result<Discovery> {
 	let mut query = search.clone();
 	query.kind = Some("agent".into());
+	let sender = Sender {
+		tenant: aidash_domain::tenancy::TenantName::new(access.identity.tenant.clone())?,
+		node,
+		subject: Some(access.identity.subject.clone()),
+	};
+	// The agents found here are the sending Node's, and carry its address.
+	let sending = routes::sending_node(&mut *access.tx, &sender).await?;
+	access.set_node(sending.clone());
+	let own = f.config.deployment.node(sending).to_string();
 	let local = catalog::list_in(access, &query).await?;
 	let mut result = Discovery {
 		agents: local
 			.into_iter()
 			.map(|entity| DiscoveredAgent {
-				node_id: f.config.deployment.to_string(),
+				node_id: own.clone(),
 				entity,
 			})
 			.collect(),
 		errors: vec![],
-	};
-	let sender = Sender {
-		tenant: aidash_domain::tenancy::TenantName::new(access.identity.tenant.clone())?,
-		node,
-		subject: Some(access.identity.subject.clone()),
 	};
 	// Configuration changes wait for this admitted read: the routes are held
 	// with a shared lock until the authority transaction ends.
