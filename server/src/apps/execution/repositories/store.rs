@@ -651,6 +651,17 @@ impl Store {
 			.await?
 		})
 	}
+	/// An event of the Run `run`; see [`event_records::append_run`].
+	pub(crate) async fn run_event(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		run: Uuid,
+		workspace: Option<Uuid>,
+		kind: &str,
+		data: Value,
+	) -> Result<()> {
+		event_records::append_run(&mut **tx, run, workspace, kind, data).await
+	}
 	pub async fn emit(
 		&self,
 		scope: &TenancyScope,
@@ -3053,8 +3064,9 @@ impl Store {
 			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
 			data["cause"] = serde_json::to_value(degraded.cause)?;
 		}
-		self.event(
+		self.run_event(
 			tx,
+			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			kind,
 			data,
@@ -3326,16 +3338,18 @@ impl Store {
 			)
 			.scalar_one(&mut **tx)
 			.await?;
-			self.event(
+			self.run_event(
 				tx,
+				id,
 				workspace,
 				"semantic.manual_retry",
 				json!({"run_id":id,"cycle":cycle,"cause":reason,"reason":"authorized_resume"}),
 			)
 			.await?;
 		}
-		self.event(
+		self.run_event(
 			tx,
+			id,
 			workspace,
 			"run.control",
 			json!({"run_id":id,"action":action}),
@@ -3406,8 +3420,9 @@ impl Store {
 			HumanRequestRecord::admit(tx, run.workspace_id, run.id, kind, prompt, key).await?;
 		human_interaction::validate_replay(&request, run, kind, prompt)?;
 		if created {
-			event_records::append(
+			event_records::append_run(
 				tx,
+				run.id,
 				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"human.requested",
 				json!(request),
@@ -3549,8 +3564,9 @@ impl Store {
 			return Ok(old);
 		};
 		let request = HumanRequestRecord::answer_locked(tx, id, response, &actor).await?;
-		event_records::append(
+		event_records::append_run(
 			tx,
+			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			"human.answered",
 			json!(request),
@@ -3769,8 +3785,9 @@ impl Store {
 			invocation.status = "UNCERTAIN".into();
 		}
 		if created {
-			self.event(
+			self.run_event(
 				tx,
+				run.id,
 				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"tool.started",
 				json!({"run_id":run.id,"tool":tool,"idempotency_key":key,"input":input}),
@@ -3808,8 +3825,9 @@ impl Store {
 		.await?;
 		let result = expired.as_ref().unwrap_or(result);
 		if InvocationRecord::complete(tx.as_mut(), run.id, key, result).await? {
-			event_records::append(
+			event_records::append_run(
 				tx.as_mut(),
+				run.id,
 				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
@@ -4707,8 +4725,9 @@ impl Store {
 		if changed == 0 {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
-		self.event(
+		self.run_event(
 			&mut tx,
+			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			event_kind,
 			json!({"run_id":run.id,"task_id":run.task_id}),
@@ -4900,8 +4919,9 @@ impl Store {
 		};
 		let h = match h {
 			Some(h) => {
-				self.event(
+				self.run_event(
 					tx,
+					run.id,
 					(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 					"human.requested",
 					json!(h),
