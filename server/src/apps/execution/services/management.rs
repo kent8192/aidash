@@ -74,7 +74,7 @@ impl HarnessManagement {
 		let f = self.runtime.clone();
 
 		if let Some(scope) = scoped(&f, actor) {
-			let state = scope.state(f.config.identity(vec![])).await?;
+			let state = scope.state(f.config.deployment_identity()).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
 		let records: Vec<crate::registry::Entry> = Vec::new();
@@ -197,7 +197,7 @@ impl HarnessManagement {
 		.await?;
 		let mut state = StateResponse {
 			access: AccessProfile::DeploymentAdministrator,
-			node: f.config.identity(vec![]),
+			deployment: f.config.deployment_identity(),
 			registry: records,
 			workspaces: f.store.workspaces(&listing()).await?,
 			tasks: crate::database::query_as(

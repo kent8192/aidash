@@ -3,8 +3,8 @@
 //! its own read permission. Run contents retain their source read requirements.
 use super::{access::Access, identity::SubjectIdentity};
 use crate::{
-	Result, apps::execution::serializers::state::StateResponse, config::NodeIdentity, domain::*,
-	store::Store,
+	Result, apps::execution::serializers::state::StateResponse, config::DeploymentIdentity,
+	domain::*, store::Store,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -289,7 +289,7 @@ impl Workspaces {
 		access.finish(result).await
 	}
 
-	pub async fn state(&self, node: NodeIdentity) -> Result<StateResponse> {
+	pub async fn state(&self, deployment: DeploymentIdentity) -> Result<StateResponse> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = aidash_application::authorization::state::state(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
@@ -300,7 +300,7 @@ impl Workspaces {
 				tenant: self.identity.tenant.clone(),
 				subject: self.identity.subject.clone(),
 			},
-			node,
+			deployment,
 			registry: state.registry,
 			workspaces: state.workspaces,
 			tasks: state.tasks,

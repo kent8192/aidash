@@ -1301,12 +1301,11 @@ pub(super) async fn run_visible(
 	run: Uuid,
 ) -> bool {
 	let state = scope
-		.state(aidash_server::config::NodeIdentity {
+		.state(aidash_server::config::DeploymentIdentity {
 			id: store.deployment.to_string(),
 			endpoint: "http://127.0.0.1:9".into(),
-			capabilities: vec![],
-			clusters: vec![],
 			protocol_version: "0.1".into(),
+			key: None,
 		})
 		.await
 		.unwrap();

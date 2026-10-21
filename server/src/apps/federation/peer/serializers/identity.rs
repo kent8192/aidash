@@ -2,15 +2,6 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct NodeIdentity {
-	pub id: String,
-	pub endpoint: String,
-	pub capabilities: Vec<String>,
-	pub clusters: Vec<String>,
-	pub protocol_version: String,
-}
-
 /// `GET /.well-known/aidash`: the Deployment's identity and its Deployment Key.
 /// It names no Node; Nodes belong to Tenants and are not public.
 #[derive(Debug, Clone, Serialize, JsonSchema)]

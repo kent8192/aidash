@@ -127,19 +127,6 @@ impl Config {
 				}),
 		}
 	}
-	pub fn identity(&self, clusters: Vec<String>) -> NodeIdentity {
-		NodeIdentity {
-			id: self.deployment.to_string(),
-			endpoint: self.endpoint.clone(),
-			capabilities: vec![
-				"agent.discovery".into(),
-				"task.execute".into(),
-				"workspace.share".into(),
-			],
-			clusters,
-			protocol_version: PROTOCOL_VERSION.into(),
-		}
-	}
 }
 
 pub fn validate_endpoint(value: &str) -> Result<()> {
@@ -158,7 +145,7 @@ pub fn secret(name: &str) -> Result<String> {
 pub(crate) use aidash_domain::configuration::same_secret;
 
 pub use crate::apps::federation::peer::serializers::identity::{
-	DeploymentIdentity, DeploymentKeyIdentity, NodeIdentity,
+	DeploymentIdentity, DeploymentKeyIdentity,
 };
 
 #[cfg(test)]

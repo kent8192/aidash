@@ -642,6 +642,8 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		.expect("the Tenant's authorized cleanup event must reach polling");
 	assert_eq!(cleanup["data"]["state"], "deleted");
 	let own_state = assert_json(alpha_subject.get("/api/state").await.unwrap(), 200);
+	assert!(own_state["deployment"]["id"].is_string(), "{own_state}");
+	assert!(own_state.get("node").is_none(), "{own_state}");
 	assert!(
 		own_state["events"]
 			.as_array()

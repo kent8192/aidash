@@ -4064,6 +4064,12 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 		"{state}"
 	);
 	assert!(!state["events"].to_string().contains("\"secret\""));
+	assert_eq!(
+		state["deployment"]["id"],
+		p.a.config.deployment.as_str(),
+		"the State names its Deployment, not a Node"
+	);
+	assert!(state.get("node").is_none(), "{state}");
 
 	// A full visible page may span hidden candidate pages. Its cursor must
 	// retain visible events beyond the response limit for the next request.
