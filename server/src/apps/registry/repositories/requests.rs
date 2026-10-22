@@ -32,6 +32,12 @@ impl DefinitionLookup for TenantRegistration<'_> {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		SqlScope(&mut self.access.tx).definition(id, version).await
 	}
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> Result<Option<aidash_application::ports::bindings::StoredAgentPlugin>> {
+		SqlScope(&mut self.access.tx).agent_plugin(digest).await
+	}
 	async fn binding_installation(
 		&mut self,
 		projection: &aidash_domain::registry::Projection,

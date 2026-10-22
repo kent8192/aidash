@@ -11,6 +11,8 @@ use serde_json::Value;
 pub struct AgentIncidentEvent {
 	#[field(primary_key = true)]
 	pub id: i64,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub incident_id: uuid::Uuid,
 	#[field(field_type = "text")]

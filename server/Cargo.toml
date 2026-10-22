@@ -167,6 +167,10 @@ name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
 [[test]]
+name = "demo_data"
+path = "src/apps/identity/tests/demo_data.rs"
+
+[[test]]
 name = "provider_authorizations"
 path = "src/apps/identity/tests/provider_authorizations.rs"
 
@@ -386,10 +390,6 @@ path = "src/apps/registry/tests/provider_bindings.rs"
 name = "tenant_registry_acceptance"
 path = "src/apps/registry/tests/tenant_registry_acceptance.rs"
 
-
-[[test]]
-name = "gcip_sign_in"
-path = "src/apps/identity/tests/gcip_sign_in.rs"
 
 [[test]]
 name = "provider_credentials"

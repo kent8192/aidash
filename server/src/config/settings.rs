@@ -50,8 +50,8 @@ use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
 use crate::apps::execution::serializers::research_providers::ResearchProviderSettings;
 use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
+use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
-use crate::apps::identity::serializers::managed_settings::ManagedGcipSource;
 use crate::apps::identity::serializers::plan_connections::PlanConnectionSettings;
 use crate::apps::identity::serializers::provider_credentials::ManagedSource;
 use crate::apps::identity::serializers::provider_credentials::Settings as ProviderCredentialSettings;
@@ -69,7 +69,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -115,20 +115,28 @@ fn settings_builder() -> Result<SettingsBuilder, BuildError> {
 		.map(std::path::PathBuf::from)
 		.unwrap_or_else(|| base_dir.join("settings"));
 	let managed = env::var_os("AIDASH_PROVIDER_CREDENTIAL_SETTINGS").map(std::path::PathBuf::from);
+	let extension = crate::bootstrap::build::current().extension;
 
 	// Presence inspection does not interpolate unselected runtime credentials.
-	let configured =
-		managed_settings_builder(&profile_str, &base_dir, &settings_dir, managed.as_deref())
-			.add_source(ManagedGcipSource::from_env())
-			.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_"))
-			.build_scoped()?
-			.has_path(&["dashboard", "oidc"]);
-	Ok(
-		managed_settings_builder(&profile_str, &base_dir, &settings_dir, managed.as_deref())
-			.add_source(ManagedGcipSource::from_env())
-			.add_source(super::legacy_env::LegacyEnvironment::new(configured))
-			.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_")),
-	)
+	let configured = extension
+		.settings(managed_settings_builder(
+			&profile_str,
+			&base_dir,
+			&settings_dir,
+			managed.as_deref(),
+		))
+		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_"))
+		.build_scoped()?
+		.has_path(&["dashboard", "oidc"]);
+	Ok(extension
+		.settings(managed_settings_builder(
+			&profile_str,
+			&base_dir,
+			&settings_dir,
+			managed.as_deref(),
+		))
+		.add_source(super::legacy_env::LegacyEnvironment::new(configured))
+		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_")))
 }
 
 fn managed_settings_builder(
@@ -163,7 +171,7 @@ fn file_settings_builder(
         // Lowest priority: Default values
         .add_source(
             DefaultSource::new()
-                .with_value("core", serde_json::json!({ "base_dir": base_dir, "installed_apps": super::apps::APP_LABELS }))
+                .with_value("core", serde_json::json!({ "base_dir": base_dir, "installed_apps": crate::bootstrap::build::current().installed_apps() }))
                 // Initialize the standard REST scaffold contact defaults.
                 .with_value("contacts", serde_json::json!({}))
                 // Initialize optional Aidash fragments without enabling OIDC, Kubernetes
@@ -173,8 +181,9 @@ fn file_settings_builder(
                 .with_value("provider_credentials", serde_json::json!({}))
                 .with_value("cache_salt", serde_json::json!({}))
                 .with_value("keyless_endpoints", serde_json::json!({}))
-                // Tenancy Rules default to the Self-hosted Offering's.
+                // The Offering supplies each Tenancy Rule left out.
                 .with_value("tenancy", serde_json::json!({}))
+                .with_value("demo_data", serde_json::json!({}))
                 .with_value("plan_connections", serde_json::json!({}))
                 .with_value("research_providers", serde_json::json!({}))
                 .with_value("research_retention", serde_json::json!({}))
@@ -261,24 +270,22 @@ mod tests {
 		let settings = &resolved.settings().provider_credentials;
 		settings.validate(&Profile::parse("local")).unwrap();
 		// Assert: Store and broker both reach worker composition without any Key Material.
-		let crate::apps::identity::serializers::provider_credentials::StoreConfig::SecretManager {
-			environment_id,
-			..
-		} = settings.store.as_ref().unwrap()
+		let crate::apps::identity::serializers::provider_credentials::StoreConfig::Enterprise(
+			store,
+		) = settings.store.as_ref().unwrap()
 		else {
-			panic!("managed Cloud settings must select Secret Manager");
+			panic!("managed Cloud settings must select an Enterprise Store");
 		};
-		assert_eq!(environment_id, "test");
+		assert_eq!(store["kind"], "secret_manager");
+		assert_eq!(store["environment_id"], "test");
 		assert_eq!(
 			settings.fingerprint_key.as_ref().unwrap().env.as_deref(),
 			Some("AIDASH_PROVIDER_FINGERPRINT_KEY")
 		);
-		assert_eq!(
-			settings.broker.as_ref().unwrap().endpoint,
-			"https://broker.run.app/api/v1"
-		);
-		assert_eq!(settings.broker.as_ref().unwrap().audience, "test");
-		std::fs::write(directory.path().join("local.toml"), format!("[provider_credentials]\nfingerprint_key = {{ env = 'AIDASH_PROVIDER_FINGERPRINT_KEY' }}\n[provider_credentials.store]\nkind = 'secret_manager'\nbyok_project_id = 'aidash-byok-fixture'\nenvironment_id = 'test'\n[provider_credentials.broker]\nendpoint = 'https://fallback.run.app/api/v1'\nissuer = 'aidash'\naudience = 'test'\nkid = '{}'\n", settings.broker.as_ref().unwrap().kid)).unwrap();
+		let broker = settings.broker.as_ref().unwrap();
+		assert_eq!(broker["endpoint"], "https://broker.run.app/api/v1");
+		assert_eq!(broker["audience"], "test");
+		std::fs::write(directory.path().join("local.toml"), format!("[provider_credentials]\nfingerprint_key = {{ env = 'AIDASH_PROVIDER_FINGERPRINT_KEY' }}\n[provider_credentials.store]\nkind = 'secret_manager'\nbyok_project_id = 'aidash-byok-fixture'\nenvironment_id = 'test'\n[provider_credentials.broker]\nendpoint = 'https://fallback.run.app/api/v1'\nissuer = 'aidash'\naudience = 'test'\nkid = '{}'\n", broker["kid"].as_str().unwrap())).unwrap();
 		std::fs::write(
 			&path,
 			r#"{"provider_credentials":{"fingerprint_key":null,"store":null,"broker":null}}"#,
@@ -295,7 +302,7 @@ mod tests {
 	) {
 		let path = directory.path().join("managed.json");
 		let mut invalid = managed_descriptor();
-		invalid["provider_credentials"]["broker"]["audience"] = serde_json::json!("other");
+		invalid["provider_credentials"]["store"] = serde_json::Value::Null;
 		for value in [
 			invalid,
 			serde_json::json!({"provider_credentials": {}, "core": {"debug": true}}),
@@ -367,15 +374,14 @@ mod tests {
 		let credentials = &resolved.settings().provider_credentials;
 		let config = &credentials.store;
 		if enabled {
-			let crate::apps::identity::serializers::provider_credentials::StoreConfig::SecretManager {
-				byok_project_id,
-				environment_id,
-			} = config.as_ref().unwrap()
+			let crate::apps::identity::serializers::provider_credentials::StoreConfig::Enterprise(
+				store,
+			) = config.as_ref().unwrap()
 			else {
-				panic!("managed Cloud settings must select Secret Manager");
+				panic!("managed Cloud settings must select an Enterprise Store");
 			};
-			assert_eq!(byok_project_id, "aidash-byok-fixture");
-			assert_eq!(environment_id, "pr-42");
+			assert_eq!(store["byok_project_id"], "aidash-byok-fixture");
+			assert_eq!(store["environment_id"], "pr-42");
 			let key = credentials.fingerprint_key.as_ref().unwrap();
 			assert_eq!(key.env.as_deref(), Some("AIDASH_PROVIDER_FINGERPRINT_KEY"));
 			assert!(key.file.is_none());
@@ -545,54 +551,5 @@ mod tests {
 			.resolve()
 			.unwrap();
 		assert!(settings.settings().cache_salt.keys().unwrap().is_none());
-	}
-
-	#[rstest::rstest]
-	fn managed_gcip_settings_preserve_tenant_ids_and_apply_typed_defaults() {
-		let directory = tempfile::tempdir().unwrap();
-		let base = include_str!("../../settings/base.example.toml")
-			.replace(
-				"[core]\n",
-				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
-			)
-			.replace(
-				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
-			);
-		std::fs::write(directory.path().join("base.toml"), base).unwrap();
-		let path = directory.path().join("dashboard.json");
-		std::fs::write(
-			&path,
-			serde_json::to_vec(&serde_json::json!({"dashboard": {"gcip": {
-				"project_id": "fixture-project",
-				"public_origin": "https://test.aidash.run",
-				"web_api_key": "public-fixture-key",
-				"tenant_bindings": {"Pool-X": "acme"},
-				"providers": {"Pool-X": ["google.com"]},
-				"password_sign_up": [],
-				"mfa_mandatory": ["Pool-X"]
-			}}}))
-			.unwrap(),
-		)
-		.unwrap();
-		let settings = file_settings_builder("local", directory.path(), directory.path())
-			.add_source(ManagedGcipSource { path: Some(path) })
-			.build_pending_composed::<ProjectSettings>()
-			.unwrap()
-			.resolve()
-			.unwrap();
-		let dashboard = &settings.settings().dashboard;
-		assert!(dashboard.oidc.is_none());
-		let gcip = dashboard.gcip.as_ref().unwrap();
-		assert_eq!(
-			gcip.issuer(),
-			"https://securetoken.google.com/fixture-project"
-		);
-		assert_eq!(gcip.tenant_bindings["Pool-X"], "acme");
-		assert_eq!(gcip.providers["Pool-X"], ["google.com"]);
-		assert!(gcip.password_sign_up.is_empty());
-		assert!(gcip.mfa_mandatory.contains("Pool-X"));
-		assert_eq!(gcip.session_absolute_seconds, 43200);
-		assert_eq!(gcip.session_idle_seconds, 1800);
 	}
 }

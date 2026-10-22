@@ -60,7 +60,7 @@ pub async fn tenant_scope(
 		return scope;
 	}
 	let bundle = serde_json::json!({"tenant":name,"subjects":{"alice":{"kind":"user"}},
-		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
+		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]});
 	aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	}
@@ -103,6 +103,8 @@ pub async fn local_run(
 		.expect("the claim queues a Run")
 }
 
+/// An admitted remote Run on `store`, in the Tenant of its Workspace when the
+/// store holds that Workspace and in `acme` otherwise.
 #[allow(dead_code)]
 pub async fn remote_run(
 	store: &aidash_server::store::Store,
@@ -111,7 +113,35 @@ pub async fn remote_run(
 	agent_id: &str,
 	agent_version: &str,
 ) -> aidash_server::domain::Run {
+	let tenant: Option<String> = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id = $1")
+		.bind(task.workspace_id)
+		.fetch_optional(store.pool.fixture_driver())
+		.await
+		.expect("the Workspace's Tenant is read");
+	remote_run_in(
+		store,
+		tenant.as_deref().unwrap_or("acme"),
+		task,
+		home,
+		agent_id,
+		agent_version,
+	)
+	.await
+}
+
+/// An admitted remote Run of `tenant` on `store`, whose Workspace lives on the
+/// Run's home Node. Writes the Tenant's root record if the store lacks it.
+#[allow(dead_code)]
+pub async fn remote_run_in(
+	store: &aidash_server::store::Store,
+	tenant: &str,
+	task: &aidash_server::domain::Task,
+	home: &str,
+	agent_id: &str,
+	agent_version: &str,
+) -> aidash_server::domain::Run {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	tenant_root_in(store.pool.fixture_driver(), tenant).await;
 	let id = uuid::Uuid::new_v4();
 	let sql = Query::insert()
 		.into_table(Alias::new("runs"))
@@ -124,6 +154,7 @@ pub async fn remote_run(
 				"agent_id",
 				"agent_version",
 				"context",
+				"tenant",
 			]
 			.map(Alias::new),
 		)
@@ -136,6 +167,7 @@ pub async fn remote_run(
 				.expr(Expr::cust("$5"))
 				.expr(Expr::cust("$6"))
 				.expr(Expr::cust("$7"))
+				.expr(Expr::cust("$8"))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
@@ -147,6 +179,7 @@ pub async fn remote_run(
 		.bind(agent_id)
 		.bind(agent_version)
 		.bind(serde_json::json!(aidash_server::context::Context::default()))
+		.bind(tenant)
 		.execute(store.pool.fixture_driver())
 		.await
 		.expect("the admitted remote Run is written");

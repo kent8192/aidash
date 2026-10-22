@@ -288,7 +288,15 @@ pub(super) fn migration() -> Migration {
                 .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
                 .with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -300,6 +308,14 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true)
                 .with_unique(false).with_primary_key(true).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("thread_id", FieldType::Uuid).with_not_null(true)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None)
@@ -342,7 +358,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("sequence", FieldType::BigInteger)
                 .with_not_null(true).with_unique(false).with_primary_key(true)
                 .with_auto_increment(true).with_default(None).with_generated(None)
-                .with_domain_option(None), ColumnDefinition::new("workspace_id",
+                .with_domain_option(None), ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(false)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
+                ColumnDefinition::new("workspace_id",
                 FieldType::Uuid).with_not_null(false).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None)
@@ -374,6 +398,14 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("request_id", FieldType::Uuid).with_not_null(true)
                 .with_unique(false).with_primary_key(true).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("token_limit", FieldType::BigInteger)
                 .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
@@ -417,7 +449,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -465,6 +505,14 @@ pub(super) fn migration() -> Migration {
                 FieldType::Uuid).with_not_null(false).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("workspace_id", FieldType::Uuid)
                 .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
@@ -504,7 +552,15 @@ pub(super) fn migration() -> Migration {
                 FieldType::Text).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -610,6 +666,14 @@ pub(super) fn migration() -> Migration {
                 FieldType::Text).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("usage", FieldType::Jsonb).with_not_null(true)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None)
@@ -631,7 +695,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("result", FieldType::Jsonb).with_not_null(false)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -728,7 +800,15 @@ pub(super) fn migration() -> Migration {
                 FieldType::Text).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -884,7 +964,15 @@ pub(super) fn migration() -> Migration {
                 FieldType::Uuid).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -924,6 +1012,14 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("workspace_id", FieldType::Uuid)
                 .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
@@ -988,6 +1084,14 @@ pub(super) fn migration() -> Migration {
                 ModelEnumRepr::String, values : vec![ModelEnumValue::String("COMPLETED"
                 .to_string()), ModelEnumValue::String("STARTED".to_string()),
                 ModelEnumValue::String("UNCERTAIN".to_string())], })),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("tool", FieldType::Text).with_not_null(true)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None)
@@ -1088,6 +1192,14 @@ pub(super) fn migration() -> Migration {
                 FieldType::Text).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("worker_pid", FieldType::BigInteger)
                 .with_not_null(false).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
@@ -1127,7 +1239,15 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("seq", FieldType::BigInteger).with_not_null(true)
                 .with_unique(false).with_primary_key(true).with_auto_increment(true)
                 .with_default(None).with_generated(None).with_domain_option(None)
-            ],
+            ,
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),],
             constraints: vec![],
             without_rowid: None,
             interleave_in_parent: None,
@@ -1183,7 +1303,7 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("pending_human_request_id", FieldType::Uuid)
                 .with_not_null(false).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None)
-                .with_generated(Some(GeneratedColumnDefinition::raw_sql("\nCASE\n    WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'external_approval'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid\n    ELSE NULL::uuid\nEND",
+                .with_generated(Some(GeneratedColumnDefinition::raw_sql("\nCASE\n    WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid\n    WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = 'approval'::text) AND ((((pending -> 'data'::text) -> 'approval'::text) ->> 'source'::text) = 'home'::text) AND (jsonb_typeof((((pending -> 'data'::text) -> 'approval'::text) -> 'request_id'::text)) = 'string'::text) AND ((((pending -> 'data'::text) -> 'approval'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN ((((pending -> 'data'::text) -> 'approval'::text) ->> 'request_id'::text))::uuid\n    ELSE NULL::uuid\nEND",
                 GeneratedStorage::Stored))).with_domain_option(None),
                 ColumnDefinition::new("phase", FieldType::Text).with_not_null(true)
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
@@ -1207,6 +1327,14 @@ pub(super) fn migration() -> Migration {
                 FieldType::Uuid).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
+                ColumnDefinition::new("tenant", FieldType::Text)
+                	.with_not_null(true)
+                	.with_unique(false)
+                	.with_primary_key(false)
+                	.with_auto_increment(false)
+                	.with_default(None)
+                	.with_generated(None)
+                	.with_domain_option(None),
                 ColumnDefinition::new("updated_at", FieldType::TimestampTz)
                 .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)

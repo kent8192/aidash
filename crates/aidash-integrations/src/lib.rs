@@ -1,17 +1,16 @@
 //! External service adapters implementing application ports.
-pub mod capability;
 pub mod decision;
 pub mod federation;
 pub mod inference;
 pub mod keyless;
 pub mod kubernetes;
 pub mod openrouter;
-mod response;
+pub mod response;
 pub mod semantic;
 
 pub use aidash_application::{Error, Result};
 
-fn http_error(error: reqwest::Error) -> Error {
+pub fn http_error(error: reqwest::Error) -> Error {
 	// External URLs can contain credentials; never retain them in errors.
 	Error::External(error.without_url().to_string())
 }
@@ -39,6 +38,8 @@ pub mod tools;
 
 pub mod skill_import;
 
+pub mod agent_plugin_import;
+
 pub mod runner;
 
 pub mod outbound;
@@ -49,7 +50,7 @@ pub mod activation;
 
 pub mod oidc;
 
-pub mod gcip;
+pub mod jwks;
 
 pub mod chatgpt;
 pub mod provider_authorization;

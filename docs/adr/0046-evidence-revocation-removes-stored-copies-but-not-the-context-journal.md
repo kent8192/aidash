@@ -1,0 +1,17 @@
+# Evidence Revocation removes stored copies but not the Context Journal
+
+Decided on 2026-10-15 for #225. Evidence Revocation exists for requests to remove stored copies of source content, such as a rights holder's request, personal data, or the end of an agreement. It is irreversible and covers all of one Run's Research evidence. It replaces the contents of Document snapshots, the text of Evidence fragments, the recorded results of research attempts and Source titles with tombstones, keeping identities, retrieval times and digests. From then on the Run's research operations return `evidence_revoked`, pending Web disclosure approvals of the Run close, an attempt in flight records no evidence when it settles (it stays charged), and citations of the Run's evidence are unknown, so a later answer is corrected or withheld. Answers already published stay as they are and show their citations as unavailable.
+
+The Context Journal is not edited. What the model has already read stays there until the Run is deleted, but the Run's later model requests carry a placeholder instead of the revoked tool results, so the content is not sent to a model provider again. An Execution Summary that absorbed any of the Run's research results is discarded as well: its range is restored from the Context Journal with the placeholder in place of each research result, and the Run continues without pausing, so a later compaction, Jev included, only sees placeholders. The model's own text in its Model Turns, which may quote or paraphrase what it read, stays and is sent again. Like a published answer it is the model's output, and removing it would break the Run's reasoning; this is a known limit. (Added 2026-10-15.)
+
+Revocation may be decided by a subject whose Tenant policy permits `research.revoke` (none by default) and by Deployment Administrators, who never read the content to do so. A record of who revoked, when and why, holding digests but no source content, outlives the Run. It is part of the Tenant's audit history, readable by the subjects permitted `research.revoke` and by Deployment Administrators, and a Tenant Deletion keeps it for the audit history's own retention period instead of purging it with the Tenant's data. (Readers and lifetime added 2026-10-15.)
+
+## Considered Options
+
+- **Stop citing and reading only, keeping the stored text.** It cannot answer a removal request. Rejected.
+- **Also redact the Context Journal.** The journal is the authoritative, append-only history; range digests, Execution Summaries and recovery depend on it. Rejected; the copy in the journal goes when the Run is deleted.
+- **Revoke one Source within a Run, or one URL across a Tenant.** A search result holds many Sources in one recorded result, and a cross-Run search needs its own design. Deferred.
+- **Let the Run keep researching after revocation.** Reading a revoked page again would recreate the copy just removed. Rejected.
+- **Keep an Execution Summary that absorbed revoked results.** The summary is a compressed copy of those results, and a revoked source must not survive inside summary text. Rejected.
+- **Treat revoked results like a revoked summary dependency and pause.** That path waits until the source is readable again, which a revoked one never is, so the Run would stop for good. Rejected.
+- **Also elide the model's own Model Turns.** It would remove the Run's reasoning around every research call. Rejected.

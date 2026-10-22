@@ -16,6 +16,7 @@ pub(super) fn migration() -> Migration {
 			name: "run_context_events".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("seq", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("origin", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("event", FieldType::Jsonb).with_not_null(true),
@@ -25,15 +26,24 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("now()".to_owned())),
 			],
 			constraints: vec![
+				Constraint::ForeignKey {
+					name: "run_context_events_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
 				Constraint::PrimaryKey {
 					name: "run_context_events_pkey".to_owned(),
 					columns: vec!["run_id".to_owned(), "seq".to_owned()],
 				},
 				Constraint::ForeignKey {
 					name: "run_context_event_run".to_owned(),
-					columns: vec!["run_id".to_owned()],
+					columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 					referenced_table: "runs".to_owned(),
-					referenced_columns: vec!["id".to_owned()],
+					referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
@@ -57,6 +67,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("id", FieldType::Uuid)
 					.with_primary_key(true)
 					.with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("stage", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("policy_version", FieldType::Text).with_not_null(true),
@@ -79,10 +90,19 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "context_compaction_attempts_tenant_root_fkey".to_owned(),
+					columns: vec!["tenant".to_owned()],
+					referenced_table: "tenants".to_owned(),
+					referenced_columns: vec!["name".to_owned()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "context_compaction_attempt_run".to_owned(),
-					columns: vec!["run_id".to_owned()],
+					columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 					referenced_table: "runs".to_owned(),
-					referenced_columns: vec!["id".to_owned()],
+					referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,

@@ -82,6 +82,8 @@ pub trait Repository: Send + Sync {
 		limit: usize,
 	) -> Result<Vec<ProviderCredential>>;
 }
+/// Provider Credentials purged per repository transaction.
+const PURGE_PAGE_SIZE: usize = 50;
 pub struct Service {
 	pub repository: Arc<dyn Repository>,
 	pub store: Arc<dyn Store>,
@@ -476,6 +478,50 @@ impl Service {
 			tracing::warn!("Provider Credential deletion committed; secret cleanup is pending");
 		}
 		Ok(row.into())
+	}
+	/// Ends every Provider Credential of a Tenant being purged, and with it
+	/// the Key Material stored outside the database (ADR 0061). Unlike
+	/// [`Self::delete`] it ignores Bindings, which are purged with the Tenant,
+	/// and it also ends Pending and Revoked credentials. It fails when any
+	/// external secret could not be destroyed, so the caller retries; each
+	/// credential's durable `Deleted` mark and version pin let the retry resume.
+	pub async fn purge_tenant(&self, tenant: &str, actor: &str) -> Result<()> {
+		let mut offset = 0;
+		loop {
+			let mut scope = self.repository.begin(tenant).await?;
+			let page = scope.list(offset, PURGE_PAGE_SIZE).await?;
+			scope.commit().await?;
+			let exhausted = page.len() < PURGE_PAGE_SIZE;
+			offset += page.len();
+			for row in page {
+				self.purge_credential(row, actor).await?;
+			}
+			if exhausted {
+				return Ok(());
+			}
+		}
+	}
+	async fn purge_credential(&self, mut row: ProviderCredential, actor: &str) -> Result<()> {
+		if row.state == State::Pending {
+			// No version is pinned yet; deleting the resource is idempotent
+			// across a crash before or after the secret exists.
+			self.store.delete(&row.tenant, &row.secret_resource).await?;
+		}
+		if row.state != State::Deleted {
+			// Deleted is the durable intent; the pin stays as the cleanup marker.
+			let mut scope = self.repository.begin(&row.tenant).await?;
+			row = scope.get(row.id).await?;
+			row.state = State::Deleted;
+			row.revision += 1;
+			scope
+				.save(&row, "provider_credential.deleted", actor)
+				.await?;
+			scope.commit().await?;
+		}
+		if row.pinned_version.is_some() {
+			self.reconcile_candidate(row).await?;
+		}
+		Ok(())
 	}
 	pub async fn bind(
 		&self,

@@ -7,7 +7,7 @@ use crate::{
 	store::{RunStore, Store},
 };
 use aidash_application::ports::execution::completion;
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::{ModelProvider, execution::*},
@@ -175,11 +175,6 @@ impl ExecutionStore for RunStore {
 	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		Store::human_request_by_id(&self.store, &self.scope, id)
-			.await
-			.map_err(Into::into)
-	}
-	async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest> {
-		Store::expire_workbench_approval(&self.store, &self.scope, id)
 			.await
 			.map_err(Into::into)
 	}
@@ -565,6 +560,22 @@ impl ExecutionAuthority for Authority<'_> {
 	async fn human_read(&self, id: Uuid) -> Result<()> {
 		self.guard.human_read(id).await.map_err(Into::into)
 	}
+	async fn tool_call_approval(
+		&self,
+		run: &Run,
+		request: aidash_application::ports::capabilities::approvals::ToolCallRequest,
+	) -> Result<aidash_application::ports::capabilities::approvals::ToolCallApproval> {
+		// A Run executing for another Node asks that Node through a human request
+		// and never reaches this capability approval (ADR 0075).
+		let authority = self
+			.guard
+			.local_authority()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.tool_call_approval(&self.federation.store, run, request)
+			.await
+			.map_err(Into::into)
+	}
 	async fn model_media(&self, selections: &[ModelMedia]) -> Result<Vec<ContentPart>> {
 		self.guard
 			.model_media(&self.federation.store, selections)
@@ -810,7 +821,7 @@ impl Environment<'_> {
 		definition: Entry,
 		journal: Box<dyn aidash_application::ports::decision::DecisionJournal + 'a>,
 	) -> Result<aidash_application::ports::decision::DecisionPorts<'a>> {
-		let provider = aidash_integrations::decision::JevDecisionProvider::new(
+		let provider = aidash_integrations::decision::RouteDecisionProvider::new(
 			decider.config.clone(),
 			aidash_application::registry::validation::decision_implementation_id(),
 			Arc::new(
@@ -823,9 +834,7 @@ impl Environment<'_> {
 				run: Some(run.id),
 				..Default::default()
 			},
-			Arc::new(aidash_integrations::decision::ByteBudget(
-				decider.config.state_budget.clone(),
-			)),
+			Arc::new(aidash_integrations::decision::ByteBudget),
 			DECIDER_TIMEOUT,
 		)?;
 		Ok(aidash_application::ports::decision::DecisionPorts {
@@ -845,11 +854,9 @@ impl Environment<'_> {
 
 impl<'a> Environment<'a> {
 	pub(crate) fn new(federation: &'a Federation, guard: Option<&'a Guard>, run: &Run) -> Self {
-		// A Run without a grant has no Tenant; only test fixtures create one.
-		let scope = guard.map_or(
-			TenancyScope::Deployment(DeploymentScopeReason::LegacyRun),
-			|guard| guard.tenancy().clone(),
-		);
+		// A step runs after its Run's authority is admitted. Without it, no Tenant
+		// is usable, and the database refuses every statement.
+		let scope = guard.map_or(TenancyScope::NoTenant, |guard| guard.tenancy().clone());
 		Self {
 			federation,
 			authority: guard.map(|guard| Authority { guard, federation }),
@@ -1166,19 +1173,15 @@ impl ExecutionEnvironment for Environment<'_> {
 		})?;
 		// The executing node's local Tenant: the worker's Access for scoped and
 		// remote Runs (the receiver's mapped Tenant), otherwise the Tenant that
-		// owns the local workspace. Unscoped workspaces have no Tenant to salt.
+		// owns the local workspace.
 		let tenant = match &self.authority {
 			Some(authority) => authority.guard.tenant().await,
-			None => self
-				.federation
-				.store
-				.workspace_tenant(run.workspace_id)
-				.await?
-				.ok_or_else(|| {
-					aidash_application::Error::Invalid(
-						"salted Projection Versions require a Tenant-owned workspace".into(),
-					)
-				})?,
+			None => {
+				self.federation
+					.store
+					.workspace_tenant(run.workspace_id)
+					.await?
+			}
 		};
 		Ok(aidash_domain::projection::CacheScope {
 			tenant,
@@ -1386,6 +1389,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,
+			sessions: None,
 		}
 		.tools(run)
 		.await

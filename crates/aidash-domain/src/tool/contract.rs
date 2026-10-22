@@ -1,6 +1,7 @@
 //! Runtime tool declarations. Names are assigned here; consumers evaluate attributes.
 use super::{Concurrency, ToolConfig};
 use crate::{
+	agent_plugin::{PluginName, ServerName},
 	capabilities::CoreCapabilities,
 	registry::{AgentConfig, EntityRef},
 };
@@ -97,6 +98,17 @@ pub enum ToolIdentity {
 	Builtin(String),
 	Registry(EntityRef),
 	Descriptor(crate::registry::bindings::QualifiedRef),
+	AgentPlugin(AgentPluginTool),
+}
+/// A tool of a remote MCP server that a Run pinned from an Agent Plugin copy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AgentPluginTool {
+	pub plugin: PluginName,
+	/// The [`crate::agent_plugin::AgentPluginRef::digest`] of the copy.
+	pub digest: String,
+	pub server: ServerName,
+	/// The server's own name for the tool.
+	pub tool: String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResourceTarget {
@@ -127,6 +139,15 @@ pub struct ToolAuthorization {
 	pub core: Option<CorePermission>,
 	pub requirements: Vec<AuthorizationRequirement>,
 }
+impl ToolAuthorization {
+	fn none() -> Self {
+		Self {
+			flag: None,
+			core: None,
+			requirements: vec![],
+		}
+	}
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolBehavior {
 	pub effect: ToolEffect,
@@ -135,7 +156,8 @@ pub struct ToolBehavior {
 	pub catch_up: bool,
 	pub media_pending: bool,
 	pub yields_model_media: bool,
-	pub workbench_approval: bool,
+	/// A call waits for a Tool call approval unless policy permits it directly.
+	pub tool_call_approval: bool,
 	/// Omitted while Sequential so contracts pinned before this field keep their digest.
 	#[serde(skip_serializing_if = "Concurrency::is_sequential")]
 	pub concurrency: Concurrency,
@@ -244,6 +266,17 @@ impl ToolContract {
 		self.behavior.concurrency = Concurrency::Sequential;
 		Ok((self.digest()? == digest).then_some(self))
 	}
+	/// A pinned plugin tool is Unsafe, Sequential and never exposed remotely. Declaring it
+	/// Read-only removes the approval only; the effect stays Unsafe like a Tenant tool's.
+	pub fn agent_plugin(identity: AgentPluginTool, read_only: bool) -> Self {
+		Self {
+			identity: ToolIdentity::AgentPlugin(identity),
+			authorization: ToolAuthorization::none(),
+			behavior: external_behavior(ToolEffect::Unsafe, !read_only),
+			disclosure: DisclosureBoundary::External,
+			remote_exposure: false,
+		}
+	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
 		let (effect, approval, disclosure) = match config {
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
@@ -263,8 +296,6 @@ impl ToolContract {
 		Self {
 			identity: ToolIdentity::Registry(reference),
 			authorization: ToolAuthorization {
-				flag: None,
-				core: None,
 				requirements: if let ToolConfig::Agent { node_id, agent } = config {
 					vec![AuthorizationRequirement::AgentExecution {
 						node_id: node_id.clone(),
@@ -273,23 +304,29 @@ impl ToolContract {
 				} else {
 					vec![]
 				},
+				..ToolAuthorization::none()
 			},
-			behavior: ToolBehavior {
-				effect,
-				workbench_approval: approval,
-				fitting: None,
-				continuation: Continuation::Ordinary,
-				catch_up: false,
-				media_pending: false,
-				yields_model_media: false,
-				concurrency: Concurrency::Sequential,
-				exposure_update: false,
-				yields: vec![],
-				disclosure_approval: false,
-			},
+			behavior: external_behavior(effect, approval),
 			disclosure,
 			remote_exposure: true,
 		}
+	}
+}
+
+/// The behavior of an ordinary tool that no model media, catch-up or yield attributes touch.
+fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavior {
+	ToolBehavior {
+		effect,
+		tool_call_approval,
+		fitting: None,
+		continuation: Continuation::Ordinary,
+		catch_up: false,
+		media_pending: false,
+		yields_model_media: false,
+		concurrency: Concurrency::Sequential,
+		exposure_update: false,
+		yields: vec![],
+		disclosure_approval: false,
 	}
 }
 
@@ -311,7 +348,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			catch_up: false,
 			media_pending: false,
 			yields_model_media: false,
-			workbench_approval: false,
+			tool_call_approval: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
 			yields: vec![],
@@ -658,7 +695,7 @@ mod tests {
 			"catch_up",
 			"media_pending",
 			"yields_model_media",
-			"workbench_approval",
+			"tool_call_approval",
 		];
 		for name in [
 			"task_create",
@@ -725,7 +762,7 @@ mod tests {
 		let contract = builtin_contract("workspace_read").unwrap();
 		assert_eq!(
 			serde_json::to_string(&contract.behavior).unwrap(),
-			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"workbench_approval":false}"#
+			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"tool_call_approval":false}"#
 		);
 		assert_eq!(
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
@@ -733,7 +770,62 @@ mod tests {
 		);
 	}
 	const PINNED_WORKSPACE_READ_DIGEST: &str =
-		"sha256:db828953f52fd78d391555cb3bd65a846349e57dc02e015e2ec032544995c271";
+		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
+	fn plugin_tool() -> AgentPluginTool {
+		AgentPluginTool {
+			plugin: PluginName::try_from("acme-tools".to_owned()).unwrap(),
+			digest: format!("sha256:{}", "a".repeat(64)),
+			server: ServerName::try_from("docs".to_owned()).unwrap(),
+			tool: "search".into(),
+		}
+	}
+	#[test]
+	fn a_plugin_tool_is_unsafe_sequential_external_and_never_exposed_remotely() {
+		for read_only in [false, true] {
+			let contract = ToolContract::agent_plugin(plugin_tool(), read_only);
+			assert_eq!(contract.identity, ToolIdentity::AgentPlugin(plugin_tool()));
+			assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
+			assert!(!contract.replay_safe());
+			assert_eq!(contract.behavior.tool_call_approval, !read_only);
+			assert!(contract.behavior.concurrency.is_sequential());
+			assert_eq!(contract.disclosure, DisclosureBoundary::External);
+			assert!(!contract.remote_exposure);
+			assert_eq!(contract.authorization, ToolAuthorization::none());
+		}
+	}
+	#[test]
+	fn a_read_only_plugin_tool_differs_from_a_normal_one_in_its_approval_only() {
+		let normal = ToolContract::agent_plugin(plugin_tool(), false);
+		let mut read_only = ToolContract::agent_plugin(plugin_tool(), true);
+
+		assert_ne!(normal.digest().unwrap(), read_only.digest().unwrap());
+		assert!(normal.behavior.tool_call_approval);
+		assert!(!read_only.behavior.tool_call_approval);
+		read_only.behavior.tool_call_approval = true;
+		assert_eq!(normal, read_only);
+	}
+	#[test]
+	fn a_plugin_tool_behaves_like_a_registry_mcp_tool_apart_from_identity_and_exposure() {
+		let registry = ToolContract::registry(
+			EntityRef {
+				id: "tool".into(),
+				version: "1".into(),
+			},
+			&ToolConfig::Mcp {
+				secret: None,
+				endpoint: "https://example.invalid".into(),
+				tool_name: "search".into(),
+				replay: "unsafe".into(),
+				idempotency_argument: None,
+			},
+		);
+		let plugin = ToolContract::agent_plugin(plugin_tool(), false);
+
+		assert_eq!(plugin.behavior, registry.behavior);
+		assert_eq!(plugin.authorization, registry.authorization);
+		assert_eq!(plugin.disclosure, registry.disclosure);
+		assert!(registry.remote_exposure);
+	}
 	#[test]
 	fn registry_effects_and_approval_are_independent() {
 		let reference = EntityRef {
@@ -755,7 +847,7 @@ mod tests {
 			);
 			assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
 			assert_eq!(contract.behavior.effect, effect);
-			assert_eq!(contract.behavior.workbench_approval, approval);
+			assert_eq!(contract.behavior.tool_call_approval, approval);
 			assert_eq!(contract.replay_safe(), safe);
 			assert!(contract.remote_exposure);
 		}

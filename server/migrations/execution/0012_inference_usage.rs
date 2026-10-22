@@ -8,6 +8,7 @@ pub(super) fn migration() -> Migration {
             name: "inference_usage".into(),
             columns: vec![
                 ColumnDefinition::new("attempt_id", FieldType::Uuid).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
                 ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("lease_token", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("response_epoch", FieldType::BigInteger).with_not_null(true),
@@ -31,7 +32,16 @@ pub(super) fn migration() -> Migration {
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true).with_default(Some("now()".into())),
                 ColumnDefinition::new("completed_at", FieldType::TimestampTz),
             ], constraints: vec![
-                Constraint::ForeignKey { name: "inference_usage_run".into(), columns: vec!["run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+            	Constraint::ForeignKey {
+            		name: "inference_usage_tenant_root_fkey".to_owned(),
+            		columns: vec!["tenant".to_owned()],
+            		referenced_table: "tenants".to_owned(),
+            		referenced_columns: vec!["name".to_owned()],
+            		on_delete: ForeignKeyAction::NoAction,
+            		on_update: ForeignKeyAction::NoAction,
+            		deferrable: None,
+            	},
+                Constraint::ForeignKey { name: "inference_usage_run".into(), columns: vec!["tenant".into(), "run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(), "id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
                 Constraint::Check { name: "inference_usage_estimate_confidence".into(), expression: "estimate_confidence IN ('exact', 'calibrated', 'conservative')".into() },
                 Constraint::Check { name: "inference_usage_outcome".into(), expression: "outcome IN ('dispatched', 'completed', 'rejected', 'unknown') AND (outcome = 'dispatched') = (completed_at IS NULL) AND (outcome = 'rejected') = (rejection_class IS NOT NULL)".into() },
                 Constraint::Check { name: "inference_usage_counts".into(), expression: "projection_version > 0 AND estimator_version > 0 AND estimated_tokens >= 0 AND input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND reasoning_tokens >= 0 AND cost_nanocredits >= 0 AND upstream_cost_nanocredits >= 0".into() },

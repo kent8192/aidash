@@ -44,19 +44,21 @@ const EVIDENCE: &str = "decision_evidence";
 const STATES: &str = "decision_states";
 const OUTCOMES: &str = "decision_outcomes";
 const PENDING: &str = "pending";
-const ATTEMPT_COLUMNS: [&str; 20] = [
+const ATTEMPT_COLUMNS: [&str; 22] = [
 	"id",
 	"decision_id",
 	"run_id",
 	"node",
 	"step",
 	"cycle",
+	"retry",
 	"input_revision",
 	"input_digest",
 	"worker",
 	"run_revision",
 	"decider",
 	"binding_restrictions",
+	"route",
 	"request_digest",
 	"state_digest",
 	"questions",
@@ -94,6 +96,8 @@ fn recovered_status(label: &str) -> Result<AttemptStatus> {
 fn stored_record(row: &native::Row) -> Result<(DispatchPermit, String, Option<Value>)> {
 	let questions: Vec<String> = serde_json::from_value(row.try_get("questions")?)?;
 	let cycle: i32 = row.try_get("cycle")?;
+	let retry: i32 = row.try_get("retry")?;
+	let route: i32 = row.try_get("route")?;
 	let record = DispatchRecord {
 		attempt: row.try_get("id")?,
 		decision: row.try_get("decision_id")?,
@@ -107,11 +111,14 @@ fn stored_record(row: &native::Row) -> Result<(DispatchPermit, String, Option<Va
 			input_digest: row.try_get("input_digest")?,
 			cycle: u32::try_from(cycle)
 				.map_err(|_| Error::Invalid("negative decision cycle".into()))?,
+			retry: u32::try_from(retry)
+				.map_err(|_| Error::Invalid("negative decision retry".into()))?,
 		},
 		decider: serde_json::from_value(row.try_get("decider")?)?,
 		binding_restrictions: serde_json::from_value::<Restrictions>(
 			row.try_get("binding_restrictions")?,
 		)?,
+		route: u32::try_from(route).map_err(|_| Error::Invalid("negative Decider Route".into()))?,
 		request_digest: row.try_get("request_digest")?,
 		state_digest: row.try_get("state_digest")?,
 		questions,
@@ -512,31 +519,50 @@ impl<'a> RunDecisionJournal<'a> {
 		native::query(
 			&Query::insert()
 				.into_table(Alias::new(ATTEMPTS))
-				.columns(ATTEMPT_COLUMNS[..19].iter().copied().map(Alias::new))
-				.values_panic([
-					Expr::value(record.attempt),
-					Expr::value(record.decision),
-					Expr::value(record.boundary.run),
-					Expr::value(record.boundary.node.as_str()),
-					Expr::value(record.boundary.step),
+				.columns(
+					ATTEMPT_COLUMNS[..21]
+						.iter()
+						.copied()
+						.chain(["tenant"])
+						.map(Alias::new),
+				)
+				.values_expr(vec![
+					Expr::value(record.attempt).into(),
+					Expr::value(record.decision).into(),
+					Expr::value(record.boundary.run).into(),
+					Expr::value(record.boundary.node.as_str()).into(),
+					Expr::value(record.boundary.step).into(),
 					Expr::value(
 						i32::try_from(record.boundary.cycle)
 							.map_err(|_| Error::Invalid("decision cycle overflow".into()))?,
-					),
-					Expr::value(record.boundary.input_revision),
-					Expr::value(record.boundary.input_digest.as_str()),
-					Expr::value(record.boundary.worker),
-					Expr::value(record.boundary.run_revision),
-					Expr::value(decider),
-					Expr::value(serde_json::to_value(&record.binding_restrictions)?),
-					Expr::value(record.request_digest.as_str()),
-					Expr::value(record.state_digest.as_str()),
-					Expr::value(serde_json::to_value(&record.questions)?),
-					Expr::value(record.question_digest.as_str()),
-					Expr::value(label(&record.mode)?),
-					Expr::value(serde_json::to_value(&owner_receipts)?),
-					Expr::value(PENDING),
+					)
+					.into(),
+					Expr::value(
+						i32::try_from(record.boundary.retry)
+							.map_err(|_| Error::Invalid("decision retry overflow".into()))?,
+					)
+					.into(),
+					Expr::value(record.boundary.input_revision).into(),
+					Expr::value(record.boundary.input_digest.as_str()).into(),
+					Expr::value(record.boundary.worker).into(),
+					Expr::value(record.boundary.run_revision).into(),
+					Expr::value(decider).into(),
+					Expr::value(serde_json::to_value(&record.binding_restrictions)?).into(),
+					Expr::value(
+						i32::try_from(record.route)
+							.map_err(|_| Error::Invalid("Decider Route overflow".into()))?,
+					)
+					.into(),
+					Expr::value(record.request_digest.as_str()).into(),
+					Expr::value(record.state_digest.as_str()).into(),
+					Expr::value(serde_json::to_value(&record.questions)?).into(),
+					Expr::value(record.question_digest.as_str()).into(),
+					Expr::value(label(&record.mode)?).into(),
+					Expr::value(serde_json::to_value(&owner_receipts)?).into(),
+					Expr::value(PENDING).into(),
+					crate::database::scope::tenant_of("runs", "id", record.boundary.run),
 				])
+				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)
@@ -694,6 +720,7 @@ impl<'a> RunDecisionJournal<'a> {
 			&evidence.state_digest,
 			&evidence.sources,
 			evidence.fit.window,
+			evidence.route,
 		) != evidence.id
 		{
 			return Err(Error::Invalid(
@@ -840,17 +867,20 @@ impl<'a> RunDecisionJournal<'a> {
 						"outcome",
 						"reason",
 						"evidence",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
-				.values_panic([
-					Expr::value(evidence_id),
-					Expr::value(stored.id),
-					Expr::value(self.run.id),
-					Expr::value(label(&stored.outcome)?),
-					Expr::value(label(&stored.reason)?),
-					Expr::value(serde_json::to_value(&stored)?),
+				.values_expr(vec![
+					Expr::value(evidence_id).into(),
+					Expr::value(stored.id).into(),
+					Expr::value(self.run.id).into(),
+					Expr::value(label(&stored.outcome)?).into(),
+					Expr::value(label(&stored.reason)?).into(),
+					Expr::value(serde_json::to_value(&stored)?).into(),
+					crate::database::scope::tenant_of("runs", "id", self.run.id),
 				])
+				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
@@ -867,17 +897,20 @@ impl<'a> RunDecisionJournal<'a> {
 							"digest",
 							"expires_at",
 							"state",
+							"tenant",
 						]
 						.map(Alias::new),
 					)
-					.values_panic([
-						Expr::value(state.id),
-						Expr::value(evidence_id),
-						Expr::value(self.run.id),
-						Expr::value(state.digest.as_str()),
-						Expr::value(state.expires_at),
-						Expr::value(state.state.clone()),
+					.values_expr(vec![
+						Expr::value(state.id).into(),
+						Expr::value(evidence_id).into(),
+						Expr::value(self.run.id).into(),
+						Expr::value(state.digest.as_str()).into(),
+						Expr::value(state.expires_at).into(),
+						Expr::value(state.state.clone()).into(),
+						crate::database::scope::tenant_of("runs", "id", self.run.id),
 					])
+					.expect("one value per column")
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **tx)
@@ -1028,16 +1061,19 @@ impl<'a> RunDecisionJournal<'a> {
 						"run_id",
 						"next_inference",
 						"observed_status",
+						"tenant",
 					]
 					.map(Alias::new),
 				)
-				.values_panic([
-					Expr::value(Uuid::new_v4()),
-					Expr::value(outcome.decision),
-					Expr::value(self.run.id),
-					Expr::value(outcome.next_inference.clone()),
-					Expr::value(outcome.observed_status.as_str()),
+				.values_expr(vec![
+					Expr::value(Uuid::new_v4()).into(),
+					Expr::value(outcome.decision).into(),
+					Expr::value(self.run.id).into(),
+					Expr::value(outcome.next_inference.clone()).into(),
+					Expr::value(outcome.observed_status.as_str()).into(),
+					crate::database::scope::tenant_of("runs", "id", self.run.id),
 				])
+				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)

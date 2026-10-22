@@ -9,9 +9,9 @@ use crate::apps::identity::oidc::{
 	BrowserOrigin, csrf_allowed, required_config, session_from_headers,
 };
 use crate::apps::identity::repositories::tenants::{self, Created, Creator};
-use crate::apps::identity::repositories::{personal_tenant, tenant_deletions};
+use crate::apps::identity::repositories::{personal_tenant, tenant_deletions, tenant_purge};
 use crate::apps::identity::serializers::tenants::{
-	CreatedTenant, LabelUpdate, TenantCreation, TenantLabel, TenantRecord,
+	CreatedTenant, LabelUpdate, PurgeProgress, TenantCreation, TenantLabel, TenantRecord,
 };
 use crate::apps::identity::services::http_auth::bearer;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
@@ -62,6 +62,22 @@ fn record(
 			)
 		})
 	});
+	let purgeable = deletion
+		.as_ref()
+		.is_some_and(|deletion| deletion.purged_at.is_none());
+	let purge = deletion
+		.as_ref()
+		.filter(|deletion| {
+			deletion.purged_at.is_none()
+				&& (deletion.purge_step.is_some() || deletion.purge_failures > 0)
+		})
+		.map(|deletion| PurgeProgress {
+			step: deletion.purge_step.clone(),
+			failures: u32::try_from(deletion.purge_failures).unwrap_or(u32::MAX),
+			error: deletion.purge_error.clone(),
+			failed_at: deletion.purge_failed_at,
+			stalled: tenant_purge::stalled(deletion),
+		});
 	TenantRecord {
 		name: tenant.name,
 		label: tenant.label,
@@ -70,6 +86,8 @@ fn record(
 		created_by_kind: tenant.created_by_kind,
 		deletion: deletion.map(Into::into),
 		restorable,
+		purgeable,
+		purge,
 	}
 }
 
@@ -143,13 +161,11 @@ impl Tenants {
 						.map_err(reinhardt::core::exception::Error::from)?
 						.pop()
 						.ok_or(Error::Unauthorized)?;
-					let pool =
-						(!account.gcip_tenant.is_empty()).then_some(account.gcip_tenant.as_str());
 					if account.disabled_at.is_some()
 						|| !f
 							.config
 							.dashboard_policy()
-							.is_some_and(|policy| policy.unbound(pool))
+							.is_some_and(|policy| policy.unrestricted(&account.issuer))
 					{
 						return Err(Error::Forbidden);
 					}
@@ -220,12 +236,11 @@ impl Tenants {
 				DashboardIdentity::find(tx, identity).await
 			})
 			.await?;
-		let pool = (!account.gcip_tenant.is_empty()).then_some(account.gcip_tenant.as_str());
 		if account.disabled_at.is_some()
 			|| !f
 				.config
 				.dashboard_policy()
-				.is_some_and(|policy| policy.provisions_personal(pool))
+				.is_some_and(|policy| policy.provisions_personal(&account.issuer))
 		{
 			return Err(Error::Forbidden);
 		}
@@ -296,10 +311,10 @@ impl Tenants {
 }
 
 /// Whether `identity` may create Tenants now, for the dashboard to offer it.
-pub(crate) fn creation_offered(f: &Federation, pool: Option<&str>, disabled: bool) -> bool {
+pub(crate) fn creation_offered(f: &Federation, issuer: &str, disabled: bool) -> bool {
 	!disabled
 		&& f.config.tenancy.tenant_creation
 		&& f.config
 			.dashboard_policy()
-			.is_some_and(|policy| policy.unbound(pool))
+			.is_some_and(|policy| policy.unrestricted(issuer))
 }

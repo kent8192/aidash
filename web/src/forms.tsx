@@ -25,6 +25,8 @@ import {
 } from "./capabilities/configuration";
 import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
+import { AgentPluginImport } from "./agent-plugin-import";
+import { agentPlugins } from "./agent-plugins";
 import type { ReferenceDocument } from "./generated/models";
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -51,6 +53,23 @@ const split = (s: string) =>
 const ref = (s: string): EntityRef => {
   const index = s.lastIndexOf("@");
   return { id: s.slice(0, index), version: s.slice(index + 1) };
+};
+// Cloudflare's Clef on its three zero-retention OpenRouter hosts, asked only
+// when Jev is unavailable (ADR 0066). Its keep threshold 0.2 (as binary64
+// bits) comes from docs/decisions/decider-route-thresholds.md, and only Jev
+// has a long-context mode.
+const CLEF_ROUTE = {
+  provider_contract: "openrouter.decisions/1",
+  model: "cloudflare/clef",
+  hosts: ["cloudflare", "deepinfra", "primeintellect"],
+  keep_threshold: "3fc999999999999a",
+  state_budget: {
+    default_request_bytes: 32000,
+    default_state_bytes: 24000,
+    long_context_request_bytes: null,
+    long_context_state_bytes: null,
+    input_stages: [null, 200, 60],
+  },
 };
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
@@ -323,6 +342,7 @@ export function EntityForm({
   const models = data.registry.filter((e) => e.kind === "model");
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
   const [core, setCore] = useState(emptyCore);
+  const [pluginConfig, setPluginConfig] = useState<Record<string, unknown>>({});
   const [cluster, setCluster] = useState("");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
@@ -346,6 +366,7 @@ export function EntityForm({
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
                   ...core,
+                  ...pluginConfig,
                 }
               : kind === "model"
                 ? {
@@ -382,20 +403,27 @@ export function EntityForm({
                     }
                   : kind === "decider"
                     ? {
-                        // A compaction Decider: only the model, mode, call
+                        // A compaction Decider: only the Jev model, whether
+                        // Clef answers when Jev is unavailable, the mode, call
                         // limit and state retention are chosen here; the
                         // contract and rule are fixed by this Node.
                         hook: "compaction",
                         answer_type: "noul",
                         description: s("description_en"),
-                        provider_contract: "typesafe.jev/1",
                         provider_credential: "openrouter",
-                        model: s("model_id"),
+                        routes: [
+                          {
+                            provider_contract: "typesafe.jev/1",
+                            model: s("model_id"),
+                            hosts: [],
+                            // The keep threshold 0.5 as binary64 bits.
+                            keep_threshold: "3fe0000000000000",
+                          },
+                          ...(d.has("clef_route") ? [CLEF_ROUTE] : []),
+                        ],
                         builder: "aidash.compaction/2",
                         option_source: "history_event/1",
                         rule: "compaction.keep/1",
-                        // The keep threshold 0.5 as binary64 bits.
-                        keep_threshold: "3fe0000000000000",
                         mode: s("decider_mode"),
                         max_calls_per_run: Number(s("max_calls_per_run")),
                         state_retention: {
@@ -422,7 +450,12 @@ export function EntityForm({
           if (
             kind === "agent" &&
             !s("instructions").trim() &&
-            !hasInstructionalBinding(core.bindings, data.registry, data.node.id)
+            !hasInstructionalBinding(
+              core.bindings,
+              data.registry,
+              data.node.id,
+              agentPlugins({ kind, config: pluginConfig }) ?? [],
+            )
           )
             throw new Error(t("agentNeedsSkill"));
           if (readingDocuments) return;
@@ -558,6 +591,7 @@ export function EntityForm({
               node={data.node.id}
               entries={data.registry}
             />
+            <AgentPluginImport config={pluginConfig} change={setPluginConfig} />
             <AgentDocuments
               documents={documents}
               change={setDocuments}
@@ -678,6 +712,10 @@ export function EntityForm({
                 />
               </Field>
             </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" name="clef_route" />
+              {t("deciderClefRoute")}
+            </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" name="retain_state" />
               {t("deciderRetainState")}

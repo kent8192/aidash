@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct GenerationRemoteDispatches {
 	#[field(primary_key = true)]
 	pub attempt_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub usage: reinhardt::db::orm::Json<serde_json::Value>,
 	#[field(field_type = "text")]

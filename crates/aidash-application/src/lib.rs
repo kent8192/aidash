@@ -9,6 +9,7 @@ pub mod federation;
 pub mod lifecycle;
 pub mod memory;
 pub mod plan_connections;
+pub mod plugin_tools;
 pub mod ports;
 pub mod provider_access;
 pub mod provider_authorization;
@@ -18,6 +19,7 @@ pub mod research;
 pub mod retention;
 pub mod tenancy;
 pub mod tenant_secrets;
+pub mod usage;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -34,6 +36,9 @@ pub enum Error {
 	Conflict(String),
 	#[error("{0}")]
 	NotFound(String),
+	/// The build's admission gate refused new work; the code is shown to the caller.
+	#[error("{0}")]
+	Refused(String),
 	#[error("unauthorized")]
 	Unauthorized,
 	#[error("forbidden")]
@@ -58,6 +63,11 @@ pub enum Error {
 	/// Typed context-recovery pause; never retried as transport.
 	#[error("{0}")]
 	Context(aidash_domain::context::recovery::Failure),
+	/// Every Decider Route was unavailable in this decision. The step is
+	/// retried a bounded number of times before it pauses as
+	/// `decider_unavailable` (ADR 0066).
+	#[error("every Decider Route is unavailable")]
+	DeciderOutage,
 	/// A truncated or refused provider completion. It pauses like `Context`;
 	/// its usage still settles the call's reservation, and no tool call from
 	/// it is ever dispatched.

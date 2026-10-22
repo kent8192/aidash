@@ -22,5 +22,28 @@ pub(super) fn migration() -> Migration {
 .add_operation(Operation::CreateIndex {table:"dashboard_mappings".into(),columns:vec!["tenant".into(),"subject".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:Some("enabled".into()),concurrently:false,expressions:None,mysql_options:None,operator_class:None})
 .add_operation(Operation::CreateIndex {table:"run_plan_connections".into(),columns:vec!["tenant".into(),"subject".into(),"provider".into(),"plan_connection_id".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
 .add_operation(Operation::AddConstraintDefinition {table:"plan_authorizations".to_owned(),constraint:Constraint::Check {name:"plan_authorization_identity".to_owned(),expression:r#"provider = 'chatgpt' AND state_hash ~ '^[0-9a-f]{64}$' AND redirect_uri ~ '^http://127\.0\.0\.1:[0-9]{1,5}/auth/callback$'"#.to_owned()}})
-.add_operation(Operation::AddConstraintDefinition {table:"plan_connection_hosts".to_owned(),constraint:Constraint::Check {name:"plan_connection_host_singleton".to_owned(),expression:r#"id = 'deployment'"#.to_owned()}})
+.add_operation(Operation::AddConstraintDefinition {table:"plan_connection_hosts".to_owned(),constraint:Constraint::Check {name:"plan_connection_host_singleton".to_owned(),expression:r#"id = 'deployment'"#.to_owned()}})		.add_operation(Operation::AddConstraintDefinition {
+			table: "plan_connections".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "plan_connections_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "run_plan_connections".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "run_plan_connections_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 }

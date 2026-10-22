@@ -85,6 +85,7 @@ export const shellCopy = {
 export const authCopy = {
   "ja-JP": {
     signIn: "Google でサインイン",
+    signInOidc: "サインイン",
     setup:
       "管理者が Aidash の OIDC 接続を設定してください。API の Bearer 認証は引き続き利用できます。",
     choose: "このタブで使う権限を選択してください",
@@ -101,10 +102,10 @@ export const authCopy = {
     expired: "登録申請の期限が切れました。再申請できます。",
     allDevices: "全端末からログアウト",
     currentDevice: "この端末からログアウト",
-    secondFactor: "2 段階認証を設定",
   },
   "en-US": {
     signIn: "Sign in with Google",
+    signInOidc: "Sign in",
     setup:
       "Ask an administrator to configure OIDC for Aidash. Bearer API access remains available.",
     choose: "Choose the authority for this tab",
@@ -121,6 +122,5 @@ export const authCopy = {
     expired: "Your request expired. You can submit another.",
     allDevices: "Log out on all devices",
     currentDevice: "Log out on this device",
-    secondFactor: "Set up two-step verification",
   },
 } as const;

@@ -1,29 +1,23 @@
+use aidash_domain::offering::Offering;
 use rstest::rstest;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[rstest]
-fn native_routes_match_the_committed_http_contract() {
-	// Use the checked-in transport catalog rather than a generated, ignored
-	// OpenAPI artifact so this contract also runs in a fresh checkout.
-	let contract: serde_json::Value = serde_json::from_str(include_str!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/tests/bruno/contracts.json"
-	)))
-	.unwrap();
-	let mut registered = BTreeMap::<(String, String), usize>::new();
-	let router = super::routes();
-	for (path, _name, _namespace, methods) in router.server_ref().get_all_routes() {
-		for method in methods {
-			*registered
-				.entry((method.to_string(), path.clone()))
-				.or_default() += 1;
-		}
-	}
-
-	// Every transport operation, including SSE, Federation and static HEAD,
-	// must resolve exactly once, without undocumented additional routes.
+/// The method and path of every route a catalog lists for `offering`. An entry
+/// without `offerings` serves every Offering.
+fn catalog(catalog: &str, offering: Offering) -> BTreeMap<(String, String), usize> {
+	let catalog: serde_json::Value = serde_json::from_str(catalog).unwrap();
 	let mut expected = BTreeMap::new();
-	for endpoint in contract.as_array().unwrap() {
+	for endpoint in catalog.as_array().unwrap() {
+		let serves = endpoint.get("offerings").is_none_or(|offerings| {
+			offerings
+				.as_array()
+				.unwrap()
+				.iter()
+				.any(|served| served.as_str() == Some(offering.as_str()))
+		});
+		if !serves {
+			continue;
+		}
 		let key = (
 			endpoint["method"].as_str().unwrap().to_owned(),
 			endpoint["path"].as_str().unwrap().to_owned(),
@@ -33,8 +27,38 @@ fn native_routes_match_the_committed_http_contract() {
 			"duplicate catalog endpoint"
 		);
 	}
+	expected
+}
+
+/// How many times the router of `offering` resolves each method and path.
+fn mounted(offering: Offering) -> BTreeMap<(String, String), usize> {
+	let mut registered = BTreeMap::<(String, String), usize>::new();
+	let router = super::routes_for(offering);
+	for (path, _name, _namespace, methods) in router.server_ref().get_all_routes() {
+		for method in methods {
+			*registered
+				.entry((method.to_string(), path.clone()))
+				.or_default() += 1;
+		}
+	}
+	registered
+}
+
+#[rstest]
+fn the_self_hosted_routes_match_the_community_catalog() {
+	// Use the checked-in transport catalog rather than a generated, ignored
+	// OpenAPI artifact so this contract also runs in a fresh checkout. Every
+	// transport operation, including SSE, Federation and static HEAD, must
+	// resolve exactly once, without undocumented additional routes.
+	let expected = catalog(
+		include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/tests/bruno/contracts.json"
+		)),
+		Offering::SelfHosted,
+	);
 	assert!(!expected.is_empty());
-	assert_eq!(registered, expected);
+	assert_eq!(mounted(Offering::SelfHosted), expected);
 }
 
 #[rstest]

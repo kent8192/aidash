@@ -136,7 +136,7 @@ impl OperationReconciliationRepository for Repository<'_> {
 		aidash_application::capabilities::withdrawal::withdraw(
 			&crate::bootstrap::operation_withdrawal_repository(
 				self.store,
-				crate::database::scope::recorded(&snapshot.tenant)?,
+				aidash_application::tenancy::TenancyScope::tenant(&snapshot.tenant)?,
 			),
 			snapshot.area_id,
 			snapshot.id,
@@ -358,6 +358,22 @@ impl OperationReconciliationScope for Scope<'_> {
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
+	}
+	async fn pod_time(
+		&mut self,
+		operation: Uuid,
+		started_at: chrono::DateTime<chrono::Utc>,
+		ended_at: chrono::DateTime<chrono::Utc>,
+	) -> Result<()> {
+		self.store
+			.usage
+			.pod_time(aidash_application::usage::PodTime {
+				operation,
+				tenant: self.access.identity.tenant.clone(),
+				started_at,
+				ended_at,
+			})
+			.await
 	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
 		let Scope { access, .. } = *self;

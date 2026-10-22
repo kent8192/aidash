@@ -64,13 +64,14 @@ pub struct ReadPlan {
 	#[serde(deserialize_with = "super::required_json")]
 	pub result: Value,
 }
+/// The answer a Run executing for another Node received from that Node's
+/// human request, for the exact call it was asked about.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ApprovalDecision {
+pub struct HomeApproval {
 	pub key: String,
 	pub call: ToolCall,
 	pub approved: bool,
-	pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -100,13 +101,23 @@ pub struct ToolCallState {
 	pub workspace_read_plan: Option<ReadPlan>,
 	pub skill_read_plan: Option<ReadPlan>,
 	pub workspace_observation_plan: Option<ReadPlan>,
-	pub workbench_approval_result: Option<ApprovalDecision>,
+	/// Only a Run executing for another Node: Home's answer to the call at `cursor`.
+	pub home_approval: Option<HomeApproval>,
+	/// The capability approval the call at `cursor` waited for. The call runs
+	/// again under it; `advance` clears it with the cursor.
+	pub approval: Option<Uuid>,
 	/// End of the admitted Tool Batch `[cursor, batch_end)`. Present only from
 	/// batch admission until adoption, so a restart resumes exactly those calls.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub batch_end: Option<usize>,
 }
 impl ToolCallState {
+	/// Move to the call at `cursor`, leaving the approvals of earlier calls behind.
+	pub fn advance(&mut self, cursor: usize) {
+		self.cursor = cursor;
+		self.home_approval = None;
+		self.approval = None;
+	}
 	pub fn selected_media(&self) -> Vec<ModelMedia> {
 		self.deferred_selected_media
 			.iter()
@@ -183,6 +194,21 @@ impl FailureTarget {
 		}
 	}
 }
+/// Where the approval a Run waits for is decided.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovalRef {
+	/// A capability approval record on this Node (tool call, outbound, Web disclosure).
+	Capability { approval_id: Uuid },
+	/// A Run executing for another Node asks that Node through a human request.
+	Home {
+		request_id: Uuid,
+		key: String,
+		call: ToolCall,
+		expires_at: DateTime<Utc>,
+	},
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WaitingState {
@@ -202,15 +228,9 @@ pub enum WaitingState {
 		request_id: Uuid,
 		resume: ResumeState,
 	},
-	CoreApproval {
-		approval_id: Uuid,
-		resume: ThinkingState,
-	},
-	ExternalApproval {
-		request_id: Uuid,
-		key: String,
-		call: ToolCall,
-		expires_at: DateTime<Utc>,
+	/// Waiting for an approval of the call at `resume`'s cursor, which then runs.
+	Approval {
+		approval: ApprovalRef,
 		resume: Box<ToolCallState>,
 	},
 	Reconciliation {
@@ -231,14 +251,20 @@ impl WaitingState {
 			| Self::Children { wake_at, .. }
 			| Self::Timer { wake_at, .. }
 			| Self::FailureDelivery { wake_at, .. } => Some(*wake_at),
-			Self::ExternalApproval { expires_at, .. } => Some(*expires_at),
+			Self::Approval {
+				approval: ApprovalRef::Home { expires_at, .. },
+				..
+			} => Some(*expires_at),
 			_ => None,
 		}
 	}
 	pub fn request_id(&self) -> Option<Uuid> {
 		match self {
 			Self::Human { request_id, .. }
-			| Self::ExternalApproval { request_id, .. }
+			| Self::Approval {
+				approval: ApprovalRef::Home { request_id, .. },
+				..
+			}
 			| Self::Reconciliation { request_id, .. } => Some(*request_id),
 			_ => None,
 		}
@@ -317,7 +343,7 @@ impl RunState {
 		match self {
 			Self::ToolCall(s) => check(s),
 			Self::Waiting(s) => match s.as_ref() {
-				WaitingState::ExternalApproval { resume, .. }
+				WaitingState::Approval { resume, .. }
 				| WaitingState::Reconciliation { resume, .. } => check(resume),
 				WaitingState::Timer {
 					resume: ResumeState::ToolCall(s),
@@ -348,6 +374,11 @@ pub struct RecoveryState {
 	/// recovered lease continues the same one (#108).
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub decision_cycle: u32,
+	/// Outage retries of the current step's compaction decision after every
+	/// Decider Route failed. A decision commits to it, so each retry asks the
+	/// Routes again; it is reset once the step saves anything else (ADR 0066).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decider_retry: u32,
 	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
 	#[serde(
 		default,
@@ -506,7 +537,7 @@ impl Run {
 		match &self.state {
 			RunState::ToolCall(s) => s.included_input_seq,
 			RunState::Waiting(wait) => match wait.as_ref() {
-				WaitingState::ExternalApproval { resume, .. }
+				WaitingState::Approval { resume, .. }
 				| WaitingState::Reconciliation { resume, .. } => resume.included_input_seq,
 				WaitingState::Human {
 					resume: ResumeState::ToolCall(s),

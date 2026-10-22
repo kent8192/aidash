@@ -151,7 +151,7 @@ records remain externally owned. Destination verification remains a human step.
 
 ## Controlled activation and operations
 
-Once this code is on protected main and the execution branch, a reviewed GitHub
+Once this code is on the execution branch and, with the first release, protected main, a reviewed GitHub
 plan may set `bootstrap_code_installed=true`, `activation_validated=true` and
 individual `enablement` fields. First enable certificates and dispatch
 **Deployment preview certificate** on `develop/0.1.0`; inspect the first valid

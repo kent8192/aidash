@@ -433,7 +433,7 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		"INSERT INTO peers (node_id, endpoint, credential_env, protocol_version, enabled) \
 		 VALUES ('aidash://node-remote', 'https://remote.example', 'AIDASH_SECRET_TEST_PEER', '0.1', true)",
 	)
-	.execute(t.d.federation.store.pool.driver())
+	.execute(t.d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let (status, body) = t

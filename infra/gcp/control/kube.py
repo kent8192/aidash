@@ -40,6 +40,11 @@ CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
 # but could never chmod the root itself as ledger initialization requires.
 RECOVERY_ROOT = "/var/lib/aidash/memory-recovery"
 RECOVERY_HOME = "home"
+# Demo data: the structure ships in the image; the people come from a Secret
+# mounted only into the migration Job (ADR 0080).
+DEMO_STRUCTURE = "/app/deploy/demo-data/structure.json"
+DEMO_PEOPLE_DIR = "/run/aidash/demo-data"
+DEMO_SECRET = "app-demo-data"
 # Deployments outside production; see `target`.
 SERVER = "deployment/app-aidash-server"
 WORKER = "deployment/app-aidash-worker"
@@ -71,7 +76,7 @@ RUNTIME_KEYS = {
     "AIDASH_OIDC_SESSION_IDLE_SECONDS",
 }
 GCIP_KEYS = {
-    "project_id", "web_api_key", "public_origin", "tenant_bindings",
+    "project_id", "web_api_key", "public_origin", "shared_pool", "tenant_bindings",
     "providers", "password_sign_up", "auth_helper", "sign_in_domains", "mfa_mandatory",
     "session_absolute_seconds", "session_idle_seconds",
 }
@@ -503,14 +508,16 @@ def gcip_settings(project, output, dashboard):
         or not isinstance(settings.get("web_api_key"), str)
         or not settings["web_api_key"].strip()
         or not isinstance(settings.get("tenant_bindings"), dict)
+        or not isinstance(settings.get("shared_pool", ""), str)
         or not isinstance(settings.get("sign_in_domains", {}), dict)
         or settings.get("auth_helper", "firebase") not in {"firebase", "public_origin"}
     ):
         raise Refused("managed GCIP configuration must match this environment")
     if PREVIEW_HOST.fullmatch(output["hostname"]) and (
-        settings.get("auth_helper", "firebase") != "firebase" or not settings["tenant_bindings"]
+        settings.get("auth_helper", "firebase") != "firebase"
+        or not (settings["tenant_bindings"] or settings.get("shared_pool"))
     ):
-        raise Refused("Random preview origins require the fixed Firebase helper and managed tenant bindings")
+        raise Refused("Random preview origins require the fixed Firebase helper and a managed GCIP Tenant")
     return {"dashboard": {"gcip": deepcopy(settings)}}
 
 
@@ -545,6 +552,12 @@ def materialize(cluster, identity, project, output, runtime):
         AIDASH_API_TOKEN=tokens["api"],
         AIDASH_CORE_RUNNER_TOKEN=tokens["runner"],
     )
+    if identity != PRODUCTION:
+        # Every non-production pod reads this Secret through `envFrom`, and the
+        # migration Job copies the server template. Enabling it here reaches
+        # both the servers that fulfil Demo Reservations (ADR 0079) and the Job
+        # that loads Demo data (ADR 0080); production keeps the false default.
+        values["AIDASH_DEMO_DATA_ENABLED"] = "true"
     if gcip is None:
         values.update(AIDASH_OIDC_ISSUER="https://accounts.google.com", AIDASH_OIDC_PUBLIC_ORIGIN="https://" + output["hostname"])
     for manifest in (
@@ -830,7 +843,7 @@ def gate(cluster, identity):
     admission(cluster, identity, "close")
 
 
-def deploy(cluster, identity, output, release, sha, settings):
+def deploy(cluster, identity, output, release, sha, settings, demo_people=None, fork=False):
     """Install both releases with writers stopped, start dependencies, then migrate."""
     namespace = namespace_of(identity)
     # An edge started by this deploy stays closed until readiness opens it, even
@@ -848,14 +861,21 @@ def deploy(cluster, identity, output, release, sha, settings):
     cluster.scale(namespace, target(identity, RUNNER), 1)
     cluster.rollout(namespace, target(identity, RUNNER))
     database_roles(cluster, identity)
-    migrate(cluster, identity, sha)
+    migrate(cluster, identity, sha, demo_people, fork)
     observer_role(cluster, identity)
     cluster.rollout(namespace, target(identity, EDGE))
 
 
-def migrate(cluster, identity, sha):
-    """One-shot Job with the server's exact image, env, mounts and identity."""
+def migrate(cluster, identity, sha, demo_people=None, fork=False):
+    """One-shot Job with the server's exact image, env, mounts and identity.
+
+    Every Environment but production also loads Demo data in the Job (ADR 0080).
+    `demo_people` is the people file's JSON; an Environment built from a fork
+    never receives it, whatever the caller passes.
+    """
     namespace = namespace_of(identity)
+    demo = identity != PRODUCTION
+    people = demo_people if demo and not fork else None
     template = deepcopy(cluster.get(*target(identity, SERVER).split("/", 1), namespace)["spec"]["template"])
     spec = template["spec"]
     container = next(item for item in spec["containers"] if item["name"] == "aidash")
@@ -877,6 +897,18 @@ def migrate(cluster, identity, sha):
         'aidash migrate && aidash memory-recovery init-if-missing --directory "$AIDASH_MEMORY_RECOVERY_DIR"'
         " && aidash activation-provision"
     ]
+    if demo:
+        # The copied server template's `app-runtime` envFrom already carries
+        # AIDASH_DEMO_DATA_ENABLED for a non-production Environment; the same
+        # Secret gives the server pods the setting that fulfils reservations.
+        container["args"][0] += f" && aidash demo-data --from {DEMO_STRUCTURE}"
+        if people is not None:
+            # Mounted into this Job's container only, never into a server or worker.
+            container["args"][0] += f" --people {DEMO_PEOPLE_DIR}/people.json"
+            spec.setdefault("volumes", []).append({"name": "demo-data", "secret": {"secretName": DEMO_SECRET}})
+            container.setdefault("volumeMounts", []).append(
+                {"name": "demo-data", "mountPath": DEMO_PEOPLE_DIR, "readOnly": True},
+            )
     spec["restartPolicy"] = "Never"
     # Never matches the backend Service or the writer drain selector. The copied
     # template keeps the required co-location term for the shared RWO claims;
@@ -897,21 +929,37 @@ def migrate(cluster, identity, sha):
         960,
     )
     name = f"migrate-{sha[:12]}-{secrets.token_hex(3)}"
-    cluster.create({
-        "apiVersion": "batch/v1", "kind": "Job",
-        "metadata": {"name": name, "namespace": namespace, "labels": labels},
-        "spec": {
-            "backoffLimit": 0,
-            "activeDeadlineSeconds": 900,
-            "ttlSecondsAfterFinished": 3600,
-            "template": {
-                "metadata": {"labels": labels},
-                "spec": spec,
+    if demo:
+        # Whatever an earlier deploy left is gone before this Job can mount it,
+        # so a fork or an unconfigured Environment never sees old people.
+        drop_demo_people(cluster, namespace)
+        if people is not None:
+            cluster.apply(secret(namespace, DEMO_SECRET, {"people.json": people}, environment=False))
+    try:
+        cluster.create({
+            "apiVersion": "batch/v1", "kind": "Job",
+            "metadata": {"name": name, "namespace": namespace, "labels": labels},
+            "spec": {
+                "backoffLimit": 0,
+                "activeDeadlineSeconds": 900,
+                "ttlSecondsAfterFinished": 3600,
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": spec,
+                },
             },
-        },
-    })
-    if not wait_job(cluster, namespace, name, 900):
-        raise RuntimeError("Migration Job failed; the retained database was not replaced")
+        })
+        if not wait_job(cluster, namespace, name, 900):
+            raise RuntimeError("Migration Job failed; the retained database was not replaced")
+    finally:
+        if demo:
+            # The finished Job needs the people no longer; do not leave them in the namespace.
+            drop_demo_people(cluster, namespace)
+
+
+def drop_demo_people(cluster, namespace):
+    if cluster.get("secret", DEMO_SECRET, namespace) is not None:
+        cluster.delete("secret", DEMO_SECRET, namespace)
 
 
 # A table owned by another role predates the owner and server roles: the

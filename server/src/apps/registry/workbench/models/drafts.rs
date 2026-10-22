@@ -206,13 +206,24 @@ impl AgentDraftShare {
 	) -> Result<()> {
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
-			.columns(["draft_id", "subject", "can_edit", "documents_digest"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(draft),
-				IntoValue::into_value(subject),
-				IntoValue::into_value(can_edit),
-				IntoValue::into_value(digest),
+			.columns(
+				[
+					"draft_id",
+					"subject",
+					"can_edit",
+					"documents_digest",
+					"tenant",
+				]
+				.map(Alias::new),
+			)
+			.values_expr(vec![
+				IntoValue::into_value(draft).into(),
+				IntoValue::into_value(subject).into(),
+				IntoValue::into_value(can_edit).into(),
+				IntoValue::into_value(digest).into(),
+				crate::database::scope::tenant_of("agent_drafts", "id", draft),
 			])
+			.expect("one value per column")
 			.on_conflict(
 				OnConflict::columns([Alias::new("draft_id"), Alias::new("subject")])
 					.update_columns([Alias::new("can_edit"), Alias::new("documents_digest")])

@@ -1,5 +1,5 @@
 meta {
-  name: 1114 tenant-registration-reject - Deployment Administrator bearer is never a Tenant Administrator
+  name: 1114 tenant-registration-reject - Subject Credential bearer is never a Tenant Administrator
   type: http
   seq: 1114
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 script:pre-request {

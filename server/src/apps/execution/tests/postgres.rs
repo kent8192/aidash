@@ -368,7 +368,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -590,7 +590,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&outage_pause)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let explicitly_paused = store
@@ -723,7 +723,6 @@ fn federation(
 		let store = &store_fixture.store;
 		let federation = Federation {
 			sandbox: Default::default(),
-			gcip: None,
 			store: store.clone(),
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			config: Config {
@@ -734,9 +733,12 @@ fn federation(
 				api_token: "test-access-token".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
-				tenancy: Default::default(),
+				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+					aidash_domain::offering::Offering::SelfHosted,
+				),
+				demo_data: false,
 				oidc: None,
-				gcip: None,
+				sign_in: None,
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
@@ -811,7 +813,7 @@ async fn final_response(store: &Store, task: Uuid) {
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -875,7 +877,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(store.pool.driver())
+			.execute(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -1059,14 +1061,11 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
 	let harness = aidash_server::harness::Harness { federation: f };
-	harness.worker_once().await.unwrap();
-	assert!(approve_fixture_call(&store).await);
-	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
 	let run: Run = {
 		let query_bind_1 = task.id;
@@ -1090,9 +1089,6 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	assert!(run.recovery.retry.is_none());
 	assert!(run.error.is_none());
 	harness.worker_once().await.unwrap();
-	assert!(approve_fixture_call(&store).await);
-	harness.worker_once().await.unwrap();
-	harness.worker_once().await.unwrap();
 	let run = store.run(&ACME, run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
@@ -1100,334 +1096,6 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		store.task(&ACME, task.id).await.unwrap().status.as_str(),
 		"RUNNING"
 	);
-	drop(server);
-	cleanup(store, &url, &schema).await;
-}
-
-async fn approve_fixture_call(store: &Store) -> bool {
-	let run = store.runs(&ACME).await.unwrap().remove(0);
-	let RunState::Waiting(waiting) = &run.state else {
-		return false;
-	};
-	let WaitingState::ExternalApproval { request_id, .. } = waiting.as_ref() else {
-		return false;
-	};
-	let human = aidash_application::ports::execution::ExecutionStore::human_request_by_id(
-		&store.for_run(ACME.clone()),
-		*request_id,
-	)
-	.await
-	.unwrap();
-	assert_eq!(human.kind, "APPROVAL_REQUIRED");
-	assert!(
-		human
-			.prompt
-			.starts_with("Approve this exact external tool action once?")
-	);
-	store
-		.answer(&ACME, *request_id, json!({"approved":true}))
-		.await
-		.unwrap();
-	true
-}
-
-struct WriteApproval {
-	store: Store,
-	url: String,
-	schema: String,
-	harness: aidash_server::harness::Harness,
-	run: Run,
-	first: Uuid,
-	effects: Arc<std::sync::atomic::AtomicUsize>,
-	server: TestServerGuard,
-	_runtime: common::RuntimeFixture,
-}
-
-#[rstest::fixture]
-async fn write_approval(
-	#[default(false)] expired: bool,
-	#[default(false)] prior_response: bool,
-	#[from(store)] _store_fixture: StoreFuture,
-	#[from(federation)]
-	#[with(_store_fixture.clone())]
-	_federation: common::RuntimeFuture,
-	#[from(upstream_fixtures::hits)] effects: Arc<std::sync::atomic::AtomicUsize>,
-	#[from(write_approval_router)]
-	#[with(effects.clone())]
-	_router: Arc<Router>,
-	#[future(awt)]
-	#[from(upstream)]
-	#[with(_router.clone())]
-	server: TestServerGuard,
-) -> WriteApproval {
-	let (store, url, schema) = _store_fixture.clone().await.parts();
-
-	let endpoint = server.url.clone();
-	let f = _federation.await.federation;
-	seed(&f.registry).await;
-	f.registry
-		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
-			"tool",
-			"managed-write",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"unsafe"}}),
-		))
-		.await
-		.unwrap();
-	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Approval", "Check external effects")
-		.await
-		.unwrap();
-	let task = running_task(&f, &agent, workspace.id, None).await;
-	let response = aidash_server::provider::ModelResponse {
-		tool_calls: (1..=2)
-			.map(|value| aidash_server::provider::ToolCall {
-				id: value.to_string(),
-				name: "plugin_0".into(),
-				arguments: json!({"value":value}),
-			})
-			.collect(),
-		..Default::default()
-	};
-	{
-		let query_bind_1 = task.id;
-		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
-				.value_expr(
-					reinhardt::query::Alias::new("phase"),
-					reinhardt::query::Expr::value("TOOL_CALL"),
-				)
-				.value_expr(
-					reinhardt::query::Alias::new("pending"),
-					Expr::value(query_bind_2.to_owned()),
-				)
-				.and_where(
-					reinhardt::query::Expr::col(reinhardt::query::Alias::new("task_id"))
-						.eq(Expr::value(query_bind_1.to_owned())),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(store.pool.driver())
-		.await
-	}
-	.unwrap();
-	let harness = aidash_server::harness::Harness { federation: f };
-	harness.worker_once().await.unwrap();
-	let run: Run = {
-		let query_bind_1 = task.id;
-		aidash_server::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::Expr::cust("*"))
-				.from(reinhardt::query::Alias::new("runs"))
-				.and_where(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("task_id"),
-					))
-					.eq(SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					)),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_one(store.pool.in_scope(&ACME))
-		.await
-	}
-	.unwrap();
-	let first: Uuid = request_id(&run);
-	if expired {
-		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-		let past = chrono::Utc::now() - chrono::Duration::minutes(16);
-		{
-			let query_bind_1 = first;
-			let query_bind_2 = past;
-			sqlx::query(
-				&Query::update()
-					.table(Alias::new("human_requests"))
-					.value_expr(
-						Alias::new("created_at"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(store.pool.driver())
-			.await
-		}
-		.unwrap();
-		let mut state = run.state.clone();
-		let RunState::Waiting(waiting) = &mut state else {
-			panic!("expected approval wait")
-		};
-		let WaitingState::ExternalApproval { expires_at, .. } = waiting.as_mut() else {
-			panic!("expected external approval")
-		};
-		*expires_at = past;
-		let pending = json!({"state_version":run.state_version,"data":json!(state)["data"],"recovery":run.recovery});
-		{
-			let query_bind_1 = run.id;
-			let query_bind_2 = pending;
-			sqlx::query(
-				&Query::update()
-					.table(Alias::new("runs"))
-					.value_expr(
-						Alias::new("pending"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(store.pool.driver())
-			.await
-		}
-		.unwrap();
-	}
-	if prior_response {
-		{
-			let query_bind_1 = first;
-			let query_bind_2 = json!({"approved":true});
-			sqlx::query(
-				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("human_requests"))
-					.value_expr(
-						reinhardt::query::Alias::new("response"),
-						Expr::value(query_bind_2.to_owned()),
-					)
-					.value_expr(
-						reinhardt::query::Alias::new("answered_by"),
-						reinhardt::query::Expr::value("human"),
-					)
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=?)".into(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.execute(store.pool.driver())
-			.await
-		}
-		.unwrap();
-	}
-	WriteApproval {
-		store,
-		url,
-		schema,
-		harness,
-		run,
-		first,
-		effects,
-		server,
-		_runtime: _store_fixture.clone().await.runtime,
-	}
-}
-
-#[rstest::rstest]
-#[case(false, false, false)]
-#[case(true, false, false)]
-#[case(true, true, false)]
-#[case(true, false, true)]
-#[tokio::test]
-async fn managed_external_write_requires_exact_one_call_approval(
-	#[case] _expired: bool,
-	#[case] late_answer: bool,
-	#[case] _prior_response: bool,
-	#[future(awt)]
-	#[with(_expired, _prior_response)]
-	write_approval: WriteApproval,
-) {
-	let WriteApproval {
-		store,
-		url,
-		schema,
-		harness,
-		mut run,
-		first,
-		effects,
-		server,
-		_runtime,
-	} = write_approval;
-	assert_eq!(run.phase().as_str(), "WAITING");
-	assert_eq!(effects.load(Ordering::SeqCst), 0);
-	if !_expired {
-		store
-			.answer(&ACME, first, json!({"approved":false}))
-			.await
-			.unwrap();
-	}
-	if late_answer {
-		let result = store
-			.answer(&ACME, first, json!({"approved":true}))
-			.await
-			.unwrap();
-		assert_eq!(
-			result.response,
-			Some(json!({"approved":false,"expired":true})),
-			"late answer must persist expiry"
-		);
-	}
-	harness.worker_once().await.unwrap();
-	harness.worker_once().await.unwrap();
-	run = store.run(&ACME, run.id).await.unwrap();
-	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	assert_eq!(effects.load(Ordering::SeqCst), 0);
-	if _expired {
-		let row: HumanRequest = {
-			let query_bind_1 = first;
-			aidash_server::database::query_as(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::Expr::cust("*"))
-					.from(reinhardt::query::Alias::new("human_requests"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_one(store.pool.in_scope(&ACME))
-			.await
-		}
-		.unwrap();
-		assert_eq!(row.response, Some(json!({"approved":false,"expired":true})));
-		assert_eq!(row.answered_by.as_deref(), Some("system"));
-		assert!(matches!(
-			store.answer(&ACME, first, json!({"approved":true})).await,
-			Err(aidash_server::Error::Conflict(_))
-		));
-	}
-	harness.worker_once().await.unwrap();
-	run = store.run(&ACME, run.id).await.unwrap();
-	assert_eq!(run.phase().as_str(), "WAITING");
-	let second = request_id(&run);
-	assert_ne!(first, second);
-	store
-		.answer(&ACME, second, json!({"approved":true}))
-		.await
-		.unwrap();
-	harness.worker_once().await.unwrap();
-	harness.worker_once().await.unwrap();
-	assert_eq!(effects.load(Ordering::SeqCst), 1);
 	drop(server);
 	cleanup(store, &url, &schema).await;
 }
@@ -1477,12 +1145,8 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.unwrap();
 	let task = running_task(&federation, &agent, workspace.id, None).await;
 	let harness = Harness { federation };
-	// Four exact external approvals add durable waiting/resume transitions.
 	for _ in 0..40 {
 		let progress = harness.worker_once().await.unwrap();
-		if approve_fixture_call(&store).await {
-			continue;
-		}
 		if !progress {
 			break;
 		}
@@ -1565,7 +1229,7 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1719,7 +1383,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1791,7 +1455,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1878,7 +1542,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1911,7 +1575,7 @@ async fn peer_disable_does_not_require_a_live_peer(
 			.and_where(reinhardt::query::Expr::cust("node_id = 'aidash://offline'"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(store.pool.driver())
+	.execute(store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let disabled = f
@@ -1950,7 +1614,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	// Simulate an event insertion failure after the primary mutation.
 	// SeaQuery cannot add a CHECK constraint to an existing table.
 	// Only the table owner can add a constraint; the server role holds DML.
-	let owner = common::owner_pool(store.pool.driver()).await;
+	let owner = common::owner_pool(store.pool.fixture_driver()).await;
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_registration CHECK(kind <> 'registry.registered')",
 	)
@@ -2038,7 +1702,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2084,7 +1748,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(store.pool.driver())
+			.fetch_one(store.pool.fixture_driver())
 			.await
 		}
 		.unwrap()
@@ -2187,16 +1851,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 	};
 	{
 		let query_bind_1 = task.id;
-		let query_bind_2 = {
-			let run = store.runs(&ACME).await.unwrap().remove(0);
-			let mut pending = common::tool_pending(json!({"response":response,"cursor":0}));
-			// The crash follows approval and dispatch of this exact unsafe call.
-			pending["data"]["workbench_approval_result"] = json!({
-				"key":format!("{}:0:0", run.id), "call":response.tool_calls[0],
-				"expires_at":chrono::Utc::now()+chrono::Duration::minutes(15), "approved":true
-			});
-			pending
-		};
+		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs"))
@@ -2217,7 +1872,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2466,29 +2121,6 @@ fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Route
 }
 
 #[rstest::fixture]
-fn write_approval_router(
-	#[from(upstream_fixtures::hits)] effects: Arc<std::sync::atomic::AtomicUsize>,
-) -> Arc<Router> {
-	Arc::new(
-		reinhardt::test::stub::StubRouter::new()
-			.route(
-				"/",
-				http::Method::POST,
-				reply(move |_request: reinhardt::Request| {
-					let counter = effects.clone();
-					async move {
-						counter.fetch_add(1, Ordering::SeqCst);
-						reinhardt::Response::ok()
-							.with_json(&json!({"ok":true}))
-							.unwrap()
-					}
-				}),
-			)
-			.into_server_router(),
-	)
-}
-
-#[rstest::fixture]
 fn ambiguous_peer_credentials_cannot_impersonate_another_node_router() -> Arc<Router> {
 	Arc::new(
 		reinhardt::test::stub::StubRouter::new()
@@ -2584,9 +2216,12 @@ fn authenticated_runtime(
 			api_token: "test-access-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			tenancy: Default::default(),
+			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+				aidash_domain::offering::Offering::SelfHosted,
+			),
+			demo_data: false,
 			oidc: None,
-			gcip: None,
+			sign_in: None,
 		};
 		runtime.federation.client = http_client;
 		runtime

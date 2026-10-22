@@ -317,6 +317,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 							Alias::new("run_id"),
 							Alias::new("identity_id"),
 							Alias::new("mapping_id"),
+							Alias::new("tenant"),
 						])
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -332,6 +333,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_3.to_owned()).into()],
 								))
+								.expr(crate::database::scope::tenant())
 								.to_owned(),
 						)
 						.to_string(PostgresQueryBuilder),
@@ -362,6 +364,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 							Alias::new("agent_id"),
 							Alias::new("agent_version"),
 							Alias::new("delivered"),
+							Alias::new("tenant"),
 						])
 						.from_subquery(
 							Query::select()
@@ -382,6 +385,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 									vec![Expr::value(query_bind_4.to_owned()).into()],
 								))
 								.expr(Expr::cust("true"))
+								.expr(crate::database::scope::tenant())
 								.to_owned(),
 						)
 						.returning([

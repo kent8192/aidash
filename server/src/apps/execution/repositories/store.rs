@@ -79,6 +79,12 @@ pub struct Store {
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
 	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
 	pub cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
+	/// Where Execution Pod time and storage samples go. The build installs it;
+	/// Community's reports nowhere.
+	pub usage: std::sync::Arc<dyn aidash_application::usage::UsageEvents>,
+	/// Decides whether new work may begin. The build installs it; Community's
+	/// admits everything.
+	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -245,78 +251,57 @@ impl Store {
 			.ok_or(Error::Forbidden)
 	}
 
-	/// The scope of a Run that a caller names only by id: its Tenant from the
-	/// local execution grant or the receiver's admission, found across Tenants
-	/// until #265 records the Tenant on the Run. A Run with neither has no
-	/// Tenant; only test fixtures create one.
+	/// The scope of a Run that a caller names only by id: the Tenant its row
+	/// records, found across Tenants.
 	pub(crate) async fn run_tenancy(&self, run: Uuid) -> Result<TenancyScope> {
 		if let Some(tenant) = self.tenancies.run(run) {
 			return Ok(tenant.into());
 		}
 		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
-		let tenant: Option<String> = self
-			.pool
-			.scoped(&lookup, async |tx| {
-				for (table, column) in [
-					("authorization_execution", "run_id"),
-					("authorization_remote_admissions", "id"),
-				] {
-					let tenant = crate::database::native::query_scalar::<String>(
-						&Query::select()
-							.column(Alias::new("tenant"))
-							.from(Alias::new(table))
-							.and_where(Expr::col(Alias::new(column)).eq(Expr::value(run)))
-							.to_string(PostgresQueryBuilder),
-					)
-					.scalar_optional(&mut **tx)
-					.await?;
-					if tenant.is_some() {
-						return Ok(tenant);
-					}
-				}
-				Ok(None)
-			})
-			.await?;
-		match tenant {
-			Some(tenant) => {
-				let tenant = aidash_domain::tenancy::TenantName::new(tenant)?;
-				self.tenancies.remember_run(run, tenant.clone());
-				Ok(tenant.into())
-			}
-			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
-		}
+		let tenant: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(self.pool.in_scope(&lookup))
+		.await?;
+		let tenant = aidash_domain::tenancy::TenantName::new(
+			tenant.ok_or_else(|| Error::NotFound("run".into()))?,
+		)?;
+		self.tenancies.remember_run(run, tenant.clone());
+		Ok(tenant.into())
 	}
 
-	/// The Tenant that owns a local workspace; unscoped workspaces have none.
-	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<Option<String>> {
+	/// The Tenant that owns a local workspace.
+	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<String> {
 		if let Some(tenant) = self.tenancies.workspace(workspace) {
-			return Ok(Some(tenant.into_inner()));
+			return Ok(tenant.into_inner());
 		}
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
-				.from(Alias::new("authorization_workspaces"))
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(self.pool.in_scope(scope))
 		.await?;
-		if let Some(tenant) = &tenant
-			&& let Ok(name) = aidash_domain::tenancy::TenantName::new(tenant)
-		{
-			self.tenancies.remember_workspace(workspace, name);
-		}
+		let tenant = tenant.ok_or_else(|| Error::NotFound("workspace".into()))?;
+		self.tenancies.remember_workspace(
+			workspace,
+			aidash_domain::tenancy::TenantName::new(tenant.clone())?,
+		);
 		Ok(tenant)
 	}
 
-	/// The scope of a Workspace that a caller names only by id: its Tenant, or
-	/// no Tenant for a legacy Workspace that only test fixtures still create.
+	/// The scope of a Workspace that a caller names only by id: its Tenant.
 	pub(crate) async fn workspace_tenancy(&self, workspace: Uuid) -> Result<TenancyScope> {
-		match self.workspace_tenant(workspace).await? {
-			Some(tenant) => Ok(TenancyScope::tenant(&tenant)?),
-			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
-		}
+		Ok(TenancyScope::tenant(
+			&self.workspace_tenant(workspace).await?,
+		)?)
 	}
 
 	/// The scope of a cross-node generation or semantic operation, found from
@@ -368,22 +353,20 @@ impl Store {
 				}
 				Ok(tenant.into())
 			}
-			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
+			None => Err(Error::NotFound("remote Run".into())),
 		}
 	}
 
 	/// Run creation re-checks the Projection Version pinned by the Binding
 	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
-	/// pinned model and, when salted, backed by this node's Cache Salt Key and
-	/// a Tenant to salt with. `tenant_scoped` is false for tenantless legacy
-	/// execution, whose Runs could never derive a Cache Scope. Legacy Runs are
-	/// never affected; nothing falls back to Legacy.
+	/// pinned model and, when salted, backed by this node's Cache Salt Key.
+	/// Legacy Projection Versions are never affected; nothing falls back to
+	/// Legacy.
 	pub(crate) fn require_projection(
 		&self,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
-		tenant_scoped: bool,
 	) -> Result<()> {
-		require_projection(snapshot, self.cache_salt.is_some(), tenant_scoped)
+		require_projection(snapshot, self.cache_salt.is_some())
 	}
 
 	/// The view of one Run's executor, in the Run's Tenant scope.
@@ -431,6 +414,8 @@ impl Store {
 			tenancies: Default::default(),
 			tool_slots,
 			cache_salt: None,
+			usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
+			admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 			provider_credentials: None,
 			plan_connections: None,
 			plan_connections_enabled: false,
@@ -534,6 +519,8 @@ impl Store {
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
+			usage: self.usage.clone(),
+			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
@@ -581,6 +568,8 @@ impl Store {
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
+			usage: self.usage.clone(),
+			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
@@ -619,6 +608,7 @@ impl Store {
 						Alias::new("workspace_id"),
 						Alias::new("kind"),
 						Alias::new("data"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -642,6 +632,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()],
 							))
+							.expr(crate::database::scope::event_tenant(workspace))
 							.to_owned(),
 					)
 					.returning_all()
@@ -678,7 +669,7 @@ impl Store {
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		let mut tx = self.pool.begin(scope).await?;
 		let workspace = self
-			.create_workspace_in(&mut tx, Uuid::new_v4(), title, goal)
+			.create_workspace_in(&mut tx, Uuid::new_v4(), tenant, title, goal)
 			.await?;
 		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
 			.await?;
@@ -715,6 +706,7 @@ impl Store {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
+		tenant: &str,
 		title: &str,
 		goal: &str,
 	) -> Result<Workspace> {
@@ -727,7 +719,12 @@ impl Store {
 			aidash_server::database::query_as(
 				&Query::insert()
 					.into_table(Alias::new("workspaces"))
-					.columns([Alias::new("id"), Alias::new("title"), Alias::new("goal")])
+					.columns([
+						Alias::new("id"),
+						Alias::new("title"),
+						Alias::new("goal"),
+						Alias::new("tenant"),
+					])
 					.from_subquery(
 						Query::select()
 							.expr(SimpleExpr::CustomWithExpr(
@@ -742,6 +739,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],
 							))
+							.expr(Expr::value(tenant.to_owned()))
 							.to_owned(),
 					)
 					.returning_all()
@@ -994,6 +992,7 @@ impl Store {
 						reinhardt::query::Alias::new("dependencies"),
 						reinhardt::query::Alias::new("parent_id"),
 						reinhardt::query::Alias::new("creation_key"),
+						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -1032,6 +1031,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_9.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)
@@ -1144,23 +1148,22 @@ impl Store {
 				.await?
 			};
 			snapshot.validate()?;
-			// Scoped claims run in a Tenant-owned workspace; the legacy claim
-			// path has already required a workspace without one.
-			let tenant_scoped: bool = {
-				let query_bind_1 = claimed.workspace_id;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id = ?))"
-								.to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_one(&mut **tx)
-				.await?
-			};
-			self.require_projection(&snapshot, tenant_scoped)?;
+			self.require_projection(&snapshot)?;
+			let tenant: String = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("tenant"))
+					.from(Alias::new("workspaces"))
+					.and_where(Expr::col("id").eq(Expr::value(claimed.workspace_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			aidash_application::usage::require(
+				self.admission.as_ref(),
+				&tenant,
+				aidash_application::usage::Work::Run,
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()
@@ -1186,6 +1189,7 @@ impl Store {
 							Alias::new("agent_id"),
 							Alias::new("agent_version"),
 							Alias::new("context"),
+							Alias::new("tenant"),
 						])
 						.from_subquery(
 							Query::select()
@@ -1214,6 +1218,11 @@ impl Store {
 									vec![Expr::value(query_bind_6.to_owned()).into()],
 								))
 								.expr(Expr::value(query_bind_7))
+								.expr(crate::database::scope::tenant_of(
+									"workspaces",
+									"id",
+									query_bind_3,
+								))
 								.to_owned(),
 						)
 						.on_conflict(
@@ -1690,6 +1699,7 @@ impl Store {
 						reinhardt::query::Alias::new("created_by"),
 						reinhardt::query::Alias::new("idempotency_key"),
 						reinhardt::query::Alias::new("run_id"),
+						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -1728,6 +1738,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_9.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)
@@ -1865,6 +1880,7 @@ impl Store {
 						Alias::new("created_by"),
 						Alias::new("idempotency_key"),
 						Alias::new("run_id"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -1903,6 +1919,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_9.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)
@@ -2594,6 +2615,7 @@ impl Store {
 						Alias::new("workspace_id"),
 						Alias::new("resource_kind"),
 						Alias::new("resource_id"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -2612,6 +2634,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_4.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"runs",
+								"id",
+								query_bind_1,
 							))
 							.to_owned(),
 					)
@@ -2638,6 +2665,7 @@ impl Store {
 						Alias::new("workspace_id"),
 						Alias::new("resource_kind"),
 						Alias::new("resource_id"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -2656,6 +2684,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_4.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"runs",
+								"id",
+								query_bind_1,
 							))
 							.to_owned(),
 					)
@@ -2710,6 +2743,7 @@ impl Store {
 						Alias::new("sender"),
 						Alias::new("content"),
 						Alias::new("idempotency_key"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -2732,6 +2766,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"workspaces",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)
@@ -3424,34 +3463,6 @@ impl Store {
 		Ok(request)
 	}
 
-	pub(crate) async fn expire_workbench_approval(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
-		let request = HumanRequestRecord::read_in(tx.as_mut(), id, true)
-			.await?
-			.ok_or_else(|| Error::NotFound("human request".into()))?;
-		let result = if human_interaction::approval_expired(&request, chrono::Utc::now()) {
-			self.answer_in(
-				tx.as_mut(),
-				id,
-				json!({"approved": false, "expired": true}),
-				"system",
-			)
-			.await?
-		} else {
-			request
-		};
-		tx.commit().await?;
-		Ok(result)
-	}
-
 	pub async fn answer(
 		&self,
 		scope: &TenancyScope,
@@ -3500,7 +3511,7 @@ impl Store {
 			.await?
 			.ok_or_else(|| Error::NotFound("run".into()))?;
 		let human_interaction::Answer::Write { response, actor } =
-			human_interaction::answer(&old, &run, response, actor, chrono::Utc::now())?
+			human_interaction::answer(&old, &run, response, actor)?
 		else {
 			return Ok(old);
 		};
@@ -3646,6 +3657,7 @@ impl Store {
 						reinhardt::query::Alias::new("input"),
 						reinhardt::query::Alias::new("status"),
 						reinhardt::query::Alias::new("replay_safe"),
+						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -3670,6 +3682,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()]
 							))
+							.expr(crate::database::scope::tenant_of("runs", "id", run.id))
 							.to_owned()
 					)
 					.to_owned()
@@ -4317,6 +4330,7 @@ impl Store {
 							reinhardt::query::Alias::new("idempotency_key"),
 							reinhardt::query::Alias::new("content"),
 							reinhardt::query::Alias::new("expires_at"),
+							reinhardt::query::Alias::new("tenant"),
 						])
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -4343,6 +4357,11 @@ impl Store {
 										"CURRENT_TIMESTAMP + INTERVAL '60 seconds'",
 									)
 								})
+								.expr(crate::database::scope::tenant_of(
+									"tasks",
+									"id",
+									query_bind_1,
+								))
 								.to_owned(),
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -4813,6 +4832,7 @@ impl Store {
 						reinhardt::query::Alias::new("kind"),
 						reinhardt::query::Alias::new("prompt"),
 						reinhardt::query::Alias::new("request_key"),
+						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -4839,6 +4859,11 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_6.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"runs",
+								"id",
+								query_bind_3,
 							))
 							.to_owned(),
 					)
@@ -4896,7 +4921,6 @@ impl Store {
 fn require_projection(
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	cache_salt: bool,
-	tenant_scoped: bool,
 ) -> Result<()> {
 	let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
 	let version = agent.projection_version.unwrap_or_default();
@@ -4928,11 +4952,6 @@ fn require_projection(
 	if version.salted() && !cache_salt {
 		return Err(Error::Invalid(format!(
 			"this node has no Cache Salt Key for Projection Version {version}"
-		)));
-	}
-	if version.salted() && !tenant_scoped {
-		return Err(Error::Invalid(format!(
-			"Projection Version {version} requires a Tenant-owned workspace; legacy execution has none"
 		)));
 	}
 	Ok(())

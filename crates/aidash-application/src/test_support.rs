@@ -1,9 +1,10 @@
 //! Small registered Binding graphs for portable adapter and lifecycle tests.
 use crate::{
 	Error, Result,
-	ports::bindings::{BindingCatalog, ProviderCatalog},
+	ports::bindings::{BindingCatalog, ProviderCatalog, StoredAgentPlugin},
 };
 use aidash_domain::{
+	agent_plugin::{AgentPluginRef, MCP_SCHEMA, PLUGIN_SCHEMA, PluginFile},
 	registry::{
 		Entry, Projection,
 		bindings::{BindingSnapshot, QualifiedRef},
@@ -23,17 +24,16 @@ pub(crate) fn decider_config() -> serde_json::Value {
 		hook: aidash_domain::decision::Hook::Compaction,
 		answer_type: aidash_domain::decision::AnswerType::Noul,
 		description: "Keep needed history".into(),
-		provider_contract: aidash_domain::decision::PROVIDER.into(),
 		provider_credential: "openrouter".into(),
-		model: "typesafe/jev-1.14".into(),
+		routes: vec![aidash_domain::decision::DeciderRoute::jev(
+			"typesafe/jev-1.14",
+		)],
 		builder: aidash_domain::decision::BUILDER.into(),
 		option_source: aidash_domain::decision::OPTION_SOURCE.into(),
 		rule: aidash_domain::decision::RULE.into(),
-		keep_threshold: aidash_domain::decision::Probability::half(),
 		mode: aidash_domain::decision::Mode::Enforce,
 		max_calls_per_run: 20,
 		state_retention: Default::default(),
-		state_budget: Default::default(),
 	})
 	.expect("a Decider configuration serializes")
 }
@@ -48,12 +48,72 @@ pub(crate) fn agent(id: &str) -> Entry {
 		json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Do the task.","bindings":[],"remove_default":[]}),
 	)
 }
+pub(crate) const PLUGIN_SOURCE: &str =
+	"https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567";
+
+/// A plugin copy named `name` with a remote server, a skipped server and one Skill per
+/// `(directory, body)`.
+pub(crate) fn stored_plugin(name: &str, skills: &[(&str, &str)]) -> StoredAgentPlugin {
+	stored_plugin_with_servers(
+		name,
+		json!({
+			"docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp"},
+			"legacy": {"type": "sse", "url": "https://legacy.example.com/sse"},
+		}),
+		skills,
+	)
+}
+
+/// A plugin copy named `name` whose `mcp.json` holds exactly `servers`.
+pub(crate) fn stored_plugin_with_servers(
+	name: &str,
+	servers: serde_json::Value,
+	skills: &[(&str, &str)],
+) -> StoredAgentPlugin {
+	let file = |path: String, content: String| PluginFile {
+		path,
+		bytes: content.into_bytes(),
+	};
+	let mut files = vec![
+		file(
+			"plugin.json".into(),
+			json!({"$schema": PLUGIN_SCHEMA, "name": name, "version": "1.0.0"}).to_string(),
+		),
+		file(
+			"mcp.json".into(),
+			json!({"$schema": MCP_SCHEMA, "mcpServers": servers}).to_string(),
+		),
+	];
+	for (directory, body) in skills {
+		files.push(file(
+			format!("skills/{directory}/SKILL.md"),
+			format!("---\nname: {directory}\ndescription: Does {directory}.\n---\n\n{body}\n"),
+		));
+	}
+	StoredAgentPlugin {
+		source: PLUGIN_SOURCE.into(),
+		plugin: aidash_domain::agent_plugin::load(&files).expect("the fixture plugin loads"),
+	}
+}
+
+pub(crate) fn plugin_reference(stored: &StoredAgentPlugin) -> AgentPluginRef {
+	AgentPluginRef::of(&stored.plugin, &stored.source)
+}
+
 struct Catalog {
 	node: String,
 	entries: Vec<Entry>,
+	plugins: Vec<StoredAgentPlugin>,
 }
 #[async_trait]
 impl BindingCatalog for Catalog {
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		Ok(self
+			.plugins
+			.iter()
+			.find(|stored| stored.plugin.digest == digest)
+			.cloned())
+	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		if reference.registry_node != self.node {
 			return Err(Error::Forbidden);
@@ -100,6 +160,15 @@ pub(crate) fn resolve(
 	remote: bool,
 	extras: Vec<Entry>,
 ) -> BindingSnapshot {
+	resolve_with_plugins(node, root, remote, extras, vec![])
+}
+pub(crate) fn resolve_with_plugins(
+	node: &str,
+	root: &Entry,
+	remote: bool,
+	extras: Vec<Entry>,
+	plugins: Vec<StoredAgentPlugin>,
+) -> BindingSnapshot {
 	let mut entries = extras;
 	if !entries.iter().any(|entry| entry.kind == "model") {
 		let model = &root.config["model"];
@@ -115,6 +184,7 @@ pub(crate) fn resolve(
 		&mut Catalog {
 			node: node.into(),
 			entries,
+			plugins,
 		},
 		&Providers,
 		QualifiedRef {
@@ -187,4 +257,210 @@ pub(crate) fn native_memory_snapshot(node: &str, id: &str) -> BindingSnapshot {
 	let mut root = agent(id);
 	root.config["bindings"] = json!([binding("memory", node, "native")]);
 	resolve(node, &root, true, native_memory_entries())
+}
+
+pub(crate) const PLUGIN_NODE: &str = "aidash://test";
+
+/// A valid snapshot of an Agent taking in `plugins`, with `settings` as its
+/// `agent_plugin_settings` (JSON null for none).
+pub(crate) fn plugin_snapshot(
+	plugins: Vec<StoredAgentPlugin>,
+	settings: serde_json::Value,
+) -> BindingSnapshot {
+	plugin_snapshot_with(plugins, settings, vec![], |_| {})
+}
+
+/// [`plugin_snapshot`] over a root Agent that `adjust` may change and Registry entries `extras`.
+pub(crate) fn plugin_snapshot_with(
+	plugins: Vec<StoredAgentPlugin>,
+	settings: serde_json::Value,
+	extras: Vec<Entry>,
+	adjust: impl FnOnce(&mut Entry),
+) -> BindingSnapshot {
+	let mut root = agent("agent");
+	root.config["agent_plugins"] = json!(plugins.iter().map(plugin_reference).collect::<Vec<_>>());
+	if !settings.is_null() {
+		root.config["agent_plugin_settings"] = settings;
+	}
+	adjust(&mut root);
+	resolve_with_plugins(PLUGIN_NODE, &root, false, extras, plugins)
+}
+
+/// A Run bound to `snapshot`.
+pub(crate) fn run_of(snapshot: BindingSnapshot) -> aidash_domain::Run {
+	use aidash_domain::{ReadyState, RecoveryState, RunControl, RunState, StateVersion};
+	aidash_domain::Run {
+		id: uuid::Uuid::new_v4(),
+		task_id: uuid::Uuid::new_v4(),
+		workspace_id: uuid::Uuid::new_v4(),
+		home_node: snapshot.agent.registry_node.clone(),
+		agent_id: snapshot.agent.id.clone(),
+		agent_version: snapshot.agent.version.clone(),
+		state_version: StateVersion::default(),
+		state: RunState::Ready(ReadyState::default()),
+		recovery: RecoveryState::default(),
+		control: RunControl::Active,
+		context: aidash_domain::context::Context {
+			binding_snapshot: Some(snapshot.into()),
+			..Default::default()
+		},
+		step: 0,
+		revision: 0,
+		observed_input_seq: 0,
+		ledger_worker_ready: true,
+		error: None,
+		lease_owner: None,
+		lease_until: None,
+		updated_at: "2026-10-02T00:00:00Z".parse().unwrap(),
+	}
+}
+
+/// A tool as a server lists it.
+pub(crate) fn listed_tool(name: &str) -> aidash_domain::agent_plugin::ListedTool {
+	aidash_domain::agent_plugin::ListedTool {
+		name: name.into(),
+		description: Some(format!("Does {name}.")),
+		input_schema: json!({
+			"type": "object",
+			"properties": {"q": {"type": "string"}},
+			"required": ["q"],
+			"additionalProperties": false,
+		}),
+	}
+}
+
+/// What a scripted server does when listed.
+pub(crate) enum Listed {
+	Tools(Vec<aidash_domain::agent_plugin::ListedTool>),
+	Forbidden,
+	Failed(crate::ports::tools::ListFailure),
+	Invalid,
+	/// An error whose text carries what a finding must never show.
+	Leaky(String),
+	Hang,
+}
+
+/// One `tools/call` as the fake sessions saw it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SessionCall {
+	pub run: uuid::Uuid,
+	pub server: crate::ports::tools::PluginServer,
+	pub url: String,
+	pub tool: String,
+	pub schema_digest: String,
+	pub arguments: serde_json::Value,
+	pub key: String,
+}
+
+/// Sessions with scripted servers. A server nobody scripted refuses its destination.
+#[derive(Default)]
+pub(crate) struct FakeSessions {
+	servers: std::sync::Mutex<
+		std::collections::BTreeMap<String, (std::time::Duration, std::sync::Arc<Listed>)>,
+	>,
+	listings: std::sync::Mutex<Vec<(uuid::Uuid, crate::ports::tools::PluginServer)>>,
+	calls: std::sync::Mutex<Vec<SessionCall>>,
+	closed: std::sync::Mutex<Vec<uuid::Uuid>>,
+	replies: std::sync::Mutex<std::collections::VecDeque<Result<serde_json::Value>>>,
+	in_flight: std::sync::atomic::AtomicUsize,
+	peak: std::sync::atomic::AtomicUsize,
+}
+impl FakeSessions {
+	pub(crate) fn script(&self, server: &str, listed: Listed) -> &Self {
+		self.script_after(server, std::time::Duration::ZERO, listed)
+	}
+	pub(crate) fn script_after(
+		&self,
+		server: &str,
+		delay: std::time::Duration,
+		listed: Listed,
+	) -> &Self {
+		self.servers
+			.lock()
+			.unwrap()
+			.insert(server.into(), (delay, std::sync::Arc::new(listed)));
+		self
+	}
+	/// The answer of the next `call`; without one, a call answers `{"content":[]}`.
+	pub(crate) fn reply(&self, reply: Result<serde_json::Value>) {
+		self.replies.lock().unwrap().push_back(reply);
+	}
+	pub(crate) fn listings(&self) -> Vec<(uuid::Uuid, crate::ports::tools::PluginServer)> {
+		self.listings.lock().unwrap().clone()
+	}
+	pub(crate) fn calls(&self) -> Vec<SessionCall> {
+		self.calls.lock().unwrap().clone()
+	}
+	/// The Runs whose sessions were ended, in order.
+	pub(crate) fn closed(&self) -> Vec<uuid::Uuid> {
+		self.closed.lock().unwrap().clone()
+	}
+	/// The most listings that ran at the same time.
+	pub(crate) fn peak(&self) -> usize {
+		self.peak.load(std::sync::atomic::Ordering::SeqCst)
+	}
+}
+#[async_trait]
+impl crate::ports::tools::PluginSessions for FakeSessions {
+	async fn list(
+		&self,
+		run: uuid::Uuid,
+		server: &crate::ports::tools::PluginServer,
+		_: &aidash_domain::agent_plugin::RemoteServer,
+	) -> Result<Vec<aidash_domain::agent_plugin::ListedTool>> {
+		use std::sync::atomic::Ordering::SeqCst;
+		self.listings.lock().unwrap().push((run, server.clone()));
+		let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+		self.peak.fetch_max(now, SeqCst);
+		let scripted = self
+			.servers
+			.lock()
+			.unwrap()
+			.get(server.server.as_str())
+			.cloned();
+		let result = match scripted {
+			None => Err(Error::Forbidden),
+			Some((delay, listed)) => {
+				tokio::time::sleep(delay).await;
+				match &*listed {
+					Listed::Tools(tools) => Ok(tools.clone()),
+					Listed::Forbidden => Err(Error::Forbidden),
+					Listed::Failed(failure) => Err((*failure).into()),
+					Listed::Invalid => Err(Error::Invalid("not a tool list".into())),
+					Listed::Leaky(text) => Err(Error::External(text.clone())),
+					Listed::Hang => std::future::pending().await,
+				}
+			}
+		};
+		self.in_flight.fetch_sub(1, SeqCst);
+		result
+	}
+	async fn call(
+		&self,
+		run: uuid::Uuid,
+		server: &crate::ports::tools::PluginServer,
+		config: &aidash_domain::agent_plugin::RemoteServer,
+		tool: &str,
+		schema_digest: &str,
+		arguments: serde_json::Value,
+		key: &str,
+	) -> Result<serde_json::Value> {
+		self.calls.lock().unwrap().push(SessionCall {
+			run,
+			server: server.clone(),
+			url: config.url.to_string(),
+			tool: tool.into(),
+			schema_digest: schema_digest.into(),
+			arguments,
+			key: key.into(),
+		});
+		self.replies
+			.lock()
+			.unwrap()
+			.pop_front()
+			.unwrap_or_else(|| Ok(json!({"content": []})))
+	}
+	async fn close(&self, run: uuid::Uuid) {
+		self.closed.lock().unwrap().push(run);
+	}
 }

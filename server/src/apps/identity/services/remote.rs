@@ -71,7 +71,7 @@ async fn corpus_digest(store: &Store, description: &Description) -> Result<Optio
 		return Ok(None);
 	}
 	// Home reads its own Workspace, in the Tenant that issued the grant.
-	let scope = crate::database::scope::recorded(&description.source_tenant)?;
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&description.source_tenant)?;
 	crate::semantic::services::memory_context::remote_corpus_digest(
 		store.pool.in_scope(&scope),
 		description,

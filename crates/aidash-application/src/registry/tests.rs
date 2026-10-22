@@ -14,6 +14,7 @@ use std::{
 	sync::Arc,
 };
 
+mod agent_plugins;
 mod memory;
 mod projection;
 
@@ -47,6 +48,7 @@ struct Scope {
 	documents: Option<Value>,
 	fail_documents: bool,
 	secret_hosts: BTreeMap<String, Vec<String>>,
+	plugins: BTreeMap<String, crate::ports::bindings::StoredAgentPlugin>,
 }
 
 #[async_trait]
@@ -82,6 +84,12 @@ impl Scope {
 }
 #[async_trait]
 impl DefinitionLookup for Scope {
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> Result<Option<crate::ports::bindings::StoredAgentPlugin>> {
+		Ok(self.plugins.get(digest).cloned())
+	}
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		self.trace.push(format!("read:{id}@{version}"));
 		self.entries

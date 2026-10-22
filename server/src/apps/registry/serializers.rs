@@ -1,5 +1,7 @@
 //! Serializers module for registry app (RESTful)
 
+pub mod agent_plugin_import;
+
 pub mod knowledge;
 
 pub mod skill_import;

@@ -27,6 +27,9 @@ pub struct Inference {
 	/// The caller's identifier for this provider call, such as a Decision
 	/// Attempt's; the token issuer generates one when it is unset.
 	pub call: Option<Uuid>,
+	/// The Decider Route's OpenRouter hosts, which a Decisions API attempt's
+	/// token signs; empty for every other call (ADR 0066).
+	pub hosts: Vec<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {

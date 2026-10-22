@@ -16,6 +16,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::OrmExecutor;
 use serde_json::Value;
 use uuid::Uuid;
+pub mod agent_plugins;
 pub(crate) mod bindings;
 pub(crate) mod requests;
 pub(crate) mod sql;
@@ -64,7 +65,19 @@ impl Registry {
 		let tenants = self
 			.pool
 			.atomic(&listing, async |tx| {
-				crate::apps::identity::models::Tenant::names(tx).await
+				// A Tenant restored within its grace period keeps working with
+				// current definitions, but a purged one must not be given back
+				// the rows its purge removed.
+				let names = crate::apps::identity::models::Tenant::names(tx).await?;
+				let purged = crate::apps::identity::repositories::tenant_deletions::purged_of(
+					tx,
+					names.iter().map(|name| name.to_string()).collect(),
+				)
+				.await?;
+				Ok(names
+					.into_iter()
+					.filter(|name| !purged.contains(name.as_str()))
+					.collect::<Vec<_>>())
 			})
 			.await?;
 		for tenant in tenants {
@@ -180,6 +193,15 @@ impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
 				.0,
 		)?)
 	}
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> aidash_application::Result<Option<aidash_application::ports::bindings::StoredAgentPlugin>>
+	{
+		agent_plugins::get_of(self.db, self.tenant.as_str(), digest)
+			.await
+			.map_err(Into::into)
+	}
 	async fn binding_installation(
 		&mut self,
 		projection: &aidash_domain::registry::Projection,
@@ -256,6 +278,14 @@ impl<E: OrmExecutor> RegistryRead for OrmScope<'_, E> {
 pub(crate) struct NativeScope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
 #[async_trait]
 impl DefinitionLookup for NativeScope<'_> {
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> aidash_application::Result<Option<aidash_application::ports::bindings::StoredAgentPlugin>>
+	{
+		agent_plugins::get(self.0, digest).await.map_err(Into::into)
+	}
+
 	async fn binding_installation(
 		&mut self,
 		p: &aidash_domain::registry::Projection,

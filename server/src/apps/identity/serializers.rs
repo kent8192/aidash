@@ -29,7 +29,6 @@ pub mod session;
 
 pub(crate) mod openapi;
 
-pub(crate) mod managed_settings;
 pub mod settings;
 
 pub mod peer_graph;
@@ -45,6 +44,8 @@ pub mod provider_credentials;
 pub mod keyless_endpoints;
 
 pub mod tenancy_settings;
+
+pub mod demo_data_settings;
 
 pub mod tenants;
 

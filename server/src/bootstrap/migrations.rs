@@ -136,14 +136,19 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 /// change the schema (#262), so only `aidash migrate`, run as the owner of
 /// every table, applies migrations.
 #[allow(clippy::disallowed_methods)] // Reads only the migration ledger.
-pub async fn require_current(url: &str, directory: &std::path::Path) -> Result<()> {
+pub async fn require_current(url: &str, roots: &[PathBuf]) -> Result<()> {
 	let connection = DatabaseConnection::connect_postgres(url)
 		.await
 		.map_err(|_| Error::External("Failed to connect to PostgreSQL".into()))?;
-	let migrations = FilesystemSource::new(directory)
-		.all_migrations()
-		.await
-		.map_err(|error| Error::External(error.to_string()))?;
+	let mut migrations = Vec::new();
+	for root in roots {
+		migrations.extend(
+			FilesystemSource::new(root)
+				.all_migrations()
+				.await
+				.map_err(|error| Error::External(error.to_string()))?,
+		);
+	}
 	let applied = DatabaseMigrationRecorder::new(connection.clone())
 		.get_applied_migrations_if_present()
 		.await
@@ -171,6 +176,78 @@ pub async fn require_current(url: &str, directory: &std::path::Path) -> Result<(
 		return Err(Error::Invalid(format!(
 			"{pending} migrations are not applied; run `aidash migrate` as the database owner first"
 		)));
+	}
+	Ok(())
+}
+
+/// One directory holding the apps of every migration root.
+///
+/// Reinhardt's commands read a single root, and SQL assets must stay inside it,
+/// so a build with more than one root gets a copy of all of them. A single
+/// root is used where it is.
+pub struct Tree {
+	path: PathBuf,
+	staged: bool,
+}
+
+impl Tree {
+	pub fn stage(roots: &[PathBuf]) -> Result<Self> {
+		if let [root] = roots {
+			return Ok(Self {
+				path: root.clone(),
+				staged: false,
+			});
+		}
+		let tree = Self {
+			path: std::env::temp_dir().join(format!("aidash-migrations-{}", uuid::Uuid::new_v4())),
+			staged: true,
+		};
+		let mut apps = HashSet::new();
+		for root in roots {
+			let entries = std::fs::read_dir(root).map_err(|error| {
+				Error::Invalid(format!("migration root {}: {error}", root.display()))
+			})?;
+			for entry in entries {
+				let entry = entry?;
+				if !entry.file_type()?.is_dir() {
+					continue;
+				}
+				let app = entry.file_name();
+				if !apps.insert(app.clone()) {
+					return Err(Error::Invalid(format!(
+						"migration app {} is in more than one root",
+						app.to_string_lossy()
+					)));
+				}
+				copy_directory(&entry.path(), &tree.path.join(&app))?;
+			}
+		}
+		Ok(tree)
+	}
+
+	pub fn path(&self) -> &std::path::Path {
+		&self.path
+	}
+}
+
+impl Drop for Tree {
+	fn drop(&mut self) {
+		if self.staged {
+			let _ = std::fs::remove_dir_all(&self.path);
+		}
+	}
+}
+
+fn copy_directory(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
+	std::fs::create_dir_all(to)?;
+	for entry in std::fs::read_dir(from)? {
+		let entry = entry?;
+		let target = to.join(entry.file_name());
+		if entry.file_type()?.is_dir() {
+			copy_directory(&entry.path(), &target)?;
+		} else {
+			std::fs::copy(entry.path(), target)?;
+		}
 	}
 	Ok(())
 }
@@ -258,13 +335,18 @@ pub async fn manage<P: reinhardt::commands::CapabilityProvider>(
 					.settings::<SelectedDatabase>(Some("default"))?
 					.url(),
 			};
-			let directory = migrations_dir.unwrap_or_else(|| {
-				prepared
-					.settings::<CoreMigrationMetadata>(None)
-					.expect("prepared migration metadata")
-					.base_dir
-					.join("migrations")
-			});
+			let roots = match migrations_dir {
+				Some(directory) => vec![directory],
+				None => super::build::current().migration_roots(
+					&prepared
+						.settings::<CoreMigrationMetadata>(None)
+						.expect("prepared migration metadata")
+						.base_dir,
+				),
+			};
+			let tree = Tree::stage(&roots)
+				.map_err(|error| CommandError::ExecutionError(error.to_string()))?;
+			let directory = tree.path();
 			let mut context = CommandContext::default();
 			context.set_verbosity(cli.verbosity);
 			if let Some(app) = app_label {
@@ -293,4 +375,60 @@ pub async fn manage<P: reinhardt::commands::CapabilityProvider>(
 		}
 		.await,
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Tree;
+	use std::fs;
+
+	#[test]
+	fn a_build_with_more_roots_stages_their_apps_together() {
+		let community = tempfile::tempdir().unwrap();
+		let enterprise = tempfile::tempdir().unwrap();
+		fs::create_dir_all(community.path().join("identity/sql")).unwrap();
+		fs::write(community.path().join("identity/0001_a.rs"), "a").unwrap();
+		fs::write(community.path().join("identity/sql/a.sql"), "b").unwrap();
+		fs::create_dir_all(enterprise.path().join("extension")).unwrap();
+		fs::write(enterprise.path().join("extension/0001_b.rs"), "c").unwrap();
+		let roots = [community.path().into(), enterprise.path().into()];
+
+		let tree = Tree::stage(&roots).unwrap();
+		let staged = tree.path().to_owned();
+
+		assert_eq!(
+			fs::read_to_string(staged.join("identity/sql/a.sql")).unwrap(),
+			"b"
+		);
+		assert_eq!(
+			fs::read_to_string(staged.join("extension/0001_b.rs")).unwrap(),
+			"c"
+		);
+		drop(tree);
+		assert!(!staged.exists(), "the staged copy is removed");
+	}
+
+	#[test]
+	fn a_single_root_is_read_in_place() {
+		let community = tempfile::tempdir().unwrap();
+		let tree = Tree::stage(&[community.path().into()]).unwrap();
+		assert_eq!(tree.path(), community.path());
+		drop(tree);
+		assert!(community.path().exists());
+	}
+
+	#[test]
+	fn an_app_in_two_roots_is_refused() {
+		let first = tempfile::tempdir().unwrap();
+		let second = tempfile::tempdir().unwrap();
+		fs::create_dir_all(first.path().join("identity")).unwrap();
+		fs::create_dir_all(second.path().join("identity")).unwrap();
+		let error = Tree::stage(&[first.path().into(), second.path().into()])
+			.err()
+			.unwrap();
+		assert_eq!(
+			error.to_string(),
+			"migration app identity is in more than one root"
+		);
+	}
 }

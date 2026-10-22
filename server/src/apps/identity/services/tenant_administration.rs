@@ -123,6 +123,12 @@ impl TenantAdministrations {
 	) -> Result<ApprovedMapping> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
+		aidash_application::usage::require(
+			self.runtime.store.admission.as_ref(),
+			&tenant,
+			aidash_application::usage::Work::Member,
+		)
+		.await?;
 		let policy = Some(administrator.policy().clone());
 		let actor = AdministrationActor::TenantAdministrator(administrator.clone());
 		let approve = || {
@@ -249,8 +255,8 @@ impl TenantAdministrations {
 				)
 				.await?;
 				if administrator
-					.bound_pool()
-					.is_some_and(|pool| pool == member.gcip_tenant)
+					.restricted_issuer()
+					.is_some_and(|issuer| issuer == member.issuer)
 				{
 					return Err(Error::Conflict(
 						"a member mapped through the Tenant Binding cannot leave".into(),

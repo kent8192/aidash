@@ -1,5 +1,5 @@
 meta {
-  name: 1151 tenants-restore - Anonymous request is rejected
+  name: 1151 tenants-restore - Subject Credential bearer never restores a Tenant
   type: http
   seq: 1151
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{contract_token}}
 }
 
 script:pre-request {

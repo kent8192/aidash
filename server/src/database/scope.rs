@@ -19,8 +19,10 @@ use aidash_application::tenancy::TenancyScope;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
-	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
+use uuid::Uuid;
 
 /// The setting that names the kind of scope.
 pub const SCOPE_SETTING: &str = "aidash.scope";
@@ -47,15 +49,53 @@ fn set_config(name: &str, value: String) -> SimpleExpr {
 	)
 }
 
-/// The scope of rows that record their Tenant by name. A legacy Workspace's
-/// rows record none until #265 gives every Workspace a Tenant.
-pub(crate) fn recorded(tenant: &str) -> Result<TenancyScope> {
-	if tenant.is_empty() {
-		Ok(TenancyScope::Deployment(
-			aidash_application::tenancy::DeploymentScopeReason::LegacyRun,
-		))
-	} else {
-		Ok(TenancyScope::tenant(tenant)?)
+/// The Tenant of the transaction's scope, as the value of an `INSERT`'s
+/// `tenant` column. The row-level policy refuses any other value. A Deployment
+/// Scope has no Tenant, so the expression is NULL there and the column's
+/// `NOT NULL` refuses the row: a writer in that scope names its Tenant, or
+/// takes it from a parent row with [`tenant_of`].
+pub(crate) fn tenant() -> Expr {
+	Expr::cust("(SELECT public.aidash_scope_tenant())")
+}
+
+/// The Tenant of the row of `table` whose `column` is `key`: a child row takes
+/// its parent's.
+pub(crate) fn tenant_of(table: &str, column: &str, key: Uuid) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		format!("(SELECT tenant FROM {table} WHERE {column} = ?)"),
+		vec![Expr::value(key).into()],
+	)
+}
+
+/// The Tenant of the row of `table` whose `column` is `key`, for a child row
+/// built in Rust.
+pub(crate) async fn parent_tenant(
+	tx: &mut dyn TransactionExecutor,
+	table: &str,
+	column: &str,
+	key: Uuid,
+) -> Result<String> {
+	let (sql, values) = Query::select()
+		.column(Alias::new("tenant"))
+		.from(Alias::new(table))
+		.and_where(Expr::col(Alias::new(column)).eq(Expr::value(key)))
+		.build(PostgresQueryBuilder);
+	let row = tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.ok_or_else(|| crate::Error::NotFound(table.into()))?;
+	Ok(row
+		.get::<String>("tenant")
+		.map_err(reinhardt::core::exception::Error::from)?)
+}
+
+/// The Tenant of an event: its Workspace's, or the transaction scope's when it
+/// concerns no Workspace, such as a Marketplace installation. A Deployment
+/// Administrator's event, such as a peer registration, concerns none.
+pub(crate) fn event_tenant(workspace: Option<Uuid>) -> SimpleExpr {
+	match workspace {
+		Some(workspace) => tenant_of("workspaces", "id", workspace),
+		None => tenant().into(),
 	}
 }
 

@@ -33,7 +33,7 @@ async fn fake(
 	let url = format!("http://{}", listener.local_addr().unwrap());
 	let seen = Arc::new(Mutex::new(Seen::default()));
 	let mut jwks: Value =
-		serde_json::from_str(include_str!("../gcip/signing-test-only.jwks.json")).unwrap();
+		serde_json::from_str(include_str!("../jwks/signing-test-only.jwks.json")).unwrap();
 	jwks["keys"][0]["kid"] = json!("fixture");
 	let discovery = json!({
 		"issuer": ISSUER,
@@ -108,7 +108,7 @@ fn id_token(claims: Value, kid: &str) -> SecretString {
 	encode(
 		&header,
 		&claims,
-		&EncodingKey::from_rsa_pem(include_bytes!("../gcip/signing-test-only.pem")).unwrap(),
+		&EncodingKey::from_rsa_pem(include_bytes!("../jwks/signing-test-only.pem")).unwrap(),
 	)
 	.unwrap()
 	.into()

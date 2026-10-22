@@ -19,7 +19,7 @@ pub use settings::settings_for;
 use std::sync::Arc;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	admitted_run, approve_agent, local_run, remote_run, replace_policy, tenant_root,
+	admitted_run, approve_agent, local_run, remote_run, remote_run_in, replace_policy, tenant_root,
 	tenant_root_in, tenant_scope, tenant_token,
 };
 
@@ -288,6 +288,7 @@ pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 	let model = format!("{id}-fixture-model");
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	tenant_root_in(fixture.runtime.store.pool.fixture_driver(), "acme").await;
 	fixture.runtime.registry.seed(&tenant).await.unwrap();
 	for (kind, key, config) in [
 		(

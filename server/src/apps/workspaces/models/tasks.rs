@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub struct Task {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 
 	#[field(db_column = "workspace_id")]
 	pub workspace_id: uuid::Uuid,

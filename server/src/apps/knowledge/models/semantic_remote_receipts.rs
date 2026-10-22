@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct SemanticRemoteReceipts {
 	#[field(primary_key = true)]
 	pub operation_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]

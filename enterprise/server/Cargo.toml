@@ -21,5 +21,51 @@ name = "manage"
 path = "src/bin/manage.rs"
 
 [dependencies]
+aidash-application.workspace = true
 aidash-domain.workspace = true
+aidash-gcp.workspace = true
 aidash-server.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+# The ORM and route macros register through these.
+ctor = "0.6"
+linkme = "0.3"
+http = "1"
+indexmap = "2"
+reinhardt.workspace = true
+reqwest = { version = "0.13", default-features = false, features = [
+  "form",
+  "json",
+  "rustls",
+] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing = "0.1"
+url = "2"
+uuid.workspace = true
+
+[dev-dependencies]
+# The Community server's test support needs the test-only ports (ADR 0006).
+aidash-application = { workspace = true, features = ["test-support"] }
+aidash-integrations = { workspace = true, features = ["test-support"] }
+base64 = "0.22"
+bytes = "1"
+futures-util.workspace = true
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
+regex = "1.12"
+reinhardt = { workspace = true, features = ["test", "testcontainers"] }
+rstest.workspace = true
+sqlx = { version = "0.8.6", default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+] }
+sha2 = "0.10"
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+toml = "1.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

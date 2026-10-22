@@ -123,6 +123,13 @@ async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
 	}), "json").await.unwrap(),200);
 }
 
+/// The Tenant root records that the store tests' credentials reference.
+async fn roots(f: &EndpointFixture) {
+	for tenant in ["alpha", "beta"] {
+		endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), tenant).await;
+	}
+}
+
 async fn all_database_text(f: &EndpointFixture) -> String {
 	let mut tx = f.database.begin_fixture().await;
 	let (sql, values) = Query::select()
@@ -930,6 +937,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	};
 	use reinhardt::db::orm::Model;
 	let mut f = endpoint.await;
+	roots(&f).await;
 	authorize_tenant(&f, "beta").await;
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
@@ -1263,6 +1271,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		max_output_tokens: 1024,
 		cache_breakpoints: false,
 		call: None,
+		hosts: vec![],
 	});
 	assert_eq!(
 		enabled
@@ -1487,6 +1496,7 @@ async fn postgres_store(
 	current: &str,
 	retired: Vec<SecretString>,
 ) -> Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore> {
+	roots(f).await;
 	Arc::new(
 		aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
 			f.runtime.store.control_pool.clone(),
@@ -1507,6 +1517,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 		Context, KeyMaterialReader, KeylessAccess, ProviderAccess, Source, TenantAccess,
 	};
 	let f = endpoint.await;
+	roots(&f).await;
 	let store = postgres_store(&f, &"11".repeat(32), vec![]).await;
 	let service = Service {
 		repository: Arc::new(NativeRepository {
@@ -1725,10 +1736,29 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 	copied.tenant = destination_tenant.into();
 	copied.nonce = rows[0].nonce.clone();
 	copied.ciphertext = rows[0].ciphertext.clone();
-	Version::objects()
+	let saved = Version::objects()
 		.save_with_executor(tx.as_mut(), &copied)
-		.await
-		.unwrap();
+		.await;
+	if destination_tenant == "beta" {
+		// The composite (tenant, resource) key already refuses a version that
+		// names another Tenant than its resource (#265), before any read can.
+		let error = saved.expect_err("a version cannot move to another Tenant");
+		assert!(
+			error.to_string().contains("credential_store_resource_fk"),
+			"{error}"
+		);
+		drop(tx);
+		assert_eq!(
+			store
+				.read("alpha", &a_resource, &source)
+				.await
+				.unwrap()
+				.expose_secret(),
+			"source-provider-key"
+		);
+		return;
+	}
+	saved.unwrap();
 	tx.commit().await.unwrap();
 	assert_eq!(
 		store
@@ -1761,6 +1791,7 @@ async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_
 	};
 	use reinhardt::db::orm::Model;
 	let f = endpoint.await;
+	roots(&f).await;
 	let pool = f.runtime.store.control_pool.clone();
 	let old = "33".repeat(32);
 	let new = "44".repeat(32);
@@ -1949,9 +1980,16 @@ fn store_settings_validate_shape_without_loading_keys() {
 			.validate(&Profile::parse("local"))
 			.is_err()
 	);
-	let mut cloud_master = valid;
-	cloud_master["store"] = json!({"kind":"secret_manager","byok_project_id":"byok-project","environment_id":"local","master_key":current});
-	assert!(serde_json::from_value::<Settings>(cloud_master).is_err());
+	let mut brokered = valid;
+	brokered["broker"] = json!({"endpoint":"https://broker.example.test/api/v1"});
+	assert!(
+		serde_json::from_value::<Settings>(brokered)
+			.unwrap()
+			.validate(&Profile::parse("local"))
+			.unwrap_err()
+			.to_string()
+			.contains("a Credential Broker serves only an Enterprise Provider Credential Store")
+	);
 }
 
 #[rstest]
@@ -2024,11 +2062,13 @@ async fn bootstrap_loads_trimmed_keys_and_fails_closed_without_valid_key_sources
 	);
 
 	let cloud: Settings = serde_json::from_value(json!({"fingerprint_key":{"file":fingerprint},"store":{"kind":"secret_manager","byok_project_id":"fixture-byok","environment_id":"local"}})).unwrap();
-	aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &cloud)
-		.await
-		.unwrap();
-	assert!(f.runtime.store.provider_credentials.is_some());
-	assert!(f.runtime.store.provider_key_material_reader.is_none());
+	assert_eq!(
+		aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &cloud)
+			.await
+			.unwrap_err()
+			.to_string(),
+		"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+	);
 }
 
 const MANAGE_CASE_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
@@ -2295,6 +2335,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 		vec![("alpha".to_owned(), alpha.id), ("beta".to_owned(), beta.id)];
 	for index in 0..24 {
 		let tenant = format!("lost-page-{index:02}");
+		endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), &tenant).await;
 		let row = old_service
 			.create(
 				&tenant,
@@ -2343,6 +2384,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 			.add_version("alpha", &resource, &"known-orphan-material-157".into())
 			.await
 			.unwrap();
+		endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), "gamma").await;
 		let gamma = known_service
 			.create(
 				"gamma",
@@ -2543,6 +2585,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	}
 	// Recovery never registers the replacement; ordinary startup now can.
 	let recovered = postgres_store(&f, &current, vec![]).await;
+	endpoint_fixtures::tenant_root_in(f.runtime.store.pool.fixture_driver(), "reconnected").await;
 	let fresh = real_service(&f, recovered.clone())
 		.create(
 			"reconnected",
@@ -2725,6 +2768,7 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 	use aidash_application::provider_credentials::{RECONCILIATION_BATCH_SIZE, Repository};
 	use aidash_domain::provider_credentials::{ProviderCredential, State};
 	let f = endpoint.await;
+	roots(&f).await;
 	let repository = NativeRepository {
 		pool: f.runtime.store.control_pool.clone(),
 		node: f.runtime.store.node_id.clone(),

@@ -65,6 +65,7 @@ pub(crate) async fn history(
 					Alias::new("revision"),
 					Alias::new("state"),
 					Alias::new("detail"),
+					Alias::new("tenant"),
 				])
 				.from_subquery(
 					Query::select()
@@ -87,6 +88,11 @@ pub(crate) async fn history(
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_5.to_owned()).into()],
+						))
+						.expr(crate::database::scope::tenant_of(
+							"workspaces",
+							"id",
+							query_bind_1,
 						))
 						.to_owned(),
 				)
@@ -131,6 +137,7 @@ pub(crate) async fn schedule_point(
 						Alias::new("id"),
 						Alias::new("entry_id"),
 						Alias::new("collection"),
+						Alias::new("tenant"),
 					])
 					.from_subquery(
 						Query::select()
@@ -145,6 +152,11 @@ pub(crate) async fn schedule_point(
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],
+							))
+							.expr(crate::database::scope::tenant_of(
+								"semantic_entries",
+								"id",
+								query_bind_2,
 							))
 							.to_owned(),
 					)

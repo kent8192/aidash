@@ -98,9 +98,11 @@ WIF trusts numeric repository/owner IDs and exact workflow, execution branch
 and GitHub Environment claims (see
 [Deploy pipeline boundary](#deploy-pipeline-boundary)). Nonproduction automation executes on the
 protected configured `automation_branch`; production cloud jobs execute the
-production workflow on `main`. Both check out privileged code and charts from
-protected `main`, pinned to the one commit the first job resolved, so every build,
-publish and apply job of a run uses the same trusted code. Source images
+production workflow on `main`. Nonproduction check out privileged code and
+charts from the protected `automation_branch`, pinned to the one commit the first
+job resolved, so every build, publish and apply job of a run uses the same
+trusted code. Production applies the checkout of the release source S, which the
+staged bundle was built from, after its `main` dispatcher and admission checks. Source images
 (`app`, `postgres`, `sandbox`) are built from an exact SHA
 in a separate job without cloud credentials, using trusted Dockerfiles. A
 `sandbox` source whose `runner/probe.py` does not emit the trusted Runner's
@@ -114,8 +116,8 @@ A publisher job copies all eight image archives to digest-addressed private
 registry entries without executing them; `release.json` records each digest and
 the trusted commit that built them. A retained release is deployed only by a
 controller running from that commit; production promotes the complete staged
-bundle and its original controller revision after main CI, human release merge
-and Git tree equality checks; after the default branch advances, a
+bundle and its original controller revision (the release source S) after main
+CI, human release merge and Git tree equality checks; after the default branch advances, a
 resume of the same source rebuilds it instead of mixing image and chart
 revisions, while running Environments keep their deployed images.
 Fork heads require explicit write-collaborator authorization for that exact SHA;
@@ -152,10 +154,10 @@ configured. The project is never inferred from a developer's `gcloud` default.
    names. Use an identity allowed to enable APIs, create the bootstrap
    resources and grant their IAM roles. Authenticate Terraform using ADC, for
    example `gcloud auth application-default login`. Select `develop_branch`.
-2. Publish the reviewed implementation to protected `main` and the configured
-   default `automation_branch` (`develop/0.1.0`) through the normal review process.
-   Privileged jobs pin the reviewed controller on `main`, independently of their
-   execution branch. Select a deployable source containing Google OAuth,
+2. Publish the reviewed implementation to the configured default
+   `automation_branch` (`develop/0.1.0`) and, with the first release, to protected
+   `main` through the normal review process. Nonproduction privileged jobs pin
+   the reviewed controller on `automation_branch`; production jobs use `main`. Select a deployable source containing Google OAuth,
    trusted-proxy authentication rate limits, the existing runtime contract and
    successful `ci.yml` for its **exact SHA**. The app build explicitly refuses
    sources missing either HTTP integration. Enable production only after its
@@ -215,9 +217,26 @@ configured. The project is never inferred from a developer's `gcloud` default.
 | Secret   | `GCP_DEVELOP_RUNTIME_CONFIG`     | Google/provider configuration JSON for develop                                          |
 | Secret   | `GCP_TEST_RUNTIME_CONFIG`        | Google/provider configuration JSON for test                                             |
 | Secret   | `GCP_PR_RUNTIME_CONFIG`          | Google/provider configuration JSON for PR staging                                       |
+| Secret   | `GCP_DEMO_DATA`                  | People for Demo data (optional, `nonproduction` only)                                   |
 
 The optional `node_count` map in `AIDASH_GCP_CONFIG` (keys `develop`, `test`,
 `pr`) sets the Environment node pool size per kind; omitted kinds use one node.
+
+The optional `GCP_DEMO_DATA` Environment secret of `nonproduction` holds the real
+people for Demo data (ADR 0080) as one JSON object:
+`{"people":[{"email":"a@example.com","tenant":"acme","subject":"alex","role":"administrator"}]}`.
+`tenant` names a `key` in `deploy/demo-data/structure.json`, and `role` is
+`administrator` or `member`. The apply job passes it to the controller as
+`AIDASH_DEMO_DATA`, which stores it as the `app-demo-data` Secret and mounts it
+read-only into the migration Job only, never into a server or worker, then
+deletes it when the Job ends. Every Environment except production puts
+`AIDASH_DEMO_DATA_ENABLED=true` in the `app-runtime` Secret, which the server,
+the workers and the copied migration Job read through `envFrom`; the Job runs
+`aidash demo-data`, and the servers may then fulfil Demo Reservations at
+sign-in. Without the people secret the Job loads only the structure. An
+Environment built from a fork never receives the people. Production never
+loads Demo data: it never sets the variable, its migration Job has no command,
+and `gcp-production.yml` cannot read the `nonproduction` secret.
 
 Without GCIP, each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
 `AIDASH_OIDC_CLIENT_SECRET`, plus required provider credentials named
@@ -250,17 +269,18 @@ runtime secrets, and secret values do not enter Terraform state.
 
 ## Operation
 
-Run **GCP environments** using workflow ref `main`; `source_ref` separately
-selects the deployed source. A manual create/resume first checks CI. Examples:
+Run **GCP environments** using workflow ref `develop/0.1.0`, the protected
+`automation_branch` that the nonproduction WIF provider trusts; `source_ref`
+separately selects the deployed source. A manual create/resume first checks CI. Examples:
 
 ```sh
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=create -f environment=develop
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=create -f environment=test -f source_ref=develop/0.1.0
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=resume -f environment=test
-gh workflow run gcp-environments.yml --ref main \
+gh workflow run gcp-environments.yml --ref develop/0.1.0 \
   -f action=stop -f environment=test
 ```
 
@@ -522,7 +542,7 @@ Admin does not provide the required
 permission. Environment automation consumes their IDs and removes
 only service/signing bindings on disable or retirement. Keep the bootstrap
 environment set to preserve immutable KMS names. See the
-[broker deployment guide](../../crates/aidash-broker/README.md) for the input
+[broker deployment guide](../../enterprise/crates/aidash-broker/README.md) for the input
 contract and manual import steps for any pre-merge draft deployment.
 
 ### Deploy pipeline boundary
@@ -575,7 +595,8 @@ not prevented:
   Terraform derives `us-central1-docker.pkg.dev/<project>/aidash/broker@<digest>`
   from it and refuses an enabled broker without an approved digest or with a
   different image. A broker change is therefore a digest change in a pull
-  request to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
+  request to the protected `automation_branch`, which production receives only
+  through the release PR to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
   override the digest: the controller refuses a `credential_brokers.<id>.image`
   key.
 - Credentialed jobs run in protected GitHub Environments named by the WIF
@@ -633,8 +654,9 @@ Environment cannot obtain credentials. The `intake` and `build` jobs and
 What the production reviewer gate covers: every production deployment, which only
 promotes the staged, already validated image bundle. Nonproduction builds and
 deploys CI-approved commits without an Environment approval; all of its runs use
-privileged code from the protected `main` checkout, so the broker digest and IAM
-changes are gated by review of the pull request to `main`.
+privileged code from the protected `automation_branch` checkout, so the broker
+digest and IAM changes are gated by review of the pull request to that branch
+and reach production only through the release PR to `main`.
 
 #### Human steps
 
@@ -662,7 +684,7 @@ changes are gated by review of the pull request to `main`.
 #### Updating the broker image digest
 
 1. Build from the reviewed commit: `docker buildx build --platform linux/amd64
---provenance=false --sbom=false -f crates/aidash-broker/Dockerfile -t
+--provenance=false --sbom=false -f enterprise/crates/aidash-broker/Dockerfile -t
 us-central1-docker.pkg.dev/<project>/aidash/broker:<sha> --push .`
 2. Read the manifest digest: `docker buildx imagetools inspect
 us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.
@@ -674,7 +696,7 @@ us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.
 The Dockerfile pins its base images by digest, but the build is not bit-for-bit
 reproducible: `apt-get update` and Cargo cache mounts are not pinned. A reviewer can
 rebuild and compare behavior, not the digest. The registry also accepts pushes from
-the deploy identity; only the digest in `main` is ever deployed, and a revision
+the deploy identity; only the reviewed digest in the protected anchor branch is ever deployed, and a revision
 deployed outside Terraform triggers the revision alert.
 
 #### Evidence still required from #152 (sandbox)
@@ -744,7 +766,7 @@ and manage exact authorized domains; they never use wildcard OAuth callbacks. Th
 `https://<production-hostname>/__/auth/handler` for the separate production project.
 Register them before rolling out a release that sets `auth_helper`. Retain the fixed Firebase callback while random staging/PR hosts use it. Email action links stay on `<project>.firebaseapp.com`, because Identity Platform has one action URL per project.
 
-Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID","sign_in_domains":["acme.example"]}}` creates a fresh pool per environment incarnation. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. `sign_in_domains` lists lowercase ASCII email domains (IDN as `xn--` punycode, exact match, no wildcards) that route `POST /auth/login` email discovery to that pool; a domain may appear in only one pool. It is routing only and grants no authority: membership is still decided by the pool and Tenant Binding, and removing a domain only stops routing. Staff verify domain ownership out of band, and review must reject public mail domains (for example `gmail.com`). OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
+Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID","sign_in_domains":["acme.example"]}}` creates a fresh pool per environment incarnation. A pool without `tenant` is the Environment's Shared Pool, for example `{"shared":{"password_sign_up":true,"google_client_id":"CLIENT_ID"}}`: Google and email/password sign-in for everyone no Sign-in Domain routes elsewhere. At most one pool may omit `tenant`, and it has no SSO providers or Sign-in Domains; Tenant Bindings are optional. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. `sign_in_domains` lists lowercase ASCII email domains (IDN as `xn--` punycode, exact match, no wildcards) that route `POST /auth/login` email discovery to that pool; a domain may appear in only one pool. It is routing only and grants no authority: membership is still decided by the pool and Tenant Binding, and removing a domain only stops routing. Staff verify domain ownership out of band, and review must reject public mail domains (for example `gmail.com`). OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Shared Pool, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
 
 The controller records digests of both desired shared inputs (Tenant configuration, IdP secrets and web API key) and actual public GCIP outputs, including generated Tenant IDs. Before applying changed shared inputs or a plan that changes GCIP tenant resources, in every affected running Environment, including unpublished ones, it closes edge admission and scales server, worker and Runner to zero under the existing lifecycle lock and state. It never calls an HTTP endpoint on a paused or absent application and requires confirmed quiescence before Terraform can apply.
 

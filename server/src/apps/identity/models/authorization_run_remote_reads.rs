@@ -10,6 +10,8 @@ use serde_json::Value;
 pub struct AuthorizationRunRemoteRead {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub run_id: uuid::Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "text")]
 	pub node_id: String,
 	#[field(primary_key = true, field_type = "text")]

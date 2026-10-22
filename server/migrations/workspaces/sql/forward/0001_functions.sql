@@ -6,8 +6,10 @@ CREATE FUNCTION public.guard_task_dependencies() RETURNS trigger
     AS $$
 BEGIN
     IF pg_trigger_depth() < 2 THEN
-        RAISE EXCEPTION 'task_dependencies is maintained by tasks'
-            USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependencies_managed';
+        IF NOT public.aidash_tenant_purge() THEN
+            RAISE EXCEPTION 'task_dependencies is maintained by tasks'
+                USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependencies_managed';
+        END IF;
     END IF;
     RETURN NULL;
 END $$;
@@ -75,7 +77,7 @@ BEGIN
     IF TG_OP = 'UPDATE' THEN
         DELETE FROM task_dependencies WHERE task_id = OLD.id;
     END IF;
-    INSERT INTO task_dependencies(task_id, workspace_id, dependency_id)
-        SELECT DISTINCT NEW.id, NEW.workspace_id, unnest(NEW.dependencies);
+    INSERT INTO task_dependencies(task_id, tenant, workspace_id, dependency_id)
+        SELECT DISTINCT NEW.id, NEW.tenant, NEW.workspace_id, unnest(NEW.dependencies);
     RETURN NEW;
 END $$;

@@ -279,7 +279,7 @@ impl AuthorizationCredential {
 			}
 			let identity: Uuid = mapping.get("identity_id").map_err(FrameworkError::from)?;
 			let (sql, values) = Query::select()
-				.columns(["issuer", "gcip_tenant", "last_valid_at", "disabled_at"].map(Alias::new))
+				.columns(["issuer", "last_valid_at", "disabled_at"].map(Alias::new))
 				.from(Alias::new(DashboardIdentity::table_name()))
 				.and_where(Expr::col("id").eq(Expr::value(identity)))
 				.lock(LockType::Share)
@@ -294,11 +294,9 @@ impl AuthorizationCredential {
 			let valid: Option<DateTime<Utc>> =
 				serde_json::from_value(identity["last_valid_at"].clone())?;
 			let issuer: String = serde_json::from_value(identity["issuer"].clone())?;
-			let pool: String = serde_json::from_value(identity["gcip_tenant"].clone())?;
 			crate::authorization::identity::require_dashboard_mapping(
 				policy,
 				&issuer,
-				&pool,
 				&mapping_tenant,
 			)?;
 			crate::authorization::identity::validate_dashboard_status(Some((

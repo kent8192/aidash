@@ -115,9 +115,9 @@ pub fn resource_kind(action: &str) -> &'static str {
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
 		TEST_LIMITS_UPDATE => "test_limits",
 		TEST_PROFILE_UPDATE => "test_profile",
-		crate::identity::tenancy::TENANT_UPDATE | crate::identity::tenancy::TENANT_DELETE => {
-			"tenant"
-		}
+		crate::identity::tenancy::TENANT_UPDATE
+		| crate::identity::tenancy::TENANT_DELETE
+		| crate::identity::tenancy::BILLING_ATTACH => "tenant",
 		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
 		MARKETPLACE_INSTALL => "package",
 		SECRET_MANAGE | SECRET_USE => "secret",

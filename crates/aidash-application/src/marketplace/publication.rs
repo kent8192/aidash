@@ -10,6 +10,7 @@ use crate::{
 };
 use aidash_domain::{
 	marketplace::definitions::{key, manifest},
+	marketplace::events,
 	marketplace::publication::validate_metadata,
 	marketplace::*,
 	policy::identifier,
@@ -35,6 +36,13 @@ pub struct PublishCommand {
 pub struct AudienceChange {
 	pub expected_revision: i64,
 	pub tenants: BTreeSet<String>,
+}
+
+/// A saved distribution and the events it owes the Tenants other than its
+/// owner, which the caller delivers once the change commits.
+pub struct Shared {
+	pub audience: Audience,
+	pub announcements: Vec<events::Announcement>,
 }
 fn conflict() -> Error {
 	Error::Conflict("revision or immutable content changed".into())
@@ -225,8 +233,8 @@ pub async fn publish(
 			.await?;
 		scope
 			.event(
-				"marketplace.published",
-				json!({"key":version.key,"tenant":version.owner_tenant}),
+				events::PUBLISHED,
+				events::published_payload(&version.key, &version.owner_tenant),
 			)
 			.await?;
 	}
@@ -242,7 +250,7 @@ pub async fn share(
 	key: &str,
 	redistributor: Option<&str>,
 	mut input: AudienceChange,
-) -> Result<Audience> {
+) -> Result<Shared> {
 	if input.tenants.len() > 128
 		|| input.expected_revision < 0
 		|| input.expected_revision == i64::MAX
@@ -290,11 +298,22 @@ pub async fn share(
 	scope.save_distribution(key, redistributor, &next).await?;
 	scope
 		.event(
-			"marketplace.distribution_changed",
-			json!({"key":key,"tenant":version.owner_tenant,"revision":next.revision}),
+			events::DISTRIBUTION_CHANGED,
+			events::distribution_changed_payload(key, &version.owner_tenant, next.revision),
 		)
 		.await?;
-	Ok(next)
+	// A consent revision is the owner's to read, so a consent change stays in
+	// the owner's own events.
+	let announcements = match (redistributor, previous) {
+		(None, Some(previous)) => {
+			events::audience_announcements(key, &version.owner_tenant, &previous, &next)
+		}
+		_ => vec![],
+	};
+	Ok(Shared {
+		audience: next,
+		announcements,
+	})
 }
 
 #[cfg(test)]

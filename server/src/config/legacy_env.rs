@@ -83,9 +83,6 @@ fn values_with_oidc(
 		("client_id", "AIDASH_OIDC_CLIENT_ID"),
 		("client_secret", "AIDASH_OIDC_CLIENT_SECRET"),
 		("public_origin", "AIDASH_OIDC_PUBLIC_ORIGIN"),
-		("keycloak_admin_url", "AIDASH_OIDC_KEYCLOAK_ADMIN_URL"),
-		("status_client_id", "AIDASH_OIDC_STATUS_CLIENT_ID"),
-		("status_client_secret", "AIDASH_OIDC_STATUS_CLIENT_SECRET"),
 	] {
 		if let Some(value) = read(name) {
 			oidc.insert(key.into(), Value::String(value));
@@ -146,6 +143,16 @@ fn values_with_oidc(
 			"keyless_endpoints".into(),
 			json!({"permitted_private_origins": origins}),
 		);
+	}
+	if let Some(value) = read("AIDASH_DEMO_DATA_ENABLED") {
+		// A value that is not a boolean stays text, so settings deserialization
+		// refuses it instead of this layer reading it as false.
+		let enabled = match value.trim().to_ascii_lowercase().as_str() {
+			"true" | "1" => Value::Bool(true),
+			"false" | "0" => Value::Bool(false),
+			_ => Value::String(value),
+		};
+		result.insert("demo_data".into(), json!({"enabled": enabled}));
 	}
 	Ok(result)
 }
@@ -226,9 +233,6 @@ mod tests {
 	#[case::client("AIDASH_OIDC_CLIENT_ID")]
 	#[case::secret("AIDASH_OIDC_CLIENT_SECRET")]
 	#[case::origin("AIDASH_OIDC_PUBLIC_ORIGIN")]
-	#[case::admin("AIDASH_OIDC_KEYCLOAK_ADMIN_URL")]
-	#[case::status_client("AIDASH_OIDC_STATUS_CLIENT_ID")]
-	#[case::status_secret("AIDASH_OIDC_STATUS_CLIENT_SECRET")]
 	fn provider_variables_retain_session_tuning_and_partial_validation(#[case] provider: &str) {
 		// Arrange: every legacy provider field still activates normal validation.
 		let data = values(|name| match name {
@@ -330,6 +334,38 @@ mod tests {
 		assert_eq!(db["options"]["application_name"], "worker");
 		assert_eq!(data["node"]["worker_count"], "2");
 		assert!(!data.contains_key("dashboard"));
+	}
+
+	#[rstest::rstest]
+	#[case::true_text(Some("true"), Some(true))]
+	#[case::one(Some("1"), Some(true))]
+	#[case::false_text(Some("false"), Some(false))]
+	#[case::absent(None, None)]
+	fn demo_data_enabled_participates_in_settings_composition(
+		#[case] variable: Option<&str>,
+		#[case] expected: Option<bool>,
+	) {
+		use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
+		// Arrange: the migration Job exports AIDASH_DEMO_DATA_ENABLED.
+		let data = values(|name| match name {
+			"AIDASH_DEMO_DATA_ENABLED" => variable.map(str::to_owned),
+			_ => None,
+		})
+		.unwrap();
+		// Act: deserialize the fragment the composed settings consume.
+		let settings = data
+			.get("demo_data")
+			.map(|value| serde_json::from_value::<DemoDataSettings>(value.clone()).unwrap());
+		// Assert: only an explicit value overrides the default, which is off.
+		assert_eq!(settings.map(|settings| settings.enabled), expected);
+	}
+
+	#[rstest::rstest]
+	fn malformed_demo_data_enabled_fails_settings_deserialization() {
+		use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
+		let data =
+			values(|name| (name == "AIDASH_DEMO_DATA_ENABLED").then(|| "maybe".into())).unwrap();
+		assert!(serde_json::from_value::<DemoDataSettings>(data["demo_data"].clone()).is_err());
 	}
 
 	#[rstest::rstest]

@@ -153,6 +153,18 @@ struct State {
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
 	/// URL intents recorded beside the Run's Task and inputs.
 	url_intents: Vec<aidash_domain::research::intent::UrlIntent>,
+	/// What the environment lists for a Run's Agent Plugins; `None` means it has no plugin support.
+	plugin_listing: Option<aidash_domain::agent_plugin::PluginTools>,
+	plugin_listings: std::sync::atomic::AtomicUsize,
+	closed_sessions: Mutex<Vec<Uuid>>,
+	/// The next save of this event kind fails once, as when the worker crashes before it commits.
+	failing_save: Mutex<Option<&'static str>>,
+	/// The authority's tool checks pass instead of being unexpected.
+	permit_tools: bool,
+	/// Answers of `tool_call_approval` in call order.
+	tool_call_approvals: Mutex<VecDeque<ToolCallApproval>>,
+	/// The requests `tool_call_approval` received.
+	tool_call_requests: Mutex<Vec<ToolCallRequest>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -272,6 +284,16 @@ fn unexpected(operation: &str) -> ! {
 impl ExecutionStore for Backend {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
+		if self
+			.0
+			.failing_save
+			.lock()
+			.unwrap()
+			.take_if(|kind| *kind == event)
+			.is_some()
+		{
+			return Err(Error::External("save failed".into()));
+		}
 		if event == "model.completed" {
 			// The store closes the pending attempt as accepted in the same transaction.
 			let mut attempts = self.0.attempts.lock().unwrap();
@@ -407,10 +429,6 @@ impl ExecutionStore for Backend {
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		let _ = id;
 		unexpected("ExecutionStore.human_request_by_id")
-	}
-	async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest> {
-		let _ = id;
-		unexpected("ExecutionStore.expire_workbench_approval")
 	}
 	async fn invocation_start(
 		&self,
@@ -807,12 +825,29 @@ impl ExecutionAuthority for Backend {
 		_contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()> {
 		let _ = call;
+		if self.0.permit_tools {
+			return Ok(());
+		}
 		unexpected("ExecutionAuthority.tool")
 	}
 	async fn human_read(&self, id: Uuid) -> Result<()> {
 		let _ = id;
 		self.record("authority.human_read");
 		Ok(())
+	}
+	async fn tool_call_approval(
+		&self,
+		_run: &Run,
+		request: ToolCallRequest,
+	) -> Result<ToolCallApproval> {
+		self.0.tool_call_requests.lock().unwrap().push(request);
+		Ok(self
+			.0
+			.tool_call_approvals
+			.lock()
+			.unwrap()
+			.pop_front()
+			.expect("scripted tool call approval"))
 	}
 	async fn model_media(
 		&self,
@@ -917,6 +952,20 @@ impl ExecutionEnvironment for Backend {
 		self.0.checks.as_ref().map(|checks| {
 			checks as &dyn aidash_application::ports::execution::completion::CompletionChecks
 		})
+	}
+	async fn pin_plugin_tools(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		let _ = run;
+		self.record("plugins.list");
+		self.0
+			.plugin_listings
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(self.0.plugin_listing.clone())
+	}
+	async fn close_plugin_sessions(&self, run: Uuid) {
+		self.0.closed_sessions.lock().unwrap().push(run);
 	}
 	async fn documents(&self, entry: &Entry) -> Result<Value> {
 		let _ = entry;
@@ -1380,6 +1429,13 @@ fn fixture() -> Fixture {
 		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
 		url_intents: vec![],
+		plugin_listing: None,
+		plugin_listings: Default::default(),
+		closed_sessions: Mutex::new(vec![]),
+		failing_save: Mutex::new(None),
+		permit_tools: false,
+		tool_call_approvals: Mutex::new(VecDeque::new()),
+		tool_call_requests: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }
 }
@@ -3602,6 +3658,8 @@ struct Scripted {
 	contract: aidash_domain::tool::ToolContract,
 	outputs: Mutex<std::collections::VecDeque<Value>>,
 	invocations: Mutex<usize>,
+	/// The invocation key of each call.
+	keys: Mutex<Vec<String>>,
 }
 impl Scripted {
 	fn new(specification: ToolSpec, contract: &str) -> Arc<Self> {
@@ -3610,7 +3668,57 @@ impl Scripted {
 			contract: aidash_domain::tool::builtin_contract(contract).expect("declared builtin"),
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
 		})
+	}
+	/// A core capability bound through its descriptor, as a deferred-exposure
+	/// Run binds it.
+	fn core_descriptor(operation: &str) -> Arc<Self> {
+		let contract = core_descriptor(NODE, operation)
+			.unwrap()
+			.declared_contract(QualifiedRef::builtin(NODE, operation))
+			.unwrap();
+		assert!(matches!(
+			contract.identity,
+			aidash_domain::tool::ToolIdentity::Descriptor(_)
+		));
+		Arc::new(Self {
+			specification: ToolSpec {
+				name: operation.into(),
+				description: "Core capability fixture".into(),
+				parameters: json!({"type":"object"}),
+			},
+			contract,
+			outputs: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
+		})
+	}
+	/// A Tenant's HTTP tool, whose calls wait for a Tool call approval.
+	fn tenant(name: &str) -> Arc<Self> {
+		Arc::new(Self {
+			specification: ToolSpec {
+				name: name.into(),
+				description: "Tenant HTTP fixture".into(),
+				parameters: json!({"type":"object"}),
+			},
+			contract: aidash_domain::tool::ToolContract::registry(
+				EntityRef {
+					id: name.into(),
+					version: "1.0.0".into(),
+				},
+				&aidash_domain::tool::ToolConfig::Http {
+					endpoint: "https://example.invalid".into(),
+					replay: "unsafe".into(),
+				},
+			),
+			outputs: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
+		})
+	}
+	fn keys(&self) -> Vec<String> {
+		self.keys.lock().unwrap().clone()
 	}
 	fn invocations(&self) -> usize {
 		*self.invocations.lock().unwrap()
@@ -3625,6 +3733,7 @@ impl Scripted {
 			contract: aidash_domain::tool::providers::research_contract(operation),
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
 		})
 	}
 }
@@ -3640,7 +3749,8 @@ impl ExecutionTool for Scripted {
 		self.contract.replay_safe()
 	}
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
-		let _ = (run, input, key);
+		let _ = (run, input);
+		self.keys.lock().unwrap().push(key.to_owned());
 		*self.invocations.lock().unwrap() += 1;
 		Ok(self
 			.outputs
@@ -3741,6 +3851,7 @@ impl DeferredSnapshot {
 			bindings: self.bindings,
 			definitions: self.definitions,
 			foreign_agents: vec![],
+			agent_plugins: vec![],
 		}
 	}
 }
@@ -4469,11 +4580,13 @@ async fn compaction_leaves_the_exposure_set_intact(mut fixture: Fixture) {
 	assert_eq!(context.exposure, exposure);
 }
 
+mod approvals;
 mod batch;
 mod decider;
 mod degraded;
 mod estimate;
 mod native;
+mod plugins;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {

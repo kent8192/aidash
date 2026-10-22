@@ -110,7 +110,7 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 			.and_where(Expr::col("revision").eq(2_i64))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -141,7 +141,7 @@ async fn native_receipt_finalization_failure_rolls_back_all_grant_dependencies(
 ) {
 	use reinhardt::query::{TableConstraint, types::IntoIden};
 	let p = scoped_pair;
-	let pool = p.a.store.pool.driver();
+	let pool = p.a.store.pool.fixture_driver();
 	// A real database CHECK fails only the final COMPLETED attempt update,
 	// after native dependencies have been inserted into the completion transaction.
 	let statement = Query::alter_table()
@@ -223,7 +223,7 @@ async fn assert_receiver_native_cache_erased(p: &Pair) {
 			.and_where(Expr::col("run_id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.b.store.pool.driver())
+	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -237,7 +237,7 @@ async fn assert_receiver_native_cache_erased(p: &Pair) {
 			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(p.b.store.pool.driver())
+	.fetch_all(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(
@@ -260,7 +260,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 ) {
 	let p = scoped_pair;
 	first_native_context(&p).await;
-	let pool = p.b.store.pool.driver();
+	let pool = p.b.store.pool.fixture_driver();
 	// Fixture-only DDL: a foreign key injects a real PostgreSQL deletion
 	// failure. No production trigger, lease or authority check is disabled.
 	// Only the table owner changes the schema; the server role holds DML.
@@ -346,7 +346,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 	.await
 	.unwrap();
 	let mut reopened = aidash_server::store::Store::from_pool(
-		p.b.store.pool.driver().clone(),
+		p.b.store.pool.fixture_driver().clone(),
 		p.b.store.node_id.clone(),
 	)
 	.await
@@ -423,7 +423,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(recorded, 2);
@@ -508,7 +508,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 			)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.a.store.pool.driver())
+	.execute(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	aidash_server::semantic::worker::sweep(&p.a.store)
@@ -522,7 +522,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 			.and_where(Expr::col("receipt").is_not_null())
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -542,10 +542,10 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 	let p = scoped_pair;
 	*p.semantic.as_ref().unwrap().reservations.lock().await = Some(ReservationCheck {
 		pools: vec![
-			p.a.store.pool.driver().clone(),
-			p.b.store.pool.driver().clone(),
+			p.a.store.pool.fixture_driver().clone(),
+			p.b.store.pool.fixture_driver().clone(),
 		],
-		dispatcher: p.a.store.pool.driver().clone(),
+		dispatcher: p.a.store.pool.fixture_driver().clone(),
 		grant: p.grant,
 		admission: p.admission,
 		purpose: "retrieval",
@@ -572,7 +572,7 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 				.and_where(Expr::col("purpose").eq("memory"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(node.store.pool.driver())
+		.fetch_all(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert!(
@@ -688,17 +688,18 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_remote_reads"))
-			.columns(["grant_id", "unit_id", "revision"].map(Alias::new))
+			.columns(["grant_id", "unit_id", "revision", "tenant"].map(Alias::new))
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(p.grant))
 					.expr(Expr::value(last))
 					.expr(Expr::value(1_i64))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.a.store.pool.driver())
+	.execute(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	// Exercise the Home peer verifier directly: a deliberate >1024-visit DAG
@@ -783,12 +784,13 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 	let mut insert = Query::insert();
 	insert
 		.into_table(Alias::new("memory_remote_reads"))
-		.columns(["grant_id", "unit_id", "revision"].map(Alias::new));
+		.columns(["grant_id", "unit_id", "revision", "tenant"].map(Alias::new));
 	for unit in &selected {
 		insert.values_panic([
 			reinhardt::query::IntoValue::into_value(p.grant),
 			reinhardt::query::IntoValue::into_value(unit.id),
 			reinhardt::query::IntoValue::into_value(unit.revision),
+			reinhardt::query::IntoValue::into_value("acme"),
 		]);
 	}
 	aidash_server::database::native::query(&insert.to_string(PostgresQueryBuilder))
@@ -804,7 +806,7 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(

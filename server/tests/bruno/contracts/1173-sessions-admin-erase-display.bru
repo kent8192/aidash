@@ -1,5 +1,5 @@
 meta {
-  name: 1173 sessions-admin-erase-display - Unrecognized bearer cannot mutate state
+  name: 1173 sessions-admin-erase-display - Anonymous request is rejected
   type: http
   seq: 1173
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 script:pre-request {

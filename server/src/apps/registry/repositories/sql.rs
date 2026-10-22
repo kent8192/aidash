@@ -13,6 +13,14 @@ impl DefinitionLookup for SqlScope<'_> {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		Ok(Definition::read_in(&mut **self.0, id, version).await?)
 	}
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> Result<Option<aidash_application::ports::bindings::StoredAgentPlugin>> {
+		super::agent_plugins::get(&mut **self.0, digest)
+			.await
+			.map_err(Into::into)
+	}
 	async fn binding_installation(
 		&mut self,
 		projection: &aidash_domain::registry::Projection,

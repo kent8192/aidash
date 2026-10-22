@@ -26,7 +26,7 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, workspace: Option<Uuid>
 				.issuer
 				.map(|issuer| (issuer, current.last_valid_at, current.disabled_at)),
 			scope.now(),
-			scope.google_issuer(),
+			|issuer| scope.reports_status(issuer),
 		)
 		.map_err(|reason| match reason {
 			DashboardStatusFailure::Forbidden => Error::Forbidden,

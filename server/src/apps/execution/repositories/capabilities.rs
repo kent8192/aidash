@@ -177,6 +177,14 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn admit_sandboxed_tool(&mut self) -> Result<()> {
+		aidash_application::usage::require(
+			self.store.admission.as_ref(),
+			&self.access.identity.tenant,
+			aidash_application::usage::Work::SandboxedTool,
+		)
+		.await
+	}
 	async fn release_python(&mut self, reason: &str) -> Result<()> {
 		crate::capabilities::python::release(self.store, self.access, self.area, reason)
 			.await

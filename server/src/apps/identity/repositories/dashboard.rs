@@ -3,7 +3,9 @@ use crate::database::native::Pool;
 use crate::{
 	apps::{
 		execution::models::Run,
-		identity::models::{DashboardExecutionOrigin, DashboardIdentity},
+		identity::models::{
+			DashboardExecutionOrigin, DashboardIdentity, DemoReservation, Fulfilment,
+		},
 	},
 	authorization::access::Access,
 	federation::Federation,
@@ -25,6 +27,26 @@ pub(crate) struct Repository(pub(crate) Federation);
 pub(crate) struct Login(pub(crate) Pool, pub(crate) String);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
+	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()> {
+		let policy = self.0.dashboard_policy();
+		// Reservations are Tenant-owned: this Deployment-scope read only finds
+		// them, and each is spent in its own Tenant's scope and transaction, so
+		// one that cannot be spent leaves the others to be.
+		for reservation in DemoReservation::unspent(&self.0, &email.to_lowercase()).await? {
+			let outcome = DemoReservation::fulfil(
+				&self.0,
+				policy.as_ref(),
+				&reservation.tenant,
+				reservation.id,
+				identity,
+			)
+			.await?;
+			if let Fulfilment::Skipped(reason) = outcome {
+				tracing::debug!(%identity, tenant = %reservation.tenant, ?reason, "Demo Reservation not spent");
+			}
+		}
+		Ok(())
+	}
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
 		super::personal_tenant::provision(&self.0, &self.1, identity)
 			.await
@@ -32,7 +54,6 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 	}
 	async fn find(
 		&mut self,
-		issuer: &str,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Option<Account>> {
 		use reinhardt::db::orm::Model;
@@ -40,11 +61,7 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 			.0
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				Ok(DashboardIdentity::objects()
-					.filter(DashboardIdentity::field_issuer().eq(issuer.to_owned()))
-					.filter(
-						DashboardIdentity::field_gcip_tenant()
-							.eq(sign_in.gcip_tenant.clone().unwrap_or_default()),
-					)
+					.filter(DashboardIdentity::field_issuer().eq(sign_in.issuer.clone()))
 					.filter(DashboardIdentity::field_subject().eq(sign_in.subject.clone()))
 					.all_with_db(tx)
 					.await?)
@@ -55,11 +72,10 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 
 	async fn register(
 		&mut self,
-		issuer: &str,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Account> {
 		Ok(account(
-			DashboardIdentity::register(&self.0, issuer, sign_in).await?,
+			DashboardIdentity::register(&self.0, sign_in).await?,
 		))
 	}
 }
@@ -76,7 +92,6 @@ pub(crate) fn account(row: DashboardIdentity) -> Account {
 		id: row.id,
 		issuer: row.issuer,
 		subject: row.subject,
-		gcip_tenant: (!row.gcip_tenant.is_empty()).then_some(row.gcip_tenant),
 		valid_since: row.valid_since,
 		last_valid_at: row.last_valid_at,
 		disabled_at: row.disabled_at,

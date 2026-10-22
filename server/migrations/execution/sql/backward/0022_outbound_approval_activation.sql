@@ -5,9 +5,9 @@ BEGIN
     IF position('IF NEW.kind = ''approval'' THEN' IN definition) > 0 THEN
         RETURN;
     END IF;
-    IF position('IF NEW.kind = ''outbound'' THEN' IN definition) = 0 THEN
+    IF position('IF NEW.kind IN (''outbound'', ''disclosure'', ''tool_call'') THEN' IN definition) = 0 THEN
         RAISE EXCEPTION 'unknown approval activation trigger definition';
     END IF;
-    EXECUTE replace(definition, 'IF NEW.kind = ''outbound'' THEN', 'IF NEW.kind = ''approval'' THEN');
+    EXECUTE replace(definition, 'IF NEW.kind IN (''outbound'', ''disclosure'', ''tool_call'') THEN', 'IF NEW.kind = ''approval'' THEN');
 END;
 $$;

@@ -196,6 +196,7 @@ async fn database_validates_registered_timeouts(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	app.database.tenant("endpoint").await;
 	let mut connection = app.database.lease.handle();
 	for (index, config) in invalid_configs.into_iter().enumerate() {
 		let mut entry = timeout_model.clone();
@@ -230,6 +231,7 @@ async fn database_validates_media_route_members_for_models(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	app.database.tenant("endpoint").await;
 	let mut connection = app.database.lease.handle();
 	let route = json!({"tag":"fixture/verified", "formats":["image/png"],
 		"source":"fixture verification", "verified_at":"2026-09-28T12:00:00Z",

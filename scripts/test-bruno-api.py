@@ -81,12 +81,11 @@ class IdentityProvider:
             "authorization": 0,
             "exchange": 0,
             "jwks": 0,
-            "account_status": 0,
         }
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler())
         self.server.daemon_threads = True
         self.origin = f"http://127.0.0.1:{self.server.server_port}"
-        self.issuer = self.origin + "/realms/bruno"
+        self.issuer = self.origin + "/issuer"
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
         )
@@ -154,15 +153,14 @@ class IdentityProvider:
 
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path == "/realms/bruno/.well-known/openid-configuration":
+                if parsed.path == "/issuer/.well-known/openid-configuration":
                     provider.count("discovery")
                     self.respond(
                         200,
                         {
                             "issuer": provider.issuer,
                             "authorization_endpoint": provider.issuer + "/authorize",
-                            "token_endpoint": provider.issuer
-                            + "/protocol/openid-connect/token",
+                            "token_endpoint": provider.issuer + "/token",
                             "jwks_uri": provider.issuer + "/certs",
                             "response_types_supported": ["code"],
                             "subject_types_supported": ["public"],
@@ -174,10 +172,10 @@ class IdentityProvider:
                             "code_challenge_methods_supported": ["S256"],
                         },
                     )
-                elif parsed.path == "/realms/bruno/certs":
+                elif parsed.path == "/issuer/certs":
                     provider.count("jwks")
                     self.respond(200, {"keys": [provider.jwk]})
-                elif parsed.path == "/realms/bruno/authorize":
+                elif parsed.path == "/issuer/authorize":
                     query = urllib.parse.parse_qs(parsed.query)
                     if query.get("client_id") != ["aidash-bruno"] or query.get(
                         "code_challenge_method"
@@ -207,14 +205,11 @@ class IdentityProvider:
                             {"code": code, "state": query["state"][0]}
                         ),
                     )
-                elif parsed.path == "/admin/realms/bruno/users/bruno-user":
-                    provider.count("account_status")
-                    self.respond(200, {"id": "bruno-user", "enabled": True})
                 else:
                     self.respond(404, {"error": "not_found"})
 
             def do_POST(self):
-                if self.path != "/realms/bruno/protocol/openid-connect/token":
+                if self.path != "/issuer/token":
                     self.respond(404, {"error": "not_found"})
                     return
                 form = urllib.parse.parse_qs(
@@ -222,16 +217,6 @@ class IdentityProvider:
                         int(self.headers.get("Content-Length", "0"))
                     ).decode()
                 )
-                if form.get("grant_type") == ["client_credentials"]:
-                    self.respond(
-                        200,
-                        {
-                            "access_token": "local-status-fixture",
-                            "token_type": "Bearer",
-                            "expires_in": 600,
-                        },
-                    )
-                    return
                 with provider.lock:
                     code = provider.codes.pop(form.get("code", [""])[0], None)
                 verifier = form.get("code_verifier", [""])[0]
@@ -701,10 +686,6 @@ def main():
                     "AIDASH_OIDC_CLIENT_ID": "aidash-bruno",
                     "AIDASH_OIDC_CLIENT_SECRET": secrets.token_urlsafe(32),
                     "AIDASH_OIDC_PUBLIC_ORIGIN": base,
-                    "AIDASH_OIDC_KEYCLOAK_ADMIN_URL": provider.origin
-                    + "/admin/realms/bruno",
-                    "AIDASH_OIDC_STATUS_CLIENT_ID": "aidash-status",
-                    "AIDASH_OIDC_STATUS_CLIENT_SECRET": secrets.token_urlsafe(32),
                 }
             )
             environment["NO_PROXY"] = environment["no_proxy"] = "127.0.0.1,localhost"

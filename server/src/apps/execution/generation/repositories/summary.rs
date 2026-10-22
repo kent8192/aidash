@@ -63,16 +63,19 @@ impl GenerationSummarySession for Session {
 					Alias::new("provider_version"),
 					Alias::new("definition_digest"),
 					Alias::new("request_bytes"),
+					Alias::new("tenant"),
 				])
-				.values_panic([
-					Expr::value(id),
-					Expr::value(attempt.id),
-					Expr::value(attempt.run),
-					Expr::value(attempt.provider.id.clone()),
-					Expr::value(attempt.provider.version.clone()),
-					Expr::value(attempt.definition_digest.clone()),
-					Expr::value(attempt.request_bytes),
+				.values_expr(vec![
+					Expr::value(id).into(),
+					Expr::value(attempt.id).into(),
+					Expr::value(attempt.run).into(),
+					Expr::value(attempt.provider.id.clone()).into(),
+					Expr::value(attempt.provider.version.clone()).into(),
+					Expr::value(attempt.definition_digest.clone()).into(),
+					Expr::value(attempt.request_bytes).into(),
+					crate::database::scope::tenant_of("runs", "id", attempt.run),
 				])
+				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)

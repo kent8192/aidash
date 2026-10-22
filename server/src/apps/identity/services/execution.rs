@@ -274,6 +274,40 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	/// Admit one exact call of a Tenant's HTTP or MCP tool, or open the Tool call
+	/// approval the Run waits for, under the worker's current authority lease. It
+	/// shares the capability approval records, decision API and Run waiting.
+	pub async fn tool_call_approval(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: aidash_application::capabilities::approvals::ToolCallRequest,
+	) -> Result<aidash_application::capabilities::approvals::ToolCallApproval> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			// A core Run's approval belongs to its Working Area, so its Thread
+			// lists it; other Runs have none.
+			let area =
+				crate::apps::execution::repositories::sessions::run_area(&mut access, run.id)
+					.await?
+					.flatten()
+					.map(|area| area.id);
+			let request =
+				aidash_application::capabilities::approvals::ToolCallRequest { area, ..request };
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::tool_call(
+				&mut scope,
+				&run.metadata(),
+				request,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
 	/// is reserved.
 	pub async fn consume_web_disclosure(
@@ -952,7 +986,7 @@ impl Guard {
 			));
 		}
 		let tenancy = access.tenancy()?;
-		let bytes = i64::try_from(config.state_budget.max_request_bytes()).map_err(|_| {
+		let bytes = i64::try_from(config.max_request_bytes()).map_err(|_| {
 			aidash_application::Error::Invalid("decision request bound overflow".into())
 		})?;
 		let questions = i32::try_from(questions).map_err(|_| {

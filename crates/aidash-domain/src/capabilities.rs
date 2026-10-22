@@ -33,7 +33,7 @@ impl CoreCapabilities {
 	}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkillAttachment {
 	pub skill_id: Uuid,

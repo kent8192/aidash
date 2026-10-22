@@ -1,7 +1,11 @@
 use super::*;
+use crate::ports::bindings::StoredAgentPlugin;
 use aidash_domain::tool::{ToolContract, providers::*};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+
+mod agent_plugins;
+mod plugin_tools;
 
 const NODE: &str = "aidash://node-a";
 fn reference(id: &str) -> QualifiedRef {
@@ -32,6 +36,7 @@ struct Catalog {
 	entries: BTreeMap<QualifiedRef, Entry>,
 	reject_installations: bool,
 	foreign: BTreeMap<QualifiedRef, ForeignAgentSnapshot>,
+	plugins: BTreeMap<String, StoredAgentPlugin>,
 }
 impl Catalog {
 	fn new() -> Self {
@@ -39,6 +44,7 @@ impl Catalog {
 			entries: BTreeMap::new(),
 			reject_installations: false,
 			foreign: BTreeMap::new(),
+			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
 		for operation in crate::registry::system::operations() {
@@ -66,6 +72,9 @@ impl Catalog {
 }
 #[async_trait]
 impl BindingCatalog for Catalog {
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		Ok(self.plugins.get(digest).cloned())
+	}
 	async fn foreign_agent(&mut self, reference: &QualifiedRef) -> Result<ForeignAgentSnapshot> {
 		self.foreign.get(reference).cloned().ok_or(Error::Forbidden)
 	}
@@ -428,6 +437,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live.clone(),
+		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	assert!(!tools.contains_key("memory_mutate"));
@@ -1115,7 +1125,7 @@ async fn explicit_member_exposure_overrides_an_eager_bundle_member() {
 			(alias, spec)
 		})
 		.collect();
-	let capabilities = aidash_domain::exposure::catalog(&saved, &specs, &[]).unwrap();
+	let capabilities = aidash_domain::exposure::catalog(&saved, &specs, &[], None).unwrap();
 	let exposure = |alias: &str| {
 		capabilities
 			.iter()
@@ -1252,6 +1262,7 @@ async fn sent_tool_definitions(bindings: [&str; 3]) -> String {
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live,
+		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	let specifications = tools
@@ -1276,6 +1287,7 @@ async fn saved_dispatch_enforces_narrowing_and_rechecks_revocation_and_provider_
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live.clone(),
+		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	let read = &tools["workspace_read"];
@@ -1314,6 +1326,7 @@ async fn activation_cannot_add_or_replace_a_binding_graph_after_execution_starts
 	let resolver = execution::PinnedResolver {
 		providers: Arc::new(Live::new()),
 		authority: Arc::new(Live::new()),
+		sessions: None,
 	};
 	assert!(resolver.tools(&run).await.is_err());
 }
@@ -1364,6 +1377,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 	let resolver = execution::PinnedResolver {
 		providers: live.clone(),
 		authority: live.clone(),
+		sessions: None,
 	};
 	assert!(matches!(
 		resolver.tools(&run).await,
@@ -1753,9 +1767,10 @@ fn native_memory_binding_preserves_removed_read_operations() {
 
 fn decider_config() -> Value {
 	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
-        "provider_contract":"typesafe.jev/1","provider_credential":"openrouter","model":"typesafe/jev-1.13",
+        "provider_credential":"openrouter",
+        "routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","keep_threshold":"3fe0000000000000"}],
         "builder":"aidash.compaction/2","option_source":"history_event/1",
-        "rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce",
+        "rule":"compaction.keep/1","mode":"enforce",
         "max_calls_per_run":20})
 }
 fn decider_binding(id: &str) -> Binding {
@@ -1801,19 +1816,20 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 		serde_json::to_value(&bound.pin).unwrap()["provider_implementation"],
 		implementation
 	);
-	assert_eq!(bound.config.model, "typesafe/jev-1.13");
+	assert_eq!(bound.config.routes[0].model, "typesafe/jev-1.13");
 	assert_eq!(bound.restrictions.preserve_recent, 8);
 	assert_eq!(bound.restrictions.keep_threshold.value(), 0.25);
 	catalog
 		.entries
 		.get_mut(&reference("decider"))
 		.unwrap()
-		.config["model"] = json!("typesafe/jev-1.14");
+		.config["routes"][0]["model"] = json!("typesafe/jev-1.14");
 	assert_eq!(
 		saved
 			.decider(aidash_domain::decision::Hook::Compaction)
 			.unwrap()
 			.config
+			.routes[0]
 			.model,
 		"typesafe/jev-1.13"
 	);
@@ -2008,6 +2024,7 @@ async fn file_read_tool(run: &Run) -> (ToolContract, Option<ConcurrentCall>) {
 	let resolver = execution::PinnedResolver {
 		providers: providers.clone(),
 		authority: providers,
+		sessions: None,
 	};
 	let tools = resolver.tools(run).await.unwrap();
 	let read = &tools["file_read"];

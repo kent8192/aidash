@@ -123,7 +123,7 @@ impl Plugin {
 		}
 	}
 }
-fn validate_arguments(schema: &Value, input: &Value) -> Result<()> {
+pub(crate) fn validate_arguments(schema: &Value, input: &Value) -> Result<()> {
 	jsonschema::validator_for(schema)
 		.map_err(|e| Error::Invalid(e.to_string()))?
 		.validate(input)
@@ -444,6 +444,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 		.collect()
 }
 
+pub mod agent_plugin;
 pub mod exposure;
 #[cfg(test)]
 mod tests;

@@ -3,86 +3,79 @@ use crate::Result;
 use aidash_domain::identity::dashboard::{Account, AccountState, SignIn};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
+use std::sync::Arc;
 use uuid::Uuid;
+
+/// The issuers whose External Identities may sign in, and the Tenant each
+/// issuer's identities may be restricted to.
+pub trait Issuers: Send + Sync {
+	/// Every issuer whose External Identities may sign in.
+	fn admitted(&self) -> Vec<String>;
+	fn admits(&self, issuer: &str) -> bool {
+		self.admitted().iter().any(|admitted| admitted == issuer)
+	}
+	/// The only Tenant that External Identities of `issuer` may be mapped into.
+	fn restriction(&self, issuer: &str) -> Option<String>;
+	/// The issuer whose External Identities are restricted to `tenant`.
+	fn restricted_issuer(&self, tenant: &str) -> Option<String>;
+	/// Whether refusing an identity disables it at once. A restriction is
+	/// policy, so removing one retires its identities; an issuer that is no
+	/// longer configured retires its identities in the background instead.
+	fn retires_refused(&self) -> bool {
+		false
+	}
+}
+
+/// One configured issuer, which admits only itself and restricts no identity.
+pub struct Issuer(pub String);
+
+impl Issuers for Issuer {
+	fn admitted(&self) -> Vec<String> {
+		vec![self.0.clone()]
+	}
+	fn admits(&self, issuer: &str) -> bool {
+		issuer == self.0
+	}
+	fn restriction(&self, _: &str) -> Option<String> {
+		None
+	}
+	fn restricted_issuer(&self, _: &str) -> Option<String> {
+		None
+	}
+}
 
 #[derive(Clone)]
 pub struct AccountPolicy {
-	pub issuer: String,
-	pub google: bool,
-	pub tenant_bindings: Option<BTreeMap<String, String>>,
-	pub gcip_providers: BTreeMap<String, Vec<String>>,
+	pub issuers: Arc<dyn Issuers>,
 	/// The Tenancy Rule that creates a Personal Tenant at sign-in.
 	pub personal_tenants: bool,
+	/// The Deployment loads Demo data (`[demo_data] enabled`), so a sign-in
+	/// fulfils the Demo Reservations held for the identity's verified email.
+	pub demo_data: bool,
 }
 
 impl AccountPolicy {
-	/// Whether an identity of `gcip_tenant` is outside every Tenant Binding, so
-	/// the Tenancy Rules cover it. A bound identity may only ever be mapped into
-	/// its bound Tenant.
-	pub fn unbound(&self, gcip_tenant: Option<&str>) -> bool {
-		match (&self.tenant_bindings, gcip_tenant) {
-			(Some(bindings), Some(pool)) => !bindings.contains_key(pool),
-			(Some(_), None) => false,
-			(None, _) => true,
-		}
+	/// Whether no restriction applies to identities of `issuer`, so the
+	/// Tenancy Rules cover them.
+	pub fn unrestricted(&self, issuer: &str) -> bool {
+		self.issuers.restriction(issuer).is_none()
 	}
-	/// Whether signing in creates a Personal Tenant for an identity of `gcip_tenant`.
-	pub fn provisions_personal(&self, gcip_tenant: Option<&str>) -> bool {
-		self.personal_tenants && self.unbound(gcip_tenant)
+	/// Whether signing in creates a Personal Tenant for an identity of `issuer`.
+	pub fn provisions_personal(&self, issuer: &str) -> bool {
+		self.personal_tenants && self.unrestricted(issuer)
 	}
-	pub fn providers_for(&self, tenant: &str) -> Vec<String> {
-		self.gcip_providers
-			.get(tenant)
-			.cloned()
-			.unwrap_or_else(|| vec!["google.com".into(), "password".into()])
-	}
-	/// The one GCIP Tenant bound to `tenant`. Only a deployment with Tenant
-	/// Bindings ties Registration Requests to a Tenant.
-	pub fn bound_pool(&self, tenant: &str) -> Option<&str> {
-		self.tenant_bindings
-			.as_ref()?
-			.iter()
-			.find_map(|(pool, bound)| (bound == tenant).then_some(pool.as_str()))
-	}
-	pub fn require_sign_in_provider(&self, sign_in: &SignIn) -> Result<()> {
-		if self.tenant_bindings.is_some() {
-			let pool = sign_in
-				.gcip_tenant
-				.as_deref()
-				.ok_or(crate::Error::Forbidden)?;
-			let provider = sign_in
-				.gcip_provider
-				.as_ref()
-				.ok_or(crate::Error::Forbidden)?;
-			if !self.providers_for(pool).contains(provider) {
-				return Err(crate::Error::Forbidden);
-			}
-		}
-		Ok(())
-	}
-	pub fn require_identity(&self, issuer: &str, gcip_tenant: Option<&str>) -> Result<()> {
-		if issuer != self.issuer {
-			return Err(crate::Error::Forbidden);
-		}
-		if let Some(bindings) = &self.tenant_bindings {
-			aidash_domain::identity::dashboard::bound_tenant(bindings, gcip_tenant)
-				.ok_or(crate::Error::Forbidden)?;
-		} else if gcip_tenant.is_some() {
+	pub fn require_identity(&self, issuer: &str) -> Result<()> {
+		if !self.issuers.admits(issuer) {
 			return Err(crate::Error::Forbidden);
 		}
 		Ok(())
 	}
-	pub fn require_mapping(
-		&self,
-		issuer: &str,
-		gcip_tenant: Option<&str>,
-		tenant: &str,
-	) -> Result<()> {
-		self.require_identity(issuer, gcip_tenant)?;
-		if let Some(bindings) = &self.tenant_bindings
-			&& aidash_domain::identity::dashboard::bound_tenant(bindings, gcip_tenant)
-				!= Some(tenant)
+	pub fn require_mapping(&self, issuer: &str, tenant: &str) -> Result<()> {
+		self.require_identity(issuer)?;
+		if self
+			.issuers
+			.restriction(issuer)
+			.is_some_and(|restricted| restricted != tenant)
 		{
 			return Err(crate::Error::Forbidden);
 		}
@@ -92,13 +85,18 @@ impl AccountPolicy {
 
 #[async_trait]
 pub trait AccountStatus: Send + Sync {
-	async fn lookup(&self, subject: &str, gcip_tenant: Option<&str>) -> Result<AccountState>;
+	async fn lookup(&self, issuer: &str, subject: &str) -> Result<AccountState>;
 }
 
 #[async_trait]
 pub trait LoginAccounts: Send {
-	async fn find(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Option<Account>>;
-	async fn register(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Account>;
+	async fn find(&mut self, sign_in: &SignIn) -> Result<Option<Account>>;
+	async fn register(&mut self, sign_in: &SignIn) -> Result<Account>;
+	/// Fulfil the Demo Reservations held for `email`, a GCIP-verified address,
+	/// by mapping `identity` into each reserved Tenant (ADR 0079). A
+	/// Reservation that is already spent, whose Tenant is deleted or whose
+	/// subject no longer exists is skipped. It adds Mappings only.
+	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()>;
 	/// Create a Personal Tenant once; never restore withdrawn authority.
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()>;
 }

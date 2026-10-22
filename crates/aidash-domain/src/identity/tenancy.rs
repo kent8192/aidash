@@ -3,6 +3,7 @@
 //! created through Aidash, the conservative last-administrator check, and
 //! Tenant Deletion.
 use crate::identity::tenant_administration::{self as administration, COLLECTION};
+use crate::offering::Offering;
 use crate::policy::{
 	Effect, Evaluation, Group, Policy, PolicyBundle, Resource, ResourceSelector, Subject,
 	SubjectKind, SubjectSelector, identifier,
@@ -25,11 +26,18 @@ pub const MEMBERS: &str = "members";
 pub const TENANT_UPDATE: &str = "tenant.update";
 /// Deleting the Tenant, and restoring it within its grace period (ADR 0060).
 pub const TENANT_DELETE: &str = "tenant.delete";
+/// Consenting, for the Tenant, to its attachment to a Billing Account.
+pub const BILLING_ATTACH: &str = "billing.attach";
+
+/// The policy that lets members approve the Tool call approvals of their own
+/// Runs, and nothing else they could be asked to approve.
+pub const MEMBER_TOOL_APPROVAL: &str = "members-tool-call-approval";
 
 /// What every ordinary member may do: use the Tenant and author definitions,
-/// never administer people, change Tenant settings, approve use, hold Provider
-/// Credentials, disclose research or administer Federation. An explicit list,
-/// because deny rules would make the last-administrator check unreliable.
+/// never administer people, change Tenant settings, approve use beyond their
+/// own tool calls (see [`MEMBER_TOOL_APPROVAL`]), hold Provider Credentials,
+/// disclose research or administer Federation. An explicit list, because deny
+/// rules would make the last-administrator check unreliable.
 pub const MEMBER_ACTIONS: &[&str] = &[
 	"agent.configure",
 	"agent.execute",
@@ -176,7 +184,7 @@ pub fn label(value: &str) -> Result<String> {
 pub const PERSONAL_LABEL: &str = "Personal";
 
 /// The deployment-wide rules for how Tenants come to exist and how people join
-/// them. The defaults are the Self-hosted Offering's.
+/// them. The Deployment's Offering supplies their defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenancyRules {
 	pub personal_tenants: bool,
@@ -186,17 +194,31 @@ pub struct TenancyRules {
 	pub invitations: bool,
 	/// How long a deleted Tenant stays restorable before it is purged.
 	pub deletion_grace_days: u32,
+	/// How long audit history outlives a Tenant's purge before it is deleted.
+	pub audit_retention_days: u32,
 }
 
-impl Default for TenancyRules {
-	fn default() -> Self {
-		Self {
+impl TenancyRules {
+	/// The rules `offering` supplies where the Deployment states none. Only
+	/// Cloud lets people start their own Tenants; elsewhere a Deployment
+	/// Administrator creates them.
+	pub fn of(offering: Offering) -> Self {
+		let administered = Self {
 			personal_tenants: false,
 			tenant_creation: false,
 			creation_per_hour: 5,
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
+			audit_retention_days: deletion::DEFAULT_AUDIT_RETENTION_DAYS,
+		};
+		match offering {
+			Offering::Cloud => Self {
+				personal_tenants: true,
+				tenant_creation: true,
+				..administered
+			},
+			Offering::SelfHosted | Offering::Dedicated => administered,
 		}
 	}
 }
@@ -308,6 +330,18 @@ pub fn initial_policy(tenant: &str, creator: bool) -> Result<PolicyBundle> {
 					.map(|action| (*action).to_owned())
 					.collect(),
 			),
+			Policy {
+				id: MEMBER_TOOL_APPROVAL.into(),
+				resources: ResourceSelector {
+					kinds: ["tool".to_owned()].into(),
+					ids: BTreeSet::new(),
+				},
+				..group_policy(
+					MEMBER_TOOL_APPROVAL,
+					MEMBERS,
+					["capability.approve".to_owned()].into(),
+				)
+			},
 		],
 	};
 	bundle.validate()?;

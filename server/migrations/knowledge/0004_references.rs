@@ -27,9 +27,9 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_collections".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_collections_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "semantic_indexes".to_owned(),
-				referenced_columns: vec!["workspace_id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -39,9 +39,9 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_entries".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_entries_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "semantic_indexes".to_owned(),
-				referenced_columns: vec!["workspace_id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -51,9 +51,9 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_indexes".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_indexes_workspace_id_fkey".to_owned(),
-				columns: vec!["workspace_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "workspace_id".to_owned()],
 				referenced_table: "workspaces".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -63,9 +63,9 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_points".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_points_collection_fkey".to_owned(),
-				columns: vec!["collection".to_owned()],
+				columns: vec!["tenant".to_owned(), "collection".to_owned()],
 				referenced_table: "semantic_collections".to_owned(),
-				referenced_columns: vec!["collection".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "collection".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -75,9 +75,9 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_points".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_points_entry_id_fkey".to_owned(),
-				columns: vec!["entry_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "entry_id".to_owned()],
 				referenced_table: "semantic_entries".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -87,9 +87,9 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_run_reads".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_run_reads_entry_id_fkey".to_owned(),
-				columns: vec!["entry_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "entry_id".to_owned()],
 				referenced_table: "semantic_entries".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -99,9 +99,129 @@ pub(super) fn migration() -> Migration {
 			table: "semantic_run_reads".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "semantic_run_reads_run_id_fkey".to_owned(),
-				columns: vec!["run_id".to_owned()],
+				columns: vec!["tenant".to_owned(), "run_id".to_owned()],
 				referenced_table: "runs".to_owned(),
-				referenced_columns: vec!["id".to_owned()],
+				referenced_columns: vec!["tenant".to_owned(), "id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_collections".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_collections_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_entries".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_entries_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_history".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_history_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_indexes".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_indexes_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_points".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_points_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_remote_attempts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_remote_attempts_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_remote_operations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_remote_operations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_remote_reads".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_remote_reads_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_remote_receipts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_remote_receipts_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "semantic_run_reads".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_run_reads_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,

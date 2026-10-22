@@ -17,7 +17,8 @@ test("generation dashboard manages policy, approval, completion and retained his
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
   let semanticRoot = "";
-  const cleanupHeaders = { authorization: "Bearer acceptance-access-token" };
+  // alice's credential, once issued; the semantic index is her Tenant's.
+  const cleanupHeaders = { authorization: "" };
   let semanticIndex:
     | { collection: string; spec: { vector: { endpoint: string } } }
     | undefined;
@@ -99,6 +100,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
+    cleanupHeaders.authorization = `Bearer ${credential.token}`;
     await api(
       "/api/registry",
       {
@@ -143,13 +145,17 @@ test("generation dashboard manages policy, approval, completion and retained his
           hook: "compaction",
           answer_type: "noul",
           description: "Keep the history the task still needs",
-          provider_contract: "typesafe.jev/1",
           provider_credential: "openrouter",
-          model: "typesafe/jev-1.14",
+          routes: [
+            {
+              provider_contract: "typesafe.jev/1",
+              model: "typesafe/jev-1.14",
+              keep_threshold: "3fe0000000000000",
+            },
+          ],
           builder: "aidash.compaction/2",
           option_source: "history_event/1",
           rule: "compaction.keep/1",
-          keep_threshold: "3fe0000000000000",
           mode: "enforce",
           max_calls_per_run: 20,
         },
@@ -198,9 +204,23 @@ test("generation dashboard manages policy, approval, completion and retained his
     };
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const authFixture = await installBearerDashboard(
-      page,
-      "acceptance-access-token",
+    await installBearerDashboard(page, credential.token, {
+      tenant,
+      name: "alice",
+    });
+    // The Tenant overview answers only a dashboard Mapping, never a Bearer
+    // credential, so it is the one read this fixture supplies. The registry
+    // still checks alice's policy on every write.
+    await page.route(`**/api/tenants/${tenant}/administration`, (route) =>
+      route.fulfill({
+        json: {
+          tenant,
+          label: null,
+          actions: ["registry.create"],
+          assignable_groups: [],
+          policy_revision: null,
+        },
+      }),
     );
     await page.goto("/");
     await expect(page.locator("#main")).toBeVisible();
@@ -220,7 +240,6 @@ test("generation dashboard manages policy, approval, completion and retained his
         );
       }
     };
-    authFixture.setToken(credential.token);
     await navigate("レジストリ");
     await page
       .getByRole("button", { name: "エンティティを登録", exact: true })
@@ -268,15 +287,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await expect(registryDialog).toHaveCount(0);
     await page.unroute("**/api/registry");
     expect(embedder).not.toBe("");
-    expect(
-      (
-        await api(
-          `/api/registry/${embedder}/1.0.0`,
-          undefined,
-          credential.token,
-        )
-      ).config,
-    ).toEqual(embeddingConfig);
+    // A Tenant subject reads only versions its Tenant approved.
     await api(
       `/api/authorization/${tenant}/catalog`,
       {
@@ -286,6 +297,15 @@ test("generation dashboard manages policy, approval, completion and retained his
       },
       credential.token,
     );
+    expect(
+      (
+        await api(
+          `/api/registry/${embedder}/1.0.0`,
+          undefined,
+          credential.token,
+        )
+      ).config,
+    ).toEqual(embeddingConfig);
     await page.reload();
     await navigate("Agent生成");
     await page
@@ -305,10 +325,10 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("モデル", { exact: true })
       .selectOption(`${id}@1.0.0`);
     await dialog
-      .getByLabel("追加する定義", { exact: true })
+      .getByLabel("追加するもの", { exact: true })
       .selectOption(`memory:${memoryDescriptor}@1.0.0`);
     await dialog
-      .getByRole("button", { name: "Bindingを追加", exact: true })
+      .getByRole("button", { name: "このエージェントに追加", exact: true })
       .click();
     await dialog
       .getByLabel("追加の指示（任意）", { exact: true })
@@ -366,7 +386,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("ゴール", { exact: true })
       .fill("Complete work with a missing specialist");
     await dialog.getByRole("button", { name: "作成", exact: true }).click();
-    await expect(dialog).toHaveCount(0);
+    // The dialog closes once the refreshed state lists the new channel (#404).
+    await expect(dialog).toHaveCount(0, { timeout: 30000 });
     const { workspaces } = await api("/api/state", undefined, credential.token);
     const workspace = workspaces.find(
       (item: { title: string }) => item.title === id,
@@ -482,7 +503,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByRole("button", { name: "生成を承認", exact: true })
       .click();
     await expect(dialog).toHaveCount(0);
-    await expect(completed).toContainText("完了", { timeout: 20000 });
+    // A deferred activation reaches the Run through recovery, ~10 s later.
+    await expect(completed).toContainText("完了", { timeout: 60000 });
     await completed.click();
     await expect(dialog).toContainText("26 / 200,000");
     expect(semanticContexts).toEqual([

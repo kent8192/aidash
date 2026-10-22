@@ -38,6 +38,7 @@ pub(super) async fn candidate(store: &Store, bank: &Bank) -> Uuid {
 					"state",
 					"created_at",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			)
@@ -61,6 +62,7 @@ pub(super) async fn candidate(store: &Store, bank: &Bank) -> Uuid {
 					.expr(Expr::value("pending"))
 					.expr(Expr::value(now))
 					.expr(Expr::value(now))
+					.expr(Expr::value("acme"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),
@@ -116,6 +118,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 					"actor",
 					"outcome",
 					"created_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			);
@@ -127,7 +130,8 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 				.expr(Expr::value("fixture"))
 				.expr(Expr::value("deployment_administrator"))
 				.expr(Expr::value(json!(null)))
-				.expr(Expr::value(now));
+				.expr(Expr::value(now))
+				.expr(Expr::value("acme"));
 		} else {
 			query.columns(
 				[
@@ -143,6 +147,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 					"next_attempt",
 					"created_at",
 					"updated_at",
+					"tenant",
 				]
 				.map(Alias::new),
 			);
@@ -160,7 +165,8 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 				.expr(Expr::value(1_i32))
 				.expr(Expr::value(now))
 				.expr(Expr::value(now))
-				.expr(Expr::value(now));
+				.expr(Expr::value(now))
+				.expr(Expr::value("acme"));
 		}
 		query.from_subquery(values.to_owned());
 		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();

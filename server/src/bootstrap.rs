@@ -45,6 +45,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::secret_store_recovery::Command,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::demo_data::Command,
+	));
 	registry
 }
 
@@ -100,6 +103,7 @@ pub async fn initialize(
 		&settings.provider_credentials,
 		&settings.plan_connections,
 	)?;
+	build::current().extension.install(&mut store)?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
@@ -111,21 +115,19 @@ pub async fn initialize(
 		.build()?;
 	let federation = Federation {
 		sandbox: Default::default(),
-		gcip: config.gcip.as_ref().map(|gcip| {
-			Arc::new(aidash_integrations::gcip::Services::new(
-				gcip.project_id.clone(),
-				client.clone(),
-			))
-		}),
 		store,
 		registry,
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
 	};
-	// Persist removed GCIP Bindings even for inactive Identities before this
+	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
+	crate::apps::identity::services::sign_in::check_restrictions(&federation).await?;
 	dashboard_authority(&federation).reconcile_policy().await?;
+	if let Some(sign_in) = &federation.config.sign_in {
+		sign_in.reconcile(&federation).await?;
+	}
 	context.set_singleton(settings.clone());
 	context.set_singleton(federation.clone());
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
@@ -220,6 +222,12 @@ impl RuntimeTasks {
 				}
 			}));
 		}
+		for service in build::current()
+			.extension
+			.services(&federation, receiver.clone())
+		{
+			tasks.spawn_service(runtime_task(service));
+		}
 		let activation = crate::activation::Runtime::new(
 			worker_runtime.clone(),
 			crate::activation::Settings::from_env()?,
@@ -253,10 +261,11 @@ impl RuntimeTasks {
 		}
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
+		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
-			// orphaned on unscheduled Runs are closed first; hourly workbench
-			// and Research evidence purges keep their cadence on the same loop.
+			// orphaned on unscheduled Runs are closed first; hourly workbench,
+			// Research evidence and Tenant purges keep their cadence on the same loop.
 			let mut ticks = 0_u32;
 			loop {
 				if ticks.is_multiple_of(60) {
@@ -280,6 +289,16 @@ impl RuntimeTasks {
 						.await
 					{
 						tracing::warn!(%error, "research account terms sweep failed");
+					}
+					// Deleted Tenants past their grace period, and the audit
+					// history that outlived an earlier purge (ADR 0061).
+					if let Err(error) = crate::apps::identity::services::tenant_purge::sweep(
+						&retention,
+						audit_retention_days,
+					)
+					.await
+					{
+						tracing::warn!(%error, "Tenant purge sweep failed");
 					}
 					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
 						tracing::warn!(%error, "agent test retention cleanup failed");
@@ -608,6 +627,14 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 pub fn skill_import() -> aidash_application::registry::skill_import::SkillImport {
 	aidash_application::registry::skill_import::SkillImport::new(Arc::new(
 		aidash_integrations::skill_import::PublicSkillSource,
+	))
+}
+
+/// Agent Plugin transport is external; HTTP handlers depend only on the use case.
+pub fn agent_plugin_import() -> aidash_application::registry::agent_plugin_import::AgentPluginImport
+{
+	aidash_application::registry::agent_plugin_import::AgentPluginImport::new(Arc::new(
+		aidash_integrations::agent_plugin_import::PublicAgentPluginSource,
 	))
 }
 
@@ -2162,9 +2189,6 @@ pub(crate) fn oidc_settings(
 		issuer: config.issuer.clone(),
 		client_id: config.client_id.clone(),
 		client_secret: config.client_secret.clone(),
-		keycloak_admin_url: config.keycloak_admin_url.clone(),
-		status_client_id: config.status_client_id.clone(),
-		status_client_secret: config.status_client_secret.clone(),
 	}
 }
 
@@ -2176,15 +2200,10 @@ pub(crate) fn dashboard_authority(
 			federation.clone(),
 		)),
 		status: federation
-			.gcip
+			.config
+			.sign_in
 			.as_ref()
-			.map(|gcip| gcip.status.clone())
-			.unwrap_or_else(|| {
-				Arc::new(aidash_integrations::oidc::AccountLookup {
-					client: federation.client.clone(),
-					settings: federation.config.oidc.as_ref().map(oidc_settings),
-				})
-			}),
+			.map(|sign_in| sign_in.status()),
 	}
 }
 
@@ -2251,36 +2270,12 @@ pub async fn configure_provider_credentials(
 	type WriteStore = Arc<dyn aidash_application::provider_credentials::Store>;
 	type Reader = Arc<dyn aidash_application::provider_access::KeyMaterialReader>;
 	let (adapter, reader): (WriteStore, Option<Reader>) = match config {
-		StoreConfig::SecretManager {
-			byok_project_id,
-			environment_id,
-		} => {
-			// Settings validation admits a broker only for this Store kind.
-			if let Some(broker) = &settings.broker {
-				use aidash_integrations::capability::{
-					KmsTokenSigner, MetadataTokenSource, issuer::CapabilityIssuer,
-				};
-				let tokens = Arc::new(MetadataTokenSource::new().map_err(|_| {
-					Error::Invalid("Capability Token metadata configuration unavailable".into())
-				})?);
-				let signer = Arc::new(KmsTokenSigner::new(broker.kid.clone(), tokens).map_err(
-					|_| Error::Invalid("invalid Capability Token KMS key version".into()),
-				)?);
-				store.capability_issuer = Some(Arc::new(CapabilityIssuer::new(
-					broker.clone(),
-					byok_project_id.clone(),
-					signer,
-				)?));
-			}
-			(
-				Arc::new(
-					aidash_integrations::provider_credentials::SecretManager::new(
-						byok_project_id.clone(),
-						environment_id.clone(),
-					)?,
-				),
-				None,
-			)
+		StoreConfig::Enterprise(fields) => {
+			let provided = build::current()
+				.extension
+				.provider_credential_store(fields, settings.broker.as_ref())?;
+			store.capability_issuer = provided.issuer;
+			(provided.store, None)
 		}
 		StoreConfig::Postgres { .. } => {
 			let (current, retired) = config.load_postgres_keys().await?;

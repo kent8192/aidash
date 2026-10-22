@@ -102,6 +102,12 @@ impl DefinitionLookup for Preview<'_> {
 		}
 		self.scope.definition(id, version).await
 	}
+	async fn agent_plugin(
+		&mut self,
+		digest: &str,
+	) -> Result<Option<crate::ports::bindings::StoredAgentPlugin>> {
+		self.scope.agent_plugin(digest).await
+	}
 	async fn binding_installation(
 		&mut self,
 		projection: &aidash_domain::registry::Projection,

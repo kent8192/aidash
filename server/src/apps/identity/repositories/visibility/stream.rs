@@ -30,8 +30,8 @@ impl StreamAuthorityStore for Authority<'_> {
 	fn node_id(&self) -> &str {
 		&self.workspaces.store.node_id
 	}
-	fn google_issuer(&self) -> &str {
-		crate::config::GOOGLE_OIDC_ISSUER
+	fn reports_status(&self, issuer: &str) -> bool {
+		crate::authorization::identity::reports_status(issuer)
 	}
 	fn now(&self) -> chrono::DateTime<chrono::Utc> {
 		chrono::Utc::now()
@@ -49,7 +49,6 @@ impl StreamAuthorityStore for Authority<'_> {
 				mapping_id: Option<Uuid>,
 				mapping_enabled: Option<bool>,
 				mapping_tenant: Option<String>,
-				gcip_tenant: Option<String>,
 				issuer: Option<String>,
 				last_valid_at: Option<chrono::DateTime<chrono::Utc>>,
 				disabled_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -61,7 +60,6 @@ impl StreamAuthorityStore for Authority<'_> {
 				mapping_id,
 				mapping_enabled,
 				mapping_tenant,
-				gcip_tenant,
 				issuer,
 				last_valid_at,
 				disabled_at
@@ -79,7 +77,6 @@ impl StreamAuthorityStore for Authority<'_> {
 				.expr_as(col("m", "id"), Alias::new("mapping_id"))
 				.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
 				.expr_as(col("m", "tenant"), Alias::new("mapping_tenant"))
-				.expr_as(col("i", "gcip_tenant"), Alias::new("gcip_tenant"))
 				.columns(
 					["issuer", "last_valid_at", "disabled_at"]
 						.map(|name| (Alias::new("i"), Alias::new(name))),
@@ -149,10 +146,6 @@ impl StreamAuthorityStore for Authority<'_> {
 				crate::authorization::identity::require_dashboard_mapping(
 					self.workspaces.store.pool.dashboard_policy().as_ref(),
 					current.issuer.as_deref().ok_or(crate::Error::Forbidden)?,
-					current
-						.gcip_tenant
-						.as_deref()
-						.ok_or(crate::Error::Forbidden)?,
 					tenant,
 				)?;
 			}

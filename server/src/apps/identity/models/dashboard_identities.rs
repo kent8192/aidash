@@ -7,18 +7,18 @@ use serde::{Deserialize, Serialize};
 #[model(
 	app_label = "identity",
 	table_name = "dashboard_identities",
-	constraints = [unique(fields = ["issuer", "gcip_tenant", "subject"], name = "dashboard_identity_key")]
+	constraints = [unique(fields = ["issuer", "subject"], name = "dashboard_identity_key")]
 )]
 #[derive(Serialize, Deserialize)]
 pub struct DashboardIdentity {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	/// A sign-in with several user pools folds the pool into the issuer, so
+	/// the same person in two pools is two External Identities.
 	#[field(field_type = "text")]
 	pub issuer: String,
 	#[field(field_type = "text")]
 	pub subject: String,
-	#[field(field_type = "text", default = "")]
-	pub gcip_tenant: String,
 	#[field(null = true)]
 	pub valid_since: Option<DateTime<Utc>>,
 	#[field(field_type = "text", null = true)]

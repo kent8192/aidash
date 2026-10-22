@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] },
+    "paths": { "@/*": ["./src/*"], "@slots/*": ["./src/slots/*"] },
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",

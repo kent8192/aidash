@@ -437,6 +437,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 				Alias::new("workspace_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
+				Alias::new("tenant"),
 			])
 			.from_subquery(
 				Query::select()
@@ -449,6 +450,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"category":reason}),
 					))
+					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);

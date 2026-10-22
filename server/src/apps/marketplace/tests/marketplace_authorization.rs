@@ -2039,6 +2039,120 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 
 #[rstest::rstest]
 #[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn each_audience_tenant_reads_its_own_copy_of_the_events_and_no_other_tenant_reads_one(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use aidash_application::tenancy::TenancyScope;
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	token(&f, "b", "user").await;
+	let c = token(&f, "c", "user").await;
+	token(&f, "gone", "user").await;
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("tenant_deletions"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"deleted_at",
+					"deleted_by_kind",
+					"purge_after",
+					"purge_failures",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value("gone"))
+					.expr(Expr::cust("now()"))
+					.expr(Expr::value("deployment_administrator"))
+					.expr(Expr::cust("now() + interval '30 days'"))
+					.expr(Expr::value(0_i64))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("announced"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("announced")).await;
+	let package = publish(&app, &a, "announced").await;
+	let key = package["key"].as_str().unwrap();
+	let marketplace_events = |tenant: &'static str| {
+		let store = &f.store;
+		async move {
+			store
+				.events(&TenancyScope::tenant(tenant).unwrap(), 0, None, 1000)
+				.await
+				.unwrap()
+				.into_iter()
+				.filter(|e| e.kind.starts_with("marketplace.") && e.data["key"] == key)
+				.map(|e| e.kind)
+				.collect::<Vec<_>>()
+		}
+	};
+	assert_eq!(marketplace_events("a").await, ["marketplace.published"]);
+	// Act: the audience names a Tenant with no root record and a deleted one beside a real one.
+	let shared = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("/api/marketplace/packages/{key}/audience"),
+		json!({"expected_revision":1,"tenants":["a","b","ghost","gone"]}),
+	)
+	.await;
+	assert_eq!(shared.0, 200, "{shared:?}");
+	// Assert: the publisher keeps its own events, and b has its own copies.
+	assert_eq!(
+		marketplace_events("a").await,
+		["marketplace.published", "marketplace.distribution_changed"]
+	);
+	assert_eq!(
+		marketplace_events("b").await,
+		["marketplace.published", "marketplace.distribution_changed"]
+	);
+	assert!(marketplace_events("c").await.is_empty());
+	assert!(marketplace_events("ghost").await.is_empty());
+	assert!(marketplace_events("gone").await.is_empty());
+	// A Tenant outside the audience reads none through any surface.
+	let polled = request(&app, &c, "GET", "/api/events?after=0", Value::Null).await;
+	assert_eq!(polled.0, 200, "{polled:?}");
+	assert!(!polled.1.to_string().contains(key), "{polled:?}");
+	let state = request(&app, &c, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert!(!state.1["events"].to_string().contains(key), "{state:?}");
+	// A consent change is the owner's to read, so it reaches no recipient.
+	let consent = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("/api/marketplace/packages/{key}/consents/b"),
+		json!({"expected_revision":0,"tenants":["b"]}),
+	)
+	.await;
+	assert_eq!(consent.0, 200, "{consent:?}");
+	assert_eq!(marketplace_events("a").await.len(), 3);
+	assert_eq!(marketplace_events("b").await.len(), 2);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("dependency", false)]
 #[case("dependency", true)]
 #[case("consent", false)]
@@ -2581,7 +2695,30 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		store: f.store.clone(),
 		identity,
 	};
-	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	// Each event is written in its own Tenant's scope, as the Marketplace does:
+	// row-level security hides Tenant b's events from Tenant a outright, while
+	// Tenant a's audits and removed installations stay visible to the database
+	// and are denied only by the reader's authority check.
+	let scope_a = aidash_application::tenancy::TenancyScope::tenant("a").unwrap();
+	let scope_b = aidash_application::tenancy::TenancyScope::tenant("b").unwrap();
+	// Tenant b exists, so that its events can reference its root record.
+	token(&f, "b", "user").await;
+	// Event sequence allocation serializes writers, so each Tenant's batch
+	// commits before the next one starts.
+	let mut tx_b = f.store.pool.begin(&scope_b).await.unwrap();
+	for _ in 0..512 {
+		f.store
+			.event(
+				&mut tx_b,
+				None,
+				"marketplace.installed",
+				json!({"tenant":"b","installation":"foreign"}),
+			)
+			.await
+			.unwrap();
+	}
+	tx_b.commit().await.unwrap();
+	let mut tx = f.store.pool.begin(&scope_a).await.unwrap();
 	for _ in 0..512 {
 		f.store
 			.event(
@@ -2589,15 +2726,6 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 				None,
 				"marketplace.audit",
 				json!({"tenant":"a","installation":installed.1["installation"]["id"]}),
-			)
-			.await
-			.unwrap();
-		f.store
-			.event(
-				&mut tx,
-				None,
-				"marketplace.installed",
-				json!({"tenant":"b","installation":"foreign"}),
 			)
 			.await
 			.unwrap();
@@ -2624,7 +2752,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
 	assert_eq!(state.0, 200, "{state:?}");
 	assert_eq!(state.1["events"], json!([]));
-	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let mut tx = f.store.pool.begin(&scope_a).await.unwrap();
 	let visible = f
 		.store
 		.event(
@@ -3551,9 +3679,6 @@ fn browser_oidc_runtime(
 			client_id: "fixture".into(),
 			client_secret: "fixture".into(),
 			public_origin: "http://127.0.0.1:8080".into(),
-			keycloak_admin_url: String::new(),
-			status_client_id: String::new(),
-			status_client_secret: String::new(),
 			session_absolute_seconds: 3600,
 			session_idle_seconds: 1800,
 		});

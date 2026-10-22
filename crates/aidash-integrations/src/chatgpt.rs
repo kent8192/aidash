@@ -38,7 +38,7 @@ pub struct ChatgptAuthorization {
 	discovery_url: String,
 	api_base: String,
 	discovery: OnceCell<Arc<Discovery>>,
-	keys: OnceCell<Arc<crate::gcip::HttpSigningKeys>>,
+	keys: OnceCell<Arc<crate::jwks::HttpSigningKeys>>,
 }
 impl ChatgptAuthorization {
 	pub fn new(client: reqwest::Client) -> Self {
@@ -86,11 +86,11 @@ impl ChatgptAuthorization {
 			.await
 			.cloned()
 	}
-	async fn keys(&self) -> Result<Arc<crate::gcip::HttpSigningKeys>> {
+	async fn keys(&self) -> Result<Arc<crate::jwks::HttpSigningKeys>> {
 		let discovery = self.discovery().await?;
 		self.keys
 			.get_or_try_init(|| async {
-				Ok(Arc::new(crate::gcip::HttpSigningKeys::new(
+				Ok(Arc::new(crate::jwks::HttpSigningKeys::new(
 					self.client.clone(),
 					discovery.jwks_uri.clone(),
 				)))
@@ -242,7 +242,7 @@ impl Authorization for ChatgptAuthorization {
 			.kid
 			.filter(|kid| !kid.is_empty() && kid.len() <= 256)
 			.ok_or(Error::Unauthorized)?;
-		use crate::gcip::SigningKeys as _;
+		use crate::jwks::SigningKeys as _;
 		let key = self
 			.keys()
 			.await?

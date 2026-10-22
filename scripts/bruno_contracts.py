@@ -17,6 +17,17 @@ COLLECTION = ROOT / "server/tests/bruno"
 CATALOG = COLLECTION / "contracts.json"
 MANIFEST = COLLECTION / "scenarios.json"
 MISSING = "11111111-1111-4111-8111-111111111111"
+# A Deployment Administrator works in the Tenant of the Workspace it names, and
+# an unknown Workspace has none (#265), so these reads would answer 404 for
+# MISSING. They name the Workspace that journey 08 creates, which keeps their
+# own response checks (an empty list, a typed cleanup status, an empty page, a
+# task that is not found) in force.
+FIXTURE_WORKSPACE_READS = {
+    "semantic-history",
+    "semantic-cleanup",
+    "memory-participants",
+    "memory-participant-current",
+}
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 PEER = {
@@ -52,6 +63,10 @@ TENANT_ROUTES = {
     "POST /api/skills/import": {
         "body": {"url": "https://github.com/bruno/skills"},
         "refusal": "Subject without registry.create cannot import a Skill",
+    },
+    "POST /api/agent-plugins/import": {
+        "body": {"url": "https://github.com/bruno/plugins"},
+        "refusal": "Subject without registry.create cannot import an Agent Plugin",
     },
     "POST /api/authorization/{tenant}/catalog": {
         "body": APPROVAL,
@@ -685,32 +700,6 @@ def render():
                 },
             )
             continue
-        if path == "/auth/gcip/transaction":
-            add(endpoint, "Transaction requires its state query", 400)
-            add(
-                endpoint,
-                "OIDC deployment cannot expose GCIP configuration",
-                401,
-                path=path + "?state=invalid",
-            )
-            add(
-                endpoint,
-                "Tampered browser cookie cannot expose GCIP configuration",
-                401,
-                path=path + "?state=invalid",
-                headers={"Cookie": "aidash-login=tampered"},
-            )
-            continue
-        if path == "/auth/gcip/exchange":
-            add(endpoint, "Exchange requires its typed token envelope", 422, body="{}")
-            add(endpoint, "Malformed token envelope is rejected", 400, body="{")
-            add(
-                endpoint,
-                "OIDC deployment cannot accept a GCIP token",
-                401,
-                body=json.dumps({"state": "invalid", "id_token": "invalid"}),
-            )
-            continue
         if path == "/auth/backchannel-logout":
             add(
                 endpoint,
@@ -852,6 +841,13 @@ def render():
             add(endpoint, "Subject Credential bearer never restores a Tenant", 401,
                 headers=SUBJECT, immutable=True)
             add(endpoint, "Only a deleted Tenant can be restored", 409,
+                headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
+        if route["name"] == "tenants-purge":
+            # Only a Deployment Administrator purges, and only a deleted Tenant (ADR 0061).
+            add(endpoint, "Subject Credential bearer never purges a Tenant", 403,
+                headers=SUBJECT, immutable=True)
+            add(endpoint, "Only a deleted Tenant can be purged", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
         if endpoint in TENANT_ROUTES:
@@ -1109,6 +1105,8 @@ def render():
             if not route["uuid_parameters"]:
                 status = 200
                 checks += 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().next_cursor).to.equal(null);'
+        if route["name"] in FIXTURE_WORKSPACE_READS:
+            uri = path.replace("{workspace}", "{{workspace_id}}")
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,

@@ -14,6 +14,8 @@ use uuid::Uuid;
 pub struct DecisionAttempt {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
 	#[field]
@@ -25,6 +27,9 @@ pub struct DecisionAttempt {
 	/// The Run's resume cycle the decision identity commits to.
 	#[field]
 	pub cycle: i32,
+	/// The step's outage retry the decision identity commits to (ADR 0066).
+	#[field]
+	pub retry: i32,
 	#[field]
 	pub input_revision: i64,
 	#[field(field_type = "text")]
@@ -38,6 +43,9 @@ pub struct DecisionAttempt {
 	pub decider: Json<Value>,
 	#[field]
 	pub binding_restrictions: Json<Value>,
+	/// The Decider Route the attempt asked (ADR 0066).
+	#[field]
+	pub route: i32,
 	#[field(field_type = "text")]
 	pub request_digest: String,
 	#[field(field_type = "text")]
@@ -68,6 +76,8 @@ pub struct DecisionAttempt {
 pub struct DecisionEvidence {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
 	#[field]
@@ -89,6 +99,8 @@ pub struct DecisionEvidence {
 pub struct DecisionState {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub evidence_id: Uuid,
 	#[field]
@@ -109,6 +121,8 @@ pub struct DecisionState {
 pub struct DecisionOutcome {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field]
 	pub decision_id: Uuid,
 	#[field]

@@ -26,6 +26,7 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { DeploymentPage } from "../deployment";
+import { UsagePanel } from "@slots/usage";
 import {
   Alert,
   Disclosure,
@@ -36,6 +37,7 @@ import {
 } from "../components/patterns";
 import { ToolSection } from "../integrated-tools";
 import { keylessOrigin } from "../keyless";
+import { groupByKind } from "../registry-kinds";
 import {
   ApprovalBadge,
   KeylessOrigin,
@@ -79,11 +81,13 @@ const listCopy = {
     filter: "名前・タグで絞り込む",
     entries: (count: number) => `${count} 件`,
     noMatches: "条件に一致するエントリはありません。",
+    kinds: "種類で表示を切り替える",
   },
   "en-US": {
     filter: "Filter by name or tag",
     entries: (count: number) => `${count} ${count === 1 ? "entry" : "entries"}`,
     noMatches: "No entries match this filter.",
+    kinds: "Show entries of one kind",
   },
 };
 
@@ -286,7 +290,7 @@ function EntryList({
   const copy = listCopy[locale];
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
-  const shown = versions.filter(
+  const matching = versions.filter(
     ({ entry }) =>
       !needle ||
       [
@@ -299,6 +303,18 @@ function EntryList({
         .toLowerCase()
         .includes(needle),
   );
+  // One kind at a time: a Registry mixing Models, Tools and Agents in one list
+  // is hard to scan. "all" stays available for searching across kinds.
+  const groups = groupByKind(matching, ({ entry }) => entry.kind);
+  const [chosenKind, setKind] = useState<string | null>(null);
+  const kind =
+    chosenKind === "all" || groups.some(([group]) => group === chosenKind)
+      ? chosenKind
+      : (groups[0]?.[0] ?? "all");
+  const shown =
+    groups.length > 1 && kind !== "all"
+      ? matching.filter(({ entry }) => entry.kind === kind)
+      : matching;
   return (
     <section className="grid min-w-0 gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -321,6 +337,30 @@ function EntryList({
         </span>
         <span className="ml-auto">{action}</span>
       </div>
+      {groups.length > 1 && (
+        <div
+          role="group"
+          aria-label={copy.kinds}
+          className="flex flex-wrap items-center gap-1.5"
+        >
+          {[...groups, ["all", matching] as const].map(([group, items]) => (
+            <Button
+              key={group}
+              type="button"
+              size="sm"
+              variant={group === kind ? "secondary" : "ghost"}
+              aria-pressed={group === kind}
+              data-registry-kind={group}
+              onClick={() => setKind(group)}
+            >
+              {t(group)}
+              <span className="font-mono text-[11px] text-faint tabular">
+                {items.length}
+              </span>
+            </Button>
+          ))}
+        </div>
+      )}
       {entries.length === 0 ? (
         <Empty />
       ) : (
@@ -546,7 +586,10 @@ export function Configuration({
       ) : (
         <>
           {section === "deployment" && deploymentAdministrator && (
-            <DeploymentPage />
+            <>
+              <DeploymentPage />
+              <UsagePanel />
+            </>
           )}
           {section === "providerCredentials" && (
             <ProviderCredentialsPage access={data.access} />

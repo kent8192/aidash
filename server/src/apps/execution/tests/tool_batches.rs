@@ -847,7 +847,7 @@ async fn rejected_batch_admission_writes_nothing(
 	match rejection {
 		Rejection::NewerInput => {
 			sqlx::query(
-				"INSERT INTO run_inputs (run_id, sender, content, idempotency_key) VALUES ($1, 'human', 'correction', $2)",
+				"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'correction', $2)",
 			)
 			.bind(run.id)
 			.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
@@ -979,9 +979,10 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 	.into_iter()
 	.find(|m| m.app_label == "registry" && m.name == "0021_tool_parallelism")
 	.unwrap();
-	// Migrations run as the table owner, as a deployment's migration Job does.
+	// The rollback guard reads the Runs of every Tenant, which row-level security
+	// shows only to a login that bypasses it.
 	let mut executor = DatabaseMigrationExecutor::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(common::owner_pool(b.f.store.pool.fixture_driver()).await),
+		PostgresBackend::new(common::admin_pool(b.f.store.pool.fixture_driver()).await),
 	)));
 	// Act / Assert: the unfinished Run refuses the rollback.
 	let error = executor
