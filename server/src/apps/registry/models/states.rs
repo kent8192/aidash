@@ -46,6 +46,9 @@ pub enum DefinitionKind {
 	#[model_enum(value = "tokenizer")]
 	#[serde(rename = "tokenizer")]
 	Tokenizer,
+	#[model_enum(value = "external_service")]
+	#[serde(rename = "external_service")]
+	ExternalService,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]

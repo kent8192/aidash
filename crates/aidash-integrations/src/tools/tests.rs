@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 #[rstest::rstest]
 #[tokio::test]
 async fn web_fetch_retries_transient_statuses_and_reports_terminal_source_rejections() {
@@ -57,6 +58,108 @@ async fn native_http_dns_resolution_is_bounded_by_the_tool_deadline() {
 	let error = resolve_within(deadline, stalled).await.unwrap_err();
 	assert!(matches!(error, Error::External(message) if message.contains("timed out")));
 	assert!(tokio::time::Instant::now() >= deadline);
+}
+
+/// Serves one JSON route that echoes the request's Authorization header, and
+/// reports every header value it saw.
+async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
+	use axum::{Router, http::HeaderMap, routing::post};
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/run", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move {
+		axum::serve(
+			listener,
+			Router::new().route(
+				"/run",
+				post(|headers: HeaderMap| async move {
+					let seen = headers
+						.get("authorization")
+						.and_then(|v| v.to_str().ok())
+						.map(str::to_owned);
+					axum::Json(json!({"authorization": seen}))
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	(endpoint, server)
+}
+
+#[tokio::test]
+async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothing_otherwise() {
+	let (endpoint, server) = authorization_echo().await;
+	let tools = HttpTools {
+		client: reqwest::Client::new(),
+	};
+	let config = ToolConfig::Http {
+		endpoint,
+		replay: "idempotent".into(),
+		secret: Some("search".into()),
+	};
+	let secret = SecretString::from("tenant-secret-value".to_owned());
+	let with = tools
+		.invoke(&config, json!({}), "key", Some(&secret))
+		.await
+		.unwrap();
+	assert_eq!(with["authorization"], "Bearer tenant-secret-value");
+	let without = tools.invoke(&config, json!({}), "key", None).await.unwrap();
+	assert_eq!(without["authorization"], Value::Null);
+	server.abort();
+	let _ = server.await;
+}
+
+#[tokio::test]
+async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret() {
+	use axum::{
+		Json, Router,
+		http::{HeaderMap, StatusCode},
+		response::IntoResponse,
+		routing::post,
+	};
+	let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+	let observed = calls.clone();
+	let (endpoint, server) = serve(Router::new().route("/mcp", post(move |headers: HeaderMap, Json(message): Json<Value>| {
+		let calls = observed.clone();
+		async move {
+			assert_eq!(headers["authorization"], "Bearer tenant-mcp-canary-296");
+			let result = match message["method"].as_str().unwrap() {
+				"initialize" => json!({"protocolVersion":message["params"]["protocolVersion"],"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}),
+				"tools/call" => {
+					assert_eq!(message["params"]["name"], "lookup");
+					assert_eq!(message["params"]["arguments"]["request_id"], "call-key");
+					assert!(!message.to_string().contains("tenant-mcp-canary-296"));
+					calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+					json!({"content":[{"type":"text","text":"authenticated result"}]})
+				},
+				_ => return StatusCode::ACCEPTED.into_response(),
+			};
+			Json(json!({"jsonrpc":"2.0","id":message["id"],"result":result})).into_response()
+		}
+	}))).await;
+	let tools = HttpTools {
+		client: reqwest::Client::new(),
+	};
+	let config = ToolConfig::Mcp {
+		endpoint,
+		tool_name: "lookup".into(),
+		secret: Some("mcp-key".into()),
+		replay: "idempotent".into(),
+		idempotency_argument: Some("request_id".into()),
+	};
+	let result = tools
+		.invoke(
+			&config,
+			json!({"query":"fixture"}),
+			"call-key",
+			Some(&"tenant-mcp-canary-296".into()),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["content"][0]["text"], "authenticated result");
+	assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+	server.abort();
+	let _ = server.await;
 }
 
 /// An MCP server over streamable HTTP. `tools/list` answers `pages` as the

@@ -1466,6 +1466,7 @@ pub async fn details_page(
 	)
 	.await?;
 	Ok(RunDetails {
+		egress_requests: details.egress_requests,
 		run: details.run,
 		invocations: details.invocations.into_iter().map(Into::into).collect(),
 		memory: details.memory,

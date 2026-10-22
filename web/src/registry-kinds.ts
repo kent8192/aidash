@@ -4,6 +4,7 @@ export const registryKindOrder = [
   "agent",
   "model",
   "tool",
+  "external_service",
   "bundle",
   "skill",
   "memory",

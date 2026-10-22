@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
+	pub egress: Option<EgressSettings>,
 	pub limits: limits::ContentLimits,
 	pub admission: bool,
 	pub outbound_origins: Vec<String>,
@@ -59,3 +60,17 @@ pub use aidash_domain::capabilities::CoreCapabilities;
 #[cfg(test)]
 #[path = "../tests/serializers_core_tests.rs"]
 mod tests;
+
+/// The self-hosted internal gateway; its address is never published by Ingress.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub struct EgressSettings {
+	pub endpoint: String,
+	#[serde(default)]
+	pub namespace: Option<String>,
+	#[serde(default)]
+	pub pod_selector: std::collections::BTreeMap<String, String>,
+	pub listen: std::net::SocketAddr,
+	#[serde(default)]
+	pub limits: aidash_domain::egress::Limits,
+}

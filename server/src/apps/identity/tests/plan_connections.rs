@@ -354,7 +354,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 }
 
 /// Alice's identity with two dashboard sessions, Bob's with one, and a
-/// Provider Credential Store whose Sign in with ChatGPT is the fake OpenAI.
+/// Secret Store whose Sign in with ChatGPT is the fake OpenAI.
 #[rstest::fixture]
 fn plan_runtime(
 	#[default(Parts::default())] parts: Parts,
@@ -1472,11 +1472,7 @@ async fn servers_without_a_postgres_store_refuse_to_enable_plan_connections(
 		let error =
 			aidash_server::bootstrap::configure_plan_connections(&mut f.store, settings, &enabled)
 				.unwrap_err();
-		assert!(
-			error
-				.to_string()
-				.contains("PostgreSQL Provider Credential Store")
-		);
+		assert!(error.to_string().contains("PostgreSQL Secret Store"));
 		aidash_server::bootstrap::configure_plan_connections(&mut f.store, settings, &disabled)
 			.unwrap();
 		assert!(f.store.plan_connections.is_none());

@@ -29,6 +29,8 @@ struct Scope {
 	actor: Actor,
 	tenant_actions: super::authority::TenantActions,
 	ceilings: TestLimitCeilings,
+	/// Resolves the Tenant Secret a real-tool rule names at dispatch.
+	tenant_secrets: Option<std::sync::Arc<aidash_application::tenant_secrets::Service>>,
 }
 #[async_trait]
 impl SandboxRepository for Repository {
@@ -50,6 +52,7 @@ impl SandboxRepository for Repository {
 			tenant_actions: self.tenant_actions.clone(),
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
+			tenant_secrets: self.store.tenant_secrets.clone(),
 		}))
 	}
 	async fn purge(&self) -> Result<u64> {

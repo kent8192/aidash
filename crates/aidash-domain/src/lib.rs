@@ -24,6 +24,7 @@ pub mod run_input;
 pub mod run_state;
 pub mod semantic;
 pub mod tenancy;
+pub mod tenant_secrets;
 
 pub use entities::*;
 
@@ -68,3 +69,5 @@ pub mod invocation;
 pub mod transactions;
 
 pub mod activation;
+
+pub mod egress;

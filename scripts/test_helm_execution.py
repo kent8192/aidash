@@ -225,7 +225,7 @@ class ChartsTest(unittest.TestCase):
         for key in set(profile) & set(runner_profile) - {'runner'}:
             self.assertEqual(profile[key], runner_profile[key], key)
         self.assertEqual(profile['runner'], {
-            'endpoint': 'http://%s:%d' % (service['metadata']['name'], service['spec']['ports'][0]['port']),
+            'endpoint': 'http://%s.aidash-pr-1.svc.cluster.local:%d' % (service['metadata']['name'], service['spec']['ports'][0]['port']),
             'token_env': 'AIDASH_CORE_RUNNER_TOKEN', 'image': runner_profile['runner']['image'],
             'runtime_class': select(objects, 'RuntimeClass', '')['metadata']['name'],
             'namespace': select(objects, 'Namespace', '-sandbox')['metadata']['name']})
@@ -249,6 +249,45 @@ class ChartsTest(unittest.TestCase):
         # Two ClusterRoles, two bindings, the RuntimeClass and three Namespaces.
         self.assertEqual(len(names[0]), 8)
         self.assertEqual(names[0] & names[1], set())
+
+    def test_egress_is_an_internal_service_shared_by_the_application_and_runner(self):
+        execution = {'sandboxImage': 'sandbox' + DIGEST,
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST},
+                     'egress': {'enabled': True, 'clusterIP': '10.96.0.90', 'port': 8950}}
+        values = dict(self.base, execution=execution)
+        objects = render(self.aidash, values, 'app', namespace='tenant-app')
+        service = select(objects, 'Service', '-egress')['spec']
+        self.assertEqual((service['type'], service['clusterIP']), ('ClusterIP', '10.96.0.90'))
+        self.assertEqual(service['ports'], [{'name': 'egress', 'port': 8950, 'targetPort': 8950}])
+        profiles = [json.loads(self.mounted(objects, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
+                    for role in ('server', 'worker')]
+        runner = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])['egress']
+        self.assertEqual(profiles, [runner, runner])
+        self.assertEqual(runner['endpoint'], 'http://10.96.0.90:8950')
+        self.assertEqual(runner['pod_selector'], service['selector'])
+        self.assertEqual(runner['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
+        policy = select(objects, 'NetworkPolicy', '-egress-internal')['spec']
+        self.assertEqual(policy['podSelector']['matchLabels'], service['selector'])
+        ingress = policy['ingress'][-1]
+        self.assertEqual(ingress['ports'], [{'protocol': 'TCP', 'port': 8950}])
+        self.assertEqual(ingress['from'][0], {
+            'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'app-sandbox'}},
+            'podSelector': {'matchLabels': {'aidash-sandbox': 'true'}},
+        })
+
+    def test_egress_refuses_an_unconfigured_address_runner_or_managed_store(self):
+        execution = {'sandboxImage': 'sandbox' + DIGEST,
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST},
+                     'egress': {'enabled': True, 'clusterIP': '10.96.0.90'}}
+        invalid = [dict(self.base, execution=dict(execution, egress={'enabled': True, 'clusterIP': ''})),
+                   dict(self.base, execution=dict(execution, runner={'enabled': False})),
+                   dict(self.base, execution=execution, providerCredentials={'settings': {
+                       'store': {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}}})]
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, values)
 
     def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
         store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}

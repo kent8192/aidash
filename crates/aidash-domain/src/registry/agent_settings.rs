@@ -179,7 +179,7 @@ impl AgentConfig {
 		match name {
 			"file_search" | "file_read" => self.core_capabilities.files = true,
 			"shell" | "shell_poll" | "shell_cancel" => self.core_capabilities.shell = true,
-			"code_interpreter" | "python_install" | "python_poll" | "python_cancel" => {
+			"code_interpreter" | "python_poll" | "python_cancel" => {
 				self.core_capabilities.python = true
 			}
 			"apply_patch" => self.core_capabilities.patch = true,

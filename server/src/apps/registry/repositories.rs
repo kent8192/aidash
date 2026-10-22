@@ -33,8 +33,14 @@ pub struct Registry {
 	node_id: String,
 	provider_credentials: bool,
 	plan_connections: bool,
+	tenant_secrets: bool,
 }
 impl Registry {
+	/// Whether definitions may name Tenant Secrets (ADR 0051).
+	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {
+		self.tenant_secrets = enabled;
+		self
+	}
 	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
 		self.provider_credentials = configured;
 		self
@@ -48,6 +54,7 @@ impl Registry {
 		crate::bootstrap::registry_validation()
 			.with_provider_credentials(self.provider_credentials)
 			.with_plan_connections(self.plan_connections)
+			.with_tenant_secrets(self.tenant_secrets)
 	}
 	/// Writes the built-in definitions into one Tenant's Registry, as Tenant
 	/// creation does.
@@ -95,6 +102,7 @@ impl Registry {
 			node_id: node_id.into(),
 			provider_credentials: false,
 			plan_connections: false,
+			tenant_secrets: false,
 		})
 	}
 	pub async fn get(&self, tenant: &TenantName, id: &str, version: &str) -> Result<Entry> {
@@ -210,6 +218,17 @@ impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn tenant_secret_hosts(
+		&mut self,
+		name: &str,
+	) -> aidash_application::Result<Option<Vec<String>>> {
+		crate::apps::identity::repositories::tenant_secrets::active_hosts_in(
+			self.db,
+			self.tenant.as_str(),
+			name,
+		)
+		.await
+	}
 }
 #[async_trait]
 impl<E: OrmExecutor> DefinitionWriter for OrmScope<'_, E> {
@@ -302,6 +321,12 @@ impl DefinitionLookup for NativeScope<'_> {
 				.metadata
 				.into_inner(),
 		)?)
+	}
+	async fn tenant_secret_hosts(
+		&mut self,
+		name: &str,
+	) -> aidash_application::Result<Option<Vec<String>>> {
+		crate::apps::identity::repositories::tenant_secrets::active_hosts(self.0, name).await
 	}
 }
 #[async_trait]

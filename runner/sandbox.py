@@ -6,6 +6,9 @@ import subprocess
 import time
 import resource
 import socket
+import sys
+sys.path.insert(0, "/opt/aidash")
+from egress import environment as egress_environment
 
 request_path = Path("/request/request.json")
 while not request_path.exists():
@@ -22,8 +25,10 @@ output.close()
 resource.setrlimit(resource.RLIMIT_NPROC, (request["processes"], request["processes"]))
 environment = {key: value for key, value in os.environ.items() if key in {
     "PATH", "HOME", "LANG", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
-    "MPLCONFIGDIR", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"
+    "MPLCONFIGDIR", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
+    "UV_PYTHON_DOWNLOADS", "UV_PYTHON"
 }}
+environment.update(egress_environment(request.get("egress")))
 if request["kind"] == "python":
     os.execve("/usr/local/bin/python", ["python", "-I", "/opt/aidash/kernel.py"], environment)
 process = subprocess.Popen(["/bin/sh", "-c", request["code"]], start_new_session=True, env=environment)

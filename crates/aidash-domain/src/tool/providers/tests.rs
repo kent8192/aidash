@@ -39,6 +39,7 @@ fn only_a_descriptors_read_only_declaration_lifts_the_tool_call_approval() {
 			transport: Some(ToolConfig::Http {
 				endpoint: "https://example.invalid".into(),
 				replay: replay.into(),
+				secret: None,
 			}),
 		};
 		let contract = descriptor
@@ -84,6 +85,7 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 		transport: Some(ToolConfig::Http {
 			endpoint: "https://example.invalid".into(),
 			replay: "read_only".into(),
+			secret: None,
 		}),
 	})
 	.unwrap();

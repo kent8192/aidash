@@ -532,7 +532,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Shell);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
-		"code_interpreter" | "python_install" | "python_poll" | "python_cancel" => {
+		"code_interpreter" | "python_poll" | "python_cancel" => {
 			auth.core = Some(CorePermission::Python);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
@@ -620,7 +620,6 @@ mod tests {
 			"shell_poll",
 			"shell_cancel",
 			"code_interpreter",
-			"python_install",
 			"python_poll",
 			"python_cancel",
 			"apply_patch",
@@ -761,7 +760,6 @@ mod tests {
 			"shell_poll",
 			"shell_cancel",
 			"code_interpreter",
-			"python_install",
 			"python_poll",
 			"python_cancel",
 			"apply_patch",
@@ -855,6 +853,7 @@ mod tests {
 				version: "1".into(),
 			},
 			&ToolConfig::Mcp {
+				secret: None,
 				endpoint: "https://example.invalid".into(),
 				tool_name: "search".into(),
 				replay: "unsafe".into(),
@@ -915,9 +914,11 @@ mod tests {
 			ToolConfig::Http {
 				endpoint: "https://example.invalid".into(),
 				replay: "read_only".into(),
+				secret: None,
 			},
 			ToolConfig::Mcp {
 				endpoint: "https://example.invalid".into(),
+				secret: None,
 				tool_name: "lookup".into(),
 				replay: "read_only".into(),
 				idempotency_argument: None,
@@ -962,9 +963,11 @@ mod tests {
 				ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
+					secret: None,
 				},
 				ToolConfig::Mcp {
 					endpoint: "https://example.invalid".into(),
+					secret: None,
 					tool_name: "lookup".into(),
 					replay: replay.into(),
 					idempotency_argument: None,

@@ -31,17 +31,22 @@ pub enum ToolConfig {
 		#[serde(default)]
 		allowed_hosts: Vec<String>,
 	},
-	/// Tool transports never carry a Deployment secret; a Tenant's tools will
-	/// authenticate with Tenant Secrets instead (#296).
+	/// Tool transports never carry a Deployment secret. A Tenant's tool
+	/// authenticates with a Tenant Secret it names in `secret`, which goes only
+	/// to the hosts recorded with that Tenant Secret (ADR 0051).
 	Http {
 		endpoint: String,
 		replay: String,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		secret: Option<String>,
 	},
 	Mcp {
 		endpoint: String,
 		tool_name: String,
 		replay: String,
 		idempotency_argument: Option<String>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		secret: Option<String>,
 	},
 	Agent {
 		node_id: String,

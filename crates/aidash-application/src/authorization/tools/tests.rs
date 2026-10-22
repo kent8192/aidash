@@ -792,7 +792,7 @@ async fn malformed_plugin_configuration_keeps_the_json_error(
 #[rstest]
 #[case::files("file_read")]
 #[case::shell("shell_poll")]
-#[case::python("python_install")]
+#[case::python("python_poll")]
 #[case::patch("apply_patch")]
 #[case::sharing("file_share")]
 #[case::outbound("outbound_get")]
@@ -1399,13 +1399,13 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 		("apply_patch".into(), 1),
 		("file_read".into(), 2),
 		("file_search".into(), 3),
-		("python_install".into(), 4),
+		("python_cancel".into(), 4),
 		("python_poll".into(), 5),
 	]);
 	for (name, outcome) in [
 		("file_read", Outcome::Forbidden),
 		("file_search", Outcome::Missing),
-		("python_install", Outcome::Fault),
+		("python_cancel", Outcome::Fault),
 	] {
 		repository
 			.outcomes
@@ -1421,7 +1421,7 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 		tools,
 		BTreeMap::from([
 			("apply_patch".into(), 1),
-			("python_install".into(), 4),
+			("python_cancel".into(), 4),
 			("python_poll".into(), 5)
 		])
 	);
@@ -1431,7 +1431,7 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 			"lease",
 			"require:builtin:file_read:tool.invoke",
 			"require:builtin:file_search:tool.invoke",
-			"require:builtin:python_install:tool.invoke",
+			"require:builtin:python_cancel:tool.invoke",
 			"release"
 		]
 	);

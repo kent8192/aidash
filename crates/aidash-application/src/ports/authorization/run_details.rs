@@ -8,6 +8,7 @@ use serde_json::Value;
 use uuid::Uuid;
 #[derive(Debug)]
 pub struct RunDetails {
+	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
 	pub run: RunInspection,
 	pub invocations: Vec<InvocationSummary>,
 	pub memory: Option<aidash_domain::memory::Binding>,
@@ -22,6 +23,13 @@ pub trait RunDetailsScope: Send {
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool>;
 	/// Preserve the original 100-row created_at/idempotency-key page and bounded JSON preview.
+	async fn egress_requests(
+		&mut self,
+		_id: Uuid,
+		_offset: u64,
+	) -> Result<Vec<aidash_domain::egress::RequestRecord>> {
+		Ok(vec![])
+	}
 	async fn invocations(&mut self, id: Uuid, offset: u64) -> Result<Vec<InvocationSummary>>;
 	async fn memory(&mut self, run: &RunMetadata)
 	-> Result<Option<aidash_domain::memory::Binding>>;

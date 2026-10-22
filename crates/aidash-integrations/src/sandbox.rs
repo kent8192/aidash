@@ -10,6 +10,7 @@ use aidash_domain::{
 	keyless::Destination, provider::ToolCall, registry::workbench::profile::RealToolRule,
 };
 use async_trait::async_trait;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
@@ -42,18 +43,22 @@ impl RealToolTransport for RealTools {
 		session: Uuid,
 		rule: &RealToolRule,
 		call: &ToolCall,
+		secret: Option<&SecretString>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
 		let client = match self.origins.destination(&rule.endpoint)? {
 			Destination::Permitted => &self.permitted,
 			Destination::PublicOnly => &self.public,
 			Destination::Forbidden => return Err(aidash_application::Error::Forbidden),
 		};
-		Ok(Box::new(Request(
-			client
-				.post(&rule.endpoint)
-				.header("idempotency-key", format!("test-{session}-{}", call.id))
-				.json(&call.arguments),
-		)))
+		let mut request = client
+			.post(&rule.endpoint)
+			.header("idempotency-key", format!("test-{session}-{}", call.id))
+			.json(&call.arguments);
+		// A Tenant Secret goes only to the test endpoint, one of its recorded hosts.
+		if let Some(secret) = secret {
+			request = request.bearer_auth(secret.expose_secret());
+		}
+		Ok(Box::new(Request(request)))
 	}
 }
 #[async_trait]

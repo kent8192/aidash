@@ -16,7 +16,7 @@ locals {
 }
 
 variable "credential_brokers" {
-  description = "Explicit opt-in only for environments with a Provider Credential Store. Never populate for PR previews."
+  description = "Explicit opt-in only for environments with a Secret Store. Never populate for PR previews."
   type = map(object({
     enabled                      = optional(bool, false)
     byok_project_id              = string
@@ -37,7 +37,7 @@ variable "credential_brokers" {
   }
   validation {
     condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || (var.byok_project_id != "" && broker.byok_project_id == var.byok_project_id)])
-    error_message = "Enabled brokers must use the environment's configured Provider Credential Store project."
+    error_message = "Enabled brokers must use the environment's configured Secret Store project."
   }
   validation {
     condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || alltrue([for other in keys(var.environments) : id == other || (!startswith("aidash-${other}-cred-", "aidash-${id}-cred-") && !startswith("aidash-${id}-cred-", "aidash-${other}-cred-"))])])

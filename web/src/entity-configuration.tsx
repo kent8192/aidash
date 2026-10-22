@@ -12,6 +12,7 @@ import { MemoryRegistryFields } from "./memory-registry";
 import { replayAfterHint, replayAfterQueryChange, sameQuery } from "./mcp-hint";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
+import { ExternalServiceFields } from "./external-service-fields";
 
 type Argument = {
   key: string;
@@ -287,6 +288,7 @@ export function EntityConfiguration({
   const [alias, setAlias] = useState("integration_invoke");
   const [members, setMembers] = useState<string[]>([]);
   const [endpoint, setEndpoint] = useState("");
+  const [secret, setSecret] = useState("");
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
@@ -444,6 +446,7 @@ export function EntityConfiguration({
       : {
           transport,
           endpoint,
+          ...(secret ? { secret } : {}),
           replay,
           ...(transport === "mcp"
             ? {
@@ -488,6 +491,7 @@ export function EntityConfiguration({
                   transport: transportConfig,
                 }
               : {};
+  if (kind === "external_service") return <ExternalServiceFields />;
   const agentSelect = (
     <Field label={t(kind === "cluster" ? "clusterCoordinator" : "toolAgent")}>
       <NativeSelect
@@ -684,6 +688,14 @@ export function EntityConfiguration({
                     queryChanged();
                     setEndpoint(event.target.value);
                   }}
+                />
+              </Field>
+              <Field label="Tenant Secret">
+                <Input
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  placeholder="api-key"
+                  pattern="[a-z0-9][a-z0-9_-]{0,63}"
                 />
               </Field>
               {transport === "mcp" && (

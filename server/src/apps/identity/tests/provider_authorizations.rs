@@ -194,7 +194,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 }
 
 /// A browser identity with a Deployment Administrator grant and two dashboard sessions, and
-/// a Provider Credential Store whose exchange is the fake OpenRouter.
+/// a Secret Store whose exchange is the fake OpenRouter.
 #[rstest::fixture]
 fn authorization_runtime(
 	#[default(Parts::default())] parts: Parts,

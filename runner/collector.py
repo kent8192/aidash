@@ -97,7 +97,7 @@ def hydrate():
                               iopub_port=7081, stdin_port=7082, hb_port=7083, control_port=7084,
                               key=os.urandom(32).hex().encode('ascii'))
         os.chmod('/request/kernel.json', 0o444)
-    save(REQUEST, {k: incoming[k] for k in ("digest", "kind", "code", "processes")})
+    save(REQUEST, {**{k: incoming[k] for k in ("digest", "kind", "code", "processes")}, "egress": incoming.get("egress")})
     print(json.dumps({"accepted": True, "started_at": started_at}))
 
 

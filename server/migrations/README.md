@@ -1,5 +1,15 @@
 # Aidash native migration history
 
+Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
+and durable operation egress budgets and audits in `execution/0046` through
+`0048`. Their forced Tenant row policies use the existing policy renderer.
+`registry/0042_external_services` extends both Registry kind checks and the
+HTTP/MCP and Agent Binding contracts; `0043` records the ORM enum state. Kind
+constraints use typed Reinhardt operations. PostgreSQL function replacements
+remain SQL DDL assets because Reinhardt has no function-body operation. The
+reverse restores the previous Tool and Agent contracts; remove External
+service definitions and bindings before reversing the kind constraints.
+
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate

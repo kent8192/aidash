@@ -9,6 +9,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+http-body-util = "0.1"
 secrecy = "0.10"
 aidash-application.workspace = true
 aidash-domain.workspace = true
@@ -25,6 +29,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "form",
   "json",
   "rustls",
+  "stream",
 ] }
 encoding_rs = "0.8"
 # Pure-Rust PDF reading and rendering for Page reading (#312). It runs only in
