@@ -6,6 +6,7 @@ import {
   nodeStorageKey,
   nodeView,
   parseNodeAddress,
+  isLocalRun,
 } from "../src/node-selection.ts";
 
 const node = (name, options = {}) => ({
@@ -124,4 +125,63 @@ test("a Node address splits into its Deployment and Node name", () => {
   assert.equal(parseNodeAddress("aidash://home"), null);
   assert.equal(parseNodeAddress("aidash://home/a/b"), null);
   assert.equal(parseNodeAddress("https://home/a"), null);
+});
+
+test("subjects monitor only Runs homed on their selected Node", () => {
+  const subject = {
+    access: { kind: "subject" },
+    node: { id: "aidash://home/first" },
+  };
+  assert.equal(isLocalRun({ home_node: "aidash://home/first" }, subject), true);
+  assert.equal(
+    isLocalRun({ home_node: "aidash://home/second" }, subject),
+    false,
+  );
+  assert.equal(
+    isLocalRun({ home_node: "aidash://other/first" }, subject),
+    false,
+  );
+});
+
+test("Deployment Administrators monitor every Node of their own Deployment", () => {
+  const administrator = {
+    access: { kind: "deployment_administrator" },
+    node: { id: "aidash://home" },
+  };
+  assert.equal(
+    isLocalRun({ home_node: "aidash://home/first" }, administrator),
+    true,
+  );
+  assert.equal(
+    isLocalRun({ home_node: "aidash://home/second" }, administrator),
+    true,
+  );
+});
+
+test("Deployment Administrators do not treat a foreign Deployment's Run as local", () => {
+  const administrator = {
+    access: { kind: "deployment_administrator" },
+    node: { id: "aidash://home" },
+  };
+  assert.equal(
+    isLocalRun({ home_node: "aidash://other/first" }, administrator),
+    false,
+  );
+  assert.equal(
+    isLocalRun({ home_node: "aidash://home-other/first" }, administrator),
+    false,
+  );
+});
+
+test("Deployment Administrator monitoring requires a valid Node address", () => {
+  const administrator = {
+    access: { kind: "deployment_administrator" },
+    node: { id: "aidash://home" },
+  };
+  for (const home_node of [
+    "aidash://home",
+    "aidash://home/first/extra",
+    "https://home/first",
+  ])
+    assert.equal(isLocalRun({ home_node }, administrator), false);
 });

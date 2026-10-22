@@ -59,6 +59,7 @@ import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
 import { resumableRun } from "./workspace-model";
 import { researchFailure } from "../research";
+import { isLocalRun } from "../node-selection";
 import {
   runMediaAccept,
   validRunMediaAttachments,
@@ -123,7 +124,7 @@ export function OperationsDialog({
   );
   const taskRuns = task
     ? data.runs.filter(
-        (run) => run.task_id === task.id && run.home_node === data.node.id,
+        (run) => run.task_id === task.id && isLocalRun(run, data),
       )
     : [];
   return (
@@ -461,6 +462,8 @@ function RunPanel({
     );
   const mediaInputRoutes = query.data?.pages[0].media_input_routes ?? [];
   const mediaAccept = runMediaAccept(mediaInputRoutes);
+  // Sending attachments still requires an exact Node, even when an
+  // administrator may monitor the Run across its Deployment.
   const canAttach = run.home_node === data.node.id && !!mediaAccept;
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
   const control = (action: "pause" | "resume" | "cancel") => {
@@ -472,7 +475,7 @@ function RunPanel({
   const managed =
     run.home_node !== data.node.id && data.access.kind === "subject";
   const controllable = !terminal && !managed;
-  const home = run.home_node === data.node.id;
+  const home = isLocalRun(run, data);
   return (
     <>
       <header className="grid min-w-0 gap-1.5">

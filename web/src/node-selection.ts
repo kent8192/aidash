@@ -1,5 +1,5 @@
 import type { NodeRecord } from "./generated/models";
-import type { State, TenantState } from "./types";
+import type { Run, State, TenantState } from "./types";
 
 /** What the dashboard knows about one Node of the signed-in Tenant. */
 export type TenantNode = Pick<
@@ -91,6 +91,20 @@ export function parseNodeAddress(
 /** `aidash://<deployment>` of an address that names a Deployment or one of its Nodes. */
 export function deploymentId(address: string): string {
   return address.replace(/^(aidash:\/\/[^/]*).*$/, "$1");
+}
+
+/** Monitoring locality: a Subject's selected Node, or a Deployment
+ *  Administrator's own Deployment. This does not grant execution authority. */
+export function isLocalRun(
+  run: Pick<Run, "home_node">,
+  state: Pick<State, "access" | "node">,
+): boolean {
+  if (state.access.kind === "subject") return run.home_node === state.node.id;
+  const home = parseNodeAddress(run.home_node);
+  return (
+    home !== null &&
+    `aidash://${home.deployment}` === deploymentId(state.node.id)
+  );
 }
 
 /**

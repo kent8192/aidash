@@ -28,6 +28,7 @@ import type {
 } from "../types";
 import { Badge, JsonView, useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
+import { isLocalRun } from "../node-selection";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { threadCopy } from "./thread-copy";
@@ -271,8 +272,7 @@ export function Channel({
     : (query.data?.tasks ??
       data.tasks.filter((task) => task.workspace_id === workspace.id));
   const scopedRuns = runs.filter(
-    ({ run }) =>
-      run.workspace_id === workspace.id && run.home_node === data.node.id,
+    ({ run }) => run.workspace_id === workspace.id && isLocalRun(run, data),
   );
   const scopedRequests = requests.filter(
     ({ request }) =>

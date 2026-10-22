@@ -249,7 +249,7 @@ export async function setup(
     invalidRun?: boolean;
     failureDeliveryRun?: boolean;
     openTask?: boolean;
-    foreignRun?: boolean;
+    foreignRun?: boolean | string;
     remoteAssignment?: boolean;
     nativeMemory?: boolean;
     nativeMemoryDisabled?: boolean;
@@ -315,7 +315,11 @@ export async function setup(
     }
   }
   if (options.openTask) data.tasks[0].status = "OPEN";
-  if (options.foreignRun) data.runs[0].home_node = "aidash://remote-home";
+  if (options.foreignRun)
+    data.runs[0].home_node =
+      typeof options.foreignRun === "string"
+        ? options.foreignRun
+        : "aidash://remote-home";
   if (options.remoteAssignment)
     data.registry.push({
       ...data.registry[1],

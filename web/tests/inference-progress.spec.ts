@@ -249,3 +249,66 @@ test("subjects never subscribe to a foreign-home run's inference stream", async 
   await expect(page.locator(".inference-progress")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("a Deployment Administrator monitors a Node's inference without Tenant execution authority", async ({
+  page,
+}) => {
+  const { errors, revokeAgents } = await setup(page, { locale: "en-US" });
+  // Deployment Administrators read no Tenant Registry.
+  revokeAgents();
+  await page.route("**/api/runs/*/inference/stream", (route) =>
+    route.fulfill({ contentType: "text/event-stream", body }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Unavailable item" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.locator(".inference-attempt.pending .inference-text"),
+  ).toHaveText("Tentative answer");
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "New request", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "Deployment Administrators do not run work outside a Tenant.",
+  );
+  expect(errors).toEqual([]);
+});
+
+for (const { subject, home } of [
+  { subject: true, home: "aidash://home/another-node" },
+  { subject: false, home: "aidash://another-deployment/another-node" },
+]) {
+  test(`${subject ? "a subject's other Node" : "a Deployment Administrator's foreign Deployment"} stays outside local execution history`, async ({
+    page,
+  }) => {
+    const { errors, revokeAgents } = await setup(page, {
+      subject,
+      foreignRun: home,
+      locale: "en-US",
+    });
+    revokeAgents();
+    let streams = 0;
+    await page.route("**/api/runs/*/inference/stream", (route) => {
+      streams += 1;
+      return route.abort();
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", { name: "Execution history", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("button").filter({ hasText: "Unavailable item" }),
+    ).toHaveCount(0);
+    expect(streams).toBe(0);
+    expect(errors).toEqual([]);
+  });
+}
