@@ -961,25 +961,43 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			Ok::<_, aidash_server::Error>(())
 		}
 	});
-	wait_for_delegation_lock(&f.store.pool, &schema, "authorization_catalog").await;
-	concurrent.spawn({
-		let pool = f.store.pool.clone();
-		async move {
-			let mut writer = pool.begin(&TEST_FIXTURE).await?;
-			aidash_server::database::native::query(
-				&reinhardt::query::Query::select()
-					.expr(SimpleExpr::FunctionCall(
-						reinhardt::query::IntoIden::into_iden("pg_advisory_xact_lock"),
-						vec![Expr::value(74003201_i64).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.execute(&mut *writer)
-			.await?;
-			writer.commit().await
-		}
+	wait_for_delegation_lock(
+		&f.store.pool,
+		Expr::col("application_name").eq(schema.as_str()),
+		"authorization_catalog",
+	)
+	.await;
+	let mut writer = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let writer_pid: i32 = aidash_server::database::native::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				reinhardt::query::IntoIden::into_iden("pg_backend_pid"),
+				vec![],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *writer)
+	.await
+	.unwrap();
+	concurrent.spawn(async move {
+		aidash_server::database::native::query(
+			&reinhardt::query::Query::select()
+				.expr(SimpleExpr::FunctionCall(
+					reinhardt::query::IntoIden::into_iden("pg_advisory_xact_lock"),
+					vec![Expr::value(74003201_i64).into()],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.execute(&mut *writer)
+		.await?;
+		writer.commit().await
 	});
-	wait_for_delegation_lock(&f.store.pool, &schema, "pg_advisory_xact_lock").await;
+	wait_for_delegation_lock(
+		&f.store.pool,
+		Expr::col("pid").eq(writer_pid),
+		"pg_advisory_xact_lock",
+	)
+	.await;
 	approval.commit().await.unwrap();
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
 		while let Some(result) = concurrent.join_next().await {
@@ -994,6 +1012,10 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		"PAUSED",
 		"delegation must admit the child's own definitions: {:?}",
 		parent_after.error
+	);
+	assert_eq!(
+		parent_after.context.binding_snapshot, parent_run.context.binding_snapshot,
+		"preparing the child must not add Tools to the parent's frozen Binding snapshot"
 	);
 	let child_run = f
 		.store
@@ -1223,7 +1245,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 
 async fn wait_for_delegation_lock(
 	pool: &aidash_server::database::native::Pool,
-	schema: &str,
+	connection: SimpleExpr,
 	query_fragment: &str,
 ) {
 	let query = reinhardt::query::Query::select()
@@ -1231,7 +1253,7 @@ async fn wait_for_delegation_lock(
 			reinhardt::query::Query::select()
 				.expr(Expr::cust("1"))
 				.from(reinhardt::query::Alias::new("pg_stat_activity"))
-				.and_where(Expr::col("application_name").eq(schema))
+				.and_where(connection)
 				.and_where(Expr::col("wait_event_type").eq("Lock"))
 				.and_where(Expr::col("query").like(format!("%{query_fragment}%")))
 				.to_owned(),

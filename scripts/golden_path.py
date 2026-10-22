@@ -674,9 +674,7 @@ def main():
         tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
         register(base_a, [
             model, tool,
-            # A Run may delegate only to agents whose definitions its own lease
-            # already approved (#401), so the coordinator binds the research tool.
-            entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover researchers, decompose the goal, delegate, wait and synthesize.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate"),
+            entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover researchers, decompose the goal, delegate, wait and synthesize.", "schema_version": 1, "bindings": [], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate"),
             entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}),
             entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}),
         ])
