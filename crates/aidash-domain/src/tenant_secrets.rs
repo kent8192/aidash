@@ -79,7 +79,7 @@ pub fn endpoint_host(endpoint: &str) -> Result<String> {
 /// Whether a Tenant Secret with these recorded hosts may go to `endpoint`.
 pub fn permits(hosts: &[String], endpoint: &str) -> Result<bool> {
 	let host = endpoint_host(endpoint)?;
-	Ok(hosts.iter().any(|recorded| *recorded == host))
+	Ok(hosts.contains(&host))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -176,6 +176,12 @@ fn transport_mut(
 
 /// The Tenant Secret a Tool definition names, with the endpoint it goes to.
 pub fn definition_target(entry: &crate::registry::Entry) -> Option<(String, String)> {
+	if entry.kind == "external_service" {
+		return Some((
+			entry.config.get("secret")?.as_str()?.to_owned(),
+			entry.config.get("base_url")?.as_str()?.to_owned(),
+		));
+	}
 	if entry.kind != "tool" {
 		return None;
 	}
@@ -195,6 +201,10 @@ pub fn definition_secret(entry: &crate::registry::Entry) -> Option<String> {
 /// Replaces the Tenant Secret a Tool definition names. Does nothing to a
 /// definition that names none.
 pub fn rename_definition_secret(entry: &mut crate::registry::Entry, name: &str) {
+	if entry.kind == "external_service" && entry.config.get("secret").is_some() {
+		entry.config["secret"] = name.into();
+		return;
+	}
 	if entry.kind != "tool" {
 		return;
 	}

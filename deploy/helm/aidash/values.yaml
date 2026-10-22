@@ -191,6 +191,13 @@ execution:
     resources:
       requests: { cpu: 100m, memory: 128Mi }
       limits: { cpu: "1", memory: 512Mi }
+  egress:
+    enabled: false
+    # Reserve an unused Service IP in the cluster's Service CIDR before enabling.
+    clusterIP: ""
+    port: 8950
+    limits:
+      { sent_bytes: 1073741824, received_bytes: 1073741824, requests: 1000 }
   limits:
     cpu: 2
     memory_bytes: 2147483648

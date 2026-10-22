@@ -100,10 +100,12 @@ impl Scope for Lease {
 	}
 }
 
+type SecretVersions = BTreeMap<String, BTreeMap<String, (String, &'static str)>>;
+
 #[derive(Clone, Default)]
 struct FakeStore {
 	/// resource -> version -> (value, state)
-	state: Arc<Mutex<BTreeMap<String, BTreeMap<String, (String, &'static str)>>>>,
+	state: Arc<Mutex<SecretVersions>>,
 	refuse_secrets: bool,
 }
 #[async_trait]

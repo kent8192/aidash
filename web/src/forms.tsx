@@ -55,14 +55,14 @@ const ref = (s: string): EntityRef => {
   return { id: s.slice(0, index), version: s.slice(index + 1) };
 };
 // Cloudflare's Clef on its three zero-retention OpenRouter hosts, asked only
-// when Jev is unavailable (ADR 0066). Its keep threshold 0.2 (as binary64
+// when Jev is unavailable (ADR 0066). Its threshold 0.2 (as binary64
 // bits) comes from docs/decisions/decider-route-thresholds.md, and only Jev
 // has a long-context mode.
 const CLEF_ROUTE = {
   provider_contract: "openrouter.decisions/1",
   model: "cloudflare/clef",
   hosts: ["cloudflare", "deepinfra", "primeintellect"],
-  keep_threshold: "3fc999999999999a",
+  threshold: "3fc999999999999a",
   state_budget: {
     default_request_bytes: 32000,
     default_state_bytes: 24000,
@@ -416,8 +416,8 @@ export function EntityForm({
                             provider_contract: "typesafe.jev/1",
                             model: s("model_id"),
                             hosts: [],
-                            // The keep threshold 0.5 as binary64 bits.
-                            keep_threshold: "3fe0000000000000",
+                            // The threshold 0.5 as binary64 bits.
+                            threshold: "3fe0000000000000",
                           },
                           ...(d.has("clef_route") ? [CLEF_ROUTE] : []),
                         ],
@@ -492,6 +492,7 @@ export function EntityForm({
               "agent",
               "model",
               "tool",
+              "external_service",
               "skill",
               "memory",
               "source",

@@ -34,7 +34,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENV UV_PYTHON_DOWNLOADS=never UV_PYTHON=/usr/local/bin/python
 COPY requirements.lock /opt/aidash/requirements.lock
 RUN pip install --no-cache-dir --require-hashes -r /opt/aidash/requirements.lock
-COPY sandbox.py collector.py kernel.py python_cells.py probe.py extract.py install.py overlay.py /opt/aidash/
+COPY egress.py sandbox.py collector.py kernel.py python_cells.py probe.py extract.py install.py overlay.py /opt/aidash/
 WORKDIR /work
 USER 10000:10000
 ENTRYPOINT ["python", "-I", "/opt/aidash/sandbox.py"]

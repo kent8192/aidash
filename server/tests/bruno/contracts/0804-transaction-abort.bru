@@ -1,5 +1,5 @@
 meta {
-  name: 0804 transaction-abort - Unrecognized bearer cannot mutate state
+  name: 0804 transaction-abort - Anonymous request is rejected
   type: http
   seq: 804
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 script:pre-request {

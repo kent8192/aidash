@@ -64,6 +64,19 @@ pub async fn registry_create(
 }
 
 #[post(
+	"/api/registry/mcp-tool-hint",
+	name = "registry-mcp-tool-hint",
+	auth = "protected"
+)]
+pub async fn mcp_tool_hint(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Json(request): Json<crate::apps::registry::serializers::contracts::McpToolHintRequest>,
+) -> ViewResult<Response> {
+	crate::http::json(service.mcp_tool_hint(actor, request).await)
+}
+
+#[post(
 	"/api/agent-plugins/import",
 	name = "agent-plugin-import",
 	auth = "protected"

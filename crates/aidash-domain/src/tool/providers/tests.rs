@@ -22,8 +22,12 @@ fn provider_versions_lifecycle_and_facts_cannot_be_relabelled() {
 	assert!(serde_json::from_value::<ToolDescriptor>(value).is_err());
 }
 #[test]
-fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
-	for replay in ["read_only", "idempotent", "unsafe"] {
+fn only_a_descriptors_read_only_declaration_lifts_the_tool_call_approval() {
+	for (replay, effect, approval) in [
+		("read_only", ToolEffect::ReadOnly, false),
+		("idempotent", ToolEffect::Unsafe, true),
+		("unsafe", ToolEffect::Unsafe, true),
+	] {
 		let descriptor = ToolDescriptor {
 			registry_node: "aidash://node-a".into(),
 			provider: "integration.http@1".into(),
@@ -45,9 +49,9 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 				version: "1.0.0".into(),
 			})
 			.unwrap();
-		assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
-		assert!(contract.behavior.tool_call_approval);
-		assert!(!contract.replay_safe());
+		assert_eq!(contract.behavior.effect, effect, "{replay}");
+		assert_eq!(contract.behavior.tool_call_approval, approval, "{replay}");
+		assert_eq!(contract.replay_safe(), !approval, "{replay}");
 	}
 }
 #[test]

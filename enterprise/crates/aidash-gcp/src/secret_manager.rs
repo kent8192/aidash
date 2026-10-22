@@ -96,9 +96,7 @@ impl SecretManager {
 				.and_then(|v| v.to_str().ok())
 				!= Some("Google")
 		{
-			return Err(Error::External(
-				"Secret Store token is unavailable".into(),
-			));
+			return Err(Error::External("Secret Store token is unavailable".into()));
 		}
 		let token: Token = aidash_integrations::response::json(response, 16384).await?;
 		Ok(token.access_token)
@@ -137,9 +135,7 @@ impl SecretManager {
 		Ok(Some(
 			aidash_integrations::response::json(response, 1024 * 1024)
 				.await
-				.map_err(|_| {
-					Error::External("Secret Store response is unavailable".into())
-				})?,
+				.map_err(|_| Error::External("Secret Store response is unavailable".into()))?,
 		))
 	}
 }
@@ -175,12 +171,10 @@ impl Store for SecretManager {
 				false,
 			)
 			.await?
-			.ok_or_else(|| {
-				Error::External("Secret Store returned no version".into())
-			})?;
-		let name = response["name"].as_str().ok_or_else(|| {
-			Error::External("Secret Store returned no version".into())
-		})?;
+			.ok_or_else(|| Error::External("Secret Store returned no version".into()))?;
+		let name = response["name"]
+			.as_str()
+			.ok_or_else(|| Error::External("Secret Store returned no version".into()))?;
 		let id = name.rsplit('/').next().unwrap_or_default();
 		let version = format!("{resource}/versions/{id}");
 		self.validate_version(&version)?;
@@ -211,9 +205,7 @@ impl Store for SecretManager {
 						continue;
 					}
 					let name = v["name"].as_str().ok_or_else(|| {
-						Error::External(
-							"Secret Store returned an invalid version".into(),
-						)
+						Error::External("Secret Store returned an invalid version".into())
 					})?;
 					let version = format!(
 						"{resource}/versions/{}",

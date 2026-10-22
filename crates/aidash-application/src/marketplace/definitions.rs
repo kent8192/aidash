@@ -36,6 +36,9 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 					aidash_domain::registry::bindings::BindingKind::Memory => "memory",
 					aidash_domain::registry::bindings::BindingKind::Source => "source",
 					aidash_domain::registry::bindings::BindingKind::Decider => "decider",
+					aidash_domain::registry::bindings::BindingKind::ExternalService => {
+						"external_service"
+					}
 				};
 				refs.push((binding.target.local(), kind.into()));
 			}

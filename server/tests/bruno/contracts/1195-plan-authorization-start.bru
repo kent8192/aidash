@@ -1,23 +1,17 @@
 meta {
-  name: 1195 plan-authorization-start - Deployment Administrator bearer owns no Plan Connection
+  name: 1195 plan-authorization-start - Anonymous request is rejected
   type: http
   seq: 1195
 }
 
 post {
-  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt/authorizations
-  body: text
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/__bruno_missing__/authorizations
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
-  Content-Type: application/json
-}
-
-body:text {
-  {}
 }
 
 script:pre-request {
@@ -33,6 +27,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

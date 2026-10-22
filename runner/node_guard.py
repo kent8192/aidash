@@ -271,6 +271,8 @@ def handle(request):
             os.chown(inputs, 10000, 10000)
             target = inputs / (operation + '.input')
             cell = {'operation_id': operation, 'code': request['code'], 'digest': request['digest']}
+            if request.get('egress'):
+                cell['egress'] = request['egress']
             if target.exists():
                 if json.loads(target.read_bytes()) != cell:
                     raise ValueError('cell identity changed')

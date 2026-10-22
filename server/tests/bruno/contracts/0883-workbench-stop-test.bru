@@ -1,5 +1,5 @@
 meta {
-  name: 0883 workbench-stop-test - Unrecognized bearer cannot mutate state
+  name: 0883 workbench-stop-test - Anonymous request is rejected
   type: http
   seq: 883
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 script:pre-request {

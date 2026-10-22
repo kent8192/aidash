@@ -36,6 +36,9 @@ impl DefinitionLookup for SqlScope<'_> {
 			Err(error) => Err(error.into()),
 		}
 	}
+	async fn tenant_secret_hosts(&mut self, name: &str) -> Result<Option<Vec<String>>> {
+		crate::apps::identity::repositories::tenant_secrets::active_hosts(&mut **self.0, name).await
+	}
 }
 #[async_trait]
 impl DefinitionWriter for SqlScope<'_> {

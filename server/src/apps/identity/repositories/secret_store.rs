@@ -78,12 +78,14 @@ async fn delete_version(
 		.map_err(db_error)?;
 	Ok(())
 }
-/// Key Material and Plan Tokens share the Store under their own namespaces
-/// (ADR 0008); each resource is named by its record's version 7 UUID.
+/// Key Material, Plan Tokens and Tenant Secret values share the Store under
+/// their own namespaces (ADR 0008, ADR 0051); each resource is named by its
+/// record's version 7 UUID.
 fn resource_id(resource: &str) -> Result<()> {
 	let id = resource
 		.strip_prefix("aidash-store/provider-credentials/")
 		.or_else(|| resource.strip_prefix("aidash-store/plan-connections/"))
+		.or_else(|| resource.strip_prefix("aidash-store/tenant-secrets/"))
 		.and_then(|s| Uuid::parse_str(s).ok())
 		.filter(|id| id.get_version_num() == 7);
 	if id.is_none() {
@@ -104,7 +106,7 @@ fn version_id(value: &str) -> Result<(&str, i64)> {
 	Ok((resource, n))
 }
 impl PostgresStore {
-	/// Registers one empty resource of either namespace for `tenant`.
+	/// Registers one empty resource of any namespace for `tenant`.
 	async fn create_resource(&self, tenant: &str, resource: String) -> Result<()> {
 		resource_id(&resource)?;
 		let mut tx = self.begin_tenant(tenant).await?;
@@ -191,7 +193,8 @@ impl PostgresStore {
 			if !self.keys.contains_key(&key_id) {
 				let resource: String = row.get("resource").map_err(db_error)?;
 				// Each namespace has its own lifecycle adapter: Provider Credentials
-				// are revoked and Plan Connections ask for reconnection.
+				// are revoked, Plan Connections ask for reconnection and a Tenant
+				// Secret fails with `secret_unavailable` until its value is replaced.
 				resource_id(&resource)?;
 				versions.push((resource, row.get("version").map_err(db_error)?));
 			}
@@ -433,6 +436,9 @@ impl Store for PostgresStore {
 	}
 	async fn create_plan(&self, tenant: &str, id: Uuid) -> Result<()> {
 		self.create_resource(tenant, self.plan_resource(id)).await
+	}
+	async fn create_secret(&self, tenant: &str, id: Uuid) -> Result<()> {
+		self.create_resource(tenant, self.secret_resource(id)).await
 	}
 	async fn add_version(
 		&self,

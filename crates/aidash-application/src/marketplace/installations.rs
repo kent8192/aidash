@@ -102,6 +102,7 @@ pub async fn view(
 	} else {
 		vec![]
 	};
+	let secrets = secret_assignments(&revision)?;
 	Ok(InstallationRevision {
 		installation: install,
 		revision: revision.revision,
@@ -110,9 +111,23 @@ pub async fn view(
 		config: revision.config,
 		dependencies: revision.dependencies,
 		bindings: revision.bindings,
+		secrets,
 		approved,
 		actions,
 	})
+}
+
+/// Derive assignments from the verified frozen source and installed definition;
+/// no mutable publication or Secret Store read is needed to configure a copy.
+pub(super) fn secret_assignments(revision: &Revision) -> Result<BTreeMap<String, String>> {
+	let package = manifest(&revision.source)?;
+	let mut assignments = BTreeMap::new();
+	if let Some(slot) = aidash_domain::tenant_secrets::definition_secret(&package.entity) {
+		let chosen = aidash_domain::tenant_secrets::definition_secret(&revision.entry)
+			.ok_or(Error::Forbidden)?;
+		assignments.insert(slot, chosen);
+	}
+	Ok(assignments)
 }
 pub async fn install(
 	scope: &mut dyn InstallationScope,

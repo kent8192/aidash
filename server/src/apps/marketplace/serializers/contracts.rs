@@ -38,6 +38,10 @@ pub struct Install {
 	pub config: Value,
 	#[serde(default)]
 	pub bindings: Vec<DependencyBinding>,
+	/// For each Tenant Secret the package declares, which of the installing
+	/// Tenant's Tenant Secrets fills it.
+	#[serde(default)]
+	pub secrets: std::collections::BTreeMap<String, String>,
 	pub idempotency_key: Uuid,
 }
 
@@ -49,6 +53,10 @@ pub struct Configure {
 	pub config: Value,
 	#[serde(default)]
 	pub bindings: Vec<DependencyBinding>,
+	/// For each Tenant Secret the package declares, which of the installing
+	/// Tenant's Tenant Secrets fills it.
+	#[serde(default)]
+	pub secrets: std::collections::BTreeMap<String, String>,
 	pub idempotency_key: Uuid,
 }
 

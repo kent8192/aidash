@@ -13,6 +13,7 @@ use aidash_domain::{
 	RawRun, RunInspection, RunMetadata, invocation::InvocationSummary, policy::Resource,
 };
 use async_trait::async_trait;
+use reinhardt::db::orm::Model;
 use reinhardt::query::{
 	Alias, ColumnRef::Asterisk, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
@@ -121,6 +122,26 @@ impl RunDetailsScope for Scope<'_> {
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.get().run_visible(run).await.map_err(Into::into)
+	}
+	async fn egress_requests(
+		&mut self,
+		id: Uuid,
+		offset: u64,
+	) -> Result<Vec<aidash_domain::egress::RequestRecord>> {
+		use crate::apps::execution::capabilities::models::EgressRequest;
+		let records = EgressRequest::objects()
+			.filter(EgressRequest::field_run_id().eq(id))
+			.order_by(&["id"])
+			.offset(offset as usize)
+			.limit(100)
+			.all_with_executor(&mut **self.access.get().tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		Ok(records
+			.into_iter()
+			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
+			.collect::<std::result::Result<_, _>>()?)
 	}
 	async fn invocations(&mut self, id: Uuid, offset: u64) -> Result<Vec<InvocationSummary>> {
 		let result: NativeResult<Vec<Invocation>> = async {

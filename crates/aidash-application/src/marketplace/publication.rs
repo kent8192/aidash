@@ -111,7 +111,7 @@ pub async fn prepare(
 	};
 	if !matches!(
 		entity.kind.as_str(),
-		"agent" | "tool" | "skill" | "bundle" | "memory" | "source"
+		"agent" | "tool" | "skill" | "bundle" | "memory" | "source" | "external_service"
 	) {
 		return Err(Error::Invalid(
 			"only agent, tool, skill, bundle, memory and source packages can be published".into(),

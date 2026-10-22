@@ -10,6 +10,9 @@ import os
 from pathlib import Path
 import queue
 import time
+import sys
+sys.path.insert(0, "/opt/aidash")
+from egress import VARIABLES as EGRESS_VARIABLES, environment as egress_environment
 from jupyter_client import BlockingKernelClient
 
 
@@ -57,7 +60,10 @@ def serve():
             # A collector restart leaves an explicit uncertain cell, never replay.
             save(result_path, {'status': 'submitting', 'digest': incoming['digest']})
             try:
-                message_id = client.execute(incoming['code'], store_history=False, allow_stdin=False, stop_on_error=True)
+                code = ("[__import__('os').environ.pop(k, None) for k in " + repr(EGRESS_VARIABLES) + "]\n"
+                        + "__import__('os').environ.update(" + repr(egress_environment(incoming.get('egress'))) + ")\n"
+                        + incoming['code'])
+                message_id = client.execute(code, store_history=False, allow_stdin=False, stop_on_error=True)
                 save(result_path, {'status': 'running', 'message_id': message_id, 'digest': incoming['digest']})
                 last_preview = 0
                 while True:

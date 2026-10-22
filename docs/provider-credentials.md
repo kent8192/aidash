@@ -2,8 +2,9 @@
 
 Provider Credentials are Tenant-owned metadata records obtained only through
 Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
-Key Material passes from the server-side exchange into the Provider Credential
-Store write port. Pinned reads use a separate narrow read port.
+Key Material passes from the server-side exchange into the Secret Store
+write port. Pinned reads use a separate narrow read port. The Store also holds
+[Tenant Secrets](tenant-secrets.md) in their own resource namespace.
 Aidash exposes no HTTP create/rotate endpoint or dashboard
 form accepting typed or pasted provider keys; Provider Authorization (below) is
 the only production write path.

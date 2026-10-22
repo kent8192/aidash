@@ -60,6 +60,10 @@ TENANT_ROUTES = {
                            "name": {"en": "Bruno"}, "description": {"en": "Contract probe"}},
                  "documents": []},
     },
+    "POST /api/registry/mcp-tool-hint": {
+        "body": {"endpoint": "https://bruno.example/mcp", "tool_name": "probe"},
+        "refusal": "Subject without registry.create cannot read an MCP tool's hint",
+    },
     "POST /api/skills/import": {
         "body": {"url": "https://github.com/bruno/skills"},
         "refusal": "Subject without registry.create cannot import a Skill",
@@ -888,6 +892,27 @@ def render():
                 add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
                     path=path.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/tenant_secrets.rs":
+            body = json.dumps({"expected_revision": 0}) if route["json"] else None
+            add(endpoint, "Forged bearer cannot manage Tenant Secrets", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Missing Store fails closed for the Deployment Administrator", DEPLOYMENT_ADMINISTRATOR),
+                ("Missing Store fails closed for the subject", SUBJECT),
+            ]:
+                add(endpoint, label, 404, headers=headers, body=body,
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Tenant Secrets are not available on this Deployment"});',
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    headers=SUBJECT, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{", immutable=True)
+                add(endpoint, "Required revision cannot be omitted", 422,
+                    headers=SUBJECT, body="{}", immutable=True)
+                add(endpoint, "Unknown lifecycle fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"expected_revision": 0, "unexpected": True}), immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
             uri = path.replace("{provider}", "openrouter")
             body = (
@@ -974,6 +999,37 @@ def render():
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
                 add(endpoint, "Plan Tokens are not an accepted field", 422,
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"access_token": "pasted"}),
+                    immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/approval_preferences.rs":
+            # A person's Approval Mode and Approval Rules are their own: only the
+            # owner's dashboard or desktop session reaches them, and a Tenant
+            # Administrator's read needs a Mapping session too, never a bearer.
+            body = (
+                json.dumps({"expected_revision": 0, "default_mode": "manual"})
+                if path.endswith("/approval-preferences/mine")
+                else json.dumps({"expected_revision": 0, "decider": None})
+                if path.endswith("/approval-decider")
+                else json.dumps({"kind": "tool_call", "target": "every", "effect": "ask"})
+                if method == "POST"
+                else json.dumps({"mode": None})
+                if route["json"]
+                else None
+            )
+            add(endpoint, "Forged bearer cannot reach a person's approval settings", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Deployment Administrator bearer owns no approval settings", DEPLOYMENT_ADMINISTRATOR),
+                ("Subject Credential bearer never reaches approval settings", SUBJECT),
+            ]:
+                add(endpoint, label, 403, headers=headers, body=body, immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                add(endpoint, "Unknown approval fields are rejected", 422,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":

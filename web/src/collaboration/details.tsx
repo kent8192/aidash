@@ -56,6 +56,11 @@ import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
+import {
+  answeredAtDeadline,
+  continuesAt,
+  deadlineTime,
+} from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
@@ -120,6 +125,7 @@ export function OperationsDialog({
       ? mesh?.nodes.find((node) => node.node_id === d.node)?.human_requests
       : data.human_requests
   )?.find((value) => value.id === d.request?.id);
+  const continues = request ? continuesAt(request) : null;
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const unavailable = isDeploymentAdministrator
@@ -258,6 +264,14 @@ export function OperationsDialog({
                     <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
                       {request.prompt}
                     </p>
+                    {continues && (
+                      <Hint>
+                        {copy.continuesAt.replace(
+                          "{time}",
+                          deadlineTime(continues, locale),
+                        )}
+                      </Hint>
+                    )}
                   </div>
                   <Field label={t("answer")}>
                     <Textarea name="answer" rows={5} required />
@@ -266,6 +280,14 @@ export function OperationsDialog({
                     <Button type="submit">{copy.send}</Button>
                   </div>
                 </form>
+              ) : request && answeredAtDeadline(request) ? (
+                <div className="grid min-w-0 justify-items-start gap-2">
+                  <Badge value={request.kind} />
+                  <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+                    {request.prompt}
+                  </p>
+                  <Hint role="status">{copy.noAnswerBeforeDeadline}</Hint>
+                </div>
               ) : (
                 <Hint role="status">{copy.unavailable}</Hint>
               ))}
@@ -461,7 +483,9 @@ function RunPanel({
     initialPageParam: 0,
     queryFn: ({ pageParam }) => runGet(id, { offset: pageParam }),
     getNextPageParam: (last, pages) =>
-      last.invocations.length === 100 ? pages.length * 100 : undefined,
+      last.invocations.length === 100 || last.egress_requests?.length === 100
+        ? pages.length * 100
+        : undefined,
     enabled: local,
     refetchInterval: 2000,
     retry: false,
@@ -765,6 +789,21 @@ function RunPanel({
           </div>
         </form>
       )}
+      {local &&
+        query.data?.pages.some((page) => page.egress_requests?.length) && (
+          <Panel title="External services">
+            {query.data.pages
+              .flatMap((page) => page.egress_requests ?? [])
+              .map((request) => (
+                <Disclosure
+                  key={request.id}
+                  summary={`${request.service} · ${request.method} ${request.path} · ${request.status}`}
+                >
+                  <JsonView value={request} />
+                </Disclosure>
+              ))}
+          </Panel>
+        )}
       <Panel title={t("toolCalls")}>
         {invocations.length === 0 && <Hint>{t("empty")}</Hint>}
         {invocations.map((call) => (

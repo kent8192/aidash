@@ -32,6 +32,7 @@ pub struct DefinitionValidation {
 	provider_credentials_enabled: bool,
 	plan_connections_enabled: bool,
 	tenant_secrets_enabled: bool,
+	egress_limits: aidash_domain::egress::Limits,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
@@ -40,8 +41,13 @@ impl DefinitionValidation {
 			provider_credentials_enabled: false,
 			plan_connections_enabled: false,
 			tenant_secrets_enabled: false,
+			egress_limits: aidash_domain::egress::Limits::default(),
 			core_tools,
 		}
+	}
+	pub fn with_egress_limits(mut self, limits: aidash_domain::egress::Limits) -> Self {
+		self.egress_limits = limits;
+		self
 	}
 	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
 		self.provider_credentials_enabled = configured;
@@ -104,6 +110,15 @@ impl DefinitionValidation {
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
+			"external_service" => {
+				let service = aidash_domain::egress::definition(e)?;
+				if let Some(limits) = service.limits {
+					limits.lower_than(self.egress_limits)?;
+				}
+				if service.secret.is_some() && !self.tenant_secrets_enabled {
+					return Err(Error::Invalid("Tenant Secrets are unavailable".into()));
+				}
+			}
 			"decider" => {
 				let config: aidash_domain::decision::DeciderConfig =
 					serde_json::from_value(e.config.clone())?;

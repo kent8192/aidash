@@ -1,5 +1,6 @@
 //! Business models, authorization rules, and state invariants.
 pub mod agent_plugin;
+pub mod approval_rules;
 pub mod catalog;
 pub mod completion;
 pub mod context;
@@ -68,3 +69,5 @@ pub mod invocation;
 pub mod transactions;
 
 pub mod activation;
+
+pub mod egress;

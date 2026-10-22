@@ -117,6 +117,13 @@ impl<Events: Send> DefinitionScope for NativeDefinitions<'_, Events> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn tenant_secret_hosts(&mut self, name: &str) -> Result<Option<Vec<String>>> {
+		crate::apps::identity::repositories::tenant_secrets::active_hosts(
+			&mut **self.access.tx,
+			name,
+		)
+		.await
+	}
 }
 
 #[async_trait]

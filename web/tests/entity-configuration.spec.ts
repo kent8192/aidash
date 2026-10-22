@@ -329,11 +329,14 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
     .getByLabel("Endpoint", { exact: true })
     .fill("https://example.com/mcp");
   await dialog.getByLabel("MCP tool name").fill("search");
-  await dialog.getByLabel("Retry behavior").selectOption("unsafe");
+  await dialog.getByLabel("What a call does").selectOption("unsafe");
   await expect(dialog.getByLabel("Request key argument")).toHaveCount(0);
   await expect(
-    dialog.getByLabel("Retry behavior").locator("option"),
-  ).toHaveCount(1);
+    dialog.getByLabel("What a call does").locator("option"),
+  ).toHaveText([
+    "Reads only (needs no approval)",
+    "May change things (asks for approval)",
+  ]);
   // Tool transports never name a Deployment secret (#296).
   await expect(dialog.getByLabel("Use configured credentials")).toHaveCount(0);
   await dialog
@@ -395,11 +398,150 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
   });
 });
 
+test("a replay choice made while an MCP hint is pending wins over a late answer", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/registry/mcp-tool-hint", async (route) => {
+    await answered;
+    return route.fulfill({ json: { read_only_hint: true } });
+  });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("mcp");
+  await dialog
+    .getByLabel("Endpoint", { exact: true })
+    .fill("https://example.com/mcp");
+  await dialog.getByLabel("MCP tool name").fill("search");
+  const replay = dialog.getByLabel("What a call does");
+  await replay.selectOption("read_only");
+  await dialog
+    .getByRole("button", { name: "Check the server's hint", exact: true })
+    .click();
+  // The person's explicit unsafe choice arrives while the request is pending.
+  await replay.selectOption("unsafe");
+  release();
+  await expect(replay).toHaveValue("unsafe");
+  await expect(
+    dialog.getByText(/The server hints that this tool only reads/),
+  ).toHaveCount(0);
+});
+
+test("an MCP server's read-only hint prefills the choice and never decides it", async ({
+  page,
+}) => {
+  const asked: unknown[] = [];
+  let answer: { status: number; json: unknown } = {
+    status: 200,
+    json: { read_only_hint: true },
+  };
+  await page.route("**/api/registry/mcp-tool-hint", (route) => {
+    asked.push(route.request().postDataJSON());
+    return route.fulfill(answer);
+  });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("mcp");
+  const check = dialog.getByRole("button", {
+    name: "Check the server's hint",
+    exact: true,
+  });
+  const replay = dialog.getByLabel("What a call does");
+  await expect(replay).toHaveValue("unsafe");
+  await expect(check).toBeDisabled();
+  await dialog
+    .getByLabel("Endpoint", { exact: true })
+    .fill("https://example.com/mcp");
+  await dialog.getByLabel("MCP tool name").fill("search");
+  await check.click();
+  await expect(replay).toHaveValue("read_only");
+  await expect(
+    dialog.getByText(/The server hints that this tool only reads/),
+  ).toBeVisible();
+  expect(asked).toEqual([
+    { endpoint: "https://example.com/mcp", tool_name: "search" },
+  ]);
+  // Changing Transport also invalidates the automatic prefill: an HTTP
+  // definition must not inherit an MCP server's read-only hint.
+  await dialog.getByLabel("Connection type").selectOption("http");
+  await expect(replay).toHaveValue("unsafe");
+  await dialog.getByLabel("Connection type").selectOption("mcp");
+  await expect(replay).toHaveValue("unsafe");
+  // Changing the queried tool undoes the automatic prefill and hides the old
+  // answer, so submitting another tool never inherits "read_only".
+  await dialog.getByLabel("MCP tool name").fill("search-more");
+  await expect(
+    dialog.getByText(/The server hints that this tool only reads/),
+  ).toHaveCount(0);
+  await expect(replay).toHaveValue("unsafe");
+  answer = { status: 200, json: { read_only_hint: false } };
+  await check.click();
+  await expect(
+    dialog.getByText("The server hints that this tool may change things."),
+  ).toBeVisible();
+  await expect(replay).toHaveValue("unsafe");
+  answer = { status: 200, json: { read_only_hint: null } };
+  await replay.selectOption("read_only");
+  await check.click();
+  await expect(
+    dialog.getByText("The server gives no hint for this tool."),
+  ).toBeVisible();
+  await expect(replay).toHaveValue("read_only");
+  answer = {
+    status: 400,
+    json: { error: "the MCP server lists no tool with that name" },
+  };
+  await check.click();
+  await expect(
+    dialog.getByText("the MCP server lists no tool with that name"),
+  ).toBeVisible();
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.transport).toMatchObject({
+    transport: "mcp",
+    tool_name: "search-more",
+    replay: "read_only",
+  });
+});
+
+test("an HTTP tool declares reads only itself", async ({ page }) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("http");
+  await expect(
+    dialog.getByRole("button", { name: "Check the server's hint" }),
+  ).toHaveCount(0);
+  await dialog
+    .getByLabel("Endpoint", { exact: true })
+    .fill("https://example.com/tool");
+  await dialog.getByLabel("What a call does").selectOption("read_only");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.transport).toEqual({
+    transport: "http",
+    endpoint: "https://example.com/tool",
+    replay: "read_only",
+  });
+});
+
 test("changing tool transport excludes hidden settings", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Entity type").selectOption("tool");
   await dialog.getByLabel("Connection type").selectOption("mcp");
-  await dialog.getByLabel("Retry behavior").selectOption("unsafe");
+  await dialog.getByLabel("What a call does").selectOption("unsafe");
   await dialog.getByLabel("Connection type").selectOption("agent");
   await dialog.getByLabel("Executor agent").selectOption("coordinator@2.0.0");
   const posted = page.waitForRequest(
@@ -626,5 +768,40 @@ test("changing Source adapter clears unsupported settings and prior validation",
   expect((await posted).postDataJSON().config).toEqual({
     schema_version: 1,
     source: { adapter: "workspace_retrieval" },
+  });
+});
+
+test("an External service form submits its destination, methods and Secret attachment", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("external_service");
+  await dialog
+    .getByLabel("Destination HTTPS URL")
+    .fill("https://images.example.test/v1/");
+  await dialog.getByRole("checkbox", { name: "POST", exact: true }).check();
+  await dialog
+    .getByLabel("Tenant Secret (optional)", { exact: true })
+    .fill("image-key");
+  await dialog
+    .getByLabel("Authentication", { exact: true })
+    .selectOption("header");
+  await dialog.getByLabel("Header name", { exact: true }).fill("X-API-Key");
+  await expect(dialog.locator('textarea[name="config"]')).toHaveCount(0);
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON()).toMatchObject({
+    kind: "external_service",
+    config: {
+      base_url: "https://images.example.test/v1/",
+      methods: ["GET", "POST"],
+      secret: "image-key",
+      authentication: { type: "header", name: "X-API-Key" },
+    },
   });
 });

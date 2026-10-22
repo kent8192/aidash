@@ -142,6 +142,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "core_areas", TenantOwned),
 	table("execution", "core_objects", TenantOwned),
 	table("execution", "core_operations", TenantOwned),
+	table("execution", "egress_budgets", TenantOwned),
+	table("execution", "egress_requests", TenantOwned),
 	table("execution", "core_quotas", TenantOwned),
 	table("execution", "core_records", TenantOwned),
 	table("execution", "core_requests", TenantOwned),
@@ -275,6 +277,12 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
+	// a person's own Approval Mode and Approval Rules (ADR 0076)
+	table("identity", "identity_approval_preferences", TenantOwned),
+	table("identity", "identity_approval_rules", TenantOwned),
+	table("identity", "identity_thread_approval_modes", TenantOwned),
+	// the approval Decider a Tenant chose for the Auto Approval Mode (ADR 0077)
+	table("identity", "identity_tenant_approval_settings", TenantOwned),
 	// the identity's one Personal Tenant, read at sign-in; purge keeps it, or
 	// signing in would provision a new Personal Tenant for an identity that deleted its own
 	tombstone("identity", "personal_tenants"),
@@ -292,6 +300,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_invitations", TenantOwned),
 	audit("identity", "tenant_retention_rule_history"),
 	table("identity", "tenant_retention_rules", TenantOwned),
+	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
+	table("identity", "tenant_secrets", TenantOwned),
 	// Tenant Deletions outlive purge and are read while the Tenant refuses everyone (ADR 0060)
 	table("identity", "tenant_deletions", DeploymentWide),
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)

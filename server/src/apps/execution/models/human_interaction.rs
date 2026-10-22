@@ -43,6 +43,7 @@ impl HumanRequest {
 			response: None,
 			created_at: chrono::Utc::now(),
 			answered_by: None,
+			answer_by: None,
 		};
 		Self::admit_home(tx, &request, key).await
 	}

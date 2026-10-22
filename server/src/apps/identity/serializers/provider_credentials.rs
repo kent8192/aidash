@@ -127,7 +127,7 @@ impl<'de> Deserialize<'de> for StoreConfig {
 				})
 			}
 			Some(_) => Ok(Self::Enterprise(fields)),
-			None => Err(D::Error::custom("a Provider Credential Store needs a kind")),
+			None => Err(D::Error::custom("a Secret Store needs a kind")),
 		}
 	}
 }
