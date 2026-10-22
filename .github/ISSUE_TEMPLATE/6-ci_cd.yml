@@ -1,7 +1,7 @@
 name: CI/CD Issue
 description: Report a CI/CD workflow issue
 title: "[CI]: <brief description>"
-labels: ["ci-cd"]
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
