@@ -1,4 +1,4 @@
-//! Issue #291: an authorized manual retry opens a new Retry Cycle (ADR 0057).
+//! Issues #291 and #332: manual retries renew only the retry ledger (ADR 0057).
 //! A library test, because a Run's memory recall goes through crate-private
 //! authority.
 use super::fixture::*;
@@ -171,10 +171,15 @@ fn failure(
 /// keeps the operation ID and its durable totals, and later replays are
 /// served from the ledger.
 #[rstest]
+#[case::recovered(true, false)]
+#[case::durable_budget(false, false)]
+#[case::durable_token_budget(false, true)]
 #[tokio::test]
-async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_recovers(
+async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets(
+	#[case] provider_recovers: bool,
+	#[case] token_budget: bool,
 	#[future] database: DatabaseFixture,
-	bounds: Bounds,
+	mut bounds: Bounds,
 	#[future(awt)] outage_provider: OutageProvider,
 	runtime_controls: RuntimeControls,
 ) {
@@ -188,6 +193,10 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 	let down = outage_provider.state.down;
 	let endpoint = format!("{}/v1", provider.url);
 	let database = database.await;
+	if token_budget {
+		bounds.max_model_calls = 8;
+		bounds.max_model_tokens = 24; // Four conservatively charged six-byte queries.
+	}
 	let (store, registry, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let agent = reference("a");
 	let authorization = Authorization {
@@ -326,7 +335,7 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 	);
 
 	// Act: the provider recovers, but the Run is still in cycle 0.
-	down.store(false, Ordering::Release);
+	down.store(!provider_recovers, Ordering::Release);
 	let spent = run_recall(&f.store, &run).await;
 	// Assert: this was the dead end of #291.
 	assert_eq!(
@@ -335,26 +344,8 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 		"{spent:?}"
 	);
 
-	// Act: pause the Run as the harness does, then retry it manually.
-	aidash_server::database::native::query(
-		&Query::update()
-			.table(Alias::new("runs"))
-			.value(Alias::new("control"), "PAUSED")
-			.value_expr(
-				Alias::new("pending"),
-				Expr::cust(
-					"JSONB_SET(pending, '{recovery,semantic_reason}', '\"retries_exhausted\"')",
-				),
-			)
-			.and_where(Expr::col("id").eq(Expr::value(run.id)))
-			.and_where(Expr::cust(
-				"SET_CONFIG('aidash.input_ledger_worker','true',true)='true'",
-			))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.in_scope(&TEST_FIXTURE))
-	.await
-	.unwrap();
+	// Act: deliver the real recall failure through worker recovery, then retry.
+	recover(&f.store, run.id, spent.unwrap_err()).await;
 	let resumed = f
 		.store
 		.control(&TEST_FIXTURE, run.id, RunControlAction::Resume)
@@ -390,6 +381,51 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 		audit,
 		json!({"run_id":run.id,"cycle":1,"cause":"retries_exhausted","reason":"authorized_resume"})
 	);
+	if !provider_recovers {
+		assert_eq!(failure(&recalled), Some(Failure::Unavailable));
+		assert_eq!(failure(&replayed), Some(Failure::Pending));
+		expire_attempts(&f.store).await;
+		assert_eq!(
+			failure(&run_recall(&f.store, &run).await),
+			Some(Failure::Unavailable)
+		);
+		expire_attempts(&f.store).await;
+		let spent = run_recall(&f.store, &run).await.unwrap_err();
+		recover(&f.store, run.id, spent).await;
+		f.store
+			.control(&TEST_FIXTURE, run.id, RunControlAction::Resume)
+			.await
+			.unwrap();
+		let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		down.store(false, Ordering::Release);
+		let exhausted = run_recall(&f.store, &run).await;
+		assert_eq!(
+			serde_json::to_value(failure(&exhausted)).unwrap(),
+			"durable_memory_budget",
+			"{exhausted:?}"
+		);
+		recover(&f.store, run.id, exhausted.unwrap_err()).await;
+		let stopped = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert_eq!(stopped.control.as_str(), "PAUSED");
+		assert!(stopped.recovery.retry.is_none());
+		assert_ne!(
+			f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
+			aidash_domain::TaskStatus::Failed
+		);
+		let details = crate::apps::identity::services::execution::management::get(
+			f.clone(),
+			actor.clone(),
+			run.id,
+		)
+		.await
+		.unwrap();
+		assert_eq!(
+			serde_json::to_value(details.semantic_recovery).unwrap(),
+			json!({"cause":"durable_memory_budget","actions":["create_follow_up_task"]})
+		);
+		assert_eq!(attempts(&f.store, operation).await.len(), 4);
+		return;
+	}
 	// Assert: the same operation recalls in cycle 1, and its replay is served
 	// from the ledger without another attempt.
 	for result in [&recalled, &replayed] {
@@ -423,4 +459,20 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 	.unwrap();
 	assert_eq!(calls, 3);
 	drop(provider);
+}
+
+/// Apply the same classification and fenced durable recovery as the worker.
+async fn recover(store: &Store, run: Uuid, error: crate::Error) {
+	let token = Uuid::new_v4();
+	assert_eq!(store.lease_run(token, 30).await.unwrap().unwrap().id, run);
+	aidash_harness::recovery::recover(
+		&crate::apps::execution::repositories::RecoveryRepository {
+			store: store.clone(),
+		},
+		token,
+		crate::apps::execution::repositories::worker::classify_failure(&error),
+		chrono::Utc::now(),
+	)
+	.await
+	.unwrap();
 }

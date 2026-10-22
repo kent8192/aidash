@@ -82,7 +82,11 @@ function fixture(reference = false) {
         deferred_run_message_reads: [],
       },
     } as unknown,
-    recovery: { retry: null, lease_recovered: false },
+    recovery: {
+      retry: null,
+      lease_recovered: false,
+      semantic_reason: null as string | null,
+    },
     state_error: null as string | null,
     observed_input_seq: 0,
     ledger_worker_ready: true,
@@ -249,6 +253,7 @@ export async function setup(
     coreVersion?: boolean;
     runMediaRoutes?: string[][];
     invalidRun?: boolean;
+    semanticPause?: string;
     failureDeliveryRun?: boolean;
     openTask?: boolean;
     foreignRun?: boolean;
@@ -299,6 +304,10 @@ export async function setup(
         workspace_id: "workspace-one",
       }))
     : [];
+  if (options.semanticPause) {
+    data.runs[0].control = "PAUSED";
+    data.runs[0].recovery.semantic_reason = options.semanticPause;
+  }
   if (options.invalidRun || options.failureDeliveryRun) {
     data.runs[0].control = "PAUSED";
     data.runs[0].context = null;

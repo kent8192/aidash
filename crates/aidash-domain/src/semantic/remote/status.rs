@@ -171,7 +171,8 @@ pub fn project(
 		result.reason = result.reason.or_else(|| {
 			record
 				.error
-				.and_then(|s| serde_json::from_value(serde_json::json!(s)).ok())
+				.as_deref()
+				.map(|code| super::journal::reason(Some(code)))
 		});
 		if result.reason.is_none()
 			&& let Some(value) = record.receipt

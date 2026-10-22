@@ -146,6 +146,32 @@ fn a_ready_view_offers_no_recovery(binding: Binding, record: Record) {
 	assert_eq!(view.recovery, None);
 	assert!(json!(view).get("recovery").is_none());
 }
+
+#[rstest]
+#[case::spent("durable_memory_budget", Failure::DurableMemoryBudget)]
+#[case::future("future_budget_cause", Failure::ContextBudget)]
+fn permanent_journal_errors_block_claims_and_receipt_disclosure(
+	binding: Binding,
+	mut record: Record,
+	#[case] code: &str,
+	#[case] expected: Failure,
+) {
+	record.state = "PAUSED".into();
+	record.error = Some(code.into());
+	record.receipt = Some(json!({"private":"a receipt must not be decoded"}));
+	assert!(
+		matches!(super::super::journal::claim_plan(&record, Utc::now()), super::super::journal::ClaimPlan::Rejected(reason) if reason == expected)
+	);
+	let view = project(&binding, None, Some(record)).unwrap();
+	assert_eq!(view.reason, Some(expected));
+	assert_eq!(view.state, "paused");
+	assert_eq!(view.result_count, None);
+	assert_eq!(view.retrieved_at, None);
+	assert_eq!(
+		view.recovery.unwrap().actions,
+		[crate::semantic::recovery::Action::CreateFollowUpTask]
+	);
+}
 #[rstest]
 fn disabled_and_unstarted_bindings_keep_their_original_initial_state(
 	binding: Binding,
