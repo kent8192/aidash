@@ -1,6 +1,6 @@
 //! Page reading parses a PDF only in a bounded child of the `aidash` binary
 //! (#312). These tests start the real binary as that child.
-use aidash_domain::research::{Failure, document::Line};
+use aidash_domain::research::Failure;
 use aidash_integrations::research::pdf::{ChildEngine, PdfEngine};
 use rstest::rstest;
 use std::{io::Write, path::PathBuf, time::Duration};
@@ -46,7 +46,7 @@ async fn the_child_extracts_lines_with_their_pages() {
 	let text = engine().await.extract(PERMITTED.to_vec()).await.unwrap();
 	assert_eq!(
 		text.lines,
-		vec![Line {
+		vec![aidash_domain::research::document::Line {
 			text: "Protected evidence on page one.".into(),
 			page: Some(1),
 		}]
