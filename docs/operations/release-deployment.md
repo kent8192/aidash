@@ -225,6 +225,9 @@ After privileged code/account inputs are installed, explicitly enable
 `GCP_CERTIFICATE_RENEWAL_ENABLED` and dispatch the first issuance on the execution
 branch. The daily schedule renews certificates within 30 days of expiry. Verify
 the first successful certificate version before enabling random preview deploys.
+For this initial certificate-only Terraform activation, explicitly set
+`enablement.notifications=false` while mail setup is pending. After configuring
+mail, set `enablement.notifications=true` and retain the other selected flags.
 
 The trusted controller validates the wildcard SAN, validity and matching key,
 then mounts the PEM only in the edge. Normal reconcile also refreshes quiet

@@ -8,6 +8,7 @@ pub mod identity;
 
 pub mod oidc;
 
+pub mod approval_preferences;
 pub mod plan_connections;
 pub mod provider_authorizations;
 

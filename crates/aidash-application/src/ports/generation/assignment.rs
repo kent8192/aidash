@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	Task,
+	approval_rules::Settings,
 	federation::Delegation,
 	generation::{
 		policy::{Allowances, Policy},
@@ -49,6 +50,19 @@ pub trait GenerationCreationScope: Send {
 	async fn history(&mut self, id: Uuid, status: &str, reason: &str) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn visible(&mut self, job: &Request) -> Result<bool>;
+	/// The Approval Mode and Approval Rules of the person the chain starts at.
+	/// `None` unless that person is an enabled User subject of this Tenant
+	/// (ADR 0076).
+	async fn approval_settings(&mut self) -> Result<Option<Settings>>;
+	/// Whether the Tenant's policy allows `action` on the resource `kind` and
+	/// `id`, with `attributes`, to the person the chain starts at, judged alone.
+	async fn root_allows(
+		&mut self,
+		kind: &str,
+		id: &str,
+		attributes: Value,
+		action: &str,
+	) -> Result<bool>;
 }
 #[async_trait]
 pub trait GenerationAssignmentScope: GenerationCreationScope {

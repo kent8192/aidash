@@ -1,4 +1,5 @@
 use super::*;
+use crate::approval_rules::{MODE_BYPASS, MODE_RESOURCE};
 use crate::identity::tenant_administration::{ACTIONS, ADMINISTRATION_ACTIONS};
 use rstest::rstest;
 use std::collections::BTreeSet;
@@ -234,6 +235,60 @@ fn members_approve_tool_calls_and_nothing_else_they_could_be_asked_for() {
 	// administrator's wildcard: the Tenant has to name it.
 	assert!(!evaluate("alice", "tool", "tool.call_unapproved"));
 	assert!(!evaluate(OWNER, "tool", "tool.call_unapproved"));
+}
+
+#[test]
+fn members_may_approve_in_advance_and_use_auto_but_bypass_has_to_be_named() {
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let evaluate = |subject: &str, kind: &str, id: &str, action: &str| {
+		bundle
+			.evaluate(&Evaluation {
+				subject: subject.into(),
+				action: action.into(),
+				resource: Resource {
+					tenant: bundle.tenant.clone(),
+					kind: kind.into(),
+					id: id.into(),
+					attributes: json!({}),
+				},
+				environment: json!({}),
+			})
+			.allowed
+	};
+	// Advancing is allowed on every kind, yet only what the member could
+	// approve themselves is within the ceiling.
+	for kind in ["tool", "outbound", "research", "generation"] {
+		assert!(evaluate("alice", kind, "x", APPROVAL_ADVANCE), "{kind}");
+	}
+	assert!(!evaluate("alice", "outbound", "x", "capability.approve"));
+	assert!(evaluate("alice", MODE_RESOURCE, "auto", MODE_AUTO));
+	for subject in ["alice", OWNER] {
+		assert!(
+			!evaluate(subject, MODE_RESOURCE, "bypass", MODE_BYPASS),
+			"{subject}"
+		);
+	}
+}
+
+#[test]
+fn only_administrators_read_a_members_approval_settings() {
+	// Arrange
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let read = administration::APPROVAL_READ;
+
+	// Act + Assert: the action is judged on the member, and members never hold it.
+	assert_eq!(administration::resource_kind(read), "subject");
+	assert!(allows(&bundle, OWNER, read));
+	assert!(!allows(&bundle, "alice", read));
+	assert!(ACTIONS.contains(&read));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&read));
+}
+
+#[test]
+fn the_mode_actions_are_judged_on_the_approval_mode_resource() {
+	for action in [crate::approval_rules::MODE_AUTO, MODE_BYPASS] {
+		assert_eq!(administration::resource_kind(action), MODE_RESOURCE);
+	}
 }
 
 #[test]

@@ -55,6 +55,7 @@ pub fn human_pending(request_id: Uuid) -> serde_json::Value {
 	pending(
 		RunState::Waiting(Box::new(WaitingState::Human {
 			request_id,
+			answer_by: None,
 			resume: ResumeState::Ready(ReadyState {}),
 		})),
 		Default::default(),

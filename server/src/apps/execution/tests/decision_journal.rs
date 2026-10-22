@@ -6,7 +6,10 @@
 mod common;
 
 use aidash_application::{
-	decision::{CompactionResult, DecisionGate, Evaluation, compaction_input_digest},
+	decision::{
+		ApprovalTool, CompactionResult, DecisionGate, Evaluation, Judgement, Ruling,
+		approval_input_digest, compaction_input_digest,
+	},
 	ports::decision::{
 		Approval, DecisionAuthority, DecisionJournal, DecisionProvider, Disclosure, DispatchError,
 		DispatchRecord, PreparedDispatch, PreparedRequest, Reservation, RetainedState,
@@ -126,6 +129,8 @@ struct Provider {
 	digest: String,
 	keep: Probability,
 	calls: AtomicUsize,
+	/// Every request fails as an outage.
+	outage: AtomicBool,
 }
 impl Provider {
 	fn new(mode: Mode) -> Self {
@@ -133,6 +138,16 @@ impl Provider {
 			digest: config(mode).digest().unwrap(),
 			keep: Probability::new(0.0).unwrap(),
 			calls: AtomicUsize::new(0),
+			outage: AtomicBool::new(false),
+		}
+	}
+	/// The provider of the approval Decider, which answers every question with
+	/// probability `answer`.
+	fn approving(mode: Mode, answer: f64) -> Self {
+		Self {
+			digest: approval_config(mode).digest().unwrap(),
+			keep: Probability::new(answer).unwrap(),
+			..Self::new(mode)
 		}
 	}
 }
@@ -175,6 +190,9 @@ struct Dispatch<'a> {
 impl PreparedDispatch for Dispatch<'_> {
 	async fn dispatch(self: Box<Self>) -> Result<BTreeMap<String, Probability>, DispatchError> {
 		self.provider.calls.fetch_add(1, Ordering::SeqCst);
+		if self.provider.outage.load(Ordering::SeqCst) {
+			return Err(aidash_application::Error::External("route outage".into()).into());
+		}
 		Ok(self
 			.request
 			.questions
@@ -1354,6 +1372,337 @@ async fn evidence_must_attest_to_the_context_and_identity_it_claims(
 		Err(aidash_application::Error::Invalid(_))
 	));
 	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	drop(journal);
+	cleanup(f, &url, &schema).await;
+}
+
+/// The approval Decider's configuration (ADR 0077).
+fn approval_config(mode: Mode) -> DeciderConfig {
+	DeciderConfig {
+		hook: Hook::Approval,
+		description: "Block risky calls".into(),
+		builder: APPROVAL_BUILDER.into(),
+		option_source: APPROVAL_OPTION_SOURCE.into(),
+		rule: APPROVAL_RULE.into(),
+		mode,
+		max_calls_per_run: 200,
+		..config(mode)
+	}
+}
+
+fn approval_definition(mode: Mode) -> Entry {
+	serde_json::from_value(
+		json!({"id":"approval-decider","version":"1.0.0","kind":"decider",
+		"name":{"en":"Approval"},"description":{"en":"Judge calls"},"config":approval_config(mode)}),
+	)
+	.unwrap()
+}
+
+fn approval_bound(node: &str, mode: Mode) -> BoundDecider {
+	let definition = approval_definition(mode);
+	let config = approval_config(mode);
+	BoundDecider {
+		pin: DeciderPin {
+			identity: QualifiedRef {
+				registry_node: node.into(),
+				id: definition.id.clone(),
+				version: definition.version.clone(),
+			},
+			definition_digest: digest(&serde_json::to_value(&definition).unwrap()),
+			configuration_digest: config.digest().unwrap(),
+			provider_implementation: IMPLEMENTATION.into(),
+		},
+		config,
+		restrictions: Restrictions::default(),
+	}
+}
+
+const APPROVAL: Uuid = Uuid::from_u128(0xa1);
+
+/// Judges the pending call of approval `APPROVAL` against the PostgreSQL journal
+/// of `run`, with at most `calls` Decision Attempts for the Run.
+async fn judge_call(
+	store: &Store,
+	run: &Run,
+	worker: Uuid,
+	mode: Mode,
+	provider: &Provider,
+	calls: u64,
+) -> aidash_application::Result<Ruling> {
+	let decider = approval_bound(&store.node_id, mode);
+	let journal = RunDecisionJournal::new(
+		store,
+		run.clone(),
+		allowance(&decider, calls),
+		Policy::new(allowance(&decider, calls)),
+	)
+	.unwrap();
+	let authority = Authority {
+		provider,
+		forbid_after_dispatch: AtomicBool::new(false),
+		retain_state: false,
+		revoke: None,
+	};
+	let pending = ToolCall {
+		id: "pending".into(),
+		name: "http_post".into(),
+		arguments: json!({"body":"Q3 summary"}),
+	};
+	let tool = ApprovalTool {
+		id: "acme.http_post".into(),
+		version: "1.0.0".into(),
+		description: "Post a document".into(),
+		input_schema: json!({"type":"object"}),
+		target: Some("https://api.example.com".into()),
+	};
+	let people = [aidash_domain::run_input::RunInput {
+		seq: 1,
+		sender: "alice".into(),
+		content: "Post the Q3 summary".into(),
+		idempotency_key: "k1".into(),
+		message_id: None,
+		reference_only: false,
+	}];
+	let definition = approval_definition(mode);
+	let boundary = Boundary {
+		node: store.node_id.clone(),
+		run: run.id,
+		step: run.step,
+		run_revision: run.revision,
+		input_revision: run.observed_input_seq,
+		worker,
+		input_digest: approval_input_digest(APPROVAL, &pending, &tool),
+		cycle: 0,
+		retry: 0,
+	};
+	DecisionGate {
+		authority: &authority,
+		journal: &journal,
+		provider,
+	}
+	.judge_approval(&Judgement {
+		boundary: &boundary,
+		decider: &decider,
+		definition: &definition,
+		now: Utc::now(),
+		approval: APPROVAL,
+		context: &run.context,
+		people: &people,
+		instructions: "Follow the task",
+		pending: &pending,
+		tool: &tool,
+	})
+	.await
+}
+
+async fn decided(
+	store: &Store,
+	run: &Run,
+	worker: Uuid,
+	mode: Mode,
+	provider: &Provider,
+) -> ApprovalEvidence {
+	match judge_call(store, run, worker, mode, provider, 10)
+		.await
+		.unwrap()
+	{
+		Ruling::Decided(evidence) => *evidence,
+		Ruling::AllowanceSpent => panic!("the allowance is spent"),
+	}
+}
+
+/// Every approval decision recorded for `run`: its outcome, reason and evidence.
+async fn approval_rows(store: &Store, run: Uuid) -> Vec<(String, String, ApprovalEvidence)> {
+	use sqlx::Row as _;
+	sqlx::query(
+		&Query::select()
+			.columns(["outcome", "reason", "evidence"].map(Alias::new))
+			.from(Alias::new("decision_evidence"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.order_by(Alias::new("created_at"), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(store.pool.fixture_driver())
+	.await
+	.unwrap()
+	.into_iter()
+	.map(|row| {
+		(
+			row.get("outcome"),
+			row.get("reason"),
+			serde_json::from_value(row.get::<Value, _>("evidence")).unwrap(),
+		)
+	})
+	.collect()
+}
+
+#[rstest::rstest]
+#[case::cleared(Mode::Enforce, 0.0, "allowed", "clear")]
+#[case::flagged(Mode::Enforce, 0.9, "blocked", "data_exfiltration")]
+#[case::shadow(Mode::Shadow, 0.9, "shadow", "data_exfiltration")]
+#[tokio::test]
+async fn an_approval_decision_is_recorded_once_and_judging_again_reuses_its_charged_answers(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+	#[case] mode: Mode,
+	#[case] answer: f64,
+	#[case] outcome: &str,
+	#[case] reason: &str,
+) {
+	// Arrange
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let provider = Provider::approving(mode, answer);
+
+	// Act
+	let first = decided(&f.store, &run, worker, mode, &provider).await;
+	let again = decided(&f.store, &run, worker, mode, &provider).await;
+
+	// Assert: one record, one provider call, one charge, and the same decision.
+	assert_eq!(first.id, again.id);
+	assert_eq!(first.answers, again.answers);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
+	let rows = approval_rows(&f.store, run.id).await;
+	assert_eq!(rows.len(), 1, "{rows:?}");
+	assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), (outcome, reason));
+	assert_eq!(rows[0].2.id, first.id);
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_unavailable_decider_is_recorded_as_a_decision_without_a_verdict(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Arrange
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let provider = Provider::approving(Mode::Enforce, 0.0);
+	provider.outage.store(true, Ordering::SeqCst);
+
+	// Act
+	let evidence = decided(&f.store, &run, worker, Mode::Enforce, &provider).await;
+
+	// Assert
+	assert_eq!(evidence.route, None);
+	let rows = approval_rows(&f.store, run.id).await;
+	assert_eq!(rows.len(), 1, "{rows:?}");
+	assert_eq!(
+		(rows[0].0.as_str(), rows[0].1.as_str()),
+		("blocked", "unavailable")
+	);
+	assert_eq!(rows[0].2.attempts.len(), 1, "the charged attempt is named");
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_spent_call_allowance_records_no_decision_and_leaves_the_call_to_a_person(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Arrange
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let provider = Provider::approving(Mode::Enforce, 0.0);
+
+	// Act: the Run may spend no Decision Attempt.
+	let ruling = judge_call(&f.store, &run, worker, Mode::Enforce, &provider, 0)
+		.await
+		.unwrap();
+
+	// Assert
+	assert!(matches!(ruling, Ruling::AllowanceSpent), "{ruling:?}");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+	assert!(approval_rows(&f.store, run.id).await.is_empty());
+	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 0);
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_evidence_that_is_not_the_decision_it_names_is_refused(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Arrange
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let provider = Provider::approving(Mode::Enforce, 0.0);
+	let saved = decided(&f.store, &run, worker, Mode::Enforce, &provider).await;
+	// Forget the recorded decision, so the journal checks the evidence afresh.
+	sqlx::query(
+		&Query::delete()
+			.from_table(Alias::new("decision_evidence"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let decider = approval_bound(&f.store.node_id, Mode::Enforce);
+	let journal = RunDecisionJournal::new(
+		&f.store,
+		run.clone(),
+		allowance(&decider, 10),
+		Policy::new(allowance(&decider, 10)),
+	)
+	.unwrap();
+
+	// Act + Assert: each tampering is refused, and nothing is recorded.
+	let mut other_state = saved.clone();
+	other_state.state_digest = format!("sha256:{}", "e".repeat(64));
+	let mut other_approval = saved.clone();
+	other_approval.approval = Uuid::from_u128(0xa2);
+	let mut unnamed = saved.clone();
+	unnamed.attempts.clear();
+	let mut unbacked = saved.clone();
+	unbacked
+		.answers
+		.insert("unanswered".into(), Probability::new(1.0).unwrap());
+	let mut other_worker = saved.clone();
+	other_worker.boundary.worker = Uuid::new_v4();
+	for tampered in [other_state, other_approval, unnamed, unbacked, other_worker] {
+		assert!(
+			journal.commit_approval(&tampered).await.is_err(),
+			"{tampered:?}"
+		);
+	}
+	assert!(approval_rows(&f.store, run.id).await.is_empty());
+	// The honest evidence is recorded, and recording it again changes nothing.
+	journal.commit_approval(&saved).await.unwrap();
+	journal.commit_approval(&saved).await.unwrap();
+	assert_eq!(approval_rows(&f.store, run.id).await.len(), 1);
 	f.store
 		.release_lease(&TEST_FIXTURE, run.id, worker)
 		.await
