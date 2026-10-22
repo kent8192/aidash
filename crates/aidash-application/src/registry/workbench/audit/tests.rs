@@ -291,7 +291,7 @@ async fn factual_sources_are_sorted_and_incident_reads_start_only_after_commit()
 	);
 	assert_eq!(
 		page.items[1].details,
-		json!({"tenant":"tenant","revision":3,"enabled":false})
+		json!({"tenant":"tenant","node":"brave-otter-k3m9q2xa","revision":3,"enabled":false})
 	);
 	assert_eq!(page.items[2].actor, None);
 	assert_eq!(page.next_offset, None);

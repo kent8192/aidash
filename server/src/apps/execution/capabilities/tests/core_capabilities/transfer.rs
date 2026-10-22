@@ -123,6 +123,25 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 			"{page}"
 		);
 	}
+	// Ownership and file.transfer do not grant use of a denied sibling Node.
+	let mut denied_node = policy.clone();
+	denied_node["policies"].as_array_mut().unwrap().push(json!({
+		"id":"no-sibling-use","effect":"deny","subjects":{"any":true},
+		"actions":["node.use"],"resources":{"kinds":["node"],"ids":[name]},
+	}));
+	common::replace_policy(&c.f.store, "acme", denied_node).await;
+	for (node, expected_status) in [(address.to_owned(), 403), (home.to_string(), 200)] {
+		let (status, page) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/file-recipients?node_id={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, expected_status, "{page}");
+	}
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (source, target) = if reverse {
 		(&receiver, &sender)
 	} else {

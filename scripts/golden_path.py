@@ -210,7 +210,8 @@ def diagnose(base, token, tenant, workspace, database):
                 response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
                 show(f"run {run['id']}", {**{key: detail.get(key) for key in ("agent_id", "phase", "control", "step", "error")}, "tool_calls": response.get("tool_calls")})
         show("policy", api_request(base, f"/api/authorization/{tenant}"))
-        show("catalog", api_request(base, f"/api/authorization/{tenant}/catalog", token=token))
+        node, _ = default_node(base, tenant, token=token)
+        show("catalog", api_request(base, f"/api/authorization/{tenant}/catalog?node={node}", token=token))
         decisions, after = [], 0
         while page := api_request(base, f"/api/authorization/{tenant}/decisions?after={after}&limit=100"):
             decisions += page
