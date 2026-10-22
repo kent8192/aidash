@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
 
 use uuid::Uuid;
 
-const COOKIE: &str = "aidash-session=desktop-browser-fixture; aidash-csrf=desktop-csrf";
-const ORIGIN: &str = "http://127.0.0.1:8080";
+const COOKIE: &str = "__Host-aidash-session=desktop-browser-fixture; aidash-csrf=desktop-csrf";
+const ORIGIN: &str = "https://127.0.0.1:8080";
 
 #[rstest::rstest]
 #[tokio::test]
@@ -148,9 +148,9 @@ fn desktop_runtime(
 				Query::select()
 					.expr(Expr::val(Uuid::new_v4()))
 					.expr(Expr::val(identity))
-					.expr(Expr::val(
-						Sha256::digest(b"desktop-browser-fixture").to_vec(),
-					))
+					.expr(Expr::val(common::browser_session_digest(
+						b"desktop-browser-fixture",
+					)))
 					.expr(Expr::val(Sha256::digest(b"desktop-csrf").to_vec()))
 					.expr(Expr::cust("clock_timestamp()"))
 					.expr(Expr::cust("clock_timestamp()"))
@@ -386,7 +386,7 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 			&[(
 				"cookie",
 				&format!(
-					"aidash-session={}",
+					"__Host-aidash-session={}",
 					tokens["access_token"].as_str().unwrap()
 				)
 			)],
@@ -747,7 +747,7 @@ async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_iden
 			&authorize,
 			&[(
 				"cookie",
-				"aidash-session=desktop-browser-fixture; aidash-csrf=wrong",
+				"__Host-aidash-session=desktop-browser-fixture; aidash-csrf=wrong",
 			)],
 			String::new(),
 		)
@@ -770,7 +770,9 @@ async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_iden
 	let select = Query::select()
 		.expr(Expr::val(Uuid::new_v4()))
 		.column(Alias::new("identity_id"))
-		.expr(Expr::val(Sha256::digest(b"other-browser-fixture").to_vec()))
+		.expr(Expr::val(common::browser_session_digest(
+			b"other-browser-fixture",
+		)))
 		.columns(["csrf_hash", "created_at", "last_activity_at", "expires_at"].map(Alias::new))
 		.from(Alias::new("dashboard_sessions"))
 		.to_owned();
@@ -801,7 +803,7 @@ async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_iden
 			&authorize,
 			&[(
 				"cookie",
-				"aidash-session=other-browser-fixture; aidash-csrf=desktop-csrf",
+				"__Host-aidash-session=other-browser-fixture; aidash-csrf=desktop-csrf",
 			)],
 			String::new(),
 		)

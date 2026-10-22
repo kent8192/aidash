@@ -10,6 +10,8 @@
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.admissionImage)) -}}{{ fail "edge.admissionImage must be pinned by digest: it enforces the admission gate" }}{{- end -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.caddyImage)) -}}{{ fail "edge.caddyImage must be pinned by digest: it receives all public traffic and shares the admission container's network namespace" }}{{- end -}}
 {{- if and $edge.firebaseProject (not (regexMatch "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" (toString $edge.firebaseProject))) -}}{{ fail "edge.firebaseProject must be a GCP project ID" }}{{- end -}}
+{{- $frameAncestors := "frame-ancestors 'none'" -}}
+{{- $frameOptions := "DENY" -}}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -44,9 +46,13 @@ data:
         }
       }
       handle {
+        header +Content-Security-Policy {{ $frameAncestors | quote }}
+        header >X-Frame-Options {{ $frameOptions }}
         reverse_proxy 127.0.0.1:8088
       }
     {{- else }}
+      header +Content-Security-Policy {{ $frameAncestors | quote }}
+      header >X-Frame-Options {{ $frameOptions }}
       reverse_proxy 127.0.0.1:8088
     {{- end }}
     }
@@ -95,6 +101,7 @@ spec:
       labels: { aidash.run/edge: {{ .Release.Name | quote }} }
       annotations:
         checksum/config: {{ printf "%s%s%s%s%s" $hostname $edge.backend (toString $edge.firebaseProject) (toString $edge.tlsSecret) (.Files.Get "files/admission.conf") | sha256sum }}
+        checksum/caddy-security-policy: {{ printf "%s|%s" $frameAncestors $frameOptions | sha256sum }}
     spec:
       hostNetwork: false
       automountServiceAccountToken: false

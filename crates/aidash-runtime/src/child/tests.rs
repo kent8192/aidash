@@ -5,10 +5,23 @@ use std::path::Path;
 fn limits() -> Limits {
 	Limits {
 		cpu_seconds: 5,
-		memory_bytes: 512 * 1024 * 1024,
+		memory_bytes: None,
 		deadline: Duration::from_secs(10),
 		max_output: 1024,
 	}
+}
+
+#[cfg(not(target_os = "linux"))]
+#[rstest]
+#[tokio::test]
+async fn a_requested_memory_limit_fails_closed() {
+	let mut limits = limits();
+	limits.memory_bytes = Some(512 * 1024 * 1024);
+	let error = shell("printf unsafe", b"", limits).await.unwrap_err();
+	assert!(
+		matches!(error, Failure::Io(ref error) if error.kind() == std::io::ErrorKind::Unsupported),
+		"{error:?}"
+	);
 }
 
 async fn shell(script: &str, input: &[u8], limits: Limits) -> Result<Vec<u8>, Failure> {

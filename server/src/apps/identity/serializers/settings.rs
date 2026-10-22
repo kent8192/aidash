@@ -70,9 +70,10 @@ impl OidcConfig {
 			let url = Url::parse(value)
 				.map_err(|_| Error::Invalid(format!("invalid dashboard.oidc.{name}")))?;
 			let secure = url.scheme() == "https";
-			let local =
-				url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
-			if (!secure && !local)
+			let local_issuer = name == "issuer"
+				&& url.scheme() == "http"
+				&& matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+			if (!secure && !local_issuer)
 				|| url.host_str().is_none()
 				|| !url.username().is_empty()
 				|| url.password().is_some()
@@ -183,5 +184,42 @@ mod tests {
 		// Assert: validation must not trim significant credential bytes.
 		assert_eq!(normalized.client_id, oidc_config.client_id);
 		assert_eq!(normalized.client_secret, oidc_config.client_secret);
+	}
+
+	#[rstest]
+	#[case::ipv4("http://127.0.0.1:8080")]
+	#[case::hostname("http://localhost:8080")]
+	fn loopback_http_public_origins_fail_startup_validation(
+		mut oidc_config: OidcConfig,
+		#[case] public_origin: &str,
+	) {
+		// Arrange
+		oidc_config.public_origin = public_origin.into();
+		let dashboard = DashboardSettings {
+			oidc: Some(oidc_config),
+		};
+		// Act
+		let error = dashboard.validate(&Profile::Development).unwrap_err();
+		// Assert: browser credentials must never be issued on a host-wide HTTP origin.
+		assert!(
+			error
+				.to_string()
+				.contains("invalid dashboard.oidc.public_origin")
+		);
+	}
+
+	#[rstest]
+	fn https_public_origin_and_loopback_http_issuer_remain_supported(mut oidc_config: OidcConfig) {
+		// Arrange
+		oidc_config.issuer = "http://127.0.0.1:18099/issuer".into();
+		oidc_config.public_origin = "https://dashboard.example.test:8443/".into();
+		// Act
+		let normalized = oidc_config.normalized().unwrap();
+		// Assert
+		assert_eq!(normalized.issuer, oidc_config.issuer);
+		assert_eq!(
+			normalized.public_origin,
+			"https://dashboard.example.test:8443"
+		);
 	}
 }
