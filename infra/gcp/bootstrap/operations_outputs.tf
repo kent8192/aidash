@@ -1,25 +1,29 @@
 output "operations_configuration" {
   description = "Nonsecret second-phase operational configuration, not evidence of backup completion or successful recovery."
   value = {
-    production_backup_enabled     = var.production_backup_enabled
-    production_monitoring_enabled = var.production_monitoring_enabled
-    gke_backup_enabled            = var.production_backup_enabled || var.production_backup_agent_enabled
-    cluster                       = var.deployment_tier == "production" ? local.production_cluster_id : null
-    backup_plan                   = try(google_gke_backup_backup_plan.production[0].id, null)
-    backup_location               = var.production_backup_location
-    backup_retain_days            = var.production_backup_retain_days
-    backup_delete_lock_days       = var.production_backup_delete_lock_days
-    backup_schedule               = var.production_backup_schedule
-    backup_schedule_paused        = var.production_backup_schedule_paused
-    backup_consistency            = "crash_consistent"
-    backup_freshness_max_seconds  = 93600
-    restore_test_required         = true
-    native_home_ledger_required   = true
-    volume_utilization_threshold  = var.production_volume_utilization_threshold
-    restart_threshold             = var.production_restart_threshold
-    monitoring_hostname           = var.production_monitoring_hostname
-    notification_channel          = try(google_monitoring_notification_channel.production[0].name, null)
-    uptime_check                  = try(google_monitoring_uptime_check_config.production[0].name, null)
+    production_backup_enabled          = var.production_backup_enabled
+    production_monitoring_enabled      = var.production_monitoring_enabled
+    gke_backup_enabled                 = var.production_backup_enabled || var.production_backup_agent_enabled
+    cluster                            = var.deployment_tier == "production" ? local.production_cluster_id : null
+    backup_plan                        = try(google_gke_backup_backup_plan.production[0].id, null)
+    pre_update_backup_plan             = try(google_gke_backup_backup_plan.pre_update[0].id, null)
+    pre_update_restore_plan            = try(google_gke_backup_restore_plan.pre_update_in_place[0].id, null)
+    pre_update_backup_retain_days      = var.production_pre_update_backup_retain_days
+    pre_update_backup_delete_lock_days = var.production_pre_update_backup_delete_lock_days
+    backup_location                    = var.production_backup_location
+    backup_retain_days                 = var.production_backup_retain_days
+    backup_delete_lock_days            = var.production_backup_delete_lock_days
+    backup_schedule                    = var.production_backup_schedule
+    backup_schedule_paused             = var.production_backup_schedule_paused
+    backup_consistency                 = "crash_consistent"
+    backup_freshness_max_seconds       = 93600
+    restore_test_required              = true
+    native_home_ledger_required        = true
+    volume_utilization_threshold       = var.production_volume_utilization_threshold
+    restart_threshold                  = var.production_restart_threshold
+    monitoring_hostname                = var.production_monitoring_hostname
+    notification_channel               = try(google_monitoring_notification_channel.production[0].name, null)
+    uptime_check                       = try(google_monitoring_uptime_check_config.production[0].name, null)
     alert_policies = concat(
       google_monitoring_alert_policy.production_uptime[*].name,
       [for policy in google_monitoring_alert_policy.production_workload : policy.name],
@@ -52,6 +56,7 @@ output "delivery_configuration" {
     publish_service_account         = google_service_account.automation["publish"].email
     acme_state_secret               = var.deployment_tier == "nonproduction" ? var.preview_acme_state_secret_id : ""
     gke_backup_enabled              = var.production_backup_enabled || var.production_backup_agent_enabled
+    pre_update_backup_plan          = try(google_gke_backup_backup_plan.pre_update[0].id, null)
     node_count                      = var.deployment_tier == "production" ? tomap({ production = 1 }) : tomap({ develop = 1, test = 1, pr = 1 })
   })
 }

@@ -237,7 +237,10 @@ def compose(values):
             public.update(preview_tls_secret=renewal["secret_id"], acme_state_secret=renewal["acme_state_secret_id"])
             bootstrap = dict(bootstrap, preview_tls_renewal=renewal)
         else:
-            public.update(production_origin="https://aidash.run", gke_backup_enabled=output["operations_configuration"]["value"]["gke_backup_enabled"])
+            operations = output["operations_configuration"]["value"]
+            public.update(production_origin="https://aidash.run", gke_backup_enabled=operations["gke_backup_enabled"])
+            if operations.get("pre_update_backup_plan"):
+                public["pre_update_backup_plan"] = operations["pre_update_backup_plan"]
         result[tier + "_bootstrap"] = bootstrap
         result[tier + "_config_json"] = json.dumps(public, separators=(",", ":"), sort_keys=True)
     managed = INITIAL_VARIABLES | {"AIDASH_GCP_CONFIG", "AIDASH_GCP_PRODUCTION_CONFIG", "GCP_WORKLOAD_IDENTITY_PROVIDER", "GCP_DEPLOY_SERVICE_ACCOUNT",

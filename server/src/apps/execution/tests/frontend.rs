@@ -68,6 +68,11 @@ async fn native_frontend_serves_assets_shell_routes_head_and_conditional_request
 		let response = client.get(path).await.unwrap();
 		assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
 		assert_eq!(response.content_type(), Some("text/html"));
+		assert_eq!(
+			response.header("content-security-policy"),
+			Some("frame-ancestors 'none'")
+		);
+		assert_eq!(response.header("x-frame-options"), Some("DENY"));
 		assert_eq!(response.text(), INDEX);
 	}
 	let script = client.get("/assets/app.js").await.unwrap();

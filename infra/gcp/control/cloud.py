@@ -20,6 +20,16 @@ class OperationDeadline(BaseException):
     """Stop retry loops and release the lock before the runner's hard timeout."""
 
 
+class CommandError(RuntimeError):
+    """Keep captured output private until an owner extracts safe diagnostics."""
+
+    def __init__(self, executable, returncode, stdout, stderr):
+        super().__init__(f"{executable} failed (exit {returncode}); no private command output was logged")
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 @contextmanager
 def operation_budget(seconds):
     token = DEADLINE.set(time.monotonic() + seconds)
@@ -56,7 +66,7 @@ def run(*args, data=None, timeout=900, env=None):
         env=None if env is None else dict(os.environ, **env),
     ) as process:
         try:
-            output, _ = process.communicate(data, timeout=timeout)
+            output, error = process.communicate(data, timeout=timeout)
         except BaseException:
             # Terraform needs an opportunity to persist state/unlock. Stop the
             # whole CLI process group before releasing the lifecycle lock.
@@ -75,9 +85,7 @@ def run(*args, data=None, timeout=900, env=None):
             bounded_timeout(1)
             raise
     if process.returncode:
-        raise RuntimeError(
-            f"{args[0]} failed (exit {process.returncode}); no private command output was logged"
-        )
+        raise CommandError(args[0], process.returncode, output, error)
     return output
 
 

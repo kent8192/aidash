@@ -35,7 +35,8 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
-	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, IntoIden, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
 use serde_json::json;
 
@@ -46,8 +47,21 @@ impl AuthorizationDecision {
 		input: &Evaluation,
 		decision: &Decision,
 	) -> Result<()> {
+		Self::append_many(tx, tenant, &[(input.clone(), decision.clone())]).await
+	}
+
+	/// Keep every decision in evaluation order without a round trip per check.
+	pub(crate) async fn append_many(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		records: &[(Evaluation, Decision)],
+	) -> Result<()> {
+		if records.is_empty() {
+			return Ok(());
+		}
 		super::authority::authority_control(tx).await?;
-		// The cursor follows commit order, including concurrently admitted inputs.
+		// Acquire before any INSERT can allocate a sequence, and retain through
+		// commit so a cursor never skips a concurrently admitted transaction.
 		let (sql, values) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				"pg_advisory_xact_lock".into_iden(),
@@ -55,28 +69,64 @@ impl AuthorizationDecision {
 			))
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
-		let (sql, values) = Query::insert()
-			.into_table(Alias::new("authorization_decisions"))
-			.columns([
-				Alias::new("tenant"),
-				Alias::new("revision"),
-				Alias::new("subject"),
-				Alias::new("action"),
-				Alias::new("resource_kind"),
-				Alias::new("resource_id"),
-				Alias::new("decision"),
-			])
-			.values_panic([
-				IntoValue::into_value(tenant),
-				IntoValue::into_value(decision.revision),
-				IntoValue::into_value(&input.subject),
-				IntoValue::into_value(&input.action),
-				IntoValue::into_value(&input.resource.kind),
-				IntoValue::into_value(&input.resource.id),
-				IntoValue::into_value(serde_json::to_value(decision)?),
-			])
-			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await?;
+		let columns = [
+			"tenant",
+			"revision",
+			"subject",
+			"action",
+			"resource_kind",
+			"resource_id",
+			"decision",
+		];
+		// Bound statement size and parameter count for large disclosure responses.
+		for records in records.chunks(100) {
+			let mut rows = Query::select();
+			for (index, (input, decision)) in records.iter().enumerate() {
+				let mut row = Query::select();
+				// cast_as quotes type names; bigint's catalog name is int8.
+				for (name, value) in [
+					("tenant", Expr::value(tenant).cast_as("text")),
+					("revision", Expr::value(decision.revision).cast_as("int8")),
+					("subject", Expr::value(&input.subject).cast_as("text")),
+					("action", Expr::value(&input.action).cast_as("text")),
+					(
+						"resource_kind",
+						Expr::value(&input.resource.kind).cast_as("text"),
+					),
+					(
+						"resource_id",
+						Expr::value(&input.resource.id).cast_as("text"),
+					),
+					(
+						"decision",
+						Expr::value(serde_json::to_value(decision)?).cast_as("jsonb"),
+					),
+				] {
+					row.expr_as(value, Alias::new(name));
+				}
+				row.expr_as(
+					Expr::value(i64::try_from(index).expect("bounded audit batch")).cast_as("int8"),
+					Alias::new("ordinal"),
+				);
+				if index == 0 {
+					rows = row;
+				} else {
+					rows.union_all(row);
+				}
+			}
+			let (sql, values) = Query::insert()
+				.into_table(Alias::new("authorization_decisions"))
+				.columns(columns.map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.columns(columns.map(|name| (Alias::new("decisions"), Alias::new(name))))
+						.from_subquery(rows, Alias::new("decisions"))
+						.order_by((Alias::new("decisions"), Alias::new("ordinal")), Order::Asc)
+						.to_owned(),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
 		Ok(())
 	}
 	pub(crate) async fn page<E: OrmExecutor>(
@@ -103,5 +153,3 @@ impl AuthorizationDecision {
 			.collect())
 	}
 }
-
-use reinhardt::query::IntoValue;

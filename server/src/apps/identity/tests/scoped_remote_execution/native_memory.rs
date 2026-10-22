@@ -2,6 +2,134 @@
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 
+#[rstest::rstest]
+#[tokio::test]
+async fn spent_home_memory_budget_pauses_the_remote_run_with_only_a_follow_up(
+	#[future(awt)]
+	#[with(true, false, false, false, true, (false, false, 32), true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let semantic = p.semantic.as_ref().unwrap();
+	// This fixture retrieves native banks only. Fail the first bank's embedding;
+	// two attempts per cycle spend four durable calls across two manual retries.
+	for _ in 0..2 {
+		for _ in 0..2 {
+			semantic
+				.failure_at
+				.store(semantic.requests.lock().await.len() + 1, Ordering::Release);
+			p.step().await;
+			assert_eq!(
+				p.run().await.recovery.semantic_reason,
+				Some(aidash_domain::semantic::Failure::Unavailable)
+			);
+			advance_semantic_retry(&p).await;
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("memory_model_attempts"))
+					.value(
+						Alias::new("created_at"),
+						chrono::Utc::now() - chrono::Duration::hours(1),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		}
+		p.step().await;
+		assert_eq!(
+			p.run().await.recovery.semantic_reason,
+			Some(aidash_domain::semantic::Failure::RetriesExhausted)
+		);
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant),
+			json!({"action":"resume"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	// The provider is healthy, but the unchanged operation has no durable budget.
+	let before = semantic.requests.lock().await.len();
+	p.step().await;
+	let stopped = p.run().await;
+	assert_eq!(stopped.control.as_str(), "PAUSED", "{stopped:?}");
+	assert_eq!(
+		serde_json::to_value(stopped.recovery.semantic_reason).unwrap(),
+		"durable_memory_budget"
+	);
+	assert!(stopped.recovery.retry.is_none());
+	assert_eq!(
+		semantic.requests.lock().await.len(),
+		before,
+		"spent native memory must not call its provider"
+	);
+	assert!(
+		p.requests.lock().await.is_empty(),
+		"spent memory must never reach inference"
+	);
+	assert_ne!(
+		p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status,
+		aidash_domain::TaskStatus::Failed
+	);
+	// Exercise the actual peer response: older readers get the established,
+	// follow-up-only reason, while current readers retain the specific cause.
+	let peer_status: Value =
+		p.a.request(
+			&p.b.config.node_id,
+			http::Method::POST,
+			"/scoped/execution/status",
+			Some(&json!({"grant_id":p.grant})),
+		)
+		.await
+		.unwrap();
+	assert_eq!(peer_status["semantic_reason"], "context_budget");
+	assert_eq!(peer_status["semantic_cause"], "durable_memory_budget");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body[0]["semantic"]["recovery"],
+		json!({"cause":"durable_memory_budget","actions":["create_follow_up_task"]})
+	);
+	let journal: (String, Option<String>) = sqlx::query_as(
+		&Query::select()
+			.columns(["state", "error"].map(Alias::new))
+			.from(Alias::new("semantic_remote_operations"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		journal,
+		("PAUSED".into(), Some("durable_memory_budget".into()))
+	);
+	Harness {
+		federation: p.b.clone(),
+	}
+	.worker_once()
+	.await
+	.unwrap();
+	assert_eq!(
+		semantic.requests.lock().await.len(),
+		before,
+		"paused work does not replay"
+	);
+	p.close().await;
+}
+
 async fn first_native_context(p: &Pair) -> Value {
 	for _ in 0..4 {
 		p.step().await;

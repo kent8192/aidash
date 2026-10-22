@@ -1,4 +1,5 @@
 """Chart contract tests for scheduling, privileges and retained single writers."""
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -135,6 +136,35 @@ class ChartsTest(unittest.TestCase):
                         {'keylessEndpoints': {'permittedPrivateOrigins': ['ollama.lan:11434']}}):
             with self.subTest(values=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(self.base, **invalid))
+
+    def test_browser_frontends_reject_framing_at_each_public_serving_layer(self):
+        objects = render(self.aidash, dict(self.base, frontend={'enabled': True}), 'app')
+        nginx = select(objects, 'ConfigMap', '-frontend-conf')['data']['default.conf']
+        self.assertIn('add_header Content-Security-Policy "frame-ancestors \'none\'" always;', nginx)
+        self.assertIn('add_header X-Frame-Options "DENY" always;', nginx)
+
+        values = {'postgres': POSTGRES,
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        rendered_edge = render(self.environment, values)
+        caddy = select(rendered_edge, 'ConfigMap', '-edge')['data']['Caddyfile']
+        self.assertEqual(caddy.count('header +Content-Security-Policy "frame-ancestors \'none\'"'), 1)
+        self.assertEqual(caddy.count('header >X-Frame-Options DENY'), 1)
+        edge = select(rendered_edge, 'Deployment', '-edge')
+        annotations = edge['spec']['template']['metadata']['annotations']
+        self.assertEqual(
+            annotations['checksum/caddy-security-policy'],
+            hashlib.sha256(b"frame-ancestors 'none'|DENY").hexdigest(),
+        )
+
+        proxied_values = dict(values, edge=dict(values['edge'], firebaseProject='aidash-fixture'))
+        proxied = select(render(self.environment, proxied_values), 'ConfigMap', '-edge')['data']['Caddyfile']
+        helper, application = proxied.split('  handle {\n', 1)
+        self.assertNotIn('Content-Security-Policy', helper)
+        self.assertNotIn('X-Frame-Options', helper)
+        self.assertIn('header +Content-Security-Policy "frame-ancestors \'none\'"', application)
+        self.assertIn('header >X-Frame-Options DENY', application)
 
     def test_trusted_proxies_are_rendered_only_when_the_server_accepts_them(self):
         # As server/src/http.rs ProxyNetwork parses AIDASH_AUTH_TRUSTED_PROXY_IPS at startup.
@@ -710,7 +740,15 @@ class ChartsTest(unittest.TestCase):
             return select(objects, 'ConfigMap', '-edge')['data']['Caddyfile'], annotations['checksum/config']
 
         plain, plain_checksum = edge()
-        self.assertIn('fixture.example {\n  header >Referrer-Policy no-referrer\n  reverse_proxy 127.0.0.1:8088\n}', plain)
+        self.assertIn(
+            'fixture.example {\n'
+            '  header >Referrer-Policy no-referrer\n'
+            '  header +Content-Security-Policy "frame-ancestors \'none\'"\n'
+            '  header >X-Frame-Options DENY\n'
+            '  reverse_proxy 127.0.0.1:8088\n'
+            '}',
+            plain,
+        )
         self.assertIn('@origin host fixture.example', plain)
         self.assertIn('respond 404', plain)
         self.assertEqual(edge(firebaseProject=''), (plain, plain_checksum))

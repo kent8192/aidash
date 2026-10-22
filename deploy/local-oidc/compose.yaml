@@ -7,7 +7,7 @@ services:
       AIDASH_OIDC_ISSUER: http://127.0.0.1:18099
       AIDASH_OIDC_CLIENT_ID: aidash-local
       AIDASH_OIDC_CLIENT_SECRET: aidash-local-secret
-      AIDASH_OIDC_PUBLIC_ORIGIN: http://127.0.0.1:${AIDASH_FRONTEND_PORT:-5173}
+      AIDASH_OIDC_PUBLIC_ORIGIN: "${AIDASH_OIDC_PUBLIC_ORIGIN:?set AIDASH_OIDC_PUBLIC_ORIGIN to the trusted HTTPS dashboard origin}"
   oidc-loopback:
     profiles: [dev, oidc]
     image: node:24.12.0-bookworm-slim

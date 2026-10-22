@@ -75,6 +75,13 @@ impl Endpoint {
 			Self::Revoke => "/auth/desktop/revoke",
 		}
 	}
+	fn carries_refresh_credential(self) -> bool {
+		matches!(self, Self::Refresh | Self::Revoke)
+	}
+	fn expires_credentials(self, status: reqwest::StatusCode) -> bool {
+		status == reqwest::StatusCode::UNAUTHORIZED
+			|| matches!(self, Self::Refresh) && status == reqwest::StatusCode::FORBIDDEN
+	}
 }
 pub enum Failure {
 	Unauthorized,
@@ -96,6 +103,11 @@ pub async fn request<T: DeserializeOwned>(
 	endpoint: Endpoint,
 	body: Option<serde_json::Value>,
 ) -> Result<T, Failure> {
+	if endpoint.carries_refresh_credential() && !profile.protects_refresh_credentials() {
+		return Err(Failure::Other(
+			"Desktop refresh credentials require an HTTPS connection".into(),
+		));
+	}
 	let url = format!("{}{}", profile.origin, endpoint.path());
 	let request = match body {
 		Some(body) => client.post(url).json(&body),
@@ -104,10 +116,7 @@ pub async fn request<T: DeserializeOwned>(
 	let mut response = request.send().await.map_err(|_| {
 		Failure::Other("Cannot reach Aidash. Check the connection and retry.".into())
 	})?;
-	if response.status() == reqwest::StatusCode::UNAUTHORIZED
-		|| (matches!(endpoint, Endpoint::Refresh)
-			&& response.status() == reqwest::StatusCode::FORBIDDEN)
-	{
+	if endpoint.expires_credentials(response.status()) {
 		return Err(Failure::Unauthorized);
 	}
 	if !response.status().is_success() {
@@ -281,54 +290,50 @@ mod tests {
 	#[case(Endpoint::Refresh, 500, false)]
 	#[case(Endpoint::Refresh, 503, false)]
 	#[case(Endpoint::Exchange, 403, false)]
-	#[tokio::test]
-	async fn refresh_denials_expire_credentials_but_outages_remain_retryable(
+	#[test]
+	fn refresh_denials_expire_credentials_but_outages_remain_retryable(
 		#[case] endpoint: Endpoint,
 		#[case] status: u16,
 		#[case] expired: bool,
 	) {
-		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let status = reqwest::StatusCode::from_u16(status).unwrap();
+		assert_eq!(endpoint.expires_credentials(status), expired);
+	}
+	#[rstest::rstest]
+	#[case("http://localhost:9", Endpoint::Refresh)]
+	#[case("http://localhost:9", Endpoint::Revoke)]
+	#[case("http://127.0.0.1:9", Endpoint::Refresh)]
+	#[case("http://127.0.0.1:9", Endpoint::Revoke)]
+	#[tokio::test]
+	async fn plaintext_endpoints_never_receive_refresh_credentials(
+		#[case] origin: &str,
+		#[case] endpoint: Endpoint,
+	) {
 		let profile = Profile {
 			id: uuid::Uuid::new_v4().to_string(),
-			name: "Authentication status fixture".into(),
-			origin: format!("http://{}", listener.local_addr().unwrap()),
+			name: "Plaintext impostor".into(),
+			origin: origin.into(),
 		};
-		let server = tokio::spawn(async move {
-			let (mut socket, _) = listener.accept().await.unwrap();
-			let mut request = Vec::new();
-			loop {
-				let mut chunk = [0; 1024];
-				let received = socket.read(&mut chunk).await.unwrap();
-				assert!(received > 0);
-				request.extend_from_slice(&chunk[..received]);
-				assert!(request.len() <= 8192);
-				if request.ends_with(b"\r\n\r\n{}") {
-					break;
-				}
-			}
-			assert!(
-				request.starts_with(format!("POST {} HTTP/1.1\r\n", endpoint.path()).as_bytes())
-			);
-			socket
-				.write_all(
-					format!(
-						"HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-					)
-					.as_bytes(),
-				)
-				.await
-				.unwrap();
-		});
 		let failure = request::<serde_json::Value>(
 			&client().unwrap(),
 			&profile,
 			endpoint,
-			Some(serde_json::json!({})),
+			Some(serde_json::json!({
+				"refresh_token":"aidash_refresh_current",
+				"next_token":"aidash_refresh_pending"
+			})),
 		)
 		.await
-		.expect_err("fixture returns a denial");
-		assert_eq!(matches!(failure, Failure::Unauthorized), expired);
-		server.await.unwrap();
+		.expect_err("plaintext refresh credentials must be rejected before I/O");
+		assert!(
+			matches!(failure, Failure::Other(message) if message == "Desktop refresh credentials require an HTTPS connection")
+		);
+	}
+	#[test]
+	fn interactive_login_endpoints_remain_available_over_plaintext() {
+		for endpoint in [Endpoint::Config, Endpoint::Start, Endpoint::Exchange] {
+			assert!(!endpoint.carries_refresh_credential());
+		}
 	}
 	#[test]
 	fn callback_is_bound_to_state_host_and_single_values() {

@@ -208,16 +208,7 @@ pub(crate) async fn active_hosts(
 	name: &str,
 ) -> Result<Option<Vec<String>>> {
 	let (sql, values) = Query::select()
-		.expr_as(
-			SimpleExpr::FunctionCall(
-				"current_setting".into_iden(),
-				vec![
-					Expr::value("aidash.tenant").into(),
-					Expr::value(true).into(),
-				],
-			),
-			"tenant".into_iden(),
-		)
+		.expr_as(crate::database::scope::tenant(), "tenant".into_iden())
 		.build(PostgresQueryBuilder);
 	let row = tx
 		.fetch_one(&sql, convert_values(values))
