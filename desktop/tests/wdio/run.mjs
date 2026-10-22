@@ -97,7 +97,7 @@ try {
     TAURI_WEBDRIVER_PORT: String(port),
   };
   // Each launcher exits and terminates the native app before the next phase.
-  // Reloading a WebDriver session alone would not prove credential persistence.
+  // Reloading a WebDriver session alone would not prove that HTTP login is ephemeral.
   for (const phase of ["login", "restore", "logged-out"]) {
     try {
       await run(
@@ -117,7 +117,7 @@ try {
   assert.equal(
     new Set(pids).size,
     3,
-    "Persistence must cross distinct native processes",
+    "Restart policy must be checked across distinct native processes",
   );
 } catch (error) {
   failed = true;

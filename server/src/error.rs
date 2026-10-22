@@ -238,7 +238,15 @@ impl Error {
 				.and_then(|v| v.as_str().map(str::to_owned))
 			&& let Ok(value) = http::HeaderValue::from_str(&code)
 		{
-			response.headers.insert("x-aidash-semantic-reason", value);
+			if reason.compatible() != reason {
+				response.headers.insert("x-aidash-semantic-cause", value);
+				response.headers.insert(
+					"x-aidash-semantic-reason",
+					HeaderValue::from_static("context_budget"),
+				);
+			} else {
+				response.headers.insert("x-aidash-semantic-reason", value);
+			}
 		}
 
 		response

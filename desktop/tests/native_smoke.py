@@ -71,12 +71,15 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.server.logins += 1
             self.tokens("aidash_refresh_" + uuid.uuid4().hex * 2)
         elif self.path == "/auth/desktop/refresh":
+            self.server.refresh_requests += 1
             if data["refresh_token"] not in self.server.refresh:
                 self.reply(401, {})
             else:
                 self.server.renewals += 1
                 self.tokens(data["next_token"])
         elif self.path == "/auth/desktop/revoke":
+            self.server.revoke_requests += 1
+            self.server.revocations += 1
             self.server.refresh.clear()
             self.server.access = None
             self.reply(204, body=b"")
@@ -184,7 +187,8 @@ def fixture(port):
     server.pending, server.codes = {}, {}
     server.access = None
     server.refresh, server.requests, server.streams = set(), [], []
-    server.logins = server.renewals = 0
+    server.logins = server.renewals = server.revocations = 0
+    server.refresh_requests = server.revoke_requests = 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
     SERVERS.append(server)
     return server
@@ -347,13 +351,18 @@ def run():
         assert all(c["width"] > 0 and c["height"] > 0 for c in geometry)
         browser.screenshot("linux-webkitgtk-graph.png")
         print("Graph and SSE verified", flush=True)
-        # Persist credentials across process exit and restart. Browser cookies
-        # cannot provide this session: the broker only issues Bearer credentials.
+        # Loopback HTTP sessions are intentionally not restored across a process
+        # restart: the broker only issues Bearer credentials, never cookies.
         browser.close()
         browser = Browser()
-        browser.button("Deployment Administrator")
-        print("Process restart restored the session", flush=True)
-        assert one.logins == 1 and one.renewals >= 1, (one.logins, one.renewals)
+        wait(lambda: "Sign in with Google" in browser.text(), "interactive HTTP login")
+        print("Process restart required another HTTP login", flush=True)
+        assert one.logins == 1 and one.renewals == one.revocations == 0, (
+            one.logins,
+            one.renewals,
+            one.revocations,
+        )
+        assert one.refresh_requests == one.revoke_requests == 0
         second = browser.invoke(
             "save_connection", name="Second", origin="http://127.0.0.1:19082"
         )
@@ -376,8 +385,10 @@ def run():
             "desktop leaked cookies"
         )
         select(browser, first["id"])
+        wait(lambda: "Sign in with Google" in browser.text(), "profile-change login")
+        browser.button("Sign in with Google")
         browser.button("Deployment Administrator")
-        assert one.logins == 1, "switching connections must preserve login"
+        assert one.logins == 2, "switching HTTP connections must require login"
         # The native window cannot navigate to a remote document.
         before = browser.js("return location.href")
         browser.js('location.href="https://example.com/"')
@@ -395,11 +406,13 @@ def run():
         browser.close()
         browser = Browser()
         wait(lambda: "Sign in with Google" in browser.text(), "logout survives restart")
-        assert one.access is None and not one.refresh
+        assert one.renewals == one.revocations == 0
+        assert one.refresh_requests == one.revoke_requests == 0
         report = {
             "startup": True,
             "external_browser_fixture_login": True,
-            "persistent_secret_service_login": True,
+            "interactive_http_login": True,
+            "no_http_refresh_or_revoke": True,
             "connection_switch": True,
             "current_device_logout_persists": True,
             "sse_last_event_id": [one.streams, two.streams],

@@ -656,6 +656,7 @@ def main():
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
             base = f"http://127.0.0.1:{port}"
+            browser_origin = f"https://127.0.0.1:{port}"
             deployment_administrator = secrets.token_urlsafe(32)
             settings = private / "settings"
             settings.mkdir()
@@ -695,7 +696,7 @@ def main():
                     "AIDASH_OIDC_ISSUER": provider.issuer,
                     "AIDASH_OIDC_CLIENT_ID": "aidash-bruno",
                     "AIDASH_OIDC_CLIENT_SECRET": secrets.token_urlsafe(32),
-                    "AIDASH_OIDC_PUBLIC_ORIGIN": base,
+                    "AIDASH_OIDC_PUBLIC_ORIGIN": browser_origin,
                 }
             )
             environment["NO_PROXY"] = environment["no_proxy"] = "127.0.0.1,localhost"
@@ -749,6 +750,7 @@ def main():
             tenant = create_tenant(base, deployment_administrator, "bruno-" + run_id)
             variables = {
                 "base_url": base,
+                "browser_origin": browser_origin,
                 "node_id": node_id,
                 "tenant": tenant,
                 "tenant_node": default_node(base, deployment_administrator, tenant),

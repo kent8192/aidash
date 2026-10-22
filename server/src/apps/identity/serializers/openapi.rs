@@ -675,25 +675,23 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::graph::project,
 	)?;
-	contracts
-		.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionActivation>(
-			document,
-			views::peer_execution::activate,
-			200,
-			"application/json",
-		)?;
+	contracts.response::<_, aidash_domain::federation::execution::admission::Activation>(
+		document,
+		views::peer_execution::activate,
+		200,
+		"application/json",
+	)?;
 	contracts.request::<_, crate::apps::identity::serializers::peer_admission::Input>(
 		document,
 		views::peer_execution::activate,
 	)?;
 	contracts.path(document, views::peer_execution::activate, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionActivation>(
-			document,
-			views::peer_execution::control,
-			200,
-			"application/json",
-		)?;
+	contracts.response::<_, aidash_domain::federation::execution::admission::Activation>(
+		document,
+		views::peer_execution::control,
+		200,
+		"application/json",
+	)?;
 	contracts
 		.request::<_, crate::apps::identity::serializers::peer_admission::RemoteExecutionControlInput>(
 			document,
@@ -706,9 +704,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::peer_execution::message,
 	)?;
 	contracts.path(document, views::peer_execution::message, &["Uuid"])?;
-	contracts.response::<_, Option<
-		crate::apps::identity::serializers::remote_execution::RemoteExecutionActivation,
-	>>(
+	contracts.response::<_, Option<aidash_domain::federation::execution::admission::Activation>>(
 		document,
 		views::peer_execution::status,
 		200,

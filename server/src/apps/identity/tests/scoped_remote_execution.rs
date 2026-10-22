@@ -146,6 +146,7 @@ struct SemanticFixture {
 	response: Arc<Mutex<Option<Value>>>,
 	entry: Uuid,
 	failing: Arc<AtomicBool>,
+	failure_at: Arc<AtomicUsize>,
 	reservations: Arc<Mutex<Option<ReservationCheck>>>,
 }
 impl Pair {
@@ -516,10 +517,22 @@ mod scoped_pair_composition {
 			None
 		};
 		if ordered {
-			ordered_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
+			ordered_receiver_agent(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&mut source_policy,
+				if native.is_some() {
+					"research-native"
+				} else {
+					"research"
+				},
+			)
+			.await;
 		}
 		let agent = generation.as_ref().map_or_else(
-			|| json!({"id":if native.is_some() { "research-native" } else if ordered { "research-ordered" } else { "research" },"version":"1.0.0"}),
+			|| json!({"id":if ordered { "research-ordered" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
 			|(_, prepared)| prepared["agent"].clone(),
 		);
 		let grant = Uuid::new_v4();
@@ -592,7 +605,7 @@ mod scoped_pair_composition {
 use scoped_pair_composition::scoped_pair;
 
 /// A receiver Agent on the Ordered Projection Version, approved on both nodes.
-/// It copies the receiver's `research` Agent, so it keeps the Home semantic
+/// It copies the receiver's base Agent, so it keeps the Home semantic
 /// memory binding when the fixture has one.
 async fn ordered_receiver_agent(
 	a: &Federation,
@@ -600,6 +613,7 @@ async fn ordered_receiver_agent(
 	aa: &common::TestApplication,
 	ba: &common::TestApplication,
 	source_policy: &mut Value,
+	base_agent: &'static str,
 ) {
 	let receiver_token = common::tenant_token(&b.store, "acme").await;
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
@@ -623,7 +637,7 @@ async fn ordered_receiver_agent(
 	let mut model = fetch("model").await;
 	model["id"] = json!("ordered-model");
 	model["config"]["projection_versions"] = json!(["legacy", "ordered"]);
-	let mut agent = fetch("research").await;
+	let mut agent = fetch(base_agent).await;
 	agent["id"] = json!("research-ordered");
 	agent["config"]["model"] = reference("ordered-model");
 	agent["config"]["projection_version"] = json!("ordered");
@@ -972,6 +986,7 @@ async fn configure_semantic(
 	let EmbeddingProvider {
 		requests,
 		failing,
+		failure_at,
 		reservations,
 		response,
 		server,
@@ -1050,6 +1065,7 @@ async fn configure_semantic(
 			requests,
 			entry: first,
 			failing,
+			failure_at,
 		},
 		server,
 	)
@@ -6277,6 +6293,7 @@ fn scoped_runtime(
 struct EmbeddingProvider {
 	requests: Arc<Mutex<Vec<Value>>>,
 	failing: Arc<AtomicBool>,
+	failure_at: Arc<AtomicUsize>,
 	reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	response: Arc<Mutex<Option<Value>>>,
 	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
@@ -6285,16 +6302,17 @@ struct EmbeddingProvider {
 fn embedding_router(
 	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
 	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(count_state)] failure_at: Arc<AtomicUsize>,
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
 ) -> Arc<Router> {
 	let embedding_app = reinhardt::test::stub::StubRouter::new()
-.route("/v1/embeddings", http::Method::POST, reply(move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
+.route("/v1/embeddings", http::Method::POST, reply(move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let failure_at=failure_at.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
 		assert!(!headers.contains_key(http::header::AUTHORIZATION), "an unsigned provider must not receive the subject or peer bearer");
         let check=reservations.lock().await.clone();
         if let Some(check)=check {check.before_http().await;}
-		requests.lock().await.push(body.clone());
-        if failing.load(Ordering::Acquire) {
+		let call = { let mut calls = requests.lock().await; calls.push(body.clone()); calls.len() };
+        if failing.load(Ordering::Acquire) || failure_at.load(Ordering::Acquire) == call {
             return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap();
         }
 		if let Some(value) = response.lock().await.clone() { return reinhardt::Response::ok().with_json(&value).unwrap(); }
@@ -6306,22 +6324,21 @@ fn embedding_router(
 fn embedding_provider(
 	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
 	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(count_state)] failure_at: Arc<AtomicUsize>,
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
 	#[from(embedding_router)]
-	#[with(requests.clone(),failing.clone(),reservations.clone(),response.clone())]
+	#[with(requests.clone(),failing.clone(),failure_at.clone(),reservations.clone(),response.clone())]
 	_router: Arc<Router>,
-	#[from(upstream_fixtures::ready_router)]
-	#[with(_router.clone())]
-	_ready: upstream_fixtures::RouterFuture,
 	#[from(upstream_fixtures::async_upstream)]
-	#[with(_ready.clone())]
+	#[with(futures_util::future::ready(_router.clone()).boxed().shared())]
 	server: upstream_fixtures::UpstreamFuture,
 ) -> BoxFuture<'static, EmbeddingProvider> {
 	async move {
 		EmbeddingProvider {
 			requests,
 			failing,
+			failure_at,
 			reservations,
 			response,
 			server: server.await,

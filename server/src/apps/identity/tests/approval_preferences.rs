@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-const ORIGIN: &str = "http://127.0.0.1:8080";
+const ORIGIN: &str = "https://127.0.0.1:8080";
 const TENANT: &str = "alpha";
 const PREFERENCES: &str = "/api/tenants/alpha/approval-preferences/mine";
 const RULES: &str = "/api/tenants/alpha/approval-rules/mine";
@@ -76,7 +76,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 				Query::select()
 					.expr(Expr::val(Uuid::new_v4()))
 					.expr(Expr::val(identity))
-					.expr(Expr::val(Sha256::digest(token.as_bytes()).to_vec()))
+					.expr(Expr::val(common::browser_session_digest(token)))
 					.expr(Expr::val(Sha256::digest(csrf.as_bytes()).to_vec()))
 					.expr(Expr::cust("clock_timestamp()"))
 					.expr(Expr::cust("clock_timestamp()"))
@@ -204,7 +204,7 @@ async fn send(
 	body: Value,
 ) -> TestResponse {
 	let (session, csrf) = person.session();
-	let cookie = format!("aidash-session={session}");
+	let cookie = format!("__Host-aidash-session={session}");
 	let body = if body.is_null() {
 		Vec::new()
 	} else {
@@ -238,7 +238,7 @@ async fn map(fixture: &Fixture, person: Person) -> String {
 		"POST",
 		"/auth/registration",
 		&[
-			("cookie", &format!("aidash-session={session}")),
+			("cookie", &format!("__Host-aidash-session={session}")),
 			("origin", ORIGIN),
 			("x-aidash-csrf", csrf),
 		],

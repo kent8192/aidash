@@ -40,6 +40,15 @@ pub(crate) fn digest(value: &str) -> Vec<u8> {
 	Sha256::digest(value.as_bytes()).to_vec()
 }
 
+pub(crate) fn browser_session_digest(value: &str) -> Vec<u8> {
+	// Domain-separate browser bearer tokens so sessions issued before browser
+	// sign-in became HTTPS-only cannot be replayed under the secure cookie name.
+	let mut digest = Sha256::new();
+	digest.update(b"aidash-browser-session-v2\0");
+	digest.update(value.as_bytes());
+	digest.finalize().to_vec()
+}
+
 pub(crate) fn random_secret() -> String {
 	// Two independent UUIDv4 values provide 244 random bits.
 	format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
@@ -213,7 +222,7 @@ async fn session_record_from_headers(
 		.store
 		.pool
 		.atomic(&TenancyScope::NoTenant, async |tx| {
-			DashboardSession::from_token(tx, digest(secret)).await
+			DashboardSession::from_token(tx, browser_session_digest(secret)).await
 		})
 		.await?;
 	if session.desktop
@@ -608,11 +617,12 @@ impl DashboardSessions {
 			.await?;
 		let secret = random_secret();
 		let csrf = random_secret();
-		let previous = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config)).map(digest);
+		let previous = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config))
+			.map(browser_session_digest);
 		DashboardSession::start(
 			pool,
 			identity.id,
-			(digest(&secret), digest(&csrf)),
+			(browser_session_digest(&secret), digest(&csrf)),
 			provider_sid,
 			sign_in.auth_time,
 			config.session_absolute_seconds,

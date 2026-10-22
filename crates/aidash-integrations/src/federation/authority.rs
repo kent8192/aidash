@@ -12,11 +12,18 @@ impl Transport for HttpTransport {
 	async fn request(&self, route: &Route, path: &str, body: &Value) -> Result<Reply> {
 		let response = self.send(route, "POST", path, Some(body)).await?;
 		let status = response.status();
-		let semantic_reason = response
-			.headers()
-			.get("x-aidash-semantic-reason")
-			.and_then(|value| value.to_str().ok())
-			.and_then(|value| serde_json::from_value(json!(value)).ok());
+		let semantic_headers = ["x-aidash-semantic-cause", "x-aidash-semantic-reason"];
+		let semantic_reason = semantic_headers
+			.iter()
+			.filter_map(|name| response.headers().get(*name))
+			.filter_map(|value| value.to_str().ok())
+			.find_map(|value| serde_json::from_value(json!(value)).ok())
+			.or_else(|| {
+				semantic_headers
+					.iter()
+					.any(|name| response.headers().contains_key(*name))
+					.then_some(aidash_domain::semantic::Failure::ContextBudget)
+			});
 		let transaction_pending = response
 			.headers()
 			.get("x-aidash-transaction-pending")

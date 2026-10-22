@@ -147,3 +147,50 @@ fn activation_carries_a_context_pause_reason_only_when_present() {
 		Some(crate::context::recovery::Failure::SummaryInvalid)
 	);
 }
+
+#[rstest]
+fn activation_preserves_a_specific_budget_cause_without_stranding_older_peers() {
+	let mut wire = json!({
+		"grant_id":Uuid::from_u128(1),"admission_id":Uuid::from_u128(2),
+		"run_id":Uuid::from_u128(2),"phase":"THINKING","control":"PAUSED",
+		"error":null,"semantic_reason":"durable_memory_budget"
+	});
+	let activation: Activation = serde_json::from_value(wire.clone()).unwrap();
+	wire = serde_json::to_value(activation).unwrap();
+	assert_eq!(wire["semantic_reason"], "context_budget");
+	assert_eq!(wire["semantic_cause"], "durable_memory_budget");
+	let schema = serde_json::to_value(schemars::schema_for!(Activation)).unwrap();
+	assert!(jsonschema::is_valid(&schema, &wire));
+	assert_eq!(
+		serde_json::from_value::<Activation>(wire.clone())
+			.unwrap()
+			.semantic_reason,
+		Some(Failure::DurableMemoryBudget)
+	);
+	// Older peers consume the established reason and ignore the added field.
+	#[derive(Deserialize)]
+	struct OlderActivation {
+		semantic_reason: Failure,
+	}
+	assert_eq!(
+		serde_json::from_value::<OlderActivation>(wire.clone())
+			.unwrap()
+			.semantic_reason,
+		Failure::ContextBudget
+	);
+	// A future cause still leaves the compatible, follow-up-only reason intact.
+	wire["semantic_cause"] = json!("future_budget_cause");
+	assert_eq!(
+		serde_json::from_value::<Activation>(wire.clone())
+			.unwrap()
+			.semantic_reason,
+		Some(Failure::ContextBudget)
+	);
+	wire.as_object_mut().unwrap().remove("semantic_cause");
+	assert_eq!(
+		serde_json::from_value::<Activation>(wire)
+			.unwrap()
+			.semantic_reason,
+		Some(Failure::ContextBudget)
+	);
+}

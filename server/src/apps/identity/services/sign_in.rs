@@ -265,11 +265,11 @@ pub async fn start_session(
 	let secret = oidc::random_secret();
 	let csrf = oidc::random_secret();
 	let previous = oidc::cookie_value(headers, &oidc::cookie_name(SESSION_COOKIE, session_config))
-		.map(oidc::digest);
+		.map(oidc::browser_session_digest);
 	DashboardSession::start(
 		&f.store.pool,
 		identity.id,
-		(oidc::digest(&secret), oidc::digest(&csrf)),
+		(oidc::browser_session_digest(&secret), oidc::digest(&csrf)),
 		None,
 		auth_time,
 		session_config.session_absolute_seconds,

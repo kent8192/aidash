@@ -16,6 +16,8 @@ export async function startFixture() {
     logins: 0,
     renewals: 0,
     revocations: 0,
+    refreshRequests: 0,
+    revokeRequests: 0,
     requests: [],
     streams: [],
   };
@@ -77,11 +79,13 @@ export async function startFixture() {
           return tokens(`aidash_refresh_${secret()}`);
         }
         if (url.pathname === "/auth/desktop/refresh") {
+          stats.refreshRequests++;
           if (!refresh.delete(input.refresh_token)) return reply(401, {});
           stats.renewals++;
           return tokens(input.next_token);
         }
         if (url.pathname === "/auth/desktop/revoke") {
+          stats.revokeRequests++;
           if (!refresh.has(input.refresh_token)) return reply(401, {});
           stats.revocations++;
           refresh.clear();

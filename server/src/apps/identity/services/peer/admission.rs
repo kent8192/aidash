@@ -12,6 +12,7 @@ use crate::{
 };
 use aidash_application::authorization::peer::admission as app;
 use aidash_application::federation::inbound::Admitted;
+use aidash_domain::federation::execution::admission::Activation;
 use uuid::Uuid;
 #[derive(Clone)]
 pub struct PeerAdmissions {
@@ -86,7 +87,7 @@ pub(crate) async fn control(
 	admitted: Admitted,
 	id: Uuid,
 	input: RemoteExecutionControlInput,
-) -> Result<crate::authorization::remote::execution::RemoteExecutionActivation> {
+) -> Result<Activation> {
 	app::control(
 		&crate::bootstrap::peer_admission_repository(&f),
 		&source(&admitted),
@@ -95,21 +96,19 @@ pub(crate) async fn control(
 		input.action,
 	)
 	.await
-	.map(Into::into)
 	.map_err(Into::into)
 }
 pub(crate) async fn status(
 	f: Federation,
 	admitted: Admitted,
 	input: Input,
-) -> Result<Option<crate::authorization::remote::execution::RemoteExecutionActivation>> {
+) -> Result<Option<Activation>> {
 	app::status(
 		&crate::bootstrap::peer_admission_repository(&f),
 		&source(&admitted),
 		input.grant_id,
 	)
 	.await
-	.map(|r| r.map(Into::into))
 	.map_err(Into::into)
 }
 pub(crate) async fn activate(
@@ -117,7 +116,7 @@ pub(crate) async fn activate(
 	admitted: Admitted,
 	id: Uuid,
 	input: Input,
-) -> Result<crate::authorization::remote::execution::RemoteExecutionActivation> {
+) -> Result<Activation> {
 	app::activate(
 		&crate::bootstrap::peer_admission_repository(&f),
 		&admitted.receiver.node,
@@ -126,7 +125,6 @@ pub(crate) async fn activate(
 		input.grant_id,
 	)
 	.await
-	.map(Into::into)
 	.map_err(Into::into)
 }
 pub(crate) async fn run_grant(store: &Store, run: &RunMetadata) -> Result<Option<Uuid>> {

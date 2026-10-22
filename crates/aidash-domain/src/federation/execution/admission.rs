@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+mod semantic_failure;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RemoteExecutionPhase {
@@ -132,7 +133,7 @@ pub struct Admission {
 	pub task_id: Uuid,
 	pub expires_at: DateTime<Utc>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Activation {
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,
@@ -140,7 +141,8 @@ pub struct Activation {
 	pub phase: RemoteExecutionPhase,
 	pub control: RemoteExecutionControlState,
 	pub error: Option<String>,
-	#[serde(default)]
+	#[serde(flatten, with = "semantic_failure")]
+	#[schemars(with = "semantic_failure::Wire")]
 	pub semantic_reason: Option<Failure>,
 	/// Typed context-recovery pause reason. Omitted when absent, so peers
 	/// without the field keep their exact wire shape.

@@ -20,6 +20,8 @@ fn gcip_bindings_are_one_to_one_and_can_be_removed(mut gcip_config: GcipConfig) 
 }
 #[rstest]
 #[case("http://dashboard.example.test")]
+#[case("http://127.0.0.1:8080")]
+#[case("http://localhost:8080")]
 #[case("https://dashboard.example.test/path")]
 #[case("https://user:password@dashboard.example.test")]
 fn gcip_rejects_invalid_origins(mut gcip_config: GcipConfig, #[case] origin: &str) {
@@ -80,9 +82,9 @@ fn auth_domain_follows_the_auth_helper(#[case] helper: Option<&str>, #[case] exp
 }
 #[rstest]
 fn public_origin_auth_domain_keeps_a_non_default_port(mut gcip_config: GcipConfig) {
-	gcip_config.public_origin = "http://127.0.0.1:8080".into();
+	gcip_config.public_origin = "https://dashboard.example.test:8443".into();
 	gcip_config.auth_helper = AuthHelper::PublicOrigin;
-	assert_eq!(gcip_config.auth_domain(), "127.0.0.1:8080");
+	assert_eq!(gcip_config.auth_domain(), "dashboard.example.test:8443");
 }
 #[rstest]
 fn unknown_auth_helper_is_rejected() {

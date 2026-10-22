@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 const SUBJECT: &str = "desktop-review-user";
 const SID: &str = "desktop-review-provider-session";
-const ORIGIN: &str = "http://127.0.0.1:8080";
+const ORIGIN: &str = "https://127.0.0.1:8080";
 const PEM: &str = include_str!(concat!(
 	env!("CARGO_MANIFEST_DIR"),
 	"/src/apps/execution/tests/fixtures/oidc/signing-test-only.pem"
@@ -631,7 +631,7 @@ fn review_runtime(
 				Query::select()
 					.expr(Expr::val(browser))
 					.expr(Expr::val(identity))
-					.expr(Expr::val(Sha256::digest(b"review-browser").to_vec()))
+					.expr(Expr::val(common::browser_session_digest(b"review-browser")))
 					.expr(Expr::val(Sha256::digest(b"review-csrf").to_vec()))
 					.expr(Expr::cust("clock_timestamp()"))
 					.expr(Expr::cust("clock_timestamp()"))

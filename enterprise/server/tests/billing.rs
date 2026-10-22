@@ -53,7 +53,7 @@ impl Cloud {
 			issuer: "https://accounts.google.com".into(),
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
@@ -100,7 +100,7 @@ impl Cloud {
 			 VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), clock_timestamp() + interval '12 hours')",
 		)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(name.as_bytes()).to_vec())
+		.bind(common::browser_session_digest(name))
 		.bind(Sha256::digest(name.as_bytes()).to_vec())
 		.bind(identity)
 		.execute(pool)
@@ -131,8 +131,8 @@ impl Cloud {
 		match person {
 			Some(person) => {
 				request = request
-					.header("cookie", format!("aidash-session={}", person.name))
-					.header("origin", "http://127.0.0.1:8080")
+					.header("cookie", format!("__Host-aidash-session={}", person.name))
+					.header("origin", "https://127.0.0.1:8080")
 					.header("x-aidash-csrf", person.name.as_str());
 			}
 			None => {

@@ -28,6 +28,10 @@ pub enum Failure {
 	ProviderContract,
 	#[error("Semantic context does not fit the available context budget")]
 	ContextBudget,
+	#[error(
+		"The native-memory operation's durable model budget is exhausted; create a follow-up Task"
+	)]
+	DurableMemoryBudget,
 	#[error("The generated lineage has insufficient provider allowance")]
 	Allowance,
 	#[error("The semantic backend is temporarily unavailable")]
@@ -52,6 +56,14 @@ pub const PENDING_REPLAY_SECONDS: i64 = 30;
 pub const OUTAGE_RETRIES: u32 = 5;
 
 impl Failure {
+	/// Established peers must still forbid retrying an irrecoverably spent operation.
+	pub fn compatible(self) -> Self {
+		match self {
+			Self::DurableMemoryBudget => Self::ContextBudget,
+			other => other,
+		}
+	}
+
 	pub fn transient(self) -> bool {
 		matches!(self, Self::Unavailable)
 	}

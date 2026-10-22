@@ -133,6 +133,7 @@ fn required_content_distinguishes_missing_fields_from_explicit_null() {
 #[case("invalidated")]
 #[case("provider_contract")]
 #[case("context_budget")]
+#[case("durable_memory_budget")]
 #[case("allowance")]
 #[case("unavailable")]
 #[case("retries_exhausted")]
