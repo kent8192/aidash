@@ -37,7 +37,7 @@ PEER = {
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
-    "Origin": "{{base_url}}",
+    "Origin": "{{browser_origin}}",
     "X-Aidash-CSRF": "{{csrf}}",
 }
 # A built-in every Tenant's Registry holds from its creation (ADR 0033).
@@ -422,7 +422,7 @@ def render():
         "POST /auth/activity",
         "Browser activity rejects missing CSRF",
         403,
-        headers={"Cookie": "{{session_cookie}}", "Origin": "{{base_url}}"},
+        headers={"Cookie": "{{session_cookie}}", "Origin": "{{browser_origin}}"},
         seq=41,
     )
     add(
@@ -452,7 +452,7 @@ def render():
         "POST /auth/logout-all",
         "All-session logout requires CSRF",
         403,
-        headers={"Cookie": "{{session_cookie}}", "Origin": "{{base_url}}"},
+        headers={"Cookie": "{{session_cookie}}", "Origin": "{{browser_origin}}"},
         seq=60,
     )
     add(
@@ -627,9 +627,9 @@ def render():
             # Sign-in Domain discovery exists only for GCIP deployments. Bruno
             # URL-encodes these typed form fields itself.
             for label, body, headers in [
-                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{base_url}}"}),
+                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{browser_origin}}"}),
                 ("OIDC deployment refuses foreign-origin discovery", "email=alice@acme.example", {"Origin": "https://untrusted.example"}),
-                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{base_url}}"}),
+                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{browser_origin}}"}),
             ]:
                 add(
                     endpoint,
@@ -673,7 +673,7 @@ def render():
                 "Tampered login cookie cannot bind the callback",
                 401,
                 path=path + "?state=invalid&code=invalid",
-                headers={"Cookie": "aidash-login=tampered"},
+                headers={"Cookie": "__Host-aidash-login=tampered"},
             )
             continue
         if path == "/auth/provider-authorizations/{provider}/callback":
@@ -734,14 +734,14 @@ def render():
             add(endpoint, "No opaque session cannot open an Invitation", 401,
                 body=link, immutable=True)
             add(endpoint, "Forged opaque session cannot open an Invitation", 401,
-                headers={"Cookie": "aidash-session=forged"}, body=link, immutable=True)
+                headers={"Cookie": "__Host-aidash-session=forged"}, body=link, immutable=True)
             add(endpoint, "Malformed JSON cannot reach the use case", 400,
                 body="{", immutable=True)
             continue
         if path.startswith("/auth/"):
             for label, headers in [
                 ("No opaque session", {}),
-                ("Forged opaque session", {"Cookie": "aidash-session=forged"}),
+                ("Forged opaque session", {"Cookie": "__Host-aidash-session=forged"}),
                 ("Revoked browser session", {"Cookie": "{{session_cookie}}"}),
             ]:
                 add(endpoint, label, 401, headers=headers)

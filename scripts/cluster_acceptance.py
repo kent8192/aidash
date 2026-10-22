@@ -10,14 +10,44 @@ import os
 import pathlib
 import socket
 import subprocess
+import threading
 import time
 import uuid
 
-from golden_path import tool_descriptor, tool_binding, ROOT, TOKEN, PEER_TOKEN, api_request, entity, approve_fixture_external_requests, reconcile_uncertain_http, wait_for
+from golden_path import (
+    ROOT, TOKEN, PEER_TOKEN, api_request, approve, approve_fixture_external_requests,
+    approve_fixture_tool_calls, entity, reconcile_uncertain_http, tenant_subject,
+    tool_binding, tool_descriptor, wait_for,
+)
+from cluster_runtime import fixture_runtime
 
 # The PostgreSQL image's init script creates both logins from these passwords.
 OWNER_PASSWORD = "acceptance-owner-password"
 SERVER_PASSWORD = "acceptance-server-password"
+
+
+def configure_research(base, node, fixture_url):
+    """Register and approve the research closure as its Tenant's subject."""
+    tenant, subject = tenant_subject(base, "Cluster acceptance", "alice", agents=(
+        f"{node}/agents/coordinator@1.0.0", f"{node}/agents/researcher@1.0.0",
+    ))
+    token = subject["token"]
+    tool = entity("tool", "research-http", tool_descriptor(node, {
+        "transport": "http", "endpoint": fixture_url + "/research", "replay": "unsafe",
+    }))
+    tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
+    entries = [
+        entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}}),
+        tool,
+        # The coordinator's inherited lease must include its child's tool (#401).
+        entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover, delegate and synthesize.", "schema_version": 1, "bindings": [tool_binding(node, "research-http")], "remove_default": [], "max_steps": 128}, capability="task.coordinate"),
+        entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}),
+        entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "schema_version": 1, "bindings": [tool_binding(node, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 128}),
+    ]
+    for entry in entries:
+        api_request(base, "/api/registry", entry, token=token)
+    approve(base, tenant, token, entries)
+    return token
 
 
 def main():
@@ -36,6 +66,9 @@ def main():
     env = {**os.environ, "KUBECONFIG": str(pathlib.Path(args.kubeconfig).resolve())}
     forwards = []
     logs = []
+    approval_stop = threading.Event()
+    approval_thread = None
+    approval_errors = []
 
     def kube(*command, value=None):
         result = subprocess.run(["kubectl", "--namespace", namespace, *command], input=json.dumps(value) if value is not None else None, text=True, capture_output=True, env=env, check=True)
@@ -80,7 +113,7 @@ def main():
         kube("create", "namespace", namespace)
         created = True
         print(f"Created {args.distribution} acceptance namespace {namespace}", flush=True)
-        apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "cluster_fixture.py"]}})
+        apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "tool_call_approvals.py", "cluster_fixture.py"]}})
         database = stateful("postgres", args.postgres_image, 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}, {"name": "AIDASH_OWNER_PASSWORD", "value": OWNER_PASSWORD}, {"name": "AIDASH_SERVER_PASSWORD", "value": SERVER_PASSWORD}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
         nats = stateful("nats", "nats:2.12-alpine", 4222, {"args": ["-js", "-sd", "/data"], "readinessProbe": {"tcpSocket": {"port": 4222}, "periodSeconds": 2}}, "/data")
         fixture = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "fixture"}, "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "fixture"}}, "template": {"metadata": {"labels": {"app": "fixture"}}, "spec": {"automountServiceAccountToken": False, "containers": [{"name": "fixture", "image": "python:3.13-alpine", "command": ["python3", "/scripts/cluster_fixture.py"], "ports": [{"containerPort": 8000}], "volumeMounts": [{"name": "code", "mountPath": "/scripts", "readOnly": True}], "readinessProbe": {"httpGet": {"path": "/status", "port": 8000}}, "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "1", "memory": "256Mi"}}}], "volumes": [{"name": "code", "configMap": {"name": "fixture-code"}}]}}}}
@@ -92,6 +125,11 @@ def main():
             repo, tag = args.image.rsplit(":", 1)
             frontend_repo, frontend_tag = args.frontend_image.rsplit(":", 1)
             subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--set-json", 'keylessEndpoints={"permittedPrivateOrigins":["http://fixture:8000"]}', "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
+            runtime = fixture_runtime(apply, f"ops-{node}-fixture")
+            for role in ("server", "worker"):
+                name = f"ops-{node}-aidash-{role}"
+                kube("patch", "deployment", name, "--type=strategic", "-p", json.dumps({"spec": {"template": {"spec": runtime}}}))
+                rollout(name)
         for service_name in ["nats"]:
             kube("rollout", "status", f"statefulset/{service_name}", "--timeout=180s")
         # The fixture provisions activation once; runtime bootstrapping stays off.
@@ -104,47 +142,56 @@ def main():
         bases = [forward(f"ops-{node}-aidash", 8080) for node in ["a", "b"]]
         for base in bases:
             wait_for(lambda base=base: api_request(base, "/health"), label="cluster server")
-        base_a, base_b = bases
-        for base, other in [(base_a, "b"), (base_b, "a")]:
-            api_request(base, "/api/peers", {"node_id": f"aidash://ops-{other}", "endpoint": f"http://ops-{other}-backend:8080", "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
-            api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}))
-            tool = entity("tool", "research-http", tool_descriptor("aidash://ops-a" if base == base_a else "aidash://ops-b", {"transport": "http", "endpoint": "http://fixture:8000/research", "replay": "unsafe"}))
-            tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
-            api_request(base, "/api/registry", tool)
-            api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "schema_version": 1, "bindings": [tool_binding("aidash://ops-a" if base == base_a else "aidash://ops-b", "research-http")], "remove_default": [], "max_steps": 128}))
-        api_request(base_a, "/api/registry", entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover, delegate and synthesize.", "schema_version": 1, "bindings": [], "remove_default": [], "max_steps": 128}, capability="task.coordinate"))
-        api_request(base_a, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}))
-        discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"})
-        assert {a["node_id"] for a in discovered["agents"]} == {"aidash://ops-a", "aidash://ops-b"}
-        goal = api_request(base_a, "/api/conversations", {"title": "Cluster recovery acceptance", "goal": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"})
+        base_a = bases[0]
+        # Research stays on Node A, as in golden_path.py. Scoped Golden Path
+        # exercises the grant/admission protocol for execution across Nodes.
+        token = configure_research(base_a, "aidash://ops-a", "http://fixture:8000")
+        discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"}, token=token)
+        assert {a["node_id"] for a in discovered["agents"]} == {"aidash://ops-a"}
+
+        def approve_calls():
+            while not approval_stop.wait(2):
+                try:
+                    approve_fixture_external_requests(base_a, token)
+                    approve_fixture_tool_calls(base_a, token)
+                except OSError as error:
+                    print(f"--- approval poll unavailable: {error!r}", flush=True)
+                except Exception as error:
+                    approval_errors.append(str(error))
+                    return
+
+        approval_thread = threading.Thread(target=approve_calls, daemon=True)
+        approval_thread.start()
+        goal = api_request(base_a, "/api/conversations", {"title": "Cluster recovery acceptance", "goal": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=token)
         workspace = goal["workspace"]["id"]
-        def remote_effect_started():
-            for base in (base_a, base_b):
-                approve_fixture_external_requests(base)
-            return api_request(fixture_url, "/status")["remote_effect_started"]
-        wait_for(remote_effect_started, timeout=90, label="remote external effect")
-        before = api_request(base_b, "/api/state")["runs"][0]
-        pods = json.loads(kube("get", "pods", "-l", "app.kubernetes.io/instance=ops-b,app.kubernetes.io/component=worker", "-o", "json"))["items"]
+        # Poll the fixture independently of subject state reads: those can take
+        # longer than the held HTTP result, so kill before looking up the Run.
+        wait_for(lambda: api_request(fixture_url, "/status")["remote_effect_started"], timeout=300, label="Actix external effect")
+        pods = json.loads(kube("get", "pods", "-l", "app.kubernetes.io/instance=ops-a,app.kubernetes.io/component=worker", "-o", "json"))["items"]
         assert len(pods) == 1
         kube("delete", "pod", pods[0]["metadata"]["name"], "--grace-period=0", "--force", "--wait=false")
-        kube("scale", "deployment/ops-b-aidash-worker", "--replicas=3")
+        kube("scale", "deployment/ops-a-aidash-worker", "--replicas=3")
         kube("scale", "deployment/ops-a-aidash-server", "--replicas=2")
-        print("Killed remote worker after effect; scaled workers to three and servers to two", flush=True)
-        reconciled_key = reconcile_uncertain_http(base_b, before["id"], lambda: api_request(fixture_url, "/status")["effects"])
+        print("Killed Node A worker after effect; scaled workers to three and servers to two", flush=True)
+        tasks = api_request(base_a, f"/api/workspaces/{workspace}", token=token)["tasks"]
+        actix = next(task for task in tasks if task["title"] == "Actix")
+        before = next(run for run in api_request(base_a, "/api/state", token=token)["runs"] if run["task_id"] == actix["id"])
+        reconciled_key = reconcile_uncertain_http(base_a, before["id"], lambda: api_request(fixture_url, "/status")["effects"], token)
 
         def complete():
-            for base in (base_a, base_b):
-                approve_fixture_external_requests(base)
-            value = api_request(base_a, f"/api/workspaces/{workspace}")
+            value = api_request(base_a, f"/api/workspaces/{workspace}", token=token)
             return value if len(value["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in value["tasks"]) else False
 
-        snapshot = wait_for(complete, timeout=180, label="cluster golden path")
-        recovered = wait_for(lambda: next((r for r in api_request(base_b, "/api/state")["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same remote run")
+        snapshot = wait_for(complete, timeout=600, label="cluster golden path")
+        recovered = wait_for(lambda: next((r for r in api_request(base_a, "/api/state", token=token)["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same research run")
         assert len(snapshot["artifacts"]) == 4
         effects = api_request(fixture_url, "/status")
         assert len(effects["effects"]) == 3
         assert effects["requests"][reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
-        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_b, "/api/events"))
+        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=token))
+        assert not approval_errors, approval_errors
+        approval_stop.set()
+        approval_thread.join(timeout=5)
         for node in ["a", "b"]:
             for role in ["server", "worker"]:
                 name = f"ops-{node}-aidash-{role}"
@@ -154,20 +201,20 @@ def main():
         for node, base in zip(["a", "b"], bases):
             identity = wait_for(lambda base=base: api_request(base, "/health"), label="rolled server")
             assert identity["node_id"] == f"aidash://ops-{node}"
-        after = api_request(bases[0], f"/api/workspaces/{workspace}")
+        after = api_request(base_a, f"/api/workspaces/{workspace}", token=token)
         assert {t["id"] for t in after["tasks"]} == {t["id"] for t in snapshot["tasks"]}
         assert {a["id"] for a in after["artifacts"]} == {a["id"] for a in snapshot["artifacts"]}
-        observation = api_request(bases[1], "/api/deployment")
+        observation = api_request(base_a, "/api/deployment")
         assert observation["enabled"] and observation["namespace"] == namespace
         assert next(d for d in observation["deployments"] if d["role"] == "worker")["ready"] == 3
-        assert all(p["name"].startswith("ops-b-") for p in observation["pods"])
+        assert all(p["name"].startswith("ops-a-") for p in observation["pods"])
         if args.dashboard:
             # The Helm public Service selects frontend Pods; its port-forward is already in bases.
-            subprocess.run(["node", "web/scripts/inspect-deployment.mjs"], cwd=ROOT, env={**env, "AIDASH_E2E_URL": bases[1]}, check=True)
-        kube("scale", "deployment/ops-b-aidash-worker", "--replicas=0")
-        wait_for(lambda: not json.loads(kube("get", "pods", "-l", "app.kubernetes.io/instance=ops-b,app.kubernetes.io/component=worker", "-o", "json"))["items"], timeout=60, label="graceful stop")
-        kube("scale", "deployment/ops-b-aidash-worker", "--replicas=1")
-        rollout("ops-b-aidash-worker")
+            subprocess.run(["node", "web/scripts/inspect-deployment.mjs"], cwd=ROOT, env={**env, "AIDASH_E2E_URL": base_a}, check=True)
+        kube("scale", "deployment/ops-a-aidash-worker", "--replicas=0")
+        wait_for(lambda: not json.loads(kube("get", "pods", "-l", "app.kubernetes.io/instance=ops-a,app.kubernetes.io/component=worker", "-o", "json"))["items"], timeout=60, label="graceful stop")
+        kube("scale", "deployment/ops-a-aidash-worker", "--replicas=1")
+        rollout("ops-a-aidash-worker")
         assert len(api_request(fixture_url, "/status")["effects"]) == 3
         for node in ["a", "b"]:
             observed_scope = json.loads(kube("exec", f"deployment/ops-{node}-aidash-server", "--", "aidash", "activation-provision"))
@@ -187,6 +234,9 @@ def main():
             while True:
                 time.sleep(1)
     finally:
+        approval_stop.set()
+        if approval_thread is not None:
+            approval_thread.join(timeout=5)
         if created:
             try:
                 (report_dir / "pods.json").write_text(kube("get", "pods", "-o", "json"))

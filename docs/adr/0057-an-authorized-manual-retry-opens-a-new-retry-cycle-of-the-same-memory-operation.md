@@ -12,4 +12,4 @@ Decided on 2026-10-17 (#291). A native-memory model operation of an Ordered Run 
 - Automatic retries within one cycle still replay the same operation, so memoized results stay cached and the ledger still bounds them.
 - A Legacy Run already derives a new context-recall operation ID on every save, so the cycle changes nothing there; it still renews the ledger of a memory tool recall, whose key a Run replays.
 - Engine jobs have no Run and stay in cycle 0; a spent engine-job ledger still fails the job.
-- Because durable totals span every cycle, repeated manual retries eventually exhaust the operation's budget, which no unchanged retry can cure. Typing that exhaustion as its own cause, with only a follow-up Task as its recovery, is left to #332.
+- Because durable totals span every cycle, repeated manual retries eventually exhaust the operation's budget, which no unchanged retry can cure. This pauses local and remote Runs with `durable_memory_budget` and offers only a follow-up Task, whose Run gets a new operation (#332). Engine jobs still fail when their durable budget is spent.

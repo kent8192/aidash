@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 
 from transaction_cluster_acceptance import Cluster, ROOT, now
+from cluster_runtime import fixture_runtime
 
 
 def digest(value):
@@ -32,7 +33,23 @@ class RemoteMemory(Cluster):
         super().__init__(args)
         self.tokens = []
         self.entries = [{}, {}]
+        self.fixture_runtimes = {}
         self.evidence = {"started_at": now(), "cases": [], "recovery": "Production leases expire naturally; IDs, fences, budgets and retry counters are never changed by the driver."}
+
+    def apply(self, value):
+        if value.get("kind") == "Deployment" and value["metadata"]["name"].startswith("tx-"):
+            value = copy.deepcopy(value)
+            node = int(value["metadata"]["name"].split("-")[1])
+            if node not in self.fixture_runtimes:
+                self.fixture_runtimes[node] = fixture_runtime(super().apply, f"tx-{node}-fixture")
+            runtime = self.fixture_runtimes[node]
+            spec = value["spec"]["template"]["spec"]
+            spec.setdefault("securityContext", {}).update(runtime["securityContext"])
+            spec.setdefault("volumes", []).extend(runtime["volumes"])
+            container = spec["containers"][0]
+            container["env"].extend(runtime["containers"][0]["env"])
+            container.setdefault("volumeMounts", []).extend(runtime["containers"][0]["volumeMounts"])
+        super().apply(value)
 
     def user(self, node, path, body=None, method=None):
         request = urllib.request.Request(self.forward(node) + path,
@@ -51,7 +68,7 @@ class RemoteMemory(Cluster):
         return value
 
     @staticmethod
-    def created(response):
+    def created_response(response):
         status, value = response
         assert status == 201, (status, value)
         return value
@@ -135,22 +152,23 @@ class RemoteMemory(Cluster):
     def register(self, node, kind, name, config, capabilities=None):
         entry = {"id": name, "version": "1.0.0", "kind": kind, "name": {"en": name}, "description": {"en": "Synthetic cluster fixture"},
                  "capabilities": capabilities or [], "languages": ["en"], "schema": {"type": "object"}, "config": config}
-        self.ok(self.api(node, "/api/registry", entry))
-        self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/catalog", {"entry": ref(entry), "expected_revision": 0, "enabled": True}))
+        self.ok(self.user(node, "/api/registry", entry))
+        self.ok(self.user(node, f"/api/authorization/{self.tenants[node]}/catalog", {"entry": ref(entry), "expected_revision": 0, "enabled": True}))
         # Hash the canonical stored definition, including server-default fields.
-        stored = self.ok(self.api(node, f"/api/registry/{name}/1.0.0"))
+        stored = self.ok(self.user(node, f"/api/registry/{name}/1.0.0"))
         self.entries[node][name] = stored
         return stored
 
     def configure(self):
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
-        self.tenants = [self.created(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
+        self.tenants = [self.created_response(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
         for node in range(2):
             subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
             self.tokens.append(credential["token"])
+            # Peer Mappings require an administrator; a Subject bearer cannot create them.
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": self.tenants[1 - node], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
             self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
@@ -160,7 +178,7 @@ class RemoteMemory(Cluster):
 
     def workspace(self):
         workspace = self.ok(self.user(0, "/api/workspaces", {"title": "Remote memory acceptance", "goal": "Search the approved archive"}))["id"]
-        self.ok(self.api(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None},
             "enabled": True, "auto_context": True, "max_sources": 100, "max_results": 10, "max_result_tokens": 4096, "max_input_bytes": 32768}}))
         entries = []
@@ -233,7 +251,7 @@ class RemoteMemory(Cluster):
         parent["template"]["capabilities"] = [capability]
         parent["embedding"] = {"provider": {"id": "home-embedding", "version": "1.0.0"}, "calls_per_agent": 10, "call_budget": 40}
         parent["remote"] = {"inference": [self.descriptor(1, "model")]}
-        self.ok(self.api(0, f"/api/generation/{self.tenants[0]}/policies/{parent_policy}", {"expected_revision": 0, "spec": parent}))
+        self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/policies/{parent_policy}", {"expected_revision": 0, "spec": parent}))
         parent_task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Generated origin", "description": "Delegate scoped memory research", "requirements": {"capability": capability}}))["id"]
         assigned = self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/tasks/{parent_task}/assign", {"policy_id": parent_policy, "reason": "Generated ancestor acceptance"}))
         assert assigned["kind"] == "generated", assigned
@@ -252,7 +270,7 @@ class RemoteMemory(Cluster):
         child_spec = copy.deepcopy(common)
         child_spec.update(template=self.entries[1]["research"], approval_required=True,
             remote={"embedding": {"provider": self.descriptor(0, "home-embedding"), "calls_per_agent": 10, "call_budget": 40}})
-        self.ok(self.api(1, f"/api/generation/{self.tenants[1]}/policies/{child_policy}", {"expected_revision": 0, "spec": child_spec}))
+        self.ok(self.user(1, f"/api/generation/{self.tenants[1]}/policies/{child_policy}", {"expected_revision": 0, "spec": child_spec}))
         intent = {"id": str(uuid.uuid4()), "node_id": "aidash://tx-01", "policy_id": child_policy, "policy_revision": 1, "ttl_seconds": 1800, "reason": "Foreign generated child acceptance"}
         route = f"/api/tasks/{child}/remote-generation"
         pending = self.ok(self.user(0, route, intent))
@@ -262,7 +280,7 @@ class RemoteMemory(Cluster):
         self.peers_ready()
         assert self.ok(self.user(0, route, intent)) == pending
         assert not self.db(1, "runs", child), "preparation cannot start an unbound Run"
-        self.ok(self.api(1, f"/api/generation/{self.tenants[1]}/requests/{pending['request_id']}/control", {"action": "approve", "reason": "Approve the exact cluster intent"}))
+        self.ok(self.user(1, f"/api/generation/{self.tenants[1]}/requests/{pending['request_id']}/control", {"action": "approve", "reason": "Approve the exact cluster intent"}))
         prepared = self.ok(self.user(0, route, intent))
         assert prepared["prepared"] and prepared["agent"] == pending["agent"]
         assert len(self.db(1, "requests", child)) == 1

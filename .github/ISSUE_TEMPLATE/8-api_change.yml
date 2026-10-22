@@ -1,6 +1,6 @@
 name: "📐 API Change Proposal"
 description: Propose a change to an existing public API
-labels: ["enhancement", "rc-migration"]
+labels: ["enhancement"]
 
 body:
   - type: markdown

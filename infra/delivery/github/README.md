@@ -44,7 +44,8 @@ Nonproduction bootstrap optionally supplies `preview_tls_renewal` with
 `acme_state_secret_id`. The renewal identities become
 `GCP_TLS_RENEWAL_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TLS_RENEWAL_SERVICE_ACCOUNT`.
 `acme_email` supplies `AIDASH_ACME_EMAIL`. Nonproduction controller JSON permits
-`acme_state_secret`; production permits the boolean `gke_backup_enabled`.
+`acme_state_secret`; production permits the boolean `gke_backup_enabled` and the
+`pre_update_backup_plan` resource name (`projects/<production project>/locations/<region>/backupPlans/<plan>`).
 `cloudflare_account_id`, when supplied, is an Environment variable only in
 `deployment-notifications`. Both controller JSON strings permit
 `credential_brokers` with only bootstrap identity/key IDs, the environment's

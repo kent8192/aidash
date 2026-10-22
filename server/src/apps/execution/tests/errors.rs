@@ -57,6 +57,11 @@ fn persistence_constraints_keep_the_legacy_server_error_envelope(#[case] kind: D
 #[case(crate::semantic::remote::Failure::Unavailable, 503, "unavailable")]
 #[case(crate::semantic::remote::Failure::Authority, 409, "authority")]
 #[case(crate::semantic::remote::Failure::Stale, 409, "stale")]
+#[case(
+	crate::semantic::remote::Failure::DurableMemoryBudget,
+	409,
+	"context_budget"
+)]
 fn semantic_failures_preserve_status_and_retry_headers(
 	#[case] reason: crate::semantic::remote::Failure,
 	#[case] status: u16,
@@ -67,6 +72,14 @@ fn semantic_failures_preserve_status_and_retry_headers(
 	let response = error.http_response();
 	assert_eq!(response.status.as_u16(), status);
 	assert_eq!(response.headers["x-aidash-semantic-reason"], code);
+	assert_eq!(
+		response
+			.headers
+			.get("x-aidash-semantic-cause")
+			.map(|value| value.to_str().unwrap()),
+		(reason == crate::semantic::remote::Failure::DurableMemoryBudget)
+			.then_some("durable_memory_budget")
+	);
 	assert_eq!(response.headers.contains_key("retry-after"), status == 503);
 	let body: Value = serde_json::from_slice(&response.body).unwrap();
 	assert_eq!(body["error"], expected);

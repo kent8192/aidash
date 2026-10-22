@@ -32,7 +32,7 @@ impl Deployment {
 			issuer: "https://accounts.google.com".into(),
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
@@ -68,7 +68,7 @@ impl Deployment {
 			 VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), clock_timestamp() + interval '12 hours')",
 		)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(name.as_bytes()).to_vec())
+		.bind(common::browser_session_digest(name.as_bytes()))
 		.bind(Sha256::digest(name.as_bytes()).to_vec())
 		.bind(identity)
 		.execute(pool)
@@ -99,8 +99,8 @@ impl Deployment {
 			.header("content-type", "application/json");
 		if let Some(person) = person {
 			request = request
-				.header("cookie", format!("aidash-session={}", person.name))
-				.header("origin", "http://127.0.0.1:8080")
+				.header("cookie", format!("__Host-aidash-session={}", person.name))
+				.header("origin", "https://127.0.0.1:8080")
 				.header("x-aidash-csrf", person.name.as_str());
 		}
 		if let Some(context) = context {
@@ -596,7 +596,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 	let secret = invitation["secret"].as_str().unwrap().to_owned();
 	assert_eq!(
 		invitation["link"],
-		format!("http://127.0.0.1:8080/invitations/{tenant}#{secret}")
+		format!("https://127.0.0.1:8080/invitations/{tenant}#{secret}")
 	);
 	let link = json!({"tenant":tenant,"secret":secret});
 	// Opening the link shows the Tenant and spends nothing.

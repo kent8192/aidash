@@ -30,6 +30,9 @@ async fn fixture() -> (Server, PeerHttp, Peer, Arc<Keys>) {
             let mut response=(StatusCode::from_u16(status).unwrap(),Json(json!({"authorization":headers["authorization"].to_str().unwrap(),"node":headers["x-aidash-node"].to_str().unwrap(),"protocol":headers["x-aidash-protocol"].to_str().unwrap(),"body":body}))).into_response();
             if status==503 {response.headers_mut().insert("x-aidash-transaction-pending","1".parse().unwrap());}
             if status==409 {response.headers_mut().insert("x-aidash-run-message-pending","1".parse().unwrap());}
+            for header in ["x-aidash-semantic-reason", "x-aidash-semantic-cause"] {
+                if let Some(code)=body[header].as_str() {response.headers_mut().insert(header,code.parse().unwrap());}
+            }
             response
         }))
         .route("/federation/v0.1/oversize",get(|| async {Response::new(axum::body::Body::from(vec![b' ';4_194_305]))}));
@@ -93,6 +96,51 @@ async fn stored_plaintext_network_peer_cannot_receive_bearer_credentials() {
 		client.send(&peer, "GET", "/observe", None).await,
 		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
+}
+
+#[rstest]
+#[case::specific(
+	Some("durable_memory_budget"),
+	Some("context_budget"),
+	Some(aidash_domain::semantic::Failure::DurableMemoryBudget)
+)]
+#[case::legacy(
+	None,
+	Some("context_budget"),
+	Some(aidash_domain::semantic::Failure::ContextBudget)
+)]
+#[case::future(
+	Some("future_budget_cause"),
+	Some("context_budget"),
+	Some(aidash_domain::semantic::Failure::ContextBudget)
+)]
+#[case::unknown(
+	None,
+	Some("future_failure"),
+	Some(aidash_domain::semantic::Failure::ContextBudget)
+)]
+#[case::ordinary(None, None, None)]
+#[tokio::test]
+async fn authority_transport_preserves_specific_and_compatible_semantic_causes(
+	#[case] cause: Option<&str>,
+	#[case] reason: Option<&str>,
+	#[case] expected: Option<aidash_domain::semantic::Failure>,
+) {
+	use aidash_application::ports::federation::authority::Transport;
+	let (_server, client, peer, _keys) = fixture().await;
+	let reply = Transport::request(
+		&client,
+		&peer,
+		"/reply/409",
+		&json!({
+			"x-aidash-semantic-reason":reason,"x-aidash-semantic-cause":cause
+		}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(reply.status, 409);
+	assert_eq!(reply.semantic_reason, expected);
+	assert!(reply.body.unwrap().is_empty());
 }
 #[rstest]
 #[case(503, true, false)]

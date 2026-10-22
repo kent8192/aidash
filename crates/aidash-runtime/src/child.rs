@@ -10,8 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub struct Limits {
 	/// CPU time after which the kernel stops the child.
 	pub cpu_seconds: u64,
-	/// Address space ceiling; enforced where the platform supports it (Linux).
-	pub memory_bytes: u64,
+	/// Required hard address-space ceiling, or `None` when the caller does not
+	/// need memory containment.
+	pub memory_bytes: Option<u64>,
 	/// Wall-clock deadline of the whole exchange.
 	pub deadline: Duration,
 	/// The largest reply accepted on standard output.
@@ -41,6 +42,13 @@ pub async fn run(
 	input: &[u8],
 	limits: Limits,
 ) -> Result<Vec<u8>, Failure> {
+	#[cfg(not(target_os = "linux"))]
+	if limits.memory_bytes.is_some() {
+		return Err(Failure::Io(std::io::Error::new(
+			std::io::ErrorKind::Unsupported,
+			"hard child address-space limits are unavailable on this platform",
+		)));
+	}
 	let mut command = tokio::process::Command::new(program);
 	command
 		.args(args)
@@ -51,21 +59,16 @@ pub async fn run(
 		.kill_on_drop(true);
 	#[cfg(unix)]
 	{
-		let Limits {
-			cpu_seconds,
-			memory_bytes,
-			..
-		} = limits;
 		// SAFETY: the closure runs in the forked child before exec and only
 		// calls setrlimit, which is async-signal-safe.
 		unsafe {
 			command.pre_exec(move || {
-				set_limit(libc::RLIMIT_CPU, cpu_seconds)?;
+				set_limit(libc::RLIMIT_CPU, limits.cpu_seconds)?;
 				set_limit(libc::RLIMIT_CORE, 0)?;
 				#[cfg(target_os = "linux")]
-				set_limit(libc::RLIMIT_AS, memory_bytes)?;
-				#[cfg(not(target_os = "linux"))]
-				let _ = memory_bytes;
+				if let Some(memory_bytes) = limits.memory_bytes {
+					set_limit(libc::RLIMIT_AS, memory_bytes)?;
+				}
 				Ok(())
 			});
 		}

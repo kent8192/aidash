@@ -250,7 +250,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: needs.prepare.outputs.build == 'true'
         with:
-          pattern: gcp-request-${{ github.run_id }}
+          name: gcp-request-${{ github.run_id }}
           path: ${{ runner.temp }}/request
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: needs.prepare.outputs.build == 'true'
@@ -262,7 +262,11 @@ jobs:
           HAS_BUILD: ${{ needs.prepare.outputs.build }}
         run: |
           if [ "$HAS_BUILD" = true ]; then
-            python3 infra/gcp/control/controller.py finish --request "$RUNNER_TEMP/request/gcp-request-$GITHUB_RUN_ID/aidash-request.json" --release "$RUNNER_TEMP/release/release.json"
+            request_file="$RUNNER_TEMP/request/aidash-request.json"
+            release_file="$RUNNER_TEMP/release/release.json"
+            test -s "$request_file"
+            test -s "$release_file"
+            python3 infra/gcp/control/controller.py finish --request "$request_file" --release "$release_file"
           else
             python3 infra/gcp/control/controller.py reconcile
           fi

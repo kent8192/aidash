@@ -77,6 +77,22 @@ variable "production_backup_delete_lock_days" {
     error_message = "Deletion protection is 1..90 whole days and must not exceed retention."
   }
 }
+variable "production_pre_update_backup_retain_days" {
+  type    = number
+  default = 14
+  validation {
+    condition     = var.production_pre_update_backup_retain_days >= 2 && var.production_pre_update_backup_retain_days <= 360 && floor(var.production_pre_update_backup_retain_days) == var.production_pre_update_backup_retain_days
+    error_message = "Pre-update backups retain between 2 and 360 whole days."
+  }
+}
+variable "production_pre_update_backup_delete_lock_days" {
+  type    = number
+  default = 2
+  validation {
+    condition     = var.production_pre_update_backup_delete_lock_days >= 1 && var.production_pre_update_backup_delete_lock_days <= 90 && floor(var.production_pre_update_backup_delete_lock_days) == var.production_pre_update_backup_delete_lock_days && var.production_pre_update_backup_delete_lock_days <= var.production_pre_update_backup_retain_days
+    error_message = "Deletion protection is 1..90 whole days and must not exceed retention."
+  }
+}
 variable "production_backup_schedule_paused" {
   type    = bool
   default = false

@@ -34,6 +34,12 @@ Agent memory is separated by agent ID, version, workspace UUID and workspace hom
 
 ## Persistence and delivery
 
+Semantic failures preserve their typed cause in Run recovery and the Home operation journal. `durable_memory_budget` means that a native-memory operation has spent its cumulative call, token or cost budget across Retry Cycles. It is permanent for that operation: the Run pauses, its Task is not failed, and recovery offers only `create_follow_up_task`.
+
+For this cause, an error response carries HTTP 409, `X-Aidash-Semantic-Reason: context_budget` and `X-Aidash-Semantic-Cause: durable_memory_budget`. Updated peers prefer a recognized cause header, then fall back to the reason header. Earlier peers read the established `context_budget` reason, which also offers only a follow-up Task. Other causes retain their existing reason header. An unknown persisted journal error fails closed as `context_budget`, so it neither authorizes an unchanged retry nor discloses a saved receipt.
+
+Remote execution status and control replies use the same projection in JSON: `semantic_reason` retains `context_budget`, and the additional `semantic_cause` carries `durable_memory_budget`. Updated peers restore the exact cause when decoding the reply; earlier peers ignore the additional field. An unknown detailed cause falls back to the compatible reason.
+
 API startup and PostgreSQL worker recovery do not wait for NATS. The event-bus supervisor reconnects independently; federation offer retries also run independently of the broker.
 
 A state mutation and its event are committed together. The event table doubles as an outbox. Its publisher waits for a JetStream acknowledgment, then records publication. A crash in between can replay an event, using its event ID as `Nats-Msg-Id`. Inbox uniqueness and task/run uniqueness remain the permanent deduplication boundary after JetStream's short duplicate window expires.
