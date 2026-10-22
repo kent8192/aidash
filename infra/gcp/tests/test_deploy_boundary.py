@@ -334,5 +334,51 @@ class DeployEntryPointTests(unittest.TestCase):
         self.assertIn("assertion.environment == 'certificate-renewal'", renewal)
 
 
+class DeliveryAnchorTests(unittest.TestCase):
+    """Nonproduction trusts the development branch; production never leaves main (#445)."""
+
+    MAIN = {"main", "refs/heads/main"}
+    # Production applies the commit its prepare job authorized, never a branch head.
+    PRODUCTION_REFS = {"main", "${{ github.sha }}", "${{ needs.prepare.outputs.trusted }}"}
+
+    @staticmethod
+    def jobs(name):
+        return yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]
+
+    @staticmethod
+    def checkout_refs(job):
+        return [str(step["with"]["ref"]) for step in job["steps"]
+                if step.get("uses", "").startswith("actions/checkout@") and "ref" in step.get("with", {})]
+
+    def test_nonproduction_workflows_never_check_out_main(self):
+        notifications = self.jobs("deployment-notifications.yml")
+        groups = {name: self.jobs(name) for name in ("gcp-environments.yml", "release-pr.yml", "deployment-certificate.yml")}
+        groups["deployment-notifications.yml"] = {key: notifications[key] for key in ("intake", "nonproduction")}
+        for name, jobs in groups.items():
+            for job_name, job in jobs.items():
+                for ref in self.checkout_refs(job):
+                    self.assertNotIn(ref, self.MAIN, f"{name}:{job_name}")
+        for name in ("gcp-environments.yml", "release-pr.yml", "deployment-certificate.yml"):
+            self.assertNotIn("branches/main", (WORKFLOWS / name).read_text(), name)
+        self.assertEqual(self.checkout_refs(notifications["nonproduction"]), ["${{ needs.intake.outputs.trusted }}"])
+
+    def test_nonproduction_intake_pins_the_protected_default_branch(self):
+        intake = self.jobs("gcp-environments.yml")["intake"]
+        pin = next(step for step in intake["steps"] if step.get("id") == "trusted")
+        self.assertEqual(pin["env"]["TRUSTED_BRANCH"], "${{ github.event.repository.default_branch }}")
+        notifications = next(step for step in self.jobs("deployment-notifications.yml")["intake"]["steps"] if step.get("id") == "trusted")
+        self.assertEqual(notifications["env"]["AUTOMATION_BRANCH"], "${{ github.event.repository.default_branch }}")
+
+    def test_production_jobs_never_check_out_the_development_branch(self):
+        for job_name, job in self.jobs("gcp-production.yml").items():
+            for ref in self.checkout_refs(job):
+                self.assertIn(ref, self.PRODUCTION_REFS, f"gcp-production.yml:{job_name}")
+        self.assertEqual(self.checkout_refs(self.jobs("gcp-production.yml")["dispatch"]), ["main"])
+        notifications = self.jobs("deployment-notifications.yml")
+        self.assertEqual(self.checkout_refs(notifications["production"]), ["${{ needs.intake.outputs.production }}"])
+        pin = next(step for step in notifications["intake"]["steps"] if step.get("id") == "trusted")
+        self.assertIn("pin('main')", pin["run"])
+
+
 if __name__ == "__main__":
     unittest.main()

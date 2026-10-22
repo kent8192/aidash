@@ -16,23 +16,23 @@ const MAX_TREE_BYTES: usize = 3_000_000;
 const MAX_FILE_BYTES: usize = 256_000;
 const MAX_FILES: usize = 64;
 
-struct Source {
-	owner: String,
-	repo: String,
-	ref_and_path: Vec<String>,
-	explicit: bool,
-	blob: bool,
+pub(crate) struct Source {
+	pub(crate) owner: String,
+	pub(crate) repo: String,
+	pub(crate) ref_and_path: Vec<String>,
+	pub(crate) explicit: bool,
+	pub(crate) blob: bool,
 }
 
 #[derive(Clone)]
-struct GitHubEndpoints {
-	web: Url,
-	api: Url,
-	raw: Url,
+pub(crate) struct GitHubEndpoints {
+	pub(crate) web: Url,
+	pub(crate) api: Url,
+	pub(crate) raw: Url,
 }
 
 impl GitHubEndpoints {
-	fn official() -> Self {
+	pub(crate) fn official() -> Self {
 		Self {
 			web: Url::parse("https://github.com/").expect("static GitHub web URL"),
 			api: Url::parse("https://api.github.com/").expect("static GitHub API URL"),
@@ -42,7 +42,12 @@ impl GitHubEndpoints {
 }
 
 impl Source {
-	fn parse(value: &str) -> Result<Self> {
+	pub(crate) fn parse(value: &str) -> Result<Self> {
+		Self::parse_naming(value, "SKILL.md")
+	}
+
+	/// `blob_file` is the file a `blob` URL must name; it only shapes the error message.
+	pub(crate) fn parse_naming(value: &str, blob_file: &str) -> Result<Self> {
 		let url =
 			Url::parse(value).map_err(|_| Error::Invalid("enter a GitHub HTTPS URL".into()))?;
 		if url.scheme() != "https"
@@ -83,9 +88,9 @@ impl Source {
 				|| (segments[2] == "tree" && segments.len() < 4)
 				|| (segments[2] == "blob" && segments.len() < 5))
 		{
-			return Err(Error::Invalid(
-				"use a repository, tree, or SKILL.md blob URL".into(),
-			));
+			return Err(Error::Invalid(format!(
+				"use a repository, tree, or {blob_file} blob URL"
+			)));
 		}
 		Ok(Self {
 			owner: segments[0].into(),
@@ -100,7 +105,7 @@ impl Source {
 		})
 	}
 
-	fn api_with_base(&self, base: &Url, suffix: &str) -> Result<Url> {
+	pub(crate) fn api_with_base(&self, base: &Url, suffix: &str) -> Result<Url> {
 		let (path, query) = suffix.split_once('?').unwrap_or((suffix, ""));
 		let mut url = base.clone();
 		{
@@ -131,7 +136,7 @@ impl Source {
 		.to_owned()
 	}
 
-	fn reference_paths(&self) -> impl Iterator<Item = (String, String)> + '_ {
+	pub(crate) fn reference_paths(&self) -> impl Iterator<Item = (String, String)> + '_ {
 		let longest = self.ref_and_path.len() - usize::from(self.blob);
 		(1..=longest).rev().map(|length| {
 			(
@@ -142,7 +147,7 @@ impl Source {
 	}
 }
 
-fn client() -> Result<Client> {
+pub(crate) fn client() -> Result<Client> {
 	Client::builder()
 		.timeout(Duration::from_secs(20))
 		.redirect(reqwest::redirect::Policy::none())
@@ -152,14 +157,33 @@ fn client() -> Result<Client> {
 }
 
 async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>> {
+	match download(client, url, limit, "Skill source").await? {
+		Download::Complete(bytes) => Ok(bytes),
+		Download::OverLimit => Err(Error::Invalid("Skill exceeds the import size limit".into())),
+	}
+}
+
+pub(crate) enum Download {
+	Complete(Vec<u8>),
+	OverLimit,
+}
+
+/// Streams a body and stops at the first chunk that would pass `limit`. `subject` names the
+/// source in error messages.
+pub(crate) async fn download(
+	client: &Client,
+	url: &str,
+	limit: usize,
+	subject: &str,
+) -> Result<Download> {
 	let mut response = client
 		.get(url)
 		.send()
 		.await
-		.map_err(|error| Error::External(format!("Skill source request failed: {error}")))?;
+		.map_err(|error| Error::External(format!("{subject} request failed: {error}")))?;
 	if !response.status().is_success() {
 		return Err(Error::Invalid(format!(
-			"Skill source returned {} for this URL",
+			"{subject} returned {} for this URL",
 			response.status()
 		)));
 	}
@@ -170,11 +194,11 @@ async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>
 		.map_err(|error| Error::External(error.to_string()))?
 	{
 		if bytes.len() + chunk.len() > limit {
-			return Err(Error::Invalid("Skill exceeds the import size limit".into()));
+			return Ok(Download::OverLimit);
 		}
 		bytes.extend_from_slice(&chunk);
 	}
-	Ok(bytes)
+	Ok(Download::Complete(bytes))
 }
 
 /// Whether a variable reaches the `gh` CLI child. The CLI may authenticate, but
@@ -205,7 +229,84 @@ pub fn gh_environment_allowed(name: &std::ffi::OsStr) -> bool {
 		)
 }
 
-async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>> {
+/// Why the REST API refused a request that the GitHub CLI then retries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+	RateLimited,
+	Unauthorized,
+}
+
+impl Refusal {
+	/// Whether a 403 body names a rate limit. A secondary refusal may arrive
+	/// with `x-ratelimit-remaining` still describing the primary budget, so the
+	/// body is the only place GitHub says the request was throttled.
+	async fn says_rate_limit(response: &mut reqwest::Response) -> bool {
+		const MAX_BODY: usize = 64 * 1024;
+		let mut body = Vec::new();
+		while body.len() < MAX_BODY {
+			match response.chunk().await {
+				Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+				Ok(None) | Err(_) => break,
+			}
+		}
+		let body = String::from_utf8_lossy(&body).to_ascii_lowercase();
+		body.contains("secondary rate limit")
+			|| body.contains("secondary-rate-limit")
+			|| body.contains("api rate limit exceeded")
+	}
+
+	/// GitHub answers an exhausted rate limit with 403 or 429 and marks it in
+	/// the headers. A secondary limit may omit those optional headers and leave
+	/// `x-ratelimit-remaining` describing the primary limit, so its refusal is
+	/// only named in the response body. Any other 401/403 is an access refusal.
+	pub(crate) async fn of(response: &mut reqwest::Response) -> Option<Self> {
+		let status = response.status();
+		let header = |name: &str| {
+			response
+				.headers()
+				.get(name)
+				.and_then(|value| value.to_str().ok())
+		};
+		let marked = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+			|| (status == reqwest::StatusCode::FORBIDDEN
+				&& (header("x-ratelimit-remaining") == Some("0")
+					|| header("retry-after").is_some()));
+		if marked {
+			return Some(Self::RateLimited);
+		}
+		if status == reqwest::StatusCode::FORBIDDEN && Self::says_rate_limit(response).await {
+			return Some(Self::RateLimited);
+		}
+		match status {
+			reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED => {
+				Some(Self::Unauthorized)
+			}
+			_ => None,
+		}
+	}
+
+	/// The error when the GitHub CLI cannot run on this server to retry.
+	pub(crate) fn without_cli(self) -> Error {
+		Error::Invalid(
+			match self {
+				Self::RateLimited => {
+					"GitHub API rate limit reached and the GitHub CLI is not installed on this server; set GITHUB_TOKEN for the server"
+				}
+				Self::Unauthorized => {
+					"GitHub refused the request and the GitHub CLI is not installed on this server; set GITHUB_TOKEN with access to this repository"
+				}
+			}
+			.into(),
+		)
+	}
+}
+
+async fn gh_api(
+	url: &str,
+	limit: usize,
+	accept: &str,
+	refusal: Refusal,
+) -> Result<Option<Vec<u8>>> {
 	let parsed = Url::parse(url).map_err(|error| Error::Invalid(error.to_string()))?;
 	let endpoint = format!(
 		"{}{}",
@@ -228,7 +329,7 @@ async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>
 		.stderr(std::process::Stdio::null())
 		.kill_on_drop(true)
 		.spawn()
-		.map_err(|_| Error::Invalid("GitHub API rate limit reached; configure GitHub CLI authentication or GITHUB_TOKEN".into()))?;
+		.map_err(|_| refusal.without_cli())?;
 	let mut output = Vec::new();
 	let stdout = child
 		.stdout
@@ -273,7 +374,7 @@ async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>
 	Ok(Some(output))
 }
 
-async fn api_get(client: &Client, url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+pub(crate) async fn api_get(client: &Client, url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
 	api_get_with_accept(client, url, limit, "application/vnd.github+json").await
 }
 
@@ -284,7 +385,13 @@ async fn api_get_with_accept(
 	accept: &str,
 ) -> Result<Option<Vec<u8>>> {
 	let mut response = client.get(url).header("accept", accept);
-	if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
+	// Compose passes an unset variable through as empty; GitHub refuses an empty
+	// bearer token, so it must count as no token.
+	if let Some(token) = ["GITHUB_TOKEN", "GH_TOKEN"]
+		.into_iter()
+		.filter_map(|name| std::env::var(name).ok())
+		.find(|token| !token.is_empty())
+	{
 		response = response.bearer_auth(token);
 	}
 	let mut response = response
@@ -297,11 +404,8 @@ async fn api_get_with_accept(
 	) {
 		return Ok(None);
 	}
-	if matches!(
-		response.status(),
-		reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED
-	) {
-		return gh_api(url, limit, accept).await;
+	if let Some(refusal) = Refusal::of(&mut response).await {
+		return gh_api(url, limit, accept, refusal).await;
 	}
 	if !response.status().is_success() {
 		return Err(Error::Invalid(format!(
@@ -387,7 +491,7 @@ fn candidates(tree: &Tree, selected_dir: Option<&str>) -> Vec<String> {
 	paths
 }
 
-async fn fetch_tree(
+pub(crate) async fn fetch_tree(
 	client: &Client,
 	source: &Source,
 	endpoints: &GitHubEndpoints,
@@ -447,16 +551,32 @@ async fn skill_tree(
 			truncated: false,
 		});
 	}
+	directory_tree(client, source, endpoints, root_sha, directory)
+		.await?
+		.ok_or_else(|| Error::Invalid("GitHub Skill directory was not found".into()))
+}
+
+/// The recursive tree below `directory`, with every path made relative to the repository root.
+/// `None` when a segment of `directory` is not a directory of the commit.
+pub(crate) async fn directory_tree(
+	client: &Client,
+	source: &Source,
+	endpoints: &GitHubEndpoints,
+	root_sha: &str,
+	directory: &str,
+) -> Result<Option<Tree>> {
 	let mut sha = root_sha.to_owned();
 	if !directory.is_empty() {
 		for segment in directory.split('/') {
 			let parent = fetch_tree(client, source, endpoints, &sha, false).await?;
-			sha = parent
+			let Some(child) = parent
 				.tree
 				.into_iter()
 				.find(|entry| entry.path == segment && entry.kind == "tree")
-				.ok_or_else(|| Error::Invalid("GitHub Skill directory was not found".into()))?
-				.sha;
+			else {
+				return Ok(None);
+			};
+			sha = child.sha;
 		}
 	}
 	let mut tree = fetch_tree(client, source, endpoints, &sha, true).await?;
@@ -465,7 +585,7 @@ async fn skill_tree(
 			entry.path = format!("{directory}/{}", entry.path);
 		}
 	}
-	Ok(tree)
+	Ok(Some(tree))
 }
 
 fn resource_paths(tree: &Tree, skill_path: &str) -> Result<Vec<String>> {
@@ -703,11 +823,17 @@ fn raw_github_to_blob(value: &str) -> Result<String> {
 	Ok(blob)
 }
 
-async fn import_github(
-	request: ImportRequest,
-	endpoints: &GitHubEndpoints,
-) -> Result<ImportResult> {
-	let source = Source::parse(&request.url)?;
+/// A public repository whose requested reference is pinned to one commit.
+pub(crate) struct Resolved {
+	pub(crate) source: Source,
+	pub(crate) client: Client,
+	pub(crate) commit: Commit,
+	/// The part of a `tree` or `blob` URL after the reference; empty without one.
+	pub(crate) subpath: String,
+}
+
+/// Checks that the repository is public and resolves the URL's reference to a commit.
+pub(crate) async fn resolve(source: Source, endpoints: &GitHubEndpoints) -> Result<Resolved> {
 	let client = client()?;
 	// The GitHub web page is checked without credentials because the anonymous
 	// REST API may already be rate limited. Private repositories return 404.
@@ -757,6 +883,44 @@ async fn import_github(
 			.ok_or_else(|| Error::Invalid("GitHub default branch was not found".into()))?;
 		(commit, String::new())
 	};
+	Ok(Resolved {
+		source,
+		client,
+		commit,
+		subpath,
+	})
+}
+
+/// `<raw base>/<owner>/<repo>/<sha>/<path>`, one percent-encoded segment per path component.
+pub(crate) fn raw_file_url(
+	endpoints: &GitHubEndpoints,
+	source: &Source,
+	sha: &str,
+	path: &str,
+) -> Result<Url> {
+	let mut url = endpoints.raw.clone();
+	{
+		let mut segments = url
+			.path_segments_mut()
+			.map_err(|_| Error::Invalid("invalid GitHub raw base URL".into()))?;
+		segments.push(&source.owner).push(&source.repo).push(sha);
+		for segment in path.split('/') {
+			segments.push(segment);
+		}
+	}
+	Ok(url)
+}
+
+async fn import_github(
+	request: ImportRequest,
+	endpoints: &GitHubEndpoints,
+) -> Result<ImportResult> {
+	let Resolved {
+		source,
+		client,
+		commit,
+		subpath,
+	} = resolve(Source::parse(&request.url)?, endpoints).await?;
 	let explicit_path = if subpath.is_empty() {
 		None
 	} else {
@@ -800,19 +964,7 @@ async fn import_github(
 		} else {
 			format!("{dir}/{path}")
 		};
-		let mut raw_url = endpoints.raw.clone();
-		{
-			let mut segments = raw_url
-				.path_segments_mut()
-				.map_err(|_| Error::Invalid("invalid Skill path".into()))?;
-			segments
-				.push(&source.owner)
-				.push(&source.repo)
-				.push(&commit.sha);
-			for segment in full_path.split('/') {
-				segments.push(segment);
-			}
-		}
+		let raw_url = raw_file_url(endpoints, &source, &commit.sha, &full_path)?;
 		let bytes = bounded_get(&client, raw_url.as_str(), MAX_FILE_BYTES - total).await?;
 		total += bytes.len();
 		if path == "SKILL.md" {
@@ -860,28 +1012,33 @@ struct Repository {
 }
 
 #[derive(serde::Deserialize)]
-struct Commit {
-	sha: String,
-	tree: TreeSha,
+pub(crate) struct Commit {
+	pub(crate) sha: String,
+	pub(crate) tree: TreeSha,
 }
 
 #[derive(serde::Deserialize)]
-struct TreeSha {
-	sha: String,
+pub(crate) struct TreeSha {
+	pub(crate) sha: String,
 }
 
 #[derive(serde::Deserialize)]
-struct Tree {
-	tree: Vec<TreeEntry>,
-	truncated: bool,
+pub(crate) struct Tree {
+	pub(crate) tree: Vec<TreeEntry>,
+	pub(crate) truncated: bool,
 }
 
 #[derive(serde::Deserialize)]
-struct TreeEntry {
-	path: String,
+pub(crate) struct TreeEntry {
+	pub(crate) path: String,
 	#[serde(rename = "type")]
-	kind: String,
-	sha: String,
+	pub(crate) kind: String,
+	pub(crate) sha: String,
+	/// Git file mode as a string, such as `100644` or `120000`.
+	#[serde(default)]
+	pub(crate) mode: Option<String>,
+	#[serde(default)]
+	pub(crate) size: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]

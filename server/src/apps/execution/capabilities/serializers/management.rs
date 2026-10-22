@@ -19,6 +19,8 @@ pub struct MaterializedFile {
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct ApprovalCard {
 	pub id: Uuid,
+	/// `outbound` (an outbound read), `disclosure` (a Web disclosure),
+	/// `tool_call` (a call of a Tenant's tool) or `grant` (a Run grant).
 	pub kind: String,
 	pub run_id: Uuid,
 	pub area_id: Option<Uuid>,
@@ -38,10 +40,20 @@ pub struct ApprovalCard {
 	pub viewer_is_approver: bool,
 	pub agent_id: Option<String>,
 	pub agent_version: Option<String>,
+	/// For a Tool call approval, or a Run grant from one, the Tenant's tool and
+	/// its definition version.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub version: Option<String>,
 	/// The research operation of a Web disclosure approval, or of the
-	/// approval a Web disclosure Run grant came from.
+	/// approval a Web disclosure Run grant came from; for a Tool call
+	/// approval, the operation of the tool the call invokes.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub operation: Option<String>,
+	/// For a Tool call approval, the exact call the approver is asked to allow.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub call: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider: Option<String>,
 	/// The price of this one request, recorded when approval was requested
@@ -55,8 +67,25 @@ pub struct ApprovalCard {
 	pub query: Option<serde_json::Value>,
 	pub decided_by: Option<String>,
 	pub decided_at: Option<DateTime<Utc>>,
+	/// What gave the approval in advance, under its owner's name: `{"rule": id}`
+	/// for one of their Approval Rules, `{"mode": "bypass"}` for the Bypass
+	/// mode, `{"mode": "auto", "decision": id}` for the approval Decider and its
+	/// Decision Evidence, and none when a person decided it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub given_by: Option<serde_json::Value>,
+	/// What refused the approval in advance, with no one asked: `{"rule": id}`
+	/// for one of the owner's Approval Rules, `{"mode": "dont_ask"}` for the
+	/// Don't ask mode, and `{"mode": "auto", "reason": ...}` for the approval
+	/// Decider, whose reason names a block category or `unavailable`. None when
+	/// a person decided it or it is still open.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refused_by: Option<serde_json::Value>,
+	/// Whether the reader may choose "Always allow": they are the person the
+	/// Run's delegation chain starts at, the approval is still pending and its
+	/// kind can have a rule.
+	pub allow_always: bool,
 	/// Why a `closed` approval or Run grant was closed, such as
-	/// `evidence_revoked`.
+	/// `evidence_revoked` or `run_ended`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub closed_reason: Option<String>,
 }

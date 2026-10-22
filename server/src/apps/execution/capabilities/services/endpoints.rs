@@ -536,6 +536,50 @@ pub(crate) async fn file_share(
 	dispatch(f, actor, id, "file_share", json!(input)).await
 }
 
+/// Checks that `thread` is a live Thread of `workspace` that the caller may
+/// read, holding the Thread's row lock like Thread deletion does so a deletion
+/// that already passed its final area page cannot race the caller's write.
+pub(crate) async fn readable_thread(
+	access: &mut Access,
+	workspace: Uuid,
+	thread: Uuid,
+) -> Result<()> {
+	let channel: crate::apps::workspaces::models::ChannelThread = {
+		let query_bind_1 = thread;
+		let query_bind_2 = workspace;
+		crate::database::query_as(
+			&sessions::select("channel_threads")
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						),
+					),
+				)
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						),
+					),
+				)
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **access.tx)
+		.await?
+	}
+	.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
+	let channel = crate::collaboration::ChannelThread::from(channel);
+	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
+	access
+		.workspace_record(workspace, "message", channel.root_message_id)
+		.await?;
+	Ok(())
+}
+
 pub(crate) async fn thread_run(
 	f: Federation,
 	actor: Actor,
@@ -696,6 +740,11 @@ pub(crate) async fn outbound_history(
 	.await;
 	access.finish(result).await
 }
+/// Approval records that end with their Run, so a pending one whose Run has
+/// ended is closed rather than left to be decided.
+fn ends_with_run(row: &super::records::Record) -> bool {
+	matches!(row.kind.as_str(), "disclosure" | "tool_call") && row.state == "pending"
+}
 pub(crate) async fn approval_list(
 	f: Federation,
 	actor: Actor,
@@ -722,9 +771,11 @@ pub(crate) async fn approval_list(
 			),
 		});
 		let (kinds, state): (&[&str], _) = match query.state {
-			Some(ApprovalState::Pending) => (&["outbound", "disclosure"], Some("pending")),
+			Some(ApprovalState::Pending) => {
+				(&["outbound", "disclosure", "tool_call"], Some("pending"))
+			}
 			Some(ApprovalState::Active) => (&["grant"], Some("active")),
-			None => (&["outbound", "grant", "disclosure"], None),
+			None => (&["outbound", "grant", "disclosure", "tool_call"], None),
 		};
 		select.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()));
 		if let Some(state) = state {
@@ -733,10 +784,11 @@ pub(crate) async fn approval_list(
 				.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())));
 		}
 		if query.state == Some(ApprovalState::Pending) {
-			// A disclosure ends with its Run: an inbox never offers one whose
-			// Run has ended, since no decision on it could take effect.
+			// A disclosure or tool call approval ends with its Run: an inbox never
+			// offers one whose Run has ended, since no decision on it could take
+			// effect.
 			select.and_where(Expr::cust(
-				"(kind <> 'disclosure' OR NOT EXISTS (SELECT 1 FROM runs r \
+				"(kind NOT IN ('disclosure', 'tool_call') OR NOT EXISTS (SELECT 1 FROM runs r \
 				 WHERE r.id::text = core_records.data->>'run_id' \
 				 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
 			));
@@ -746,13 +798,13 @@ pub(crate) async fn approval_list(
 				.fetch_all(&mut **access.tx)
 				.await?;
 		let next_cursor = (rows.len() == 51).then(|| rows[49].id);
-		// Every view, not only the inbox, shows a pending disclosure whose Run
-		// has ended as closed, as a decision on it would close it, so no
-		// reader is offered it.
+		// Every view, not only the inbox, shows a pending disclosure or tool call
+		// approval whose Run has ended as closed, as a decision on it would close
+		// it, so no reader is offered it.
 		let waiting: Vec<Uuid> = rows
 			.iter()
 			.take(50)
-			.filter(|row| row.kind == "disclosure" && row.state == "pending")
+			.filter(|row| ends_with_run(row))
 			.filter_map(|row| serde_json::from_value(row.data["run_id"].clone()).ok())
 			.collect();
 		let ended: std::collections::HashSet<Uuid> = if waiting.is_empty() {
@@ -781,19 +833,26 @@ pub(crate) async fn approval_list(
 				continue;
 			}
 			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
-			let run_ended = row.kind == "disclosure" && row.state == "pending" && ended.contains(&run);
+			let run_ended = ends_with_run(&row) && ended.contains(&run);
 			// A Run grant past its `expires_at` no longer admits anything, so
 			// it reads as expired rather than active and revocable.
 			let expired = matches!(row.state.as_str(), "pending" | "active")
 				&& row.expires_at.is_some_and(|t| t < chrono::Utc::now());
 			let data = &row.data;
+			let state = if run_ended { "closed" } else if expired { "expired" } else { &row.state };
+			// A rule can name an outbound read, a Web disclosure or a tool call, and
+			// only the person the Run's delegation chain starts at may make one.
+			let allow_always = state == "pending"
+				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
+				&& data["subjects"][0] == json!(subject)
+				&& super::approvals::can_allow_always(&f.store, &mut access, &row).await?;
 			// Designated approvers see only the scoped card, never Run output.
 			items.push(json!({
 				"id": row.id,
 				"kind": row.kind,
 				"run_id": run,
 				"area_id": row.area_id,
-				"state": if run_ended { "closed" } else if expired { "expired" } else { &row.state },
+				"state": state,
 				"revision": row.revision,
 				"requester": row.owner,
 				"approver": data["approver"],
@@ -805,12 +864,18 @@ pub(crate) async fn approval_list(
 				"viewer_is_approver": data["approver"] == json!(subject),
 				"agent_id": data["agent_id"],
 				"agent_version": data["agent_version"],
+				"tool": data["tool"],
+				"version": if data["tool"].is_string() { data["version"].clone() } else { Value::Null },
 				"operation": data["operation"],
+				"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
 				"provider": data["provider"],
 				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
 				"query": data["query"],
 				"decided_by": data["decided_by"],
 				"decided_at": data["decided_at"],
+				"given_by": data["given_by"],
+				"refused_by": data["refused_by"],
+				"allow_always": allow_always,
 				"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
 			}));
 		}
@@ -838,7 +903,11 @@ pub(crate) async fn approval_revoke(
 	input: super::approvals::Revoke,
 ) -> Result<Revoked> {
 	let mut access = access(&f, actor).await?;
-	let result = super::approvals::revoke(&mut access, id, "outbound", input).await;
+	let result = async {
+		let kind = super::approvals::revocable_kind(&mut access, id).await?;
+		super::approvals::revoke(&mut access, id, kind, input).await
+	}
+	.await;
 	typed(access.finish(result).await?)
 }
 pub(crate) async fn grant_revoke(

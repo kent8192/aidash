@@ -146,6 +146,7 @@ pub(crate) mod dashboard;
 pub(crate) mod personal_tenant;
 
 pub(crate) mod tenant_deletions;
+pub(crate) mod tenant_purge;
 pub(crate) mod tenants;
 
 pub(crate) mod invitations;
@@ -155,6 +156,8 @@ pub(crate) mod home_execution;
 pub(crate) mod desktop;
 pub(crate) mod retention;
 
+pub(crate) mod approval_decider;
+pub(crate) mod approval_preferences;
 pub mod plan_connections;
 pub mod provider_credentials;
 

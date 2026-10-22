@@ -134,7 +134,9 @@ pub async fn cleanup_database(_url: &str, database: &str) {
 pub fn policy(node: &str) -> Value {
 	let agent = qualified_agent(node, "research", "1.0.0");
 	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
-        "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})
+        "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+            // A wildcard never grants calling a Tenant's tool without approval.
+            {"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})
 }
 
 #[allow(dead_code)]
@@ -169,8 +171,125 @@ async fn bootstrap_with_resources(
 	semantic: bool,
 	files: bool,
 ) -> (Value, String, Uuid) {
+	bootstrap_with_policy(
+		f,
+		app,
+		endpoint,
+		semantic,
+		files,
+		false,
+		policy(&f.config.node_id),
+	)
+	.await
+}
+/// Like [`bootstrap`], under a policy that grants no direct permission to call a
+/// Tenant's tool, so every such call waits for a Tool call approval.
+#[allow(dead_code)]
+pub async fn bootstrap_requiring_tool_call_approval(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	let mut policy = policy(&f.config.node_id);
+	require_tool_call_approval(&mut policy);
+	bootstrap_with_policy(f, app, endpoint, false, false, false, policy).await
+}
+/// Like [`bootstrap_requiring_tool_call_approval`], and the Agent also binds
+/// `http-read` as `plugin_1`: its version declares the one operation read-only,
+/// and the endpoint's `/read` route serves it. `plugin_0` still asks.
+#[allow(dead_code)]
+pub async fn bootstrap_with_read_only_tool(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	let mut policy = policy(&f.config.node_id);
+	require_tool_call_approval(&mut policy);
+	bootstrap_with_policy(f, app, endpoint, false, false, true, policy).await
+}
+/// Narrow `approved-work` so that no subject may call a Tenant's tool without a
+/// Tool call approval: agents keep every action, and users keep what members
+/// have, including approving the tool calls of their own Runs (ADR 0075).
+#[allow(dead_code)]
+pub fn require_tool_call_approval(policy: &mut Value) {
+	let resources = policy["policies"][0]["resources"].clone();
+	policy["policies"][0]["subjects"] = json!({"kinds":["agent"]});
+	let policies = policy["policies"].as_array_mut().unwrap();
+	policies.retain(|policy| policy["id"] != "call-unapproved");
+	policies.push(json!({"id":"member-work","effect":"allow","subjects":{"kinds":["user"]},"actions":aidash_domain::identity::tenancy::MEMBER_ACTIONS,"resources":resources}));
+	policies.push(json!({"id":"member-tool-call-approval","effect":"allow","subjects":{"kinds":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}));
+}
+/// The Tool call approval the Run waits for, with the call it asks about.
+#[allow(dead_code)]
+pub fn awaited_tool_call(
+	run: &aidash_server::domain::Run,
+) -> Option<(Uuid, aidash_domain::provider::ToolCall)> {
+	use aidash_domain::{RunState, WaitingState, run_state::ApprovalRef};
+	let RunState::Waiting(waiting) = &run.state else {
+		return None;
+	};
+	let WaitingState::Approval {
+		approval: ApprovalRef::Capability { approval_id },
+		resume,
+	} = waiting.as_ref()
+	else {
+		return None;
+	};
+	Some((
+		*approval_id,
+		resume.response.tool_calls[resume.cursor].clone(),
+	))
+}
+/// Decide the pending Tool call approval `approval` as the approver `token`
+/// names, through the same list and decision API the dashboard uses.
+/// `choice` is `allow_once`, `allow_run` or `deny`; an `allow_run` lasts ten minutes.
+#[allow(dead_code)]
+pub async fn decide_tool_call(
+	app: &TestApplication,
+	token: &str,
+	approval: Uuid,
+	choice: &str,
+) -> (u16, Value) {
+	let (status, inbox) = request(
+		app,
+		token,
+		"GET",
+		"/api/capabilities/approvals?state=pending&role=approver",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{inbox}");
+	let card = inbox["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap_or_else(|| panic!("approval {approval} is not pending for this approver: {inbox}"));
+	assert_eq!(card["kind"], "tool_call", "{card}");
+	let mut decision = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":choice});
+	if choice == "allow_run" {
+		decision["targets"] = card["targets"].clone();
+		decision["expires_at"] = json!(chrono::Utc::now() + chrono::Duration::minutes(10));
+	}
+	request(
+		app,
+		token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		decision,
+	)
+	.await
+}
+async fn bootstrap_with_policy(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+	semantic: bool,
+	files: bool,
+	read_only_tool: bool,
+	policy: Value,
+) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
-	let policy = policy(&f.config.node_id);
 	tenant_root(f, "acme").await;
 	let (status, snapshot) = request(
 		app,
@@ -184,6 +303,9 @@ async fn bootstrap_with_resources(
 	let mut agent_bindings = vec![
 		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
+	if read_only_tool {
+		agent_bindings.push(json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
+	}
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
@@ -215,7 +337,7 @@ async fn bootstrap_with_resources(
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
 	f.store.keyless.permit_origin_of(endpoint).unwrap();
-	for (kind, id, config) in [
+	let mut definitions = vec![
 		(
 			"model",
 			"model",
@@ -231,7 +353,18 @@ async fn bootstrap_with_resources(
 			"research",
 			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
-	] {
+	];
+	if read_only_tool {
+		definitions.insert(
+			2,
+			(
+				"tool",
+				"http-read",
+				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
+			),
+		);
+	}
+	for (kind, id, config) in definitions {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		f.registry
 			.register(&tenant, serde_json::from_value(entry).unwrap())
@@ -517,6 +650,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 					aidash_domain::offering::Offering::SelfHosted,
 				),
+				demo_data: false,
 				oidc: None,
 				sign_in: None,
 			},

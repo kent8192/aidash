@@ -1,5 +1,9 @@
 //! Current tool authority, plugin delegation, and builtin visibility are use cases.
-use crate::{Error, Result, ports::authorization::tools::AgentToolRepository};
+use crate::{
+	Error, Result,
+	capabilities::approvals::{CALL_UNAPPROVED, INVOKE},
+	ports::authorization::tools::AgentToolRepository,
+};
 use aidash_domain::{
 	RunMetadata,
 	exposure::{self, CapabilityIdentity},
@@ -43,6 +47,27 @@ pub fn remote_identifier(run: &RunMetadata, kind: &str, id: &str) -> Result<Stri
 		return Err(Error::Forbidden);
 	}
 	Ok(format!("{}/{kind}s/{id}", run.home_node))
+}
+
+/// The `<id>@<version>` an approval names for the tool, when the tool is one the
+/// Tenant's HTTP, MCP or Agent Plugin policy approves outside its contract.
+fn approval_reference(contract: &ToolContract) -> Option<(String, String)> {
+	match &contract.identity {
+		ToolIdentity::Descriptor(reference) => {
+			Some((reference.id.clone(), reference.version.clone()))
+		}
+		ToolIdentity::Registry(reference) => {
+			Some((reference.id.clone(), reference.version.clone()))
+		}
+		ToolIdentity::AgentPlugin(tool) => {
+			let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
+			Some((
+				format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool),
+				digest.chars().take(12).collect(),
+			))
+		}
+		ToolIdentity::Builtin(_) => None,
+	}
 }
 
 pub async fn authorize(
@@ -95,6 +120,37 @@ pub async fn authorize(
 			scope.require(&resource, "tool.invoke").await?;
 			operation = grant.strip_prefix("builtin:").map(str::to_owned);
 			&contract.authorization
+		}
+		// The Agent version's Catalog Approval covers the servers of its plugin copies (ADR 0072),
+		// so a plugin tool has no Registry entry. It needs the copy to be referenced and the Run
+		// to have pinned exactly this server and tool.
+		ToolIdentity::AgentPlugin(identity) => {
+			let pinned = configuration
+				.agent_plugins
+				.iter()
+				.any(|plugin| plugin.name == identity.plugin && plugin.digest == identity.digest)
+				.then(|| {
+					repository
+						.plugin_tools()?
+						.servers
+						.iter()
+						.filter(|server| {
+							server.plugin == identity.plugin
+								&& server.digest == identity.digest
+								&& server.server == identity.server
+						})
+						.flat_map(|server| &server.tools)
+						.find(|tool| tool.name == identity.tool)
+				})
+				.flatten()
+				.ok_or(Error::Forbidden)?;
+			current = ToolContract::agent_plugin(identity.clone(), pinned.read_only);
+			if current != *contract {
+				return Err(Error::Conflict(
+					"admitted plugin tool contract changed".into(),
+				));
+			}
+			&current.authorization
 		}
 	};
 	let configured_skill = authorization
@@ -200,6 +256,27 @@ pub async fn authorize(
 			}
 		}
 	}
+	// A Read-only operation needs no approval, but the explicit deny of
+	// `tool.call_unapproved` still refuses it. The capability approval path
+	// checks this on the Run's home Node; doing it with the contract authority
+	// also covers a Run executing for another Node.
+	if contract.behavior.read_only_operation
+		&& let Some((id, version)) = approval_reference(contract)
+	{
+		let resource = scope.resource(
+			"tool",
+			&id,
+			json!({
+				"version": version,
+				"operation": INVOKE,
+				"run_id": run.id,
+				"action": CALL_UNAPPROVED,
+			}),
+		);
+		if scope.explicitly_denied(&resource, CALL_UNAPPROVED).await? {
+			return Err(Error::Forbidden);
+		}
+	}
 	Ok(())
 }
 
@@ -215,12 +292,14 @@ fn asset_skill(
 	let snapshot = repository
 		.binding_snapshot()
 		.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
-	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[])?
+	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[], None)?
 		.into_iter()
 		.find(|capability| capability.alias == alias)
 		.and_then(|capability| match capability.identity {
 			CapabilityIdentity::Registry(reference) => Some(reference),
-			CapabilityIdentity::DirectSkill { .. } => None,
+			CapabilityIdentity::DirectSkill { .. } | CapabilityIdentity::AgentPluginTool { .. } => {
+				None
+			}
 		}))
 }
 

@@ -46,6 +46,7 @@ struct Viewer {
 	context: Value,
 	cached_runs: BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: BTreeMap<Uuid, bool>,
+	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 }
 struct Producer<'a> {
 	access: &'a mut Access,
@@ -60,6 +61,7 @@ impl Drop for Producer<'_> {
 			self.access.context = viewer.context;
 			self.access.cached_runs = viewer.cached_runs;
 			self.access.cached_humans = viewer.cached_humans;
+			self.access.read_verdicts = viewer.read_verdicts;
 		}
 	}
 }
@@ -155,6 +157,7 @@ impl SourceReadScope for Scope<'_> {
 			context: self.access.context.clone(),
 			cached_runs: std::mem::take(&mut self.access.cached_runs),
 			cached_humans: std::mem::take(&mut self.access.cached_humans),
+			read_verdicts: std::mem::take(&mut self.access.read_verdicts),
 		};
 		Ok(Box::new(Producer {
 			access: &mut *self.access,

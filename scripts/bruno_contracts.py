@@ -17,6 +17,17 @@ COLLECTION = ROOT / "server/tests/bruno"
 CATALOG = COLLECTION / "contracts.json"
 MANIFEST = COLLECTION / "scenarios.json"
 MISSING = "11111111-1111-4111-8111-111111111111"
+# A Deployment Administrator works in the Tenant of the Workspace it names, and
+# an unknown Workspace has none (#265), so these reads would answer 404 for
+# MISSING. They name the Workspace that journey 08 creates, which keeps their
+# own response checks (an empty list, a typed cleanup status, an empty page, a
+# task that is not found) in force.
+FIXTURE_WORKSPACE_READS = {
+    "semantic-history",
+    "semantic-cleanup",
+    "memory-participants",
+    "memory-participant-current",
+}
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 PEER = {
@@ -49,9 +60,17 @@ TENANT_ROUTES = {
                            "name": {"en": "Bruno"}, "description": {"en": "Contract probe"}},
                  "documents": []},
     },
+    "POST /api/registry/mcp-tool-hint": {
+        "body": {"endpoint": "https://bruno.example/mcp", "tool_name": "probe"},
+        "refusal": "Subject without registry.create cannot read an MCP tool's hint",
+    },
     "POST /api/skills/import": {
         "body": {"url": "https://github.com/bruno/skills"},
         "refusal": "Subject without registry.create cannot import a Skill",
+    },
+    "POST /api/agent-plugins/import": {
+        "body": {"url": "https://github.com/bruno/plugins"},
+        "refusal": "Subject without registry.create cannot import an Agent Plugin",
     },
     "POST /api/authorization/{tenant}/catalog": {
         "body": APPROVAL,
@@ -828,6 +847,13 @@ def render():
             add(endpoint, "Only a deleted Tenant can be restored", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["name"] == "tenants-purge":
+            # Only a Deployment Administrator purges, and only a deleted Tenant (ADR 0061).
+            add(endpoint, "Subject Credential bearer never purges a Tenant", 403,
+                headers=SUBJECT, immutable=True)
+            add(endpoint, "Only a deleted Tenant can be purged", 409,
+                headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
             body = json.dumps(tenant_route["body"])
@@ -952,6 +978,37 @@ def render():
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
                 add(endpoint, "Plan Tokens are not an accepted field", 422,
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"access_token": "pasted"}),
+                    immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/approval_preferences.rs":
+            # A person's Approval Mode and Approval Rules are their own: only the
+            # owner's dashboard or desktop session reaches them, and a Tenant
+            # Administrator's read needs a Mapping session too, never a bearer.
+            body = (
+                json.dumps({"expected_revision": 0, "default_mode": "manual"})
+                if path.endswith("/approval-preferences/mine")
+                else json.dumps({"expected_revision": 0, "decider": None})
+                if path.endswith("/approval-decider")
+                else json.dumps({"kind": "tool_call", "target": "every", "effect": "ask"})
+                if method == "POST"
+                else json.dumps({"mode": None})
+                if route["json"]
+                else None
+            )
+            add(endpoint, "Forged bearer cannot reach a person's approval settings", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Deployment Administrator bearer owns no approval settings", DEPLOYMENT_ADMINISTRATOR),
+                ("Subject Credential bearer never reaches approval settings", SUBJECT),
+            ]:
+                add(endpoint, label, 403, headers=headers, body=body, immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                add(endpoint, "Unknown approval fields are rejected", 422,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
@@ -1083,6 +1140,8 @@ def render():
             if not route["uuid_parameters"]:
                 status = 200
                 checks += 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().next_cursor).to.equal(null);'
+        if route["name"] in FIXTURE_WORKSPACE_READS:
+            uri = path.replace("{workspace}", "{{workspace_id}}")
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,

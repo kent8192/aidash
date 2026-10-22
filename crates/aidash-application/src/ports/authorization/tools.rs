@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	HumanRequest, RunMetadata, Task,
+	agent_plugin::PluginTools,
 	policy::Resource,
 	registry::{EntityRef, Entry, bindings::BindingSnapshot},
 };
@@ -14,6 +15,8 @@ pub trait AgentToolRepository: Send + Sync {
 	fn is_remote(&self) -> bool;
 	/// The admitted Binding snapshot of the Run being authorized.
 	fn binding_snapshot(&self) -> Option<&BindingSnapshot>;
+	/// The plugin tools the Run pinned at its first step; `None` before it pinned any.
+	fn plugin_tools(&self) -> Option<&PluginTools>;
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>>;
 }
 #[async_trait]
@@ -27,6 +30,9 @@ pub trait AgentToolScope: Send {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	/// Whether the policy explicitly denies `action` on `resource` for any
+	/// subject of the current authority. A missing allow is not a denial.
+	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource>;

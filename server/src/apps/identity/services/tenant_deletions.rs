@@ -12,6 +12,7 @@ use crate::apps::identity::oidc::{
 	BrowserOrigin, csrf_allowed, required_config, session_from_headers,
 };
 use crate::apps::identity::repositories::tenant_deletions::{self, DeletionActor};
+use crate::apps::identity::repositories::tenant_purge;
 use crate::apps::identity::serializers::tenants::{TenantDeletionRequest, TenantDeletionView};
 use crate::apps::identity::services::http_auth::bearer;
 use crate::authorization::identity::{Actor, SubjectIdentity};
@@ -213,6 +214,7 @@ impl TenantDeletions {
 		// decision, and a denial here is audited as one there would be.
 		let mut check = f.store.pool.begin(&scope).await?;
 		let checked = async {
+			refuse_purged(&mut check, &tenant).await?;
 			steward.authorize(&mut check, &tenant, true).await?;
 			tenant_deletions::current_locked(&mut check, &tenant)
 				.await?
@@ -233,8 +235,9 @@ impl TenantDeletions {
 			.store
 			.pool
 			.atomic(&scope, async |tx| {
+				refuse_purged(tx, &tenant).await?;
 				steward.authorize(tx, &tenant, true).await?;
-				let deletion = tenant_deletions::current(tx, &tenant)
+				let deletion = tenant_deletions::current_locked(tx, &tenant)
 					.await?
 					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
 				tenant_deletions::restore(tx, &deletion, steward.actor()).await?;
@@ -246,6 +249,57 @@ impl TenantDeletions {
 			})
 			.await;
 		let deletion = steward.finish(f, result).await?;
+		Ok(deletion.into())
+	}
+
+	/// Ends the grace period of a deleted Tenant now, so its data is purged at
+	/// once instead of at the deadline (ADR 0061). Only a Deployment
+	/// Administrator may: a Tenant Administrator who could skip the grace
+	/// period could not be undone by anyone. The purge itself runs on the
+	/// retention loop, and is started here without waiting for the next sweep.
+	pub(crate) async fn purge_now(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<TenantDeletionView> {
+		aidash_domain::policy::identifier(&tenant)?;
+		if !matches!(actor, Actor::DeploymentAdministrator) {
+			return Err(Error::Forbidden);
+		}
+		let steward = Steward::DeploymentAdministrator(origin);
+		let f = &self.runtime;
+		let result = f
+			.store
+			.pool
+			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+				// A purge that already started, or a deadline already past, is
+				// what this asks for; only a finished purge is refused.
+				if tenant_deletions::ended(tx, &tenant).await? == Some("tenant_purged") {
+					return Err(Error::Conflict("tenant_purged".into()));
+				}
+				steward.authorize(tx, &tenant, true).await?;
+				let deletion = tenant_deletions::current_locked(tx, &tenant)
+					.await?
+					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
+				let deletion = tenant_purge::purge_now(tx, &deletion).await?;
+				steward
+					.administration_actor()
+					.record(tx, event("tenant.purge", &tenant))
+					.await?;
+				Ok(deletion)
+			})
+			.await;
+		let deletion = steward.finish(f, result).await?;
+		let store = f.store.clone();
+		let audit_days = f.config.tenancy.audit_retention_days;
+		tokio::spawn(async move {
+			if let Err(error) =
+				crate::apps::identity::services::tenant_purge::sweep(&store, audit_days).await
+			{
+				tracing::warn!(%error, "the purge started by a Deployment Administrator failed");
+			}
+		});
 		Ok(deletion.into())
 	}
 
@@ -308,6 +362,17 @@ impl TenantDeletions {
 		Ok(Steward::TenantAdministrator(
 			self.tenant_administrator(identity, &origin, tenant)?,
 		))
+	}
+}
+
+/// Refuses a Tenant whose purge is under way or done, before taking any lock.
+/// A purge deletes the Tenant's policy, so every later check of the Tenant would
+/// fail for that reason alone, and a purge step holds the deletion row while it
+/// works, so waiting for it behind the policy lock could deadlock.
+async fn refuse_purged(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()> {
+	match tenant_deletions::ended(tx, tenant).await? {
+		Some(reason) => Err(Error::Conflict(reason.into())),
+		None => Ok(()),
 	}
 }
 

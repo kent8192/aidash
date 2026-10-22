@@ -3,6 +3,7 @@
 //! evaluated against the pinned snapshot instead of fixtures.
 use crate::{Error, Result, tools::required};
 use aidash_domain::{
+	agent_plugin::PluginTools,
 	exposure::{self, Capability, CapabilityIdentity, DeferredBudgets, ExposureState},
 	provider::{ToolCall, ToolSpec},
 	registry::{
@@ -19,6 +20,7 @@ pub const EVALUATED: &str = "evaluated";
 
 /// Discoverable capabilities of a deferred draft. Attachments are
 /// Discoverable and load their pinned body; mounted roots have no live area.
+/// The plugin tools a session pinned are Discoverable like a Run's.
 pub struct Deferred {
 	config: AgentConfig,
 	budgets: DeferredBudgets,
@@ -28,24 +30,30 @@ pub struct Deferred {
 
 impl Deferred {
 	/// `None` under `legacy@1`.
-	pub fn new(snapshot: &BindingSnapshot) -> Result<Option<Self>> {
+	pub fn new(
+		snapshot: &BindingSnapshot,
+		plugin_tools: Option<&PluginTools>,
+	) -> Result<Option<Self>> {
 		let config = AgentConfig::from_snapshot(snapshot)?;
 		let Some(budgets) = config.exposure_policy().budgets().copied() else {
 			return Ok(None);
 		};
-		let specifications =
+		let mut specifications =
 			crate::registry::bindings::execution::bound_specifications(snapshot, |binding, _| {
 				Ok(crate::tools::plugin_specification(
 					&binding.definition,
 					binding.alias.as_deref().unwrap_or_default(),
 				))
 			})?;
+		specifications.extend(crate::tools::agent_plugin::pinned_specifications(
+			plugin_tools,
+		));
 		let attachments = config
 			.skill_attachments
 			.iter()
 			.map(crate::capabilities::skills::attachment_skill)
 			.collect::<Result<Vec<_>>>()?;
-		let catalog = exposure::catalog(snapshot, &specifications, &attachments)?;
+		let catalog = exposure::catalog(snapshot, &specifications, &attachments, plugin_tools)?;
 		Ok(Some(Self {
 			config,
 			budgets,
@@ -84,6 +92,9 @@ impl Deferred {
 					.ok_or_else(|| {
 						Error::Invalid(format!("selected Skill {alias} is not attached"))
 					})?,
+				CapabilityIdentity::AgentPluginTool { .. } => {
+					return Err(Error::Invalid(format!("selected {alias} is not a Skill")));
+				}
 			};
 			text.push_str(&exposure::resident_block(capability, &body));
 		}
@@ -101,7 +112,8 @@ impl Deferred {
 	/// request did not advertise, or a pure exposure tool. Every call of a
 	/// response is decided against its own request's Exposure set; Load/Unload
 	/// results are staged into `state` for the next request. `None` leaves the
-	/// call to its fixture or real dispatch.
+	/// call to its fixture or real dispatch. A pinned plugin tool has no
+	/// `binding`; it is answered only when its request did not advertise it.
 	///
 	/// `fits(result, reserve)` tells whether the next test request still fits
 	/// its limits with `result` recorded and `reserve` more request bytes. A
@@ -111,7 +123,7 @@ impl Deferred {
 	/// [`Evaluated::NoRoom`].
 	pub fn evaluate(
 		&self,
-		binding: &ResolvedBinding,
+		binding: Option<&ResolvedBinding>,
 		call: &ToolCall,
 		state: &mut ExposureState,
 		step: i32,
@@ -136,8 +148,11 @@ impl Deferred {
 			};
 			return Ok(Some(Evaluated::Result(json!({ "error": message }))));
 		}
-		let Some(operation) = (binding.definition.kind == "tool")
-			.then(|| serde_json::from_value::<ToolDescriptor>(binding.definition.config.clone()))
+		let Some(operation) = binding
+			.filter(|binding| binding.definition.kind == "tool")
+			.map(|binding| {
+				serde_json::from_value::<ToolDescriptor>(binding.definition.config.clone())
+			})
 			.transpose()?
 			.map(|descriptor| descriptor.operation)
 			.filter(|operation| EXPOSURE_TOOLS.contains(&operation.as_str()))

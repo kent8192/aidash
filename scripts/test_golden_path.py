@@ -46,6 +46,40 @@ class ReconciliationTests(unittest.TestCase):
         request.assert_called_once_with("http://receiver.invalid", "/api/runs/remote-run", token="subject-token")
 
 
+class FixtureApprovalTests(unittest.TestCase):
+    base = "http://node.invalid"
+
+    def card(self, identifier, tool, **overrides):
+        return {"id": identifier, "kind": "tool_call", "run_id": "run", "revision": 1, "tool": tool, **overrides}
+
+    def test_a_run_on_this_node_is_allowed_once_for_owned_fixture_tools_only(self):
+        page = {"items": [self.card("own", "research-http"), self.card("foreign", "production-payments"),
+                          self.card("outbound", "research-http", kind="outbound")], "next_cursor": None}
+        sent = []
+
+        def request(base, path, body=None, token=None):
+            if body is None:
+                return page
+            sent.append((path, body["choice"], token))
+            return {"state": "approved"}
+        with patch.object(golden_path, "api_request", side_effect=request):
+            golden_path.approve_fixture_tool_calls(self.base, "subject-token")
+        self.assertEqual(sent, [("/api/capabilities/approvals/own/decide", "allow_once", "subject-token")])
+
+    def test_a_run_executing_for_another_node_is_answered_through_its_human_request(self):
+        prompt = "Approve this exact external tool action once? Tool: research-http@1.0.0; call: {}"
+        requests = [{"id": "h1", "kind": "APPROVAL_REQUIRED", "prompt": prompt},
+                    {"id": "h2", "kind": "APPROVAL_REQUIRED", "prompt": prompt.replace("research-http", "payments")},
+                    {"id": "h3", "kind": "APPROVAL_REQUIRED", "prompt": prompt, "response": {"approved": False}}]
+        responses = [{"human_requests": requests}, {}]
+        with patch.object(golden_path, "api_request", side_effect=responses) as request:
+            golden_path.approve_fixture_external_requests(self.base, "subject-token")
+        self.assertEqual(request.call_args_list, [
+            call(self.base, "/api/state", token="subject-token"),
+            call(self.base, "/api/human-requests/h1/answer", {"approved": True}, token="subject-token"),
+        ])
+
+
 class KeylessFixtureProxyTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

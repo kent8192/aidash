@@ -39,7 +39,7 @@ pub fn execution(
 		let node = &app.runtime.config.node_id;
 		let agent = qualified_agent(node, "research", "1.0.0");
 		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
-			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
+			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]});
 		crate::endpoint::tenant_root(&app.runtime, "acme").await;
 		assert_json(
 			app.deployment_administrator

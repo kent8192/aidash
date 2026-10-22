@@ -55,7 +55,41 @@ pub fn human_pending(request_id: Uuid) -> serde_json::Value {
 	pending(
 		RunState::Waiting(Box::new(WaitingState::Human {
 			request_id,
+			answer_by: None,
 			resume: ResumeState::Ready(ReadyState {}),
+		})),
+		Default::default(),
+	)
+}
+
+/// A Run waiting on an approval ADR 0075 leaves outside the local request table:
+/// `home` for the human request a Run executing for another Node sent to that
+/// Node, otherwise a capability approval record.
+#[allow(
+	dead_code,
+	reason = "Shared fixture targets independently use different Run constructors"
+)]
+pub fn approval_pending(approval_id: Uuid, home: bool) -> serde_json::Value {
+	use aidash_domain::run_state::{ApprovalRef, ToolCallState};
+	use aidash_server::domain::{RunState, WaitingState};
+	let approval = if home {
+		ApprovalRef::Home {
+			request_id: approval_id,
+			key: "run:0:0".into(),
+			call: aidash_server::provider::ToolCall {
+				id: "call".into(),
+				name: "plugin_0".into(),
+				arguments: json!({}),
+			},
+			expires_at: Utc::now() + chrono::Duration::minutes(15),
+		}
+	} else {
+		ApprovalRef::Capability { approval_id }
+	};
+	pending(
+		RunState::Waiting(Box::new(WaitingState::Approval {
+			approval,
+			resume: Box::new(ToolCallState::default()),
 		})),
 		Default::default(),
 	)

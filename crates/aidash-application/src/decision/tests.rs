@@ -33,7 +33,7 @@ fn clef() -> DeciderRoute {
 		provider_contract: DECISIONS.into(),
 		model: "cloudflare/clef".into(),
 		hosts: vec!["cloudflare".into(), "deepinfra".into()],
-		keep_threshold: Probability::new(0.3).unwrap(),
+		threshold: Probability::new(0.3).unwrap(),
 		state_budget: StateBudget {
 			long_context_request_bytes: None,
 			long_context_state_bytes: None,
@@ -460,6 +460,9 @@ impl DecisionJournal for Fixture {
 		saved.evidence.push(committed);
 		Ok(())
 	}
+	async fn commit_approval(&self, _: &ApprovalEvidence) -> Result<()> {
+		unreachable!("compaction decisions commit no approval evidence")
+	}
 	async fn expire_states(&self, _: DateTime<Utc>) -> Result<usize> {
 		Ok(0)
 	}
@@ -718,12 +721,12 @@ async fn an_unavailable_route_hands_the_decision_to_the_next_route() {
 		assert_eq!(answered.provider_contract, DECISIONS);
 		assert_eq!(answered.outcome, Outcome::Applied);
 		// The Route's own threshold applies, under the Binding's.
-		assert_eq!(answered.restrictions.keep_threshold.value(), 0.3);
+		assert_eq!(answered.restrictions.threshold.value(), 0.3);
 		assert_eq!(answered.replay().unwrap(), answered.branches);
 		// The pin commits to each Route's threshold, so evidence cannot claim a
 		// looser one than the Route it asked, nor rewrite the Route's.
 		let mut looser = answered.clone();
-		looser.restrictions.keep_threshold = Probability::half();
+		looser.restrictions.threshold = Probability::half();
 		assert!(matches!(
 			looser.replay(),
 			Err(aidash_domain::Error::Invalid(message)) if message.contains("Route asked")
@@ -759,18 +762,19 @@ async fn a_route_that_refuses_the_state_records_evidence_before_the_next_route()
 			.iter()
 			.all(|route| *route == 1)
 	);
-	let saved = fixture.saved.lock().unwrap();
-	let [refused, answered] = saved.evidence.as_slice() else {
-		panic!("one evidence per Route");
-	};
-	assert_eq!(
-		(refused.route, refused.reason),
-		(0, Reason::ProviderFailure)
-	);
-	assert!(refused.attempts.is_empty());
-	refused.validate_rejection().unwrap();
-	assert_eq!((answered.route, answered.outcome), (1, Outcome::Applied));
-	drop(saved);
+	{
+		let saved = fixture.saved.lock().unwrap();
+		let [refused, answered] = saved.evidence.as_slice() else {
+			panic!("one evidence per Route");
+		};
+		assert_eq!(
+			(refused.route, refused.reason),
+			(0, Reason::ProviderFailure)
+		);
+		assert!(refused.attempts.is_empty());
+		refused.validate_rejection().unwrap();
+		assert_eq!((answered.route, answered.outcome), (1, Outcome::Applied));
+	}
 	// When no Route accepts the state, the Run pauses at once, and each
 	// Route's refusal is on record.
 	let fixture = Fixture::routed(
@@ -1278,7 +1282,7 @@ async fn invalid_final_approval_preserves_completed_attempts_without_context_or_
 		for (restrictions, days) in [
 			(
 				Restrictions {
-					keep_threshold: Probability::new(0.6).unwrap(),
+					threshold: Probability::new(0.6).unwrap(),
 					..Default::default()
 				},
 				7,
@@ -1889,7 +1893,7 @@ async fn replay_rejects_erased_retention_markers() {
 async fn bound_decider_restrictions_reach_compaction_without_separate_defaults() {
 	for restrictions in [
 		Restrictions {
-			keep_threshold: Probability::new(0.1).unwrap(),
+			threshold: Probability::new(0.1).unwrap(),
 			..Default::default()
 		},
 		Restrictions {

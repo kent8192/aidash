@@ -5,11 +5,40 @@ use crate::tool::providers::{
 };
 
 impl BindingSnapshot {
+	/// The pinned Agent Plugin Skills are exactly those of the copies the Agent definition names.
+	fn validate_agent_plugins(&self, config: &AgentBindings) -> Result<()> {
+		if self.remote && !config.agent_plugins.is_empty() {
+			return Err(Error::Invalid(
+				"Agent Plugins are unavailable remotely".into(),
+			));
+		}
+		let differs = || {
+			Error::Invalid(
+				"AGENT_PLUGIN_CHANGED: pinned Agent Plugins differ from the Agent".into(),
+			)
+		};
+		if self.agent_plugins.len() != config.agent_plugins.len() {
+			return Err(differs());
+		}
+		for (pinned, reference) in self.agent_plugins.iter().zip(&config.agent_plugins) {
+			let names = pinned
+				.skills
+				.iter()
+				.map(|skill| crate::capabilities::skills::validate(skill).map(|meta| meta.name))
+				.collect::<Result<Vec<_>>>()?;
+			if pinned.digest != reference.digest || names != reference.skills {
+				return Err(differs());
+			}
+		}
+		Ok(())
+	}
+
 	pub(super) fn validate_closure(
 		&self,
 		config: &AgentBindings,
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
+		self.validate_agent_plugins(config)?;
 		let normalized = definitions
 			.get(&self.agent)
 			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
@@ -21,7 +50,7 @@ impl BindingSnapshot {
 			.map(|binding| (binding, BTreeSet::new(), None::<(String, String)>))
 			.collect::<Vec<_>>();
 		let mut expected = BTreeMap::<QualifiedRef, NormalizedBinding>::new();
-		let mut source_skill_support = false;
+		let mut source_skill_support = config.has_plugin_skills();
 		let mut decision_hooks = BTreeSet::new();
 		while let Some((mut normalized, mut ancestry, lifecycle)) = pending.pop() {
 			let binding = &mut normalized.binding;

@@ -470,9 +470,6 @@ impl ExecutionStore for Bench {
 	async fn human_request_by_id(&self, _id: Uuid) -> Result<HumanRequest> {
 		unexpected("ExecutionStore.human_request_by_id")
 	}
-	async fn expire_workbench_approval(&self, _id: Uuid) -> Result<HumanRequest> {
-		unexpected("ExecutionStore.expire_workbench_approval")
-	}
 	async fn invocation_start(
 		&self,
 		_run: &Run,
@@ -741,6 +738,37 @@ impl ExecutionAuthority for Bench {
 	}
 	async fn human_read(&self, _id: Uuid) -> Result<()> {
 		unexpected("ExecutionAuthority.human_read")
+	}
+	async fn tool_call_approval(
+		&self,
+		_run: &Run,
+		_request: ToolCallRequest,
+	) -> Result<ToolCallApproval> {
+		unexpected("ExecutionAuthority.tool_call_approval")
+	}
+	async fn approval_mode(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		unexpected("ExecutionAuthority.approval_mode")
+	}
+	async fn answer_deadline(&self, _run: &Run) -> Result<Option<i64>> {
+		unexpected("ExecutionAuthority.answer_deadline")
+	}
+	async fn approval_judgement(
+		&self,
+		_run: &Run,
+		_approval: Uuid,
+	) -> Result<Option<aidash_application::capabilities::approvals::JudgeRequest>> {
+		unexpected("ExecutionAuthority.approval_judgement")
+	}
+	async fn settle_judgement(
+		&self,
+		_run: &Run,
+		_approval: Uuid,
+		_settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<bool> {
+		unexpected("ExecutionAuthority.settle_judgement")
 	}
 	async fn model_media(
 		&self,

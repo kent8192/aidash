@@ -54,28 +54,28 @@ jobs:
       contents: read
     outputs:
       proceed: ${{ steps.filter.outputs.proceed }}
-      # Every later job checks out this one default-branch commit, so the
-      # trusted images, charts and controller of a run cannot diverge if the
+      # Every later job checks out this one protected default-branch commit, so
+      # the trusted images, charts and controller of a run cannot diverge if the
       # branch advances while jobs are scheduled.
       trusted: ${{ steps.trusted.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
-          # The execution/default branch is separate from the protected code anchor.
           persist-credentials: false
       - id: trusted
         env:
           GH_TOKEN: ${{ github.token }}
+          TRUSTED_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$RUNNER_TEMP/trusted-branch.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/${TRUSTED_BRANCH//\//%2F}" > "$RUNNER_TEMP/trusted-branch.json"
           python3 - <<'PY'
           import json, os, re
           from pathlib import Path
           branch = json.loads((Path(os.environ['RUNNER_TEMP']) / 'trusted-branch.json').read_text())
           sha = branch['commit']['sha']
           if not branch.get('protected') or not re.fullmatch('[a-f0-9]{40}', sha):
-              raise SystemExit('The CD code anchor must be protected main')
+              raise SystemExit('The CD code anchor must be the protected default branch')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'sha={sha}\n')
           PY
@@ -226,6 +226,7 @@ jobs:
       AIDASH_RUNTIME_TEST: ${{ secrets.GCP_TEST_RUNTIME_CONFIG }}
       AIDASH_RUNTIME_PR: ${{ secrets.GCP_PR_RUNTIME_CONFIG }}
       AIDASH_GCIP_IDP_SECRETS: ${{ secrets.GCP_GCIP_IDP_SECRETS }}
+      AIDASH_DEMO_DATA: ${{ secrets.GCP_DEMO_DATA }}
       TF_IN_AUTOMATION: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

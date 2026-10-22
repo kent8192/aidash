@@ -87,6 +87,7 @@ pub(crate) async fn create_in(
 		response: None,
 		created_at: chrono::Utc::now(),
 		answered_by: None,
+		answer_by: None,
 	};
 	requests.push(Record {
 		key: key.into(),

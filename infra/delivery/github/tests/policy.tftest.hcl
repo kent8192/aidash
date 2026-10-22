@@ -11,10 +11,6 @@ override_data {
   target = data.github_app.actions
   values = { id = "15368" }
 }
-override_data {
-  target = data.github_app.release[0]
-  values = { id = "543210" }
-}
 
 variables {
   configure_variables          = true
@@ -104,7 +100,6 @@ run "protection_phase_needs_no_cloud_or_release_app" {
       length(github_repository_environment.delivery) == 5 &&
       length(github_actions_variable.delivery) == 4 &&
       alltrue([for item in github_actions_variable.delivery : item.value == "false"]) &&
-      length(data.github_app.release) == 0 &&
       length(github_actions_environment_variable.notification_account) == 0
     )
     error_message = "Initial protection must work without cloud/App credentials and touch only disabled flags, not existing account variables."
@@ -159,10 +154,10 @@ run "narrow_ci_rulesets_preserve_baseline_policy_and_bootstrap_access" {
   }
   assert {
     condition = (
-      github_repository_ruleset.delivery_checks["main"].conditions[0].ref_name[0].include == tolist(["refs/heads/main"]) &&
-      github_repository_ruleset.delivery_checks["develop"].conditions[0].ref_name[0].include == tolist(["refs/heads/develop/0.1.0"])
+      keys(github_repository_ruleset.delivery_checks) == ["main"] &&
+      github_repository_ruleset.delivery_checks["main"].conditions[0].ref_name[0].include == tolist(["refs/heads/main"])
     )
-    error_message = "Required checks must target exactly stable main and the configured development branch."
+    error_message = "Required checks must target exactly stable main; development branches keep only the baseline ruleset."
   }
 }
 
@@ -175,10 +170,9 @@ run "reviewed_rollout_binds_staging_to_release_app" {
   assert {
     condition = (
       length(github_repository_ruleset.delivery_checks["main"].rules[0].required_status_checks[0].required_check) == 2 &&
-      length([for check in github_repository_ruleset.delivery_checks["main"].rules[0].required_status_checks[0].required_check : check if check.context == "Staging deployment" && check.integration_id == 543210]) == 1 &&
-      length(github_repository_ruleset.delivery_checks["develop"].rules[0].required_status_checks[0].required_check) == 1
+      length([for check in github_repository_ruleset.delivery_checks["main"].rules[0].required_status_checks[0].required_check : check if check.context == "Staging deployment" && check.integration_id == 543210]) == 1
     )
-    error_message = "Only the reviewed release App may satisfy staging, and develop must not require a release-only status."
+    error_message = "Only the reviewed release App may satisfy staging."
   }
 }
 
@@ -207,15 +201,6 @@ run "staging_gate_before_bootstrap_is_rejected" {
   command = plan
   variables {
     require_staging_check = true
-  }
-  expect_failures = [terraform_data.contract]
-}
-
-run "app_id_slug_mismatch_is_rejected" {
-  command = plan
-  override_data {
-    target = data.github_app.release[0]
-    values = { id = "654321" }
   }
   expect_failures = [terraform_data.contract]
 }
@@ -276,6 +261,40 @@ run "controlled_activation_uses_only_explicit_flags" {
       github_actions_variable.delivery[key].value == "true"
     ])
     error_message = "Explicit validated activation must publish the selected workflow flags without manipulating secrets."
+  }
+}
+
+run "activated_nonproduction_defaults_notifications_on" {
+  command = plan
+  variables {
+    bootstrap_code_installed = true
+    activation_validated     = true
+    enablement               = { nonproduction = true }
+  }
+  assert {
+    condition = (
+      github_actions_variable.delivery["GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED"].value == "true" &&
+      github_actions_variable.delivery["GCP_ENVIRONMENTS_ENABLED"].value == "true" &&
+      github_actions_variable.delivery["GCP_PRODUCTION_ENABLED"].value == "false" &&
+      github_actions_variable.delivery["GCP_CERTIFICATE_RENEWAL_ENABLED"].value == "false"
+    )
+    error_message = "Validated nonproduction activation must enable deployment mail by default without enabling production or certificates."
+  }
+}
+
+run "activated_nonproduction_can_disable_notifications" {
+  command = plan
+  variables {
+    bootstrap_code_installed = true
+    activation_validated     = true
+    enablement               = { nonproduction = true, notifications = false }
+  }
+  assert {
+    condition = (
+      github_actions_variable.delivery["GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED"].value == "false" &&
+      github_actions_variable.delivery["GCP_ENVIRONMENTS_ENABLED"].value == "true"
+    )
+    error_message = "An explicit notification opt-out must remain effective without disabling nonproduction."
   }
 }
 

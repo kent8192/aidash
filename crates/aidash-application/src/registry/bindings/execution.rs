@@ -1,14 +1,15 @@
 //! Reconstruct dispatch from durable Bindings while checking live Node authority.
 use crate::{
 	Error, Result,
-	ports::{bindings::*, execution::*},
+	ports::{bindings::*, execution::*, tools::PluginSessions},
+	tools::agent_plugin::pinned_tools,
 };
 use aidash_domain::{
 	Run,
 	provider::ToolSpec,
 	registry::{bindings::*, rules::digest},
 	tool::{
-		ToolContract,
+		ToolConfig, ToolContract,
 		concurrency::{ConcurrentCall, batchable},
 		providers::ToolDescriptor,
 	},
@@ -20,6 +21,9 @@ use std::{collections::BTreeMap, sync::Arc};
 pub struct PinnedResolver {
 	pub providers: Arc<dyn ProviderSet>,
 	pub authority: Arc<dyn BindingAuthority>,
+	/// The Run's sessions with its Agent Plugins' remote servers. Without them, a Run offers no
+	/// plugin tool.
+	pub sessions: Option<Arc<dyn PluginSessions>>,
 }
 #[async_trait]
 impl BindingResolver for PinnedResolver {
@@ -78,6 +82,15 @@ impl BindingResolver for PinnedResolver {
 				}) as Arc<dyn ExecutionTool>,
 			);
 		}
+		if let Some(sessions) = &self.sessions {
+			for (alias, tool) in pinned_tools(sessions, run, snapshot)? {
+				if tools.insert(alias.clone(), tool).is_some() {
+					return Err(Error::Conflict(format!(
+						"plugin tool {alias} has the alias of another tool"
+					)));
+				}
+			}
+		}
 		Ok(tools)
 	}
 }
@@ -97,6 +110,12 @@ impl ExecutionTool for BoundTool {
 	}
 	fn contract(&self) -> ToolContract {
 		self.contract.clone()
+	}
+	fn external_target(&self) -> Option<String> {
+		match serde_json::from_value::<ToolConfig>(self.binding.definition.config.clone()).ok()? {
+			ToolConfig::Http { endpoint, .. } | ToolConfig::Mcp { endpoint, .. } => Some(endpoint),
+			ToolConfig::Native { .. } | ToolConfig::Agent { .. } => None,
+		}
 	}
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()

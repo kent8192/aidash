@@ -1,4 +1,5 @@
 use super::*;
+use crate::approval_rules::{MODE_BYPASS, MODE_RESOURCE};
 use crate::identity::tenant_administration::{ACTIONS, ADMINISTRATION_ACTIONS};
 use rstest::rstest;
 use std::collections::BTreeSet;
@@ -105,6 +106,7 @@ fn each_offering_supplies_its_column_of_defaults(
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: 30,
+			audit_retention_days: 365,
 		}
 	);
 }
@@ -155,10 +157,15 @@ fn a_zero_hourly_limit_allows_nothing() {
 #[test]
 fn the_creator_administers_and_members_use() {
 	let mut bundle = initial_policy("brave-otter-k3m9q2xa", true).unwrap();
-	for action in ACTIONS
-		.iter()
-		.chain([TENANT_UPDATE, TENANT_DELETE, "catalog.approve"].iter())
-	{
+	for action in ACTIONS.iter().chain(
+		[
+			TENANT_UPDATE,
+			TENANT_DELETE,
+			BILLING_ATTACH,
+			"catalog.approve",
+		]
+		.iter(),
+	) {
 		assert!(allows(&bundle, OWNER, action), "{action}");
 	}
 	assert!(bundle.groups[ADMINISTRATORS].assignable);
@@ -190,6 +197,7 @@ fn the_creator_administers_and_members_use() {
 		[
 			TENANT_UPDATE,
 			TENANT_DELETE,
+			BILLING_ATTACH,
 			"catalog.approve",
 			"provider_credential.create",
 			"research.disclose",
@@ -202,10 +210,118 @@ fn the_creator_administers_and_members_use() {
 }
 
 #[test]
+fn members_approve_tool_calls_and_nothing_else_they_could_be_asked_for() {
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let evaluate = |subject: &str, kind: &str, action: &str| {
+		bundle
+			.evaluate(&Evaluation {
+				subject: subject.into(),
+				action: action.into(),
+				resource: Resource {
+					tenant: bundle.tenant.clone(),
+					kind: kind.into(),
+					id: "tool-1".into(),
+					attributes: json!({}),
+				},
+				environment: json!({}),
+			})
+			.allowed
+	};
+	assert!(evaluate("alice", "tool", "capability.approve"));
+	for kind in ["outbound", "research", "generation"] {
+		assert!(!evaluate("alice", kind, "capability.approve"), "{kind}");
+	}
+	// Calling without approval is never granted by default, not even by an
+	// administrator's wildcard: the Tenant has to name it.
+	assert!(!evaluate("alice", "tool", "tool.call_unapproved"));
+	assert!(!evaluate(OWNER, "tool", "tool.call_unapproved"));
+}
+
+#[test]
+fn members_may_approve_in_advance_and_use_auto_but_bypass_has_to_be_named() {
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let evaluate = |subject: &str, kind: &str, id: &str, action: &str| {
+		bundle
+			.evaluate(&Evaluation {
+				subject: subject.into(),
+				action: action.into(),
+				resource: Resource {
+					tenant: bundle.tenant.clone(),
+					kind: kind.into(),
+					id: id.into(),
+					attributes: json!({}),
+				},
+				environment: json!({}),
+			})
+			.allowed
+	};
+	// Advancing is allowed on every kind, yet only what the member could
+	// approve themselves is within the ceiling.
+	for kind in ["tool", "outbound", "research", "generation"] {
+		assert!(evaluate("alice", kind, "x", APPROVAL_ADVANCE), "{kind}");
+	}
+	assert!(!evaluate("alice", "outbound", "x", "capability.approve"));
+	assert!(evaluate("alice", MODE_RESOURCE, "auto", MODE_AUTO));
+	for subject in ["alice", OWNER] {
+		assert!(
+			!evaluate(subject, MODE_RESOURCE, "bypass", MODE_BYPASS),
+			"{subject}"
+		);
+	}
+}
+
+#[test]
+fn only_administrators_read_a_members_approval_settings() {
+	// Arrange
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	let read = administration::APPROVAL_READ;
+
+	// Act + Assert: the action is judged on the member, and members never hold it.
+	assert_eq!(administration::resource_kind(read), "subject");
+	assert!(allows(&bundle, OWNER, read));
+	assert!(!allows(&bundle, "alice", read));
+	assert!(ACTIONS.contains(&read));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&read));
+}
+
+#[test]
+fn the_mode_actions_are_judged_on_the_approval_mode_resource() {
+	for action in [crate::approval_rules::MODE_AUTO, MODE_BYPASS] {
+		assert_eq!(administration::resource_kind(action), MODE_RESOURCE);
+	}
+}
+
+#[test]
+fn a_wildcard_allow_never_grants_an_explicit_action_but_a_wildcard_deny_covers_it() {
+	let mut bundle = initial_policy("t", true).unwrap();
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(!allows(&bundle, OWNER, action), "{action}");
+	}
+	let mut named = bundle.policies[0].clone();
+	named.id = "named".into();
+	named.actions = crate::policy::EXPLICIT_ACTIONS
+		.iter()
+		.map(|action| (*action).to_owned())
+		.collect();
+	bundle.policies.push(named);
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(allows(&bundle, OWNER, action), "{action}");
+	}
+	let mut deny = bundle.policies[0].clone();
+	deny.id = "deny-all".into();
+	deny.effect = crate::policy::Effect::Deny;
+	deny.actions = ["*".to_owned()].into();
+	bundle.policies.push(deny);
+	for action in crate::policy::EXPLICIT_ACTIONS {
+		assert!(!allows(&bundle, OWNER, action), "{action}");
+	}
+}
+
+#[test]
 fn a_tenant_without_a_creator_starts_empty() {
 	let bundle = initial_policy("calm-heron-00000000", false).unwrap();
 	assert!(bundle.subjects.is_empty());
-	assert_eq!(bundle.policies.len(), 2);
+	assert_eq!(bundle.policies.len(), 3);
 }
 
 fn with_member(mut bundle: PolicyBundle, name: &str, group: &str) -> PolicyBundle {

@@ -38,6 +38,8 @@ pub mod tools;
 
 pub mod skill_import;
 
+pub mod agent_plugin_import;
+
 pub mod runner;
 
 pub mod outbound;

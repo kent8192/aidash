@@ -4,6 +4,7 @@ use crate::{
 	ports::registry::CoreToolCatalog,
 };
 use aidash_domain::{
+	approval_rules::{ApprovalKind, ApprovalMode, ApprovalRule, RuleEffect, RuleTarget, Settings},
 	capabilities::CoreCapabilities,
 	generation::requests::Request,
 	policy::{PolicyBundle, Subject},
@@ -35,6 +36,8 @@ struct State {
 	failure: Option<String>,
 	pause: Option<String>,
 	denied: BTreeSet<String>,
+	/// Every history reason, in order.
+	reasons: Vec<String>,
 	active: usize,
 	commits: usize,
 	rollbacks: usize,
@@ -61,6 +64,10 @@ struct Scope {
 	finished: bool,
 	created: Option<Request>,
 	foreign_clock: DateTime<Utc>,
+	/// The rules and mode of the person the chain starts at.
+	settings: Option<Settings>,
+	/// What the Tenant's policy lets that person do alone, as `kind:action`.
+	root_policy: BTreeSet<String>,
 }
 impl Scope {
 	fn new() -> Self {
@@ -108,6 +115,8 @@ impl Scope {
 			finished: false,
 			created: None,
 			foreign_clock: now,
+			settings: None,
+			root_policy: BTreeSet::new(),
 		}
 	}
 	async fn point(&self, name: impl Into<String>) -> Result<()> {
@@ -308,8 +317,8 @@ impl GenerationCreationScope for Scope {
 	}
 	async fn history(&mut self, id: Uuid, status: &str, reason: &str) -> Result<()> {
 		assert_eq!(id, Uuid::from_u128(1));
-		assert_eq!(reason, "work");
 		self.point("history").await?;
+		self.state.lock().unwrap().reasons.push(reason.into());
 		self.effects.push(format!("history:{status}"));
 		Ok(())
 	}
@@ -327,6 +336,18 @@ impl GenerationCreationScope for Scope {
 	async fn visible(&mut self, _job: &Request) -> Result<bool> {
 		self.point("visible").await?;
 		Ok(self.visible)
+	}
+	async fn approval_settings(&mut self) -> Result<Option<Settings>> {
+		Ok(self.settings.clone())
+	}
+	async fn root_allows(
+		&mut self,
+		kind: &str,
+		_id: &str,
+		_attributes: Value,
+		action: &str,
+	) -> Result<bool> {
+		Ok(self.root_policy.contains(&format!("{kind}:{action}")))
 	}
 }
 #[async_trait]
@@ -851,6 +872,9 @@ async fn foreign_creation_inherits_depth_caps_expiry_and_omits_local_events(
 	let mut scope = Scope::new();
 	scope.depth = Some(1);
 	scope.policy.spec.limits.max_depth = 4;
+	// Nobody's mode or rules cover a request that arrived through Federation.
+	empowered(&mut scope);
+	advising(&mut scope, ApprovalMode::Bypass, vec![]);
 	let intent = Intent {
 		id: Uuid::from_u128(6),
 		home_node: "aidash://home".into(),
@@ -1023,4 +1047,173 @@ async fn each_quota_limit_is_independent_and_prevents_insert(
 	));
 	assert!(!scope.calls().iter().any(|c| c == "insert"));
 	assert!(scope.effects.is_empty());
+}
+
+/// Alice may approve generation and catalog requests and advance approvals,
+/// and may use the Auto and Bypass modes.
+fn empowered(scope: &mut Scope) {
+	scope.root_policy.extend(
+		[
+			"generation:generation.approve",
+			"registry:catalog.approve",
+			"generation:approval.advance",
+			"approval_mode:approval.mode.auto",
+			"approval_mode:approval.mode.bypass",
+		]
+		.map(String::from),
+	);
+}
+fn advising(scope: &mut Scope, mode: ApprovalMode, rules: Vec<ApprovalRule>) {
+	scope.settings = Some(Settings {
+		mode,
+		rules,
+		bypass_accepted: true,
+		auto_available: true,
+	});
+}
+fn policy_rule(effect: RuleEffect) -> ApprovalRule {
+	ApprovalRule {
+		id: Uuid::from_u128(21),
+		kind: ApprovalKind::Generation,
+		target: RuleTarget::Exact("policy".into()),
+		effect,
+	}
+}
+#[rstest]
+#[case::allow_rule(ApprovalMode::Manual, vec![policy_rule(RuleEffect::Allow)], format!("approved in advance through Approval Rule {}", Uuid::from_u128(21)))]
+#[case::bypass(ApprovalMode::Bypass, vec![], "approved in advance through the Bypass Approval Mode".to_owned())]
+#[tokio::test]
+async fn a_rule_or_mode_within_the_ceiling_queues_the_request_and_names_itself(
+	validation: DefinitionValidation,
+	#[case] mode: ApprovalMode,
+	#[case] rules: Vec<ApprovalRule>,
+	#[case] reason: String,
+) {
+	let mut scope = Scope::new();
+	empowered(&mut scope);
+	advising(&mut scope, mode, rules);
+
+	let job = generated(
+		assign_in(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+		)
+		.await
+		.unwrap(),
+	);
+
+	assert_eq!(job.status, "QUEUED");
+	assert_eq!(
+		scope.state.lock().unwrap().reasons,
+		["work".to_owned(), reason]
+	);
+	assert_eq!(
+		&scope.effects[3..],
+		["history:PENDING_APPROVAL", "history:QUEUED", "event"]
+	);
+}
+#[rstest]
+#[case::no_catalog_approval("registry:catalog.approve")]
+#[case::no_generation_approval("generation:generation.approve")]
+#[case::advance_not_allowed("generation:approval.advance")]
+#[tokio::test]
+async fn an_allow_rule_beyond_the_ceiling_leaves_the_request_pending(
+	validation: DefinitionValidation,
+	#[case] missing: &str,
+) {
+	let mut scope = Scope::new();
+	empowered(&mut scope);
+	scope.root_policy.remove(missing);
+	advising(
+		&mut scope,
+		ApprovalMode::Manual,
+		vec![policy_rule(RuleEffect::Allow)],
+	);
+
+	let job = generated(
+		assign_in(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+		)
+		.await
+		.unwrap(),
+	);
+
+	assert_eq!(job.status, "PENDING_APPROVAL");
+}
+#[rstest]
+#[case::deny_rule(ApprovalMode::Bypass, vec![policy_rule(RuleEffect::Deny)])]
+#[case::dont_ask(ApprovalMode::DontAsk, vec![])]
+#[tokio::test]
+async fn a_deny_rule_or_dont_ask_refuses_the_request_without_reserving_anything(
+	validation: DefinitionValidation,
+	#[case] mode: ApprovalMode,
+	#[case] rules: Vec<ApprovalRule>,
+) {
+	let mut scope = Scope::new();
+	empowered(&mut scope);
+	advising(&mut scope, mode, rules);
+
+	let result = assign_in(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await;
+
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(scope.effects.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn auto_leaves_a_generation_request_to_a_person_as_it_has_no_step_to_judge(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	empowered(&mut scope);
+	advising(&mut scope, ApprovalMode::Auto, vec![]);
+
+	let job = generated(
+		assign_in(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+		)
+		.await
+		.unwrap(),
+	);
+
+	assert_eq!(job.status, "PENDING_APPROVAL");
+}
+#[rstest]
+#[tokio::test]
+async fn a_request_without_a_person_of_the_tenant_is_never_covered(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	empowered(&mut scope);
+
+	let job = generated(
+		assign_in(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+		)
+		.await
+		.unwrap(),
+	);
+
+	assert_eq!(job.status, "PENDING_APPROVAL");
 }

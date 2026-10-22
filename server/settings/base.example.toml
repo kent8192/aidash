@@ -81,6 +81,17 @@ creation_total = 20
 invitations = true
 # Days a deleted Tenant stays restorable before its data is purged (1 to 90).
 deletion_grace_days = 30
+# Days a purged Tenant's audit history (administration history, authorization
+# decisions, policy revisions, catalog history, Evidence Revocations and
+# Retention Rule history) is kept before it is deleted (1 to 3650).
+audit_retention_days = 365
+
+# Demo data (ADR 0079, ADR 0080): `aidash demo-data` loads fictional Tenants and
+# reserves them for people by verified email. The command refuses to run, and
+# a sign-in fulfils no Demo Reservation, unless this is on. Only the migration
+# Job of a non-production Environment turns it on, with AIDASH_DEMO_DATA_ENABLED.
+[demo_data]
+enabled = false
 
 # Omit this table to disable dashboard OIDC.
 # [dashboard.oidc]

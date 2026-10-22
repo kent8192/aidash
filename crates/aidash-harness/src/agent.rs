@@ -1,6 +1,15 @@
 //! Durable agent execution use case. All effects cross application ports.
-use aidash_application::{Error, Result, execution::*, ports::execution::*};
+use aidash_application::{
+	Error, Result,
+	capabilities::approvals::{
+		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
+		answer_deadline_response, answer_for_model,
+	},
+	execution::*,
+	ports::execution::*,
+};
 use aidash_domain::{
+	approval_rules::ApprovalMode,
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
 	media::ModelMedia,
@@ -12,7 +21,7 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
+	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -50,7 +59,7 @@ impl<'a> Executor<'a> {
 		run.state.tool_mut()?.request_tokens =
 			run.state.tool()?.request_tokens.saturating_add(growth);
 		run.context = context.clone();
-		run.state.tool_mut()?.cursor = cursor + 1;
+		run.state.tool_mut()?.advance(cursor + 1);
 		self.environment
 			.store()
 			.save_run(run, token, "run.tool_recorded")
@@ -263,7 +272,7 @@ impl<'a> Executor<'a> {
 		progress.workspace_read_plan = None;
 		progress.skill_read_plan = None;
 		progress.workspace_observation_plan = None;
-		progress.cursor = end;
+		progress.advance(end);
 		progress.batch_end = None;
 		store.save_run(run, token, "run.tool_recorded").await?;
 		Ok(true)
@@ -919,6 +928,53 @@ impl<'a> Executor<'a> {
 		token: Uuid,
 		visibility: &mut dyn ExecutionVisibility,
 	) -> Result<()> {
+		self.advance_step(run, token, visibility).await?;
+		if run.phase().is_terminal() {
+			self.environment.close_plugin_sessions(run.id).await;
+		}
+		Ok(())
+	}
+	/// Lists the remote servers of the Run's Agent Plugins once, at its first step, and pins the
+	/// tools they offer (ADR 0073). A recovered Run that pinned them never lists again, and a
+	/// crash before the save lists again.
+	async fn pin_plugin_tools(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&dyn ExecutionAuthority>,
+		visibility: &mut dyn ExecutionVisibility,
+	) -> Result<()> {
+		let declares_plugins = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.is_some_and(|snapshot| !snapshot.agent_plugins.is_empty());
+		if !declares_plugins || run.context.plugin_tools.is_some() {
+			return Ok(());
+		}
+		// Like inference, release visibility and authorization locks during I/O.
+		if let Some(guard) = guard {
+			guard.suspend().await?;
+		}
+		visibility.suspend().await?;
+		let pinned = self.environment.pin_plugin_tools(run).await;
+		let resumed = visibility.resume().await;
+		if let Some(guard) = guard {
+			guard.resume().await?;
+		}
+		resumed?;
+		let Some(pinned) = pinned? else {
+			return Ok(());
+		};
+		run.context.plugin_tools = Some(pinned);
+		self.environment.store().pin_plugin_tools(run, token).await
+	}
+	async fn advance_step(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		visibility: &mut dyn ExecutionVisibility,
+	) -> Result<()> {
 		let store = self.environment.store();
 		let guard = self.environment.authority();
 		let home = self.environment.home(run);
@@ -1039,6 +1095,7 @@ impl<'a> Executor<'a> {
 				home.claim(&task, &entry).await?;
 				home.transition(aidash_domain::TaskStatus::Running).await?;
 				self.record_start_content(run, &agent).await?;
+				self.pin_plugin_tools(run, token, guard, visibility).await?;
 				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
 			}
@@ -1284,6 +1341,13 @@ impl<'a> Executor<'a> {
 					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
+				}
+				if !run_message_catchup
+					&& home.local()
+					&& let Some(guard) = guard
+					&& guard.auto_judging(run).await?
+				{
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(AUTO_MODE_INSTRUCTION);
 				}
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"agent_state":{"phase":run.phase(),"step":run.step}});
 				if let Some(deferred_read) = &thinking.deferred_workspace_read {
@@ -1978,7 +2042,8 @@ impl<'a> Executor<'a> {
 					workspace_read_plan: None,
 					skill_read_plan: None,
 					workspace_observation_plan: None,
-					workbench_approval_result: None,
+					home_approval: None,
+					approval: None,
 					batch_end: None,
 				}));
 				run.error = None;
@@ -2260,6 +2325,7 @@ impl<'a> Executor<'a> {
 								let h=home.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
 								run.state = RunState::Waiting(Box::new(WaitingState::Human {
 									request_id: h.id,
+									answer_by: None,
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							} else {
@@ -2468,6 +2534,14 @@ impl<'a> Executor<'a> {
 						Err(error) => return Err(error),
 					}
 				}
+				// A person who asked not to be asked is not asked by the model either.
+				if contract.behavior.continuation == Continuation::Human
+					&& home.local()
+					&& let Some(guard) = guard
+					&& guard.approval_mode(run).await? == Some(ApprovalMode::DontAsk)
+				{
+					return self.tool_error(run, token, &call, cursor, DONT_ASK_HUMAN_REQUEST.into()).await;
+				}
 				let mut prepared_result = None;
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
 					let (range, saved) = match tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor) {
@@ -2509,33 +2583,91 @@ impl<'a> Executor<'a> {
 				}
 				let call = &call;
 				let response_epoch = run.state.tool()?.response_epoch;
-				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
-				// Approval follows the admitted provider contract for every Agent.
-				if contract.behavior.workbench_approval {
+				let call_key = format!("{}:{}:{}", run.id, response_epoch, cursor);
+				// A call resumed after an approval raised inside it runs under its
+				// own key, so the recorded `approval_required` result never replays.
+				let key = match run.state.tool()?.approval {
+					Some(approval) => format!("{call_key}:approval:{approval}"),
+					None => call_key.clone(),
+				};
+				// Approval follows the admitted provider contract for every Agent. A
+				// Read-only operation needs none, yet only the Tenant's own authority
+				// can tell whether its policy forbids the call outright.
+				if contract.behavior.tool_call_approval
+					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
+				{
 					let (reference_id, reference_version) = match &contract.identity {
-						ToolIdentity::Descriptor(reference) => (&reference.id, &reference.version),
-						ToolIdentity::Registry(reference) => (&reference.id, &reference.version),
+						ToolIdentity::Descriptor(reference) => (reference.id.clone(), reference.version.clone()),
+						ToolIdentity::Registry(reference) => (reference.id.clone(), reference.version.clone()),
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
+						ToolIdentity::AgentPlugin(tool) => plugin_approval_reference(tool),
 					};
-					if let Some(decision) = run
+					if home.local() {
+						let Some(guard) = guard else {
+							return self
+								.tool_error(run, token, call, cursor, "tool call approval is unavailable without scoped authority".into())
+								.await;
+						};
+						let request = ToolCallRequest {
+							key: call_key.clone(),
+							tool: aidash_domain::registry::EntityRef {
+								id: reference_id.clone(),
+								version: reference_version.clone(),
+							},
+							operation: INVOKE.into(),
+							call: call.clone(),
+							area: None,
+							read_only: contract.behavior.read_only_operation,
+						};
+						let mut outcome = guard.tool_call_approval(run, request.clone()).await?;
+						if let ToolCallApproval::Pending { approval_id, .. } = outcome {
+							let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
+							// Asked again, the approval answers as the Decider settled it.
+							if self.judge_approval(run, token, guard, &pending, approval_id).await?.settled() {
+								outcome = guard.tool_call_approval(run, request).await?;
+							}
+						}
+						match outcome {
+							ToolCallApproval::Approved { .. } => {}
+							ToolCallApproval::Pending { approval_id, .. } => {
+								run.state = RunState::Waiting(Box::new(WaitingState::Approval {
+									approval: ApprovalRef::Capability { approval_id },
+									resume: Box::new(run.state.tool()?.clone()),
+								}));
+								store
+									.save_run(run, token, "run.waiting_for_tool_approval")
+									.await?;
+								return Ok(());
+							}
+							ToolCallApproval::Refused(refusal) => {
+								return self
+									.tool_error(run, token, call, cursor, refusal.message().into())
+									.await;
+							}
+						}
+					} else if let Some(decision) = run
 						.state
 						.tool()?
-						.workbench_approval_result
+						.home_approval
 						.as_ref()
-						.filter(|d| d.key == key && d.call == *call)
+						.filter(|d| d.key == call_key && d.call == *call)
 					{
-						if !decision.approved || decision.expires_at <= chrono::Utc::now() {
+						if !decision.approved {
 							return self
 								.tool_error(
 									run,
 									token,
 									call,
 									cursor,
-									"external write approval was denied or expired".into(),
+									"tool call approval was denied or expired".into(),
 								)
 								.await;
 						}
 					} else {
+						if let Some(guard) = guard {
+							guard.action("human.request", "run", run.id).await?;
+						}
+						// The person who can approve is at the Node the Run executes for.
 						let prompt = format!(
 							"Approve this exact external tool action once? Tool: {}@{}; call: {}",
 							reference_id,
@@ -2547,17 +2679,18 @@ impl<'a> Executor<'a> {
 								run,
 								"APPROVAL_REQUIRED",
 								&prompt,
-								&format!("{key}:workbench-approval"),
+								&format!("{call_key}:workbench-approval"),
 							)
 							.await?;
-						run.state =
-							RunState::Waiting(Box::new(WaitingState::ExternalApproval {
+						run.state = RunState::Waiting(Box::new(WaitingState::Approval {
+							approval: ApprovalRef::Home {
 								request_id: request.id,
-								key: key.clone(),
+								key: call_key.clone(),
 								call: call.clone(),
 								expires_at: request.created_at + chrono::Duration::minutes(15),
-								resume: Box::new(run.state.tool()?.clone()),
-							}));
+							},
+							resume: Box::new(run.state.tool()?.clone()),
+						}));
 						store
 							.save_run(run, token, "run.waiting_for_tool_approval")
 							.await?;
@@ -2682,6 +2815,40 @@ impl<'a> Executor<'a> {
 				} else {
 					output
 				};
+				// What a Tenant's HTTP or MCP tool returns is external data and never
+				// raises an approval, which would repeat the external call.
+				let framework = if contract.behavior.tenant_tool_call() {
+					FrameworkResult::Ordinary
+				} else {
+					FrameworkResult::decode(&contract, &output)?
+				};
+				// An approval raised inside the call is not its result. The Run waits,
+				// then makes the same call again under the approval's own key.
+				if let FrameworkResult::Approval(approval_id) = framework {
+					if let Some(guard) = guard {
+						let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
+						match self.judge_approval(run, token, guard, &pending, approval_id).await? {
+							// The call runs again at once under the approval's own key.
+							approval::Judged::Allowed => {
+								run.state.tool_mut()?.approval = Some(approval_id);
+								store.save_run(run, token, "run.approved_by_auto").await?;
+								return Ok(());
+							}
+							approval::Judged::Blocked(reason) => {
+								return self.tool_error(run, token, call, cursor, reason.refusal_message().into()).await;
+							}
+							approval::Judged::Undecided => {}
+						}
+					}
+					let mut resume = run.state.tool()?.clone();
+					resume.approval = Some(approval_id);
+					run.state = RunState::Waiting(Box::new(WaitingState::Approval {
+						approval: ApprovalRef::Capability { approval_id },
+						resume: Box::new(resume),
+					}));
+					store.save_run(run, token, "run.waiting_for_approval").await?;
+					return Ok(());
+				}
 				// Load/Unload results are staged with the same save that records
 				// them and take effect with the next inference.
 				if contract.behavior.exposure_update
@@ -2702,19 +2869,20 @@ impl<'a> Executor<'a> {
 				progress.workspace_read_plan = None;
 				progress.skill_read_plan = None;
 				progress.workspace_observation_plan = None;
-				progress.cursor = cursor + 1;
-				match FrameworkResult::decode(&contract, &output)? {
-					FrameworkResult::Approval(approval_id) => {
-						run.step += 1;
-						run.state = RunState::Waiting(Box::new(WaitingState::CoreApproval {
-							approval_id,
-							resume: ThinkingState::default(),
-						}));
-					}
+				progress.advance(cursor + 1);
+				match framework {
 					FrameworkResult::Human(request_id) => {
+						// Only a model's question of a person on this Node has an
+						// Answer Deadline; the person's settings are read now.
+						let seconds = match guard {
+							Some(guard) if home.local() => guard.answer_deadline(run).await?,
+							_ => None,
+						};
 						run.step += 1;
 						run.state = RunState::Waiting(Box::new(WaitingState::Human {
 							request_id,
+							answer_by: seconds
+								.map(|seconds| chrono::Utc::now() + chrono::Duration::seconds(seconds)),
 							resume: ResumeState::Thinking(ThinkingState::default()),
 						}));
 					}
@@ -2724,7 +2892,8 @@ impl<'a> Executor<'a> {
 							resume,
 						})?
 					}
-					FrameworkResult::Ordinary => {}
+					// An approval returned above, before the call was recorded.
+					FrameworkResult::Ordinary | FrameworkResult::Approval(_) => {}
 				}
 				home.report(
 					&format!("{key}:tool"),
@@ -2751,21 +2920,34 @@ impl<'a> Executor<'a> {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
-                    let h = home.human_request_by_id(id).await?;
+                    let mut h = home.human_request_by_id(id).await?;
 					if !home.local() && h.response.is_none() {
 						// A remote scheduler polls Home; an unanswered continuation
 						// remains waiting and advances the next polling deadline.
 						store.save_run(run, token, "run.waiting").await?;
 						return Ok(());
 					}
-					let response = if home.local() && matches!(&waiting, WaitingState::ExternalApproval {expires_at,..} if *expires_at <= chrono::Utc::now()) {store.expire_workbench_approval(id).await?.response} else {h.response}.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
+					if h.response.is_none()
+						&& let WaitingState::Human { answer_by: Some(answer_by), .. } = &waiting
+					{
+						if *answer_by > chrono::Utc::now() {
+							// Woken by a clock that runs ahead of this one.
+							store.save_run(run, token, "run.waiting").await?;
+							return Ok(());
+						}
+						h = answer_at_deadline(home.as_ref(), id).await?;
+					}
+					let response = h.response.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
-						WaitingState::ExternalApproval {
-							key,
-							call,
-							expires_at,
+						WaitingState::Approval {
+							approval:
+								ApprovalRef::Home {
+									key,
+									call,
+									expires_at,
+									..
+								},
 							resume,
-							..
 						} => {
 							#[derive(serde::Deserialize)]
 							struct ApprovalAnswer {
@@ -2773,11 +2955,11 @@ impl<'a> Executor<'a> {
 							}
 							let decision =
 								serde_json::from_value::<ApprovalAnswer>(response.clone()).ok();
-							resume.workbench_approval_result = Some(ApprovalDecision {
+							resume.home_approval = Some(HomeApproval {
 								key: key.clone(),
 								call: call.clone(),
-								approved: decision.is_some_and(|d| d.approved),
-								expires_at: *expires_at,
+								approved: decision.is_some_and(|d| d.approved)
+									&& *expires_at > chrono::Utc::now(),
 							})
 						}
 						WaitingState::Reconciliation { key, .. } => {
@@ -2803,18 +2985,17 @@ impl<'a> Executor<'a> {
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,
-							response,
+							response: answer_for_model(response),
 						});
 					}
 				}
 				run.state = match waiting {
 					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
-					WaitingState::Children { resume, .. }
-					| WaitingState::CoreApproval { resume, .. } => RunState::Thinking(resume),
+					WaitingState::Children { resume, .. } => RunState::Thinking(resume),
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
 					}
-					WaitingState::ExternalApproval { resume, .. }
+					WaitingState::Approval { resume, .. }
 					| WaitingState::Reconciliation { resume, .. } => RunState::ToolCall(resume),
 					WaitingState::FailureDelivery { .. } => {
 						return Err(Error::Invalid(
@@ -2829,6 +3010,19 @@ impl<'a> Executor<'a> {
 			}
 		}
 		Ok(())
+	}
+}
+
+/// Answer a model's question on the system's behalf because its person's
+/// Answer Deadline passed. A person who answered first wins, and so does a
+/// system answer given before a crash.
+async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<HumanRequest> {
+	match home
+		.close_human_request(request, answer_deadline_response())
+		.await
+	{
+		Err(Error::Conflict(_)) => home.human_request_by_id(request).await,
+		closed => closed,
 	}
 }
 
@@ -3099,6 +3293,16 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 	}
 }
 
+/// The `<id>@<version>` an approval prompt names for a plugin tool: its server path, and the first
+/// 12 hex digits of the digest of the plugin copy that declared it.
+fn plugin_approval_reference(tool: &aidash_domain::tool::AgentPluginTool) -> (String, String) {
+	let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
+	(
+		format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool),
+		digest.chars().take(12).collect(),
+	)
+}
+
 /// The pinned snapshot and budgets of a `deferred@1` Run, read from its
 /// Agent definition; `None` under `legacy@1` or without a Binding snapshot.
 fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::DeferredBudgets)>> {
@@ -3126,7 +3330,12 @@ async fn exposure_catalog(
 		.map(|(alias, tool)| (alias.clone(), tool.specification()))
 		.collect();
 	let direct = environment.direct_skills(run).await?;
-	Ok(exposure::catalog(snapshot, &specs, &direct)?)
+	Ok(exposure::catalog(
+		snapshot,
+		&specs,
+		&direct,
+		run.context.plugin_tools.as_ref(),
+	)?)
 }
 /// Resident blocks of the selected Skills: Registry bodies from the pinned
 /// snapshot, direct bodies from the Run's pinned Skill files.
@@ -3153,6 +3362,9 @@ async fn resident_skills(
 				environment
 					.direct_skill_body(run, *skill_id, &capability.digest)
 					.await?
+			}
+			exposure::CapabilityIdentity::AgentPluginTool { .. } => {
+				return Err(Error::Invalid(format!("selected {alias} is not a Skill")));
 			}
 		};
 		text.push_str(&exposure::resident_block(capability, &body));
@@ -3363,6 +3575,7 @@ fn summary_dependencies(
 	dependencies
 }
 
+mod approval;
 mod completion;
 mod progress;
 #[cfg(test)]

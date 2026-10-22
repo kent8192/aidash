@@ -31,4 +31,25 @@ pub struct TenantDeletion {
 	pub restored_by_identity: Option<uuid::Uuid>,
 	#[field(null = true)]
 	pub purged_at: Option<DateTime<Utc>>,
+	/// The purge step that runs next, or keeps failing; absent before the first
+	/// attempt and once the purge finished.
+	#[field(field_type = "text", null = true)]
+	pub purge_step: Option<String>,
+	/// Consecutive failures of `purge_step`.
+	#[field]
+	pub purge_failures: i64,
+	#[field(field_type = "text", null = true)]
+	pub purge_error: Option<String>,
+	#[field(null = true)]
+	pub purge_failed_at: Option<DateTime<Utc>>,
+	/// The purge worker that owns this purge, so replicas do not race. Every
+	/// destructive step locks the row and checks it still holds this token.
+	#[field(null = true)]
+	pub purge_lease: Option<uuid::Uuid>,
+	/// Until when that worker owns it.
+	#[field(null = true)]
+	pub purge_leased_until: Option<DateTime<Utc>>,
+	/// When the audit history that outlived the purge was deleted.
+	#[field(null = true)]
+	pub audit_erased_at: Option<DateTime<Utc>>,
 }

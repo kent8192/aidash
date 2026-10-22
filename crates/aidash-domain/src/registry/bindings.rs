@@ -207,8 +207,23 @@ pub struct AgentBindings {
 	/// means no verification and is not serialized, like `prompt_cache`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub completion: Option<crate::completion::CompletionPolicy>,
+	/// The Agent Plugin copies this Agent version takes in (ADR 0072). Omitted when empty, so
+	/// definitions without plugins keep their bytes and digests.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub agent_plugins: Vec<crate::agent_plugin::AgentPluginRef>,
+	/// What this Agent version decides about the servers of those plugins. Omitted when empty,
+	/// so definitions without settings keep their bytes and digests.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub agent_plugin_settings: crate::agent_plugin::PluginSettings,
 }
 impl AgentBindings {
+	/// Whether some Agent Plugin carries a Skill, which makes it a Skill context like a Skill
+	/// Source.
+	pub fn has_plugin_skills(&self) -> bool {
+		self.agent_plugins
+			.iter()
+			.any(|plugin| !plugin.skills.is_empty())
+	}
 	/// The resolved Exposure policy; absent means `legacy@1`.
 	pub fn exposure_policy(&self) -> ExposurePolicy {
 		self.exposure.unwrap_or_default()
@@ -222,6 +237,7 @@ impl AgentBindings {
 			|| !(1..=MAX_TOOL_PARALLELISM).contains(&self.tool_parallelism)
 			|| self.bindings.len() > MAX_BINDINGS
 			|| self.instructions.trim().is_empty()
+				&& !self.has_plugin_skills()
 				&& !self
 					.bindings
 					.iter()
@@ -278,7 +294,42 @@ impl AgentBindings {
 		if let Some(policy) = &self.completion {
 			policy.validate()?;
 		}
+		self.validate_agent_plugins()?;
 		Ok(())
+	}
+	fn validate_agent_plugins(&self) -> Result<()> {
+		use crate::{agent_plugin::MAX_AGENT_PLUGINS, capabilities::skills::MAX_RUN_SKILLS};
+		if self.agent_plugins.len() > MAX_AGENT_PLUGINS {
+			return Err(Error::Invalid(format!(
+				"AGENT_PLUGIN_LIMIT: an Agent takes in at most {MAX_AGENT_PLUGINS} plugins"
+			)));
+		}
+		let mut names = BTreeSet::new();
+		let mut digests = BTreeSet::new();
+		for plugin in &self.agent_plugins {
+			plugin.validate()?;
+			if !names.insert(&plugin.name) || !digests.insert(&plugin.digest) {
+				return Err(Error::Invalid(
+					"AGENT_PLUGIN_DUPLICATE: plugin names and digests are unique".into(),
+				));
+			}
+		}
+		if self
+			.agent_plugins
+			.iter()
+			.map(|plugin| plugin.skills.len())
+			.sum::<usize>()
+			> MAX_RUN_SKILLS
+		{
+			return Err(Error::Invalid(format!(
+				"SKILL_BINDING_LIMIT: an Agent pins at most {MAX_RUN_SKILLS} plugin Skills"
+			)));
+		}
+		crate::agent_plugin::validate_settings(
+			&self.agent_plugin_settings,
+			&self.agent_plugins,
+			self.exposure_policy().is_deferred(),
+		)
 	}
 	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
 		match self.context_policy.as_ref()? {
@@ -472,10 +523,10 @@ impl Narrowing {
 		let result = Self {
 			decision: match (&self.decision, &other.decision) {
 				(Some(a), Some(b)) => Some(crate::decision::Restrictions {
-					keep_threshold: if a.keep_threshold.value() <= b.keep_threshold.value() {
-						a.keep_threshold
+					threshold: if a.threshold.value() <= b.threshold.value() {
+						a.threshold
 					} else {
-						b.keep_threshold
+						b.threshold
 					},
 					preserve_recent: a.preserve_recent.max(b.preserve_recent),
 					forbid_apply: a.forbid_apply || b.forbid_apply,
@@ -605,7 +656,7 @@ impl Binding {
 					.narrow
 					.decision
 					.as_ref()
-					.is_some_and(|r| r.keep_threshold.value() > 0.5 || r.preserve_recent < 6)
+					.is_some_and(|r| r.threshold.value() > 0.5 || r.preserve_recent < 6)
 			{
 				return Err(Error::Invalid(
 					"invalid Decider Binding restrictions".into(),
@@ -738,6 +789,9 @@ pub struct BindingSnapshot {
 	/// Public Deployment Administrator Agent transports retain the receiver's complete admitted closure.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub foreign_agents: Vec<ForeignAgentSnapshot>,
+	/// The Skills of each Agent Plugin copy the Agent definition takes in, in its order.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub agent_plugins: Vec<crate::agent_plugin::PinnedAgentPlugin>,
 }
 
 impl BindingSnapshot {
@@ -794,6 +848,7 @@ impl ForeignAgentSnapshot {
 			bindings: self.bindings.clone(),
 			definitions: self.definitions.clone(),
 			foreign_agents: vec![],
+			agent_plugins: vec![],
 		}
 	}
 	pub fn from_snapshot(snapshot: BindingSnapshot) -> Result<Self> {
@@ -818,7 +873,9 @@ impl ForeignAgentSnapshot {
 				|| matches!(
 					definition.definition.kind.as_str(),
 					"memory" | "source" | "skill"
-				)
+				) || definition.definition.kind == "agent"
+				&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
+					.is_ok_and(|agent| !agent.agent_plugins.is_empty())
 		}) {
 			return Err(Error::Invalid(
 				"foreign Agent has an unsupported private or cross-Node dependency".into(),
@@ -997,6 +1054,7 @@ impl BindingSnapshot {
 			));
 		}
 		if config.instructions.trim().is_empty()
+			&& !config.has_plugin_skills()
 			&& !config.bindings.iter().any(|binding| {
 				binding.kind == BindingKind::Skill
 					|| binding.kind == BindingKind::Source

@@ -132,14 +132,14 @@ variable "activation_validated" {
 }
 
 variable "enablement" {
-  description = "Every workflow starts disabled. Set a specific field only for an explicitly authorized activation."
+  description = "Omitting enablement keeps every workflow disabled. Explicit activation defaults notifications on; set notifications=false to opt out."
   type = object({
     nonproduction = optional(bool, false)
     production    = optional(bool, false)
-    notifications = optional(bool, false)
+    notifications = optional(bool, true)
     certificates  = optional(bool, false)
   })
-  default = {}
+  default = { notifications = false }
 }
 
 variable "cloudflare_account_id" {
@@ -163,12 +163,12 @@ variable "acme_email" {
 }
 
 variable "existing_delivery_ruleset_ids" {
-  description = "Import only fixed-name owned narrow delivery-check rulesets, keyed main/develop. Leave unrelated and classic protections unmanaged."
+  description = "Import only fixed-name owned narrow delivery-check rulesets, keyed main. Leave unrelated and classic protections unmanaged."
   type        = map(number)
   default     = {}
   validation {
-    condition     = length(setsubtract(toset(keys(var.existing_delivery_ruleset_ids)), toset(["main", "develop"]))) == 0 && alltrue([for id in values(var.existing_delivery_ruleset_ids) : id > 0 && floor(id) == id])
-    error_message = "Only the owned main/develop delivery-check ruleset IDs may be adopted."
+    condition     = length(setsubtract(toset(keys(var.existing_delivery_ruleset_ids)), toset(["main"]))) == 0 && alltrue([for id in values(var.existing_delivery_ruleset_ids) : id > 0 && floor(id) == id])
+    error_message = "Only the owned main delivery-check ruleset ID may be adopted."
   }
 }
 

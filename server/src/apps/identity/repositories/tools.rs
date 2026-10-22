@@ -37,6 +37,9 @@ impl AgentToolRepository for AgentTools<'_> {
 	fn binding_snapshot(&self) -> Option<&aidash_domain::registry::bindings::BindingSnapshot> {
 		self.run.context.binding_snapshot.as_deref()
 	}
+	fn plugin_tools(&self) -> Option<&aidash_domain::agent_plugin::PluginTools> {
+		self.run.context.plugin_tools.as_ref()
+	}
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>> {
 		Ok(Box::new(Scope {
 			remote: self.remote,
@@ -84,6 +87,15 @@ impl AgentToolScope for Scope<'_> {
 			.require(resource, action)
 			.await
 			.map_err(Into::into)
+	}
+	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		for subject in self.access.subjects.clone() {
+			let input = self.access.evaluation(&subject, resource, action);
+			if self.access.snapshot.bundle.evaluate(&input).reason == "explicit_deny" {
+				return Ok(true);
+			}
+		}
+		Ok(false)
 	}
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)

@@ -91,13 +91,24 @@ fn document(row: &Row, name: &str) -> Result<Value, Error> {
 	}
 }
 
+/// The human request or capability approval a Run's waiting state names, in the
+/// `data` of its stored `pending` document. A Run waiting on its Home Node's
+/// human request is not one: that request lives on another Node.
+fn awaited_id(pending: &Value) -> Option<&str> {
+	let wait = &pending["data"];
+	match wait["reason"].as_str()? {
+		"human" => wait["request_id"].as_str(),
+		"approval" if wait["approval"]["source"] == "capability" => {
+			wait["approval"]["approval_id"].as_str()
+		}
+		_ => None,
+	}
+}
+
 fn human_wait(phase: &str, pending: &Value) -> bool {
 	// A timed WAITING phase is work. A human/approval wait can also carry an
 	// expiry wake_at; that does not extend the application's approval deadline.
-	phase == "WAITING"
-		&& ["human_request_id", "core_approval_id"]
-			.iter()
-			.any(|key| pending.get(key).is_some_and(|v| v.is_string()))
+	phase == "WAITING" && awaited_id(pending).is_some()
 }
 
 async fn count(tx: &mut Transaction, table: &str, condition: SimpleExpr) -> Result<i64, Error> {
@@ -218,12 +229,8 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 		let phase = text(&row, "phase")?;
 		let pending = document(&row, "pending")?;
 		let control = text(&row, "control")?;
-		let awaiting_person = pending["human_request_id"]
-			.as_str()
-			.is_some_and(|id| unanswered.contains(id))
-			|| pending["core_approval_id"]
-				.as_str()
-				.is_some_and(|id| approvals.contains(id));
+		let awaiting_person = awaited_id(&pending)
+			.is_some_and(|id| unanswered.contains(id) || approvals.contains(id));
 		if control != "PAUSED"
 			&& !(control != "CANCELLED" && human_wait(&phase, &pending) && awaiting_person)
 		{

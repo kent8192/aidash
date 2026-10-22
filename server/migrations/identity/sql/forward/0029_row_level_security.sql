@@ -68,6 +68,26 @@ ALTER TABLE public.dashboard_mappings FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.dashboard_mappings AS PERMISSIVE FOR ALL TO PUBLIC
     USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
     WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+ALTER TABLE public.identity_approval_preferences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.identity_approval_preferences FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.identity_approval_preferences AS PERMISSIVE FOR ALL TO PUBLIC
+    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+ALTER TABLE public.identity_approval_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.identity_approval_rules FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.identity_approval_rules AS PERMISSIVE FOR ALL TO PUBLIC
+    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+ALTER TABLE public.identity_tenant_approval_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.identity_tenant_approval_settings FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.identity_tenant_approval_settings AS PERMISSIVE FOR ALL TO PUBLIC
+    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+ALTER TABLE public.identity_thread_approval_modes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.identity_thread_approval_modes FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.identity_thread_approval_modes AS PERMISSIVE FOR ALL TO PUBLIC
+    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
 ALTER TABLE public.personal_tenants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.personal_tenants FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.personal_tenants AS PERMISSIVE FOR ALL TO PUBLIC

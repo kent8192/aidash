@@ -238,6 +238,13 @@ workspaces:
   Deployment-wide. The `startup` test target compares the list with the
   migrated database, so a migration that adds a table classifies it in the same
   change.
+- The Enterprise workspace classifies its own tables in
+  `enterprise/server/src/classification.rs`, one `table(...)` line each. The
+  Enterprise build hands that list to Community through `Extension::tables`, so
+  `Build::tables` returns the combined list that purge reads.
+  `enterprise/server/tests/classification.rs` runs the same comparison
+  (`server/src/database/classification/comparison.rs`) on a database migrated
+  with both workspaces' roots, and its failure names the Enterprise file.
 
 ## Row-level policies
 
@@ -267,6 +274,17 @@ login and the activity observer all need a scope.
   Tenant. The server reports it, like a failed `WITH CHECK`, as an internal
   error, because it means a server bug rather than a refused permission.
 
+- `identity/0028_tenancy_policy_functions` also creates `aidash_tenant_purge()`,
+  true only in the `tenant-purge` Deployment Scope (`aidash.scope` is
+  `deployment` and `application_name` is `deployment:tenant-purge`), which only
+  `server/src/database/scope.rs` can write. Purge deletes rows that triggers
+  keep from direct changes, so these `RunSQL` functions let that scope through
+  and nothing else: `guard_task_dependencies`, `guard_registry_agent_model_refs`,
+  `guard_registry_agent_resource_refs` and `guard_registry_memory_role_refs`
+  (rows their parents maintain) and `marketplace_immutable`, for `DELETE` only
+  (a Tenant's Marketplace revisions go with the Tenant). Each function calls it
+  only after its own check, so it never runs where the function is absent.
+  Reinhardt cannot express trigger function bodies (ADR 0061).
 - A row whose `tenant` is NULL or empty is visible only in a Deployment Scope.
 - Each app's `*_row_level_security` migration enables and forces the policy on
   its own tables and depends on the functions migration: `execution/0036`,
@@ -274,7 +292,9 @@ login and the activity observer all need a scope.
   `registry/0033` for the tables that carried a `tenant` column before #265, and
   `NNNN_tenant_owned_row_level_security` (`execution/0043`, `federation/0011`,
   `identity/0032`, `knowledge/0034`, `marketplace/0011`, `registry/0037` and
-  `workspaces/0009`) for the tables that gained it there. The policy asset test
+  `workspaces/0009`) for the tables that gained it there. A table created after
+  that carries its own policy migration, such as
+  `registry/0040_agent_plugin_copies_row_level_security`. The policy asset test
   selects migrations by the `_row_level_security` suffix, and a separate
   migration after the app's first policy migration keeps those files unchanged
   for the branches that already contain them. Reversal drops the policy,
@@ -289,6 +309,12 @@ login and the activity observer all need a scope.
   test scans every migration source, outside function bodies, for such writes.
   Seed Tenant-owned rows from the server inside a scope, or change the table's
   baseline definition.
+- A Tenant-owned Enterprise table gets the same policy from an
+  `NNNN_row_level_security` migration of its own app. The policy checks
+  (`server/src/database/policy/checks.rs`) run on Community's migrations in the
+  unit tests and on the Enterprise root in
+  `enterprise/server/tests/classification.rs`, where they also refuse a write
+  to any Tenant-owned row of either workspace.
 - Test fixtures that seed or inspect Tenant-owned rows with plain SQLx use
   `Pool::fixture_driver()`. Its sessions hold the `test-fixture` Deployment
   Scope, and scoped transactions still override it. Only debug builds have it,
@@ -441,6 +467,12 @@ pruning or summary, journals those events as `imported`.
 
 `registry/0035_decider_kind` (after `registry/0034_research_view`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) removes the `compactor` kind (#108 Part B, ADR 0042): it drops `registry_compactor_config` and replaces `registry_kind_check` with a list that names `decider` instead. A Decider's configuration is validated by the application. Aidash is undeployed, so there is no data rewrite: the new check fails while a compactor entry exists, and such entries must be registered again as Deciders. Typed constraint operations suffice. The generated state-only checkpoint `registry/0036_decider_kind_state` swaps `compactor` for `decider` in `registry_kind_model_enum_check`.
 
+`registry/0038_agent_plugin_copies` (after `registry/0037_tenant_owned_row_level_security`) creates `agent_plugin_copies` with typed operations (#414, ADR 0072): the Tenant's copy of each imported Agent Plugin, keyed by `(tenant, digest)` where `digest` is the plugin's tree digest. A row keeps the serialized loaded plugin (`plugin`), every fetched file (`files`, text or base64) and the paths the Agent Plugins specification forbids (`denied`). Checks require the `sha256:` digest form, the digest in `plugin` to equal the key and the three documents to have their JSON types. The copy exists before the Agent version that pins it, so the table has no key into `registry`; it references the Tenant root record through `agent_plugin_copies_tenant_root_fkey`. Rows are immutable: the repository inserts with `ON CONFLICT DO NOTHING` and never updates. `registry/0039_agent_plugin_copies_state` is the generated state-only checkpoint.
+
+`registry/0040_agent_plugin_copies_row_level_security` (after `registry/0039_agent_plugin_copies_state` and `identity/0028_tenancy_policy_functions`) enforces the forced Tenant policy on `agent_plugin_copies`, as `registry/0037` does for the tables that gained a `tenant` column in #265. It is a database-only `RunSQL` migration whose assets are the policy template rendered for the one table.
+
+`registry/0041_agent_plugins_definition` (after `registry/0040_agent_plugin_copies_row_level_security`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugins` key of #414: an array of at most 8 objects, each with a `sha256:` `digest`, string `name` and `source`, `skills` and `findings` arrays and a `servers` object. An explicit null is rejected, and a plugin that carries Skills lets the Agent's instructions be empty, as a Skill Binding does. `AgentBindings::validate` checks the rest. It keeps the `0029_completion_policy` body otherwise. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugins` or any Run pins an Agent definition that does, then restores the `0029_completion_policy` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
+
 `workspaces/0008_publishing_run` (after `workspaces/0007_model_state`) adds a nullable `run_id` to `messages` and `artifacts` with typed `AddColumn` operations. It records the Run that published the text on this Node, so a Source citation in it resolves only against that Run's Research evidence. It has no foreign key: the value outlives a deleted Run, so such a citation reads as unavailable rather than as text nobody published. Existing rows keep `NULL`, and rollback drops both columns.
 
 `execution/0029_research_retention` (after `execution/0028_url_intents_model_state`) adds `purged_at` and `purge_reason` to `research_snapshots` with typed operations. A check keeps both set or both null, limits the reason to `retention` or `revocation`, and requires a Purged snapshot to keep no contents (`lines = '[]'`, `text_bytes = 0`). A partial index on unpurged snapshot ids serves the retention sweep. It also creates `research_revocations`, keyed by Run with no reference to `runs`, so the audit record of an Evidence Revocation outlives its Run (ADR 0046), with a `(tenant, revoked_at)` index for listing. The generated state-only checkpoint `execution/0030_research_retention_state` records the columns and table in the ORM snapshot without the checks and indexes.
@@ -467,4 +499,10 @@ pruning or summary, journals those events as `imported`.
 
 `identity/0028_tenancy_policy_functions` (after `identity/0027_plan_connection_identity_reference`) creates the row-level policy functions `aidash_deployment_scope()` and `aidash_scope_tenant()` (#264). `execution/0036_row_level_security` (after `execution/0035_run_semantic_retry_cycle`), `federation/0010_row_level_security` (after `federation/0009_pinned_delegations_state`), `identity/0029_row_level_security`, `knowledge/0033_row_level_security` (after `knowledge/0032_memory_attempt_retry_cycle`), `marketplace/0010_row_level_security` (after `marketplace/0009_remove_compatibility_gate_state`) and `registry/0033_row_level_security` (after `registry/0032_degraded_context`) each also depend on it and enforce the forced policy on their app's Tenant-owned tables; see Row-level policies above. All seven are database-only `RunSQL` migrations with reversible SQL assets.
 
-`identity/0030_tenant_deletions` (after `identity/0029_row_level_security`) creates `tenant_deletions`, one Deployment-wide row per recorded Tenant Deletion (ADR 0060), referencing the Tenant's root record and the acting External Identities. A check ties each actor kind to its identity and forbids a purged deletion from being restored. A partial unique index keeps at most one unrestored deletion per Tenant, which every authenticated boundary checks, and a second partial index orders the deletions awaiting purge by their deadline. The generated state-only checkpoint `identity/0031_tenant_deletions_state` records the model without the checks and indexes.
+`identity/0030_tenant_deletions` (after `identity/0029_row_level_security`) creates `tenant_deletions`, one Deployment-wide row per recorded Tenant Deletion (ADR 0060), referencing the Tenant's root record and the acting External Identities. A check ties each actor kind to its identity and forbids a purged deletion from being restored. A partial unique index keeps at most one unrestored deletion per Tenant, which every authenticated boundary checks, and a second partial index orders the deletions awaiting purge by their deadline. The generated state-only checkpoint `identity/0031_tenant_deletions_state` records the model without the checks and indexes. The same migration holds the purge state (ADR 0061): `purge_step` (the step that runs next or keeps failing), `purge_failures` and `purge_error` with `purge_failed_at` (what the failed step reported), `purge_lease` and `purge_leased_until` (the worker that owns the purge, and until when; every destructive step locks the row and checks it still holds the lease, and a restore is refused while one does) and `audit_erased_at` (when the audit history that outlived the purge was deleted). The checks keep the step a known one, the error set whenever failures are counted, and a purged deletion free of progress, and a third partial index serves the sweep that deletes audit history. `identity/0004_references` creates neither `authorization_revisions_tenant_fkey` nor the foreign key from `authorization_catalog_history` to `authorization_catalog`: audit history is kept after purge and must not reference data purge deletes, so both reference only their Tenant's root record.
+
+`identity_approval_preferences`, `identity_approval_rules` and `identity_thread_approval_modes` hold a person's own Approval Mode and Approval Rules (#411, ADR 0076). Aidash is undeployed, so they are edited into the baseline, as the Tenant column was: tables in `identity/0002_tables`, keys and the unique rule index in `identity/0003_keys_indexes`, the `<table>_tenant_root_fkey` references in `identity/0004_references`, the ORM snapshot in `identity/0007_model_state`, and the row-level policies in the `identity/0029_row_level_security` assets. `identity_approval_preferences` is keyed by `(tenant, subject)` and keeps the default mode, the Answer Deadline (#413) and when the person accepted the risk of Bypass; a check refuses `bypass` as the default before that. `identity_approval_rules` is keyed by `(tenant, id)`; its unique index on `(tenant, subject, kind, effect, target)` also serves the per-approval read of one owner's rules and refuses a rule stored twice. `identity_thread_approval_modes` is keyed by `(tenant, thread_id, subject)` and has no reference to the workspaces app: the endpoint checks that the Thread exists. A development database made before this change is recreated.
+
+`identity_tenant_approval_settings` holds the approval Decider a Tenant chose for the Auto Approval Mode (#412, ADR 0077), keyed by `(tenant)`. A Tenant without a row uses the built-in `aidash.approval-decider`; a row whose `decider_id` and `decider_version` are both null (a check ties them together) is a Tenant that reset to it, and its `revision` keeps counting. It is edited into the baseline for the reason the approval tables above were: `identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` (`identity_tenant_approval_settings_tenant_root_fkey`), the ORM snapshot in `identity/0007_model_state` and the row-level policy in the `identity/0029_row_level_security` assets. The same change widens two checks of `execution/0041_decision_evidence_v3`: `decision_evidence_outcome` also accepts the approval outcomes `allowed` and `blocked` and the reasons `clear`, `data_exfiltration`, `destructive`, `beyond_request`, `injected`, `boundary` and `unavailable`, and `decision_evidence_final` also makes an `allowed` or `blocked` decision final. An approval decision is keyed by its evidence identity, which commits to the approval, the Decider, the Route and the state, so a retry under another worker finds the evidence it already recorded. A development database made before this change is recreated.
+
+`identity/0033_demo_data` (after `identity/0032_tenant_owned_row_level_security`) creates the three tables of Demo data (ADR 0079, ADR 0080) with typed operations. `demo_data_loads` is Deployment-wide: one row per pair of `demo-data` inputs that loaded to completion, keyed by the lowercase hex SHA-256 of their canonical JSON, written last in its own transaction so a rerun with the same digest changes nothing. `demo_tenants` is Deployment-wide and names a Tenant (purge deletes it with the Tenant): it maps a structure key (`[a-z][a-z0-9-]{0,31}`) to the Tenant name assigned to it, one key per Tenant, because Tenant labels are not unique. `demo_reservations` is Tenant-owned: it reserves a fictional subject of the Tenant for a lowercase email address, unique per `(tenant, email)`, and a check keeps `spent_at` and `spent_by` (an External Identity) set together. It references the Tenant root record through `demo_reservations_tenant_root_fkey`. `identity/0034_demo_data_state` is the generated state-only checkpoint, and `identity/0035_demo_reservations_row_level_security` (after it and `identity/0028_tenancy_policy_functions`) enforces the forced Tenant policy on `demo_reservations` with a rendered `RunSQL` asset, as `registry/0040` does.

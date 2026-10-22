@@ -52,14 +52,25 @@ Nonproduction bootstrap optionally supplies `preview_tls_renewal` with
 versions. A broker `image` is refused, PR previews cannot have one, and only the
 production config may carry the `production` broker.
 
-Account configuration still leaves every workflow disabled. Explicit
-`enablement={nonproduction,production,notifications,certificates}` defaults all
-fields false. Turning on any flag requires both `bootstrap_code_installed=true`
-and `activation_validated=true`; production additionally requires nonproduction
+Omitting `enablement` keeps every workflow disabled, including during account
+configuration. In an explicitly supplied
+`enablement={nonproduction,production,notifications,certificates}` object,
+`notifications` defaults to `true`; the other fields default to `false`.
+Set `notifications=false` explicitly to keep mail disabled during an activation,
+including an initial certificate-only activation. Turning on any flag requires
+both `bootstrap_code_installed=true` and `activation_validated=true`; production additionally requires nonproduction
 and the App-bound staging gate. Mail activation requires the account ID, and
 certificate activation requires its dedicated WIF identity and ACME email.
 These acknowledgements do not execute live probes: the person running the setup
 must supply the corresponding acceptance evidence before controlled activation.
+
+For an existing deployment, set `enablement.notifications=true` in the private
+`github.tfvars.json` used by the setup helper, retaining its other enablement
+fields, account inputs and activation acknowledgements. A reviewed GitHub-stack
+plan/apply publishes `GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED=true`. Merging this
+change alone does not apply Terraform or update the live repository variable.
+After applying, run **Deployment notifications** on the configured automation
+branch to process pending receipts without redeploying the application.
 
 Never pass runtime JSON, private keys, DNS tokens, Cloudflare sending tokens or
 the private alias-forwarding destination to this root. There are no secret
@@ -69,14 +80,12 @@ Secret Manager versions also remain outside this root.
 
 ## Preserve existing policy
 
-The only rulesets this root owns are:
+The only ruleset this root owns is `Aidash delivery main checks`: `CI Success`
+from the GitHub Actions App on exactly `refs/heads/main`. Development branches
+keep only the baseline `develop/x.y.z` ruleset; this root adds no required check
+there.
 
-- `Aidash delivery main checks`: `CI Success` from the GitHub Actions App on
-  exactly `refs/heads/main`.
-- `Aidash delivery develop checks`: the same check on exactly the configured
-  `refs/heads/develop/x.y.z`.
-
-They contain required status checks only: no review/PR-policy replacement,
+It contains required status checks only: no review/PR-policy replacement,
 branch deletion/force-push changes, administrator exemptions or App bypasses.
 Existing broad rulesets and classic branch protection continue to apply through
 [GitHub rule layering](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets).
@@ -96,13 +105,13 @@ Before any real plan, read current environments, their deployment branch/tag
 policies, repository variables and repository rulesets. Build these adoption
 inputs from actual metadata:
 
-| Input                                    | Allowed adoption                                                                                |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `existing_delivery_ruleset_ids`          | Keys `main`/`develop`, IDs whose names and narrow semantics exactly match the owned names above |
-| `existing_environments`                  | Existing names from the five fixed Environments                                                 |
-| `existing_deployment_policy_ids`         | One existing exact branch-only policy ID per owned Environment                                  |
-| `existing_repository_variables`          | Existing names from this phase's fixed managed inventory                                        |
-| `existing_notification_account_variable` | Existing `deployment-notifications:CLOUDFLARE_ACCOUNT_ID` in account phase                      |
+| Input                                    | Allowed adoption                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| `existing_delivery_ruleset_ids`          | Key `main`, the ID whose name and narrow semantics exactly match the owned name above |
+| `existing_environments`                  | Existing names from the five fixed Environments                                       |
+| `existing_deployment_policy_ids`         | One existing exact branch-only policy ID per owned Environment                        |
+| `existing_repository_variables`          | Existing names from this phase's fixed managed inventory                              |
+| `existing_notification_account_variable` | Existing `deployment-notifications:CLOUDFLARE_ACCOUNT_ID` in account phase            |
 
 Do not select an existing ruleset just because its target branch matches. Stop
 on unexpected rules within an owned name instead of losing those controls.

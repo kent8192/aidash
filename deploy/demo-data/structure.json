@@ -1,0 +1,242 @@
+{
+  "tenants": [
+    {
+      "key": "acme",
+      "label": "Acme Research",
+      "subjects": [
+        {
+          "id": "morgan",
+          "groups": ["administrators"]
+        },
+        {
+          "id": "dana",
+          "groups": ["members"]
+        },
+        {
+          "id": "sam",
+          "groups": ["members"]
+        }
+      ],
+      "registry": [
+        {
+          "id": "demo-gpt-4o-mini",
+          "version": "1.0.0",
+          "kind": "model",
+          "name": {
+            "en": "GPT-4o mini (OpenRouter)"
+          },
+          "description": {
+            "en": "A small, fast model routed through OpenRouter for the demo agents."
+          },
+          "capabilities": [],
+          "languages": ["en"],
+          "schema": {},
+          "config": {
+            "provider": "openrouter",
+            "model_id": "openai/gpt-4o-mini",
+            "endpoint": "https://openrouter.ai/api/v1",
+            "context_window": 128000,
+            "max_output_tokens": 16384,
+            "modalities": ["text"],
+            "cost": {}
+          }
+        },
+        {
+          "id": "weather-lookup",
+          "version": "1.0.0",
+          "kind": "tool",
+          "name": {
+            "en": "Weather lookup"
+          },
+          "description": {
+            "en": "Reads a public weather forecast over HTTP."
+          },
+          "capabilities": [],
+          "languages": ["en"],
+          "schema": {
+            "type": "object"
+          },
+          "config": {
+            "registry_node": "$node",
+            "provider": "integration.http@1",
+            "operation": "invoke",
+            "default_alias": "weather_lookup",
+            "tier": "integration",
+            "transport": {
+              "transport": "http",
+              "endpoint": "https://api.open-meteo.com/v1/forecast",
+              "replay": "read_only"
+            }
+          }
+        },
+        {
+          "id": "research-assistant",
+          "version": "1.0.0",
+          "kind": "agent",
+          "name": {
+            "en": "Research assistant"
+          },
+          "description": {
+            "en": "Answers research questions and checks the weather for field work."
+          },
+          "capabilities": [],
+          "languages": ["en"],
+          "schema": {},
+          "config": {
+            "schema_version": 1,
+            "model": {
+              "id": "demo-gpt-4o-mini",
+              "version": "1.0.0"
+            },
+            "instructions": "You help the Acme research team. Answer briefly and say when you are unsure.",
+            "bindings": [
+              {
+                "kind": "tool",
+                "target": {
+                  "registry_node": "$node",
+                  "id": "weather-lookup",
+                  "version": "1.0.0"
+                },
+                "narrow": {}
+              }
+            ],
+            "remove_default": []
+          }
+        },
+        {
+          "id": "summarizer",
+          "version": "1.0.0",
+          "kind": "agent",
+          "name": {
+            "en": "Summarizer"
+          },
+          "description": {
+            "en": "Condenses long text into a few sentences."
+          },
+          "capabilities": [],
+          "languages": ["en"],
+          "schema": {},
+          "config": {
+            "schema_version": 1,
+            "model": {
+              "id": "demo-gpt-4o-mini",
+              "version": "1.0.0"
+            },
+            "instructions": "Summarize the text you are given in at most five sentences.",
+            "bindings": [],
+            "remove_default": []
+          }
+        }
+      ],
+      "approvals": [
+        {
+          "entry": {
+            "id": "demo-gpt-4o-mini",
+            "version": "1.0.0"
+          },
+          "groups": ["members"]
+        },
+        {
+          "entry": {
+            "id": "weather-lookup",
+            "version": "1.0.0"
+          },
+          "groups": ["members"]
+        },
+        {
+          "entry": {
+            "id": "research-assistant",
+            "version": "1.0.0"
+          },
+          "groups": ["members"]
+        },
+        {
+          "entry": {
+            "id": "summarizer",
+            "version": "1.0.0"
+          },
+          "groups": ["members"]
+        }
+      ]
+    },
+    {
+      "key": "globex",
+      "label": "Globex Support",
+      "subjects": [
+        {
+          "id": "riley",
+          "groups": ["administrators"]
+        },
+        {
+          "id": "jordan",
+          "groups": ["members"]
+        }
+      ],
+      "registry": [
+        {
+          "id": "demo-gpt-4o-mini",
+          "version": "1.0.0",
+          "kind": "model",
+          "name": {
+            "en": "GPT-4o mini (OpenRouter)"
+          },
+          "description": {
+            "en": "A small, fast model routed through OpenRouter for the demo agents."
+          },
+          "capabilities": [],
+          "languages": ["en"],
+          "schema": {},
+          "config": {
+            "provider": "openrouter",
+            "model_id": "openai/gpt-4o-mini",
+            "endpoint": "https://openrouter.ai/api/v1",
+            "context_window": 128000,
+            "max_output_tokens": 16384,
+            "modalities": ["text"],
+            "cost": {}
+          }
+        },
+        {
+          "id": "support-triage",
+          "version": "1.0.0",
+          "kind": "agent",
+          "name": {
+            "en": "Support triage"
+          },
+          "description": {
+            "en": "Sorts incoming support requests by urgency."
+          },
+          "capabilities": [],
+          "languages": ["en"],
+          "schema": {},
+          "config": {
+            "schema_version": 1,
+            "model": {
+              "id": "demo-gpt-4o-mini",
+              "version": "1.0.0"
+            },
+            "instructions": "You triage support requests for Globex. Label each request low, medium or high urgency and explain why in one sentence.",
+            "bindings": [],
+            "remove_default": []
+          }
+        }
+      ],
+      "approvals": [
+        {
+          "entry": {
+            "id": "demo-gpt-4o-mini",
+            "version": "1.0.0"
+          },
+          "groups": ["members"]
+        },
+        {
+          "entry": {
+            "id": "support-triage",
+            "version": "1.0.0"
+          },
+          "groups": ["members"]
+        }
+      ]
+    }
+  ]
+}

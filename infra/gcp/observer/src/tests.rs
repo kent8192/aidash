@@ -3,17 +3,20 @@ use reinhardt_query::{ColumnDef, Value as QueryParameter};
 
 #[test]
 fn only_explicit_human_waits_can_idle() {
-	assert!(human_wait(
-		"WAITING",
-		&json!({"human_request_id":"id", "wake_at":"expiry"})
-	));
-	assert!(human_wait("WAITING", &json!({"core_approval_id":"id"})));
-	assert!(!human_wait("WAITING", &json!({"wake_at":"later"})));
+	let human = json!({"data":{"reason":"human","request_id":"id","wake_at":"expiry"}});
+	let approval =
+		json!({"data":{"reason":"approval","approval":{"source":"capability","approval_id":"id"}}});
+	let home = json!({"data":{"reason":"approval","approval":{"source":"home","request_id":"id"}}});
+	assert!(human_wait("WAITING", &human));
+	assert!(human_wait("WAITING", &approval));
+	assert_eq!(awaited_id(&approval), Some("id"));
+	assert!(!human_wait("WAITING", &home));
+	assert!(!human_wait("WAITING", &json!({"data":{"wake_at":"later"}})));
+	assert!(!human_wait("THINKING", &human));
 	assert!(!human_wait(
-		"THINKING",
-		&json!({"human_request_id":"old-id"})
+		"WAITING",
+		&json!({"data":{"reason":"human","request_id":null}})
 	));
-	assert!(!human_wait("WAITING", &json!({"human_request_id":null})));
 	assert!(!human_wait("FUTURE_PHASE", &json!({})));
 }
 

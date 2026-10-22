@@ -11,6 +11,7 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 pub struct Loaded {
@@ -49,5 +50,12 @@ pub trait OperationReconciliationScope: Send {
 	async fn put(&mut self, kind: &str, bytes: &[u8]) -> Result<(Uuid, String)>;
 	async fn publish(&mut self, entries: Vec<MountedFile>) -> Result<i64>;
 	async fn event(&mut self, data: Value) -> Result<()>;
+	/// Reports how long the operation's Execution Pod ran.
+	async fn pod_time(
+		&mut self,
+		operation: Uuid,
+		started_at: DateTime<Utc>,
+		ended_at: DateTime<Utc>,
+	) -> Result<()>;
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()>;
 }

@@ -30,6 +30,21 @@ export type DeletedTenant = {
   restorable: boolean;
 };
 
+/** How far a purge got, once it started or failed (ADR 0061). */
+export type PurgeProgress = {
+  step:
+    | "provider_credentials"
+    | "capability_objects"
+    | "rows"
+    | "finish"
+    | null;
+  failures: number;
+  error: string | null;
+  failed_at: string | null;
+  /** Failed several times in a row and needs attention. */
+  stalled: boolean;
+};
+
 type TenantRecord = {
   name: string;
   label: string | null;
@@ -39,7 +54,23 @@ type TenantRecord = {
   deletion: TenantDeletion | null;
   /** Decided by the server's clock, not this device's. */
   restorable: boolean;
+  /** Deleted and not purged yet, so a Deployment Administrator may purge it. */
+  purgeable: boolean;
+  purge: PurgeProgress | null;
 };
+
+const purgeSteps = {
+  provider_credentials: {
+    en: "ending Provider Credentials",
+    ja: "Provider Credential の終了",
+  },
+  capability_objects: {
+    en: "erasing capability object files",
+    ja: "capability オブジェクトファイルの削除",
+  },
+  rows: { en: "deleting the Tenant's data", ja: "テナントのデータの削除" },
+  finish: { en: "finishing", ja: "完了処理" },
+} as const;
 
 const messages = {
   "the Tenant would be left without a Tenant Administrator": {
@@ -161,8 +192,7 @@ export function DeleteTenantForm({
 }
 
 /** What deleting a Tenant does, in the reader's language. Only a Deployment
- *  Administrator restores a Tenant a Deployment Administrator deleted, and the
- *  purge after the grace period is not built yet, so it is not promised. */
+ *  Administrator restores a Tenant a Deployment Administrator deleted. */
 function deletionNotice(
   english: boolean,
   deleter: TenantDeletion["deleted_by_kind"],
@@ -180,13 +210,13 @@ function deletionNotice(
       deleter === "deployment_administrator"
         ? "Only a Deployment Administrator can restore it"
         : "Its Tenant Administrators or a Deployment Administrator can restore it";
-    return `Nobody can use the Tenant from the moment it is deleted, and its running work is cancelled. ${restorer} ${period}; after that it can no longer be restored. Sign in with ChatGPT connections end now and must be connected again after a restore. Delete any OpenRouter keys at OpenRouter yourself.`;
+    return `Nobody can use the Tenant from the moment it is deleted, and its running work is cancelled. ${restorer} ${period}; after that its data is purged and it can no longer be restored. Its administration history, authorization decisions, policy revisions and catalog history are kept for a limited time after the purge. Sign in with ChatGPT connections end now and must be connected again after a restore. Delete any OpenRouter keys at OpenRouter yourself; Aidash cannot reach them, nor provider-side caches or platform logs.`;
   }
   const restorer =
     deleter === "deployment_administrator"
       ? "Deployment Administrator だけが"
       : "Tenant Administrator または Deployment Administrator が";
-  return `削除した時点で誰もこのテナントを使えなくなり、実行中の作業は取り消されます。${period}${restorer}復元でき、その後は復元できません。Sign in with ChatGPT の接続はすぐに終了し、復元後には接続し直す必要があります。OpenRouter のキーは OpenRouter 側で削除してください。`;
+  return `削除した時点で誰もこのテナントを使えなくなり、実行中の作業は取り消されます。${period}${restorer}復元でき、その後はテナントのデータが消去され、復元できません。管理履歴・認可の判定・ポリシーの改訂・カタログ履歴は、消去後も一定期間だけ保持されます。Sign in with ChatGPT の接続はすぐに終了し、復元後には接続し直す必要があります。OpenRouter のキーは OpenRouter 側で削除してください。Aidash は OpenRouter のキー、プロバイダ側のプロンプトキャッシュ、プラットフォームのログには手が届きません。`;
 }
 
 /** Leaves the Tenant through the current Mapping. */
@@ -277,6 +307,15 @@ async function restore(
         ? { "x-aidash-context": mappingContext({ tenant, id: mapping }) }
         : {},
     },
+  );
+  if (!response.ok) throw new Error(await failure(response, english));
+}
+
+/** Purges a deleted Tenant's data now, as a Deployment Administrator. */
+async function purge(tenant: string, english: boolean): Promise<void> {
+  const response = await sessionFetch(
+    `/api/tenants/${encodeURIComponent(tenant)}/purge`,
+    { method: "POST" },
   );
   if (!response.ok) throw new Error(await failure(response, english));
 }
@@ -381,8 +420,26 @@ export function DeletedTenants({
   );
 }
 
+/** Where a purge stands, naming the step and error of one that keeps failing. */
+function purgeProgress(
+  purge: PurgeProgress,
+  english: boolean,
+  locale: string,
+): string {
+  const step = purge.step ? purgeSteps[purge.step] : null;
+  const name = step ? (english ? step.en : step.ja) : "";
+  if (purge.failures === 0)
+    return english ? `Purging: ${name}` : `消去中: ${name}`;
+  const when = purge.failed_at ? deadline(purge.failed_at, locale) : "";
+  const error = purge.error ?? "";
+  return english
+    ? `${purge.stalled ? "Purge stalled" : "Purge failing"} while ${name}, ${purge.failures} failures, last ${when}: ${error}`
+    : `${purge.stalled ? "消去が停滞しています" : "消去に失敗しています"}（${name}、${purge.failures} 回、最後 ${when}）: ${error}`;
+}
+
 /** The Deployment Administrators' list of Tenants, with each deletion's
- *  deadline and Restore while it is restorable. */
+ *  deadline, Restore while it is restorable, Purge now until it is purged, and
+ *  the step and error of a purge that keeps failing. */
 export function DeploymentTenants() {
   const { locale } = useI18n();
   const english = locale === "en-US";
@@ -390,10 +447,24 @@ export function DeploymentTenants() {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState<string | null>(null);
   const tenants = useQuery({
     queryKey: ["deployment-tenants", offset],
     queryFn: () => apiFetch<TenantRecord[]>(`/api/tenants?offset=${offset}`),
   });
+  const act = (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    void action()
+      .catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => {
+        setBusy(false);
+        void client.invalidateQueries({ queryKey: ["deployment-tenants"] });
+      });
+  };
   return (
     <section className="grid gap-2">
       <h3 className="text-[11px] font-medium text-faint">
@@ -430,36 +501,71 @@ export function DeploymentTenants() {
                         : `削除済み。復元期限（${deadline(tenant.deletion.purge_after, locale)}）を過ぎました`}
                 </span>
               )}
+              {tenant.purge && (
+                <span
+                  className={
+                    tenant.purge.stalled
+                      ? "block text-destructive"
+                      : "block text-faint"
+                  }
+                >
+                  {purgeProgress(tenant.purge, english, locale)}
+                </span>
+              )}
             </span>
-            {tenant.restorable && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() => {
-                  setBusy(true);
-                  setError("");
-                  void restore(tenant.name, null, english)
-                    // A Mapping in the restored Tenant reappears in the session.
-                    .then(changed)
-                    .catch((reason) =>
-                      setError(
-                        reason instanceof Error
-                          ? reason.message
-                          : String(reason),
-                      ),
+            <span className="flex flex-wrap items-center gap-2">
+              {tenant.restorable && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    act(
+                      // A Mapping in the restored Tenant reappears in the session.
+                      () => restore(tenant.name, null, english).then(changed),
                     )
-                    .finally(() => {
-                      setBusy(false);
-                      void client.invalidateQueries({
-                        queryKey: ["deployment-tenants"],
-                      });
-                    });
-                }}
-              >
-                {english ? "Restore" : "復元"}
-              </Button>
-            )}
+                  }
+                >
+                  {english ? "Restore" : "復元"}
+                </Button>
+              )}
+              {tenant.purgeable &&
+                (confirming === tenant.name ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={busy}
+                      onClick={() =>
+                        act(() =>
+                          purge(tenant.name, english).then(() =>
+                            setConfirming(null),
+                          ),
+                        )
+                      }
+                    >
+                      {english ? "Purge permanently" : "完全に消去する"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setConfirming(null)}
+                    >
+                      {english ? "Cancel" : "キャンセル"}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setConfirming(tenant.name)}
+                  >
+                    {english ? "Purge now" : "今すぐ消去"}
+                  </Button>
+                ))}
+            </span>
           </li>
         ))}
       </ul>

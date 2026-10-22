@@ -795,7 +795,8 @@ pub(super) fn migration() -> Migration {
 				                ColumnDefinition::new("pending_human_request_id", FieldType::Uuid)
 				                .with_generated(Some(GeneratedColumnDefinition::raw_sql(r#"
 						CASE
-						WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'external_approval'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid
+						WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid
+						WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = 'approval'::text) AND ((((pending -> 'data'::text) -> 'approval'::text) ->> 'source'::text) = 'home'::text) AND (jsonb_typeof((((pending -> 'data'::text) -> 'approval'::text) -> 'request_id'::text)) = 'string'::text) AND ((((pending -> 'data'::text) -> 'approval'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN ((((pending -> 'data'::text) -> 'approval'::text) ->> 'request_id'::text))::uuid
 						ELSE NULL::uuid
 						END"#,
 				                GeneratedStorage::Stored)))
