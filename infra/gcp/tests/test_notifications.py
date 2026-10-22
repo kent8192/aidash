@@ -171,6 +171,27 @@ class ReceiptBoundaryTests(unittest.TestCase):
             )
 
     @patch("notifications.time.time", return_value=NOW)
+    def test_pre_update_backup_fields_are_optional_but_exact(self, _):
+        name = "projects/aidash-test/locations/us-central1/backupPlans/aidash-production-pre-update/backups/pre-update-g4-" + "a" * 12
+        production = {"deployment_tier": "production"}
+        plain = receipt("production", hostname="aidash.run")
+        configuration = dict(production, production_origin="https://aidash.run")
+        self.assertNotIn("Pre-update Backup", message(plain, configuration)["text"])
+        text = message(dict(plain, pre_update_backup=name, writers_started=True), configuration)["text"]
+        self.assertIn(f"Pre-update Backup: {name}", text)
+        self.assertIn("Writers started: yes", text)
+        self.assertNotIn("Pre-update Backup", message(dict(plain, writers_started=True), configuration)["text"])
+        for changes in (
+            {"pre_update_backup": "projects/x/backups/y"},
+            {"pre_update_backup": name + "\nBcc: attacker@example.com"},
+            {"pre_update_backup": name, "writers_started": "yes"},
+            {"writers_started": False},
+            {"unexpected": True},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(Refused):
+                message(dict(plain, **changes), configuration)
+
+    @patch("notifications.time.time", return_value=NOW)
     def test_receipt_object_name_must_match_event_identity(self, _):
         store = MemoryStore([receipt()])
         old = store.objects.pop("notifications/" + "a" * 64 + ".json")

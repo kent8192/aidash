@@ -264,13 +264,19 @@ python3 scripts/cluster_acceptance.py --kubeconfig /path/to/private.kubeconfig \
 ```
 
 The runner requires an explicit kubeconfig and creates a unique namespace. It
-executes the two-node research golden path using local OpenRouter-compatible protocol
-fixtures, kills a worker after an effect, scales server/worker replicas, rolls
+provisions two Nodes and executes the research golden path on Node A using local
+OpenRouter-compatible protocol fixtures. A Tenant subject registers and approves
+the research definitions, submits the goal and answers Tool call approvals.
+The disposable fixtures provision core execution storage and a Provider Credential
+Store with temporary keys so the Agents' default bindings can be admitted.
+The runner kills Node A's worker after an effect, scales server/worker replicas, rolls
 every Deployment, stops and resumes workers, and checks stable identities,
 original task/run/artifact IDs and three unique external effects. It checks the
 real Kubernetes observation API and writes evidence under `private/platform/`.
 The Python runner only deletes the namespace it created. `--keep` retains it until Ctrl+C
 for browser inspection. The all-six integrated release scenario is separate.
+Scoped remote execution across Nodes is covered by `scripts/test-acceptance.sh`;
+the platform journey does not use the removed implicit peer delegation protocol.
 
 References: [Pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination),
 [probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/),
