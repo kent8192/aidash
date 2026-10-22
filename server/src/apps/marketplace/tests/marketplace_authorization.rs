@@ -3062,7 +3062,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			.method(method)
 			.uri(path)
 			.header("cookie", "__Host-aidash-session=marketplace-test-session")
-			.header("origin", "http://127.0.0.1:8080")
+			.header("origin", "https://127.0.0.1:8080")
 			.header("x-aidash-csrf", "marketplace-test-csrf")
 			.header(
 				"x-aidash-context",

@@ -101,7 +101,7 @@ async fn browser_workbench(
 			.parse()
 			.unwrap(),
 	);
-	headers.insert("origin", "http://localhost:8080".parse().unwrap());
+	headers.insert("origin", "https://localhost:8080".parse().unwrap());
 	headers.insert("x-aidash-csrf", "browser-authority-csrf".parse().unwrap());
 	headers.insert(
 		"x-aidash-context",
