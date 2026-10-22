@@ -1307,24 +1307,7 @@ pub(crate) async fn transfer_recipients(
 	let result = async {
 		let target = aidash_domain::nodes::NodeAddress::parse(&input.node_id)?;
 		if target.deployment == f.config.deployment {
-			let node = crate::apps::identity::repositories::nodes::get(
-				&mut *access.tx,
-				&access.identity.tenant,
-				target.node.as_str(),
-			)
-			.await?;
-			let resource = access.resource(
-				"node",
-				node.name.as_str(),
-				json!({"label":node.label,"default":node.default}),
-			);
-			access
-				.require(
-					&resource,
-					aidash_domain::identity::tenant_administration::NODE_USE,
-				)
-				.await?;
-			access.set_node(node.name);
+			access.use_node(target.node).await?;
 			return super::transfer::recipient_list(&f, &mut access, input.cursor).await;
 		}
 		access

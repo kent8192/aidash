@@ -462,7 +462,7 @@ fn sharing_generation_fixture(
 		)
 		.await;
 		let file = &source["manifest"][0];
-		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":source["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":f.c.f.config.deployment,"agent_id":"research","agent_version":"1.1.0","thread_id":f.new_thread["id"]}});
+		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":source["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),"agent_id":"research","agent_version":"1.1.0","thread_id":f.new_thread["id"]}});
 		let path = format!("/api/runs/{}/files/share", sender.id);
 		let (_, session) = request(
 			&f.c.app,

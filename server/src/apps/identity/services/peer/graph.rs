@@ -6,6 +6,7 @@ pub(crate) use crate::apps::identity::repositories::graph::persistence::{
 
 use crate::{
 	Error, Result,
+	apps::federation::remote::repositories::routes,
 	authorization::{access::Access, identity::Actor},
 	federation::Federation,
 };
@@ -40,9 +41,13 @@ pub(crate) async fn peers(
 ) -> Result<Vec<GraphPeer>> {
 	match actor {
 		Actor::Subject(identity) => {
-			let routes = f.routes(&sender(&identity, node.as_deref(), true)?).await?;
+			let sender = sender(&identity, node.as_deref(), true)?;
 			let mut access = Access::begin(&f.store, &identity).await?;
 			let result = async {
+				let sending = routes::sending_node(&mut *access.tx, &sender).await?;
+				access.use_node(sending).await?;
+				let routes =
+					routes::all(&mut *access.tx, &f.config.deployment, &sender, false).await?;
 				let mut visible = Vec::new();
 				for route in routes {
 					let target = route.target.to_string();
@@ -78,6 +83,8 @@ pub(crate) async fn expand(
 			let sender = sender(&identity, input.sending_node.as_deref(), true)?;
 			let mut access = Access::begin(&f.store, &identity).await?;
 			let result = async {
+				let sending = routes::sending_node(&mut *access.tx, &sender).await?;
+				access.use_node(sending).await?;
 				let resource =
 					access.resource("node", &input.node_id, json!({"remote_node":input.node_id}));
 				access.require(&resource, "federation.graph.read").await?;

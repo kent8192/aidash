@@ -32,6 +32,94 @@ async fn discover(client: &APIClient, search: Value) -> Value {
 }
 
 #[rstest]
+#[case::label("/label", json!("Default"))]
+#[case::default("/default", json!(true))]
+#[tokio::test]
+async fn discovery_uses_conditional_node_attributes(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+	#[case] attribute: &str,
+	#[case] expected: Value,
+) {
+	let fixture = Box::pin(execution).await;
+	let node = endpoint::default_node(&fixture.app.runtime.store, "acme").await;
+	let mut policy = fixture.policy.clone();
+	policy["policies"] = json!([
+		{"id":"catalog-read","effect":"allow","subjects":{"any":true},"actions":["registry.read"],"resources":{"kinds":["*"]}},
+		{"id":"conditional-node","effect":"allow","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[node.node]},
+		 "condition":{"op":"eq","left":{"source":"resource","path":attribute},"right":{"source":"literal","value":expected}}},
+	]);
+	deployment_administrator(
+		&fixture.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	let discovered = discover(&fixture.subject, json!({})).await;
+	assert_eq!(discovered["errors"], json!([]), "{discovered}");
+	assert!(
+		!discovered["agents"].as_array().unwrap().is_empty(),
+		"{discovered}"
+	);
+}
+
+#[rstest]
+#[case::peers(false)]
+#[case::expand(true)]
+#[tokio::test]
+async fn outbound_graph_requires_use_of_its_sending_node(
+	#[future] discovery_pair: DiscoveryPair,
+	#[case] expand: bool,
+) {
+	let pair = Box::pin(discovery_pair).await;
+	let source = endpoint::default_node(&pair.source_runtime.store, "acme").await;
+	let target = endpoint::default_node(&pair.destination_runtime.store, "acme").await;
+	let issued = deployment_administrator(
+		&pair.destination.app,
+		"/api/authorization/acme/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	deployment_administrator(
+		&pair.destination.app,
+		"/api/authorization/acme/peer-mappings",
+		json!({
+			"node":target.node,"source_node":source,"source_subject":"alice",
+			"credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true,
+		}),
+	)
+	.await;
+	let path = format!("/api/federation/graph/peers?node={}", source.node);
+	let input = json!({"node_id":target,"sending_node":source.node,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,"target_tenant":null});
+	for denied in [false, true] {
+		if denied {
+			let mut policy = pair.source.policy.clone();
+			policy["policies"].as_array_mut().unwrap().push(json!({
+				"id":"no-sender-use","effect":"deny","subjects":{"any":true},
+				"actions":["node.use"],"resources":{"kinds":["node"],"ids":[source.node]},
+			}));
+			deployment_administrator(
+				&pair.source.app,
+				"/api/authorization/acme",
+				json!({"expected_revision":1,"bundle":policy}),
+			)
+			.await;
+		}
+		let response = if expand {
+			pair.source
+				.subject
+				.post("/api/federation/graph", &input, "json")
+				.await
+				.unwrap()
+		} else {
+			pair.source.subject.get(&path).await.unwrap()
+		};
+		assert_json(response, if denied { 403 } else { 200 });
+	}
+}
+
+#[rstest]
 #[tokio::test]
 async fn discovery_requires_node_use_even_without_any_routes(
 	#[future]

@@ -21,5 +21,5 @@ body:text {
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Start a bound S256 desktop handoff contract", function () { expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("base_url")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url);const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request); });
+  test("Start a bound S256 desktop handoff contract", function () { expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("browser_origin")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url.replace(bru.getEnvVar("browser_origin"),bru.getEnvVar("base_url")));const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request); });
 }

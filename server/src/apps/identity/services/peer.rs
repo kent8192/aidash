@@ -120,23 +120,7 @@ pub(crate) async fn mapped_access_mode(
 			},
 		};
 		let mut access = access_mode(f, &admitted, exclusive).await?;
-		let node = crate::apps::identity::repositories::nodes::get(
-			&mut *access.tx,
-			admitted.tenant.as_str(),
-			receiver.as_str(),
-		)
-		.await?;
-		let resource = access.resource(
-			"node",
-			receiver.as_str(),
-			json!({"label":node.label,"default":node.default}),
-		);
-		let result = access
-			.require(
-				&resource,
-				aidash_domain::identity::tenant_administration::NODE_USE,
-			)
-			.await;
+		let result = access.use_node(receiver.clone()).await;
 		if let Err(error) = result {
 			return access.finish::<Access>(Err(error)).await;
 		}

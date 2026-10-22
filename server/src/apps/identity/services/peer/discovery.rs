@@ -40,14 +40,7 @@ pub(crate) async fn discover_in(
 	};
 	// The agents found here are the sending Node's, and carry its address.
 	let sending = routes::sending_node(&mut *access.tx, &sender).await?;
-	access.set_node(sending.clone());
-	let resource = access.resource("node", sending.as_str(), json!({}));
-	access
-		.require(
-			&resource,
-			aidash_domain::identity::tenant_administration::NODE_USE,
-		)
-		.await?;
+	access.use_node(sending.clone()).await?;
 	let own = f.config.deployment.node(sending).to_string();
 	let local = catalog::list_in(access, &query).await?;
 	let mut result = Discovery {

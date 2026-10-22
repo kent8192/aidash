@@ -18,7 +18,7 @@ use uuid::Uuid;
 #[async_trait]
 impl RemoteCommandEffects for Scope<'_> {
 	fn local_node(&self) -> &str {
-		self.runtime.config.deployment.as_str()
+		self.access.node_reference()
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
@@ -381,7 +381,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 			.require(
 				&self.access.resource(
 					"human_request",
-					format!("{}/human_requests/{id}", self.access.node_id),
+					format!("{}/human_requests/{id}", self.access.node_reference()),
 					resource.attributes,
 				),
 				"human.read",

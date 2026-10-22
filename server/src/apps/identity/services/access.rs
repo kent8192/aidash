@@ -563,6 +563,29 @@ impl Access {
 		}
 	}
 
+	/// Authorize work on an owned Node using its current policy attributes,
+	/// then select its Catalog and Federation identity.
+	pub(crate) async fn use_node(&mut self, name: aidash_domain::nodes::NodeName) -> Result<()> {
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *self.tx,
+			&self.identity.tenant,
+			name.as_str(),
+		)
+		.await?;
+		let resource = self.resource(
+			"node",
+			node.name.as_str(),
+			json!({"label":node.label,"default":node.default}),
+		);
+		self.require(
+			&resource,
+			aidash_domain::identity::tenant_administration::NODE_USE,
+		)
+		.await?;
+		self.set_node(node.name);
+		Ok(())
+	}
+
 	/// The Node of a Workspace of this Access's Tenant.
 	pub(crate) async fn workspace_node(
 		&mut self,

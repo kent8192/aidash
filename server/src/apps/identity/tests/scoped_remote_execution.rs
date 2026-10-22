@@ -6832,3 +6832,105 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 	);
 	p.close().await;
 }
+
+#[rstest::rstest]
+#[case::request("human.request")]
+#[case::read("human.read")]
+#[case::answer("human.answer")]
+#[tokio::test]
+async fn remote_human_authorization_uses_the_home_nodes_address(
+	#[future(awt)] scoped_pair: Pair,
+	#[case] action: &str,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let saved = home
+		.human_request("QUESTION", "A Node-scoped question", "node-scoped-human")
+		.await
+		.unwrap();
+	let address = node_of(&p.a);
+	let (kind, id) = if action == "human.request" {
+		("run", format!("{address}/runs/{}", p.admission))
+	} else {
+		(
+			"human_request",
+			format!("{address}/human_requests/{}", saved.id),
+		)
+	};
+	let answer_path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let answer = json!({"id":saved.id,"response":{"answer":"Continue"}});
+	let mut policy = p.source_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-node-human","effect":"deny","subjects":{"any":true},
+		"actions":[action],"resources":{"kinds":[kind],"ids":[id]},
+	}));
+	common::replace_policy(&p.a.store, "acme", policy).await;
+	match action {
+		"human.request" => {
+			let denied = home
+				.human_request(
+					"QUESTION",
+					"Another Node-scoped question",
+					"node-scoped-denied",
+				)
+				.await;
+			assert!(denied.is_err(), "{denied:?}");
+		}
+		"human.read" => {
+			let denied = home.human_request_by_id(saved.id).await;
+			let (status, projection) = request(
+				&p.aa,
+				&p.token,
+				"GET",
+				&format!("/api/tasks/{}/remote-executions", p.task),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{projection}");
+			assert_eq!(projection[0]["human_requests"], json!([]), "{projection}");
+			assert!(denied.is_err(), "{denied:?}");
+		}
+		"human.answer" => {
+			let (status, response) =
+				request(&p.aa, &p.token, "POST", &answer_path, answer.clone()).await;
+			assert_eq!(status, 403, "{response}");
+			assert_eq!(
+				home.human_request_by_id(saved.id).await.unwrap().response,
+				None
+			);
+		}
+		_ => unreachable!(),
+	}
+	common::replace_policy(&p.a.store, "acme", p.source_policy.clone()).await;
+	match action {
+		"human.request" => {
+			home.human_request(
+				"QUESTION",
+				"Another Node-scoped question",
+				"node-scoped-denied",
+			)
+			.await
+			.unwrap();
+		}
+		"human.read" => {
+			assert_eq!(
+				home.human_request_by_id(saved.id).await.unwrap().id,
+				saved.id
+			);
+		}
+		"human.answer" => {
+			let (status, response) = request(&p.aa, &p.token, "POST", &answer_path, answer).await;
+			assert_eq!(status, 200, "{response}");
+			assert_eq!(
+				home.human_request_by_id(saved.id).await.unwrap().response,
+				Some(json!({"answer":"Continue"}))
+			);
+		}
+		_ => unreachable!(),
+	}
+	p.close().await;
+}

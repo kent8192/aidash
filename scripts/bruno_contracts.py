@@ -129,17 +129,17 @@ DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
-         "/api/registry/versions?node=" + NODE,
+         "/api/registry/versions?node={{tenant_node}}",
          "expect(res.getBody().versions).to.eql([]);"),
         ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT,
-         "/api/registry/versions?node=" + NODE, ""),
+         "/api/registry/versions?node={{tenant_node}}", ""),
     ],
     "GET /api/authorization/{tenant}/catalog": [
         ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT,
-         "/api/authorization/{{tenant}}/catalog?node=" + NODE,
+         "/api/authorization/{{tenant}}/catalog?node={{tenant_node}}",
          "expect(res.getBody()).to.eql([]);"),
         ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT,
-         "/api/authorization/{{tenant}}/catalog?node=" + NODE, ""),
+         "/api/authorization/{{tenant}}/catalog?node={{tenant_node}}", ""),
     ],
     "GET /api/registry": [
         ("Subject discovers no definition it may not read", 200, SUBJECT, None,
@@ -470,7 +470,7 @@ def render():
     desktop_start = {"redirect_uri":"http://127.0.0.1:43217/callback","state":"ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss","code_challenge":"2RMjpSmPO5-BTbKe-qJx8k-9zO390GJJG4q8jge3-2k"}
     add("POST /auth/desktop/start", "Start a bound S256 desktop handoff", 200,
         body=json.dumps(desktop_start), seq=45,
-        checks='expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("base_url")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url);const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request);')
+        checks='expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("browser_origin")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url.replace(bru.getEnvVar("browser_origin"),bru.getEnvVar("base_url")));const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request);')
     add("GET /auth/desktop/authorize", "Browser consent binds the handoff", 200,
         path="{{desktop_authorize_url}}", headers={"Cookie":"{{session_cookie}}"}, seq=46,
         checks='expect(res.getHeader("content-type")).to.include("text/html");expect(String(res.getBody())).to.include(bru.getVar("desktop_request"));expect(res.getHeader("content-security-policy")).to.include("http://127.0.0.1:43217");')
@@ -1167,7 +1167,7 @@ def render():
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
         if route["name"] == "file_recipient_list":
-            uri = path + "?node_id={{node_id}}"
+            uri = path + "?node_id={{node_id}}/{{tenant_node}}"
             status = 403
             checks = ""
             label = "Subject without file transfer permission cannot list recipients"

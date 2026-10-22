@@ -172,7 +172,11 @@ impl HomeScope for Scope {
 			}
 			let human = self.access.resource(
 				"human_request",
-				format!("{}/human_requests/{}", self.access.node_id, request.id),
+				format!(
+					"{}/human_requests/{}",
+					self.access.node_reference(),
+					request.id
+				),
 				resource.attributes.clone(),
 			);
 			if self.access.decide(&human, "human.read").await? {
@@ -202,7 +206,11 @@ impl HomeScope for Scope {
 			.require(
 				&self.access.resource(
 					"human_request",
-					format!("{}/human_requests/{}", self.access.node_id, request.id),
+					format!(
+						"{}/human_requests/{}",
+						self.access.node_reference(),
+						request.id
+					),
 					resource.attributes,
 				),
 				"human.answer",
