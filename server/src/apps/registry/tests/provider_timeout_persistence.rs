@@ -271,7 +271,7 @@ async fn database_validates_media_route_members_for_models(
 }
 
 /// The model the dashboard's registration form sends (`web/src/forms.tsx`),
-/// without its Provider Credential: this Node has no Provider Credential Store.
+/// without its Provider Credential: this Node has no Secret Store.
 #[fixture]
 fn dashboard_model() -> Value {
 	json!({"id":"","version":"1.0.0","kind":"model",

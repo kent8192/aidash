@@ -3,7 +3,9 @@
 //! the definitions of the questions it asked and records the Run's resume cycle
 //! its decision identity commits to, a decision whose pruning the
 //! Summary Stage completed is `staged`, and incomplete durable answers have a
-//! reason of their own. `staged` is final like `applied` and `shadow`.
+//! reason of their own. `staged` is final like `applied` and `shadow`. An
+//! approval decision (#412, ADR 0077) is `allowed`, `blocked` or `shadow`, with
+//! the block reason it names or `clear`, and is final like them.
 //! Aidash is undeployed, so v2 rows are not migrated: the new attempt column
 //! has no default. Physical DDL precedes the `0042_decision_evidence_v3_state`
 //! snapshot.
@@ -42,7 +44,7 @@ pub(super) fn migration() -> Migration {
 			table: "decision_evidence".into(),
 			constraint: Constraint::Check {
 				name: "decision_evidence_outcome".into(),
-				expression: "outcome IN ('applied', 'staged', 'shadow', 'rejected') AND reason IN ('fits', 'insufficient', 'forbidden', 'provider_failure', 'authority_failure', 'journal_failure', 'invalid_answers', 'incomplete_answers', 'no_candidates') AND jsonb_typeof(evidence) = 'object'".into(),
+				expression: "outcome IN ('applied', 'staged', 'shadow', 'rejected', 'allowed', 'blocked') AND reason IN ('fits', 'insufficient', 'forbidden', 'provider_failure', 'authority_failure', 'journal_failure', 'invalid_answers', 'incomplete_answers', 'no_candidates', 'clear', 'data_exfiltration', 'destructive', 'beyond_request', 'injected', 'boundary', 'unavailable') AND jsonb_typeof(evidence) = 'object'".into(),
 			},
 		})
 		.add_operation(Operation::DropNamedIndex {
@@ -57,14 +59,14 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
-		// An applied, staged or shadow decision is final; only rejected snapshots repeat.
+		// An applied, staged, shadow, allowed or blocked decision is final; only rejected snapshots repeat.
 		.add_operation(Operation::CreateNamedIndex {
 			table: "decision_evidence".into(),
 			name: "decision_evidence_final".into(),
 			columns: vec!["decision_id".into()],
 			unique: true,
 			index_type: Some(IndexType::BTree),
-			where_clause: Some("(outcome IN ('applied', 'staged', 'shadow'))".into()),
+			where_clause: Some("(outcome IN ('applied', 'staged', 'shadow', 'allowed', 'blocked'))".into()),
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

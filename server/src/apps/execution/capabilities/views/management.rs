@@ -434,23 +434,6 @@ pub async fn python(
 }
 
 #[post(
-	"/api/runs/{id}/python/install",
-	name = "!core_python_install",
-	auth = "protected"
-)]
-pub async fn python_install(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<crate::capabilities::packages::Install>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::python_install(service.runtime.clone(), actor, id, input).await)
-}
-
-#[post(
 	"/api/runs/{id}/python/poll",
 	name = "!core_python_poll",
 	auth = "protected"

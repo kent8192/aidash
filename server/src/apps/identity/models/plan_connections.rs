@@ -1,6 +1,6 @@
 //! Plan Connection metadata, pending Sign in with ChatGPT authorizations, Run
 //! pins and this Deployment's host ID (#159, ADR 0007, ADR 0031). Plan Tokens
-//! are never ORM fields; they stay in the Provider Credential Store.
+//! are never ORM fields; they stay in the Secret Store.
 use super::dashboard_administration::database_time;
 use crate::database::native::Pool;
 use crate::{Error, Result};

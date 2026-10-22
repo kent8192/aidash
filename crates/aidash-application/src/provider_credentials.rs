@@ -17,7 +17,9 @@ pub struct Validation {
 pub trait KeyValidator: Send + Sync {
 	async fn validate(&self, provider: Provider, key: &SecretString) -> Result<Validation>;
 }
-/// Deliberately no access/read-payload operation, even for the fake adapter.
+/// The write port of the Secret Store: Key Material, Plan Tokens and Tenant
+/// Secret values. Deliberately no access/read-payload operation, even for the
+/// fake adapter.
 #[async_trait]
 pub trait Store: Send + Sync {
 	fn resource(&self, id: Uuid) -> String;
@@ -39,7 +41,20 @@ pub trait Store: Send + Sync {
 	/// Tokens, such as Cloud's Secret Manager until #248, refuses.
 	async fn create_plan(&self, _tenant: &str, _id: Uuid) -> Result<()> {
 		Err(Error::Invalid(
-			"this Provider Credential Store does not hold Plan Tokens".into(),
+			"this Secret Store does not hold Plan Tokens".into(),
+		))
+	}
+	/// The resource holding one Tenant Secret's values, under its own
+	/// namespace (ADR 0051).
+	fn secret_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/tenant-secrets/{id}")
+	}
+	/// Creates one Tenant Secret's resource. A Store that cannot hold Tenant
+	/// Secrets, such as Cloud's Secret Manager until the Credential Broker
+	/// carries tool calls (#310), refuses.
+	async fn create_secret(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::Invalid(
+			"this Secret Store does not hold Tenant Secrets".into(),
 		))
 	}
 }
@@ -67,6 +82,8 @@ pub trait Repository: Send + Sync {
 		limit: usize,
 	) -> Result<Vec<ProviderCredential>>;
 }
+/// Provider Credentials purged per repository transaction.
+const PURGE_PAGE_SIZE: usize = 50;
 pub struct Service {
 	pub repository: Arc<dyn Repository>,
 	pub store: Arc<dyn Store>,
@@ -461,6 +478,50 @@ impl Service {
 			tracing::warn!("Provider Credential deletion committed; secret cleanup is pending");
 		}
 		Ok(row.into())
+	}
+	/// Ends every Provider Credential of a Tenant being purged, and with it
+	/// the Key Material stored outside the database (ADR 0061). Unlike
+	/// [`Self::delete`] it ignores Bindings, which are purged with the Tenant,
+	/// and it also ends Pending and Revoked credentials. It fails when any
+	/// external secret could not be destroyed, so the caller retries; each
+	/// credential's durable `Deleted` mark and version pin let the retry resume.
+	pub async fn purge_tenant(&self, tenant: &str, actor: &str) -> Result<()> {
+		let mut offset = 0;
+		loop {
+			let mut scope = self.repository.begin(tenant).await?;
+			let page = scope.list(offset, PURGE_PAGE_SIZE).await?;
+			scope.commit().await?;
+			let exhausted = page.len() < PURGE_PAGE_SIZE;
+			offset += page.len();
+			for row in page {
+				self.purge_credential(row, actor).await?;
+			}
+			if exhausted {
+				return Ok(());
+			}
+		}
+	}
+	async fn purge_credential(&self, mut row: ProviderCredential, actor: &str) -> Result<()> {
+		if row.state == State::Pending {
+			// No version is pinned yet; deleting the resource is idempotent
+			// across a crash before or after the secret exists.
+			self.store.delete(&row.tenant, &row.secret_resource).await?;
+		}
+		if row.state != State::Deleted {
+			// Deleted is the durable intent; the pin stays as the cleanup marker.
+			let mut scope = self.repository.begin(&row.tenant).await?;
+			row = scope.get(row.id).await?;
+			row.state = State::Deleted;
+			row.revision += 1;
+			scope
+				.save(&row, "provider_credential.deleted", actor)
+				.await?;
+			scope.commit().await?;
+		}
+		if row.pinned_version.is_some() {
+			self.reconcile_candidate(row).await?;
+		}
+		Ok(())
 	}
 	pub async fn bind(
 		&self,

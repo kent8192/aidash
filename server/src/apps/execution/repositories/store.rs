@@ -55,6 +55,10 @@ pub struct Store {
 	/// `[plan_connections] enabled`: new authorizations, model lists and
 	/// admission of `chatgpt` models.
 	pub plan_connections_enabled: bool,
+	/// Present only where the Secret Store can hold Tenant Secret values and
+	/// the server may read them: a self-hosted node with a PostgreSQL Store
+	/// (ADR 0051). Cloud and Dedicated offer none until #310.
+	pub tenant_secrets: Option<std::sync::Arc<aidash_application::tenant_secrets::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
@@ -81,6 +85,12 @@ pub struct Store {
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
 	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
 	pub cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
+	/// Where Execution Pod time and storage samples go. The build installs it;
+	/// Community's reports nowhere.
+	pub usage: std::sync::Arc<dyn aidash_application::usage::UsageEvents>,
+	/// Decides whether new work may begin. The build installs it; Community's
+	/// admits everything.
+	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -411,9 +421,12 @@ impl Store {
 			tenancies: Default::default(),
 			tool_slots,
 			cache_salt: None,
+			usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
+			admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 			provider_credentials: None,
 			plan_connections: None,
 			plan_connections_enabled: false,
+			tenant_secrets: None,
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
@@ -515,9 +528,12 @@ impl Store {
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
+			usage: self.usage.clone(),
+			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
+			tenant_secrets: self.tenant_secrets.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -563,9 +579,12 @@ impl Store {
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
+			usage: self.usage.clone(),
+			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
+			tenant_secrets: self.tenant_secrets.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -1142,6 +1161,21 @@ impl Store {
 			};
 			snapshot.validate()?;
 			self.require_projection(&snapshot)?;
+			let tenant: String = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("tenant"))
+					.from(Alias::new("workspaces"))
+					.and_where(Expr::col("id").eq(Expr::value(claimed.workspace_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			aidash_application::usage::require(
+				self.admission.as_ref(),
+				&tenant,
+				aidash_application::usage::Work::Run,
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()
@@ -3441,34 +3475,6 @@ impl Store {
 		Ok(request)
 	}
 
-	pub(crate) async fn expire_workbench_approval(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
-		let request = HumanRequestRecord::read_in(tx.as_mut(), id, true)
-			.await?
-			.ok_or_else(|| Error::NotFound("human request".into()))?;
-		let result = if human_interaction::approval_expired(&request, chrono::Utc::now()) {
-			self.answer_in(
-				tx.as_mut(),
-				id,
-				json!({"approved": false, "expired": true}),
-				"system",
-			)
-			.await?
-		} else {
-			request
-		};
-		tx.commit().await?;
-		Ok(result)
-	}
-
 	pub async fn answer(
 		&self,
 		scope: &TenancyScope,
@@ -3517,7 +3523,7 @@ impl Store {
 			.await?
 			.ok_or_else(|| Error::NotFound("run".into()))?;
 		let human_interaction::Answer::Write { response, actor } =
-			human_interaction::answer(&old, &run, response, actor, chrono::Utc::now())?
+			human_interaction::answer(&old, &run, response, actor)?
 		else {
 			return Ok(old);
 		};
@@ -3876,7 +3882,24 @@ impl Store {
 	) -> Result<RunDetails> {
 		let invocations = InvocationRecord::page(tx, run.id, offset).await?;
 		let memory = crate::semantic::repositories::bindings::load(tx, &run.metadata()).await?;
+		let egress_requests =
+			crate::apps::execution::capabilities::models::EgressRequest::objects()
+				.filter(
+					crate::apps::execution::capabilities::models::EgressRequest::field_run_id()
+						.eq(run.id),
+				)
+				.order_by(&["id"])
+				.offset(offset as usize)
+				.limit(100)
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?;
+		let egress_requests = egress_requests
+			.into_iter()
+			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
+			.collect::<std::result::Result<Vec<aidash_domain::egress::RequestRecord>, _>>()?;
 		Ok(RunDetails {
+			egress_requests,
 			media_input_routes: Vec::new(),
 			run: run.into(),
 			invocations,

@@ -3,9 +3,28 @@ use super::{contracts::Area, records::Record};
 pub use crate::apps::execution::capabilities::serializers::approvals::{
 	ApprovalDecision, Outbound, Revoke,
 };
-use crate::{Result, authorization::access::Access, domain::Run, store::Store};
+use crate::{Error, Result, authorization::access::Access, domain::Run, store::Store};
+use aidash_application::ports::capabilities::approvals::ApprovalScope as _;
 use serde_json::Value;
 use uuid::Uuid;
+pub(crate) async fn can_allow_always(
+	store: &Store,
+	access: &mut Access,
+	record: &Record,
+) -> Result<bool> {
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
+	let run = scope
+		.run_context(serde_json::from_value(record.data["run_id"].clone())?)
+		.await?;
+	aidash_application::capabilities::approvals::can_allow_always(
+		&mut scope,
+		&run,
+		&crate::apps::execution::repositories::capability_records::domain(record.clone()),
+	)
+	.await
+	.map_err(Into::into)
+}
+
 pub(crate) async fn visible(access: &mut Access, record: &Record) -> Result<bool> {
 	let mut scope = crate::bootstrap::approval_scope(None, access, None);
 	aidash_application::capabilities::approvals::visible(
@@ -57,6 +76,21 @@ pub(crate) async fn decide(
 	aidash_application::capabilities::approvals::decide(&mut scope, id, input.into())
 		.await
 		.map_err(Into::into)
+}
+/// The kind of the approval record `id` names, among those a revocation can
+/// end: an outbound read and a Tool call approval.
+pub(crate) async fn revocable_kind(access: &mut Access, id: Uuid) -> Result<&'static str> {
+	for kind in [
+		"outbound",
+		aidash_application::capabilities::approvals::TOOL_CALL,
+	] {
+		match super::records::get(access, id, kind).await {
+			Ok(_) => return Ok(kind),
+			Err(Error::NotFound(_)) => {}
+			Err(error) => return Err(error),
+		}
+	}
+	Err(Error::NotFound("grant unavailable".into()))
 }
 pub(crate) async fn revoke(
 	access: &mut Access,

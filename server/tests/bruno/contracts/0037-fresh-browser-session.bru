@@ -19,10 +19,10 @@ tests {
     expect(res.getStatus()).to.equal(307);
   });
   test("Callback stays on the configured origin", function () {
-    expect(res.getHeader("location").startsWith(bru.getEnvVar("base_url")+"/auth/callback?")).to.equal(true);
+    expect(res.getHeader("location").startsWith(bru.getEnvVar("browser_origin")+"/auth/callback?")).to.equal(true);
   });
 
   if (res.getStatus() === 307) {
-    bru.setVar("callback_url",res.getHeader("location"));
+    bru.setVar("callback_url",res.getHeader("location").replace(bru.getEnvVar("browser_origin"),bru.getEnvVar("base_url")));
   }
 }

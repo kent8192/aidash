@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
 import { Badge as StatusBadge } from "./components/ui/badge";
@@ -52,13 +52,13 @@ function returningTenant(): string {
 }
 
 /**
- * Reads and clears the callback's `provider_authorization` outcome; the
+ * Reads the callback's `provider_authorization` outcome; the
  * settings page of a key OpenRouter still holds but Aidash does not store (one
  * issued for a failed write, or the key a reconnect replaced); and whether
  * validation warned about the connected key. The outcome belongs only to the
  * Tenant the authorization started for.
  */
-function takeOutcome(tenant: string): {
+function readOutcome(tenant: string): {
   outcome: Outcome;
   keySettingsUrl: string | null;
   keyWarnings: boolean;
@@ -71,10 +71,6 @@ function takeOutcome(tenant: string): {
     "aidash-provider-authorization-key-warnings",
   );
   const started = sessionStorage.getItem(tenantKey);
-  sessionStorage.removeItem("aidash-provider-authorization");
-  sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
-  sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
-  if (value) sessionStorage.removeItem(tenantKey);
   if (!value || !(outcomes as readonly string[]).includes(value)) return null;
   if (started !== tenant) return null;
   const outcome = value as Outcome;
@@ -159,7 +155,16 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [callback] = useState(() => takeOutcome(tenant));
+  const [callback] = useState(() => readOutcome(tenant));
+  useEffect(() => {
+    // A render can be retried before it commits. Keep the returning Tenant
+    // and its outcome available until this page actually mounts.
+    if (!sessionStorage.getItem("aidash-provider-authorization")) return;
+    sessionStorage.removeItem("aidash-provider-authorization");
+    sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
+    sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
+    sessionStorage.removeItem(tenantKey);
+  }, []);
   const outcome = callback?.outcome;
   // Revocation, deletion and a failed authorization leave a live key at
   // OpenRouter; its settings page is where the user deletes it.

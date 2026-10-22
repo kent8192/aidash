@@ -10,14 +10,16 @@ import sys
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backup
 import controller
-from cloud import Terraform as NativeTerraform
+from cloud import Terraform as NativeTerraform, operation_budget
 from kubefake import PROJECT, FakeCluster
-from policy import IMAGE_KINDS, transition
+from policy import IMAGE_KINDS, Refused, transition
 
 
 SHA = "a" * 40
@@ -74,6 +76,20 @@ class ConfigurationTests(unittest.TestCase):
                     value["byok_project_id"] = byok
                 with patch.dict(os.environ, {"AIDASH_GCP_CONFIG": json.dumps(value)}):
                     self.assertEqual(controller.load_config(), value)
+
+
+class ProductionSourceTests(unittest.TestCase):
+    def verify(self, trusted_sha):
+        entry = {"sha": SHA, "main_sha": "b" * 40,
+                 "release": {"source_sha": SHA, "trusted_sha": trusted_sha, "images": deepcopy(IMAGES)}}
+        config = dict(CONFIG, staging_project_id=PROJECT)
+        with patch.object(controller.delivery, "authorize_production", return_value={"sha": SHA}):
+            controller.verify_source(config, "production", entry)
+
+    def test_retained_bundle_must_be_built_from_the_release_source(self):
+        self.verify(SHA)
+        with self.assertRaises(Refused):
+            self.verify(TRUSTED)
 
 
 class MemoryStore:
@@ -166,7 +182,7 @@ class CloudFixture:
         }
 
 
-class ReconcileTests(unittest.TestCase):
+class ReconcileFixture:
     def setUp(self):
         self.store = MemoryStore()
         self.cloud = CloudFixture()
@@ -267,6 +283,8 @@ class ReconcileTests(unittest.TestCase):
 
         return patch.object(self.cloud, "outputs", side_effect=values)
 
+
+class ReconcileTests(ReconcileFixture, unittest.TestCase):
     def test_create_installs_dependencies_migrates_with_writers_stopped_then_publishes(self):
         self.request()
         applies = []
@@ -1444,6 +1462,34 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.calls, [("activity", "test")])
         self.assertTrue(self.cloud.managed["test"]["running"])
 
+    def test_deploy_passes_the_validated_demo_people_without_logging_them(self):
+        self.request()
+        people = {"people": [{"email": "alex@example.test", "subject": "alex"}]}
+        output = io.StringIO()
+        with patch.dict(os.environ, {"AIDASH_DEMO_DATA": json.dumps(people, indent=2)}), \
+                patch.object(controller.kube, "deploy", wraps=controller.kube.deploy) as deploy, \
+                redirect_stdout(output):
+            self.reconcile()
+        (call,) = deploy.call_args_list
+        self.assertEqual(json.loads(call.kwargs["demo_people"]), people)
+        self.assertFalse(call.kwargs["fork"])
+        self.assertNotIn("alex@example.test", output.getvalue())
+
+    def test_deploy_without_demo_people_passes_none(self):
+        self.request()
+        with patch.dict(os.environ, {"AIDASH_DEMO_DATA": ""}), \
+                patch.object(controller.kube, "deploy", wraps=controller.kube.deploy) as deploy:
+            self.reconcile()
+        (call,) = deploy.call_args_list
+        self.assertIsNone(call.kwargs["demo_people"])
+
+    def test_demo_people_must_be_a_json_object_and_are_never_echoed(self):
+        for raw in ('["alex@example.test"]', "not json alex@example.test", '"alex@example.test"'):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"AIDASH_DEMO_DATA": raw}):
+                with self.assertRaises(controller.Refused) as raised:
+                    controller.demo_people()
+                self.assertNotIn("alex", str(raised.exception))
+
     def test_failed_deployment_waits_for_explicit_retry_and_keeps_data(self):
         self.request()
         with patch.object(controller.kube, "migrate", side_effect=RuntimeError("fixture migration failure")):
@@ -1638,6 +1684,793 @@ class ReconcileTests(unittest.TestCase):
         self.reconcile()
         self.assertFalse(self.cloud.plans)
         self.assertFalse(self.calls)
+
+
+PLAN = f"projects/{PROJECT}/locations/us-central1/backupPlans/aidash-production-pre-update"
+EXPECTED_CLUSTER = f"projects/{PROJECT}/locations/us-central1-a/clusters/aidash"
+UPDATE = "b" * 40
+
+
+class BackupApi:
+    """Stands in for the Backup for GKE REST API; requests also land in the shared event list."""
+
+    def __init__(self, events, plans):
+        self.events = events
+        self.plans = plans
+        self.backups = {}
+        self.requests = []
+        self.states = ["IN_PROGRESS", "SUCCEEDED"]
+
+    @staticmethod
+    def fresh(state):
+        return {
+            "state": state, "containsVolumeData": True, "containsSecrets": True,
+            "resourceCount": 12, "volumeCount": 4,
+            "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+            "clusterMetadata": {"cluster": EXPECTED_CLUSTER},
+        }
+
+    def seed(self, generation, sha, state="SUCCEEDED"):
+        name = f"{PLAN}/backups/{backup.backup_id(generation, sha)}"
+        self.backups[name] = self.fresh(state)
+        return name
+
+    def __call__(self, method, resource, body=None):
+        self.requests.append((method, resource))
+        if method == "POST":
+            plan, identifier = resource.split("/backups?backupId=")
+            name = f"{plan}/backups/{identifier}"
+            self.events.append(("backup_create", name, len(self.plans())))
+            if name in self.backups:
+                raise urllib.error.HTTPError(resource, 409, "ALREADY_EXISTS", {}, None)
+            self.backups[name] = self.fresh("CREATING")
+            return {"name": "operations/1"}
+        self.events.append(("backup_get", resource))
+        if resource not in self.backups:
+            raise urllib.error.HTTPError(resource, 404, "NOT_FOUND", {}, None)
+        current = self.backups[resource]
+        if current["state"] in {"CREATING", "IN_PROGRESS"}:
+            current["state"] = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        return dict(current)
+
+
+class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.config.update(deployment_tier="production", pre_update_backup_plan=PLAN)
+        self.api = BackupApi(self.calls, lambda: self.cloud.plans)
+        self.context.enter_context(patch.object(backup, "call", self.api))
+        self.context.enter_context(patch.object(controller, "verify_source", lambda *args: None))
+
+    def production_request(self, sha=SHA):
+        self.sequence += 1
+        request = dict(
+            environment="production", action="up", sequence=self.sequence, sha=sha, source_ref="main",
+            source_repo=CONFIG["repository"], main_sha=sha,
+        )
+        self.store.state = transition(self.store.state, request, "c" * 12, 0, production=True)[0]
+        entry = self.store.state["environments"]["production"]
+        entry["release"] = {"source_sha": sha, "trusted_sha": TRUSTED, "images": deepcopy(IMAGES)}
+        return entry
+
+    def entry(self):
+        return self.store.state["environments"]["production"]
+
+    def running_production(self):
+        self.production_request()
+        self.reconcile()
+        self.assertEqual(self.entry()["status"], "ready")
+        self.calls.clear()
+        self.api.requests.clear()
+
+    def writers(self):
+        return self.kube.replicas("aidash-production", "statefulset", "app-aidash-server")
+
+    def event(self, name):
+        return next(index for index, call in enumerate(self.calls) if call[0] == name)
+
+    def retry_request(self, retry):
+        authorized = {
+            "sha": UPDATE, "main_sha": UPDATE, "source_ref": "main", "source_repo": CONFIG["repository"], "fork": False,
+            "approved_sha": "", "release_pr": 1,
+            "release": {"source_sha": UPDATE, "trusted_sha": TRUSTED, "images": deepcopy(IMAGES)},
+        }
+        environment = {"GITHUB_RUN_ID": str(self.sequence + 10), "GITHUB_REF": "refs/heads/main"}
+        event = {"inputs": {"main_sha": UPDATE, "retry_failed": "true" if retry else "false"}}
+        with patch.dict(os.environ, environment), patch.object(controller.delivery, "authorize_production", return_value=authorized):
+            return controller.requests(self.config, event, "workflow_dispatch", self.store.state)
+
+    def test_first_deployment_protects_the_application_and_skips_the_backup(self):
+        self.production_request()
+        self.reconcile()
+        self.assertEqual(self.api.requests, [])
+        self.assertIn("protectedapplication", [key[0] for key in self.kube.objects])
+        self.assertEqual(
+            self.kube.get("persistentvolumeclaim", "memory-recovery", "aidash-production")["metadata"]["labels"],
+            {"aidash.run/backup": "exclude"},
+        )
+        self.assertNotIn("pre_update_backup", self.entry())
+
+    def test_update_backs_up_after_the_seal_and_before_any_terraform_apply(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.production_request(UPDATE)
+        self.reconcile()
+        entry = self.entry()
+        name = f"{PLAN}/backups/pre-update-g2-{'b' * 12}"
+        self.assertEqual((entry["status"], entry["pre_update_backup"]), ("ready", name))
+        created = self.calls[self.event("backup_create")]
+        self.assertEqual(created, ("backup_create", name, baseline))
+        self.assertGreaterEqual(len([call for call in self.calls if call[0] == "backup_get"]), 2)
+        self.assertLess(self.calls.index(("admission", "production", "close")), self.event("protect"))
+        self.assertLess(self.event("protect"), self.event("backup_create"))
+        self.assertLess(self.event("backup_get"), self.event("helm"))
+        self.assertGreater(len(self.cloud.plans), baseline)
+        self.assertFalse(backup.restorable(entry))
+
+    def shared_change(self):
+        # Both a broker rotation and a GCIP change reach the shared apply; its
+        # refresh reloads the running release and reopens admission.
+        self.config["credential_brokers"] = {"production": {"enabled": True}}
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        self.cloud.gcip = {"tenant_ids": ["pool"], "tenant_bindings": {"pool": "acme"}}
+        return patch.object(controller, "reconcile_environment", lambda *args: None)
+
+    def test_the_backup_waits_for_the_protected_application_to_be_ready(self):
+        plan = self.config.pop("pre_update_backup_plan")
+        self.running_production()
+        self.assertIsNone(self.kube.get("protectedapplication", "aidash", "aidash-production"))
+        self.config["pre_update_backup_plan"] = plan
+        self.production_request(UPDATE)
+        statuses = [None, {}, {"readyToBackup": False}, {"readyToBackup": "true"}, {"readyToBackup": True}]
+        get = self.kube.get
+
+        def observe(kind, name, namespace=None):
+            application = get(kind, name, namespace)
+            if kind == "protectedapplication":
+                status = statuses.pop(0)
+                self.calls.append(("backup_readiness", status))
+                if status is None:
+                    return None
+                application["status"] = status
+            return application
+
+        with patch.object(self.kube, "get", observe):
+            self.reconcile()
+        self.assertEqual(statuses, [])
+        ready = self.calls.index(("backup_readiness", {"readyToBackup": True}))
+        self.assertLess(ready, self.event("backup_create"))
+        self.assertEqual(self.entry()["status"], "ready")
+
+    def test_application_readiness_timeout_preserves_the_deployment_budget_and_applies_nothing(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        baseline = len(self.cloud.plans)
+        get = self.kube.get
+        elapsed = [0]
+
+        def observe(kind, name, namespace=None):
+            application = get(kind, name, namespace)
+            if kind == "protectedapplication":
+                application.pop("status", None)
+            return application
+
+        def sleep(seconds):
+            elapsed[0] += seconds
+
+        with patch.object(self.kube, "get", observe), \
+                patch.object(controller.kube.time, "monotonic", lambda: elapsed[0]), \
+                patch.object(controller.kube.time, "sleep", sleep), \
+                operation_budget(backup.DEPLOY_RESERVE + 7):
+            with self.assertRaises(RuntimeError):
+                self.reconcile()
+        self.assertEqual(elapsed[0], 7)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+        self.assertEqual(self.entry()["status"], "failed")
+        self.assertNotIn("pre_update_backup", self.entry())
+        self.assertEqual(self.writers(), 1)
+        with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+            self.retry_request(retry=False)
+
+    def test_a_shared_apply_takes_the_backup_before_terraform_and_keeps_writers_sealed(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.production_request(UPDATE)
+        writers_at_backup = []
+        take = backup.take
+
+        def observe_writers(*args):
+            writers_at_backup.append(self.writers())
+            return take(*args)
+
+        with self.shared_change(), patch.object(backup, "take", observe_writers):
+            self.reconcile()
+        entry = self.entry()
+        name = f"{PLAN}/backups/pre-update-g2-{'b' * 12}"
+        self.assertEqual(entry["pre_update_backup"], name)
+        created = self.calls[self.event("backup_create")]
+        self.assertEqual(created, ("backup_create", name, baseline))
+        self.assertEqual(writers_at_backup, [0])
+        # The shared refresh skips production, so the pre-Terraform backup is
+        # still the sealed state when the deployment starts.
+        after = self.event("backup_create") + 1
+        helms = [index for index, call in enumerate(self.calls[after:], start=after) if call == ("helm", "production", "app")]
+        self.assertEqual(len(helms), 1)
+        before_deploy = self.calls[after:helms[0]]
+        self.assertNotIn(("admission", "production", "open"), before_deploy)
+        self.assertNotIn(("scale", "production", "server", 1), before_deploy)
+        actions = [call for call in self.calls[:helms[0]] if call[0] == "admission" and call[1] == "production"]
+        self.assertEqual(actions[-1], ("admission", "production", "close"))
+        self.assertTrue(entry["writers_started"])
+        self.assertFalse(backup.restorable(entry))
+        self.assertEqual(self.entry()["status"], "ready")
+        self.assertEqual(self.writers(), 1)
+
+    def test_a_resumed_update_keeps_its_seal_through_a_shared_apply(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        # A previous run recorded the backup and stopped before deploying.
+        self.entry()["pre_update_backup"] = "recorded"
+        with self.shared_change():
+            self.reconcile()
+        self.assertEqual(self.entry()["pre_update_backup"], "recorded")
+        self.assertNotIn("backup_create", [call[0] for call in self.calls])
+        helms = [index for index, call in enumerate(self.calls) if call == ("helm", "production", "app")]
+        self.assertEqual(len(helms), 1)
+        self.assertNotIn(("admission", "production", "open"), self.calls[:helms[0]])
+        actions = [call for call in self.calls[:helms[0]] if call[0] == "admission" and call[1] == "production"]
+        self.assertEqual(actions[-1], ("admission", "production", "close"))
+        self.assertEqual(self.entry()["status"], "ready")
+
+    def test_a_provider_credential_change_does_not_reload_before_a_pending_update(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.config["credential_brokers"] = {"production": {"enabled": True}}
+        expected = descriptor("production")
+        with self.managed_outputs(
+            lambda identity: expected if self.cloud.brokers.get(identity, {}).get("enabled") else None
+        ):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["provider_credentials"], expected)
+        helms = [index for index, call in enumerate(self.calls) if call == ("helm", "production", "app")]
+        self.assertEqual(len(helms), 1)
+        self.assertNotIn(("admission", "production", "open"), self.calls[:helms[0]])
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(entry["status"], "ready")
+
+    def test_a_shared_refresh_does_not_start_writers_before_a_failed_migration(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        with patch.object(controller.kube, "migrate", side_effect=RuntimeError("migration failed")), self.shared_change():
+            with self.assertRaises(RuntimeError):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(backup.restorable(entry))
+        self.assertFalse(entry.get("writers_started"))
+        after = self.calls[self.event("backup_create") + 1:]
+        self.assertNotIn(("scale", "production", "server", 1), after)
+        self.assertNotIn(("admission", "production", "open"), after)
+
+    def test_a_failure_after_the_backup_fences_the_generation_before_unsealing(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        update = controller.update_entry
+
+        def fail_before_deploy(store, identity, generation, **fields):
+            if (
+                fields.get("start_pending") is False
+                and "writers_started" not in fields
+                and "pre_update_backup" not in fields
+            ):
+                raise RuntimeError("failure after the backup")
+            return update(store, identity, generation, **fields)
+
+        with patch.object(controller, "update_entry", side_effect=fail_before_deploy):
+            with self.assertRaises(RuntimeError):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(entry.get("pre_update_backup"))
+        self.assertTrue(entry.get("writers_started"))
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(entry["start_pending"])
+        self.assertFalse(backup.restorable(entry))
+        self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+        self.assertIsNone(controller.pending_production_update(
+            self.config, self.store, self.cloud, self.cloud.managed
+        ))
+
+    def test_a_recorded_backup_is_not_reused_after_writers_started(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.entry()["pre_update_backup"] = "recorded"
+        self.entry()["writers_started"] = True
+        with self.shared_change():
+            with self.assertRaises(controller.Refused):
+                self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(backup.restorable(entry))
+
+    def test_a_blocked_seal_returns_not_ready_and_waits_for_active_work(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        entry = self.entry()
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with patch.object(controller, "pending_production_update", return_value=entry), \
+                patch.object(controller.kube, "seal", return_value=False):
+            sealed, pending, ready = controller.take_pre_update_backup_before_shared(
+                self.config, self.store, terraform, self.cloud.managed, set()
+            )
+        self.assertEqual((sealed, pending, ready), (set(), True, False))
+        self.assertEqual(self.entry()["status"], "waiting_for_active_work")
+
+    def test_a_blocked_pre_update_seal_skips_the_shared_apply(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.production_request(UPDATE)
+        with self.shared_change(), patch.object(
+            controller, "take_pre_update_backup_before_shared", return_value=(set(), True, False)
+        ):
+            self.reconcile()
+        self.assertEqual(len(self.cloud.plans), baseline)
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+
+    def test_an_update_with_a_missing_running_namespace_is_refused(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        entry = self.entry()
+        self.kube.objects.pop(("namespace", None, "aidash-production"))
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with self.assertRaisesRegex(controller.Refused, "namespace is missing"):
+            controller.pre_update_backup(
+                self.config, self.store, terraform, "production", entry["generation"], entry
+            )
+
+    def test_an_unexpected_excluded_retained_volume_refuses_the_update(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.kube.patch(
+            "persistentvolumeclaim", "capability-objects",
+            {"metadata": {"labels": {"aidash.run/backup": "exclude"}}}, "aidash-production",
+        )
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+
+    def test_a_missing_retained_volume_refuses_the_update(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.kube.objects.pop(("pvc", "aidash-production", "capability-objects"))
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+
+    def test_an_unexpected_excluded_secret_refuses_the_update(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.kube.patch(
+            "secret", "app-runtime",
+            {"metadata": {"labels": {"aidash.run/backup": "exclude"}}}, "aidash-production",
+        )
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+
+    def test_a_failed_broker_only_apply_after_the_backup_records_the_started_writers(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.config["credential_brokers"] = {"production": {"enabled": True}}
+        with patch.object(self.cloud, "apply", side_effect=RuntimeError("apply unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "apply unavailable"):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(entry.get("pre_update_backup"))
+        self.assertTrue(entry.get("writers_started"))
+        self.assertFalse(backup.restorable(entry))
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(entry["start_pending"])
+        with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+            self.retry_request(retry=False)
+        self.assertIsNone(controller.pending_production_update(
+            self.config, self.store, self.cloud, self.cloud.managed
+        ))
+
+    def test_a_failed_shared_gcip_apply_keeps_the_old_release_and_runner_stopped(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        with self.shared_change(), patch.object(
+            self.cloud, "apply", side_effect=RuntimeError("partially applied GCIP change")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "partially applied GCIP change"):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(entry["gcip_pending"])
+        self.assertTrue(entry["gcip_quiesced"])
+        self.assertEqual(self.writers(), 0)
+        self.assertEqual(self.kube.replicas("aidash-production", "statefulset", "app-execution-runner"), 0)
+        self.assertNotIn(("admission", "production", "open"), self.calls)
+        self.assertNotIn("writers_started", entry)
+        self.assertTrue(backup.restorable(entry))
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(entry["start_pending"])
+
+    def test_update_discovery_failure_restores_the_preflight_seals(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with patch.object(controller, "pending_production_update", side_effect=RuntimeError("outputs unavailable")), \
+                patch.object(controller.kube, "unseal") as unseal:
+            with self.assertRaisesRegex(RuntimeError, "outputs unavailable"):
+                controller.take_pre_update_backup_before_shared(
+                    self.config, self.store, terraform, self.cloud.managed, {"production"}
+                )
+        self.assertTrue(unseal.called)
+        self.assertNotEqual(self.entry()["status"], "failed")
+
+    def test_a_resumed_update_revalidates_its_source_before_the_shared_apply(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.entry()["pre_update_backup"] = "recorded"
+        baseline = len(self.cloud.plans)
+        with self.shared_change(), patch.object(
+            controller, "verify_source", side_effect=controller.Refused("source superseded")
+        ):
+            with self.assertRaisesRegex(controller.Refused, "source superseded"):
+                self.reconcile()
+        self.assertEqual(len(self.cloud.plans), baseline)
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertTrue(entry.get("writers_started"))
+        self.assertEqual(self.writers(), 1)
+
+    def test_restoring_admission_after_a_backup_records_the_started_writers(self):
+        self.running_production()
+        self.entry()["pre_update_backup"] = "recorded"
+        terraform = type("Fixture", (), {"cluster": lambda _: self.kube})()
+        with patch.object(controller.kube, "unseal") as unseal:
+            controller.restore_broker_admission(terraform, {"production"}, self.store)
+        self.assertTrue(unseal.called)
+        self.assertTrue(self.entry().get("writers_started"))
+        self.assertFalse(backup.restorable(self.entry()))
+
+    def test_a_backup_failure_before_a_shared_apply_unseals_and_applies_nothing(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.api.states = ["FAILED"]
+        self.production_request(UPDATE)
+        with self.shared_change():
+            with self.assertRaises(controller.Refused):
+                self.reconcile()
+            entry = self.entry()
+            self.assertEqual((entry["status"], entry["diagnostic"]), ("failed", "Refused"))
+            self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+            self.assertNotIn("pre_update_backup", entry)
+            self.assertEqual(len(self.cloud.plans), baseline)
+            self.assertNotIn("helm", [call[0] for call in self.calls])
+            self.assertEqual(self.writers(), 1)
+            self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+            with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+                self.retry_request(retry=False)
+            # A direct re-run of the failed apply job is fenced to this generation.
+            self.calls.clear()
+            self.reconcile()
+        self.assertEqual(self.cloud.managed["production"]["release_sha"], SHA)
+        self.assertEqual(self.entry()["status"], "failed")
+
+    def test_a_failed_backup_unseals_applies_nothing_and_waits_for_an_explicit_retry(self):
+        self.running_production()
+        baseline = len(self.cloud.plans)
+        self.api.states = ["FAILED"]
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual((entry["status"], entry["diagnostic"]), ("failed", "Refused"))
+        self.assertNotIn("pre_update_backup", entry)
+        self.assertEqual(len(self.cloud.plans), baseline)
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(self.calls[-1], ("admission", "production", "open"))
+        self.assertEqual(self.cloud.managed["production"]["release_sha"], SHA)
+        with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+            self.retry_request(retry=False)
+
+        self.api.states = ["SUCCEEDED"]
+        request = self.retry_request(retry=True)[0]
+        self.store.state = transition(self.store.state, request, "c" * 12, 0, production=True)[0]
+        self.entry()["release"] = request["release"]
+        self.assertNotIn("writers_started", self.entry())
+        self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["pre_update_backup"], f"{PLAN}/backups/pre-update-g3-{'b' * 12}")
+        self.assertEqual(sorted(name for name in self.api.backups), sorted([
+            f"{PLAN}/backups/pre-update-g2-{'b' * 12}", f"{PLAN}/backups/pre-update-g3-{'b' * 12}",
+        ]))
+
+    def test_a_deleting_or_vanished_backup_also_fails_the_update(self):
+        self.running_production()
+
+        def vanishes(method, resource, body=None):
+            if method == "GET":
+                raise urllib.error.HTTPError(resource, 404, "NOT_FOUND", {}, None)
+            return {}
+
+        for replacement in (None, vanishes):
+            self.api.states = ["DELETING"]
+            self.production_request(UPDATE)
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(backup, "NOT_FOUND_GRACE", 0))
+                if replacement:
+                    stack.enter_context(patch.object(backup, "call", replacement))
+                with self.assertRaises(RuntimeError):
+                    self.reconcile()
+            self.assertEqual(self.entry()["status"], "failed")
+            self.assertNotIn("pre_update_backup", self.entry())
+            self.assertEqual(self.writers(), 1)
+
+    def test_a_backup_that_does_not_finish_in_time_fails_the_update(self):
+        self.running_production()
+        self.api.states = ["IN_PROGRESS"]
+        self.production_request(UPDATE)
+        with patch.object(backup, "MAX_WAIT", 0.05), self.assertRaises(RuntimeError):
+            self.reconcile()
+        self.assertEqual(self.entry()["status"], "failed")
+        self.assertNotIn("pre_update_backup", self.entry())
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+        self.assertEqual(self.writers(), 1)
+
+    def test_a_backup_not_yet_readable_after_creation_is_polled_again(self):
+        self.running_production()
+        unread = []
+
+        def eventually(method, resource, body=None):
+            if method == "GET" and not unread:
+                unread.append(resource)
+                raise urllib.error.HTTPError(resource, 404, "NOT_FOUND", {}, None)
+            return self.api(method, resource, body)
+
+        self.production_request(UPDATE)
+        with patch.object(backup, "call", eventually), patch.object(backup, "POLL", 0):
+            self.reconcile()
+        self.assertEqual(unread, [f"{PLAN}/backups/pre-update-g2-{'b' * 12}"])
+        self.assertEqual(self.entry()["pre_update_backup"], unread[0])
+
+    def test_an_existing_backup_of_the_same_generation_is_resumed(self):
+        self.running_production()
+        name = self.api.seed(2, UPDATE)
+        self.production_request(UPDATE)
+        self.reconcile()
+        self.assertEqual(self.entry()["pre_update_backup"], name)
+        self.assertEqual([method for method, _ in self.api.requests][0], "POST")
+        self.assertEqual(self.entry()["status"], "ready")
+
+    def test_production_refuses_an_update_without_a_backup_plan_but_deploys_the_first_time(self):
+        del self.config["pre_update_backup_plan"]
+        self.running_production()
+        self.assertEqual(self.api.requests, [])
+        self.assertNotIn("protect", [call[0] for call in self.calls])
+        self.production_request(UPDATE)
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        self.assertEqual(self.entry()["status"], "failed")
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+        self.assertEqual(self.writers(), 1)
+        self.assertEqual(self.api.requests, [])
+
+    def test_other_tiers_update_without_a_backup(self):
+        self.config = deepcopy(CONFIG)
+        self.request("pr-1")
+        self.reconcile()
+        self.request("pr-1", "update", sha=UPDATE)
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["pr-1"]["status"], "ready")
+        self.assertEqual(self.cloud.managed["pr-1"]["release_sha"], UPDATE)
+        self.assertEqual(self.api.requests, [])
+        self.assertNotIn("protect", [call[0] for call in self.calls])
+        self.assertNotIn("writers_started", self.store.state["environments"]["pr-1"])
+
+    def test_writers_started_is_written_before_the_writers_start(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        seen = []
+        start = controller.kube.start_writers
+
+        def crash(cluster, identity):
+            seen.append(deepcopy(self.entry()))
+            start(cluster, identity)
+            raise RuntimeError("crash after the writers started")
+
+        with patch.object(controller.kube, "start_writers", crash), self.assertRaises(RuntimeError):
+            self.reconcile()
+        self.assertTrue(seen[0]["writers_started"])
+        entry = self.entry()
+        self.assertTrue(entry["writers_started"])
+        self.assertTrue(entry["pre_update_backup"])
+        self.assertFalse(backup.restorable(entry))
+
+    def test_a_deployment_that_fails_before_the_writers_start_stays_restorable(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        with patch.object(controller.kube, "migrate", side_effect=RuntimeError("migration failed")), self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(entry["status"], "failed")
+        self.assertNotIn("writers_started", entry)
+        self.assertTrue(backup.restorable(entry))
+
+    def test_reopening_the_old_release_after_the_backup_counts_as_started(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        real = controller.pre_update_backup
+
+        def then_fail(*args):
+            real(*args)
+            raise RuntimeError("superseded after the backup")
+
+        with patch.object(controller, "pre_update_backup", then_fail), self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual(self.writers(), 1)
+        self.assertTrue(entry["pre_update_backup"] and entry["writers_started"])
+        self.assertFalse(backup.restorable(entry))
+
+    def test_a_new_generation_forgets_the_previous_backup_and_start_marker(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.reconcile()
+        self.assertTrue(self.entry()["writers_started"])
+        self.production_request("c" * 40)
+        self.assertNotIn("pre_update_backup", self.entry())
+        self.assertNotIn("writers_started", self.entry())
+
+    def test_the_receipt_names_the_backup_and_the_started_writers(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        self.reconcile()
+        self.config["release_flow_enabled"] = False
+        sent = []
+        with patch.object(controller.delivery, "immutable_write", lambda store, key, value: sent.append(value)), \
+                patch.object(controller.delivery, "Store"), patch.dict(os.environ, {"GITHUB_RUN_ID": "7"}), \
+                patch.object(controller.delivery, "trusted_revision", lambda: TRUSTED):
+            controller.delivery.publish_result(
+                dict(self.config, notification_bucket="notifications", production_origin="https://aidash.run"),
+                self.store, "production", self.entry()["generation"], None, "ready",
+            )
+        receipt = sent[0]
+        self.assertEqual(receipt["pre_update_backup"], self.entry()["pre_update_backup"])
+        self.assertIs(receipt["writers_started"], True)
+
+
+class BackupTests(unittest.TestCase):
+    def test_backup_ids_are_lowercase_and_fit_a_resource_id(self):
+        identifier = backup.backup_id(123456789, "ABCDEF0123456789"[:16].lower() + "a" * 24)
+        self.assertRegex(identifier, r"^[a-z][a-z0-9-]{0,62}$")
+        self.assertEqual(identifier, "pre-update-g123456789-abcdef012345")
+
+    def test_a_backup_is_restorable_only_until_a_writer_starts(self):
+        self.assertFalse(backup.restorable({}))
+        self.assertTrue(backup.restorable({"pre_update_backup": "x"}))
+        self.assertFalse(backup.restorable({"pre_update_backup": "x", "writers_started": True}))
+
+    def test_the_wait_never_eats_the_deployments_reserve_of_the_reconcile_budget(self):
+        self.assertEqual(backup.wait_window(), 30 * 60)
+        with operation_budget(60 * 60):
+            self.assertEqual(backup.wait_window(), 30 * 60)
+        with operation_budget(35 * 60):
+            self.assertTrue(14 * 60 < backup.wait_window() <= 15 * 60)
+        with operation_budget(20 * 60), self.assertRaisesRegex(controller.Refused, "Too little"):
+            backup.wait_window()
+
+    def test_a_backup_that_selected_nothing_is_no_backup(self):
+        empty = {"state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True, "resourceCount": 3, "volumeCount": 0}
+        with patch.object(backup, "call", lambda method, resource, body=None: empty):
+            with self.assertRaisesRegex(controller.Refused, "no volume data"):
+                backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
+
+    def test_a_successful_backup_without_secrets_is_not_a_restore_point(self):
+        for contains_secrets in (False, None):
+            with self.subTest(containsSecrets=contains_secrets):
+                succeeded = {
+                    "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": contains_secrets,
+                    "resourceCount": 12, "volumeCount": 4,
+                }
+                if contains_secrets is None:
+                    del succeeded["containsSecrets"]
+                with patch.object(backup, "call", lambda method, resource, body=None, succeeded=succeeded: succeeded):
+                    with self.assertRaisesRegex(controller.Refused, "no Secrets"):
+                        backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
+
+    def test_a_permissive_mode_backup_is_not_a_restore_point(self):
+        succeeded = {
+            "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True,
+            "resourceCount": 12, "volumeCount": 4, "permissiveMode": True,
+            "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+            "clusterMetadata": {"cluster": EXPECTED_CLUSTER},
+        }
+        with patch.object(backup, "call", lambda method, resource, body=None, value=succeeded: value):
+            with self.assertRaisesRegex(controller.Refused, "permissive mode"):
+                backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
+
+    def test_a_successful_backup_must_select_the_protected_application(self):
+        succeeded = {
+            "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True,
+            "resourceCount": 12, "volumeCount": 4,
+            "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+        }
+        mutations = (
+            lambda value: value.update(selectedApplications={"namespacedNames": [{"namespace": "other", "name": "x"}]}),
+            lambda value: value.update(selectedNamespaces={"namespaces": ["aidash-production"]}),
+            lambda value: value.update(allNamespaces=True),
+            lambda value: value.pop("selectedApplications"),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                value = deepcopy(succeeded)
+                mutate(value)
+                with patch.object(backup, "call", lambda method, resource, body=None, value=value: value):
+                    with self.assertRaisesRegex(controller.Refused, "protected application"):
+                        backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
+
+    def test_a_successful_backup_must_come_from_the_expected_cluster(self):
+        for metadata in (
+            {"cluster": "projects/other/locations/us-central1/clusters/other"},
+            None,
+        ):
+            with self.subTest(metadata=metadata):
+                succeeded = {
+                    "state": "SUCCEEDED", "containsVolumeData": True, "containsSecrets": True,
+                    "resourceCount": 12, "volumeCount": 4,
+                    "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]},
+                }
+                if metadata is not None:
+                    succeeded["clusterMetadata"] = metadata
+                with patch.object(backup, "call", lambda method, resource, body=None, value=succeeded: value):
+                    with self.assertRaisesRegex(controller.Refused, "another cluster"):
+                        backup.take(PLAN, 2, UPDATE, EXPECTED_CLUSTER)
+
+    def test_an_invalid_plan_name_is_refused_before_any_request(self):
+        with patch.object(backup, "call", side_effect=AssertionError("no request")):
+            with self.assertRaisesRegex(controller.Refused, "invalid"):
+                backup.take("projects/other/backupPlans/x/../y", 2, UPDATE, EXPECTED_CLUSTER)
+
+
+class PlanConfigurationTests(unittest.TestCase):
+    PRODUCTION = {
+        "deployment_tier": "production", "project_id": PROJECT, "nonproduction_project_id": "aidash-np",
+        "nonproduction_state_bucket": "np-state", "staging_release_bucket": "np-releases", "staging_project_id": "aidash-np",
+        "notification_bucket": "notes", "release_app_bot_login": "bot[bot]", "state_bucket": "state", "release_bucket": "releases",
+        "production_origin": "https://aidash.run",
+    }
+
+    def test_only_production_names_a_plan_inside_its_own_project(self):
+        controller.delivery.validate_config(dict(self.PRODUCTION, pre_update_backup_plan=PLAN))
+        controller.delivery.validate_config(self.PRODUCTION)
+        for bad in (PLAN.replace(PROJECT, "aidash-other"), "projects/x", 7):
+            with self.assertRaises(controller.Refused):
+                controller.delivery.validate_config(dict(self.PRODUCTION, pre_update_backup_plan=bad))
+        with self.assertRaises(controller.Refused):
+            controller.delivery.validate_config({"project_id": PROJECT, "pre_update_backup_plan": PLAN})
 
 
 class IntakeTests(unittest.TestCase):

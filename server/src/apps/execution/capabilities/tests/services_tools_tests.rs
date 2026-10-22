@@ -45,7 +45,7 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 			sharing: true,
 		},
 	);
-	assert_eq!(tools.len(), 15);
+	assert_eq!(tools.len(), 14);
 	for (name, tool) in &tools {
 		let schema = tool.specification().parameters;
 		assert!(!schema.to_string().contains("$ref"), "{name}");
@@ -53,15 +53,5 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 			assert_eq!(schema["additionalProperties"], false, "{name}");
 		}
 	}
-	let install = tools["python_install"].specification().parameters;
-	assert_eq!(
-		install["properties"]["wheels"]["items"]["additionalProperties"],
-		false
-	);
-	assert!(
-		install["required"]
-			.as_array()
-			.unwrap()
-			.contains(&json!("wheels"))
-	);
+	assert!(!tools.contains_key("python_install"));
 }

@@ -151,13 +151,16 @@ records remain externally owned. Destination verification remains a human step.
 
 ## Controlled activation and operations
 
-Once this code is on protected main and the execution branch, a reviewed GitHub
+Once this code is on the execution branch and, with the first release, protected main, a reviewed GitHub
 plan may set `bootstrap_code_installed=true`, `activation_validated=true` and
-individual `enablement` fields. First enable certificates and dispatch
+individual `enablement` fields. First use
+`enablement={certificates=true,notifications=false}` to enable certificates
+while mail setup is still pending, and dispatch
 **Deployment preview certificate** on `develop/0.1.0`; inspect the first valid
 Secret Manager version. Its daily schedule renews within 30 days, preserves the
 ACME account privately, and a normal lifecycle reconcile refreshes running edges.
-Then run nonproduction/mail acceptance. Require the release App's staging check
+Then explicitly set `enablement.notifications=true`, retaining the other
+selected enablement fields, and run nonproduction/mail acceptance. Require the release App's staging check
 only after the bootstrap main merge; this check affects every main-target PR.
 Production additionally requires nonproduction enablement and that staging gate.
 
@@ -165,6 +168,11 @@ Prepare the backup API with `production_backup_agent_enabled=true`. The composed
 production config forwards `gke_backup_enabled=true` to the actual deployment
 cluster. Only after observing that cluster/agent should a second bootstrap plan
 enable `production_backup_enabled` and `production_monitoring_enabled`.
+The same apply creates the Pre-update Backup plan, its in-place restore plan and
+the deploy identity's grant to create backups on that plan, and publishes
+`pre_update_backup_plan` in the production config. Production updates refuse to
+run without it. The next production deploy applies the ProtectedApplication that
+both backup plans select.
 [Operations inspection](gcp/README.md) checks successful backup freshness and alert
 configuration; it explicitly does not claim restore success or email arrival.
 Keep application provider credentials and external effects disabled during an

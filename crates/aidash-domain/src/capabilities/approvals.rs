@@ -19,6 +19,10 @@ pub enum ApprovalChoice {
 	#[default]
 	AllowOnce,
 	AllowRun,
+	/// Allows this approval once and creates an allow Approval Rule for its
+	/// kind and target. Only the person the Run's delegation chain starts at
+	/// may choose it.
+	AllowAlways,
 	Deny,
 }
 

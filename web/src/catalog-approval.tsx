@@ -1,3 +1,4 @@
+import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,6 +10,7 @@ import type { RegistryVersion } from "./generated/models";
 import type { State } from "./types";
 import { ApiError } from "./transport";
 import { keylessOrigin } from "./keyless";
+import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
 import { agentPlugins, type AgentPluginRef } from "./agent-plugins";
 import { AgentPluginSummary } from "./agent-plugin-summary";
@@ -170,6 +172,7 @@ export function CatalogApprovalSection({
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
   const recipients = deciderRecipients(entry);
+  const readOnly = toolReplay(entry) === "read_only";
   const plugins = agentPlugins(entry);
   const installed = !!entry.installation;
   const decides =
@@ -258,7 +261,13 @@ export function CatalogApprovalSection({
         ) : (
           <KeylessOrigin origin={origin} />
         ))}
+      <SecretDisclosure entry={entry} />
       {recipients && <DeciderRecipients recipients={recipients} />}
+      {readOnly && decides && state !== "approved" && (
+        <Notice tone="warning" role="status" className="read-only-notice">
+          {t("catalogReadOnlyNotice")}
+        </Notice>
+      )}
       {plugins && (
         <AgentPluginsDisclosure
           plugins={plugins}

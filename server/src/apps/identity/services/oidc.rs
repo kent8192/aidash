@@ -40,6 +40,15 @@ pub(crate) fn digest(value: &str) -> Vec<u8> {
 	Sha256::digest(value.as_bytes()).to_vec()
 }
 
+pub(crate) fn browser_session_digest(value: &str) -> Vec<u8> {
+	// Domain-separate browser bearer tokens so sessions issued before browser
+	// sign-in became HTTPS-only cannot be replayed under the secure cookie name.
+	let mut digest = Sha256::new();
+	digest.update(b"aidash-browser-session-v2\0");
+	digest.update(value.as_bytes());
+	digest.finalize().to_vec()
+}
+
 pub(crate) fn random_secret() -> String {
 	// Two independent UUIDv4 values provide 244 random bits.
 	format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
@@ -213,7 +222,7 @@ async fn session_record_from_headers(
 		.store
 		.pool
 		.atomic(&TenancyScope::NoTenant, async |tx| {
-			DashboardSession::from_token(tx, digest(secret)).await
+			DashboardSession::from_token(tx, browser_session_digest(secret)).await
 		})
 		.await?;
 	if session.desktop
@@ -411,6 +420,50 @@ pub async fn actor_from_headers(
 	))
 }
 
+/// The External Identity of a valid browser session, which needs no Mapping,
+/// after the CSRF check that `method` requires. For endpoints a build adds
+/// that act for the person rather than for one of their Tenants.
+pub async fn session_identity(
+	f: &Federation,
+	headers: &HeaderMap,
+	method: &Method,
+) -> Result<Uuid> {
+	let config = required_config(f)?;
+	let session = session_from_headers(f, headers).await?;
+	if !csrf_allowed(config, headers, &session, method) {
+		return Err(Error::Forbidden);
+	}
+	Ok(session.identity_id())
+}
+
+/// The External Identity acting through a browser Mapping of `tenant` whose
+/// subject the Tenant's own policy allows `action`. A Deployment
+/// Administrator context, a Subject Credential and a Mapping of another
+/// Tenant are refused.
+pub async fn authorize_mapping(
+	f: &Federation,
+	headers: &HeaderMap,
+	method: &Method,
+	tenant: &str,
+	action: &str,
+) -> Result<Uuid> {
+	aidash_domain::policy::identifier(tenant)?;
+	let (Actor::Subject(identity), origin) = actor_from_headers(f, headers, method).await? else {
+		return Err(Error::Forbidden);
+	};
+	if identity.tenant != tenant {
+		return Err(Error::Forbidden);
+	}
+	let mut access = crate::authorization::access::NativeAccess::begin(&f.store, &identity).await?;
+	let resource = access.resource("tenant", tenant, serde_json::json!({}));
+	let allowed = access.decide(&resource, action).await;
+	if access.finish(allowed).await? {
+		Ok(origin.identity_id)
+	} else {
+		Err(Error::Forbidden)
+	}
+}
+
 /// `/api/dashboard` routes admit only Deployment Administrators: the bearer token or a browser
 /// session holding a Deployment Administrator grant.
 fn deployment_administrator_actor(
@@ -564,11 +617,12 @@ impl DashboardSessions {
 			.await?;
 		let secret = random_secret();
 		let csrf = random_secret();
-		let previous = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config)).map(digest);
+		let previous = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config))
+			.map(browser_session_digest);
 		DashboardSession::start(
 			pool,
 			identity.id,
-			(digest(&secret), digest(&csrf)),
+			(browser_session_digest(&secret), digest(&csrf)),
 			provider_sid,
 			sign_in.auth_time,
 			config.session_absolute_seconds,

@@ -73,7 +73,7 @@ impl RunState {
 		match self {
 			Self::ToolCall(s) => Some(s),
 			Self::Waiting(wait) => match wait.as_ref() {
-				WaitingState::ExternalApproval { resume, .. }
+				WaitingState::Approval { resume, .. }
 				| WaitingState::Reconciliation { resume, .. } => Some(resume),
 				WaitingState::Timer {
 					resume: ResumeState::ToolCall(s),

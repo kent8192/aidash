@@ -18,7 +18,7 @@ locals {
     "cloudflare_zone_id", "domain", "repository", "develop_branch", "node_count",
     "deployment_tier", "automation_branch", "trusted_branch", "notification_bucket",
     "notification_service_account", "release_flow_enabled", "release_app_bot_login", "preview_tls_secret",
-    "acme_state_secret", "gke_backup_enabled", "gcip_tenants", "gcip_web_api_key",
+    "acme_state_secret", "gke_backup_enabled", "pre_update_backup_plan", "gcip_tenants", "gcip_web_api_key",
     "nonproduction_project_id", "nonproduction_state_bucket", "production_origin", "staging_release_bucket",
     "staging_project_id", "staging_max_age_seconds", "preview_request_interval_seconds", "max_preview_environments",
     "credential_brokers",
@@ -115,7 +115,8 @@ resource "terraform_data" "contract" {
         alltrue([for count in values(try(config.node_count, {})) : count >= 1 && floor(count) == count]) &&
         can(regex("^[a-f0-9]{32}$", config.cloudflare_zone_id)) &&
         (config.deployment_tier != "production" || !contains(keys(config), "acme_state_secret")) &&
-        (!contains(keys(config), "gke_backup_enabled") || (config.deployment_tier == "production" && contains([true, false], try(config.gke_backup_enabled, false))))
+        (!contains(keys(config), "gke_backup_enabled") || (config.deployment_tier == "production" && contains([true, false], try(config.gke_backup_enabled, false)))) &&
+        (!contains(keys(config), "pre_update_backup_plan") || (config.deployment_tier == "production" && can(regex("^projects/${config.project_id}/locations/[a-z0-9-]+/backupPlans/[a-z][a-z0-9-]{0,62}$", config.pre_update_backup_plan))))
       ]), false)
       error_message = "Controller JSON must contain only allowed non-secret fields and match the repository, exact execution branch, trusted main and release App."
     }

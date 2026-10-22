@@ -127,7 +127,7 @@ impl<'de> Deserialize<'de> for StoreConfig {
 				})
 			}
 			Some(_) => Ok(Self::Enterprise(fields)),
-			None => Err(D::Error::custom("a Provider Credential Store needs a kind")),
+			None => Err(D::Error::custom("a Secret Store needs a kind")),
 		}
 	}
 }
@@ -156,19 +156,13 @@ impl StoreConfig {
 		} = self
 		else {
 			return Err(crate::Error::Invalid(
-				"Provider Credential Store recovery requires a PostgreSQL Store".into(),
+				"Secret Store recovery requires a PostgreSQL Store".into(),
 			));
 		};
-		let current = master_key
-			.load("Provider Credential Store Master Key")
-			.await?;
+		let current = master_key.load("Secret Store Master Key").await?;
 		let mut retired = Vec::new();
 		for source in retired_master_keys {
-			retired.push(
-				source
-					.load("Provider Credential Store retired Master Key")
-					.await?,
-			);
+			retired.push(source.load("Secret Store retired Master Key").await?);
 		}
 		Ok((current, retired))
 	}
@@ -201,9 +195,7 @@ impl Settings {
 		let key = self
 			.fingerprint_key
 			.as_ref()
-			.ok_or_else(|| {
-				crate::Error::Invalid("Provider Credential Store requires fingerprint_key".into())
-			})?
+			.ok_or_else(|| crate::Error::Invalid("Secret Store requires fingerprint_key".into()))?
 			.load("Provider Credential fingerprint key")
 			.await?;
 		if key.expose_secret().len() < 32 {
@@ -225,14 +217,12 @@ impl SettingsValidation for Settings {
 		}
 		if self.broker.is_some() && !matches!(self.store, Some(StoreConfig::Enterprise(_))) {
 			return Err(invalid(
-				"a Credential Broker serves only an Enterprise Provider Credential Store".into(),
+				"a Credential Broker serves only an Enterprise Secret Store".into(),
 			));
 		}
 		if let Some(store) = &self.store {
 			if self.fingerprint_key.is_none() {
-				return Err(invalid(
-					"Provider Credential Store requires fingerprint_key".into(),
-				));
+				return Err(invalid("Secret Store requires fingerprint_key".into()));
 			}
 			match store {
 				StoreConfig::Postgres {

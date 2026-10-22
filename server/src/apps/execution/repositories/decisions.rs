@@ -18,8 +18,9 @@ use aidash_domain::{
 	Run,
 	context::{Context, recovery::Failure},
 	decision::{
-		AttemptStatus, Boundary, Evidence, Mode, Outcome, OutcomeLink, Probability, Restrictions,
-		StateReference, StateRetentionWitness, policy::ExecutionAllowance, pruning,
+		ApprovalEvidence, AttemptEvidence, AttemptStatus, Boundary, DeciderPin, Evidence, Mode,
+		Outcome, OutcomeLink, Probability, Questions, Restrictions, StateReference,
+		StateRetentionWitness, approval_questions, policy::ExecutionAllowance, pruning,
 		validate_digest,
 	},
 	registry::rules,
@@ -326,6 +327,22 @@ pub trait DecisionOwners: Send + Sync {
 	async fn settle(&self, _record: &DispatchRecord) -> Result<()> {
 		Ok(())
 	}
+}
+
+/// What the evidence of one decision says about its charged attempts, whichever
+/// hook the decision served.
+struct Attested<'a> {
+	/// The decision the attempts were charged under.
+	decision: Uuid,
+	boundary: &'a Boundary,
+	decider: &'a DeciderPin,
+	binding_restrictions: &'a Restrictions,
+	restrictions: &'a Restrictions,
+	state_digest: &'a str,
+	mode: Mode,
+	/// The question definitions the attempts asked.
+	questions: &'a Questions,
+	attempts: &'a [AttemptEvidence],
 }
 
 /// Decision Evidence and Decision Attempts of one leased Run and its admitted Decider.
@@ -664,52 +681,22 @@ impl<'a> RunDecisionJournal<'a> {
 		tx: &mut native::Transaction,
 		evidence: &Evidence,
 	) -> Result<()> {
-		let charged: BTreeMap<Uuid, RecoveredAttempt> = attempts_of(tx, self.run.id, evidence.id)
-			.await?
-			.iter()
-			.map(|row| recovered(row).map(|prior| (prior.permit.record.attempt, prior)))
-			.collect::<Result<_>>()?;
-		let named: BTreeSet<_> = evidence.attempts.iter().map(|attempt| attempt.id).collect();
-		if named.len() != evidence.attempts.len() || !named.iter().eq(charged.keys()) {
-			return Err(Error::Invalid(
-				"decision evidence differs from its charged attempts".into(),
-			));
-		}
-		let mut answered = BTreeMap::new();
-		for attempt in &evidence.attempts {
-			let saved = charged.get(&attempt.id).ok_or_else(|| {
-				Error::Invalid("decision evidence names an uncharged attempt".into())
-			})?;
-			let record = &saved.permit.record;
-			if record.request_digest != attempt.request_digest
-				|| record.questions != attempt.questions
-				|| record
-					.questions
-					.iter()
-					.any(|question| !evidence.questions.contains_key(question))
-				|| record.question_digest != attempt.question_digest
-				// The charge committed to the definitions the request asked.
-				|| aidash_domain::decision::question_digest(&evidence.questions, &record.questions)
-					.ok()
-					.as_ref()
-					!= Some(&record.question_digest)
-				|| record.binding_restrictions != evidence.binding_restrictions
-				|| saved.permit.owner_receipts != attempt.owner_receipts
-				|| !same_input(&record.boundary, &evidence.boundary)
-				|| record.decider != evidence.decider
-				|| record.state_digest != evidence.state_digest
-				|| record.mode != evidence.mode
-				|| !evidence
-					.restrictions
-					.at_least_as_strict(&record.binding_restrictions)
-				|| attempt.status != saved.status
-			{
-				return Err(Error::Invalid(
-					"decision evidence differs from its charged attempts".into(),
-				));
-			}
-			answered.extend(saved.answers.iter().flatten().map(|(q, a)| (q.clone(), *a)));
-		}
+		let answered = self
+			.charged_answers(
+				tx,
+				&Attested {
+					decision: evidence.id,
+					boundary: &evidence.boundary,
+					decider: &evidence.decider,
+					binding_restrictions: &evidence.binding_restrictions,
+					restrictions: &evidence.restrictions,
+					state_digest: &evidence.state_digest,
+					mode: evidence.mode,
+					questions: &evidence.questions,
+					attempts: &evidence.attempts,
+				},
+			)
+			.await?;
 		// The decision UUID commits to its inputs and the admitted Binding
 		// restrictions the evidence keeps, so evidence that names other sources
 		// or another window under it is not this decision, attempts or not.
@@ -735,6 +722,118 @@ impl<'a> RunDecisionJournal<'a> {
 			));
 		}
 		Ok(())
+	}
+
+	/// The attempts an approval decision's evidence names must be those its
+	/// Route's decision charged, and its answers those they recorded. A
+	/// decision whose Routes were all unavailable names the attempts of the last
+	/// Route asked, or none.
+	async fn check_approval_attempts(
+		&self,
+		tx: &mut native::Transaction,
+		evidence: &ApprovalEvidence,
+	) -> Result<()> {
+		let Some(route) = evidence
+			.route
+			.or_else(|| evidence.failed_routes.last().copied())
+		else {
+			return if evidence.attempts.is_empty() {
+				Ok(())
+			} else {
+				Err(Error::Invalid(
+					"approval evidence names attempts of no Route".into(),
+				))
+			};
+		};
+		// An approval decision has no sources and no window.
+		let decision = aidash_application::decision::decision_identity(
+			&evidence.boundary,
+			&evidence.decider,
+			&evidence.binding_restrictions,
+			&evidence.state_digest,
+			&[],
+			0,
+			route,
+		);
+		let answered = self
+			.charged_answers(
+				tx,
+				&Attested {
+					decision,
+					boundary: &evidence.boundary,
+					decider: &evidence.decider,
+					binding_restrictions: &evidence.binding_restrictions,
+					restrictions: &evidence.restrictions,
+					state_digest: &evidence.state_digest,
+					mode: evidence.mode,
+					questions: &approval_questions(),
+					attempts: &evidence.attempts,
+				},
+			)
+			.await?;
+		if evidence.answers != answered {
+			return Err(Error::Invalid(
+				"approval evidence differs from its charged attempts".into(),
+			));
+		}
+		Ok(())
+	}
+
+	/// The answers the attempts of `attested.decision` durably recorded, once the
+	/// evidence is shown to name exactly the attempts this Run charged for it.
+	async fn charged_answers(
+		&self,
+		tx: &mut native::Transaction,
+		attested: &Attested<'_>,
+	) -> Result<BTreeMap<String, Probability>> {
+		let charged: BTreeMap<Uuid, RecoveredAttempt> =
+			attempts_of(tx, self.run.id, attested.decision)
+				.await?
+				.iter()
+				.map(|row| recovered(row).map(|prior| (prior.permit.record.attempt, prior)))
+				.collect::<Result<_>>()?;
+		let named: BTreeSet<_> = attested.attempts.iter().map(|attempt| attempt.id).collect();
+		if named.len() != attested.attempts.len() || !named.iter().eq(charged.keys()) {
+			return Err(Error::Invalid(
+				"decision evidence differs from its charged attempts".into(),
+			));
+		}
+		let mut answered = BTreeMap::new();
+		for attempt in attested.attempts {
+			let saved = charged.get(&attempt.id).ok_or_else(|| {
+				Error::Invalid("decision evidence names an uncharged attempt".into())
+			})?;
+			let record = &saved.permit.record;
+			if record.request_digest != attempt.request_digest
+				|| record.questions != attempt.questions
+				|| record
+					.questions
+					.iter()
+					.any(|question| !attested.questions.contains_key(question))
+				|| record.question_digest != attempt.question_digest
+				// The charge committed to the definitions the request asked.
+				|| aidash_domain::decision::question_digest(attested.questions, &record.questions)
+					.ok()
+					.as_ref()
+					!= Some(&record.question_digest)
+				|| &record.binding_restrictions != attested.binding_restrictions
+				|| saved.permit.owner_receipts != attempt.owner_receipts
+				|| !same_input(&record.boundary, attested.boundary)
+				|| &record.decider != attested.decider
+				|| record.state_digest != attested.state_digest
+				|| record.mode != attested.mode
+				|| !attested
+					.restrictions
+					.at_least_as_strict(&record.binding_restrictions)
+				|| attempt.status != saved.status
+			{
+				return Err(Error::Invalid(
+					"decision evidence differs from its charged attempts".into(),
+				));
+			}
+			answered.extend(saved.answers.iter().flatten().map(|(q, a)| (q.clone(), *a)));
+		}
+		Ok(answered)
 	}
 
 	/// Checks that need no transaction: the boundary and pin, the evidence's
@@ -986,6 +1085,83 @@ impl<'a> RunDecisionJournal<'a> {
 		Ok(())
 	}
 
+	/// Record one approval decision (ADR 0077). Its identity commits to the
+	/// approval, the Decider, the Route and the state, so judging again after a
+	/// crash, under another worker, reproduces it: evidence already recorded under
+	/// that identity is kept, whatever worker judged it.
+	async fn commit_approval_evidence(&self, evidence: &ApprovalEvidence) -> Result<()> {
+		self.check_boundary(&evidence.boundary)?;
+		if evidence.decider != self.allowance.decider {
+			return Err(Error::Invalid(
+				"approval evidence names another Decider than the Run's admitted pin".into(),
+			));
+		}
+		evidence.validate()?;
+		if aidash_application::decision::approval_evidence_identity(
+			&evidence.boundary.node,
+			evidence.boundary.run,
+			evidence.approval,
+			&evidence.decider,
+			evidence.route,
+			&evidence.state_digest,
+		) != evidence.id
+		{
+			return Err(Error::Invalid(
+				"approval evidence differs from its decision identity".into(),
+			));
+		}
+		let mut tx = self.begin().await?;
+		fence(&mut tx, &evidence.boundary).await?;
+		let recorded: Option<Uuid> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new(EVIDENCE))
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
+				.and_where(Expr::col("decision_id").eq(Expr::value(evidence.id)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		if recorded.is_some() {
+			tx.commit().await?;
+			return Ok(());
+		}
+		self.check_approval_attempts(&mut tx, evidence).await?;
+		// The checks above can outlast the lease that `fence` saw.
+		lease_held_now(&mut tx, &evidence.boundary).await?;
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new(EVIDENCE))
+				.columns(
+					[
+						"id",
+						"decision_id",
+						"run_id",
+						"outcome",
+						"reason",
+						"evidence",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
+				.values_expr(vec![
+					Expr::value(Uuid::new_v4()).into(),
+					Expr::value(evidence.id).into(),
+					Expr::value(self.run.id).into(),
+					Expr::value(label(&evidence.outcome())?).into(),
+					Expr::value(evidence.reason()).into(),
+					Expr::value(serde_json::to_value(evidence)?).into(),
+					crate::database::scope::tenant_of("runs", "id", self.run.id),
+				])
+				.expect("one value per column")
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await
+	}
+
 	/// The first half of recording a staged decision inside the transaction
 	/// that adopts the summary completing its pruning (ADR 0056): the evidence
 	/// names the pruned projection, and `adopted` continues from it.
@@ -1188,6 +1364,9 @@ impl DecisionJournal for RunDecisionJournal<'_> {
 		state: Option<&RetainedState>,
 	) -> aidash_application::Result<()> {
 		Ok(self.commit_evidence(evidence, context, state).await?)
+	}
+	async fn commit_approval(&self, evidence: &ApprovalEvidence) -> aidash_application::Result<()> {
+		Ok(self.commit_approval_evidence(evidence).await?)
 	}
 	/// Retention cleanup is Deployment-wide; it is not limited to this Run.
 	async fn expire_states(&self, now: DateTime<Utc>) -> aidash_application::Result<usize> {

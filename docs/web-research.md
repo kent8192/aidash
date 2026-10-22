@@ -67,9 +67,11 @@ not exposed to remote Runs).
   Nothing leaves the Node.
 
 Results share one envelope: `{version, operation, status, limits, data}` with
-`status` `ok`, `partial`, `empty`, `error`, `uncertain` or `approval_required`.
-A result never exceeds 32 KiB; a passage shrinks rather than being cut silently,
-and the cursor resumes exactly after the delivered text. Errors carry a stable
+`status` `ok`, `partial`, `empty`, `error` or `uncertain`. A disclosure that
+needs a decision returns `approval_required` to the harness instead, and the Run
+waits rather than showing that result to the model. A result never exceeds
+32 KiB; a passage shrinks rather than being cut silently, and the cursor resumes
+exactly after the delivered text. Errors carry a stable
 `code` (for example `unknown_source`, `invalid_cursor`, `disclosure_denied`,
 `non_public_destination`, `attempt_limit`, `budget_exhausted`, `rate_limited`,
 `timeout`, `page_not_viewable`, `original_not_retained`, `view_limit`,
@@ -223,13 +225,15 @@ all; without it the disclosure is denied.
   the disclosure proceeds.
 - Otherwise a designated approver (a `user` subject with the
   `capability_approver` attribute and `capability.approve`) must decide. The
-  tool returns `approval_required` with the `approval_id`, and the Run waits as
-  it does for any other capability approval. The approver sees the exact
-  `disclosure` content in `GET /api/capabilities/approvals` and decides with
+  tool's `approval_required` result, with the `approval_id`, is not shown to the
+  model; the Run waits as it does for any other capability approval. The
+  approver sees the exact `disclosure` content in
+  `GET /api/capabilities/approvals` and decides with
   `POST /api/capabilities/approvals/{id}/decide`.
-- After approval the Run resumes, and the model repeats the identical call. An
-  `allow_once` approval is consumed by that one disclosure, only once its
-  attempt is reserved; a call that is not dispatched leaves it usable.
+- After approval the Run resumes and makes the exact same call, with no model
+  response in between. An `allow_once` approval is consumed by that one
+  disclosure, only once its attempt is reserved; a call that is not dispatched
+  leaves it usable.
 - An "allow for this Run" grant covers later disclosures to the same
   destination only until new user input arrives.
 - Denial, expiry or an explicit policy deny returns `disclosure_denied`; the
@@ -353,8 +357,10 @@ without access to the Thread. The disclosure card shows the operation,
 destination, provider, the Deployment account it is charged to, the estimated
 price, requester and Agent, a summary of the search query and, collapsed, the
 exact content sent. It never shows the Thread, the Run's output, the account
-ID or any remaining budget. In the Thread, a denied, expired, closed or
-blocked disclosure stays listed as such and is never sent, and the Run's
+ID or any remaining budget. A Tool call approval card shows the tool, its
+version, the operation and the exact call in place of these fields. In the
+Thread, a denied, expired, closed or blocked disclosure stays listed as such and
+is never sent, and the Run's
 active grants are listed with their scope for their requester and approver to
 revoke.
 
@@ -456,6 +462,9 @@ any reason is killed and leaves the page unreadable (`extraction_failed`). The
 parser reads page content streams and the fonts they use; it never interprets
 annotations, forms, scripts or attachments.
 
+PDF extraction and rendering fail closed on platforms without a verified hard
+address-space limit. Other page media remain available there.
+
 - Lines follow content-stream order, one visual line each, with the page's
   physical 1-based number; a page boundary always ends a line. Page labels are
   not used. The first 500 pages are read.
@@ -475,9 +484,6 @@ annotations, forms, scripts or attachments.
   not drawn. The image is kept with its fragment, so a reader sees exactly what
   the model saw; a purge keeps it like a passage's text, and an Evidence
   Revocation removes it.
-
-On macOS the first PDF a server process reads can take about 30 s while the
-system assesses the unsigned binary; Linux has no such delay.
 
 ## Implementing another provider
 

@@ -273,7 +273,7 @@ impl Evidence {
 			let chosen = if protected {
 				Branch::Keep
 			} else {
-				branch(call, result, self.restrictions.keep_threshold)
+				branch(call, result, self.restrictions.threshold)
 			};
 			if replay.insert(candidate.id.clone(), chosen).is_some() {
 				return Err(Error::Invalid(
@@ -366,37 +366,7 @@ impl Evidence {
 	/// Each attempt is well formed and asks questions of this decision that no
 	/// other attempt asks; returns how many questions an answered attempt covers.
 	fn validate_attempts(&self) -> Result<usize> {
-		let mut coverage = std::collections::BTreeSet::new();
-		let mut attempted_questions = std::collections::BTreeSet::new();
-		let mut attempts = std::collections::BTreeSet::new();
-		for attempt in &self.attempts {
-			validate_digest(&attempt.request_digest)?;
-			validate_digest(&attempt.question_digest)?;
-			if attempt.id.is_nil()
-				|| !attempts.insert(attempt.id)
-				|| attempt.questions.is_empty()
-				|| attempt.owner_receipts.is_empty()
-				|| attempt.owner_receipts.values().any(Uuid::is_nil)
-			{
-				return Err(Error::Invalid("corrupt historical attempt evidence".into()));
-			}
-			for question in &attempt.questions {
-				if !self.questions.contains_key(question) || !attempted_questions.insert(question) {
-					return Err(Error::Invalid(
-						"historical attempts have conflicting question coverage".into(),
-					));
-				}
-				if attempt.status == AttemptStatus::Answered {
-					coverage.insert(question);
-				}
-			}
-			if question_digest(&self.questions, &attempt.questions)? != attempt.question_digest {
-				return Err(Error::Invalid(
-					"historical attempt asked other questions than its evidence names".into(),
-				));
-			}
-		}
-		Ok(coverage.len())
+		validate_attempt_set(&self.attempts, &self.questions)
 	}
 	/// Each candidate names an event of the history under the ID its boundary
 	/// derives, with a call and a result question of its own, and every
@@ -470,7 +440,7 @@ impl Evidence {
 				"historical model or mode differs from the pinned Decider configuration".into(),
 			));
 		}
-		if self.restrictions.keep_threshold.value() > self.route_thresholds[route].value() {
+		if self.restrictions.threshold.value() > self.route_thresholds[route].value() {
 			return Err(Error::Invalid(
 				"historical restrictions are looser than the Route asked".into(),
 			));
@@ -557,6 +527,45 @@ impl Evidence {
 			fit: self.fit.clone(),
 		}
 	}
+}
+
+/// Each attempt is well formed and asks questions of the decision that no other
+/// attempt asks; returns how many questions an answered attempt covers.
+pub(super) fn validate_attempt_set(
+	attempts: &[AttemptEvidence],
+	questions: &Questions,
+) -> Result<usize> {
+	let mut coverage = std::collections::BTreeSet::new();
+	let mut attempted_questions = std::collections::BTreeSet::new();
+	let mut ids = std::collections::BTreeSet::new();
+	for attempt in attempts {
+		validate_digest(&attempt.request_digest)?;
+		validate_digest(&attempt.question_digest)?;
+		if attempt.id.is_nil()
+			|| !ids.insert(attempt.id)
+			|| attempt.questions.is_empty()
+			|| attempt.owner_receipts.is_empty()
+			|| attempt.owner_receipts.values().any(Uuid::is_nil)
+		{
+			return Err(Error::Invalid("corrupt historical attempt evidence".into()));
+		}
+		for question in &attempt.questions {
+			if !questions.contains_key(question) || !attempted_questions.insert(question) {
+				return Err(Error::Invalid(
+					"historical attempts have conflicting question coverage".into(),
+				));
+			}
+			if attempt.status == AttemptStatus::Answered {
+				coverage.insert(question);
+			}
+		}
+		if question_digest(questions, &attempt.questions)? != attempt.question_digest {
+			return Err(Error::Invalid(
+				"historical attempt asked other questions than its evidence names".into(),
+			));
+		}
+	}
+	Ok(coverage.len())
 }
 
 /// The commitment an attempt keeps to the definitions of the questions it asked.

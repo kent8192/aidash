@@ -8,6 +8,9 @@ use serde::Serialize;
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct RunDetails {
+	/// Metadata-only gateway requests, paged with the inspection offset.
+	#[serde(default)]
+	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
 	pub run: crate::domain::RunInspection,
 	pub invocations: Vec<Invocation>,
 	pub memory: Option<aidash_domain::memory::Binding>,

@@ -156,7 +156,13 @@ pub struct ToolBehavior {
 	pub catch_up: bool,
 	pub media_pending: bool,
 	pub yields_model_media: bool,
-	pub workbench_approval: bool,
+	/// A call waits for a Tool call approval unless policy permits it directly.
+	pub tool_call_approval: bool,
+	/// A declared Read-only operation of a Tenant's HTTP or MCP tool. Its calls
+	/// need no Tool call approval, yet the Tenant's policy may still forbid
+	/// them outright (ADR 0076).
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub read_only_operation: bool,
 	/// Omitted while Sequential so contracts pinned before this field keep their digest.
 	#[serde(skip_serializing_if = "Concurrency::is_sequential")]
 	pub concurrency: Concurrency,
@@ -185,6 +191,12 @@ pub enum Yield {
 	Citations,
 }
 impl ToolBehavior {
+	/// A call of a Tenant's HTTP or MCP tool, whose result is external data: it
+	/// passes the Tool call gate, which asks or only checks, and it can never
+	/// raise an approval of its own.
+	pub fn tenant_tool_call(&self) -> bool {
+		self.tool_call_approval || self.read_only_operation
+	}
 	pub fn permits(&self, mode: ToolUseMode) -> bool {
 		match mode {
 			ToolUseMode::Ordinary => true,
@@ -254,16 +266,30 @@ impl ToolContract {
 		Ok(crate::registry::rules::digest(&serde_json::to_value(self)?))
 	}
 	/// The contract a Run pinned under `digest`, if any. A Run admitted before
-	/// its provider declared Concurrency safety keeps that operation Sequential.
+	/// its provider declared Concurrency safety keeps that operation Sequential;
+	/// a legacy Read-only definition keeps its approval-gated Unsafe contract.
 	pub fn pinned(mut self, digest: &str) -> crate::Result<Option<Self>> {
 		if self.digest()? == digest {
 			return Ok(Some(self));
 		}
-		if self.behavior.concurrency.is_sequential() {
-			return Ok(None);
+		if !self.behavior.concurrency.is_sequential() {
+			self.behavior.concurrency = Concurrency::Sequential;
+			if self.digest()? == digest {
+				return Ok(Some(self));
+			}
 		}
-		self.behavior.concurrency = Concurrency::Sequential;
-		Ok((self.digest()? == digest).then_some(self))
+		// Existing HTTP/MCP versions could already declare `replay: read_only`
+		// before that declaration changed their effect and approval gate. Only
+		// restore this older contract when the Run pinned its exact digest.
+		if matches!(self.identity, ToolIdentity::Registry(_)) && self.behavior.read_only_operation {
+			self.behavior.effect = ToolEffect::Unsafe;
+			self.behavior.tool_call_approval = true;
+			self.behavior.read_only_operation = false;
+			if self.digest()? == digest {
+				return Ok(Some(self));
+			}
+		}
+		Ok(None)
 	}
 	/// A pinned plugin tool is Unsafe, Sequential and never exposed remotely. Declaring it
 	/// Read-only removes the approval only; the effect stays Unsafe like a Tenant tool's.
@@ -271,13 +297,23 @@ impl ToolContract {
 		Self {
 			identity: ToolIdentity::AgentPlugin(identity),
 			authorization: ToolAuthorization::none(),
-			behavior: external_behavior(ToolEffect::Unsafe, !read_only),
+			behavior: ToolBehavior {
+				// A read-only tool the Agent version declares still passes the
+				// Tool call gate, so an explicit deny refuses it (ADR 0076).
+				read_only_operation: read_only,
+				..external_behavior(ToolEffect::Unsafe, !read_only)
+			},
 			disclosure: DisclosureBoundary::External,
 			remote_exposure: false,
 		}
 	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
 		let (effect, approval, disclosure) = match config {
+			// A Read-only operation still sends its arguments to the registered
+			// service, so disclosure stays External; Concurrency stays Sequential.
+			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } if config.declares_read_only() => {
+				(ToolEffect::ReadOnly, false, DisclosureBoundary::External)
+			}
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
 				(ToolEffect::Unsafe, true, DisclosureBoundary::External)
 			}
@@ -292,6 +328,7 @@ impl ToolContract {
 				},
 			),
 		};
+		let read_only_operation = config.declares_read_only();
 		Self {
 			identity: ToolIdentity::Registry(reference),
 			authorization: ToolAuthorization {
@@ -305,7 +342,10 @@ impl ToolContract {
 				},
 				..ToolAuthorization::none()
 			},
-			behavior: external_behavior(effect, approval),
+			behavior: ToolBehavior {
+				read_only_operation,
+				..external_behavior(effect, approval)
+			},
 			disclosure,
 			remote_exposure: true,
 		}
@@ -313,15 +353,16 @@ impl ToolContract {
 }
 
 /// The behavior of an ordinary tool that no model media, catch-up or yield attributes touch.
-fn external_behavior(effect: ToolEffect, workbench_approval: bool) -> ToolBehavior {
+fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavior {
 	ToolBehavior {
 		effect,
-		workbench_approval,
+		tool_call_approval,
 		fitting: None,
 		continuation: Continuation::Ordinary,
 		catch_up: false,
 		media_pending: false,
 		yields_model_media: false,
+		read_only_operation: false,
 		concurrency: Concurrency::Sequential,
 		exposure_update: false,
 		yields: vec![],
@@ -347,7 +388,8 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			catch_up: false,
 			media_pending: false,
 			yields_model_media: false,
-			workbench_approval: false,
+			tool_call_approval: false,
+			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
 			yields: vec![],
@@ -490,7 +532,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Shell);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
-		"code_interpreter" | "python_install" | "python_poll" | "python_cancel" => {
+		"code_interpreter" | "python_poll" | "python_cancel" => {
 			auth.core = Some(CorePermission::Python);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
@@ -578,7 +620,6 @@ mod tests {
 			"shell_poll",
 			"shell_cancel",
 			"code_interpreter",
-			"python_install",
 			"python_poll",
 			"python_cancel",
 			"apply_patch",
@@ -694,7 +735,7 @@ mod tests {
 			"catch_up",
 			"media_pending",
 			"yields_model_media",
-			"workbench_approval",
+			"tool_call_approval",
 		];
 		for name in [
 			"task_create",
@@ -719,7 +760,6 @@ mod tests {
 			"shell_poll",
 			"shell_cancel",
 			"code_interpreter",
-			"python_install",
 			"python_poll",
 			"python_cancel",
 			"apply_patch",
@@ -761,15 +801,13 @@ mod tests {
 		let contract = builtin_contract("workspace_read").unwrap();
 		assert_eq!(
 			serde_json::to_string(&contract.behavior).unwrap(),
-			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"workbench_approval":false}"#
+			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"tool_call_approval":false}"#
 		);
 		assert_eq!(
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
 			PINNED_WORKSPACE_READ_DIGEST
 		);
 	}
-	const PINNED_WORKSPACE_READ_DIGEST: &str =
-		"sha256:db828953f52fd78d391555cb3bd65a846349e57dc02e015e2ec032544995c271";
 	fn plugin_tool() -> AgentPluginTool {
 		AgentPluginTool {
 			plugin: PluginName::try_from("acme-tools".to_owned()).unwrap(),
@@ -785,7 +823,9 @@ mod tests {
 			assert_eq!(contract.identity, ToolIdentity::AgentPlugin(plugin_tool()));
 			assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
 			assert!(!contract.replay_safe());
-			assert_eq!(contract.behavior.workbench_approval, !read_only);
+			assert_eq!(contract.behavior.tool_call_approval, !read_only);
+			assert_eq!(contract.behavior.read_only_operation, read_only);
+			assert!(contract.behavior.tenant_tool_call());
 			assert!(contract.behavior.concurrency.is_sequential());
 			assert_eq!(contract.disclosure, DisclosureBoundary::External);
 			assert!(!contract.remote_exposure);
@@ -793,14 +833,16 @@ mod tests {
 		}
 	}
 	#[test]
-	fn a_read_only_plugin_tool_differs_from_a_normal_one_in_its_approval_only() {
+	fn a_read_only_plugin_tool_differs_from_a_normal_one_in_its_approval_gate_only() {
 		let normal = ToolContract::agent_plugin(plugin_tool(), false);
 		let mut read_only = ToolContract::agent_plugin(plugin_tool(), true);
 
 		assert_ne!(normal.digest().unwrap(), read_only.digest().unwrap());
-		assert!(normal.behavior.workbench_approval);
-		assert!(!read_only.behavior.workbench_approval);
-		read_only.behavior.workbench_approval = true;
+		assert!(normal.behavior.tool_call_approval);
+		assert!(!read_only.behavior.tool_call_approval);
+		assert!(read_only.behavior.read_only_operation);
+		read_only.behavior.tool_call_approval = true;
+		read_only.behavior.read_only_operation = false;
 		assert_eq!(normal, read_only);
 	}
 	#[test]
@@ -811,6 +853,7 @@ mod tests {
 				version: "1".into(),
 			},
 			&ToolConfig::Mcp {
+				secret: None,
 				endpoint: "https://example.invalid".into(),
 				tool_name: "search".into(),
 				replay: "unsafe".into(),
@@ -825,28 +868,133 @@ mod tests {
 		assert!(registry.remote_exposure);
 	}
 	#[test]
-	fn registry_effects_and_approval_are_independent() {
+	fn only_a_tenants_http_or_mcp_tool_passes_the_tool_call_gate() {
 		let reference = EntityRef {
 			id: "tool".into(),
 			version: "1".into(),
 		};
+		for config in [
+			ToolConfig::Agent {
+				node_id: "node".into(),
+				agent: reference.clone(),
+			},
+			ToolConfig::Native {
+				operation: "http_get".into(),
+				allowed_hosts: vec![],
+			},
+		] {
+			let contract = ToolContract::registry(reference.clone(), &config);
+			assert!(!contract.behavior.tenant_tool_call());
+		}
+		assert!(
+			!builtin_contract("human_request")
+				.unwrap()
+				.behavior
+				.tenant_tool_call()
+		);
+	}
+	const PINNED_WORKSPACE_READ_DIGEST: &str =
+		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
+	#[test]
+	fn admitted_read_only_definitions_keep_their_approval_gated_contract() {
+		// Persisted contract shape before Read-only declarations changed approval
+		// behavior. Both HTTP and MCP definitions pinned these same bytes.
+		let legacy = serde_json::json!({
+			"identity": {"Registry": {"id": "tool", "version": "1"}},
+			"authorization": {"flag": null, "core": null, "requirements": []},
+			"behavior": {
+				"effect": "Unsafe", "fitting": null, "continuation": "Ordinary",
+				"catch_up": false, "media_pending": false, "yields_model_media": false,
+				"tool_call_approval": true
+			},
+			"disclosure": "External", "remote_exposure": true
+		});
+		let digest = crate::registry::rules::digest(&legacy);
+		for config in [
+			ToolConfig::Http {
+				endpoint: "https://example.invalid".into(),
+				replay: "read_only".into(),
+				secret: None,
+			},
+			ToolConfig::Mcp {
+				endpoint: "https://example.invalid".into(),
+				secret: None,
+				tool_name: "lookup".into(),
+				replay: "read_only".into(),
+				idempotency_argument: None,
+			},
+		] {
+			let current = ToolContract::registry(
+				EntityRef {
+					id: "tool".into(),
+					version: "1".into(),
+				},
+				&config,
+			);
+			let pinned = current
+				.clone()
+				.pinned(&digest)
+				.unwrap()
+				.expect("the admitted Run keeps its contract");
+			assert_eq!(serde_json::to_value(pinned).unwrap(), legacy);
+			assert_eq!(
+				current.clone().pinned(&current.digest().unwrap()).unwrap(),
+				Some(current.clone())
+			);
+			assert!(current.pinned("sha256:unknown").unwrap().is_none());
+		}
+	}
+	#[test]
+	fn only_a_declared_read_only_operation_needs_no_tool_call_approval() {
+		let reference = EntityRef {
+			id: "tool".into(),
+			version: "1".into(),
+		};
+		// Anything but the exact declaration, including an unknown label, stays
+		// an unproven operation that asks for approval.
 		for (replay, effect, approval, safe) in [
-			("read_only", ToolEffect::Unsafe, true, false),
+			("read_only", ToolEffect::ReadOnly, false, true),
 			("idempotent", ToolEffect::Unsafe, true, false),
 			("unsafe", ToolEffect::Unsafe, true, false),
+			("READ_ONLY", ToolEffect::Unsafe, true, false),
+			("", ToolEffect::Unsafe, true, false),
 		] {
-			let contract = ToolContract::registry(
-				reference.clone(),
-				&ToolConfig::Http {
+			for config in [
+				ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
+					secret: None,
 				},
-			);
-			assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
-			assert_eq!(contract.behavior.effect, effect);
-			assert_eq!(contract.behavior.workbench_approval, approval);
-			assert_eq!(contract.replay_safe(), safe);
-			assert!(contract.remote_exposure);
+				ToolConfig::Mcp {
+					endpoint: "https://example.invalid".into(),
+					secret: None,
+					tool_name: "lookup".into(),
+					replay: replay.into(),
+					idempotency_argument: None,
+				},
+			] {
+				let contract = ToolContract::registry(reference.clone(), &config);
+				assert_eq!(contract.identity, ToolIdentity::Registry(reference.clone()));
+				assert_eq!(contract.behavior.effect, effect, "{replay:?}");
+				assert_eq!(contract.behavior.tool_call_approval, approval, "{replay:?}");
+				// Either way the call passes the Tool call gate: asked, or only
+				// checked against the Tenant's policy.
+				assert_eq!(
+					contract.behavior.read_only_operation,
+					effect == ToolEffect::ReadOnly,
+					"{replay:?}"
+				);
+				assert!(contract.behavior.tenant_tool_call(), "{replay:?}");
+				assert_eq!(contract.replay_safe(), safe, "{replay:?}");
+				assert_eq!(contract.disclosure, DisclosureBoundary::External);
+				assert!(contract.remote_exposure);
+				// A Read-only operation implies no Concurrency safety.
+				assert!(contract.behavior.concurrency.is_sequential(), "{replay:?}");
+				assert!(
+					!super::super::concurrency::batchable(&contract.behavior),
+					"{replay:?}"
+				);
+			}
 		}
 	}
 }

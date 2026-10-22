@@ -65,7 +65,8 @@ pub struct Run {
 		generated_sql = "
 CASE
     WHEN ((context -> 'binding_snapshot'::text) -> 'remote'::text) = 'true'::jsonb THEN NULL::uuid
-    WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'external_approval'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid
+    WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid
+    WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = 'approval'::text) AND ((((pending -> 'data'::text) -> 'approval'::text) ->> 'source'::text) = 'home'::text) AND (jsonb_typeof((((pending -> 'data'::text) -> 'approval'::text) -> 'request_id'::text)) = 'string'::text) AND ((((pending -> 'data'::text) -> 'approval'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN ((((pending -> 'data'::text) -> 'approval'::text) ->> 'request_id'::text))::uuid
     ELSE NULL::uuid
 END",
 		generated_stored = true

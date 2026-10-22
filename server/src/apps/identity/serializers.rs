@@ -8,6 +8,7 @@ pub mod identity;
 
 pub mod oidc;
 
+pub mod approval_preferences;
 pub mod plan_connections;
 pub mod provider_authorizations;
 
@@ -40,10 +41,13 @@ pub mod remote_execution_commands;
 pub(crate) mod desktop;
 
 pub mod provider_credentials;
+pub mod tenant_secrets;
 
 pub mod keyless_endpoints;
 
 pub mod tenancy_settings;
+
+pub mod demo_data_settings;
 
 pub mod tenants;
 

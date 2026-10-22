@@ -204,8 +204,10 @@ CREATE FUNCTION public.guard_registry_agent_model_refs() RETURNS trigger
     AS $$
 BEGIN
     IF pg_trigger_depth() < 2 THEN
-        RAISE EXCEPTION 'registry_agent_model_refs is maintained by registry'
-            USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_model_reference';
+        IF NOT public.aidash_tenant_purge() THEN
+            RAISE EXCEPTION 'registry_agent_model_refs is maintained by registry'
+                USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_model_reference';
+        END IF;
     END IF;
     RETURN NULL;
 END $$;
@@ -214,8 +216,10 @@ CREATE FUNCTION public.guard_registry_agent_resource_refs() RETURNS trigger
     AS $$
 BEGIN
     IF pg_trigger_depth() < 2 THEN
-        RAISE EXCEPTION 'registry_agent_resource_refs is maintained by registry'
-            USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_resource_reference';
+        IF NOT public.aidash_tenant_purge() THEN
+            RAISE EXCEPTION 'registry_agent_resource_refs is maintained by registry'
+                USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_resource_reference';
+        END IF;
     END IF;
     RETURN NULL;
 END $$;

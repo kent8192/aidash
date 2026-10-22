@@ -33,13 +33,15 @@ created exclusively with mode 0600 and contains raw Task text, tool arguments
 and model-visible results.
 
 Every fixture tool is an `integration.http@1` declaration, and such calls need
-human approval. By default the runner denies each approval request, so the
-declared endpoint (`--tool-endpoint`, by default the unresolvable host name
-`tools.invalid`) is never contacted. The model's call is still recorded with a
-denial result. Use `--approve-external-calls` only with an endpoint that the
-server may reach, which must be public or listed in
-`[keyless_endpoints] permitted_private_origins`, and that accepts the fixture
-arguments. Other human requests receive a fixed
+a Tool call approval. By default the runner denies each Tool call approval it
+finds through `scripts/tool_call_approvals.py`, so the declared endpoint
+(`--tool-endpoint`, by default the unresolvable host name `tools.invalid`) is never contacted.
+The model's call is still recorded with a denial result. Direct permission
+(`tool.call_unapproved`) in the evaluated Tenant's policy would let such a call
+proceed without any approval. Use
+`--approve-external-calls` only with an endpoint that the server may reach, which must be public or listed in
+`[keyless_endpoints] permitted_private_origins`, and
+that accepts the fixture arguments. Other human requests receive a fixed
 "no human is available" answer. A Run still running after `--run-timeout`
 seconds (default 600) is cancelled and reported with `timed_out: true`.
 
@@ -49,18 +51,20 @@ Workspace. Use an isolated deployment.
 
 ## API calls
 
-| Purpose                     | Call                                                                                            | Defined at                                                 |
-| --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Node identity               | `GET /.well-known/aidash`                                                                       | `server/src/apps/federation/peer/views/management.rs:43`   |
-| Register tool, Skill, Agent | `POST /api/registry`                                                                            | `server/src/apps/registry/views/management.rs:40`          |
-| Workspace                   | `POST /api/workspaces`                                                                          | `server/src/apps/workspaces/views/management.rs:32`        |
-| Task                        | `POST /api/workspaces/{id}/tasks`                                                               | `server/src/apps/workspaces/views/management.rs:60`        |
-| Admit the Run               | `POST /api/tasks/{id}/delegate` with this node's ID                                             | `server/src/apps/federation/remote/views/management.rs:15` |
-| Find the Run and approvals  | `GET /api/state` (`runs`, `human_requests`)                                                     | `server/src/apps/execution/views/management.rs:20`         |
-| Answer approvals            | `POST /api/human-requests/{id}/answer`                                                          | `server/src/apps/execution/views/management.rs:80`         |
-| Run inspection              | `GET /api/runs/{id}`                                                                            | `server/src/apps/execution/views/management.rs:49`         |
-| Cancel on timeout           | `POST /api/runs/{id}/control` with `{"action": "cancel"}`                                       | `server/src/apps/execution/views/management.rs:59`         |
-| Per-request usage           | `GET /api/workspaces/{id}` (`model.completed` events with `run_id`, `step` and `context_usage`) | `server/src/apps/workspaces/views/management.rs:41`        |
+| Purpose                     | Call                                                                                            | Defined at                                                       |
+| --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Node identity               | `GET /.well-known/aidash`                                                                       | `server/src/apps/federation/peer/views/management.rs:43`         |
+| Register tool, Skill, Agent | `POST /api/registry`                                                                            | `server/src/apps/registry/views/management.rs:40`                |
+| Workspace                   | `POST /api/workspaces`                                                                          | `server/src/apps/workspaces/views/management.rs:32`              |
+| Task                        | `POST /api/workspaces/{id}/tasks`                                                               | `server/src/apps/workspaces/views/management.rs:60`              |
+| Admit the Run               | `POST /api/tasks/{id}/delegate` with this node's ID                                             | `server/src/apps/federation/remote/views/management.rs:15`       |
+| Find the Run and approvals  | `GET /api/state` (`runs`, `human_requests`)                                                     | `server/src/apps/execution/views/management.rs:20`               |
+| Find Tool call approvals    | `GET /api/capabilities/approvals?state=pending&role=approver`                                   | `server/src/apps/execution/capabilities/views/management.rs:364` |
+| Answer approvals            | `POST /api/human-requests/{id}/answer`                                                          | `server/src/apps/execution/views/management.rs:80`               |
+| Decide Tool call approvals  | `POST /api/capabilities/approvals/{id}/decide` with `allow_once` or `deny`                      | `server/src/apps/execution/capabilities/views/management.rs:377` |
+| Run inspection              | `GET /api/runs/{id}`                                                                            | `server/src/apps/execution/views/management.rs:49`               |
+| Cancel on timeout           | `POST /api/runs/{id}/control` with `{"action": "cancel"}`                                       | `server/src/apps/execution/views/management.rs:59`               |
+| Per-request usage           | `GET /api/workspaces/{id}` (`model.completed` events with `run_id`, `step` and `context_usage`) | `server/src/apps/workspaces/views/management.rs:41`              |
 
 ## Fixture
 
@@ -113,7 +117,8 @@ Each variant has these fields:
     may still have been denied approval, which is the default.
   - `first_call_index` and `first_selected_index` give positions in
     `tool_calls`.
-- `human_answers`: each human request the runner answered and its answer.
+- `human_answers`: each human request the runner answered and its answer, and
+  each Tool call approval it decided, with the tool and the answer.
 
 ## What the API does not expose
 

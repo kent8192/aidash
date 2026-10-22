@@ -56,7 +56,7 @@ async fn pinned_plugin_tools_are_offered_beside_the_bindings_with_their_specific
 	);
 	let contract = search.contract();
 	assert!(matches!(contract.identity, ToolIdentity::AgentPlugin(_)));
-	assert!(contract.behavior.workbench_approval);
+	assert!(contract.behavior.tool_call_approval);
 	assert!(!search.replay_safe());
 }
 

@@ -126,6 +126,8 @@ def transition(state, request, incarnation, now, hostname_token="", production=F
     entry.pop("outcome_run_id", None)
     entry.pop("outcome_trusted_sha", None)
     entry.pop("outcome_published", None)
+    entry.pop("pre_update_backup", None)
+    entry.pop("writers_started", None)
     entry.pop("staging_publication_run_id", None)
     entry.pop("staging_verified_at", None)
     entry.pop("staging_publication_pending", None)

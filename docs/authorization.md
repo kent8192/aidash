@@ -71,6 +71,8 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `peer_mapping.update`           | `peer_mapping` | Create, update and disable a Peer Mapping                                                                      |
 | `workbench.test_limits.update`  | `test_limits`  | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
 | `workbench.test_profile.update` | `test_profile` | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
+| `approval.read`                 | `subject`      | Read a member's default Approval Mode and Approval Rules. Only the member writes them.                         |
+| `billing.attach`                | `tenant`       | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 
@@ -82,7 +84,7 @@ The Tenant's policy marks the groups a Tenant Administrator may confer without r
 - `PUT /api/tenants/{tenant}/subjects/{subject}/groups` with `{"groups":[...],"expected_policy_revision":n}` replaces only Assignable Group memberships. Other groups and roles are retained.
 - Neither operation edits roles, group definitions or any other part of the policy. Those change only when the whole policy is replaced.
 
-A Tenant created through Aidash starts with two Assignable Groups: `administrators`, allowed every action, and `members`, allowed an explicit list of actions to use the Tenant and author definitions. Tenant Administrators can therefore appoint each other; unmarking `administrators` stops that. A Tenant Administrator cannot disable its own Mapping or change its own subject's groups (403). Before a Tenant Administrator disables a Mapping, changes Assignable Groups or replaces the policy, and before a member leaves, the same transaction checks that another enabled Mapping of an enabled External Identity keeps every administration action without conditions; otherwise it answers 409. A replacement counts the actor's own Mapping. The administration actions are `registration.read`, `registration.approve`, `registration.reject`, `mapping.read`, `mapping.disable`, `subject.group.update`, `invitation.create`, `policy.read`, `policy.update` and `tenant.delete`, so a Tenant always keeps someone who can repair its policy (ADR 0026) and nobody leaves behind a Tenant no one can delete (ADR 0060). Conditional allows, and allows limited to particular resources, do not count, and every deny counts as matching. Deployment Administrator actions, including replacing the whole policy, are never blocked.
+A Tenant created through Aidash starts with two Assignable Groups: `administrators`, allowed every action, and `members`, allowed an explicit list of actions to use the Tenant and author definitions. The initial policy also grants `members` `capability.approve` on resource kind `tool` (policy `members-tool-call-approval`), so they may approve the Tool call approvals of their own Runs. It also grants `approval.advance` and `approval.mode.auto`, so members may approve in advance within what the Tenant's policy lets them approve, and use Auto. It never grants `approval.mode.bypass`, so a Tenant that wants Bypass must name it. Tenant Administrators can therefore appoint each other; unmarking `administrators` stops that. A Tenant Administrator cannot disable its own Mapping or change its own subject's groups (403). Before a Tenant Administrator disables a Mapping, changes Assignable Groups or replaces the policy, and before a member leaves, the same transaction checks that another enabled Mapping of an enabled External Identity keeps every administration action without conditions; otherwise it answers 409. A replacement counts the actor's own Mapping. The administration actions are `registration.read`, `registration.approve`, `registration.reject`, `mapping.read`, `mapping.disable`, `subject.group.update`, `invitation.create`, `policy.read`, `policy.update` and `tenant.delete`, so a Tenant always keeps someone who can repair its policy (ADR 0026) and nobody leaves behind a Tenant no one can delete (ADR 0060). Conditional allows, and allows limited to particular resources, do not count, and every deny counts as matching. Deployment Administrator actions, including replacing the whole policy, are never blocked.
 
 Subjects created, memberships changed and policies replaced by a Tenant Administrator advance the policy revision with the actor `oidc:<identity id>` and the Mapping it acted through (`actor_mapping_id`). A browser Deployment Administrator's replacement records `deployment_administrator:oidc:<identity id>`. A Deployment Administrator replacing the policy at an older `expected_revision` receives 409 and must reload.
 
@@ -107,14 +109,15 @@ Every Tenant has a root record keyed by its Tenant name, `<adjective>-<noun>-<8 
 
 The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's policy decides them. The `[deployment] offering` supplies each rule the settings leave out, and an explicit value overrides it. Identities of a GCIP Tenant with a Tenant Binding are never covered: they hold no Personal Tenant, create no Tenants and redeem no other Tenant's Invitation.
 
-| Setting               | Self-hosted | Cloud  | Dedicated | Meaning                                                                    |
-| --------------------- | ----------- | ------ | --------- | -------------------------------------------------------------------------- |
-| `personal_tenants`    | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                 |
-| `tenant_creation`     | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                           |
-| `creation_per_hour`   | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                      |
-| `creation_total`      | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged               |
-| `invitations`         | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations  |
-| `deletion_grace_days` | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
+| Setting                | Self-hosted | Cloud  | Dedicated | Meaning                                                                       |
+| ---------------------- | ----------- | ------ | --------- | ----------------------------------------------------------------------------- |
+| `personal_tenants`     | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                    |
+| `tenant_creation`      | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                              |
+| `creation_per_hour`    | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                         |
+| `creation_total`       | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged                  |
+| `invitations`          | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations     |
+| `deletion_grace_days`  | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90)    |
+| `audit_retention_days` | `365`       | `365`  | `365`     | Days a purged Tenant's audit history is kept before it is deleted (1 to 3650) |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 
@@ -139,7 +142,20 @@ A Tenant Deletion is a recorded decision (ADR 0060). `POST /api/tenants/{tenant}
 
 The Tenant stays restorable for `deletion_grace_days`. `POST /api/tenants/{tenant}/restore` restores it before then, as a Deployment Administrator or through a browser session that names its own Mapping in the deleted Tenant in `x-aidash-context`. That Mapping's subject must be allowed `tenant.delete` by the policy the Tenant was deleted with, and the Mapping, its External Identity and its credential must still be usable. The usual authentication refuses a deleted Tenant, so this route authenticates the caller itself and uses only that Mapping and that Tenant's policy. A Tenant a Deployment Administrator deleted is restored only by a Deployment Administrator (409 otherwise). Deleting a restored Tenant again starts a new grace period. Deletions are kept in `tenant_deletions`, one Deployment-wide row per deletion, which outlives purge.
 
-Purging a deleted Tenant's data after its grace period is not implemented yet (ADR 0061, #239). Tenant-creation limits already count a deleted Tenant until it is purged.
+#### Purge
+
+After the grace period, Aidash purges the Tenant's data (ADR 0061). The purge is a resumable, idempotent job on the hourly retention loop, so a purge may lag its deadline by up to an hour. It runs in the `tenant-purge` Deployment Scope and works through four steps in order. Each step is idempotent, and a purge that fails resumes from the failed step at the next sweep. Each step first locks the deletion row and checks, under that lock, that it is still unrestored, unpurged and leased to this purge, and keeps the lock while it works, so a restore never interleaves with a destructive step. A restore is refused once a purge owns the Tenant or the grace period has ended.
+
+1. **Secrets and Provider Credentials.** Tenant Secrets and their stored values are purged. Plan Connections that deletion could not end are ended, then every Provider Credential, bound or not, is revoked and deleted, and its stored Key Material with it. On Cloud this deletes the Secret Manager secrets before the rows that name them.
+2. **Capability object files.** The files that only `core_objects` names are erased before their rows.
+3. **Rows.** Every row the Tenant owns in a Tenant-owned table of `server/src/database/classification.rs` is deleted, children before parents. The order comes from the foreign keys of the migrated database, so a table added to the classification is purged without a second list. Marketplace consents, audiences, versions and provenance are Deployment-wide and stay, and so do events without a Tenant.
+4. **Finish.** The root record's label is cleared and the deletion record is marked purged. The Tenant name, creation time and creating principal stay as a tombstone, so the name is never reused, and a restore is refused with 409 `tenant_purged`. Tenant-creation limits stop counting the Tenant.
+
+The classification is the single source of what purge keeps. A Tenant-owned table is purged unless it is marked audit history or a tombstone pointer. **Audit history** is the administration history, authorization decisions, policy revisions, catalog history, and Evidence Revocation and Retention Rule history. It is kept for `audit_retention_days` after the purge and then deleted by the same loop. Who may read it after the purge is not decided yet (#301). The identity's Personal Tenant link is kept too, so signing in never provisions a second Personal Tenant for an identity that deleted its own. A test fails when a table with a `tenant` column is neither purged, kept, nor a declared Deployment-wide reference, and when anything purge keeps references a table it deletes.
+
+`POST /api/tenants/{tenant}/purge` purges a deleted Tenant at once, ending its grace period (`tenant.purge` in the administration history). Only a Deployment Administrator may; a Tenant Administrator cannot (401 or 403), and a Tenant that is not deleted answers 409. `GET /api/tenants` lists, for each Tenant, whether it is `purgeable` and, once a purge started or failed, its `purge` progress: the `step` that runs next or keeps failing, the number of `failures`, the last `error`, and `stalled` after three failures in a row. The dashboard's Tenant list for Deployment Administrators offers Purge now and shows a stalled purge with its step and error.
+
+**What purge cannot reach.** The runner journal has no Tenant key, and acknowledging a message blanks it. Platform and broker logs, provider-side prompt caches, and OpenRouter keys are outside Aidash, so people delete their OpenRouter keys at OpenRouter; the deletion dialog says so. Memory recovery archives follow at their next prune. Billing records are Deployment-wide and are not purged (#242).
 
 `POST /api/tenants/{tenant}/leave` disables the caller's own Mapping and retires its Plan Connection. It answers 409 when the Tenant would be left without a Tenant Administrator, and for a member mapped through the Tenant's Tenant Binding, whom signing in would map again. A member who left returns only through a new Invitation, as the same user subject.
 
@@ -266,6 +282,7 @@ Every Tenant has its own Registry. A definition's identity is `(tenant, id, vers
 | Method | Path                                             | Required action                                                    |
 | ------ | ------------------------------------------------ | ------------------------------------------------------------------ |
 | POST   | `/api/registry`                                  | `registry.create` on `registry` `{kind}/{id}`                      |
+| POST   | `/api/registry/mcp-tool-hint`                    | `registry.create` on `registry` `tool/all`: an MCP tool's hint     |
 | GET    | `/api/registry/versions`                         | `registry.read`: every version with its approval state and history |
 | GET    | `/api/authorization/{tenant}/catalog`            | `registry.read`: the Tenant's Catalog Approvals                    |
 | POST   | `/api/authorization/{tenant}/catalog`            | `catalog.approve` on `registry` `{kind}/{id}@{version}`            |
@@ -285,6 +302,8 @@ Approving a generation needs `generation.approve` and `catalog.approve`, and a D
 
 A subject can POST `{"revision":0,"agent":{"id":"research","version":"1.0.0"}}` to `/api/tasks/{id}/claim`, or delegate to the local node through `/api/tasks/{id}/delegate`. The task must be OPEN with completed dependencies. Admission checks workspace access, `agent.execute` and `task.execute`, then commits the task claim, run and execution grant together. Local delegation additionally requires `task.delegate` for the originating chain and records its delivery atomically.
 
+Before a worker delegates locally, its outer authority transaction checks and locks the selected Agent's complete Binding closure under the parent's current policy. The child may bind definitions absent from the parent's frozen Binding snapshot; preparing the child does not change that snapshot or give the parent new Tools. The inherited mutation transaction then checks the complete subject chain, including the child, against the retained approvals before atomically admitting the child. Preparation reuses the outer transaction's distribution lock: [PostgreSQL grants a session's repeated advisory-lock requests even while another session waits](https://www.postgresql.org/docs/17/explicit-locking.html#ADVISORY-LOCKS). Taking a new shared distribution lease in the mutation transaction could instead wait behind a writer that is itself waiting for the parent to finish.
+
 The grant stores tenant, workspace, root subject, credential ID and the complete runtime agent chain; it contains no bearer secret. Every execution decision must allow both the originating subject and every agent in that chain, including each subject's policy-defined delegation ancestors. A child cannot escape a parent's denial. The chain is bounded to 32 subjects, including the root.
 
 | Boundary                   | Required action and resource                                                                                                                       |
@@ -298,6 +317,10 @@ The grant stores tenant, workspace, root subject, credential ID and the complete
 | Complete a task            | `artifact.create` and `task.complete`                                                                                                              |
 | Control or resume a run    | `workspace.read`, `run.read`, `memory.read` and `run.control`                                                                                      |
 
+The policy action `tool.call_unapproved` on resource kind `tool` lets a tool call proceed without a Tool call approval. Its resource ID is the tool's registry ID, and its attributes are `version` and `operation`.
+
+A version of a Tenant's HTTP or MCP tool definition declares its one `invoke` operation a Read-only operation with `replay: "read_only"` in its transport, and calls of it need no Tool call approval, though an explicit deny in the Tenant's policy still refuses them. The declaration belongs to the version: versions are immutable, so changing `replay` registers a new version (the same id and version with another value is a 409), and the Catalog Approval of the version covers the declaration. `idempotent` and `unsafe` calls still ask. A Read-only operation implies no Concurrency safety, and it still sends its arguments to the service the Tenant registered (ADR 0078). What an MCP server says about its own tools never makes an operation read-only: `POST /api/registry/mcp-tool-hint` reads one tool's `annotations.readOnlyHint` from the server's `tools/list` so that the registration form can prefill its choice, stores nothing and needs `registry.create` like the registration itself. It returns `{"read_only_hint": true | false | null}`. The server is reached like a Keyless endpoint (ADR 0036): public addresses and the Deployment's permitted private origins only, with host names checked against every address they resolve to and no redirects. A refused address answers 400 with the same message as an unreachable server.
+
 Under a `deferred@1` Exposure policy, `capability_search`, `capability_describe`, `capability_load` and `capability_unload` add no Agent flag, Core capability or resource requirement beyond the Run authority above and the `tool.invoke` check every bound Built-in passes. They disclose and change only the Run's own Binding snapshot and Exposure set. Loading a capability grants nothing: every Binding's authority is still checked at each step, and revocation fails the step whether or not the capability is loaded. `skill_asset_read` identifies its Skill by alias and decides by identity kind: a Registry Skill must be configured on the Agent and pass `skill.use`, and a direct Skill requires the Skills Core capability. An alias that names no Registry Skill on an Agent without Skill attachments or roots names no asset; it reaches the tool, which returns the recoverable `UNKNOWN_CAPABILITY`.
 
 Runtime resource attributes include trusted workspace `owner` and `workspace_id`. Tasks add their stored `created_by` and `task_id`; artifacts add their stored `created_by`, `task_id` and content `kind`; messages expose their persisted author as `created_by` and `sender`. Registry resources add their stored version, capabilities, tags, languages and configuration. Memory uses the agent ID with its stored run's `version` and canonical agent `created_by`. JSON payloads cannot replace these authority attributes. Artifact creation is scoped to the producing task ID; task/message creation is scoped to the workspace ID. The environment identifies the node and `transport: "worker"`. These attributes come from persisted state.
@@ -307,6 +330,65 @@ Each worker boundary reloads and locks the current policy, credential, grant, wo
 The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
 
 Scoped remote delegation uses durable source grants, receiver admissions and scoped Worker/Home boundaries, described below. It is the only remote delegation: the unscoped peer offer, workspace-command and control endpoints are removed (ADR 0043).
+
+## Approval Rules and Modes
+
+A person can decide in advance which approvals their own Runs get without waiting for a Designated approver. Their Approval Mode and Approval Rules never approve more than the Tenant's policy lets that person approve in advance. Aidash records each approval they give under their name, with the rule or mode that gave it (ADR 0076).
+
+These settings cover only Runs whose delegation chain starts at an enabled user subject of the Tenant and that execute on their home Node. They never cover a Run that arrived through Federation.
+
+Aidash decides each approval when the Run needs it, in this order:
+
+1. An explicit deny in the Tenant's policy refuses the approval.
+2. Direct permission in the Tenant's policy, or a Read-only operation, proceeds without an approval.
+3. The person's Approval Rules apply, deny before ask before allow. An ask rule asks in Auto and Bypass too, and refuses in Don't ask. An allow rule approves only what the policy lets the person approve in advance.
+4. The person's Approval Mode applies.
+
+| Mode      | What it does with an approval the Run would otherwise wait for                                        |
+| --------- | ----------------------------------------------------------------------------------------------------- |
+| Manual    | Asks the Designated approver.                                                                         |
+| Auto      | Is decided by the Tenant's approval Decider, unless the Auto fallbacks below ask a person.            |
+| Don't ask | Is refused, so the Run never waits. The model's `human_request` is refused too.                       |
+| Bypass    | Is approved, within what the Tenant's policy lets the person approve. Deny and ask rules still apply. |
+
+A person has a default mode and can override it for any Thread. A change applies to running Runs at their next approval. The API refuses a mode the Tenant's policy does not allow. If the policy later withdraws a mode, it acts as Manual.
+
+A person can also set an Answer Deadline, `answer_deadline_seconds`, from 60 seconds to 30 days (2592000), or `null` for none, which is the default. It is how long their Runs wait for an answer to the model's own question (`human_request`) before continuing on the model's judgment. It covers the same Runs as the settings above. It never applies to a Completion Review, a failed subtask's intervention or the Reconciliation of an uncertain tool call, which keep waiting for a person. A Run that asks such a question records `answer_by` in its waiting state, and `GET /api/state` shows it on the question. If nobody has answered by then, the system answers the request as `system` with `{"answered": false, "reason": "answer_deadline"}`. The model reads that no answer arrived within the person's Answer Deadline and that it should continue on its own judgment. An answer that arrives first wins, and one that arrives after the system's is refused with 409 because the request is already answered. A new deadline applies to questions asked after the change. Don't ask refuses the question outright, so no deadline applies.
+
+Bypass needs a recorded acceptance, given once with `accept_bypass: true` on the preferences update. Until then Bypass acts as Manual, and a Thread cannot set it.
+
+Auto needs the `approval.mode.auto` action and a Catalog Approval of the Tenant's chosen approval Decider version on the Node. Without both, Auto acts as Manual. Each mode choice in the preferences and Thread responses carries a `reason` when the mode is not allowed or not ready. The reasons are `policy` when the Tenant's policy does not allow the mode, `not_accepted` when Bypass awaits acceptance, `decider_unapproved` when the approval Decider has no Catalog Approval on the Node, and `no_decider` when the Tenant's approval Decider is not registered as one. Until the Tenant names another, its approval Decider is the built-in `aidash.approval-decider@1.0.0`. The Tenant names another with the route below. The decision itself is in [Approval hook](decision-gate.md#approval-hook).
+
+Auto returns a Run to asking a person when the Decider refuses too often. Three blocks in a row, or twenty refusals since a person last approved, in one Run, return that Run to asking until a person approves a call. An allowed call ends a streak of blocks, and a person's approval clears both counts. A refusal for want of a verdict, `unavailable`, counts toward the twenty but neither extends nor ends a streak. A spent call allowance leaves that one call to a person and records no decision.
+
+The policy actions that govern these settings are checked on the approval's own resource or on a mode resource:
+
+| Action                 | Resource                     | Allows                                                                                                       |
+| ---------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `approval.advance`     | The approval's own resource  | Approval Rules and Bypass approve it, only where the person is an eligible approver and holds this action.   |
+| `approval.mode.auto`   | `approval_mode`, ID `auto`   | Using Auto. Members hold it by default.                                                                      |
+| `approval.mode.bypass` | `approval_mode`, ID `bypass` | Using Bypass. An allow of `*` never grants it, so the policy must name it. Members never hold it by default. |
+
+A rule names an approval kind, an effect (allow, ask or deny) and a target. The target is one target of that kind or every target of it. The kinds are a Tenant tool definition (optionally one operation), an outbound origin, a Research provider for Web search, a page host for Page reading, and a Generation policy. An allow rule beyond what the policy lets the person approve in advance stays stored with `effective: false` and has no effect.
+
+An approval that a rule or mode gives records `given_by` as `{"rule": id}` or `{"mode": "bypass"}`. `allow_always` approves once and creates an allow rule for the person. Only the person the Run's delegation chain starts at is offered it.
+
+An approval the Auto Decider allows records `given_by` as `{"mode":"auto","decision":id}`, where the id is its Decision Evidence. An approval that Auto refuses records `refused_by` as `{"mode":"auto","reason":"<block reason>"}`, and its `error` is `REFUSED_BY_AUTO`. The other refusals record `{"policy":"tenant"}`, `{"rule":id}` or `{"mode":"dont_ask"}`.
+
+The routes below read and change these settings. The `mine` routes and the Thread routes take the owner's own browser or desktop session, and a Subject Credential gets 403.
+
+| Method | Path                                                         | Body or result                                                                                      |
+| ------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| GET    | `/api/tenants/{tenant}/approval-preferences/mine`            | The default mode, Answer Deadline, Bypass acceptance, revision, and each mode's availability.       |
+| PUT    | `/api/tenants/{tenant}/approval-preferences/mine`            | Body: `expected_revision`, `default_mode`, optional `accept_bypass`, `answer_deadline_seconds`.     |
+| GET    | `/api/tenants/{tenant}/approval-rules/mine`                  | The person's rules, each with `effective`.                                                          |
+| POST   | `/api/tenants/{tenant}/approval-rules/mine`                  | Body: `kind`, `target` and `effect`.                                                                |
+| DELETE | `/api/tenants/{tenant}/approval-rules/mine/{id}`             | Deletes one of the person's rules.                                                                  |
+| GET    | `/api/tenants/{tenant}/subjects/{subject}/approval-settings` | Needs `approval.read`. Shows a member's default mode, Answer Deadline, Bypass acceptance, rules.    |
+| GET    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | The caller's mode for the Thread, `null` when the default applies, the default mode, and the modes. |
+| PUT    | `/api/workspaces/{workspace}/threads/{thread}/approval-mode` | Body: `mode`. `null` clears the Thread's mode.                                                      |
+| GET    | `/api/tenants/{tenant}/approval-decider`                     | Any Tenant subject. Returns `decider` (`id`, `version`), `built_in`, `registered`, `approved`.      |
+| PUT    | `/api/tenants/{tenant}/approval-decider`                     | Body: `expected_revision`, and `decider` or `null` to reset to the built-in. Needs `tenant.update`. |
 
 ## Scoped conversations and human interaction
 
@@ -356,7 +438,7 @@ Change history and decision audits paginate using durable revision/sequence curs
 
 Subjects have kind `user`, `agent`, `node` or `service`, direct roles, groups, attributes, an `enabled` flag and an optional `delegated_by` subject. Groups grant roles; roles inherit other roles. Subject selectors combine IDs, kinds, groups and effective roles with OR. Use `{"any": true}` alone to match any registered, enabled subject in the tenant. Actions and resource kinds must be nonempty sets. Resource IDs optionally narrow the scope. Names are case-sensitive; only a complete `"*"` is a wildcard in action/resource selectors.
 
-Policies default to deny, and any matching explicit deny overrides all allows regardless of order. A resource in another tenant always denies. Delegated subjects must also pass the same action/resource evaluation for every ancestor, using that ancestor's current attributes and authority. Disabling a delegator revokes its descendants' effective authority on the next evaluation.
+Policies default to deny, and any matching explicit deny overrides all allows regardless of order. `tool.call_unapproved` and `approval.mode.bypass` are explicit actions: an allow grants them only when it names them, never through `*`, and a deny with `*` still covers them. A resource in another tenant always denies. Delegated subjects must also pass the same action/resource evaluation for every ancestor, using that ancestor's current attributes and authority. Disabling a delegator revokes its descendants' effective authority on the next evaluation.
 
 Conditions support `all`, `any`, `eq`, `not_eq`, array `contains` and `exists`. Operands read JSON pointers from subject/resource/environment attributes or contain a literal JSON value. Missing operands fail comparisons, including `not_eq`; explicit JSON null remains a value. Empty condition groups, unknown fields, dangling references, duplicate policy IDs, role/delegation cycles and excessive expression depth are rejected. Bundles allow at most 512 subjects, groups, roles and policies each; role/delegation chains are limited to 32, and each expression to depth 16 and 256 nodes.
 

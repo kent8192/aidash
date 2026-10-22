@@ -3,8 +3,9 @@
 
 For each frozen fixture case, registers the same synthetic HTTP tools and
 optional Registry Skills under a legacy Agent and a deferred@1 Agent, runs one
-Task with each, and reads the Run inspection. External tool calls are denied by
-default, so fixture endpoints are never contacted. The report contains raw
+Task with each, and reads the Run inspection. Tool call approvals are denied by
+default, so fixture endpoints are never contacted unless the Tenant's policy
+permits `tool.call_unapproved`, which needs no approval. The report contains raw
 measurements only: exposure bytes, provider token counts, the model's tool
 calls and whether the expected tool was selected. It makes no accuracy or cost
 claim and approves nothing.
@@ -19,6 +20,8 @@ import tomllib
 import urllib.error
 import urllib.request
 import uuid
+
+import tool_call_approvals
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
@@ -131,6 +134,10 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
                     answer = {"approved": approve} if approval else {"answer": NO_HUMAN}
                     api(f"/api/human-requests/{request['id']}/answer", answer)
                     answers.append({"kind": request["kind"], "prompt": request["prompt"], "answer": answer})
+                for card in tool_call_approvals.pending(api, run_id):
+                    tool_call_approvals.decide(api, card, approve)
+                    answers.append({"kind": card["kind"], "tool": tool_call_approvals.call_name(card),
+                                    "call": card.get("call"), "answer": {"approved": approve}})
             time.sleep(interval)
         phase = f"{case['id']}:{variant}:inspection"
         events = api(f"/api/workspaces/{workspace}")["events"]

@@ -1,5 +1,5 @@
 meta {
-  name: 0986 frontend-index-head - Stale conditional request serves current content
+  name: 0986 frontend-index-head - Serve the configured frontend content
   type: http
   seq: 986
 }
@@ -12,10 +12,9 @@ head {
 
 headers {
   Accept: application/json
-  If-None-Match: "stale"
 }
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Stale conditional request serves current content contract", function () { expect(res.getBody()).to.equal(""); });
+  test("Serve the configured frontend content contract", function () { expect(res.getBody()).to.equal("");expect(res.getHeader("x-content-type-options")).to.equal("nosniff");bru.setVar("frontendEtag",res.getHeader("etag")); });
 }

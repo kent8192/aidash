@@ -33,6 +33,13 @@ fn store_error(error: keyring::Error) -> String {
 	.into()
 }
 pub async fn read(profile: Profile) -> Result<Option<Credential>, String> {
+	if !profile.protects_refresh_credentials() {
+		// Purge credentials written by older clients without first releasing the
+		// secret from the OS store. A failure is surfaced so downgrade exposure is
+		// not silently retained.
+		delete(profile).await?;
+		return Ok(None);
+	}
 	tokio::task::spawn_blocking(move || match entry(&profile)?.get_password() {
 		Ok(value) => {
 			let value = Zeroizing::new(value);
@@ -47,6 +54,9 @@ pub async fn read(profile: Profile) -> Result<Option<Credential>, String> {
 	.map_err(|_| "Credential worker failed")?
 }
 pub async fn write(profile: Profile, credential: Credential) -> Result<(), String> {
+	if !profile.protects_refresh_credentials() {
+		return Err("Persistent desktop sign-in requires an HTTPS connection".into());
+	}
 	tokio::task::spawn_blocking(move || {
 		let value = Zeroizing::new(
 			serde_json::to_string(&credential).map_err(|_| "Cannot encode credential")?,
@@ -56,6 +66,7 @@ pub async fn write(profile: Profile, credential: Credential) -> Result<(), Strin
 	.await
 	.map_err(|_| "Credential worker failed")?
 }
+
 pub async fn delete(profile: Profile) -> Result<(), String> {
 	tokio::task::spawn_blocking(move || match entry(&profile)?.delete_credential() {
 		Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -63,4 +74,43 @@ pub async fn delete(profile: Profile) -> Result<(), String> {
 	})
 	.await
 	.map_err(|_| "Credential worker failed")?
+}
+
+pub async fn purge_plaintext(profiles: &[Profile]) -> Result<(), String> {
+	for profile in profiles {
+		if !profile.protects_refresh_credentials() {
+			delete(profile.clone()).await?;
+		}
+	}
+	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[rstest::rstest]
+	#[case("http://localhost:8080")]
+	#[case("http://127.0.0.1:8080")]
+	#[tokio::test]
+	async fn refuses_to_store_refresh_credentials_for_plaintext_profiles(#[case] origin: &str) {
+		let profile = Profile {
+			id: uuid::Uuid::new_v4().to_string(),
+			name: "Plaintext fixture".into(),
+			origin: origin.into(),
+		};
+		let error = write(
+			profile,
+			Credential {
+				current: "aidash_refresh_current".into(),
+				pending: Some("aidash_refresh_pending".into()),
+			},
+		)
+		.await
+		.unwrap_err();
+		assert_eq!(
+			error,
+			"Persistent desktop sign-in requires an HTTPS connection"
+		);
+	}
 }

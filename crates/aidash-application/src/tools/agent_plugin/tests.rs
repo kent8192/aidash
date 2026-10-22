@@ -92,8 +92,8 @@ async fn a_plugin_tool_is_unsafe_and_asks_for_approval_unless_declared_read_only
 	assert_eq!(identity.plugin.as_str(), "acme");
 	assert_eq!(identity.server.as_str(), "docs");
 	assert_eq!(identity.tool, "search");
-	assert!(search.behavior.workbench_approval);
-	assert!(!read.behavior.workbench_approval);
+	assert!(search.behavior.tool_call_approval);
+	assert!(!read.behavior.tool_call_approval);
 	for tool in pinned.tools.values() {
 		assert!(!tool.replay_safe());
 	}

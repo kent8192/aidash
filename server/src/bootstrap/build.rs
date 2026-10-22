@@ -4,6 +4,7 @@
 //! library (ADR 0032). Each binary installs its `Build` before it runs a
 //! command, so that every settings load refuses another build's Offering
 //! before it connects to anything.
+use crate::database::classification::{self, Table};
 use aidash_domain::offering::Offering;
 use reinhardt::conf::settings::builder::BuildError;
 use reinhardt::conf::settings::scoped::ScopedSettings;
@@ -77,7 +78,27 @@ pub trait Extension: Sync + std::fmt::Debug {
 	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
 		None
 	}
-	/// The Provider Credential Store of an Enterprise `kind`, from its settings
+	/// Installs the adapters this build adds to the Store, once its pools exist.
+	/// Community installs none, so its Store reports no usage and admits all work.
+	fn install(&self, _store: &mut crate::store::Store) -> crate::Result<()> {
+		Ok(())
+	}
+	/// Long-running services the build adds to Community's. Each runs until
+	/// `stopping` changes to true.
+	fn services(
+		&self,
+		_federation: &crate::federation::Federation,
+		_stopping: tokio::sync::watch::Receiver<bool>,
+	) -> Vec<Service> {
+		Vec::new()
+	}
+	/// The classification of every table the build's own migrations create,
+	/// which Community's list does not hold (#266). Read the combined list
+	/// through [`Build::tables`].
+	fn tables(&self) -> &'static [Table] {
+		&[]
+	}
+	/// The Secret Store of an Enterprise `kind`, from its settings
 	/// fields, and the Capability Token issuer of its Credential Broker.
 	fn provider_credential_store(
 		&self,
@@ -85,6 +106,9 @@ pub trait Extension: Sync + std::fmt::Debug {
 		broker: Option<&serde_json::Value>,
 	) -> crate::Result<ProvidedStore>;
 }
+
+/// One background service of a build.
+pub type Service = std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<()>> + Send>>;
 
 pub struct ProvidedStore {
 	pub store: Arc<dyn aidash_application::provider_credentials::Store>,
@@ -105,7 +129,7 @@ impl Extension for Community {
 			.and_then(serde_json::Value::as_str)
 			.unwrap_or_default();
 		Err(crate::Error::Invalid(format!(
-			"the Community build has no {kind} Provider Credential Store; it needs the Enterprise build"
+			"the Community build has no {kind} Secret Store; it needs the Enterprise build"
 		)))
 	}
 }
@@ -128,6 +152,12 @@ impl Build {
 			.chain(self.apps)
 			.copied()
 			.collect()
+	}
+
+	/// Every table of this build's migrations: Community's list, then the
+	/// build's own. The Tenant-owned ones are what purge deletes (ADR 0061).
+	pub fn tables(&self) -> impl Iterator<Item = &'static Table> {
+		classification::TABLES.iter().chain(self.extension.tables())
 	}
 
 	/// Community's migration root followed by this build's.
@@ -168,7 +198,11 @@ impl Build {
 
 #[cfg(test)]
 mod tests {
-	use super::Build;
+	use super::{Build, Extension, ProvidedStore};
+	use crate::database::classification::{
+		Classification::{DeploymentWide, TenantOwned},
+		TABLES, Table, table,
+	};
 	use aidash_domain::offering::Offering::{self, Cloud, Dedicated, SelfHosted};
 	use rstest::rstest;
 
@@ -190,7 +224,7 @@ mod tests {
 				.err()
 				.unwrap()
 				.to_string(),
-			"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+			"the Community build has no secret_manager Secret Store; it needs the Enterprise build"
 		);
 		assert!(extension.routes(SelfHosted).is_none());
 	}
@@ -230,5 +264,44 @@ mod tests {
 			actual,
 			refusal.map(|message| format!("Validation error: {message}"))
 		);
+	}
+
+	const EXTRA: &[Table] = &[
+		table("extra", "extra_notes", DeploymentWide),
+		table("extra", "extra_rows", TenantOwned),
+	];
+
+	#[derive(Debug)]
+	struct Extra;
+
+	impl Extension for Extra {
+		fn tables(&self) -> &'static [Table] {
+			EXTRA
+		}
+		fn provider_credential_store(
+			&self,
+			_: &serde_json::Map<String, serde_json::Value>,
+			_: Option<&serde_json::Value>,
+		) -> crate::Result<ProvidedStore> {
+			unreachable!("no Secret Store in this test")
+		}
+	}
+
+	#[test]
+	fn the_community_build_lists_only_communitys_tables() {
+		assert!(Build::COMMUNITY.extension.tables().is_empty());
+		assert!(Build::COMMUNITY.tables().eq(TABLES.iter()));
+	}
+
+	#[test]
+	fn a_build_lists_its_own_tables_after_communitys() {
+		let build = Build {
+			extension: &Extra,
+			..Build::COMMUNITY
+		};
+		let listed = build.tables().collect::<Vec<_>>();
+		assert_eq!(listed.len(), TABLES.len() + EXTRA.len());
+		assert!(listed[..TABLES.len()].iter().copied().eq(TABLES.iter()));
+		assert!(listed[TABLES.len()..].iter().copied().eq(EXTRA.iter()));
 	}
 }

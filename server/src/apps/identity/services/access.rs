@@ -112,6 +112,7 @@ pub(crate) struct Access {
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
+	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	pub(crate) peer_client: reqwest::Client,
 	pub(crate) node_id: String,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
@@ -151,6 +152,7 @@ pub(crate) struct PublicationContext {
 	cached_humans: std::collections::BTreeMap<Uuid, bool>,
 	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
+	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 }
 
@@ -277,6 +279,7 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
+			read_verdicts: Default::default(),
 			dependency_frontier: None,
 			peer_client: client,
 			node_id: node.to_owned(),
@@ -301,9 +304,8 @@ impl Access {
 		}
 	}
 	pub(crate) async fn flush_audit(&mut self) -> Result<()> {
-		for (input, decision) in &self.pending_decisions {
-			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
-		}
+		Authorization::record_many(&mut self.tx, &self.identity.tenant, &self.pending_decisions)
+			.await?;
 		self.pending_decisions.clear();
 		Ok(())
 	}
@@ -342,6 +344,7 @@ impl Access {
 			cached_humans: std::mem::take(&mut self.cached_humans),
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
 			checking_reads: std::mem::take(&mut self.checking_reads),
+			read_verdicts: std::mem::take(&mut self.read_verdicts),
 			dependency_frontier: self.dependency_frontier.take(),
 		};
 		self.worker();
@@ -371,6 +374,7 @@ impl Access {
 		self.cached_humans = old.cached_humans;
 		self.remote_read_cache = old.remote_read_cache;
 		self.checking_reads = old.checking_reads;
+		self.read_verdicts = old.read_verdicts;
 		self.dependency_frontier = old.dependency_frontier;
 	}
 
@@ -387,6 +391,7 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
+			read_verdicts: Default::default(),
 			dependency_frontier: None,
 			peer_client: lease.peer_client.clone(),
 			node_id: lease.node_id.clone(),
@@ -426,9 +431,8 @@ impl Access {
 	/// Commit the completed authorization checks and release their row locks
 	/// while the worker waits on an external provider.
 	pub async fn suspend(&mut self) -> Result<()> {
-		for (input, decision) in &self.pending_decisions {
-			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
-		}
+		Authorization::record_many(&mut self.tx, &self.identity.tenant, &self.pending_decisions)
+			.await?;
 		let previous = self
 			.tx
 			.take()
@@ -449,6 +453,7 @@ impl Access {
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
 		self.checking_reads.clear();
+		self.read_verdicts.clear();
 		self.dependency_frontier = None;
 		self.subjects = vec![self.identity.subject.clone()];
 		self.durable_audit = true;
@@ -533,15 +538,8 @@ impl Access {
 				.begin(&self.identity.tenancy()?)
 				.await?
 				.into_executor()?;
-			for (input, decision) in records {
-				AuthorizationDecision::append(
-					audit.as_mut(),
-					&self.identity.tenant,
-					input,
-					decision,
-				)
+			AuthorizationDecision::append_many(audit.as_mut(), &self.identity.tenant, records)
 				.await?;
-			}
 			audit.commit().await?;
 		} else {
 			self.pending_decisions.extend_from_slice(records);
@@ -584,10 +582,12 @@ impl Access {
 		if result.is_ok() {
 			let mut tx =
 				tx.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
-			for (input, decision) in &self.pending_decisions {
-				AuthorizationDecision::append(tx.as_mut(), &self.identity.tenant, input, decision)
-					.await?;
-			}
+			AuthorizationDecision::append_many(
+				tx.as_mut(),
+				&self.identity.tenant,
+				&self.pending_decisions,
+			)
+			.await?;
 			tx.commit().await?;
 		} else {
 			if let Some(tx) = tx {
@@ -600,15 +600,12 @@ impl Access {
 					.begin(&self.identity.tenancy()?)
 					.await?
 					.into_executor()?;
-				for (input, decision) in &self.pending_decisions {
-					AuthorizationDecision::append(
-						audit.as_mut(),
-						&self.identity.tenant,
-						input,
-						decision,
-					)
-					.await?;
-				}
+				AuthorizationDecision::append_many(
+					audit.as_mut(),
+					&self.identity.tenant,
+					&self.pending_decisions,
+				)
+				.await?;
 				audit.commit().await?;
 			}
 		}

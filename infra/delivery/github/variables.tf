@@ -132,14 +132,14 @@ variable "activation_validated" {
 }
 
 variable "enablement" {
-  description = "Every workflow starts disabled. Set a specific field only for an explicitly authorized activation."
+  description = "Omitting enablement keeps every workflow disabled. Explicit activation defaults notifications on; set notifications=false to opt out."
   type = object({
     nonproduction = optional(bool, false)
     production    = optional(bool, false)
-    notifications = optional(bool, false)
+    notifications = optional(bool, true)
     certificates  = optional(bool, false)
   })
-  default = {}
+  default = { notifications = false }
 }
 
 variable "cloudflare_account_id" {

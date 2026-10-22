@@ -6,8 +6,10 @@ CREATE FUNCTION public.guard_task_dependencies() RETURNS trigger
     AS $$
 BEGIN
     IF pg_trigger_depth() < 2 THEN
-        RAISE EXCEPTION 'task_dependencies is maintained by tasks'
-            USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependencies_managed';
+        IF NOT public.aidash_tenant_purge() THEN
+            RAISE EXCEPTION 'task_dependencies is maintained by tasks'
+                USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependencies_managed';
+        END IF;
     END IF;
     RETURN NULL;
 END $$;

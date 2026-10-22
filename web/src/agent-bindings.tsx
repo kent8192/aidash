@@ -7,8 +7,9 @@ import { Check, Group, Hint, pairClass } from "./components/patterns";
 import { Field, useI18n } from "./ui";
 import { disambiguateLabels } from "./display-labels";
 import { hasPluginSkills, type AgentPluginRef } from "./agent-plugins";
+import { groupByKind } from "./registry-kinds";
 export type Binding = {
-  kind: "tool" | "bundle" | "skill" | "memory" | "source";
+  kind: "tool" | "bundle" | "skill" | "memory" | "source" | "external_service";
   target: { registry_node: string; id: string; version: string };
   alias?: string;
   narrow: {
@@ -134,7 +135,14 @@ export function AgentBindings({
   const [target, setTarget] = useState("");
   const origin = node;
   const available = entries.filter((e) =>
-    ["tool", "bundle", "skill", "memory", "source"].includes(e.kind),
+    [
+      "tool",
+      "bundle",
+      "skill",
+      "memory",
+      "source",
+      "external_service",
+    ].includes(e.kind),
   );
   const labels = disambiguateLabels(
     available,
@@ -176,11 +184,11 @@ export function AgentBindings({
       ),
     });
   return (
-    <Group legend={ja ? "Registry Binding" : "Registry bindings"}>
+    <Group legend={ja ? "ツールとデータの追加" : "Added tools and data"}>
       <Hint>
         {ja
-          ? "workspace_read と human_request は常に含まれます。機能の利用には現在の権限とProviderが必要です。メモリの読み込みにはMemoryまたはSourceを明示的に追加してください。"
-          : "workspace_read and human_request are always included. Current permissions and providers are required. Add a Memory or Source explicitly to read memory."}
+          ? "Registryに登録したツール、バンドル、スキル、メモリー、ソースのうち、このエージェントにだけ使わせるものを選びます。すべてのエージェントが最初から持つツールは、下の「組み込みツール」で外せます。メモリーを読むには、メモリーかソースをここで追加してください。実行には現在の権限とProviderが必要です。"
+          : "Choose the Registry tools, bundles, skills, memories and sources that this Agent uses in addition to the built-in tools. Remove built-in tools under Built-in tools below. To read memory, add a Memory or Source here. Running still needs current permissions and providers."}
       </Hint>
       <div className={pairClass}>
         <Field label={ja ? "登録Node" : "Registering Node"}>
@@ -190,19 +198,23 @@ export function AgentBindings({
             className="bg-raised font-mono text-xs text-muted-foreground"
           />
         </Field>
-        <Field label={ja ? "追加する定義" : "Definition to bind"}>
+        <Field label={ja ? "追加するもの" : "Item to add"}>
           <NativeSelect
             value={target}
             onChange={(e) => setTarget(e.target.value)}
           >
             <option value="">{ja ? "選択" : "Select"}</option>
-            {available.map((e) => (
-              <option
-                key={`${e.kind}:${e.id}@${e.version}`}
-                value={`${e.kind}:${e.id}@${e.version}`}
-              >
-                {labels.get(`${e.kind}:${e.id}@${e.version}`)} · {e.kind}
-              </option>
+            {groupByKind(available, (e) => e.kind).map(([kind, items]) => (
+              <optgroup key={kind} label={t(kind)}>
+                {items.map((e) => (
+                  <option
+                    key={`${e.kind}:${e.id}@${e.version}`}
+                    value={`${e.kind}:${e.id}@${e.version}`}
+                  >
+                    {labels.get(`${e.kind}:${e.id}@${e.version}`)}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </NativeSelect>
         </Field>
@@ -244,7 +256,7 @@ export function AgentBindings({
           setTarget("");
         }}
       >
-        {ja ? "Bindingを追加" : "Add binding"}
+        {ja ? "このエージェントに追加" : "Add to this Agent"}
       </Button>
       {bindings.length > 0 && (
         <ul className="grid min-w-0 gap-3">
@@ -257,7 +269,7 @@ export function AgentBindings({
                 <p className="min-w-0 flex-1 text-[13px] font-medium text-foreground [overflow-wrap:anywhere]">
                   {label(binding)}{" "}
                   <span className="font-normal text-muted-foreground">
-                    · {binding.kind} ·{" "}
+                    · {t(binding.kind)} ·{" "}
                     <span className="font-mono text-xs">
                       {binding.target.registry_node}
                     </span>
@@ -274,7 +286,7 @@ export function AgentBindings({
                     })
                   }
                 >
-                  {ja ? "取り外す" : "Remove binding"}
+                  {ja ? "このエージェントから外す" : "Remove from this Agent"}
                 </Button>
               </div>
               {binding.kind === "tool" && (
@@ -328,7 +340,12 @@ export function AgentBindings({
           ))}
         </ul>
       )}
-      <Group nested legend={ja ? "標準ツール" : "Default tools"}>
+      <Group nested legend={ja ? "組み込みツール" : "Built-in tools"}>
+        <Hint>
+          {ja
+            ? "すべてのエージェントが最初から持つツールです。チェックを外すとこのエージェントから外れます。workspace_read と human_request は常に含まれ、灰色の項目は今の設定で必要なため外せません。"
+            : "Every Agent starts with these tools. Clear one to remove it from this Agent. workspace_read and human_request are always included. Grayed-out tools are required by the current setup."}
+        </Hint>
         <div className="grid min-w-0 gap-x-4 gap-y-1.5 sm:grid-cols-2">
           {defaults.map((name) => (
             <Check

@@ -49,6 +49,32 @@ impl CatalogMutation for TenantCatalog<'_> {
 	}
 }
 
+/// Any version in the Tenant's Registry, approved or not.
+pub(crate) async fn definition(
+	tx: &mut crate::database::native::Transaction,
+	reference: &EntityRef,
+) -> Result<Entry> {
+	Ok(Definition::read_in(&mut **tx, &reference.id, &reference.version).await?)
+}
+
+/// Whether the Tenant currently approves this exact version.
+pub(crate) async fn approved(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+	reference: &EntityRef,
+) -> Result<bool> {
+	Ok(!AuthorizationCatalog::objects()
+		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+		.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
+		.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
+		.filter(AuthorizationCatalog::field_enabled().eq(true))
+		.all_with_executor(&mut **tx)
+		.await
+		.map_err(FrameworkError::from)
+		.map_err(crate::Error::from)?
+		.is_empty())
+}
+
 #[async_trait]
 impl CatalogApprovalScope for TenantCatalog<'_> {
 	fn tenant(&self) -> &str {
@@ -61,19 +87,11 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 		&self.access.identity.subject
 	}
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry> {
-		Ok(Definition::read_in(&mut **self.access.tx, &reference.id, &reference.version).await?)
+		definition(&mut self.access.tx, reference).await
 	}
 	async fn approved(&mut self, reference: &EntityRef) -> Result<bool> {
-		Ok(!AuthorizationCatalog::objects()
-			.filter(AuthorizationCatalog::field_tenant().eq(self.access.identity.tenant.clone()))
-			.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
-			.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
-			.filter(AuthorizationCatalog::field_enabled().eq(true))
-			.all_with_executor(&mut **self.access.tx)
-			.await
-			.map_err(FrameworkError::from)
-			.map_err(crate::Error::from)?
-			.is_empty())
+		let tenant = self.access.identity.tenant.clone();
+		approved(&mut self.access.tx, &tenant, reference).await
 	}
 	async fn require(&mut self, entry: &Entry, action: &str) -> Result<()> {
 		let resource = self.access.resource(

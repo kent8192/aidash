@@ -22,10 +22,12 @@ production. PR environments remain explicitly requested with `/preview up`.
   `deployment.noreply@aidash.run` and fixed stg/prod/test role recipients;
   authenticated API calls, durable deduplication and notification-only retries.
 
-Privileged code is pinned to a protected `main` commit. `automation_branch`
-means the protected repository default branch on which scheduled and
-workflow-run automation executes; it is separate from `trusted_branch`.
-Production cloud jobs execute the production workflow on `main` only.
+Nonproduction privileged code is pinned to one commit of the protected
+`automation_branch`, the repository default branch on which scheduled and
+workflow-run automation executes. Production cloud jobs execute the production
+workflow and keep their code anchor on `main`; `trusted_branch` names that
+production anchor and no nonproduction check reads it. See
+[ADR 0081](../adr/0081-nonproduction-delivery-trusts-the-protected-development-branch.md).
 
 ## Verification
 

@@ -79,7 +79,7 @@ services:
     depends_on:
       postgres-extensions:
         condition: service_completed_successfully
-  # Generates this machine's Provider Credential Store keys once. They live in
+  # Generates this machine's Secret Store keys once. They live in
   # a volume, so `down -v` deletes them together with the credentials they encrypt.
   provider-credential-keys:
     profiles: [dev]
@@ -123,14 +123,18 @@ services:
       AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
       AIDASH_MEMORY_RECOVERY_DIR: /var/lib/aidash/memory-recovery
       AIDASH_PROVIDER_CREDENTIAL_SETTINGS: /run/aidash/provider-credentials.json
+      AIDASH_CAPABILITY_PROFILE: /run/aidash/capability-profile.json
     configs:
       - source: provider-credentials
         target: /run/aidash/provider-credentials.json
+      - source: capability-profile
+        target: /run/aidash/capability-profile.json
       - source: local-settings
         target: /app/server/settings/local.toml
     volumes:
       - memory-recovery:/var/lib/aidash/memory-recovery
       - provider-credentials:/var/lib/aidash/provider-credentials:ro
+      - capabilities:/var/lib/aidash/capabilities
     ports:
       - "127.0.0.1:${AIDASH_BACKEND_PORT:-18080}:8080"
     depends_on:
@@ -210,14 +214,25 @@ configs:
         "fingerprint_key": {"file": "/var/lib/aidash/provider-credentials/fingerprint-key"},
         "store": {"kind": "postgres", "master_key": {"file": "/var/lib/aidash/provider-credentials/master-key"}}
       }}
+  # Without a profile the Node admits no core work, so every Goal for an Agent
+  # with core capabilities fails with CAPABILITIES_DISABLED. The dev stack
+  # admits it with the default limits and working storage in a volume. It has
+  # no isolated Runner, so Sandboxed tools stay unavailable.
+  capability-profile:
+    content: |
+      {"admission": true, "storage": "/var/lib/aidash/capabilities"}
   # The Self-hosted Tenancy Rules leave Personal Tenants off. The dev stack turns
   # them on, so a first Google sign-in works without a Deployment Administrator.
   local-settings:
     content: |
       [tenancy]
       personal_tenants = true
+
+      [demo_data]
+      enabled = true
 volumes:
   postgres:
   memory-recovery:
   provider-credentials:
+  capabilities:
   nats:

@@ -971,7 +971,7 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 
 	let endpoint = server.url.clone();
 	let app = application_fixture.application.clone();
-	let (_, token, task) = bootstrap(&f, &app, &endpoint).await;
+	let (_, token, task) = bootstrap_requiring_tool_call_approval(&f, &app, &endpoint).await;
 	assert_eq!(
 		request(
 			&app,
@@ -992,17 +992,11 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 			break;
 		}
 		let current = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-		if let aidash_domain::RunState::Waiting(wait) = &current.state
-			&& let aidash_domain::WaitingState::ExternalApproval {
-				request_id, call, ..
-			} = wait.as_ref()
-		{
+		if let Some((approval, call)) = awaited_tool_call(&current) {
 			assert_eq!(call.name, "plugin_0");
 			assert_eq!(call.id, "call-1");
-			f.store
-				.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
-				.await
-				.unwrap();
+			let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
+			assert_eq!(status, 200, "{decided}");
 		}
 	}
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);

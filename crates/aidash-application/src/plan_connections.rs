@@ -1,7 +1,7 @@
 //! Plan Connection lifecycle (ADR 0007, ADR 0031). The server runs Sign in
 //! with ChatGPT: it keeps the `state`, the `nonce` and the PKCE verifier, and
 //! it alone exchanges the code. The callback URL reaches it from a desktop
-//! relay or a paste. Plan Tokens go straight into the Provider Credential
+//! relay or a paste. Plan Tokens go straight into the Secret
 //! Store; only a narrow read port returns them, for one call.
 use crate::{
 	Error, Result,

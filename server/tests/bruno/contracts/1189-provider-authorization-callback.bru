@@ -1,0 +1,21 @@
+meta {
+  name: 1189 provider-authorization-callback - Tampered browser binding cannot complete an authorization
+  type: http
+  seq: 1189
+}
+
+get {
+  url: {{base_url}}/auth/provider-authorizations/openrouter/callback?state=invalid&code=invalid
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: aidash-provider-authorization=tampered; __Host-aidash-provider-authorization=tampered
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

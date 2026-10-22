@@ -173,7 +173,13 @@ impl Access {
 	/// journals must terminate without skipping any resource's current policy.
 	pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		let key = (self.node_id.clone(), run, self.authority_context());
-		let Some(_visit) = self.checking_reads.enter(key) else {
+		// Runs read each other's outputs, so the same Run is reached by many
+		// paths; walking it once per path grows with every read (#404).
+		if let Some(verdict) = self.read_verdicts.get(&key) {
+			return Ok(verdict);
+		}
+		let outermost = self.checking_reads.is_idle();
+		let Some(_visit) = self.checking_reads.enter(key.clone()) else {
 			return Ok(true);
 		};
 		let coordinator = self.dependency_frontier.is_none();
@@ -186,6 +192,11 @@ impl Access {
 			if matches!(result, Ok(true)) {
 				result = self.verify_dependencies(pending).await;
 			}
+		}
+		match result {
+			Ok(verdict) => self.read_verdicts.record(key, verdict, outermost),
+			Err(_) if outermost => self.read_verdicts.abandon(),
+			Err(_) => {}
 		}
 		result
 	}

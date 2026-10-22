@@ -1,4 +1,4 @@
-//! The Secret Manager Provider Credential Store and its Credential Broker.
+//! The Secret Manager Secret Store and its Credential Broker.
 use aidash_gcp::capability::{
 	KmsTokenSigner, MetadataTokenSource,
 	issuer::{CapabilityIssuer, WorkerConfiguration},
@@ -35,7 +35,7 @@ impl StoreConfig {
 				.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 		{
 			return Err(Error::Invalid(
-				"invalid Provider Credential Store project or environment".into(),
+				"invalid Secret Store project or environment".into(),
 			));
 		}
 		Ok(())
@@ -52,11 +52,11 @@ pub fn store(
 		.unwrap_or_default();
 	if kind != "secret_manager" {
 		return Err(Error::Invalid(format!(
-			"the Enterprise build has no {kind} Provider Credential Store"
+			"the Enterprise build has no {kind} Secret Store"
 		)));
 	}
 	let config: StoreConfig = serde_json::from_value(store.clone().into())
-		.map_err(|error| Error::Invalid(format!("invalid Provider Credential Store: {error}")))?;
+		.map_err(|error| Error::Invalid(format!("invalid Secret Store: {error}")))?;
 	config.validate()?;
 	let broker = broker
 		.map(|broker| {
@@ -75,7 +75,7 @@ pub fn store(
 				// Only Cloud Secret Manager Stores are served by a Credential Broker.
 				if broker.audience != environment_id {
 					return Err(Error::Invalid(
-					"Credential Broker audience must match the configured Provider Credential Store environment"
+					"Credential Broker audience must match the configured Secret Store environment"
 						.into(),
 				));
 				}

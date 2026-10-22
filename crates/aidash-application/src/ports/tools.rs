@@ -9,13 +9,23 @@ use aidash_domain::{
 	tool::ToolConfig,
 };
 use async_trait::async_trait;
+use secrecy::SecretString;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[async_trait]
 pub trait ToolTransport: Send + Sync {
-	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value>;
+	/// `secret` is the value of the Tenant Secret the configuration names,
+	/// already checked against the endpoint's host; the transport sends it as
+	/// the bearer credential and nowhere else.
+	async fn invoke(
+		&self,
+		configuration: &ToolConfig,
+		input: Value,
+		key: &str,
+		secret: Option<&SecretString>,
+	) -> Result<Value>;
 }
 
 /// Names one remote server of one Agent Plugin copy a Run takes in.
@@ -136,4 +146,13 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Option<Vec<u8>>>;
 	/// Encoded-byte cap of one Skill asset chunk: the resource profile's `read_bytes`.
 	fn skill_read_bytes(&self) -> Result<usize>;
+	/// The value of the Run's Tenant's Tenant Secret `name`, to be sent to
+	/// `endpoint`. A missing or deleted Tenant Secret, or one that does not
+	/// record the endpoint's host, is `secret_unavailable`. A placement with
+	/// no Secret Store of its own holds none.
+	async fn tenant_secret(&self, _name: &str, _endpoint: &str) -> Result<SecretString> {
+		Err(crate::Error::Invalid(
+			aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+		))
+	}
 }

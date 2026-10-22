@@ -37,8 +37,8 @@ def event(run):
     return {"action": "completed", "repository": {"full_name": REPOSITORY}, "workflow_run": deepcopy(run)}
 
 
-def receipt(sha=SOURCE):
-    return {"protocol": "aidash-staging-receipt/1", "source_sha": sha, "trusted_sha": MAIN, "status": "ready", "generation": 2, "run_id": 200,
+def receipt(sha=SOURCE, trusted=None):
+    return {"protocol": "aidash-staging-receipt/1", "source_sha": sha, "trusted_sha": trusted or sha, "status": "ready", "generation": 2, "run_id": 200,
             "images": {kind: f"us-central1-docker.pkg.dev/aidash-test/aidash/{kind}@sha256:{'d' * 64}" for kind in IMAGE_KINDS}}
 
 
@@ -75,13 +75,13 @@ class GitHubTransport:
                 "head": {"ref": f"release/20261012T010203Z-{sha[:12]}", "sha": sha, "repo": {"full_name": REPOSITORY}},
                 "base": {"ref": "main", "repo": {"full_name": REPOSITORY}}, "body": f"<!-- aidash-release:{json.dumps(metadata)} -->"}
 
-    def __call__(self, *args, data=None, timeout=None):
+    def __call__(self, *args, data=None, timeout=None, env=None):
         if args[:2] != ("gh", "api"):
             raise AssertionError("The release owner must use the gh API transport")
-        if len(args) == 3 and args[2].endswith("/zip"):
-            return self.zipfiles[int(args[2].split("/")[-2])]
         self.assert_api(args, data)
         method, endpoint = args[3], args[4]
+        if endpoint.endswith("/zip"):
+            return b"HTTP/2.0 200 OK\r\n\r\n" + self.zipfiles[int(endpoint.split("/")[-2])]
         parsed = urlsplit(endpoint)
         path = parsed.path.removeprefix(f"repos/{REPOSITORY}/")
         query = parse_qs(parsed.query)
@@ -150,10 +150,12 @@ class GitHubTransport:
             response.update(body)
         else:
             raise AssertionError((method, path, body))
-        return json.dumps(deepcopy(response)).encode()
+        status = 201 if method == "POST" and endpoint != "graphql" else 200
+        return f"HTTP/2.0 {status} Response\r\n\r\n".encode() + json.dumps(deepcopy(response)).encode()
 
     def assert_api(self, args, data):
-        if args[2] != "--method" or (data is not None and args[5:] != ("--input", "-")):
+        body_options = tuple(arg for arg in args[5:] if arg != "--include")
+        if args[2] != "--method" or (data is not None and body_options != ("--input", "-")):
             raise AssertionError("API bodies must be passed as JSON stdin without a shell")
 
 
@@ -226,7 +228,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.assertFalse(self.github.prs[0]["draft"])
         self.assertEqual(self.github.checks[0]["head_sha"], SOURCE)
         self.assertEqual(self.github.checks[0]["conclusion"], "success")
-        self.assertEqual(self.github.checks[0]["external_id"], f"aidash-staging/1:200:2:{MAIN}")
+        self.assertEqual(self.github.checks[0]["external_id"], f"aidash-staging/1:200:2:{SOURCE}")
 
     def test_staging_before_candidate_creation_is_replayed_from_original_artifact(self):
         self.github.add_staging()
@@ -285,6 +287,15 @@ class ReleaseLifecycleTests(unittest.TestCase):
                     releases.accept_staging(CONFIG, event(gh.runs[200]), value)
                 self.assertEqual(gh.writes, [])
                 self.assertTrue(gh.prs[0]["draft"])
+
+    def test_receipt_from_a_controller_other_than_the_release_source_is_refused_even_when_it_is_a_main_ancestor(self):
+        self.github.prs.append(self.github.managed_pr())
+        value = receipt(trusted=MAIN)
+        self.github.add_staging(value)
+        with self.assertRaises(Refused):
+            releases.accept_staging(CONFIG, event(self.github.runs[200]), value)
+        self.assertEqual(self.github.writes, [])
+        self.assertTrue(self.github.prs[0]["draft"])
 
     def test_fabricated_valid_shape_receipt_does_not_match_original_artifact(self):
         self.github.prs.append(self.github.managed_pr())

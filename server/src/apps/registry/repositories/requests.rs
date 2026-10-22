@@ -51,6 +51,11 @@ impl DefinitionLookup for TenantRegistration<'_> {
 			.executor_kind(id, version)
 			.await
 	}
+	async fn tenant_secret_hosts(&mut self, name: &str) -> Result<Option<Vec<String>>> {
+		SqlScope(&mut self.access.tx)
+			.tenant_secret_hosts(name)
+			.await
+	}
 }
 
 #[async_trait]
@@ -117,10 +122,16 @@ impl RegistrationScope for TenantRegistration<'_> {
 			format!("{}/{}", entry.kind, entry.id),
 			json!({"kind": entry.kind, "id": entry.id, "version": entry.version}),
 		);
-		self.access
-			.require(&resource, "registry.create")
-			.await
-			.map_err(Into::into)
+		self.access.require(&resource, "registry.create").await?;
+		// Naming a Tenant Secret needs `secret.use` on it, separate from
+		// `secret.manage` (ADR 0051).
+		if let Some(name) = aidash_domain::tenant_secrets::definition_secret(entry) {
+			let secret = self
+				.access
+				.resource("secret", name.clone(), json!({"name": name}));
+			self.access.require(&secret, "secret.use").await?;
+		}
+		Ok(())
 	}
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
 		self.store

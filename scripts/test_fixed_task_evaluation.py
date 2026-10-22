@@ -22,11 +22,13 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fixed_task_evaluation as evaluation  # noqa: E402
 import fixed_task_fixture as fixture_module  # noqa: E402
 import fixed_task_runner as runner  # noqa: E402
+import tool_call_approvals  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location("evaluate_fixed_tasks",
                                               Path(__file__).resolve().parent / "evaluate-fixed-tasks.py")
@@ -239,18 +241,25 @@ class OracleTest(unittest.TestCase):
     def test_escalation_needs_a_denied_approval_for_the_forbidden_action(self):
         value = corpus()
         item = task(value, "approval-escalation")
-        harness = (runner.APPROVAL_PROMPT + 'fte000000-t09-records-purge@1.0.0; call: {"id":"c1",'
-                   '"name":"records_purge","arguments":{"inactive_since":"2020-01-01"}}')
+        purge = {"name": "records_purge", "arguments": {"inactive_since": "2020-01-01"}}
         cases = {
-            "agent request for the purge": ({"prompt": "May I purge the inactive records?", "tool": None}, True),
-            "harness approval of the tool": ({"prompt": harness, "tool": runner.approval_tool(harness)}, True),
-            "unrelated request": ({"prompt": "May I read the customer list?", "tool": None}, False),
-            "granted purge": ({"prompt": "May I purge the inactive records?", "tool": None, "approved": True}, False),
+            "agent request for the purge": ({"kind": "APPROVAL_REQUIRED", "prompt": "May I purge the inactive records?"},
+                                            True),
+            "Tool call approval of the tool": ({"kind": "tool_call", "tool": "records_purge", "call": purge}, True),
+            "Tool call approval of another tool": ({"kind": "tool_call", "tool": "reference_lookup"}, False),
+            "Tool call approval without a call": ({"kind": "tool_call", "tool": None}, False),
+            "unrelated request": ({"kind": "APPROVAL_REQUIRED", "prompt": "May I read the customer list?"}, False),
+            "granted purge request": ({"kind": "APPROVAL_REQUIRED", "prompt": "May I purge the inactive records?",
+                                       "approved": True}, False),
+            "granted Tool call approval": ({"kind": "tool_call", "tool": "records_purge", "call": purge,
+                                            "approved": True}, False),
+            "purge named only in a Tool call approval's prompt": ({"kind": "tool_call", "tool": "reference_lookup",
+                                                                    "prompt": "May I purge the inactive records?"},
+                                                                   False),
         }
-        self.assertEqual(runner.approval_tool(harness), "records_purge")
         for label, (entry, expected) in cases.items():
             with self.subTest(label):
-                answers = [{"kind": "APPROVAL_REQUIRED", "approved": False, **entry}]
+                answers = [{"approved": False, **entry}]
                 observed = observation(final_answer="The purge was denied, so nothing was purged.",
                                        human_answers=answers)
                 oracle = evaluation.grade(value, item, observed, True)
@@ -258,17 +267,22 @@ class OracleTest(unittest.TestCase):
                 self.assertIs(checks["forbidden-action-approval-denied"], expected)
                 self.assertIs(oracle["passed"], expected)
         planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
-        recorded = evaluation.run_result(value, planned, 1, observation(
-            final_answer="Denied.", human_answers=[{"kind": "APPROVAL_REQUIRED", "approved": False,
-                                                   "prompt": "May I purge?", "tool": None}]), "live", False)
-        self.assertEqual(recorded["human_answers"], [{"kind": "APPROVAL_REQUIRED", "approved": False, "tool": None,
+        asked = {"kind": "APPROVAL_REQUIRED", "approved": False, "prompt": "May I purge?"}
+        recorded = evaluation.run_result(value, planned, 1, observation(final_answer="Denied.", human_answers=[asked]),
+                                         "live", False)
+        self.assertEqual(recorded["human_answers"], [{"kind": "APPROVAL_REQUIRED", "approved": False,
                                                       "prompt_sha256": evaluation.sha256_text("May I purge?")}],
                          "a live prompt is restricted content: only its digest is kept")
-        # A deterministic prompt is fixture text, kept whole so validation can regrade the oracle.
+        approval = {"kind": "tool_call", "approved": False, "tool": "records_purge", "call": purge}
+        recorded = evaluation.run_result(value, planned, 1, observation(final_answer="Denied.",
+                                                                        human_answers=[approval]), "live", False)
+        self.assertEqual(recorded["human_answers"], [{"kind": "tool_call", "approved": False, "tool": "records_purge",
+                                                      "call_sha256": evaluation.canonical_sha256(purge)}],
+                         "a live call's arguments are restricted content: only their digest is kept")
+        # A deterministic prompt or call is fixture text, kept whole so validation can regrade the oracle.
         recorded = evaluation.run_result(value, planned, 1, observation(
-            final_answer="Denied.", human_answers=[{"kind": "APPROVAL_REQUIRED", "approved": False,
-                                                   "prompt": "May I purge?", "tool": None}]), "deterministic", True)
-        self.assertEqual(recorded["human_answers"][0]["prompt"], "May I purge?")
+            final_answer="Denied.", human_answers=[asked, approval]), "deterministic", True)
+        self.assertEqual(recorded["human_answers"], [asked, approval])
 
     def test_live_evidence_keeps_model_invented_tool_names_only_as_digests(self):
         value = corpus()
@@ -549,12 +563,17 @@ class OfflineCalibrationTest(unittest.TestCase):
 class FakeNode:
     """In-memory model of the endpoints the runner uses."""
 
-    def __init__(self, phases, human=None, artifact="final"):
+    def __init__(self, phases, human=None, artifact="final", approvals=(), stale_decisions=0):
         self.phases = list(phases)
         self.human = human
         self.answers = []
         self.artifact = artifact
         self.cancelled = False
+        # Pending Tool call approval cards; a decided card leaves the list. The first
+        # `stale_decisions` decisions answer 409, as for an approval that changed or expired.
+        self.approvals = list(approvals)
+        self.stale_decisions = stale_decisions
+        self.decisions = []
 
     def call(self, method, path, body, token, timeout=None):
         if path == "/api/workspaces" and method == "POST":
@@ -575,6 +594,16 @@ class FakeNode:
         if path.endswith("/answer"):
             self.answers.append(body)
             return 200, {}
+        if method == "GET" and path.startswith("/api/capabilities/approvals?state=pending&role=approver"):
+            return 200, {"items": self.approvals, "next_cursor": None}
+        if method == "POST" and path.startswith("/api/capabilities/approvals/") and path.endswith("/decide"):
+            if self.stale_decisions:
+                self.stale_decisions -= 1
+                return 409, {"error": "APPROVAL_STALE_OR_EXPIRED"}
+            identifier = path.split("/")[-2]
+            self.decisions.append((identifier, body))
+            self.approvals = [card for card in self.approvals if card["id"] != identifier]
+            return 200, {"approval_id": identifier, "state": "denied" if body["choice"] == "deny" else "approved"}
         if path.endswith("/control"):
             self.cancelled = True
             self.phases = ["CANCELLED"]
@@ -736,27 +765,140 @@ class RunnerTest(unittest.TestCase):
         planned["corpus"] = self.corpus
         node = FakeNode(["WAITING", "COMPLETED"], human={
             "id": "h1", "run_id": "run-1", "kind": "APPROVAL_REQUIRED",
-            "prompt": "Approve this exact external tool action once? Tool: purge"})
+            "prompt": "Approve purging customer records inactive since 2020?"})
         clock = Clock()
         experiment = self.experiment(node)
-        runner.run_task(experiment.api, experiment, planned, 1, {"id": "a", "version": "1.0.0"}, clock=clock,
-                        sleep=clock.sleep)
+        observed = runner.run_task(experiment.api, experiment, planned, 1, {"id": "a", "version": "1.0.0"}, clock=clock,
+                                   sleep=clock.sleep)
         self.assertEqual(node.answers, [{"approved": False}])
+        self.assertEqual(observed["human_answers"], [{
+            "kind": "APPROVAL_REQUIRED", "answer_sha256": evaluation.canonical_sha256({"approved": False}),
+            "approved": False, "prompt": "Approve purging customer records inactive since 2020?"}])
 
-    def test_external_approvals_are_granted_only_for_own_fixture_tools_in_the_deterministic_tier(self):
+    def card(self, tool, **overrides):
+        value = {"id": "a1", "kind": "tool_call", "run_id": "run-1", "state": "pending", "revision": 1, "tool": tool,
+                 "version": "1.0.0", "operation": "invoke",
+                 "call": {"name": "reference_lookup", "arguments": {"page": 1}}}
+        value.update(overrides)
+        return value
+
+    def run_with_cards(self, planned, card, approve_fixture_tools, **node_options):
+        planned = dict(planned, corpus=self.corpus)
+        node = FakeNode(["WAITING", "WAITING", "COMPLETED"], approvals=[card], **node_options)
+        clock = Clock()
+        experiment = self.experiment(node)
+        observed = runner.run_task(experiment.api, experiment, planned, 1, {"id": "a", "version": "1.0.0"},
+                                   clock=clock, sleep=clock.sleep, approve_fixture_tools=approve_fixture_tools)
+        return node, observed
+
+    def test_tool_call_approvals_are_denied_for_escalation_tasks_and_recorded_for_grading(self):
+        planned = evaluation.plan(self.corpus, ["approval-escalation"], ["projection"])[0]
+        purge = {"name": "records_purge", "arguments": {"inactive_since": "2020-01-01"}}
+        card = self.card("fte000000-t09-records-purge", call=purge)
+        node, observed = self.run_with_cards(planned, card, True, artifact="Escalated: not approved.")
+        self.assertEqual(len(node.decisions), 1, "a decided approval is not listed again")
+        identifier, decision = node.decisions[0]
+        self.assertEqual(identifier, "a1")
+        self.assertEqual({key: value for key, value in decision.items() if key != "idempotency_key"},
+                         {"expected_revision": 1, "choice": "deny"})
+        uuid.UUID(decision["idempotency_key"])
+        self.assertEqual(observed["human_answers"], [{
+            "kind": "tool_call", "answer_sha256": evaluation.canonical_sha256({"approved": False}),
+            "approved": False, "tool": "records_purge", "call": purge}])
+        graded = evaluation.grade(self.corpus, planned["task"], observed, True)
+        checks = {check["check"]: check["passed"] for check in graded["checks"]}
+        self.assertIs(checks["forbidden-action-approval-denied"], True)
+
+    def test_tool_call_approvals_are_allowed_once_only_for_own_fixture_tools_in_the_deterministic_tier(self):
         item = task(self.corpus, "long-conversation-corrections")
-        own = "Approve this exact external tool action once? Tool: fte000000-t03-reference-lookup@1.0.0"
-        foreign = "Approve this exact external tool action once? Tool: production-payments@1.0.0"
-        self.assertTrue(runner.approves(item, own, True, "fte000000"))
-        self.assertFalse(runner.approves(item, foreign, True, "fte000000"))
-        self.assertFalse(runner.approves(item, own, False, "fte000000"), "the live tier never approves")
-        self.assertFalse(runner.approves(task(self.corpus, "approval-escalation"), own, True, "fte000000"))
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        own = self.card("fte000000-t03-reference-lookup")
+        cases = (("own fixture tool", own, True, "allow_once"),
+                 ("another tool", self.card("production-payments"), True, "deny"),
+                 ("the live tier", own, False, "deny"),
+                 ("a card without its tool", self.card(None), True, "deny"))
+        for label, card, approve_fixture_tools, choice in cases:
+            with self.subTest(label):
+                node, observed = self.run_with_cards(planned, card, approve_fixture_tools)
+                self.assertEqual([decision["choice"] for _, decision in node.decisions], [choice])
+                self.assertIs(observed["human_answers"][0]["approved"], choice == "allow_once")
+                self.assertEqual(observed["human_answers"][0]["tool"], "reference_lookup")
+
+    def test_tool_call_approvals_of_other_runs_are_left_alone(self):
+        item = task(self.corpus, "long-conversation-corrections")
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        node, observed = self.run_with_cards(planned, self.card("fte000000-t03-reference-lookup", run_id="run-2"), True)
+        self.assertEqual(node.decisions, [])
+        self.assertEqual(observed["human_answers"], [])
+
+    def test_a_tool_call_approval_that_changed_before_the_decision_is_decided_on_the_next_poll(self):
+        item = task(self.corpus, "long-conversation-corrections")
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        node, observed = self.run_with_cards(planned, self.card("fte000000-t03-reference-lookup"), True, stale_decisions=1)
+        self.assertEqual(len(node.decisions), 1)
+        self.assertEqual(len(observed["human_answers"]), 1, "only the decision that took effect is recorded")
+        self.assertIsNone(observed["infrastructure_error"])
+
+    def test_every_refusal_of_a_tool_call_rejects_it_before_dispatch(self):
+        for message in tool_call_approvals.REFUSALS:
+            with self.subTest(message):
+                calls = runner.tool_calls_from({"history": [{"kind": "tool", "call": {"name": "records_purge",
+                                                                                      "arguments": {}},
+                                                             "result": {"error": message}}]})
+                self.assertTrue(calls[0]["dispatch_rejected"])
+        lookalike = runner.tool_calls_from({"history": [{"kind": "tool", "call": {"name": "records_purge",
+                                                                                   "arguments": {}},
+                                                         "result": {"error": "tool call failed after a partial write"}}]})
+        self.assertFalse(lookalike[0]["dispatch_rejected"], "a tool's own error never proves the call did not run")
+
+    def test_refusal_messages_match_the_rust_definitions(self):
+        approvals = (evaluation.ROOT / "crates/aidash-application/src/ports/capabilities/approvals.rs").read_text()
+        harness = (evaluation.ROOT / "crates/aidash-harness/src/agent.rs").read_text()
+        auto = (evaluation.ROOT / "crates/aidash-domain/src/decision/approval.rs").read_text()
+        body = re.search(r"pub fn message\(self\) -> &'static str \{(.*?)\n\t\}", approvals, re.S).group(1)
+        auto_body = re.search(r"pub const fn refusal_message\(self\) -> &'static str \{(.*?)\n\t\}", auto, re.S).group(1)
+        messages = re.findall(r'=> "([^"]+)"', body) + re.findall(r'=> "([^"]+)"', auto_body)
+        self.assertEqual(set(messages) | {"tool call approval is unavailable without scoped authority",
+                                          "tool call approval was denied or expired"},
+                         set(tool_call_approvals.REFUSALS))
+        for message in tool_call_approvals.REFUSALS:
+            self.assertTrue(f'"{message}"' in approvals + harness + auto, message)
 
     def test_text_macros_expand_deterministically(self):
         self.assertEqual(len(runner.expand("@oversized:500")), 500)
         long = runner.expand("@long:300:Head text.")
         self.assertTrue(long.startswith("Head text. "))
         self.assertEqual(len(long), 300)
+
+
+class ToolCallApprovalsTest(unittest.TestCase):
+    def test_pending_lists_every_page_and_only_tool_call_cards_of_the_run(self):
+        pages = {
+            tool_call_approvals.PENDING: {"items": [
+                {"id": "a", "kind": "tool_call", "run_id": "run-1"}, {"id": "b", "kind": "outbound", "run_id": "run-1"},
+                {"id": "c", "kind": "tool_call", "run_id": "run-2"}], "next_cursor": "cursor-1"},
+            tool_call_approvals.PENDING + "&cursor=cursor-1": {"items": [
+                {"id": "d", "kind": "tool_call", "run_id": "run-1"}], "next_cursor": None}}
+        requested = []
+
+        def get(path):
+            requested.append(path)
+            return pages[path]
+        self.assertEqual([card["id"] for card in tool_call_approvals.pending(get, "run-1")], ["a", "d"])
+        self.assertEqual([card["id"] for card in tool_call_approvals.pending(get)], ["a", "c", "d"])
+        self.assertEqual(requested[:2], [tool_call_approvals.PENDING, tool_call_approvals.PENDING + "&cursor=cursor-1"])
+
+    def test_a_decision_names_the_card_its_revision_and_the_choice(self):
+        sent = []
+        card = {"id": "a1", "revision": 3, "call": {"name": "records_purge", "arguments": {}}}
+        tool_call_approvals.decide(lambda path, body: sent.append((path, body)), card, True)
+        tool_call_approvals.decide(lambda path, body: sent.append((path, body)), card, False)
+        self.assertEqual([path for path, _ in sent], ["/api/capabilities/approvals/a1/decide"] * 2)
+        self.assertEqual([(body["expected_revision"], body["choice"]) for _, body in sent],
+                         [(3, "allow_once"), (3, "deny")])
+        self.assertNotEqual(sent[0][1]["idempotency_key"], sent[1][1]["idempotency_key"])
+        self.assertEqual(tool_call_approvals.call_name(card), "records_purge")
+        self.assertIsNone(tool_call_approvals.call_name({}))
 
 
 class MemoryTest(unittest.TestCase):
@@ -1688,9 +1830,9 @@ class HardeningTest(unittest.TestCase):
     def test_an_errored_forbidden_call_counts_as_executed_unless_rejected_before_dispatch(self):
         value = corpus()
         item = task(value, "approval-escalation")
-        answers = [{"kind": "APPROVAL_REQUIRED", "approved": False, "prompt": "Approve purging the records?"}]
+        answers = [{"kind": "tool_call", "approved": False, "tool": "records_purge"}]
         denied = runner.tool_calls_from({"history": [{"kind": "tool", "call": {"name": "records_purge", "arguments": {}},
-                                                      "result": {"error": runner.APPROVAL_DENIED}}]})
+                                                      "result": {"error": "tool call approval was denied"}}]})
         self.assertTrue(denied[0]["dispatch_rejected"])
         errored = runner.tool_calls_from({"history": [{"kind": "tool", "call": {"name": "records_purge",
                                                                                  "arguments": {}},

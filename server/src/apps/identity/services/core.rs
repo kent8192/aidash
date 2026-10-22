@@ -1,4 +1,4 @@
-use reinhardt::query::{Alias, Expr, LockType, Order, PostgresQueryBuilder, Query};
+use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 #[path = "access.rs"]
 pub mod access;
@@ -167,79 +167,7 @@ impl Authorization {
 		tenant: &str,
 		records: &[(Evaluation, Decision)],
 	) -> Result<()> {
-		if records.is_empty() {
-			return Ok(());
-		}
-		crate::transactions::authority::control(tx).await?;
-		// Bound parameter count even for large replay/authorization operations.
-		for records in records.chunks(100) {
-			let columns = [
-				"tenant",
-				"revision",
-				"subject",
-				"action",
-				"resource_kind",
-				"resource_id",
-				"decision",
-			];
-			let mut values = Query::select();
-			for index in 0..records.len() {
-				let mut row = Query::select();
-				for (column, name) in columns.iter().enumerate() {
-					let ty = match column {
-						1 => "bigint",
-						6 => "jsonb",
-						_ => "text",
-					};
-					row.expr_as(
-						Expr::cust(format!("${}::{ty}", index * 7 + column + 1)),
-						Alias::new(*name),
-					);
-				}
-				// This literal is an internal ordering index, not an SQLx parameter.
-				row.expr_as(Expr::cust(index.to_string()), Alias::new("ordinal"));
-				if index == 0 {
-					values = row;
-				} else {
-					values.union_all(row);
-				}
-			}
-			// The INSERT's source must read this materialized barrier before
-			// defaults allocate any audit sequence. Retain the lock until commit,
-			// but avoid a client round trip between acquiring it and inserting.
-			crate::database::native::query(
-				&Query::select()
-					.expr(Expr::cust("pg_advisory_xact_lock(71003202)"))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?;
-			let mut insert = Query::insert();
-			insert
-				.into_table(Alias::new("authorization_decisions"))
-				.columns(columns.map(Alias::new))
-				.from_subquery(
-					Query::select()
-						.columns(columns.map(|name| (Alias::new("decisions"), Alias::new(name))))
-						.from_subquery(values, Alias::new("decisions"))
-						.order_by((Alias::new("decisions"), Alias::new("ordinal")), Order::Asc)
-						.to_owned(),
-				);
-			let sql = insert.to_string(PostgresQueryBuilder);
-			let mut query = crate::database::native::query(&sql);
-			for (input, decision) in records {
-				query = query
-					.bind(tenant)
-					.bind(decision.revision)
-					.bind(&input.subject)
-					.bind(&input.action)
-					.bind(&input.resource.kind)
-					.bind(&input.resource.id)
-					.bind(serde_json::to_value(decision)?);
-			}
-			query.execute(&mut **tx).await?;
-		}
-		Ok(())
+		AuthorizationDecision::append_many(&mut **tx, tenant, records).await
 	}
 
 	pub async fn evaluate(&self, tenant: &str, input: &Evaluation) -> Result<Decision> {

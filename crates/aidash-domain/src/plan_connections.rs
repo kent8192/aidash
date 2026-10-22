@@ -1,6 +1,6 @@
 //! Plan Connections (ADR 0007, ADR 0031): one subject's Sign in with ChatGPT
 //! grant and the pure rules of OpenAI's plan-usage contract. Plan Tokens never
-//! appear here; they stay in the Provider Credential Store.
+//! appear here; they stay in the Secret Store.
 use crate::provider_credentials::Provider;
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};

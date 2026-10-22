@@ -90,9 +90,15 @@ pub struct Usage {
 	pub summary_call_limit: i64,
 }
 
+/// The attributes of a generation request's resource, which policy conditions
+/// may test. A request not yet stored has the same ones.
+pub fn resource_attributes(policy_id: &str, root_subject: &str, task_id: Uuid) -> Value {
+	json!({"policy_id":policy_id,"root_subject":root_subject,"task_id":task_id})
+}
+
 impl Request {
 	pub fn resource_attributes(&self) -> Value {
-		json!({"policy_id":self.policy_id,"root_subject":self.root_subject,"task_id":self.task_id})
+		resource_attributes(&self.policy_id, &self.root_subject, self.task_id)
 	}
 	pub fn active(&self) -> bool {
 		matches!(

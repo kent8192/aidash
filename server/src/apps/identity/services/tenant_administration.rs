@@ -31,7 +31,7 @@ pub async fn provide(#[inject] runtime: Federation) -> TenantAdministrations {
 
 impl TenantAdministrations {
 	/// Bearer Subject Credentials and Deployment Administrators are never Tenant Administrators.
-	async fn administrator(
+	pub(crate) async fn administrator(
 		&self,
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
@@ -57,7 +57,11 @@ impl TenantAdministrations {
 	}
 
 	/// A denial is audited after its rolled-back transaction.
-	async fn finish<T>(&self, administrator: &TenantAdministrator, result: Result<T>) -> Result<T> {
+	pub(crate) async fn finish<T>(
+		&self,
+		administrator: &TenantAdministrator,
+		result: Result<T>,
+	) -> Result<T> {
 		if matches!(result, Err(Error::Forbidden)) {
 			administrator
 				.record_denial(&self.runtime.store.pool)
@@ -123,6 +127,12 @@ impl TenantAdministrations {
 	) -> Result<ApprovedMapping> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
+		aidash_application::usage::require(
+			self.runtime.store.admission.as_ref(),
+			&tenant,
+			aidash_application::usage::Work::Member,
+		)
+		.await?;
 		let policy = Some(administrator.policy().clone());
 		let actor = AdministrationActor::TenantAdministrator(administrator.clone());
 		let approve = || {

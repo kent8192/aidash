@@ -248,6 +248,13 @@ impl OperationReconciliationScope for Scope<'_> {
 		.map_err(Into::into)
 	}
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+		let mut body = body;
+		if method == "POST"
+			&& path == "/v1/operations"
+			&& let Some(input) = &mut body
+		{
+			super::super::egress::attach(self.store, &mut self.access, input).await?;
+		}
 		use aidash_application::ports::capabilities::runner::RunnerTransport as _;
 		crate::bootstrap::operation_runner(self.store)?
 			.request(method, path, body.as_ref())
@@ -358,6 +365,22 @@ impl OperationReconciliationScope for Scope<'_> {
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
+	}
+	async fn pod_time(
+		&mut self,
+		operation: Uuid,
+		started_at: chrono::DateTime<chrono::Utc>,
+		ended_at: chrono::DateTime<chrono::Utc>,
+	) -> Result<()> {
+		self.store
+			.usage
+			.pod_time(aidash_application::usage::PodTime {
+				operation,
+				tenant: self.access.identity.tenant.clone(),
+				started_at,
+				ended_at,
+			})
+			.await
 	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
 		let Scope { access, .. } = *self;

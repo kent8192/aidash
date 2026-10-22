@@ -38,6 +38,32 @@ fn a_profile_shared_with_the_runner_keeps_its_runner_only_fields() {
 	);
 }
 
+#[test]
+fn egress_profiles_require_an_internal_ip_runner_and_positive_cumulative_limits() {
+	let mut value = chart_profile();
+	value["egress"] = json!({"endpoint":"http://10.96.0.90:8950","listen":"0.0.0.0:8950"});
+	let profile: Profile = serde_json::from_value(value.clone()).unwrap();
+	assert!(crate::capabilities::Runtime::new(profile).is_ok());
+	for endpoint in [
+		"http://example.com:8950",
+		"http://8.8.8.8:8950",
+		"http://169.254.169.254",
+		"http://10.96.0.90:8950/?token=key",
+		"https://10.96.0.90:8950",
+	] {
+		let mut rejected = value.clone();
+		rejected["egress"]["endpoint"] = json!(endpoint);
+		assert!(
+			crate::capabilities::Runtime::new(serde_json::from_value(rejected).unwrap()).is_err()
+		);
+	}
+	let mut rejected = value.clone();
+	rejected["runner"] = Value::Null;
+	assert!(crate::capabilities::Runtime::new(serde_json::from_value(rejected).unwrap()).is_err());
+	value["egress"]["limits"] = json!({"requests":0});
+	assert!(crate::capabilities::Runtime::new(serde_json::from_value(value).unwrap()).is_err());
+}
+
 #[rstest::rstest]
 #[case::sentry_pids_limit(&["host_tasks"], json!(512))]
 #[case::runner_scheduling(&["runner", "node_selector"], json!({"pool": "execution"}))]

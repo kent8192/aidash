@@ -33,27 +33,27 @@ fn a_secret_manager_store_is_served_by_its_credential_broker() {
 #[case::other_kind(
 	json!({"kind":"vault"}),
 	None,
-	"the Enterprise build has no vault Provider Credential Store"
+	"the Enterprise build has no vault Secret Store"
 )]
 #[case::foreign_field(
 	json!({"kind":"secret_manager","byok_project_id":"aidash-byok-fixture","environment_id":"test","master_key":{"env":"KEY"}}),
 	None,
-	"invalid Provider Credential Store: unknown field `master_key`"
+	"invalid Secret Store: unknown field `master_key`"
 )]
 #[case::project(
 	json!({"kind":"secret_manager","byok_project_id":"byok/project","environment_id":"test"}),
 	None,
-	"invalid Provider Credential Store project or environment"
+	"invalid Secret Store project or environment"
 )]
 #[case::environment(
 	json!({"kind":"secret_manager","byok_project_id":"aidash-byok-fixture","environment_id":"Test"}),
 	None,
-	"invalid Provider Credential Store project or environment"
+	"invalid Secret Store project or environment"
 )]
 #[case::audience(
 	json!({"kind":"secret_manager","byok_project_id":"aidash-byok-fixture","environment_id":"test"}),
 	Some(broker("other")),
-	"Credential Broker audience must match the configured Provider Credential Store environment"
+	"Credential Broker audience must match the configured Secret Store environment"
 )]
 #[case::broker_field(
 	json!({"kind":"secret_manager","byok_project_id":"aidash-byok-fixture","environment_id":"test"}),

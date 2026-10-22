@@ -331,6 +331,9 @@ impl OperationAdmissionScope<Uuid> for Scope {
 			"health:shell"
 		})
 	}
+	async fn admit_sandboxed_tool(&mut self) -> Result<()> {
+		self.record("admit")
+	}
 	async fn release_python(&mut self, reason: &str) -> Result<()> {
 		self.record(format!("release:{reason}"))
 	}
@@ -351,9 +354,9 @@ impl OperationAdmissionScope<Uuid> for Scope {
 	}
 }
 #[rstest]
-#[case::shell("shell",vec!["health:shell","release:shell_requested"])]
-#[case::python("code_interpreter",vec!["health:python"])]
-#[case::install("python_install",vec!["health:shell","release:packages_changed"])]
+#[case::shell("shell",vec!["health:shell","admit","release:shell_requested"])]
+#[case::python("code_interpreter",vec!["health:python","admit"])]
+#[case::install("python_install",vec!["health:shell","admit","release:packages_changed"])]
 #[tokio::test]
 async fn operation_admission_keeps_authorization_mount_probe_release_and_accept_order(
 	mut scope: Scope,
@@ -459,9 +462,10 @@ async fn new_operation_admission_stops_before_file_authority_on_invalid_saved_st
 #[case::authorization("file.write", 2)]
 #[case::mounts("files", 3)]
 #[case::health("health:shell", 4)]
-#[case::python_release("release:shell_requested", 5)]
-#[case::mark_running("running", 6)]
-#[case::accept("accept", 7)]
+#[case::admission("admit", 5)]
+#[case::python_release("release:shell_requested", 6)]
+#[case::mark_running("running", 7)]
+#[case::accept("accept", 8)]
 #[tokio::test]
 async fn faults_stop_before_later_admission_effects(
 	mut scope: Scope,
@@ -483,6 +487,7 @@ async fn faults_stop_before_later_admission_effects(
 			"file.write",
 			"files",
 			"health:shell",
+			"admit",
 			"release:shell_requested",
 			"running",
 			"accept"
@@ -534,6 +539,7 @@ async fn invalid_extra_shape_retains_the_original_rollback_boundary_after_runnin
 			"file.write",
 			"files",
 			"health:shell",
+			"admit",
 			"release:shell_requested",
 			"running"
 		]

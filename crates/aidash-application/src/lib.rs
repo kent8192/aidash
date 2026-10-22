@@ -18,6 +18,8 @@ pub mod recovery;
 pub mod research;
 pub mod retention;
 pub mod tenancy;
+pub mod tenant_secrets;
+pub mod usage;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -34,6 +36,9 @@ pub enum Error {
 	Conflict(String),
 	#[error("{0}")]
 	NotFound(String),
+	/// The build's admission gate refused new work; the code is shown to the caller.
+	#[error("{0}")]
+	Refused(String),
 	#[error("unauthorized")]
 	Unauthorized,
 	#[error("forbidden")]
@@ -144,3 +149,5 @@ pub mod activation;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+pub mod egress;

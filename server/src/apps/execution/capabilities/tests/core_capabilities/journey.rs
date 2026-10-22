@@ -1,10 +1,11 @@
 //! A provider-driven journey: tool selection and tool arguments travel through
 //! the real Harness, authorization guards, journal, and isolated runtime.
 use super::*;
+use crate::common::{awaited_tool_call, decide_tool_call};
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	context::ContextEvent,
-	domain::{RunControl, RunPhase, RunState, WaitingState},
+	domain::{RunControl, RunPhase},
 };
 use reinhardt::ServerRouter as Router;
 use std::sync::{
@@ -227,11 +228,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 				assert!(result["error"].is_null(), "{}: {}", call.name, result);
 			}
 		}
-		if let RunState::Waiting(waiting) = &run.state
-			&& let WaitingState::ExternalApproval {
-				request_id, call, ..
-			} = waiting.as_ref()
-		{
+		if let Some((approval, call)) = awaited_tool_call(&run) {
 			assert!(
 				!answered_approval,
 				"the exact external action must need only one approval"
@@ -239,26 +236,27 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 			assert_eq!(call.name, "plugin_0");
 			assert_eq!(call.arguments, json!({"result":42}));
 			assert_eq!(j.effects.load(Ordering::SeqCst), 0);
-			let human = aidash_application::ports::execution::ExecutionStore::human_request_by_id(
-				&j.c.f.store.for_run(TEST_FIXTURE),
-				*request_id,
-			)
-			.await
-			.unwrap();
-			assert_eq!(human.kind, "APPROVAL_REQUIRED");
-			assert!(
-				human
-					.prompt
-					.starts_with("Approve this exact external tool action once? Tool: http@1.1.0;")
-			);
-			let (status, result) = request(
+			let (status, card) = request(
 				&j.c.app,
 				&j.c.token,
-				"POST",
-				&format!("/api/human-requests/{request_id}/answer"),
-				json!({"approved":true}),
+				"GET",
+				"/api/capabilities/approvals?state=pending&role=approver",
+				Value::Null,
 			)
 			.await;
+			assert_eq!(status, 200, "{card}");
+			let card = card["items"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|item| item["id"] == json!(approval))
+				.unwrap_or_else(|| panic!("the approval is not pending: {card}"));
+			assert_eq!(card["kind"], "tool_call");
+			assert_eq!(card["tool"], "http");
+			assert_eq!(card["version"], "1.1.0");
+			assert_eq!(card["call"]["arguments"], json!({"result":42}));
+			let (status, result) =
+				decide_tool_call(&j.c.app, &j.c.token, approval, "allow_once").await;
 			assert_eq!(status, 200, "{result}");
 			answered_approval = true;
 		}
@@ -489,6 +487,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
 			json!({"kind":"agent"});
+		crate::common::require_tool_call_approval(&mut c.policy);
 		crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 		c
 	}

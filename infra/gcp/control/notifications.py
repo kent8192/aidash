@@ -89,7 +89,7 @@ def validate_receipt(receipt, configuration, event_id=None):
     if (
         not isinstance(receipt, dict)
         or not required <= receipt.keys()
-        or receipt.keys() - required - {"images"}
+        or receipt.keys() - required - {"images", "pre_update_backup", "writers_started"}
     ):
         raise Refused("invalid notification receipt fields")
     if receipt["protocol"] != PROTOCOL or not matches(EVENT_ID, receipt["event_id"]):
@@ -152,6 +152,13 @@ def validate_receipt(receipt, configuration, event_id=None):
             reference,
         ):
             raise Refused("deployment notification requires immutable image references")
+    if "pre_update_backup" in receipt and not matches(
+        r"projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/backupPlans/[a-z][a-z0-9-]{0,62}/backups/pre-update-g[0-9]+-[0-9a-f]{12}",
+        receipt["pre_update_backup"],
+    ):
+        raise Refused("invalid Pre-update Backup name")
+    if receipt.get("writers_started", True) is not True:
+        raise Refused("invalid writers_started marker")
     return receipt
 
 
@@ -180,6 +187,10 @@ def message(receipt, configuration):
             f"Event ID: {receipt['event_id']}",
         ]
     )
+    if "pre_update_backup" in receipt:
+        lines.append(f"Pre-update Backup: {receipt['pre_update_backup']}")
+    if receipt.get("writers_started"):
+        lines.append("Writers started: yes")
     for kind, reference in sorted(receipt.get("images", {}).items()):
         lines.append(f"Image {kind}: {reference}")
     return {

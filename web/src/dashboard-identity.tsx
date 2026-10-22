@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, authenticatedFetch } from "./transport";
 import { Panel, useI18n } from "./ui";
+import { MemberApprovalSettings } from "./approval-settings";
 import { Alert, GroupChoice, Hint, Pager } from "./components/patterns";
 import { TenantInvitations, TenantLabelForm } from "./tenancy";
 import { DeleteTenantForm, LeaveTenantButton } from "./tenant-deletion";
@@ -755,6 +756,12 @@ export function TenantIdentityAdministration({
                       {english ? "Disable" : "無効化"}
                     </Button>
                   )}
+                {can("approval.read") && (
+                  <MemberApprovalSettings
+                    tenant={tenant}
+                    subject={mapping.subject}
+                  />
+                )}
               </li>
             ))}
           </ul>

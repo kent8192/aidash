@@ -108,6 +108,24 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual(self.cluster.secret("aidash-pr-2", "env-activity")["AIDASH_CORE_RUNNER_TOKEN"], tokens["runner"])
         self.assertEqual(self.cluster.secret("aidash-pr-2", "app-runner"), {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]})
 
+    def test_demo_data_is_enabled_for_nonproduction_servers_and_job_only(self):
+        # The server Deployment reads app-runtime through envFrom; the copied
+        # migration Job inherits the same envFrom. Both need the setting so a
+        # sign-in can fulfil the Reservations that the Job loaded.
+        self.materialize(RUNTIME)
+        self.assertEqual(
+            self.cluster.secret("aidash-pr-2", "app-runtime")["AIDASH_DEMO_DATA_ENABLED"],
+            "true",
+        )
+        production = FakeCluster([])
+        production.put({"kind": "Namespace", "metadata": {"name": "aidash-production"}})
+        output = dict(OUTPUT, hostname="aidash.run", runtime_secret="production")
+        kube.materialize(production, "production", PROJECT, output, RUNTIME)
+        self.assertNotIn(
+            "AIDASH_DEMO_DATA_ENABLED",
+            production.secret("aidash-production", "app-runtime"),
+        )
+
     def test_observer_never_receives_the_application_database_login(self):
         self.materialize(RUNTIME)
         tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
@@ -505,6 +523,36 @@ class SealAndMigrationTests(unittest.TestCase):
         self.assertEqual(zonal.get("storageclass", kube.STORAGE_CLASS)["parameters"], {"type": "pd-balanced"})
         self.assertNotIn("allowedTopologies", zonal.get("storageclass", kube.STORAGE_CLASS))
 
+    def test_protect_selects_everything_but_the_ledger_claim_and_is_idempotent(self):
+        kube.prepare(self.cluster, "production")
+        # Without a backup plan the CRD may not exist, so nothing is applied for it.
+        self.assertIsNone(self.cluster.get("protectedapplication", "aidash", "aidash-production"))
+        kube.prepare(self.cluster, "production", protected=True)
+        application = self.cluster.get("protectedapplication", "aidash", "aidash-production")
+        self.assertEqual(application["apiVersion"], "gkebackup.gke.io/v1")
+        self.assertEqual(application["spec"]["resourceSelection"], {"type": "Selector", "selector": {"matchExpressions": [
+            {"key": "aidash.run/backup", "operator": "NotIn", "values": ["exclude"]},
+        ]}})
+        # A claim created before protection gains the label; no other claim does.
+        self.assertEqual(self.cluster.get("persistentvolumeclaim", "memory-recovery", "aidash-production")["metadata"]["labels"], {"aidash.run/backup": "exclude"})
+        self.assertNotIn("labels", self.cluster.get("persistentvolumeclaim", "capability-objects", "aidash-production")["metadata"])
+        before = (application, self.cluster.get("persistentvolumeclaim", "memory-recovery", "aidash-production"))
+        with patch.object(self.cluster, "patch", wraps=self.cluster.patch) as patched:
+            kube.protect(self.cluster, "production")
+        patched.assert_not_called()
+        self.assertEqual(before, (self.cluster.get("protectedapplication", "aidash", "aidash-production"), self.cluster.get("persistentvolumeclaim", "memory-recovery", "aidash-production")))
+
+    def test_protect_labels_a_claim_that_predates_the_label(self):
+        namespace = "aidash-production"
+        self.cluster.dynamic_claim(namespace, "memory-recovery")
+        self.assertNotIn("labels", self.cluster.get("persistentvolumeclaim", "memory-recovery", namespace)["metadata"])
+        kube.protect(self.cluster, "production")
+        self.assertEqual(self.cluster.get("persistentvolumeclaim", "memory-recovery", namespace)["metadata"]["labels"], {"aidash.run/backup": "exclude"})
+
+    def test_only_the_ledger_claim_is_created_with_the_exclusion_label(self):
+        labelled = {name for name, size in kube.CLAIMS.items() if "labels" in kube.claim("aidash-production", name, size)["metadata"]}
+        self.assertEqual(labelled, {"memory-recovery"})
+
     def test_production_is_never_created_on_zonal_disks(self):
         # Class parameters are immutable; a zonal class would keep the zone a
         # single point of failure, so production refuses to start on it.
@@ -550,6 +598,7 @@ class SealAndMigrationTests(unittest.TestCase):
             "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
             "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
                 "name": "aidash", "args": ["server"], "volumeMounts": mounts,
+                "envFrom": [{"secretRef": {"name": "app-runtime"}}],
                 "env": [{"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]}],
             }]}}},
         })
@@ -566,7 +615,94 @@ class SealAndMigrationTests(unittest.TestCase):
             {"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]},
             {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "app-migration", "key": "DATABASE_URL"}}},
         ])
+        # The copied server template keeps reading app-runtime, which carries
+        # AIDASH_DEMO_DATA_ENABLED for a non-production Environment.
+        self.assertEqual(container["envFrom"], [{"secretRef": {"name": "app-runtime"}}])
         self.assertIn('--directory "$AIDASH_MEMORY_RECOVERY_DIR"', container["args"][0])
+
+    def migration_job(self, identity, people=None, fork=False):
+        """Run the migration Job and return it with every Secret applied meanwhile."""
+        namespace = kube.namespace_of(identity)
+        kind, name = kube.target(identity, kube.SERVER).split("/", 1)
+        self.cluster.put({
+            "kind": kind.capitalize(), "metadata": {"name": name, "namespace": namespace},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
+                "name": "aidash", "args": ["server"], "env": [], "volumeMounts": [],
+                "envFrom": [{"secretRef": {"name": "app-runtime"}}],
+            }]}}},
+        })
+        applied = []
+        apply = self.cluster.apply
+        self.cluster.apply = lambda manifest: (applied.append(manifest), apply(manifest))[1]
+        kube.migrate(self.cluster, identity, "a" * 40, people, fork)
+        (key,) = [key for key in self.cluster.objects if key[0] == "job"]
+        job = self.cluster.objects.pop(key)
+        return job["spec"]["template"]["spec"], [item for item in applied if item["kind"] == "Secret"]
+
+    def test_production_migration_loads_no_demo_data(self):
+        spec, applied = self.migration_job("production", people='{"people": []}')
+        (container,) = spec["containers"]
+        self.assertNotIn("demo-data", container["args"][0])
+        self.assertFalse(any(item["name"] == "AIDASH_DEMO_DATA_ENABLED" for item in container["env"]))
+        self.assertNotIn("volumes", spec)
+        self.assertEqual(applied, [])
+        self.assertIsNone(self.cluster.get("secret", kube.DEMO_SECRET, "aidash-production"))
+
+    def test_other_environments_load_the_structure_without_people(self):
+        spec, applied = self.migration_job("test")
+        (container,) = spec["containers"]
+        self.assertTrue(container["args"][0].endswith(" && aidash demo-data --from /app/deploy/demo-data/structure.json"))
+        # The Job inherits the server's app-runtime envFrom, which
+        # `materialize` gives the enabled flag to on non-production.
+        self.assertEqual(container["envFrom"], [{"secretRef": {"name": "app-runtime"}}])
+        self.assertNotIn("volumes", spec)
+        self.assertEqual(container["volumeMounts"], [])
+        self.assertEqual(applied, [])
+
+    def test_people_reach_only_the_migration_job_and_are_removed_afterwards(self):
+        people = '{"people": [{"email": "alex@example.test"}]}'
+        spec, applied = self.migration_job("test", people=people)
+        (container,) = spec["containers"]
+        self.assertTrue(container["args"][0].endswith(
+            " && aidash demo-data --from /app/deploy/demo-data/structure.json"
+            " --people /run/aidash/demo-data/people.json"
+        ))
+        self.assertEqual(spec["volumes"], [{"name": "demo-data", "secret": {"secretName": "app-demo-data"}}])
+        self.assertEqual(container["volumeMounts"], [
+            {"name": "demo-data", "mountPath": "/run/aidash/demo-data", "readOnly": True},
+        ])
+        (manifest,) = applied
+        self.assertEqual(manifest["metadata"], {"name": "app-demo-data", "namespace": "aidash-test"})
+        self.assertEqual(base64.b64decode(manifest["data"]["people.json"]).decode(), people)
+        # The server and worker templates are untouched, and the people do not stay behind.
+        server = self.cluster.get("deployment", "app-aidash-server", "aidash-test")["spec"]["template"]["spec"]
+        self.assertNotIn("volumes", server)
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+    def test_fork_never_receives_people_and_loses_a_stale_secret(self):
+        self.cluster.put(kube.secret("aidash-test", "app-demo-data", {"people.json": "{}"}, environment=False))
+        spec, applied = self.migration_job("test", people='{"people": []}', fork=True)
+        (container,) = spec["containers"]
+        self.assertNotIn("--people", container["args"][0])
+        self.assertIn("aidash demo-data --from", container["args"][0])
+        self.assertNotIn("volumes", spec)
+        self.assertEqual(applied, [])
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+    def test_unconfigured_environment_loses_a_stale_secret(self):
+        self.cluster.put(kube.secret("aidash-test", "app-demo-data", {"people.json": "{}"}, environment=False))
+        spec, _ = self.migration_job("test")
+        self.assertNotIn("volumes", spec)
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+    def test_failed_migration_still_removes_the_people(self):
+        self.cluster.put({
+            "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{"name": "aidash"}]}}},
+        })
+        with patch.object(kube, "wait_job", return_value=False), self.assertRaises(RuntimeError):
+            kube.migrate(self.cluster, "test", "a" * 40, '{"people": []}')
+        self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
 
 
 class DatabaseRoleTests(unittest.TestCase):

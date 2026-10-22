@@ -88,6 +88,15 @@ impl AgentToolScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		for subject in self.access.subjects.clone() {
+			let input = self.access.evaluation(&subject, resource, action);
+			if self.access.snapshot.bundle.evaluate(&input).reason == "explicit_deny" {
+				return Ok(true);
+			}
+		}
+		Ok(false)
+	}
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)
 	}
