@@ -35,6 +35,7 @@ test("transaction dashboard aborts a stale change safely and displays committed 
   });
   expect(created.status(), await created.text()).toBe(200);
   const workspace = await created.json();
+  const nodeId = `${session.node_id}/${workspace.node}`;
   await installBearerDashboard(page, token);
   await page.addInitScript(() => {
     localStorage.setItem("aidash-locale", "en-US");
@@ -42,12 +43,12 @@ test("transaction dashboard aborts a stale change safely and displays committed 
   await page.goto("/transactions");
   const manifest = (expected_revision = 0) => ({
     id: randomUUID(),
-    coordinator: session.node_id,
+    coordinator: nodeId,
     isolation: "serializable",
     deadline: new Date(Date.now() + 300000).toISOString(),
     participants: [
       {
-        node_id: session.node_id,
+        node_id: nodeId,
         mutations: [
           {
             kind: "workspace_state",
@@ -65,6 +66,7 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       .click();
     const dialog = page.getByRole("dialog");
     const mutation = value.participants[0].mutations[0];
+    await dialog.getByLabel("Node", { exact: true }).selectOption(nodeId);
     await dialog
       .getByLabel("Workspace", { exact: true })
       .selectOption(workspace.id);
@@ -78,15 +80,21 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       .getByRole("button", { name: "Review changes", exact: true })
       .click();
     await expect(dialog).toContainText("Atomic dashboard");
-    const posted = page.waitForRequest(
-      (request) =>
-        request.url().endsWith("/api/transactions") &&
-        request.method() === "POST",
+    const posted = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/transactions") &&
+        response.request().method() === "POST",
     );
     await dialog
       .getByRole("button", { name: "Submit transaction", exact: true })
       .click();
-    Object.assign(value, (await posted).postDataJSON());
+    const response = await posted;
+    expect(response.status(), await response.text()).toBe(202);
+    Object.assign(value, response.request().postDataJSON());
+    expect(value.coordinator).toBe(nodeId);
+    expect(
+      value.participants.map((participant) => participant.node_id),
+    ).toEqual([nodeId]);
     await expect(page.locator(".transaction-details")).toBeVisible();
     await expect(page.locator(".transaction-details")).not.toContainText(
       value.id,

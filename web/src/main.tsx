@@ -1060,7 +1060,7 @@ function Dashboard({
             }
             data={data}
             stateError={state.isError ? state.error.message : undefined}
-            nodeId={session.data.node_id}
+            nodeId={current?.address ?? ""}
             deploymentAdministrator={deploymentAdministrator}
             workspace={currentChannel || undefined}
             close={() => go("collaboration", { focus: "" })}

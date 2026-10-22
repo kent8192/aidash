@@ -99,14 +99,15 @@ export function TransactionsPage({
   const create = () => {
     setError("");
     setReview(null);
+    const coordinator = deploymentAdministrator ? "" : nodeId;
     setDraft({
       id: crypto.randomUUID(),
-      coordinator: nodeId,
+      coordinator,
       isolation: "serializable",
       deadline: new Date(Date.now() + 300000).toISOString(),
       participants: [
         {
-          node_id: nodeId,
+          node_id: coordinator,
           mutations: [
             {
               kind: "workspace_state",
@@ -134,7 +135,11 @@ export function TransactionsPage({
       <Panel
         title={t("transactions")}
         action={
-          <Button size="sm" onClick={create}>
+          <Button
+            size="sm"
+            onClick={create}
+            disabled={!deploymentAdministrator && !nodeId}
+          >
             <Plus aria-hidden />
             {t("transactionCreate")}
           </Button>
