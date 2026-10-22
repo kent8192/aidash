@@ -19,7 +19,7 @@ explicit manual actions.
 
 | Step | Automated setup                                                                                                                                                                                                                                    | Manual completion evidence                                                                                                                                                                                                                                                                       |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1    | Four workflow enablement variables remain false                                                                                                                                                                                                    | Review/merge the privileged code into main and default develop; synchronize main history into develop                                                                                                                                                                                            |
+| 1    | Four workflow enablement variables remain false                                                                                                                                                                                                    | Review/merge the privileged code into default develop first, then main with the first release; synchronize main history into develop                                                                                                                                                             |
 | 2    | Five protected Environments, exact branch policies, additive CI/App checks; release App manifest and protected key handoff                                                                                                                         | Owner Create/Install consent for only Aidash; live reviewer/branch protections; enable the App staging check only after bootstrap main merge                                                                                                                                                     |
 | 3    | Dedicated production project on the same billing account, two isolated bootstrap stacks, private state/release/notification buckets, exact WIF and staging read grants; public config composition and protected secret installation                | Supply separate runtime/IdP credentials and public GCIP pool definitions; verify cross-tier and unauthorized WIF denial                                                                                                                                                                          |
 | 4    | TLS/ACME Secret metadata, dedicated renewal identity and daily DNS-01 certificate workflow; refresh running preview edges                                                                                                                          | Fill the scoped DNS token and ACME contact; verify wildcard issuance and external OAuth/SSO callbacks with authenticated access                                                                                                                                                                  |
@@ -71,8 +71,9 @@ evidence expires. The schedule never retries failed migrations or execution.
 
 S and M usually differ because a merge creates a new commit. Do not rebuild
 images merely to relabel S as M. Record S, M and the bundle's trusted controller
-SHA **T** separately. T must be an approved ancestor of protected `main`; the
-bundle includes app, postgres, sandbox, observer, nats, control, edge and caddy.
+SHA **T** separately. T equals S, because nonproduction trusts the protected
+development branch head it deploys; production refuses any bundle whose T is not
+S. The bundle includes app, postgres, sandbox, observer, nats, control, edge and caddy.
 Fresh production admission requires staging evidence no older than seven days
 (`staging_max_age_seconds` defaults to 604800). Revalidate expired evidence; do
 not edit a stored receipt. Each validation writes an immutable archive at
@@ -107,9 +108,11 @@ can authorize this operation. `/preview stop` preserves the environment;
 Publish the reviewed workflow and controller changes to the appropriate
 protected branches before enabling them. `automation_branch` is the protected
 repository default branch, currently `develop/0.1.0`, on which nonproduction
-workflow-run, comment and scheduled automation executes. `trusted_branch` is
-`main`: privileged jobs pin one reviewed main commit and never execute PR code.
-Run manual **GCP environments** operations on `automation_branch`, not on the
+workflow-run, comment and scheduled automation executes. Nonproduction
+privileged jobs pin one commit of that protected branch and never execute PR
+code. `trusted_branch` stays `main` and now names only production's code anchor:
+the production dispatcher and notifications check out `main`, and production
+applies the checkout of S. Run manual **GCP environments** operations on `automation_branch`, not on the
 source branch being deployed or on the trusted-code checkout ref. These names
 have different purposes. WIF checks the workflow execution ref and
 GitHub Environment, independently of the code checkout. Changing the default
@@ -195,6 +198,9 @@ After privileged code/account inputs are installed, explicitly enable
 `GCP_CERTIFICATE_RENEWAL_ENABLED` and dispatch the first issuance on the execution
 branch. The daily schedule renews certificates within 30 days of expiry. Verify
 the first successful certificate version before enabling random preview deploys.
+For this initial certificate-only Terraform activation, explicitly set
+`enablement.notifications=false` while mail setup is pending. After configuring
+mail, set `enablement.notifications=true` and retain the other selected flags.
 
 The trusted controller validates the wildcard SAN, validity and matching key,
 then mounts the PEM only in the edge. Normal reconcile also refreshes quiet
@@ -348,7 +354,7 @@ tests, hosted CI, infrastructure, mail forwarding or restore drills have passed.
 
 After the seal and before Terraform or Helm changes anything, a production
 update takes a Pre-update Backup under the plan `aidash-production-pre-update`
-(ADR 0079). The backup is named `pre-update-g<generation>-<sha>`. It holds every
+(ADR 0082). The backup is named `pre-update-g<generation>-<sha>`. It holds every
 resource in `aidash-production`, with volume data and Secrets, except the Home
 recovery ledger claim. If the backup fails, or takes longer than 30 minutes or
 the time the deploy still needs, the update fails before it changes anything and

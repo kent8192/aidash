@@ -19,7 +19,7 @@ import backup
 import controller
 from cloud import Terraform as NativeTerraform, operation_budget
 from kubefake import PROJECT, FakeCluster
-from policy import IMAGE_KINDS, transition
+from policy import IMAGE_KINDS, Refused, transition
 
 
 SHA = "a" * 40
@@ -76,6 +76,20 @@ class ConfigurationTests(unittest.TestCase):
                     value["byok_project_id"] = byok
                 with patch.dict(os.environ, {"AIDASH_GCP_CONFIG": json.dumps(value)}):
                     self.assertEqual(controller.load_config(), value)
+
+
+class ProductionSourceTests(unittest.TestCase):
+    def verify(self, trusted_sha):
+        entry = {"sha": SHA, "main_sha": "b" * 40,
+                 "release": {"source_sha": SHA, "trusted_sha": trusted_sha, "images": deepcopy(IMAGES)}}
+        config = dict(CONFIG, staging_project_id=PROJECT)
+        with patch.object(controller.delivery, "authorize_production", return_value={"sha": SHA}):
+            controller.verify_source(config, "production", entry)
+
+    def test_retained_bundle_must_be_built_from_the_release_source(self):
+        self.verify(SHA)
+        with self.assertRaises(Refused):
+            self.verify(TRUSTED)
 
 
 class MemoryStore:
@@ -1447,6 +1461,34 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
             self.reconcile()
         self.assertEqual(self.calls, [("activity", "test")])
         self.assertTrue(self.cloud.managed["test"]["running"])
+
+    def test_deploy_passes_the_validated_demo_people_without_logging_them(self):
+        self.request()
+        people = {"people": [{"email": "alex@example.test", "subject": "alex"}]}
+        output = io.StringIO()
+        with patch.dict(os.environ, {"AIDASH_DEMO_DATA": json.dumps(people, indent=2)}), \
+                patch.object(controller.kube, "deploy", wraps=controller.kube.deploy) as deploy, \
+                redirect_stdout(output):
+            self.reconcile()
+        (call,) = deploy.call_args_list
+        self.assertEqual(json.loads(call.kwargs["demo_people"]), people)
+        self.assertFalse(call.kwargs["fork"])
+        self.assertNotIn("alex@example.test", output.getvalue())
+
+    def test_deploy_without_demo_people_passes_none(self):
+        self.request()
+        with patch.dict(os.environ, {"AIDASH_DEMO_DATA": ""}), \
+                patch.object(controller.kube, "deploy", wraps=controller.kube.deploy) as deploy:
+            self.reconcile()
+        (call,) = deploy.call_args_list
+        self.assertIsNone(call.kwargs["demo_people"])
+
+    def test_demo_people_must_be_a_json_object_and_are_never_echoed(self):
+        for raw in ('["alex@example.test"]', "not json alex@example.test", '"alex@example.test"'):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"AIDASH_DEMO_DATA": raw}):
+                with self.assertRaises(controller.Refused) as raised:
+                    controller.demo_people()
+                self.assertNotIn("alex", str(raised.exception))
 
     def test_failed_deployment_waits_for_explicit_retry_and_keeps_data(self):
         self.request()

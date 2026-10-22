@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import sys
 from tempfile import TemporaryDirectory
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gcp" / "control"))
 from cloud import github, run
@@ -217,14 +218,11 @@ def preflight(config):
     branch = config.get("automation_branch")
     if not branch or repo["default_branch"] != branch or os.environ.get("GITHUB_REF") != "refs/heads/" + branch:
         raise Refused("Certificate renewal must execute from the configured protected default automation branch")
-    for name in (branch, "main"):
-        from urllib.parse import quote
-        actual = github("repos/" + repository + "/branches/" + quote(name, safe=""))
-        sha = actual.get("commit", {}).get("sha", "")
-        if not actual.get("protected") or not re.fullmatch(r"[a-f0-9]{40}", sha):
-            raise Refused("Certificate workflow and trusted main code anchor must both be protected")
-        if name == "main":
-            return sha
+    actual = github("repos/" + repository + "/branches/" + quote(branch, safe=""))
+    sha = actual.get("commit", {}).get("sha", "")
+    if not actual.get("protected") or not re.fullmatch(r"[a-f0-9]{40}", sha):
+        raise Refused("Certificate workflow and trusted code anchor must be the protected automation branch")
+    return sha
 
 
 def main():
