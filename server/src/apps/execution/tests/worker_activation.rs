@@ -1379,22 +1379,21 @@ async fn embedded_worker_child(#[future(awt)] child_runtime: Federation) {
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 #[rstest::fixture]
-fn activation_address() -> std::net::SocketAddr {
-	// Real child processes bind this reserved address; restart tests require a stable port.
-	std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap()
+fn activation_address() -> std::net::TcpListener {
+	// Keep the port reserved while database setup and earlier process tests run.
+	std::net::TcpListener::bind("127.0.0.1:0").unwrap()
 }
 #[rstest::fixture]
 fn activation_runtime(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
-	activation_address: std::net::SocketAddr,
+	activation_address: std::net::TcpListener,
 ) -> common::RuntimeFuture {
 	use futures_util::FutureExt;
 	async move {
 		let mut runtime = runtime.await;
-		runtime.federation.config.endpoint = format!("http://{activation_address}");
+		runtime.federation.config.endpoint =
+			format!("http://{}", activation_address.local_addr().unwrap());
+		runtime.process_listener = Some(Arc::new(std::sync::Mutex::new(Some(activation_address))));
 		runtime
 	}
 	.boxed()
@@ -1810,6 +1809,18 @@ async fn initial_process(
 		consumes,
 		binary,
 	} = initial_command.await;
+	// Workers share the advertised endpoint but do not bind its HTTP listener.
+	// Release the reservation only when the server is about to take it over.
+	if mode != "worker" {
+		owner
+			.runtime
+			.process_listener
+			.as_ref()
+			.unwrap()
+			.lock()
+			.unwrap()
+			.take();
+	}
 	let mut process = Process {
 		_fixture_owner: Some(owner),
 		child: command.spawn().unwrap(),
