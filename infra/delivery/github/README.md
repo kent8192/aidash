@@ -52,14 +52,25 @@ Nonproduction bootstrap optionally supplies `preview_tls_renewal` with
 versions. A broker `image` is refused, PR previews cannot have one, and only the
 production config may carry the `production` broker.
 
-Account configuration still leaves every workflow disabled. Explicit
-`enablement={nonproduction,production,notifications,certificates}` defaults all
-fields false. Turning on any flag requires both `bootstrap_code_installed=true`
-and `activation_validated=true`; production additionally requires nonproduction
+Omitting `enablement` keeps every workflow disabled, including during account
+configuration. In an explicitly supplied
+`enablement={nonproduction,production,notifications,certificates}` object,
+`notifications` defaults to `true`; the other fields default to `false`.
+Set `notifications=false` explicitly to keep mail disabled during an activation,
+including an initial certificate-only activation. Turning on any flag requires
+both `bootstrap_code_installed=true` and `activation_validated=true`; production additionally requires nonproduction
 and the App-bound staging gate. Mail activation requires the account ID, and
 certificate activation requires its dedicated WIF identity and ACME email.
 These acknowledgements do not execute live probes: the person running the setup
 must supply the corresponding acceptance evidence before controlled activation.
+
+For an existing deployment, set `enablement.notifications=true` in the private
+`github.tfvars.json` used by the setup helper, retaining its other enablement
+fields, account inputs and activation acknowledgements. A reviewed GitHub-stack
+plan/apply publishes `GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED=true`. Merging this
+change alone does not apply Terraform or update the live repository variable.
+After applying, run **Deployment notifications** on the configured automation
+branch to process pending receipts without redeploying the application.
 
 Never pass runtime JSON, private keys, DNS tokens, Cloudflare sending tokens or
 the private alias-forwarding destination to this root. There are no secret
