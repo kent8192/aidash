@@ -5,7 +5,9 @@ import json
 
 from golden_path import Fixture
 
-fixture = Fixture("aidash://ops-a", "aidash://ops-b")
+# The platform journey exercises Pod lifecycle on Node A. Scoped federation
+# recovery has its own Golden Path; implicit cross-Node delegation was removed.
+fixture = Fixture("aidash://ops-a", "aidash://ops-a")
 base_handler = fixture.handler()
 
 
