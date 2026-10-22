@@ -184,7 +184,7 @@ class IdentityProvider:
                         return
                     redirect = query.get("redirect_uri", [""])[0]
                     if (
-                        not redirect.startswith("http://127.0.0.1:")
+                        not redirect.startswith("https://127.0.0.1:")
                         or urllib.parse.urlsplit(redirect).path != "/auth/callback"
                     ):
                         self.respond(400, {"error": "invalid_redirect"})
