@@ -103,6 +103,33 @@ requires the reviewed full head SHA, for example
 can authorize this operation. `/preview stop` preserves the environment;
 `/preview destroy` removes its owned data. These actions cannot operate production.
 
+## Release PR diagnostics
+
+The Release PR workflow records JSON events for configuration validation,
+candidate validation and creation, staging receipt discovery and validation,
+and readiness publication. Each phase reports its outcome and elapsed time;
+failures include the exception type and source line without exception text.
+An always-run final step reports checkout, configuration, App authentication
+and controller outcomes, including failures before the controller starts.
+
+Each GitHub request records its method, route template, request sequence and
+elapsed time. Responses include the HTTP status, GitHub Request ID and available
+rate-limit/retry metadata. Known API and transport failures receive fixed
+categories such as `integration_permission_denied`, `no_commits_between` or
+`connection_reset`. Validation details include only allowlisted resource,
+field, code and GraphQL error types. Unknown errors retain the status and
+Request ID with `unclassified`; arbitrary server text remains withheld.
+
+Configuration is passed to the reusable execution workflow as a secret so
+GitHub masks it before printing any step environment. The existing
+`release-automation` Environment still supplies the App private key. Logs never
+include request/response bodies, GraphQL variables, configuration values,
+credentials, arbitrary stderr, signed download URLs or archive contents.
+The controller disables inherited `GH_DEBUG` output. Do not add `--verbose`,
+shell tracing or environment dumps when investigating a failure. Use the
+recorded UTC time, Request ID, source/controller SHA and phase to correlate
+the failure with GitHub support and the exact trusted source revision.
+
 ## Account and GitHub setup
 
 Publish the reviewed workflow and controller changes to the appropriate
