@@ -272,6 +272,11 @@ pub struct HumanRequest {
 	pub prompt: String,
 	pub response: Option<Value>,
 	pub created_at: DateTime<Utc>,
+	/// When the Run waiting for this question continues without an answer, if
+	/// its person set an Answer Deadline. Only the dashboard state fills it in,
+	/// from the Run's waiting state.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub answer_by: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

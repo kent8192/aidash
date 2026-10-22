@@ -2,6 +2,7 @@
 use crate::apps::registry::serializers::agent_plugin_import::{
 	AgentPluginImportResult, PluginImportRequest,
 };
+use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
 use crate::apps::registry::services::agent_plugin_import;
 use crate::{
 	Error, Result,
@@ -100,6 +101,52 @@ impl RegistryManagement {
 		.await
 		.map_err(Into::into);
 		access.finish(result).await
+	}
+
+	/// What the MCP server at `request.endpoint` says about one tool, read for
+	/// the registration form. It needs `registry.create`, because its only use
+	/// is to register that tool, and stores nothing: the hint never makes an
+	/// operation read-only (ADR 0078). The server is reached like a Keyless
+	/// endpoint (ADR 0036), so the Tenant cannot aim it at a private address
+	/// the Deployment does not permit.
+	pub(crate) async fn mcp_tool_hint(
+		&self,
+		actor: Actor,
+		request: McpToolHintRequest,
+	) -> Result<McpToolHint> {
+		let f = self.runtime.clone();
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let resource = access.resource(
+			"registry",
+			format!(
+				"tool/{}",
+				aidash_domain::identity::tenant_administration::COLLECTION
+			),
+			serde_json::json!({"kind": "tool"}),
+		);
+		let result = access.require(&resource, "registry.create").await;
+		access.finish(result).await?;
+		let read_only_hint = aidash_integrations::tools::mcp_read_only_hint(
+			&f.store.provider_clients,
+			&f.store.keyless,
+			&request.endpoint,
+			&request.tool_name,
+		)
+		.await
+		.map_err(|error| match error {
+			// The reason can name hosts and ports the caller should not probe, and
+			// an address the Deployment does not permit reads like an unreachable one.
+			error @ (aidash_application::Error::External(_)
+			| aidash_application::Error::Forbidden) => {
+				tracing::debug!(%error, "MCP tool hint unavailable");
+				Error::Invalid("the MCP server could not be read".into())
+			}
+			other => other.into(),
+		})?;
+		Ok(McpToolHint { read_only_hint })
 	}
 
 	/// Fetching a public Skill snapshot needs `registry.create`, because its only

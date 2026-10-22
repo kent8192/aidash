@@ -1,5 +1,5 @@
 import { Badge as Tag } from "./components/ui/badge";
-import { Hint } from "./components/patterns";
+import { Facts, Hint } from "./components/patterns";
 import { ArrowUpRight } from "lucide-react";
 import type { Entry, Run, State, Task } from "./types";
 import { Badge, useI18n } from "./ui";
@@ -12,6 +12,7 @@ import {
   useRegistryVersions,
 } from "./catalog-approval";
 import { approvalState } from "./catalog-approval-model";
+import { toolReplay } from "./tool-declaration";
 
 type Selection =
   | { kind: "entityDetail"; entity: Entry }
@@ -61,6 +62,7 @@ export function EntityDetails({
       if (task) open({ kind: "taskDetail", task });
     }
   };
+  const replay = toolReplay(current);
   const runs =
     current.kind === "agent"
       ? data.runs.filter(
@@ -92,6 +94,9 @@ export function EntityDetails({
               </Tag>
             ))}
           </div>
+        )}
+        {replay && (
+          <Facts items={[[t("toolReplay"), t(`toolReplay_${replay}`)]]} />
         )}
       </header>
       {version && versions.data && (

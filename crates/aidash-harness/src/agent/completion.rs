@@ -308,6 +308,7 @@ impl Executor<'_> {
 		run.context.completion = progress;
 		run.suspend(|resume| WaitingState::Human {
 			request_id: request.id,
+			answer_by: None,
 			resume,
 		})?;
 		self.environment

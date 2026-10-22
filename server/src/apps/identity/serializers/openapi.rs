@@ -236,6 +236,69 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.response::<_, plan::Models>(document, v::models, 200, "application/json")?;
 		contracts.path(document, v::models, &["String", "String"])?;
 	}
+	{
+		use super::approval_preferences as approval;
+		use views::approval_preferences as v;
+		contracts.response::<_, approval::Preferences>(
+			document,
+			v::preferences,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::preferences, &["String"])?;
+		contracts.request::<_, approval::PreferencesUpdate>(document, v::update_preferences)?;
+		contracts.response::<_, approval::Preferences>(
+			document,
+			v::update_preferences,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::update_preferences, &["String"])?;
+		contracts.response::<_, approval::Rules>(document, v::rules, 200, "application/json")?;
+		contracts.path(document, v::rules, &["String"])?;
+		contracts.request::<_, approval::RuleInput>(document, v::add_rule)?;
+		contracts.response::<_, approval::Rule>(document, v::add_rule, 201, "application/json")?;
+		contracts.path(document, v::add_rule, &["String"])?;
+		contracts.empty(document, v::delete_rule, 204)?;
+		contracts.path(document, v::delete_rule, &["String", "Uuid"])?;
+		contracts.response::<_, approval::Settings>(
+			document,
+			v::settings_of,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::settings_of, &["String", "String"])?;
+		contracts.response::<_, approval::ApprovalDecider>(
+			document,
+			v::decider,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::decider, &["String"])?;
+		contracts.request::<_, approval::ApprovalDeciderUpdate>(document, v::set_decider)?;
+		contracts.response::<_, approval::ApprovalDecider>(
+			document,
+			v::set_decider,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::set_decider, &["String"])?;
+		contracts.response::<_, approval::ThreadMode>(
+			document,
+			v::thread_mode,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::thread_mode, &["Uuid", "Uuid"])?;
+		contracts.request::<_, approval::ThreadModeUpdate>(document, v::set_thread_mode)?;
+		contracts.response::<_, approval::ThreadMode>(
+			document,
+			v::set_thread_mode,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::set_thread_mode, &["Uuid", "Uuid"])?;
+	}
 
 	contracts.response::<_, desktop::Started>(
 		document,

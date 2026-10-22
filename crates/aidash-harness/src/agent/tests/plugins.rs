@@ -1,6 +1,7 @@
 //! Agent Plugin tools (ADR 0073): a Run pins them once at its first step, and calls to them
 //! wait for a Tool call approval unless the plugin declares them read-only.
 use super::*;
+use aidash_application::capabilities::approvals::Refusal;
 use aidash_domain::{
 	agent_plugin::{
 		PinnedAgentPlugin, PinnedServer, PinnedTool, PluginName, PluginTools, ServerName,
@@ -220,6 +221,7 @@ fn plugin_call(fixture: &mut Fixture, read_only: bool) -> ToolCall {
 	let tool = Arc::new(Scripted {
 		specification,
 		contract: ToolContract::agent_plugin(identity(), read_only),
+		external_target: None,
 		outputs: Mutex::new([json!({"content": []})].into()),
 		invocations: Mutex::new(0),
 		keys: Mutex::new(vec![]),
@@ -306,10 +308,18 @@ async fn an_approved_plugin_call_runs_once(mut fixture: Fixture) {
 #[tokio::test]
 async fn a_read_only_plugin_call_proceeds_without_approval(mut fixture: Fixture) {
 	plugin_call(&mut fixture, true);
+	// The gate only checks the Tenant's policy for a read-only tool.
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
 
 	advance(&mut fixture).await.unwrap();
 
 	assert_eq!(scripted(&fixture).invocations(), 1);
+	let requests = fixture.backend.0.tool_call_requests.lock().unwrap();
+	assert!(
+		requests.iter().all(|request| request.read_only),
+		"{requests:?}"
+	);
+	drop(requests);
 	assert!(
 		!fixture
 			.backend
@@ -317,4 +327,15 @@ async fn a_read_only_plugin_call_proceeds_without_approval(mut fixture: Fixture)
 			.contains(&"run.waiting_for_tool_approval".into())
 	);
 	assert!(fixture.backend.0.human.lock().unwrap().is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_explicit_deny_refuses_a_read_only_plugin_call(mut fixture: Fixture) {
+	plugin_call(&mut fixture, true);
+	approvals(&fixture, [ToolCallApproval::Refused(Refusal::Forbidden)]);
+
+	advance(&mut fixture).await.unwrap();
+
+	assert_eq!(scripted(&fixture).invocations(), 0);
 }

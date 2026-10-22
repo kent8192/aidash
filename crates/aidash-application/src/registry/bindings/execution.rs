@@ -9,7 +9,7 @@ use aidash_domain::{
 	provider::ToolSpec,
 	registry::{bindings::*, rules::digest},
 	tool::{
-		ToolContract,
+		ToolConfig, ToolContract,
 		concurrency::{ConcurrentCall, batchable},
 		providers::ToolDescriptor,
 	},
@@ -110,6 +110,12 @@ impl ExecutionTool for BoundTool {
 	}
 	fn contract(&self) -> ToolContract {
 		self.contract.clone()
+	}
+	fn external_target(&self) -> Option<String> {
+		match serde_json::from_value::<ToolConfig>(self.binding.definition.config.clone()).ok()? {
+			ToolConfig::Http { endpoint, .. } | ToolConfig::Mcp { endpoint, .. } => Some(endpoint),
+			ToolConfig::Native { .. } | ToolConfig::Agent { .. } => None,
+		}
 	}
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()

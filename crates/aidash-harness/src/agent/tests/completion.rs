@@ -408,6 +408,56 @@ async fn an_overdue_check_pauses_for_review_while_it_keeps_the_area_busy(mut fix
 	assert!(!completed(&fixture));
 }
 
+/// An Answer Deadline belongs to a model's question only: a person with one
+/// still holds the Run at its Completion Review until they answer.
+#[rstest]
+#[tokio::test]
+async fn a_completion_review_waits_for_its_answer_whatever_the_persons_deadline(
+	mut fixture: Fixture,
+) {
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.answer_deadline = Some(60);
+	let mut fake = FakeChecks::with("sha256:edited", [Outcome::Pass]);
+	fake.polls = u32::MAX;
+	gated(
+		&mut fixture,
+		tests_policy(
+			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
+		),
+		Some(fake),
+	);
+	answer(&mut fixture, "Done.");
+	advance_sources(&mut fixture).await.unwrap();
+	let pending = fixture.run.context.completion.pending.as_mut().unwrap();
+	pending.started_at -= chrono::Duration::seconds(3600);
+	pending.running_since = Some(pending.started_at);
+	checks(&fixture).busy.store(true, Ordering::SeqCst);
+
+	settle(&mut fixture).await;
+
+	let RunState::Waiting(wait) = &fixture.run.state else {
+		panic!(
+			"the Run waits for the review, not {:?}",
+			fixture.run.phase()
+		);
+	};
+	assert!(matches!(
+		wait.as_ref(),
+		WaitingState::Human {
+			answer_by: None,
+			..
+		}
+	));
+	assert_eq!(wait.deadline(), None);
+	assert!(
+		!fixture
+			.backend
+			.calls()
+			.contains(&"authority.answer_deadline")
+	);
+}
+
 /// A repairable failure at the step limit names the step limit, not a spent
 /// Repair Allowance that new input could renew.
 #[rstest]

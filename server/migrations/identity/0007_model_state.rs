@@ -1416,6 +1416,242 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		.add_operation(Operation::CreateTable {
+			name: "identity_approval_preferences".to_string(),
+			columns: vec![
+				ColumnDefinition::new("answer_deadline_seconds", FieldType::BigInteger)
+					.with_not_null(false)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("bypass_accepted_at", FieldType::TimestampTz)
+					.with_not_null(false)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("default_mode", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("subject", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "identity_approval_rules".to_string(),
+			columns: vec![
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("effect", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("id", FieldType::Uuid)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("kind", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("subject", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("target", FieldType::Jsonb)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "identity_tenant_approval_settings".to_string(),
+			columns: vec![
+				ColumnDefinition::new("decider_id", FieldType::Text)
+					.with_not_null(false)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("decider_version", FieldType::Text)
+					.with_not_null(false)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "identity_thread_approval_modes".to_string(),
+			columns: vec![
+				ColumnDefinition::new("mode", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("subject", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("thread_id", FieldType::Uuid)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
 		.add_dependency("workspaces", "0006_triggers")
 		.atomic(true)
 		.with_initial(None)

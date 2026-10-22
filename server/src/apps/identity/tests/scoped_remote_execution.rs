@@ -377,7 +377,7 @@ mod scoped_pair_composition {
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
-		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","keep_threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
+		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
 		let (status, body) = request(
 			&ba,
 			&receiver_token,
@@ -1414,6 +1414,7 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 	let describe = |protocol: &'static str| {
 		let p = &p;
 		async move {
+			let started = std::time::Instant::now();
 			let response = reqwest::Client::new()
 				.post(format!(
 					"{}/federation/v0.1/scoped/execution/grants/describe",
@@ -1427,7 +1428,9 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 				.await
 				.unwrap();
 			assert_eq!(response.status(), 200);
-			response.json::<Value>().await.unwrap()
+			let body = response.json::<Value>().await.unwrap();
+			eprintln!("scoped describe ({protocol}): {:?}", started.elapsed());
+			body
 		}
 	};
 	let expected = || async {

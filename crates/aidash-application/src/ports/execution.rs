@@ -363,6 +363,11 @@ pub trait ExecutionHome: Send + Sync {
 pub trait ExecutionTool: Send + Sync {
 	fn specification(&self) -> ToolSpec;
 	fn contract(&self) -> aidash_domain::tool::ToolContract;
+	/// The external address a call of a Tenant's HTTP or MCP tool reaches, when
+	/// the Decider must see where arguments would be sent.
+	fn external_target(&self) -> Option<String> {
+		None
+	}
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
 	/// Resource Claims and output bound derived by trusted provider code from
@@ -415,6 +420,46 @@ pub trait ExecutionAuthority: Send + Sync {
 		run: &Run,
 		request: crate::ports::capabilities::approvals::ToolCallRequest,
 	) -> Result<crate::ports::capabilities::approvals::ToolCallApproval>;
+	/// The Approval Mode that covers `run` now: the one of the person its
+	/// delegation chain starts at. `None` when no person's mode covers it,
+	/// such as a Run that arrived through Federation or Tenant maintenance, a
+	/// Workbench test or an evaluation fixture (ADR 0076).
+	async fn approval_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>>;
+	/// Whether Auto is the Run's effective Approval Mode now: selected,
+	/// permitted by policy, backed by an available Decider, and not suspended
+	/// by its block limits. Defaults to false for an authority that does not
+	/// know the person's settings.
+	async fn auto_judging(&self, _run: &Run) -> Result<bool> {
+		Ok(false)
+	}
+	/// How many seconds the person whose delegation chain `run` starts at
+	/// waits for an answer to the model's question before the Run continues
+	/// without one (their Answer Deadline). `None` when they set none or when
+	/// no person's settings cover the Run, as for [`Self::approval_mode`].
+	async fn answer_deadline(&self, run: &Run) -> Result<Option<i64>>;
+	/// The pending approval of `run` that the approval Decider is to judge, or
+	/// `None` when it is not one: unknown, decided, expired, another Run's, or
+	/// asked of a person (Manual, a rule that asks, Auto suspended).
+	async fn approval_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<Option<crate::ports::capabilities::approvals::JudgeRequest>>;
+	/// Record how the approval Decider settled `approval`, in the name of the
+	/// person the Run's chain starts at: given, or refused with the reason the
+	/// model receives. Only a pending judged approval settles; asking again with
+	/// the same decision settles nothing more, and one a person decided
+	/// meanwhile is left as they decided it. Returns whether the record was
+	/// settled as asked; `false` means the settlement had no effect.
+	async fn settle_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+		settlement: crate::ports::capabilities::approvals::Settlement,
+	) -> Result<bool>;
 	async fn model_media(
 		&self,
 		selections: &[aidash_domain::media::ModelMedia],
@@ -487,6 +532,17 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// The Run's compaction Decider and the ports its decisions use under the
 	/// current lease, or `None` when the Run has no compaction Decider.
 	async fn compaction_decider(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
+		Ok(None)
+	}
+	/// The approval Decider the Tenant chose for `run`, with the Agent Binding's
+	/// narrowing of its thresholds, and the ports its decisions use under the
+	/// current lease. `None` when Auto is not available to the Run, which then
+	/// asks a person as in Manual.
+	async fn approval_decider(
 		&self,
 		_run: &Run,
 		_token: Uuid,

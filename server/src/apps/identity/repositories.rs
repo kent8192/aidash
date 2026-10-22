@@ -156,6 +156,8 @@ pub(crate) mod home_execution;
 pub(crate) mod desktop;
 pub(crate) mod retention;
 
+pub(crate) mod approval_decider;
+pub(crate) mod approval_preferences;
 pub mod plan_connections;
 pub mod provider_credentials;
 

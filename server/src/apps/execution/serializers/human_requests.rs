@@ -20,6 +20,7 @@ impl From<HumanRequestRecord> for HumanRequest {
 			prompt: record.prompt,
 			response: record.response.map(|value| value.0),
 			created_at: record.created_at,
+			answer_by: None,
 		}
 	}
 }
