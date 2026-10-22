@@ -315,7 +315,7 @@ pub(crate) async fn discover_for(
 	let result = async {
 		let node = crate::apps::identity::repositories::nodes::get(
 			&mut *access.tx,
-			&admitted.tenant.to_string(),
+			admitted.tenant.as_str(),
 			admitted.receiver.node.as_str(),
 		)
 		.await?;

@@ -1,7 +1,6 @@
 use super::*;
 
-#[path = "../../../execution/tests/support/native_database.rs"]
-mod native_database;
+use crate::apps::execution::test_database as native_database;
 
 #[rstest::rstest]
 #[tokio::test]
