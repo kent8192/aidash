@@ -76,7 +76,62 @@ async fn memory_recovery_init_if_missing_accepts_the_migration_owner(
 		"{}",
 		String::from_utf8_lossy(&output.stderr)
 	);
-	assert!(home.join("epoch.cbor").exists());
+	let epoch = std::fs::read(home.join("epoch.cbor")).unwrap();
+	let ledger = std::fs::read(home.join("ledger.cbor")).unwrap();
+	// Act: a retried deployment runs the same command against the retained volume.
+	let output = command.output().await.expect("repeat memory-recovery");
+	// Assert: the owner can verify the existing ledger without replacing it.
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(std::fs::read(home.join("epoch.cbor")).unwrap(), epoch);
+	assert_eq!(std::fs::read(home.join("ledger.cbor")).unwrap(), ledger);
+}
+
+/// The command must use the guarded maintenance connection even though the
+/// migration owner is accepted. Refusing a privileged login must leave the
+/// external ledger uninitialized.
+#[rstest]
+#[case::superuser(&["ALTER ROLE aidash_owner SUPERUSER"], "is a superuser")]
+#[case::bypassrls(&["ALTER ROLE aidash_owner BYPASSRLS"], "has BYPASSRLS")]
+#[case::replication(&["ALTER ROLE aidash_owner REPLICATION"], "has REPLICATION")]
+#[case::switched_role(
+	&["GRANT aidash_server TO aidash_owner", "ALTER ROLE aidash_owner SET role = 'aidash_server'"],
+	"starts as another role"
+)]
+#[tokio::test]
+async fn memory_recovery_init_if_missing_refuses_a_privileged_migration_login(
+	#[future] database: DatabaseFixture,
+	#[case] grants: &[&str],
+	#[case] reason: &str,
+) {
+	// Arrange: role DDL that Reinhardt Query cannot express. Change the owner's
+	// attributes only after the fixture has migrated, as a misconfigured Job login.
+	let f = database.await;
+	let admin = sqlx::PgPool::connect(&with_login(&f.url, ADMIN))
+		.await
+		.unwrap();
+	for statement in grants {
+		sqlx::query(statement).execute(&admin).await.unwrap();
+	}
+	admin.close().await;
+	let directory = tempfile::tempdir().unwrap();
+	let home = directory.path().join("home");
+	std::fs::create_dir(&home).unwrap();
+	let mut command = crate::deployment::deployment_command(&f.owner_url, directory.path());
+	command
+		.args(["memory-recovery", "init-if-missing", "--directory"])
+		.arg(&home);
+	// Act
+	let output = command.output().await.expect("run memory-recovery");
+	// Assert: the login guard refuses the command before it creates a ledger.
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert!(!output.status.success(), "{stderr}");
+	assert!(stderr.contains(reason), "{stderr}");
+	assert!(!home.join("epoch.cbor").exists());
+	assert!(!home.join("ledger.cbor").exists());
 }
 
 /// A login that owns no table but owns a schema can still create and drop
