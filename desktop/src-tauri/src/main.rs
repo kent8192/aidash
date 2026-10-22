@@ -265,36 +265,38 @@ async fn desktop_login(
 	{
 		return Err("Invalid desktop sign-in response".into());
 	}
-	let save = async {
-		state.current(generation)?;
-		credentials::write(
-			profile.clone(),
-			Credential {
-				current: tokens.refresh_token.clone(),
-				pending: None,
-			},
-		)
-		.await
-	}
-	.await;
-	if let Err(error) = save {
-		let _ = auth::request::<serde_json::Value>(
-			&state.client,
-			&profile,
-			Endpoint::Revoke,
-			Some(json!({"refresh_token":tokens.refresh_token})),
-		)
+	if profile.protects_refresh_credentials() {
+		let save = async {
+			state.current(generation)?;
+			credentials::write(
+				profile.clone(),
+				Credential {
+					current: tokens.refresh_token.clone(),
+					pending: None,
+				},
+			)
+			.await
+		}
 		.await;
-		return Err(error);
-	}
-	if let Some(previous) = previous {
-		let _ = auth::request::<serde_json::Value>(
-			&state.client,
-			&profile,
-			Endpoint::Revoke,
-			Some(json!({"refresh_token":previous.current})),
-		)
-		.await;
+		if let Err(error) = save {
+			let _ = auth::request::<serde_json::Value>(
+				&state.client,
+				&profile,
+				Endpoint::Revoke,
+				Some(json!({"refresh_token":tokens.refresh_token})),
+			)
+			.await;
+			return Err(error);
+		}
+		if let Some(previous) = previous {
+			let _ = auth::request::<serde_json::Value>(
+				&state.client,
+				&profile,
+				Endpoint::Revoke,
+				Some(json!({"refresh_token":previous.current})),
+			)
+			.await;
+		}
 	}
 	state.current(generation)?;
 	cache.insert(profile.id, Cached::from_tokens(&tokens));
@@ -340,6 +342,10 @@ fn main() {
 					"connections.json"
 				});
 			let profiles = Profiles::load(path).map_err(std::io::Error::other)?;
+			tauri::async_runtime::block_on(credentials::purge_plaintext(
+				&profiles.settings.profiles,
+			))
+			.map_err(std::io::Error::other)?;
 			app.manage(DesktopState {
 				profiles: Mutex::new(profiles),
 				operation: Mutex::new(HashMap::new()),

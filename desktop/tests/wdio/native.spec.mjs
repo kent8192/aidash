@@ -137,7 +137,7 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       );
     });
 
-    it("switches connection authority, resets SSE cursors and preserves each login", async () => {
+    it("switches connection authority, resets SSE cursors and requires another HTTP login", async () => {
       await add("Second", origins[1]);
       await authorize();
       await browser.waitUntil(
@@ -149,14 +149,19 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       assert(!second.streams.includes(new URL(origins[0]).port));
       const oldStreams = (await status(0)).streams.length;
       await select(`First · ${origins[0]}`);
-      await button("Deployment Administrator");
+      await textContains("Sign in with Google");
+      await authorize();
       await browser.waitUntil(
         async () => (await status(0)).streams.length > oldStreams,
       );
       assert.equal((await status(0)).streams[oldStreams], "-1");
       for (const index of [0, 1]) {
         const fixture = await status(index);
-        assert.equal(fixture.logins, 1);
+        assert.equal(fixture.logins, index === 0 ? 2 : 1);
+        assert.equal(fixture.renewals, 0);
+        assert.equal(fixture.revocations, 0);
+        assert.equal(fixture.refreshRequests, 0);
+        assert.equal(fixture.revokeRequests, 0);
         assert(fixture.requests.every((request) => !request.cookie));
       }
     });
@@ -183,25 +188,32 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       );
     });
   } else if (phase === "restore") {
-    it("restores both OS-stored logins in a new native process and revokes them on logout", async () => {
-      await button("Deployment Administrator");
+    it("does not restore or transmit HTTP refresh credentials in a new native process", async () => {
+      await textContains("Sign in with Google");
       const first = await status(0);
-      assert.equal(first.logins, 1);
-      assert(first.renewals >= 1);
+      assert.equal(first.logins, 2);
+      assert.equal(first.renewals, 0);
+      assert.equal(first.revocations, 0);
+      assert.equal(first.refreshRequests, 0);
+      assert.equal(first.revokeRequests, 0);
+      await authorize();
       await select(`Second · ${origins[1]}`);
-      await button("Deployment Administrator");
+      await textContains("Sign in with Google");
+      await authorize();
       const second = await status(1);
-      assert.equal(second.logins, 1);
-      assert(second.renewals >= 1);
+      assert.equal(second.logins, 2);
+      assert.equal(second.renewals, 0);
+      assert.equal(second.revocations, 0);
+      assert.equal(second.refreshRequests, 0);
+      assert.equal(second.revokeRequests, 0);
       await logout();
-      assert.equal((await status(1)).active, false);
+      assert.equal((await status(1)).revocations, 0);
+      assert.equal((await status(1)).revokeRequests, 0);
       await select(`First · ${origins[0]}`);
-      await button("Deployment Administrator");
-      await logout();
-      assert.equal((await status(0)).active, false);
+      await textContains("Sign in with Google");
     });
   } else if (phase === "logged-out") {
-    it("stays logged out after another native process restart", async () => {
+    it("still requires interactive HTTP login after another native process restart", async () => {
       await textContains("Sign in with Google");
       assert.deepEqual(await invoke("desktop_access"), { value: null });
       await select(`Second · ${origins[1]}`);
@@ -209,8 +221,11 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       assert.deepEqual(await invoke("desktop_access"), { value: null });
       for (const index of [0, 1]) {
         const fixture = await status(index);
-        assert.equal(fixture.logins, 1);
-        assert.equal(fixture.revocations, 1);
+        assert.equal(fixture.logins, index === 0 ? 3 : 2);
+        assert.equal(fixture.renewals, 0);
+        assert.equal(fixture.revocations, 0);
+        assert.equal(fixture.refreshRequests, 0);
+        assert.equal(fixture.revokeRequests, 0);
       }
     });
   } else {

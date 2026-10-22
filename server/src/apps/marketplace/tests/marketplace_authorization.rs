@@ -2879,7 +2879,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	{
 		let query_bind_1 = session;
 		let query_bind_2 = identity;
-		let query_bind_3 = Sha256::digest(b"marketplace-test-session").to_vec();
+		let query_bind_3 = common::browser_session_digest(b"marketplace-test-session");
 		let query_bind_4 = Sha256::digest(b"marketplace-test-csrf").to_vec();
 		sqlx::query(
 			&Query::insert()
@@ -3059,7 +3059,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		http::Request::builder()
 			.method(method)
 			.uri(path)
-			.header("cookie", "aidash-session=marketplace-test-session")
+			.header("cookie", "__Host-aidash-session=marketplace-test-session")
 			.header("origin", "http://127.0.0.1:8080")
 			.header("x-aidash-csrf", "marketplace-test-csrf")
 			.header(
@@ -3676,7 +3676,7 @@ fn browser_oidc_runtime(
 			issuer: "https://accounts.google.com".into(),
 			client_id: "fixture".into(),
 			client_secret: "fixture".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 3600,
 			session_idle_seconds: 1800,
 		});

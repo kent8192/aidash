@@ -23,7 +23,7 @@ async fn browser_workbench(
 		issuer: issuer.into(),
 		client_id: "aidash".into(),
 		client_secret: "local-test-secret".into(),
-		public_origin: "http://localhost:8080".into(),
+		public_origin: "https://localhost:8080".into(),
 		session_absolute_seconds: 43_200,
 		session_idle_seconds: 1_800,
 	});
@@ -50,7 +50,7 @@ async fn browser_workbench(
 		.unwrap();
 	let session = DashboardSession::build()
 		.id(Uuid::new_v4())
-		.token_hash(Sha256::digest(b"browser-authority-session").to_vec())
+		.token_hash(common::browser_session_digest(b"browser-authority-session"))
 		.csrf_hash(Sha256::digest(b"browser-authority-csrf").to_vec())
 		.identity_id(identity.id)
 		.provider_sid(None)
@@ -97,7 +97,9 @@ async fn browser_workbench(
 	let mut headers = HeaderMap::new();
 	headers.insert(
 		"cookie",
-		"aidash-session=browser-authority-session".parse().unwrap(),
+		"__Host-aidash-session=browser-authority-session"
+			.parse()
+			.unwrap(),
 	);
 	headers.insert("origin", "http://localhost:8080".parse().unwrap());
 	headers.insert("x-aidash-csrf", "browser-authority-csrf".parse().unwrap());

@@ -91,7 +91,7 @@ worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
 
-The dashboard requires a configured Google OAuth client. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Kubernetes startup uses the example Secrets in `deploy/local-k8s/` and does not load `.env`. Add the three `AIDASH_OIDC_*` connection values (`CLIENT_ID`, `CLIENT_SECRET`, and `PUBLIC_ORIGIN`) to the `aidash-local-app` Secret, including `AIDASH_OIDC_PUBLIC_ORIGIN=http://127.0.0.1:8080`, then re-run `cargo make k8s-up` to restart the Pods. Register `http://127.0.0.1:8080/auth/callback` in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
+The built-in loopback endpoint is plain HTTP, so it does not support browser sign-in; the dashboard shows setup guidance, while `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Browser sessions require a trusted HTTPS dashboard origin. To enable OIDC, publish the frontend Service and its API/auth proxy through HTTPS, add `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and that HTTPS `AIDASH_OIDC_PUBLIC_ORIGIN` to the `aidash-local-app` Secret, then re-run `cargo make k8s-up` to restart the Pods. Register the matching `https://<dashboard-origin>/auth/callback` URI in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
 ```sh
 kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
@@ -143,19 +143,24 @@ mounted as its `local.toml`), so your first Google sign-in gets a Personal
 Tenant without approval. Other Self-hosted deployments keep the Offering's default, `false`
 (see [Tenancy Rules](docs/authorization.md#tenancy-rules-tenant-creation-and-invitations)).
 
-To sign in without a Google client, add this Compose override to `.env`:
+To sign in without a Google client, first expose the frontend and its API/auth
+proxy at a trusted HTTPS origin and set that origin in `.env`, together with
+this Compose override:
 
 ```dotenv
 COMPOSE_FILE=compose.yaml:deploy/local-oidc/compose.yaml
+AIDASH_OIDC_PUBLIC_ORIGIN=https://dashboard.example.test
 ```
 
 Run `cargo make dev` to start a generic local OIDC issuer and its loopback relay
-with the development stack, and to point the backend at it. The issuer signs in
-whatever subject you type on its page, so it is for local development only. The
-relay makes `http://127.0.0.1:18099` reachable inside the backend's network
-namespace, so the browser and backend use the same issuer. Both use the
-official Node.js image independently of the frontend build, including on the
-first start or with a custom `COMPOSE_PROJECT_NAME`.
+with the development stack, and to point the backend at it. The HTTPS proxy must
+route the dashboard, `/api`, and `/auth` to the Compose frontend without changing
+the configured public origin. The issuer signs in whatever subject you type on
+its page, so it is for local development only. The relay makes
+`http://127.0.0.1:18099` reachable inside the backend's network namespace, so
+the browser and backend use the same issuer. Both use the official Node.js image
+independently of the frontend build, including on the first start or with a
+custom `COMPOSE_PROJECT_NAME`.
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. Where the Tenancy Rules turn Personal Tenants on, Google sign-in creates personal Tenant authority; otherwise a new identity files a registration request. Shared Tenant membership requires approval and Deployment Administrator access requires a separate explicit grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Deployment Administrators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and Deployment Administrator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
@@ -209,10 +214,10 @@ Then register `https://<public origin host>/__/auth/handler` as each identity pr
 Self-hosted Aidash signs in through any OpenID Connect issuer, directly with Google by default, using Authorization Code with PKCE. The backend verifies the ID token's signature, issuer, audience, expiry and nonce before creating an HttpOnly session; it never exposes the issuer's tokens or the client secret to the browser. Identity is keyed by issuer and `sub`, never by email. The steps below use Google; for another issuer, set `AIDASH_OIDC_ISSUER` to its issuer URL and register the same redirect URI with it.
 
 1. In [Google Auth Platform](https://console.cloud.google.com/auth/overview), configure your application's branding and audience. Add permitted test users while the app is in testing.
-2. Create an OAuth client of type **Web application**. Register the exact authorized redirect URI `<origin>/auth/callback`, for example `http://127.0.0.1:5173/auth/callback` for Vite or `http://127.0.0.1:8080/auth/callback` for local Kubernetes.
+2. Create an OAuth client of type **Web application**. Register the exact authorized redirect URI `<origin>/auth/callback`, for example `https://dashboard.example.test/auth/callback`.
 3. Set `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and `AIDASH_OIDC_PUBLIC_ORIGIN` on the backend as shown in `.env.example`, then restart it. `AIDASH_OIDC_ISSUER` defaults to `https://accounts.google.com`. Keep the client secret on the backend only.
 
-The Vite proxy forwards `/auth` to the backend. Production requires an HTTPS dashboard origin, which enables Secure host-only session cookies. Sessions expire after 12 hours or 30 minutes without user activity by default. See [Google's OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect) for provider setup.
+The Vite proxy forwards `/auth` to the backend. Every dashboard origin that enables browser sign-in must use trusted HTTPS, which enables Secure host-only session cookies. Upgrading from a release that allowed loopback HTTP signs existing browser sessions out once; desktop credentials are unaffected. Sessions expire after 12 hours or 30 minutes without user activity by default. See [Google's OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect) for provider setup.
 
 Aidash reads no account status from an OIDC issuer: a valid ID token is the whole admission. An issuer may still send back-channel logout notifications to `POST /auth/backchannel-logout`; Google sends none. Account changes at the issuer therefore do not immediately revoke existing Aidash sessions or pause admitted work. Aidash continues checking local identity disablement, subject policy, mappings and credentials at execution boundaries; use local mapping/deployment-administrator-grant revocation to remove access. Aidash logout affects Aidash sessions, not the Google browser session. No offline Google access or refresh token is requested.
 

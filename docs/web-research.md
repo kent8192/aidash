@@ -456,6 +456,9 @@ any reason is killed and leaves the page unreadable (`extraction_failed`). The
 parser reads page content streams and the fonts they use; it never interprets
 annotations, forms, scripts or attachments.
 
+PDF extraction and rendering fail closed on platforms without a verified hard
+address-space limit. Other page media remain available there.
+
 - Lines follow content-stream order, one visual line each, with the page's
   physical 1-based number; a page boundary always ends a line. Page labels are
   not used. The first 500 pages are read.
@@ -475,9 +478,6 @@ annotations, forms, scripts or attachments.
   not drawn. The image is kept with its fragment, so a reader sees exactly what
   the model saw; a purge keeps it like a passage's text, and an Evidence
   Revocation removes it.
-
-On macOS the first PDF a server process reads can take about 30 s while the
-system assesses the unsigned binary; Linux has no such delay.
 
 ## Implementing another provider
 

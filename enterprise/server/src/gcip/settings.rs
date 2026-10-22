@@ -132,9 +132,7 @@ impl GcipConfig {
 		}
 		let origin = Url::parse(&self.public_origin)
 			.map_err(|_| Error::Invalid("invalid dashboard.gcip.public_origin".into()))?;
-		if !(origin.scheme() == "https"
-			|| (origin.scheme() == "http"
-				&& matches!(origin.host_str(), Some("localhost" | "127.0.0.1"))))
+		if origin.scheme() != "https"
 			|| origin.host_str().is_none()
 			|| !origin.username().is_empty()
 			|| origin.password().is_some()

@@ -154,16 +154,20 @@ for attempt in $(seq 50); do
   sleep 0.1
 done
 check() {
-  local scheme=$1 host=$2 status=$3 port=443 result
+  local scheme=$1 host=$2 status=$3 framing=${4:-} port=443 result
   if [[ "$scheme" == http ]]; then port=80; fi
   result=$(curl --http1.1 -sS --cacert /fixture/tls.crt --resolve "$host:$port:127.0.0.1" --max-time 3 -D- -o /dev/null "$scheme://$host/")
   case "$result" in *"HTTP/1.1 $status"*) ;; *) printf "%s\n" "$result"; exit 1;; esac
   case "$result" in *"Referrer-Policy: no-referrer"*|*"referrer-policy: no-referrer"*) ;; *) printf "%s\n" "$result"; exit 1;; esac
   case "$result" in *"Referrer-Policy: unsafe-url"*) exit 1;; esac
+  if [[ "$framing" == deny ]]; then
+    case "$result" in *"Content-Security-Policy: frame-ancestors 'none'"*|*"content-security-policy: frame-ancestors 'none'"*) ;; *) printf "%s\n" "$result"; exit 1;; esac
+    case "$result" in *"X-Frame-Options: DENY"*|*"x-frame-options: DENY"*) ;; *) printf "%s\n" "$result"; exit 1;; esac
+  fi
 }
-check https "$known" 200
+check https "$known" 200 deny
 check https "$unknown" 404
 check http "$unknown" 404
 check http "$known" 308
-printf "%s\n" "Chart Caddy: static wildcard TLS, exact-host routing, unknown-host HTTPS/HTTP rejected, redirect and backend responses enforce no-referrer"
+printf "%s\n" "Chart Caddy: static wildcard TLS, exact-host routing, unknown-host HTTPS/HTTP rejected, redirect and backend responses enforce no-referrer, application responses deny framing"
 '
