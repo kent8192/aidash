@@ -719,5 +719,11 @@
   "agentPluginDenied": "プラグインの外を指すため除外したパス",
   "catalogAgentPlugins": "Agent Plugin",
   "catalogAgentPluginsAdmit": "このバージョンを承認すると、プラグインが宣言するサーバーを許可することになります。",
-  "approvals": "承認"
+  "approvals": "承認",
+  "bundle": "バンドル",
+  "source": "ソース",
+  "decider": "Decider",
+  "embedding": "埋め込み",
+  "reranker": "再順位付け",
+  "tokenizer": "トークナイザー"
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release candidates and their staging gate, executed only from trusted main.
+"""Release candidates and their staging gate, executed from the protected development branch.
 
 PR code is never checked out or executed. Every API write uses fixed endpoints
 and JSON input; the installation token remains outside deployment artifacts.
@@ -301,8 +301,8 @@ def validate_receipt(config, event, receipt):
     owned = [value for value in artifacts if value.get("name") == "staging-receipt"]
     if len(owned) != 1 or owned[0].get("expired") is not False or owned[0].get("workflow_run", {}).get("id") != completed["id"]:
         raise Refused("No unique unexpired staging receipt belongs to the trusted run")
-    main = protected_branch(config, config.get("trusted_branch", "main"))
-    ancestor(config, receipt["trusted_sha"], main)
+    if receipt["trusted_sha"] != receipt["source_sha"]:
+        raise Refused("The staged controller and images must be built from the release source")
     current_candidate(config, receipt["source_sha"])
     source_ci(config, receipt["source_sha"])
     return receipt

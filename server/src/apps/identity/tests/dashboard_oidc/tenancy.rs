@@ -17,6 +17,15 @@ struct Deployment {
 
 impl Deployment {
 	async fn new(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
+		Self::with_demo_data(runtime, rules, false).await
+	}
+
+	/// Like [`Self::new`], with `[demo_data] enabled` as given.
+	async fn with_demo_data(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		demo_data: bool,
+	) -> Self {
 		let runtime = runtime.await;
 		let (mut federation, url, database) = runtime.parts();
 		federation.config.oidc = Some(OidcConfig {
@@ -28,6 +37,7 @@ impl Deployment {
 			session_idle_seconds: 1_800,
 		});
 		federation.config.tenancy = rules;
+		federation.config.demo_data = demo_data;
 		let app = common::application(federation.clone()).await;
 		Self {
 			federation,
@@ -1300,5 +1310,7 @@ async fn display_retention_follows_the_request_that_ended_last(
 
 #[path = "tenancy/deletion.rs"]
 mod deletion;
+#[path = "tenancy/demo_data.rs"]
+mod demo_data;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;

@@ -719,5 +719,11 @@
   "agentPluginDenied": "Paths left out because they lead outside the plugin",
   "catalogAgentPlugins": "Agent Plugins",
   "catalogAgentPluginsAdmit": "Approving this version admits the servers its plugins declare.",
-  "approvals": "Approvals"
+  "approvals": "Approvals",
+  "bundle": "Bundle",
+  "source": "Source",
+  "decider": "Decider",
+  "embedding": "Embedding",
+  "reranker": "Reranker",
+  "tokenizer": "Tokenizer"
 }

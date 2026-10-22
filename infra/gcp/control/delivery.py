@@ -201,9 +201,8 @@ def authorize_production(config, main_sha, ci_check, accepted=None):
         # Recheck current main/human provenance above, without reading a mutable
         # staging index that cannot revoke or replace this accepted bundle.
         if (not isinstance(accepted, dict) or set(accepted) != {"source_sha", "trusted_sha", "images"}
-                or accepted["source_sha"] != source or not SHA.fullmatch(accepted["trusted_sha"])
-                or github(f"repos/{repo}/compare/{accepted['trusted_sha']}...{main_sha}").get("status") not in {"ahead", "identical"}):
-            raise Refused("The accepted bundle has invalid main provenance")
+                or accepted["source_sha"] != source or accepted["trusted_sha"] != source):
+            raise Refused("The accepted bundle was not built from the release source")
         valid_images(accepted["images"], config["staging_project_id"])
         return {"sha": source, "main_sha": main_sha, "source_ref": "main", "source_repo": repo,
                 "fork": False, "approved_sha": "", "release_pr": pr["number"], "release": deepcopy(accepted)}
@@ -211,8 +210,8 @@ def authorize_production(config, main_sha, ci_check, accepted=None):
     if not receipt or receipt.get("protocol") != "aidash-staging-receipt/1" or receipt.get("status") != "ready" or receipt.get("source_sha") != source:
         raise Refused("No successful staging evidence exists for this exact release")
     trusted = receipt.get("trusted_sha", "")
-    if not SHA.fullmatch(trusted) or github(f"repos/{repo}/compare/{trusted}...{main_sha}").get("status") not in {"ahead", "identical"}:
-        raise Refused("The staged controller is not an approved main ancestor")
+    if trusted != source:
+        raise Refused("The staged controller was not built from the release source")
     workflow = github(f"repos/{repo}/actions/workflows/gcp-environments.yml")
     stage_run = github(f"repos/{repo}/actions/runs/{int(receipt['run_id'])}")
     if (stage_run.get("workflow_id") != workflow["id"] or stage_run.get("conclusion") != "success"
