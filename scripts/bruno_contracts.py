@@ -813,6 +813,7 @@ def render():
                 headers=SUBJECT, immutable=True)
             add(endpoint, "Only a deleted Tenant can be purged", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/nodes.rs":
             # Creating a Node as a Deployment Administrator would change the shared Tenant.
             if method == "GET":
