@@ -1379,8 +1379,11 @@ async fn artifact_state_page_is_filled_after_task_denials(
 }
 
 #[rstest::rstest]
+#[case::default_node(false)]
+#[case::named_node(true)]
 #[tokio::test]
 async fn discovered_registry_entries_remain_live_journal_dependencies(
+	#[case] named_node: bool,
 	#[future(awt)]
 	#[from(discovered_registry_entries_remain_live_journal_dependencies_provider)]
 	fixture: DiscoveredRegistryEntriesRemainLiveJournalDependenciesProvider,
@@ -1390,7 +1393,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	let server = fixture.server;
 	let endpoint = server.url.clone();
 	let _calls = fixture.calls;
-	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
+	let (mut bundle, token, mut task) = bootstrap(&f, &app, &endpoint).await;
 	let mut entry = f
 		.registry
 		.get(
@@ -1400,6 +1403,48 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		)
 		.await
 		.unwrap();
+	let node = if named_node {
+		let node = f
+			.config
+			.deployment
+			.node(common::second_node_in(f.store.pool.fixture_driver(), "acme").await);
+		common::approve_agent_on(&f, "acme", &entry, &node).await;
+		bundle = serde_json::to_value(
+			aidash_server::authorization::Authorization {
+				pool: f.store.pool.clone(),
+			}
+			.snapshot("acme")
+			.await
+			.unwrap()
+			.bundle,
+		)
+		.unwrap();
+		let (status, workspace) = request(
+			&app,
+			&token,
+			"POST",
+			"/api/workspaces",
+			json!({"node":node.node,"title":"Named Node discovery","goal":"Retain discovered metadata"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{workspace}");
+		let (status, created) = request(
+			&app,
+			&token,
+			"POST",
+			&format!(
+				"/api/workspaces/{}/tasks",
+				workspace["id"].as_str().unwrap()
+			),
+			json!({"title":"Discover on the Run's Node","description":"Use approved tools"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{created}");
+		task = created["id"].as_str().unwrap().parse().unwrap();
+		node.node
+	} else {
+		common::default_node(&f.store, "acme").await.node
+	};
 	entry.id = "discovered-only".into();
 	entry.binding_normalization = None;
 	entry
@@ -1418,7 +1463,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -1467,6 +1512,22 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	}
 	.unwrap();
 	assert_eq!(tracked, 1);
+	let remote: i64 = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(reinhardt::query::Alias::new(
+				"authorization_run_remote_reads",
+			))
+			.and_where(Expr::col(reinhardt::query::Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		remote, 0,
+		"the Run's own Node uses local registry dependencies"
+	);
 	// Act: rebuild the HTTP application over persisted reads before changing policy.
 	drop(app);
 	let app = common::application(f.clone()).await;
@@ -1476,7 +1537,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
 		)
 		.await
 		.0,
@@ -1492,7 +1553,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
+			json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
 		)
 		.await
 		.0,

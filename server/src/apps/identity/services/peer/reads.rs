@@ -22,16 +22,17 @@ impl Access {
 		let Some(run) = self.read_run else {
 			return Ok(());
 		};
+		let own = self.node_reference().to_owned();
 		let local: Vec<_> = agents
 			.iter()
-			.filter(|agent| agent.node_id == self.node_id)
+			.filter(|agent| agent.node_id == own)
 			.map(|agent| agent.entity.clone())
 			.collect();
 		self.track_registry(&local).await?;
 		// This independent commit precedes invocation/context persistence, so a
 		// killed worker cannot retain metadata without its visibility dependency.
 		let mut tx = self.pool.begin(&self.tenancy()?).await?;
-		for agent in agents.iter().filter(|agent| agent.node_id != self.node_id) {
+		for agent in agents.iter().filter(|agent| agent.node_id != own) {
 			let metadata = serde_json::to_value(&agent.entity)?;
 			{
 				let query_bind_1 = run;

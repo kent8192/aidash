@@ -555,7 +555,8 @@ impl WorkerAuthority {
 	}
 	pub async fn discover(&self, f: &Federation, search: &Search) -> Result<Discovery> {
 		let mut access = self.access.write().await;
-		super::peer::discovery::discover_in(f, &mut access, None, search).await
+		let node = access.node.clone();
+		super::peer::discovery::discover_in(f, &mut access, node, search).await
 	}
 }
 
