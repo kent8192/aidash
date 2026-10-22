@@ -6,6 +6,7 @@ import { Check, ChevronRight, X } from "lucide-react";
 import { humanAnswer } from "../generated/aidash";
 import type { HumanRequest } from "../types";
 import type { Selection } from "./details";
+import { continuesAt, deadlineTime } from "../approval-settings-model";
 import { useI18n } from "../ui";
 import { cn } from "../lib/utils";
 import { collaborationCopy } from "./copy";
@@ -65,22 +66,38 @@ export function ChannelRequests({
       aria-label={copy.needsInput}
     >
       {requests.map((item) => {
+        const continues = continuesAt(item.request);
         const meta = (
-          <Facts
-            className="mt-2.5 border-t border-border pt-2.5"
-            items={[
-              ...(requester
-                ? [[locale === "ja-JP" ? "依頼元" : "From", requester] as const]
-                : []),
-              [
-                locale === "ja-JP" ? "待機" : "Waiting",
-                locale === "ja-JP"
-                  ? `${since(item.request)} から`
-                  : `since ${since(item.request)}`,
-                true,
-              ] as const,
-            ]}
-          />
+          <>
+            <Facts
+              className="mt-2.5 border-t border-border pt-2.5"
+              items={[
+                ...(requester
+                  ? [
+                      [
+                        locale === "ja-JP" ? "依頼元" : "From",
+                        requester,
+                      ] as const,
+                    ]
+                  : []),
+                [
+                  locale === "ja-JP" ? "待機" : "Waiting",
+                  locale === "ja-JP"
+                    ? `${since(item.request)} から`
+                    : `since ${since(item.request)}`,
+                  true,
+                ] as const,
+              ]}
+            />
+            {continues && (
+              <span className="mt-1.5 block text-xs text-muted-foreground">
+                {copy.continuesAt.replace(
+                  "{time}",
+                  deadlineTime(continues, locale),
+                )}
+              </span>
+            )}
+          </>
         );
         const kicker = (
           <span className="flex items-center gap-1.5 text-[11px] font-medium text-warning">

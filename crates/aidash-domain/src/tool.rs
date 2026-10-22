@@ -48,3 +48,15 @@ pub enum ToolConfig {
 		agent: EntityRef,
 	},
 }
+
+impl ToolConfig {
+	/// The Tenant's definition version declares its one `invoke` operation a
+	/// Read-only operation (ADR 0078). Any other `replay` value, and anything
+	/// an MCP server says about itself, leaves the operation unproven.
+	pub fn declares_read_only(&self) -> bool {
+		matches!(
+			self,
+			Self::Http { replay, .. } | Self::Mcp { replay, .. } if replay == "read_only"
+		)
+	}
+}

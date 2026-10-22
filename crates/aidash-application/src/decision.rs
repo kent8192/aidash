@@ -10,9 +10,15 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+mod approval_state;
 mod dispatch;
+mod judge;
 mod state;
+pub use approval_state::{ApprovalState, ApprovalTool, build_approval_state};
 pub use dispatch::{attempt_identity, decision_identity};
+pub use judge::{
+	Judgement, Ruling, approval_evidence_identity, approval_input_digest, settlement_of,
+};
 pub use state::{BuiltState, build_compaction_state, compaction_disclosure};
 
 /// Digest the complete inference input before redacting its classification view.
@@ -413,7 +419,7 @@ impl DecisionGate<'_> {
 				branch(
 					evidence.answers[&option.keep_call],
 					evidence.answers[&option.keep_result],
-					restrictions.keep_threshold,
+					restrictions.threshold,
 				)
 			};
 			selected.insert(option.history_index, choice);

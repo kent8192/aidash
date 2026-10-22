@@ -85,6 +85,7 @@ fn human(value: u128, visible: bool) -> HumanRequest {
 		prompt: if visible { "saved-author" } else { "hidden" }.into(),
 		response: None,
 		answered_by: None,
+		answer_by: None,
 		created_at: Utc::now(),
 	}
 }
@@ -388,6 +389,51 @@ async fn current_state_keeps_its_records_order_and_saved_authority(mut scope: Sc
 		]
 	);
 }
+/// The Run waits on question `request` and continues at `answer_by` without an answer.
+fn run_waiting_on(request: u128, answer_by: Option<DateTime<Utc>>) -> RawRun {
+	let mut waiting = run(3, true);
+	waiting.metadata.phase = RunPhase::Waiting;
+	waiting.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Human {
+			request_id: id(request),
+			answer_by,
+			resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	waiting
+}
+
+#[rstest]
+#[case::the_question_the_run_waits_on(5, None, Some("2026-10-19T00:00:00Z"))]
+#[case::another_question_of_the_run(6, None, None)]
+#[case::a_question_already_answered(5, Some(json!({"answer":"A"})), None)]
+#[tokio::test]
+async fn a_waiting_question_shows_when_its_run_continues_without_an_answer(
+	mut scope: Scope,
+	#[case] waiting_on: u128,
+	#[case] response: Option<serde_json::Value>,
+	#[case] expected: Option<&str>,
+) {
+	let continues_at: DateTime<Utc> = "2026-10-19T00:00:00Z".parse().unwrap();
+	scope.runs = BTreeMap::from([(0, vec![run_waiting_on(waiting_on, Some(continues_at))])]);
+	let mut question = human(5, true);
+	question.response = response;
+	scope.humans = BTreeMap::from([(0, vec![question])]);
+
+	let output = state(&mut scope).await.unwrap();
+
+	assert_eq!(
+		output
+			.human_requests
+			.iter()
+			.map(|request| request.answer_by)
+			.collect::<Vec<_>>(),
+		[expected.map(|text| text.parse::<DateTime<Utc>>().unwrap())]
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn denied_workspace_events_do_not_remove_tenant_marketplace_events(mut scope: Scope) {

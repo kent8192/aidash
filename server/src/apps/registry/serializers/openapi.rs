@@ -5,6 +5,7 @@ use crate::apps::registry::serializers::agent_plugin_import::{
 };
 use crate::apps::registry::serializers::contracts::Entry as RegistryContractsEntry;
 use crate::apps::registry::serializers::contracts::Search;
+use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
 use crate::apps::registry::serializers::knowledge::PersonalAgent;
 use crate::apps::registry::serializers::skill_import::ImportRequest;
 use crate::apps::registry::serializers::skill_import::ImportResult;
@@ -49,6 +50,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, RegistryContractsEntry>(document, views::management::registry_create)?;
 	contracts.idempotency(document, views::management::registry_create)?;
+	contracts.response::<_, McpToolHint>(
+		document,
+		views::management::mcp_tool_hint,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, McpToolHintRequest>(document, views::management::mcp_tool_hint)?;
 	contracts.response::<_, ImportResult>(
 		document,
 		views::management::skill_import,

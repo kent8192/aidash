@@ -44,9 +44,16 @@ impl Clients {
 	pub(crate) fn select(&self, access: &Access) -> Result<&reqwest::Client> {
 		match access.keyless {
 			None => Ok(&self.direct),
-			Some(Destination::Permitted) => Ok(&self.permitted),
-			Some(Destination::PublicOnly) => Ok(&self.public),
-			Some(Destination::Forbidden) => Err(Error::Forbidden),
+			Some(destination) => self.keyless(destination),
+		}
+	}
+
+	/// The client a Keyless destination may use; a refused one never reaches I/O.
+	pub fn keyless(&self, destination: Destination) -> Result<&reqwest::Client> {
+		match destination {
+			Destination::Permitted => Ok(&self.permitted),
+			Destination::PublicOnly => Ok(&self.public),
+			Destination::Forbidden => Err(Error::Forbidden),
 		}
 	}
 }

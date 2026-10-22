@@ -5,7 +5,7 @@ fn jev() -> DeciderRoute {
 		provider_contract: PROVIDER.into(),
 		model: "typesafe/jev-1.13".into(),
 		hosts: vec![],
-		keep_threshold: Probability::half(),
+		threshold: Probability::half(),
 		state_budget: StateBudget::default(),
 	}
 }
@@ -18,7 +18,7 @@ fn clef() -> DeciderRoute {
 			"deepinfra".into(),
 			"primeintellect".into(),
 		],
-		keep_threshold: Probability::half(),
+		threshold: Probability::half(),
 		state_budget: StateBudget {
 			long_context_request_bytes: None,
 			long_context_state_bytes: None,
@@ -45,7 +45,6 @@ fn config() -> DeciderConfig {
 fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() {
 	let original = serde_json::to_value(config()).unwrap();
 	for (field, value) in [
-		("hook", "approval"),
 		("answer_type", "choice"),
 		("builder", "custom-code/1"),
 		("option_source", "live/1"),
@@ -84,12 +83,7 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 	let mut json = original.clone();
 	json["routes"][0]["model"] = format!("typesafe/jev-1.{}", "1".repeat(256)).into();
 	assert!(serde_json::from_value::<DeciderConfig>(json).map_or(true, |c| c.validate().is_err()));
-	for field in [
-		"model",
-		"provider_contract",
-		"keep_threshold",
-		"state_budget",
-	] {
+	for field in ["model", "provider_contract", "threshold", "state_budget"] {
 		// These belong to a Route now.
 		let mut json = original.clone();
 		json[field] = original["routes"][0][field].clone();
@@ -142,29 +136,26 @@ fn decisions_routes_pin_exact_models_and_name_their_hosts() {
 		with(|r| r.model = "~cloudflare/clef-latest".into()),
 		with(|r| r.model = "cloudflare/clef:free".into()),
 		with(|r| r.model = "clef".into()),
-		with(|r| r.keep_threshold = Probability::new(0.0).unwrap()),
-		with(|r| r.keep_threshold = Probability::new(0.6).unwrap()),
+		with(|r| r.threshold = Probability::new(0.0).unwrap()),
+		with(|r| r.threshold = Probability::new(0.6).unwrap()),
 	] {
 		assert!(invalid.validate().is_err(), "{invalid:?}");
 	}
 	for routes in [vec![], vec![jev(), clef(), clef()], vec![jev(); 5]] {
 		assert!(DeciderConfig { routes, ..config() }.validate().is_err());
 	}
-	let lower = with(|r| r.keep_threshold = Probability::new(0.3).unwrap());
+	let lower = with(|r| r.threshold = Probability::new(0.3).unwrap());
 	lower.validate().unwrap();
 	// A Route's lower threshold keeps more; a Binding's stricter one still wins.
 	assert_eq!(
-		Restrictions::default()
-			.with_route(&lower)
-			.keep_threshold
-			.value(),
+		Restrictions::default().with_route(&lower).threshold.value(),
 		0.3
 	);
 	let strict = Restrictions {
-		keep_threshold: Probability::new(0.2).unwrap(),
+		threshold: Probability::new(0.2).unwrap(),
 		..Default::default()
 	};
-	assert_eq!(strict.with_route(&lower).keep_threshold.value(), 0.2);
+	assert_eq!(strict.with_route(&lower).threshold.value(), 0.2);
 }
 #[test]
 fn served_models_match_their_pin_or_a_dated_snapshot_of_it() {
@@ -210,7 +201,7 @@ fn binary64_evidence_round_trips_subnormals_negative_zero_and_boundary_neighbors
 	}
 }
 #[test]
-fn keep_threshold_is_inclusive_and_result_precedes_call() {
+fn threshold_is_inclusive_and_result_precedes_call() {
 	let below =
 		Probability::new(f64::from_bits(Probability::half().value().to_bits() - 1)).unwrap();
 	let half = Probability::half();
@@ -223,19 +214,19 @@ fn keep_threshold_is_inclusive_and_result_precedes_call() {
 fn narrowing_cannot_increase_deletion_and_intersections_preserve_both_constraints() {
 	let c = config();
 	let a = Restrictions {
-		keep_threshold: Probability::new(0.25).unwrap(),
+		threshold: Probability::new(0.25).unwrap(),
 		preserve_recent: 8,
 		forbid_apply: false,
 		max_calls_per_run: Some(10),
 	};
 	let b = Restrictions {
-		keep_threshold: Probability::new(0.1).unwrap(),
+		threshold: Probability::new(0.1).unwrap(),
 		preserve_recent: 6,
 		forbid_apply: true,
 		max_calls_per_run: None,
 	};
 	let intersection = a.intersect(&b, &c).unwrap();
-	assert_eq!(intersection.keep_threshold, b.keep_threshold);
+	assert_eq!(intersection.threshold, b.threshold);
 	assert_eq!(intersection.preserve_recent, 8);
 	assert!(intersection.forbid_apply);
 	assert_eq!(intersection.max_calls_per_run, Some(10));
@@ -255,7 +246,7 @@ fn narrowing_cannot_increase_deletion_and_intersections_preserve_both_constraint
 	}
 	assert!(
 		Restrictions {
-			keep_threshold: Probability::new(0.6).unwrap(),
+			threshold: Probability::new(0.6).unwrap(),
 			..a.clone()
 		}
 		.validate(&c)

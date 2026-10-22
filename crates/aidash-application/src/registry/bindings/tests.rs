@@ -1768,13 +1768,13 @@ fn native_memory_binding_preserves_removed_read_operations() {
 fn decider_config() -> Value {
 	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
         "provider_credential":"openrouter",
-        "routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","keep_threshold":"3fe0000000000000"}],
+        "routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}],
         "builder":"aidash.compaction/2","option_source":"history_event/1",
         "rule":"compaction.keep/1","mode":"enforce",
         "max_calls_per_run":20})
 }
 fn decider_binding(id: &str) -> Binding {
-	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"keep_threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()
+	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()
 }
 #[tokio::test]
 async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
@@ -1818,7 +1818,7 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 	);
 	assert_eq!(bound.config.routes[0].model, "typesafe/jev-1.13");
 	assert_eq!(bound.restrictions.preserve_recent, 8);
-	assert_eq!(bound.restrictions.keep_threshold.value(), 0.25);
+	assert_eq!(bound.restrictions.threshold.value(), 0.25);
 	catalog
 		.entries
 		.get_mut(&reference("decider"))
@@ -1892,7 +1892,7 @@ async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admis
 #[test]
 fn decider_bindings_reject_deletion_widening_and_tool_only_fields() {
 	for narrow in [
-		json!({"decision":{"keep_threshold":"3fe3333333333333"}}),
+		json!({"decision":{"threshold":"3fe3333333333333"}}),
 		json!({"decision":{"preserve_recent":5}}),
 		json!({"allowed_hosts":["example.test"]}),
 		json!({"limits":{"max_calls":10}}),
