@@ -74,6 +74,7 @@ async fn interruption_store(
 		usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
 		admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 		provider_credentials: None,
+		tenant_secrets: None,
 		plan_connections: None,
 		plan_connections_enabled: false,
 		provider_key_material_reader: None,

@@ -1,5 +1,15 @@
 # Aidash native migration history
 
+Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
+and durable operation egress budgets and audits in `execution/0046` through
+`0048`. Their forced Tenant row policies use the existing policy renderer.
+`registry/0042_external_services` extends both Registry kind checks and the
+HTTP/MCP and Agent Binding contracts; `0043` records the ORM enum state. Kind
+constraints use typed Reinhardt operations. PostgreSQL function replacements
+remain SQL DDL assets because Reinhardt has no function-body operation. The
+reverse restores the previous Tool and Agent contracts; remove External
+service definitions and bindings before reversing the kind constraints.
+
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
@@ -507,4 +517,4 @@ pruning or summary, journals those events as `imported`.
 
 `identity/0033_demo_data` (after `identity/0032_tenant_owned_row_level_security`) creates the three tables of Demo data (ADR 0079, ADR 0080) with typed operations. `demo_data_loads` is Deployment-wide: one row per pair of `demo-data` inputs that loaded to completion, keyed by the lowercase hex SHA-256 of their canonical JSON, written last in its own transaction so a rerun with the same digest changes nothing. `demo_tenants` is Deployment-wide and names a Tenant (purge deletes it with the Tenant): it maps a structure key (`[a-z][a-z0-9-]{0,31}`) to the Tenant name assigned to it, one key per Tenant, because Tenant labels are not unique. `demo_reservations` is Tenant-owned: it reserves a fictional subject of the Tenant for a lowercase email address, unique per `(tenant, email)`, and a check keeps `spent_at` and `spent_by` (an External Identity) set together. It references the Tenant root record through `demo_reservations_tenant_root_fkey`. `identity/0034_demo_data_state` is the generated state-only checkpoint, and `identity/0035_demo_reservations_row_level_security` (after it and `identity/0028_tenancy_policy_functions`) enforces the forced Tenant policy on `demo_reservations` with a rendered `RunSQL` asset, as `registry/0040` does.
 
-`execution/0046_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0036_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0042_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0042` is listed in `TENANT_REGISTRY_MIGRATIONS`.
+`execution/0049_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0039_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0044_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0044` is listed in `TENANT_REGISTRY_MIGRATIONS`.

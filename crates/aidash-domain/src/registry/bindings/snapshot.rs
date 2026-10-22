@@ -67,6 +67,7 @@ impl BindingSnapshot {
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
 				BindingKind::Decider => "decider",
+				BindingKind::ExternalService => "external_service",
 			};
 			if entry.kind != kind {
 				return Err(Error::Invalid(

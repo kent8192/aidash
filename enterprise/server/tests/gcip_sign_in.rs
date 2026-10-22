@@ -2275,7 +2275,7 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
 			"resources": {"kinds": [
 				"registration", "mapping", "subject", "invitation", "policy", "decision",
-				"credential", "peer_mapping", "test_limits", "test_profile"
+				"credential", "peer_mapping", "test_limits", "test_profile", "secret"
 			]},
 			"condition": null
 		}, {

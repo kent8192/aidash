@@ -1,0 +1,42 @@
+{{- if .Values.execution.egress.enabled }}
+{{- $e := .Values.execution.egress -}}
+{{- $_ := include "aidash.egressSettings" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-egress
+spec:
+  type: ClusterIP
+  clusterIP: {{ $e.clusterIP | quote }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+  ports:
+    - { name: egress, port: {{ $e.port | int }}, targetPort: {{ $e.port | int }} }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-egress-internal
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  policyTypes: [Ingress]
+  ingress:
+    {{- if not .Values.backendIngress.podSelectors }}
+    # Preserve the API's ordinary ingress when it has no more specific policy.
+    - ports: [{ protocol: TCP, port: 8080 }]
+    {{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "aidash.sandboxNamespace" . | quote }}
+          podSelector:
+            matchLabels: { aidash-sandbox: "true" }
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports: [{ protocol: TCP, port: {{ $e.port | int }} }]
+{{- end }}

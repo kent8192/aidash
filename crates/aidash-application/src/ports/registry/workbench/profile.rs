@@ -40,6 +40,13 @@ pub trait ProfileRepository: Send + Sync {
 	/// about the rules is read, keeping nothing; `save` decides it again with
 	/// the write, which keeps that decision.
 	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()>;
+	/// The hosts the Tenant's active Tenant Secret `name` records, or `None`
+	/// when there is none. A Subject needs `secret.use` on it; a placement
+	/// without a Secret Store holds none.
+	async fn tenant_secret_hosts(&self, tenant: &str, name: &str) -> Result<Option<Vec<String>>> {
+		let _ = (tenant, name);
+		Ok(None)
+	}
 	/// The definition in the profile's Tenant, which the caller names.
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry>;
 	/// Preserve the exclusive row lock, expected-revision fence and atomic

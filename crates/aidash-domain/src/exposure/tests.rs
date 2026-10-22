@@ -567,9 +567,16 @@ fn shared_lifecycle_companions_are_charged_once() {
 	let mut run = Run::default();
 	run.mandatory()
 		.builtin("code_interpreter", BindingOrigin::Explicit)
-		.builtin("python_install", BindingOrigin::Explicit)
 		.builtin("python_poll", BindingOrigin::Companion)
 		.builtin("python_cancel", BindingOrigin::Companion);
+	run.bind_tool(
+		reference("another-python"),
+		"another_python",
+		core_descriptor(NODE, "code_interpreter").unwrap(),
+		"Another parent",
+		0,
+		BindingOrigin::Explicit,
+	);
 	let catalog = run.catalog();
 	let budgets = DeferredBudgets::default();
 	let base = select(&budgets, &catalog, &ExposureState::default())
@@ -577,7 +584,7 @@ fn shared_lifecycle_companions_are_charged_once() {
 		.usage
 		.schema_bytes;
 	let mut state = ExposureState::default();
-	for alias in ["code_interpreter", "python_install"] {
+	for alias in ["code_interpreter", "another_python"] {
 		let digest = capability(&catalog, alias).digest.clone();
 		state = applied(
 			&state,
@@ -591,7 +598,7 @@ fn shared_lifecycle_companions_are_charged_once() {
 	assert_eq!(
 		selection.usage.schema_bytes - base,
 		bytes("code_interpreter")
-			+ bytes("python_install")
+			+ bytes("another_python")
 			+ bytes("python_poll")
 			+ bytes("python_cancel")
 	);

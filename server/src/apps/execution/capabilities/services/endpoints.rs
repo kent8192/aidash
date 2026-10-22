@@ -929,14 +929,6 @@ pub(crate) async fn python(
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "code_interpreter", json!(input)).await
 }
-pub(crate) async fn python_install(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: super::packages::Install,
-) -> Result<Envelope> {
-	dispatch(f, actor, id, "python_install", json!(input)).await
-}
 pub(crate) async fn python_poll(
 	f: Federation,
 	actor: Actor,

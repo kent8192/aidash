@@ -58,3 +58,5 @@ pub mod provider_authorization;
 pub mod provider_credentials;
 
 pub mod research;
+
+pub mod egress;

@@ -51,7 +51,6 @@ fn only_provider_verified_reads_declare_shared_read() {
 		"shell_poll",
 		"shell_cancel",
 		"code_interpreter",
-		"python_install",
 		"python_poll",
 		"python_cancel",
 		"apply_patch",

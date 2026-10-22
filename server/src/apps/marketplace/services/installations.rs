@@ -58,6 +58,7 @@ fn install_command(
 		digest: input.digest.clone(),
 		config: input.config.clone(),
 		bindings: input.bindings.clone(),
+		secrets: input.secrets.clone(),
 		idempotency_key: input.idempotency_key,
 	}
 }
@@ -68,6 +69,7 @@ fn configure_command(
 		expected_revision: input.expected_revision,
 		config: input.config.clone(),
 		bindings: input.bindings.clone(),
+		secrets: input.secrets.clone(),
 		idempotency_key: input.idempotency_key,
 	}
 }
@@ -115,6 +117,7 @@ mod conversion_tests {
 	#[rstest]
 	fn installation_conversion_preserves_replay_bytes() {
 		let input = Install {
+			secrets: Default::default(),
 			digest: "sha256:fixture".into(),
 			config: json!({"instructions":"Frozen"}),
 			bindings: vec![DependencyBinding {
@@ -140,6 +143,7 @@ mod conversion_tests {
 	#[rstest]
 	fn configuration_conversion_preserves_replay_bytes() {
 		let input = Configure {
+			secrets: Default::default(),
 			expected_revision: 7,
 			config: json!({"instructions":"Changed"}),
 			bindings: vec![DependencyBinding {

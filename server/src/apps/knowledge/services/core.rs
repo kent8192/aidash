@@ -26,7 +26,7 @@ impl IndexSpec {
 		self.validate_with(&crate::bootstrap::registry_validation())
 	}
 	/// Validate against a node's runtime composition, so a configured Provider
-	/// Credential Store admits Tenant-backed embeddings.
+	/// Secret Store admits Tenant-backed embeddings.
 	pub fn validate_with(
 		&self,
 		validation: &aidash_application::registry::DefinitionValidation,

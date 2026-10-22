@@ -81,6 +81,7 @@ pub fn definition_references(
 					BindingKind::Memory => "memory",
 					BindingKind::Source => "source",
 					BindingKind::Decider => "decider",
+					BindingKind::ExternalService => "external_service",
 				};
 				result.push((normalized.binding.target, kind.into()));
 			}
@@ -617,6 +618,7 @@ pub enum BindingKind {
 	Memory,
 	Source,
 	Decider,
+	ExternalService,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

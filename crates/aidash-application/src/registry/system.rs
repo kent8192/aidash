@@ -153,6 +153,7 @@ pub async fn seed(
 		.into_iter()
 		.chain(offered)
 		.chain(deciders)
+		.chain(external_services())
 	{
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;
 		// Restart may precede recovery of a prepared transaction. Even an
@@ -228,3 +229,31 @@ pub fn attributes(entry: &Entry) -> serde_json::Value {
 pub mod packages;
 #[cfg(test)]
 mod tests;
+
+/// Package indexes still require each Tenant's Catalog Approval and explicit Binding.
+fn external_services() -> Vec<Entry> {
+	[
+		("npm", "https://registry.npmjs.org/"),
+		("pypi", "https://pypi.org/"),
+	]
+	.into_iter()
+	.map(|(name, base_url)| Entry {
+		binding_normalization: None,
+		installation: None,
+		id: format!("core.{name}"),
+		version: "1.0.0".into(),
+		kind: "external_service".into(),
+		name: std::collections::BTreeMap::from([("en".into(), name.into())]),
+		description: std::collections::BTreeMap::from([(
+			"en".into(),
+			aidash_domain::egress::DISCLOSURE.into(),
+		)]),
+		capabilities: vec![],
+		tags: vec!["system".into()],
+		languages: vec![],
+		skills: vec![],
+		schema: json!({}),
+		config: json!({"base_url":base_url,"methods":["GET","HEAD"],"authentication":{"type":"bearer"}}),
+	})
+	.collect()
+}

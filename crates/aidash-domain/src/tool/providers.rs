@@ -68,8 +68,8 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"file_search" | "file_read" | "apply_patch" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
-		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_install"
-		| "python_poll" | "python_cancel" => "core.sandbox@1",
+		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_poll"
+		| "python_cancel" => "core.sandbox@1",
 		"outbound_get" => "core.egress@1",
 		"file_share" => "core.sharing@1",
 		_ => return None,
@@ -173,7 +173,6 @@ pub fn requires_runner(operation: &str) -> bool {
 			| "shell_poll"
 			| "shell_cancel"
 			| "code_interpreter"
-			| "python_install"
 			| "python_poll"
 			| "python_cancel"
 	)
@@ -187,7 +186,6 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "shell_poll"
 				| "shell_cancel"
 				| "code_interpreter"
-				| "python_install"
 				| "python_poll"
 				| "python_cancel"
 				| "outbound_get"
@@ -205,7 +203,7 @@ pub fn core_descriptor(node: &str, operation: &str) -> Result<ToolDescriptor> {
 		.ok_or_else(|| Error::Invalid("unknown provider operation".into()))?;
 	let companions = match operation {
 		"shell" => Some(("shell_poll", "shell_cancel")),
-		"code_interpreter" | "python_install" => Some(("python_poll", "python_cancel")),
+		"code_interpreter" => Some(("python_poll", "python_cancel")),
 		_ => None,
 	};
 	Ok(ToolDescriptor {
@@ -413,7 +411,6 @@ pub fn reserved_aliases() -> BTreeSet<&'static str> {
 			"shell_poll",
 			"shell_cancel",
 			"code_interpreter",
-			"python_install",
 			"python_poll",
 			"python_cancel",
 			"outbound_get",

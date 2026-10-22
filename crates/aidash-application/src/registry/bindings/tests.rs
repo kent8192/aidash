@@ -264,14 +264,13 @@ async fn missing_required_and_tampered_definitions_fail_closed() {
 	);
 }
 #[tokio::test]
-async fn python_start_operations_share_pinned_companions() {
+async fn a_python_start_pins_its_poll_and_cancel_companions() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	let code = catalog.core("code_interpreter");
-	let install = catalog.core("python_install");
 	catalog.core("python_poll");
 	catalog.core("python_cancel");
-	let bundle = catalog.bundle("python", vec![code, install]);
+	let bundle = catalog.bundle("python", vec![code]);
 	config.bindings.push(Binding {
 		kind: BindingKind::Bundle,
 		target: bundle,
@@ -281,12 +280,7 @@ async fn python_start_operations_share_pinned_companions() {
 		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
-	for operation in [
-		"code_interpreter",
-		"python_install",
-		"python_poll",
-		"python_cancel",
-	] {
+	for operation in ["code_interpreter", "python_poll", "python_cancel"] {
 		assert_eq!(
 			saved
 				.bindings
@@ -310,10 +304,12 @@ async fn selecting_async_start_also_pins_companions_but_not_other_starts() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	let code = catalog.core("code_interpreter");
-	let install = catalog.core("python_install");
+	let shell = catalog.core("shell");
+	catalog.core("shell_poll");
+	catalog.core("shell_cancel");
 	catalog.core("python_poll");
 	catalog.core("python_cancel");
-	let bundle = catalog.bundle("python", vec![code.clone(), install]);
+	let bundle = catalog.bundle("host", vec![code.clone(), shell]);
 	config.bindings.push(Binding {
 		kind: BindingKind::Bundle,
 		target: bundle,
@@ -333,7 +329,7 @@ async fn selecting_async_start_also_pins_companions_but_not_other_starts() {
 		!saved
 			.bindings
 			.iter()
-			.any(|binding| binding.alias.as_deref() == Some("python_install"))
+			.any(|binding| binding.alias.as_deref() == Some("shell"))
 	);
 }
 #[tokio::test]
@@ -1047,7 +1043,6 @@ async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 		"shell_poll",
 		"shell_cancel",
 		"code_interpreter",
-		"python_install",
 		"python_poll",
 		"python_cancel",
 	];
@@ -1422,10 +1417,12 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 		});
 	}
 	let code = catalog.core("code_interpreter");
-	let install = catalog.core("python_install");
+	let shell = catalog.core("shell");
+	catalog.core("shell_poll");
+	catalog.core("shell_cancel");
 	catalog.core("python_poll");
 	catalog.core("python_cancel");
-	let bundle = catalog.bundle("python", vec![code.clone(), install.clone()]);
+	let bundle = catalog.bundle("host", vec![code.clone(), shell.clone()]);
 	config.bindings.push(Binding {
 		kind: BindingKind::Bundle,
 		target: bundle,
@@ -1477,7 +1474,7 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 	let expanded = snapshot(&mut catalog, &expanded_config, false)
 		.await
 		.unwrap();
-	for identity in [install, QualifiedRef::builtin(NODE, "apply_patch")] {
+	for identity in [shell, QualifiedRef::builtin(NODE, "apply_patch")] {
 		let mut added = recovered.clone();
 		added.bindings.push(
 			expanded

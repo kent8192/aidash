@@ -161,4 +161,6 @@ pub(crate) mod approval_preferences;
 pub mod plan_connections;
 pub mod provider_credentials;
 
-pub mod credential_store;
+pub mod secret_store;
+
+pub mod tenant_secrets;

@@ -208,6 +208,7 @@ fn rule() -> RealToolRule {
 		endpoint: "https://test.example/rpc".into(),
 		allowed_actions: vec!["read".into()],
 		allowed_resources: vec!["fixture".into()],
+		secret: None,
 	}
 }
 #[async_trait]

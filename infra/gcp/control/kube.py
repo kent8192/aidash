@@ -522,7 +522,7 @@ def provider_settings(descriptor, external):
             or not ENVIRONMENT.fullmatch(store["environment_id"])
             or descriptor["fingerprint_key"] != {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}
         ):
-            raise Refused("invalid managed Provider Credential Store")
+            raise Refused("invalid managed Secret Store")
         fingerprint = external.get("AIDASH_PROVIDER_FINGERPRINT_KEY")
         if not isinstance(fingerprint, str) or len(fingerprint.strip().encode()) < 32:
             raise Refused("BYOK requires a stable Provider Credential fingerprint key of at least 32 bytes")

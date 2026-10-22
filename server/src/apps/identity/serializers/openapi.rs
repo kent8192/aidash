@@ -119,6 +119,52 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	}
+	{
+		use super::tenant_secrets as ts;
+		use aidash_application::tenant_secrets::Metadata as SecretMetadata;
+		contracts.response::<_, Vec<SecretMetadata>>(
+			document,
+			views::tenant_secrets::list,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::tenant_secrets::list, &["String"])?;
+		contracts.response::<_, SecretMetadata>(
+			document,
+			views::tenant_secrets::get_record,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::tenant_secrets::get_record,
+			&["String", "String"],
+		)?;
+		contracts.request::<_, ts::Write>(document, views::tenant_secrets::put_record)?;
+		contracts.response::<_, SecretMetadata>(
+			document,
+			views::tenant_secrets::put_record,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::tenant_secrets::put_record,
+			&["String", "String"],
+		)?;
+		contracts.request::<_, ts::Revision>(document, views::tenant_secrets::delete_record)?;
+		contracts.response::<_, SecretMetadata>(
+			document,
+			views::tenant_secrets::delete_record,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::tenant_secrets::delete_record,
+			&["String", "String"],
+		)?;
+	}
 	contracts.response::<_, Vec<Metadata>>(
 		document,
 		views::provider_credentials::list,

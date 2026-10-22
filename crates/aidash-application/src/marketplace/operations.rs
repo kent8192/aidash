@@ -98,6 +98,7 @@ pub async fn administration(
 		let approved = scope
 			.approved(&input.tenant, &reference(&revision.entry))
 			.await?;
+		let secrets = super::installations::secret_assignments(&revision)?;
 		entries.push(InstallationRevision {
 			installation,
 			revision: revision.revision,
@@ -106,6 +107,7 @@ pub async fn administration(
 			config: revision.config,
 			dependencies: revision.dependencies,
 			bindings: revision.bindings,
+			secrets,
 			approved,
 			actions: vec![],
 		});

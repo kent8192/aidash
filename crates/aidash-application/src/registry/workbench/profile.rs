@@ -176,6 +176,13 @@ pub async fn put(
 		}
 		let tool = repository.definition(&tenant, &rule.tool).await?;
 		validate_real_rule(configuration, rule, &tool)?;
+		// A rule may send a Tenant Secret to its test endpoint, which must be
+		// one of that Tenant Secret's recorded hosts (ADR 0051).
+		if let Some(name) = &rule.secret {
+			aidash_domain::tenant_secrets::validate_name(name)?;
+			let hosts = repository.tenant_secret_hosts(&tenant, name).await?;
+			crate::tenant_secrets::admit(name, &rule.endpoint, hosts.as_deref())?;
+		}
 	}
 	repository.save(&tenant, &id, &input).await
 }

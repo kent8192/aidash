@@ -477,7 +477,7 @@ def render():
     desktop_start = {"redirect_uri":"http://127.0.0.1:43217/callback","state":"ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss","code_challenge":"2RMjpSmPO5-BTbKe-qJx8k-9zO390GJJG4q8jge3-2k"}
     add("POST /auth/desktop/start", "Start a bound S256 desktop handoff", 200,
         body=json.dumps(desktop_start), seq=45,
-        checks='expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("base_url")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url);const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request);')
+        checks='expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("browser_origin")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url.replace(bru.getEnvVar("browser_origin"),bru.getEnvVar("base_url")));const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request);')
     add("GET /auth/desktop/authorize", "Browser consent binds the handoff", 200,
         path="{{desktop_authorize_url}}", headers={"Cookie":"{{session_cookie}}"}, seq=46,
         checks='expect(res.getHeader("content-type")).to.include("text/html");expect(String(res.getBody())).to.include(bru.getVar("desktop_request"));expect(res.getHeader("content-security-policy")).to.include("http://127.0.0.1:43217");')
@@ -892,6 +892,27 @@ def render():
                 add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
                     path=path.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/tenant_secrets.rs":
+            body = json.dumps({"expected_revision": 0}) if route["json"] else None
+            add(endpoint, "Forged bearer cannot manage Tenant Secrets", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Missing Store fails closed for the Deployment Administrator", DEPLOYMENT_ADMINISTRATOR),
+                ("Missing Store fails closed for the subject", SUBJECT),
+            ]:
+                add(endpoint, label, 404, headers=headers, body=body,
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Tenant Secrets are not available on this Deployment"});',
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    headers=SUBJECT, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{", immutable=True)
+                add(endpoint, "Required revision cannot be omitted", 422,
+                    headers=SUBJECT, body="{}", immutable=True)
+                add(endpoint, "Unknown lifecycle fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"expected_revision": 0, "unexpected": True}), immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
             uri = path.replace("{provider}", "openrouter")
             body = (
@@ -908,7 +929,7 @@ def render():
                 ("Missing Store fails closed for the subject", SUBJECT),
             ]:
                 add(endpoint, label, 404, path=uri, headers=headers, body=body,
-                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Provider Credential Store is not configured"});',
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Secret Store is not configured"});',
                     immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,

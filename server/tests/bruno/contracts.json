@@ -7279,58 +7279,6 @@
   },
   {
     "method": "POST",
-    "path": "/api/runs/{id}/python/install",
-    "name": "core_python_install",
-    "source": "server/src/apps/execution/capabilities/views/management.rs",
-    "json": true,
-    "uuid_parameters": ["id"],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/Envelope"
-      },
-      "definitions": {
-        "Envelope": {
-          "type": "object",
-          "description": "Executable result alternatives shared by HTTP and model tool delivery.\nResult variants allow common envelope fields in composed OpenAPI schemas.\nInputs remain strict; outputs permit additive fields for forward compatibility.",
-          "required": [
-            "operation_id",
-            "status",
-            "policy_revision",
-            "area_id",
-            "generation",
-            "revision"
-          ],
-          "properties": {
-            "area_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "generation": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "operation_id": {
-              "type": "string"
-            },
-            "policy_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "status": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
     "path": "/api/runs/{id}/python/poll",
     "name": "core_python_poll",
     "source": "server/src/apps/execution/capabilities/views/management.rs",
@@ -38134,5 +38082,41 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/secrets",
+    "name": "tenant-secret-list",
+    "source": "server/src/apps/identity/views/tenant_secrets.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/secrets/{name}",
+    "name": "tenant-secret-get",
+    "source": "server/src/apps/identity/views/tenant_secrets.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/secrets/{name}",
+    "name": "tenant-secret-put",
+    "source": "server/src/apps/identity/views/tenant_secrets.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/secrets/{name}",
+    "name": "tenant-secret-delete",
+    "source": "server/src/apps/identity/views/tenant_secrets.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

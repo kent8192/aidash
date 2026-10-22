@@ -13,6 +13,7 @@ fn version() -> Version {
 		author: "fixture".into(),
 		permissions: vec![],
 		dependencies: vec![],
+		secrets: vec![],
 	};
 	let manifest_source = serde_json::to_string(&package).unwrap();
 	Version {

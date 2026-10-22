@@ -36,3 +36,7 @@ pub(crate) mod api_schema;
 pub mod bootstrap;
 
 pub mod database;
+
+#[cfg(test)]
+#[path = "apps/execution/repositories/egress/tests.rs"]
+mod egress_tests;

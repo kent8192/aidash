@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -255,6 +256,17 @@ class Runner:
                   "metadata": {"name": "aidash-deny", "namespace": self.config["namespace"]},
                   "spec": {"podSelector": {"matchLabels": {"aidash-sandbox": "true"}},
                            "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
+        settings = self.config.get('egress')
+        if settings:
+            endpoint = urlsplit(settings['endpoint'])
+            address = ipaddress.ip_address(endpoint.hostname)
+            if endpoint.scheme != 'http' or endpoint.username or endpoint.password or endpoint.path not in ('', '/') or endpoint.query or endpoint.fragment:
+                raise ValueError('Egress endpoint must be an internal HTTP IP origin')
+            destination = {'ipBlock': {'cidr': str(address) + ('/32' if address.version == 4 else '/128')}}
+            if settings.get('namespace') and settings.get('pod_selector'):
+                destination = {'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': settings['namespace']}},
+                               'podSelector': {'matchLabels': settings['pod_selector']}}
+            policy['spec']['egress'] = [{'to': [destination], 'ports': [{'protocol': 'TCP', 'port': endpoint.port or 80}]}]
         self.kube(["apply", "-f", "-"], json.dumps(policy).encode())
 
     def path(self, operation):
@@ -279,9 +291,17 @@ class Runner:
         return {k: v for k, v in record.items() if k not in ("request", "pod_uid")}
 
     def accept(self, request, admission_probe=False):
-        if set(request) - {"session_id"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
+        if set(request) - {"session_id", "egress"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
+        if 'egress' in request:
+            lease = request['egress']
+            settings = self.config.get('egress') or {}
+            if (not isinstance(lease, dict) or set(lease) != {'url', 'token'}
+                    or lease['url'] != settings.get('endpoint')
+                    or not isinstance(lease['token'], str)
+                    or not re.fullmatch(re.escape(operation) + r'\.[A-Za-z0-9_-]{43}', lease['token'])):
+                raise Rejected(400, 'invalid Egress lease')
         # "verify" runs like "shell" but never exports /work: a Completion Gate
         # Check must not change the Working Area it verifies.
         if request["kind"] not in ("shell", "verify", "python") or not isinstance(request["code"], str):
@@ -647,7 +667,7 @@ class Runner:
                 record = self.update(operation, hydrated=True)
             record = self.update(operation, executed=True, status="running")
             self.guard(record, "cell", operation_id=operation, code=record["request"]["code"],
-                       digest=record["digest"], seconds=record["request"]["seconds"])
+                       digest=record["digest"], seconds=record["request"]["seconds"], egress=record["request"].get("egress"))
             memory_live = True
             while True:
                 current = self.get(operation)

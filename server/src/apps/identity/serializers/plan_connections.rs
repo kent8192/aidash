@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// `[plan_connections]` with `enabled = true`. Off by default: whoever runs a
 /// Self-hosted Deployment turns Plan Connections on, accepting that the host
 /// can read the Plan Tokens it stores (ADR 0007, ADR 0008). A server whose
-/// Provider Credential Store is not PostgreSQL refuses to start with it on.
+/// Secret Store is not PostgreSQL refuses to start with it on.
 /// Turning it off again keeps existing connections readable and
 /// disconnectable, and stops everything else.
 #[settings(fragment = true, section = "plan_connections")]

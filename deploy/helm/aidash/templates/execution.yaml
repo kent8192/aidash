@@ -305,7 +305,9 @@ metadata:
 data:
   profile.json: |-
     {{- $runner := dict "journal" "/var/lib/aidash/journal" "namespace" $sandbox "image" $image "runtime_class" $runtime "kubectl" "/usr/local/bin/kubectl" "listen_host" "0.0.0.0" "listen_port" 8949 "token_env" "AIDASH_CORE_RUNNER_TOKEN" "node_selector" $selector "tolerations" $tolerations "node_guard" (dict "namespace" $trusted "selector" (printf "aidash.run/guard=%s" .Release.Name) "container" "guard" "command" (list "python3" "-I" "/opt/aidash/node_guard.py")) }}
-    {{- toJson (mergeOverwrite (deepCopy $e.limits) (dict "runner" $runner)) | nindent 4 }}
+    {{- $profile := dict "runner" $runner -}}
+    {{- if $e.egress.enabled -}}{{- $_ := set $profile "egress" (include "aidash.egressSettings" . | fromJson) -}}{{- end -}}
+    {{- toJson (mergeOverwrite (deepCopy $e.limits) $profile) | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: {{ include "aidash.workloadKind" . }}
