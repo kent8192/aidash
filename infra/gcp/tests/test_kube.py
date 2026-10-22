@@ -523,6 +523,36 @@ class SealAndMigrationTests(unittest.TestCase):
         self.assertEqual(zonal.get("storageclass", kube.STORAGE_CLASS)["parameters"], {"type": "pd-balanced"})
         self.assertNotIn("allowedTopologies", zonal.get("storageclass", kube.STORAGE_CLASS))
 
+    def test_protect_selects_everything_but_the_ledger_claim_and_is_idempotent(self):
+        kube.prepare(self.cluster, "production")
+        # Without a backup plan the CRD may not exist, so nothing is applied for it.
+        self.assertIsNone(self.cluster.get("protectedapplication", "aidash", "aidash-production"))
+        kube.prepare(self.cluster, "production", protected=True)
+        application = self.cluster.get("protectedapplication", "aidash", "aidash-production")
+        self.assertEqual(application["apiVersion"], "gkebackup.gke.io/v1")
+        self.assertEqual(application["spec"]["resourceSelection"], {"type": "Selector", "selector": {"matchExpressions": [
+            {"key": "aidash.run/backup", "operator": "NotIn", "values": ["exclude"]},
+        ]}})
+        # A claim created before protection gains the label; no other claim does.
+        self.assertEqual(self.cluster.get("persistentvolumeclaim", "memory-recovery", "aidash-production")["metadata"]["labels"], {"aidash.run/backup": "exclude"})
+        self.assertNotIn("labels", self.cluster.get("persistentvolumeclaim", "capability-objects", "aidash-production")["metadata"])
+        before = (application, self.cluster.get("persistentvolumeclaim", "memory-recovery", "aidash-production"))
+        with patch.object(self.cluster, "patch", wraps=self.cluster.patch) as patched:
+            kube.protect(self.cluster, "production")
+        patched.assert_not_called()
+        self.assertEqual(before, (self.cluster.get("protectedapplication", "aidash", "aidash-production"), self.cluster.get("persistentvolumeclaim", "memory-recovery", "aidash-production")))
+
+    def test_protect_labels_a_claim_that_predates_the_label(self):
+        namespace = "aidash-production"
+        self.cluster.dynamic_claim(namespace, "memory-recovery")
+        self.assertNotIn("labels", self.cluster.get("persistentvolumeclaim", "memory-recovery", namespace)["metadata"])
+        kube.protect(self.cluster, "production")
+        self.assertEqual(self.cluster.get("persistentvolumeclaim", "memory-recovery", namespace)["metadata"]["labels"], {"aidash.run/backup": "exclude"})
+
+    def test_only_the_ledger_claim_is_created_with_the_exclusion_label(self):
+        labelled = {name for name, size in kube.CLAIMS.items() if "labels" in kube.claim("aidash-production", name, size)["metadata"]}
+        self.assertEqual(labelled, {"memory-recovery"})
+
     def test_production_is_never_created_on_zonal_disks(self):
         # Class parameters are immutable; a zonal class would keep the zone a
         # single point of failure, so production refuses to start on it.
