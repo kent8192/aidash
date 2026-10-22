@@ -1414,6 +1414,7 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 	let describe = |protocol: &'static str| {
 		let p = &p;
 		async move {
+			let started = std::time::Instant::now();
 			let response = reqwest::Client::new()
 				.post(format!(
 					"{}/federation/v0.1/scoped/execution/grants/describe",
@@ -1427,7 +1428,9 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 				.await
 				.unwrap();
 			assert_eq!(response.status(), 200);
-			response.json::<Value>().await.unwrap()
+			let body = response.json::<Value>().await.unwrap();
+			eprintln!("scoped describe ({protocol}): {:?}", started.elapsed());
+			body
 		}
 	};
 	let expected = || async {
