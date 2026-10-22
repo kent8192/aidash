@@ -347,12 +347,12 @@ class DeliveryAnchorTests(unittest.TestCase):
 
     @staticmethod
     def checkout_refs(job):
-        return [str(step["with"]["ref"]) for step in job["steps"]
+        return [str(step["with"]["ref"]) for step in job.get("steps", [])
                 if step.get("uses", "").startswith("actions/checkout@") and "ref" in step.get("with", {})]
 
     def test_nonproduction_workflows_never_check_out_main(self):
         notifications = self.jobs("deployment-notifications.yml")
-        groups = {name: self.jobs(name) for name in ("gcp-environments.yml", "release-pr.yml", "deployment-certificate.yml")}
+        groups = {name: self.jobs(name) for name in ("gcp-environments.yml", "release-pr.yml", "release-pr-execute.yml", "deployment-certificate.yml")}
         groups["deployment-notifications.yml"] = {key: notifications[key] for key in ("intake", "nonproduction")}
         for name, jobs in groups.items():
             for job_name, job in jobs.items():
