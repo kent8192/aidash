@@ -65,6 +65,9 @@ services:
       target: dev-backend
       args:
         CARGO_PROFILE: dev
+    env_file:
+      - path: .env
+        required: false
     environment:
       NATS_URL: nats://nats:4222
       AIDASH_NODE_ID: ${AIDASH_NODE_ID:-aidash://node-a}
