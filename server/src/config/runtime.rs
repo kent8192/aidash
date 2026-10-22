@@ -108,7 +108,7 @@ impl Config {
 			deployment_key: None,
 			demo_data: settings.demo_data.enabled,
 			sign_in,
-			tier_limits: extension.tier_limits(),
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			oidc: settings
 				.dashboard
 				.oidc

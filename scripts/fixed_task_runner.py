@@ -116,6 +116,8 @@ class Experiment:
         self.subject = "evaluator"
         self.token = None
         self.catalog_revision = {}
+        self.node_name = None
+        self.node_address = None
 
     def ref(self, identifier):
         return {"registry_deployment": self.node, "id": identifier, "version": "1.0.0"}
@@ -127,16 +129,25 @@ class Experiment:
         and its Tenant exist solely for this invocation. The live tier never
         calls this and uses the evaluator's existing Tenant policy.
         """
+        # Aidash assigns both Tenant and Node names.
+        self.tenant = self.api.post("/api/tenants", {"label": self.tenant}, accept=(201,))["name"]
+        self.default_node()
         subjects = {self.subject: {"kind": "user"}}
         for agent in agent_ids:
-            subjects[f"{self.node}/agents/{agent}@1.0.0"] = {"kind": "agent"}
-        # Aidash assigns Tenant names; `self.tenant` is the label until it does.
-        self.tenant = self.api.post("/api/tenants", {"label": self.tenant}, accept=(201,))["name"]
+            subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
         bundle = {"tenant": self.tenant, "subjects": subjects,
                   "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
                                 "actions": ["*"], "resources": {"kinds": ["*"]}}]}
         self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": 1, "bundle": bundle})
         self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
+
+    def default_node(self):
+        """Resolve the Tenant's actual Node once, including for a live experiment."""
+        if self.node_name is None:
+            node = next(node for node in self.api.get(f"/api/tenants/{self.tenant}/nodes", token=self.token)
+                        if node["default"])
+            self.node_name, self.node_address = node["name"], node["address"]
+        return self.node_name
 
     def register(self, kind, identifier, config, schema=None, description="Fixed-task evaluation fixture",
                  name=None):
@@ -146,7 +157,7 @@ class Experiment:
                  "config": config}
         self.api.post("/api/registry", entry)
         self.api.post(f"/api/authorization/{self.tenant}/catalog",
-                      {"entry": {"id": identifier, "version": "1.0.0"}, "expected_revision": 0, "enabled": True})
+                      {"node": self.default_node(), "entry": {"id": identifier, "version": "1.0.0"}, "expected_revision": 0, "enabled": True})
         return {"id": identifier, "version": "1.0.0", "config_sha256": canonical_sha256(config)}
 
 

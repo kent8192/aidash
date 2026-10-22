@@ -167,7 +167,15 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 					Expr::value(task.workspace_id).into(),
 				),
 				Some(intent) => (
-					crate::database::scope::default_node(&access.identity.tenant),
+					Expr::value(
+						access
+							.node
+							.as_ref()
+							.ok_or(Error::Forbidden)?
+							.as_str()
+							.to_owned(),
+					)
+					.into(),
 					Expr::value(intent["home_node"].as_str().unwrap_or_default().to_owned()).into(),
 					SimpleExpr::from(Expr::cust("NULL::uuid")),
 					SimpleExpr::from(Expr::cust("NULL::uuid")),

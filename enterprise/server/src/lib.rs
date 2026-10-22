@@ -77,6 +77,13 @@ impl Extension for Adapters {
 		billing::install(store, aidash_server::bootstrap::build::offering())
 	}
 
+	fn tier_limits(
+		&self,
+		store: &aidash_server::store::Store,
+	) -> aidash_server::Result<Arc<dyn aidash_application::ports::nodes::TierLimits>> {
+		billing::tier_limits(store, aidash_server::bootstrap::build::offering())
+	}
+
 	fn services(
 		&self,
 		federation: &aidash_server::federation::Federation,

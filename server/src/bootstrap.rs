@@ -114,6 +114,7 @@ pub async fn initialize(
 		&settings.plan_connections,
 	)?;
 	build::current().extension.install(&mut store)?;
+	config.tier_limits = build::current().extension.tier_limits(&store)?;
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
@@ -1820,6 +1821,7 @@ pub(crate) fn transfer_scope<'a>(
 	crate::apps::execution::repositories::transfer::Scope {
 		store,
 		authority: crate::apps::execution::repositories::transfer::Authority::Borrowed(access),
+		receiving: None,
 		pending: None,
 	}
 }

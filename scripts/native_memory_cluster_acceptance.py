@@ -75,11 +75,11 @@ class NativeMemory(RemoteMemory):
                 (self.directory / f"node-{node}-memory-recovery.log").write_text(type(error).__name__)
         super().save()
 
-    def api(self, node, path, body=None):
+    def user(self, node, path, body=None, method=None):
         if body is not None and "/generation/" in path and "/policies/" in path:
             body = copy.deepcopy(body)
             body["spec"].setdefault("remote", {})["memory"] = [self.descriptor(0, "home-embedding")]
-        return super().api(node, path, body)
+        return super().user(node, path, body, method)
 
     def generated_task(self, workspace):
         return super().generated_task(workspace, policy_suffix="-" + self.language.lower())
@@ -102,17 +102,18 @@ class NativeMemory(RemoteMemory):
                 "max_model_calls": 4, "max_model_tokens": 32768, "max_cost_micros": 10000, "max_retries": 2, "max_call_seconds": 30},
             "semantic_link_min_similarity_millionths": 700000, "learn_from_runs": False, "maintain_observations": False, "refresh_mental_models": False}}
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
-        self.tenants = [self.created(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
+        self.tenants = [self.nodes[node]["tenant"] for node in range(2)]
         for node in range(2):
             def binding(kind, target, origin=node):
                 return {"kind": kind, "target": {"registry_deployment": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
-            subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
-            subjects[f"aidash://tx-{node:02}/agents/learning@1.0.0"] = {"kind": "agent"}
+            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
+            subjects[f"{self.nodes[node]['address']}/agents/learning@1.0.0"] = {"kind": "agent"}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
             self.tokens.append(credential["token"])
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": self.tenants[1 - node], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            # Peer Mappings require an administrator; a Subject bearer cannot create them.
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             for kind, name, config in [
                 ("model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
                 ("embedding", "home-embedding", self.embedding), ("reranker", "native-reranker", {"provider": "rrf"}),
@@ -133,7 +134,7 @@ class NativeMemory(RemoteMemory):
 
     def workspace(self):
         workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Native memory {self.language}", "goal": "Read attributed Home memory / 出典付き記憶を参照"}))["id"]
-        self.ok(self.api(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None}, "enabled": True,
             "auto_context": False, "max_sources": 100, "max_results": 4, "max_result_tokens": 32768, "max_input_bytes": 32768}}))
         participant = self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/participants", {"agent": ref(self.entries[0]["research"])}))
@@ -160,7 +161,7 @@ class NativeMemory(RemoteMemory):
 
     def activate(self, task, agent):
         grant = str(uuid.uuid4())
-        self.ok(self.user(0, f"/api/tasks/{task}/remote-grants", {"id": grant, "node_id": "aidash://tx-01", "agent": agent, "ttl_seconds": 1800,
+        self.ok(self.user(0, f"/api/tasks/{task}/remote-grants", {"id": grant, "node_id": self.nodes[1]["address"], "agent": agent, "ttl_seconds": 1800,
             "semantic": {"mode": "required_home", "embedding": ref(self.entries[0]["home-embedding"]), "native": self.selection}}))
         activated = self.ok(self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/activate", {}))
         assert self.ok(self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/activate", {}))["admission_id"] == activated["admission_id"]
@@ -248,7 +249,7 @@ class NativeMemory(RemoteMemory):
         record = {"language": language, "generated": generated, "home": "aidash://tx-00", "started_at": now()}
         self.evidence.setdefault("run_learning", []).append(record)
         workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Learning {language}", "goal": "Review attributed failure observations"}))["id"]
-        self.ok(self.api(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None}, "enabled": True,
             "auto_context": False, "max_sources": 100, "max_results": 4, "max_result_tokens": 32768, "max_input_bytes": 32768}}))
         capability = "native-learning-generated-" + language.lower() if generated else "native-learning-ordinary"

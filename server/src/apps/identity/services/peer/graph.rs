@@ -264,7 +264,17 @@ async fn project_page(
 			let node = admitted.sender.to_string();
 			let mut access = super::access(f, &admitted).await?;
 			let result = async {
-				let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
+				let receiving = crate::apps::identity::repositories::nodes::get(
+					&mut *access.tx,
+					admitted.tenant.as_str(),
+					admitted.receiver.node.as_str(),
+				)
+				.await?;
+				let resource = access.resource(
+					"node",
+					receiving.name.as_str(),
+					json!({"label":receiving.label,"default":receiving.default}),
+				);
 				access.require(&resource, "federation.graph.read").await?;
 				let mapping_revision =
 					crate::apps::identity::repositories::graph::persistence::mapping_revision(

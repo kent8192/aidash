@@ -30,6 +30,232 @@ async fn discover(client: &APIClient, search: Value) -> Value {
 		200,
 	)
 }
+
+#[rstest]
+#[tokio::test]
+async fn discovery_requires_node_use_even_without_any_routes(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+) {
+	// Arrange
+	let fixture = Box::pin(execution).await;
+	let mut policy = fixture.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"no-node-use","effect":"deny","subjects":{"any":true},
+		"actions":["node.use"],"resources":{"kinds":["node"]},
+	}));
+	deployment_administrator(
+		&fixture.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	// Act
+	let response = fixture
+		.subject
+		.post("/api/discover", &json!({}), "json")
+		.await
+		.unwrap();
+	// Assert
+	assert_json(response, 403);
+}
+
+#[rstest]
+#[tokio::test]
+async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+) {
+	// Arrange
+	let fixture = Box::pin(execution).await;
+	let app = &fixture.app;
+	let second = assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/tenants/acme/nodes",
+				&json!({"label":"Second"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		201,
+	);
+	let name = aidash_domain::nodes::NodeName::parse(second["name"].as_str().unwrap()).unwrap();
+	let authorization = aidash_server::authorization::Authorization {
+		pool: app.runtime.store.pool.clone(),
+	};
+	for id in ["model", "http", "research"] {
+		authorization
+			.set_catalog(
+				"acme",
+				&name,
+				&aidash_server::registry::EntityRef {
+					id: id.into(),
+					version: "1.0.0".into(),
+				},
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&aidash_server::registry::EntityRef {
+				id: "research".into(),
+				version: "1.0.0".into(),
+			},
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	// Act: only the sibling has an approved Agent.
+	let discovered = discover(&fixture.subject, json!({})).await;
+	// Assert
+	assert_eq!(discovered["errors"], json!([]), "{discovered}");
+	assert_eq!(
+		discovered["agents"].as_array().unwrap().len(),
+		1,
+		"{discovered}"
+	);
+	assert_eq!(discovered["agents"][0]["node_id"], second["address"]);
+
+	// A deployment-wide ID must not replace the receiving Node in a decision.
+	let mut policy = fixture.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deployment-is-not-a-node","effect":"deny","subjects":{"any":true},
+		"actions":["federation.discover"],"resources":{"kinds":["node"],"ids":[app.runtime.config.deployment.as_str()]},
+	}));
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"receiving-node-label","effect":"deny","subjects":{"any":true},
+		"actions":["federation.discover"],"resources":{"kinds":["node"],"ids":[name.as_str()]},
+		"condition":{"op":"not_eq","left":{"source":"resource","path":"/label"},"right":{"source":"literal","value":"Second"}},
+	}));
+	deployment_administrator(
+		app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	let allowed = discover(&fixture.subject, json!({})).await;
+	assert_eq!(allowed["agents"], discovered["agents"], "{allowed}");
+	assert_eq!(allowed["errors"], json!([]), "{allowed}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn catalog_reads_distinguish_an_empty_node_from_another_tenants_node(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+) {
+	// Arrange
+	let fixture = Box::pin(execution).await;
+	endpoint::tenant_root(&fixture.app.runtime, "globex").await;
+	let foreign = endpoint::default_node(&fixture.app.runtime.store, "globex").await;
+	let own = endpoint::default_node(&fixture.app.runtime.store, "acme").await;
+	// Act / Assert
+	for (node, status) in [(own.node.to_string(), 200), (foreign.node.to_string(), 404)] {
+		assert_json(
+			fixture
+				.subject
+				.get(&format!("/api/authorization/acme/catalog?node={node}"))
+				.await
+				.unwrap(),
+			status,
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn delegating_to_a_sibling_executes_on_that_receiving_node(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+) {
+	// Arrange: a portable Agent has approvals on both Nodes, and no Mapping
+	// is needed between Nodes belonging to this Tenant.
+	let fixture = Box::pin(execution).await;
+	let app = &fixture.app;
+	let second = assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/tenants/acme/nodes",
+				&json!({"label":"Executor"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		201,
+	);
+	let name = aidash_domain::nodes::NodeName::parse(second["name"].as_str().unwrap()).unwrap();
+	let address = second["address"].as_str().unwrap();
+	let authorization = aidash_server::authorization::Authorization {
+		pool: app.runtime.store.pool.clone(),
+	};
+	for id in ["model", "http", "research"] {
+		authorization
+			.set_catalog(
+				"acme",
+				&name,
+				&aidash_server::registry::EntityRef {
+					id: id.into(),
+					version: "1.0.0".into(),
+				},
+				0,
+				true,
+				"fixture",
+			)
+			.await
+			.unwrap();
+	}
+	let mut policy = fixture.policy.clone();
+	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.0.0")] =
+		json!({"kind":"agent"});
+	deployment_administrator(
+		app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	// Act
+	let delegated = assert_json(
+		fixture
+			.subject
+			.post(
+				&format!("/api/tasks/{}/delegate", fixture.task),
+				&json!({"node_id":address,"agent":{"id":"research","version":"1.0.0"}}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	// Assert
+	assert_eq!(delegated["node_id"], address);
+	let runs = app
+		.runtime
+		.store
+		.runs(&aidash_application::tenancy::TEST_FIXTURE)
+		.await
+		.unwrap();
+	assert_eq!(runs.len(), 1);
+	assert_eq!(runs[0].node, name);
+	assert_eq!(
+		runs[0].home_node,
+		endpoint::default_node(&app.runtime.store, "acme")
+			.await
+			.to_string()
+	);
+}
 async fn deployment_administrator(app: &EndpointFixture, path: &str, body: Value) -> Value {
 	assert_json(
 		app.deployment_administrator

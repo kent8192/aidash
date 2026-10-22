@@ -37,6 +37,7 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// The transfer loop reaches every Tenant's outbound transfer records.
@@ -81,7 +82,37 @@ impl Authority<'_> {
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) authority: Authority<'a>,
+	pub(crate) receiving: Option<aidash_domain::nodes::NodeName>,
 	pub(crate) pending: Option<PendingObject>,
+}
+
+/// A sibling sender and receiver share core_records, while the protocol keeps
+/// one transfer ID. Namespaced version-8 storage IDs also cannot collide with
+/// the version-4 IDs generated for outbound transfers.
+pub(super) fn incoming_record_id(id: Uuid, node: &aidash_domain::nodes::NodeName) -> Uuid {
+	let hash = Sha256::new()
+		.chain_update(b"aidash-file-transfer-in-v1\0")
+		.chain_update(node.as_str())
+		.chain_update(id.as_bytes())
+		.finalize();
+	let mut bytes = [0; 16];
+	bytes.copy_from_slice(&hash[..16]);
+	uuid::Builder::from_custom_bytes(bytes).into_uuid()
+}
+
+pub(super) fn logical_record(mut row: NativeRecord, id: Uuid) -> Record {
+	row.id = id;
+	domain(row)
+}
+
+impl Scope<'_> {
+	fn storage_id(&self, id: Uuid, kind: &str) -> Result<Uuid> {
+		Ok(if kind == "transfer_in" {
+			incoming_record_id(id, self.receiving.as_ref().ok_or_else(missing)?)
+		} else {
+			id
+		})
+	}
 }
 fn missing() -> Error {
 	Error::External("transfer repository scope invariant".into())
@@ -175,10 +206,17 @@ impl TransferRepository for Repository<'_> {
 			tenant: record.tenant.clone(),
 			subject: record.owner.clone(),
 		};
-		let access = Access::begin(&self.federation.store, &identity).await?;
+		let description: Description = serde_json::from_value(record.data["description"].clone())?;
+		let source = aidash_domain::nodes::NodeAddress::parse(&description.source_node)?;
+		if source.deployment != self.federation.config.deployment {
+			return Err(Error::Forbidden);
+		}
+		let mut access = Access::begin(&self.federation.store, &identity).await?;
+		access.set_node(source.node);
 		Ok(Box::new(Scope {
 			store: Some(&self.federation.store),
 			authority: Authority::Owned(Box::new(access)),
+			receiving: None,
 			pending: None,
 		}))
 	}
@@ -186,16 +224,25 @@ impl TransferRepository for Repository<'_> {
 		let tx = self.federation.store.pool.begin(&MAINTENANCE).await?;
 		Ok(Box::new(Receipt { tx, id }))
 	}
-	async fn request(&self, tenant: &str, node: &str, path: &str, body: &Value) -> Result<Value> {
-		peer::authority_request(
-			self.federation,
-			&peer::node_sender(tenant)?,
-			node,
-			path,
-			body,
-		)
-		.await
-		.map_err(Into::into)
+	async fn request(
+		&self,
+		tenant: &str,
+		source: &str,
+		node: &str,
+		path: &str,
+		body: &Value,
+	) -> Result<Value> {
+		let source = aidash_domain::nodes::NodeAddress::parse(source)?;
+		if source.deployment != self.federation.config.deployment {
+			return Err(Error::Forbidden);
+		}
+		let sender = aidash_domain::federation::route::Sender {
+			node: Some(source.node),
+			..peer::node_sender(tenant)?
+		};
+		peer::authority_request(self.federation, &sender, node, path, body)
+			.await
+			.map_err(Into::into)
 	}
 	async fn jobs(&self) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
@@ -276,11 +323,13 @@ impl TransferScope for Scope<'_> {
 		self.authority.get().resource(kind, id, attributes)
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.authority
-			.get_mut()
-			.workspace(id)
-			.await
-			.map_err(Into::into)
+		let access = self.authority.get_mut();
+		let node = access.node.clone();
+		let result = access.workspace(id).await;
+		if let Some(node) = node {
+			access.set_node(node);
+		}
+		result.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.authority
@@ -326,9 +375,10 @@ impl TransferScope for Scope<'_> {
 		Ok(self.authority.get_mut().route_to(node).await?.map(|_| true))
 	}
 	async fn record(&mut self, id: Uuid, kind: &str) -> Result<Record> {
-		records::get(self.authority.get_mut(), id, kind)
+		let stored = self.storage_id(id, kind)?;
+		records::get(self.authority.get_mut(), stored, kind)
 			.await
-			.map(domain)
+			.map(|row| logical_record(row, id))
 			.map_err(Into::into)
 	}
 	async fn insert(
@@ -340,9 +390,10 @@ impl TransferScope for Scope<'_> {
 		data: Value,
 		expires: Option<DateTime<Utc>>,
 	) -> Result<Record> {
+		let stored = self.storage_id(id, kind)?;
 		records::insert(
 			self.authority.get_mut(),
-			id,
+			stored,
 			area,
 			kind,
 			state,
@@ -350,13 +401,15 @@ impl TransferScope for Scope<'_> {
 			expires,
 		)
 		.await
-		.map(domain)
+		.map(|row| logical_record(row, id))
 		.map_err(Into::into)
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
+		let id = record.id;
 		let mut row = native(record);
+		row.id = self.storage_id(id, &record.kind)?;
 		let result = records::update(self.authority.get_mut(), &mut row).await;
-		*record = domain(row);
+		*record = logical_record(row, id);
 		result.map_err(Into::into)
 	}
 	async fn copy_snapshot(&mut self, file: &MountedFile) -> Result<MountedFile> {

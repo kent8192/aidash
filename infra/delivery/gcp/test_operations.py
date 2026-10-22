@@ -2,9 +2,19 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
 import unittest
+from unittest.mock import patch
 
+import inspect_operations
 from inspect_operations import inspect, Refused
+
+
+APPLICATION = {"namespace": "aidash-production", "name": "aidash"}
 
 
 class OperationalObservationTests(unittest.TestCase):
@@ -26,14 +36,29 @@ class OperationalObservationTests(unittest.TestCase):
         self.cluster = {"name": "aidash", "location": "us-central1", "addonsConfig": {"gkeBackupAgentConfig": {"enabled": True}}}
         self.plan = {
             "name": plan, "cluster": cluster,
-            "backupConfig": {"selectedNamespaces": {"namespaces": ["aidash-production"]}, "includeVolumeData": True, "includeSecrets": True},
+            "backupConfig": {"selectedApplications": {"namespacedNames": [APPLICATION]}, "includeVolumeData": True, "includeSecrets": True},
             "retentionPolicy": {"backupRetainDays": 30, "backupDeleteLockDays": 7},
             "backupSchedule": {"cronSchedule": "0 19 * * *"},
         }
         self.backup = {
             "name": plan + "/backups/observed", "state": "SUCCEEDED", "createTime": "2026-10-12T19:00:00Z", "completeTime": "2026-10-12T19:15:00Z",
-            "clusterMetadata": {"cluster": cluster}, "selectedNamespaces": {"namespaces": ["aidash-production"]},
+            "clusterMetadata": {"cluster": cluster}, "selectedApplications": {"namespacedNames": [APPLICATION]},
             "containsVolumeData": True, "containsSecrets": True, "volumeCount": 5,
+        }
+        ledger = {
+            "kind": "PersistentVolumeClaim", "metadata": {
+                "namespace": "aidash-production", "name": "memory-recovery", "labels": {"aidash.run/backup": "exclude"},
+            },
+        }
+        self.membership = {
+            "application": {
+                "metadata": deepcopy(APPLICATION),
+                "spec": {"resourceSelection": {"type": "Selector", "selector": {"matchExpressions": [
+                    {"key": "aidash.run/backup", "operator": "NotIn", "values": ["exclude"]},
+                ]}}},
+            },
+            "claims": [ledger, {"kind": "PersistentVolumeClaim", "metadata": {"namespace": "aidash-production", "name": "capability-objects"}}],
+            "excluded": [deepcopy(ledger)],
         }
         self.channel = {"name": channel, "type": "email", "labels": {"email_address": "prod.deployment@aidash.run"}, "enabled": True}
         self.uptime = {
@@ -54,16 +79,195 @@ class OperationalObservationTests(unittest.TestCase):
             for index, (name, metric_filter, comparison, threshold, duration, aligner, trigger, period) in enumerate(rows)
         ]
         self.now = datetime(2026, 10, 13, 0, 0, tzinfo=timezone.utc)
+        pre_update = f"projects/{project}/locations/us-central1/backupPlans/aidash-production-pre-update"
+        restore = f"projects/{project}/locations/us-central1/restorePlans/aidash-production-pre-update-in-place"
+        self.operations.update(
+            pre_update_backup_plan=pre_update, pre_update_restore_plan=restore,
+            pre_update_backup_retain_days=14, pre_update_backup_delete_lock_days=2,
+        )
+        self.pre_update = {
+            "name": pre_update, "cluster": cluster, "state": "READY", "deactivated": False,
+            "backupConfig": {"selectedApplications": {"namespacedNames": [APPLICATION]}, "includeVolumeData": True, "includeSecrets": True},
+            "retentionPolicy": {"backupRetainDays": 14, "backupDeleteLockDays": 2},
+        }
+        self.restore = {
+            "name": restore, "backupPlan": pre_update, "cluster": cluster, "state": "READY",
+            "restoreConfig": {
+                "selectedApplications": {"namespacedNames": [APPLICATION]},
+                "namespacedResourceRestoreMode": "DELETE_AND_RESTORE", "volumeDataRestorePolicy": "RESTORE_VOLUME_DATA_FROM_BACKUP",
+                "clusterResourceRestoreScope": {"noGroupKinds": True},
+            },
+        }
 
     def observe(self, backups=None):
-        return inspect(self.config, self.operations, self.cluster, self.plan, backups if backups is not None else [self.backup], self.channel, self.uptime, self.policies, self.now)
+        return inspect(
+            self.config, self.operations, self.cluster, self.plan, backups if backups is not None else [self.backup],
+            self.channel, self.uptime, self.policies, self.now, self.pre_update, self.restore,
+            membership=self.membership,
+        )
 
     def test_successful_snapshot_and_config_never_prove_restore_or_mail_delivery(self):
         observation = self.observe()
         self.assertTrue(observation["successful_backup_observed"])
+        self.assertTrue(observation["protected_application_membership_verified"])
         self.assertFalse(observation["restore_verified"])
         self.assertFalse(observation["notification_delivery_proven"])
         self.assertIn("independent_native_home_ledger", observation["required_next_evidence"])
+
+    def test_pre_update_plans_are_reported_and_may_be_absent_from_older_outputs(self):
+        self.assertTrue(self.observe()["pre_update_plans_verified"])
+        for key in ("pre_update_backup_plan", "pre_update_restore_plan"):
+            del self.operations[key]
+        self.pre_update = self.restore = None
+        self.assertFalse(self.observe()["pre_update_plans_verified"])
+
+    def test_the_daily_plan_and_backup_must_select_exactly_the_protected_application(self):
+        for mutate in (
+            lambda: self.plan["backupConfig"].update(selectedNamespaces={"namespaces": ["aidash-production"]}),
+            lambda: self.plan["backupConfig"].update(selectedApplications={"namespacedNames": [APPLICATION, {"namespace": "other", "name": "x"}]}),
+            lambda: self.backup.pop("selectedApplications"),
+        ):
+            self.setUp()
+            mutate()
+            with self.assertRaises(Refused):
+                self.observe()
+
+    def test_daily_inspection_requires_a_live_application_membership_observation(self):
+        self.membership = None
+        with self.assertRaisesRegex(Refused, "membership was not observed"):
+            self.observe()
+
+    def test_daily_inspection_rejects_a_drifted_application_selector(self):
+        for selection in (
+            {},
+            {"type": "All"},
+            {"type": "Selector", "selector": {}},
+            {"type": "Selector", "selector": {"matchExpressions": [
+                {"key": "aidash.run/backup", "operator": "In", "values": ["exclude"]},
+            ]}},
+            {"type": "Selector", "selector": {"matchExpressions": [
+                {"key": "aidash.run/backup", "operator": "NotIn", "values": ["exclude"]},
+            ], "matchLabels": {"app.kubernetes.io/instance": "app"}}},
+        ):
+            with self.subTest(selection=selection):
+                self.setUp()
+                self.membership["application"]["spec"]["resourceSelection"] = selection
+                with self.assertRaisesRegex(Refused, "ProtectedApplication selector"):
+                    self.observe()
+
+    def test_daily_inspection_rejects_missing_or_included_ledger_claims(self):
+        for mutate in (
+            lambda: self.membership.update(application=None),
+            lambda: self.membership["application"]["metadata"].update(namespace="other"),
+            lambda: self.membership["claims"].pop(0),
+            lambda: self.membership["claims"][0]["metadata"].pop("labels"),
+            lambda: self.membership["claims"][0]["metadata"]["labels"].update({"aidash.run/backup": "include"}),
+            lambda: self.membership.update(excluded=[]),
+        ):
+            with self.subTest(mutate=mutate):
+                self.setUp()
+                mutate()
+                with self.assertRaises(Refused):
+                    self.observe()
+
+    def test_daily_inspection_rejects_missing_retained_claims_and_other_exclusions(self):
+        for kind, name in (("PersistentVolumeClaim", "capability-objects"), ("Secret", "app-runtime")):
+            with self.subTest(kind=kind, name=name):
+                self.setUp()
+                self.membership["excluded"].append({
+                    "kind": kind, "metadata": {"namespace": "aidash-production", "name": name, "labels": {"aidash.run/backup": "exclude"}},
+                })
+                with self.assertRaisesRegex(Refused, "other than the ledger"):
+                    self.observe()
+        self.setUp()
+        self.membership["claims"].pop()
+        with self.assertRaisesRegex(Refused, "Retained volumes are missing"):
+            self.observe()
+
+    def test_pre_update_plans_must_stay_unscheduled_application_scoped_and_unable_to_delete_the_namespace(self):
+        mutations = [
+            (lambda: self.pre_update.update(backupSchedule={"cronSchedule": "0 19 * * *"}), "Pre-update Backup plan"),
+            (lambda: self.pre_update["backupConfig"].update(selectedNamespaces={"namespaces": ["aidash-production"]}), "Pre-update Backup plan"),
+            (lambda: self.pre_update["retentionPolicy"].update(backupRetainDays=30), "Pre-update Backup plan"),
+            (lambda: self.restore["restoreConfig"].pop("selectedApplications"), "could delete more"),
+            (lambda: self.restore["restoreConfig"].update(selectedNamespaces={"namespaces": ["aidash-production"]}), "could delete more"),
+            (lambda: self.restore["restoreConfig"].update(allNamespaces=True), "could delete more"),
+            (lambda: self.restore.update(backupPlan=self.plan["name"]), "could delete more"),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                self.setUp()
+                mutate()
+                with self.assertRaisesRegex(Refused, message):
+                    self.observe()
+        self.setUp()
+        self.pre_update = None
+        with self.assertRaisesRegex(Refused, "not observed"):
+            self.observe()
+
+    def test_the_pre_update_plan_must_be_active_and_ready(self):
+        for mutate in (
+            lambda: self.pre_update.pop("state"),
+            lambda: self.pre_update.update(state="CREATING"),
+            lambda: self.pre_update.update(state="DEACTIVATED"),
+            lambda: self.pre_update.update(deactivated=True),
+        ):
+            with self.subTest(mutate=mutate):
+                self.setUp()
+                mutate()
+                with self.assertRaisesRegex(Refused, "Pre-update Backup plan"):
+                    self.observe()
+
+    def test_the_pre_update_plan_must_not_have_a_smart_rpo_schedule(self):
+        for schedule in ({"rpoConfig": {}}, {"rpoConfig": {"targetRpoMinutes": 60}}):
+            with self.subTest(schedule=schedule):
+                self.setUp()
+                self.pre_update["backupSchedule"] = schedule
+                with self.assertRaisesRegex(Refused, "Pre-update Backup plan"):
+                    self.observe()
+
+    def test_the_restore_plan_must_be_ready(self):
+        for state in (None, "CREATING", "CLUSTER_PENDING", "FAILED", "DELETING"):
+            with self.subTest(state=state):
+                self.setUp()
+                if state is None:
+                    self.restore.pop("state")
+                else:
+                    self.restore["state"] = state
+                with self.assertRaisesRegex(Refused, "could delete more"):
+                    self.observe()
+
+    def test_the_restore_plan_must_not_override_the_volume_restore_policy(self):
+        for policy in ("NO_VOLUME_DATA_RESTORATION", "REUSE_VOLUME_HANDLE_FROM_BACKUP"):
+            with self.subTest(policy=policy):
+                self.setUp()
+                self.restore["restoreConfig"]["volumeDataRestorePolicyBindings"] = [
+                    {"volumeType": "GCE_PERSISTENT_DISK", "policy": policy}
+                ]
+                with self.assertRaisesRegex(Refused, "could delete more"):
+                    self.observe()
+        self.setUp()
+        self.restore["restoreConfig"]["volumeDataRestorePolicyBindings"] = [
+            {"volumeType": "GCE_PERSISTENT_DISK", "policy": "RESTORE_VOLUME_DATA_FROM_BACKUP"}
+        ]
+        self.assertTrue(self.observe()["pre_update_plans_verified"])
+
+    def test_the_restore_plan_must_leave_cluster_resources_untouched(self):
+        for scope in (
+            None,
+            {"noGroupKinds": False},
+            {"allGroupKinds": True},
+            {"noGroupKinds": True, "selectedGroupKinds": [{"group": "rbac.authorization.k8s.io", "kind": "ClusterRole"}]},
+            {"noGroupKinds": True, "excludedGroupKinds": [{"group": "", "kind": "Namespace"}]},
+        ):
+            with self.subTest(scope=scope):
+                self.setUp()
+                if scope is None:
+                    self.restore["restoreConfig"].pop("clusterResourceRestoreScope")
+                else:
+                    self.restore["restoreConfig"]["clusterResourceRestoreScope"] = scope
+                with self.assertRaisesRegex(Refused, "could delete more"):
+                    self.observe()
 
     def test_recent_completion_cannot_hide_stale_snapshot_or_missing_actual_backup(self):
         stale = deepcopy(self.backup)
@@ -86,6 +290,72 @@ class OperationalObservationTests(unittest.TestCase):
                 mutate()
                 with self.assertRaisesRegex(Refused, message):
                     self.observe()
+
+
+class ApplicationMembershipReadTests(unittest.TestCase):
+    def setUp(self):
+        self.kubeconfigs = []
+        self.kinds = b"persistentvolumeclaims\nsecrets\n"
+        self.failure = False
+
+    def command(self, args, *, env, timeout, stderr):
+        kubeconfig = Path(env["KUBECONFIG"])
+        self.kubeconfigs.append(kubeconfig)
+        self.assertTrue(kubeconfig.is_file())
+        self.assertEqual(stat.S_IMODE(kubeconfig.stat().st_mode), 0o600)
+        self.assertEqual(env["CLOUDSDK_AUTH_ACCESS_TOKEN"], "inspection-token")
+        self.assertNotIn("inspection-token", args)
+        if args[0] == "gcloud":
+            self.assertEqual(tuple(args[1:5]), ("container", "clusters", "get-credentials", "aidash"))
+            self.assertIn("--dns-endpoint", args)
+            self.assertEqual(args[args.index("--project") + 1], "aidash-production")
+            return b""
+        self.assertEqual(args[0], "kubectl")
+        self.assertEqual(args[args.index("--kubeconfig") + 1], str(kubeconfig))
+        if "api-resources" in args:
+            self.assertIn("--namespaced=true", args)
+            self.assertIn("--verbs=list", args)
+            return self.kinds
+        self.assertIn("get", args)
+        self.assertEqual(args[args.index("--namespace") + 1], "aidash-production")
+        kind = args[args.index("get") + 1]
+        if kind == "protectedapplication":
+            self.assertIn("aidash", args)
+            return json.dumps({"metadata": APPLICATION}).encode()
+        if kind == "persistentvolumeclaims":
+            return json.dumps({"items": [{"metadata": {"name": "memory-recovery"}}]}).encode()
+        self.assertEqual(kind, "persistentvolumeclaims,secrets")
+        self.assertEqual(args[args.index("--selector") + 1], "aidash.run/backup=exclude")
+        if self.failure:
+            raise subprocess.CalledProcessError(1, args, stderr=b"listing denied")
+        return json.dumps({"items": [{"kind": "PersistentVolumeClaim", "metadata": {"name": "memory-recovery"}}]}).encode()
+
+    def test_membership_reads_are_scoped_and_temporary_credentials_are_removed(self):
+        with patch.dict(os.environ, {"KUBECONFIG": "/unchanged/user-config"}), \
+                patch.object(inspect_operations.subprocess, "check_output", self.command):
+            membership = inspect_operations.observe_membership("aidash-production", "inspection-token")
+            self.assertEqual(os.environ["KUBECONFIG"], "/unchanged/user-config")
+        self.assertEqual(membership["application"]["metadata"], APPLICATION)
+        self.assertEqual(membership["claims"][0]["metadata"]["name"], "memory-recovery")
+        self.assertEqual(membership["excluded"][0]["kind"], "PersistentVolumeClaim")
+        self.assertTrue(self.kubeconfigs)
+        self.assertTrue(all(not path.exists() for path in self.kubeconfigs))
+
+    def test_incomplete_discovery_cannot_approve_a_partial_exclusion_inventory(self):
+        self.kinds = b""
+        with patch.object(inspect_operations.subprocess, "check_output", self.command):
+            with self.assertRaisesRegex(Refused, "enumerate"):
+                inspect_operations.observe_membership("aidash-production", "inspection-token")
+        self.assertTrue(self.kubeconfigs)
+        self.assertTrue(all(not path.exists() for path in self.kubeconfigs))
+
+    def test_exclusion_listing_failure_is_not_treated_as_an_empty_inventory(self):
+        self.failure = True
+        with patch.object(inspect_operations.subprocess, "check_output", self.command):
+            with self.assertRaises(subprocess.CalledProcessError):
+                inspect_operations.observe_membership("aidash-production", "inspection-token")
+        self.assertTrue(self.kubeconfigs)
+        self.assertTrue(all(not path.exists() for path in self.kubeconfigs))
 
 
 if __name__ == "__main__":

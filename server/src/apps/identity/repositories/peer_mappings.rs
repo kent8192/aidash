@@ -162,8 +162,11 @@ impl MappingRepository for Repository<'_> {
 			Access::begin(&self.runtime.store, &identity).await
 		};
 		access
-			.map(|access| AccessScope {
-				access: Box::new(access),
+			.map(|mut access| {
+				access.set_node(mapping.node.clone());
+				AccessScope {
+					access: Box::new(access),
+				}
 			})
 			.map_err(Into::into)
 	}

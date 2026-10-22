@@ -4,6 +4,194 @@ use reinhardt::http::ViewResult;
 use reinhardt::{Handler, Request, Response, ServerRouter};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[rstest::rstest]
+#[case::from_default(false)]
+#[case::from_secondary(true)]
+#[tokio::test]
+async fn sibling_file_transfers_require_their_own_node_authority(
+	#[future] capability_fixture: CoreFixture,
+	#[case] reverse: bool,
+	#[from(worker_control)] control: WorkerControl,
+) {
+	// Arrange: each Node has its own Workspace and admitted file Agent.
+	let c = Box::pin(capability_fixture).await;
+	let home = common::default_node(&c.f.store, "acme").await;
+	let sender = admit(&c).await;
+	let (status, second) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{second}");
+	let name = second["name"].as_str().unwrap();
+	let address = second["address"].as_str().unwrap();
+	let (status, bindings) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={}", home.node),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{bindings}");
+	let approvals: Vec<_> = bindings.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding| json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"expected_revision":0,"enabled":true})).collect();
+	let (status, approved) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/authorization/acme/catalog/approvals",
+		json!({"node":name,"approvals":approvals}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approved}");
+	let mut policy = c.policy.clone();
+	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.1.0")] =
+		json!({"kind":"agent"});
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
+	let (status, workspace) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Sibling files","goal":"Receive selected files","node":name}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Sibling recipient","description":"Receive selected files"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, delegated) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":address,"agent":{"id":"research","version":"1.1.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{delegated}");
+	let receiver =
+		c.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.task_id.to_string() == task["id"].as_str().unwrap())
+			.unwrap();
+	assert_eq!(receiver.node.as_str(), name);
+	assert_eq!(receiver.home_node, address);
+	for run in [&sender, &receiver] {
+		let (status, area) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/runs/{}/working-area", run.id),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{area}");
+	}
+	// Each local recipient lookup stays in the Node named by the UI.
+	for (node, expected) in [(home.to_string(), &sender), (address.to_owned(), &receiver)] {
+		let (status, page) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/file-recipients?node_id={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{page}");
+		let items = page["items"].as_array().unwrap();
+		assert!(!items.is_empty(), "{page}");
+		assert!(items.iter().all(|item| item["node_id"] == node), "{page}");
+		assert!(
+			items
+				.iter()
+				.all(|item| item["thread_id"] == expected.task_id.to_string()),
+			"{page}"
+		);
+	}
+	let (source, target) = if reverse {
+		(&receiver, &sender)
+	} else {
+		(&sender, &receiver)
+	};
+	let target_address = format!("{}/{}", c.f.config.deployment, target.node);
+	let (status, patched) = request(&c.app, &c.token, "POST", &format!("/api/runs/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
+	assert_eq!(status, 200, "{patched}");
+	let (status, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", source.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let file = &area["manifest"][0];
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":target_address,"agent_id":target.agent_id,"agent_version":target.agent_version,"thread_id":target.task_id}});
+	let path = format!("/api/runs/{}/files/share", source.id);
+	let mut denied = policy.clone();
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-transfer","effect":"deny","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"]}}));
+	common::replace_policy(&c.f.store, "acme", denied).await;
+	// Act / Assert: sharing with a sibling must cross file.transfer admission.
+	let (status, refused) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
+	assert_eq!(status, 403, "{refused}");
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let (status, pending) = request(&c.app, &c.token, "POST", &path, input).await;
+	assert_eq!(status, 200, "{pending}");
+	assert_eq!(pending["status"], "pending");
+	let transfer = pending["transfer_id"].as_str().unwrap();
+	let WorkerControl { stop, receiver: rx } = control;
+	let worker = tokio::spawn(aidash_server::capabilities::transfer::run(c.f.clone(), rx));
+	let receipt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+		loop {
+			let (status, state) = request(
+				&c.app,
+				&c.token,
+				"GET",
+				&format!("/api/file-transfers/{transfer}"),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{state}");
+			if state["status"] == "completed" {
+				break state;
+			}
+			assert_ne!(state["status"], "failed", "{state}");
+			tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+		}
+	})
+	.await
+	.expect("sibling transfer completes");
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	let file = &receipt["receipt"]["files"][0];
+	let (status, received) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/files/read", target.id),
+		json!({"file_id":file["file_id"],"representation":"text"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{received}");
+	assert_eq!(received["content"], "sibling 東京\n");
+	c.close().await;
+}
+
 struct TransferFixture {
 	a: CoreFixture,
 	b: CoreFixture,

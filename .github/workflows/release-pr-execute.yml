@@ -1,0 +1,73 @@
+name: Execute release PR
+on:
+  workflow_call:
+    secrets:
+      AIDASH_GCP_CONFIG:
+        required: true
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    environment: release-automation
+    timeout-minutes: 10
+    env:
+      AIDASH_GCP_CONFIG: ${{ secrets.AIDASH_GCP_CONFIG }}
+      GH_DEBUG: ""
+    steps:
+      # workflow_run pins github.sha to the protected default-branch revision.
+      # Never execute the candidate branch or downloaded artifact code here.
+      - name: Check out the trusted workflow revision
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate configuration and log safe execution context
+        id: context
+        run: python3 -u infra/gcp/control/releases.py context
+      - name: Issue the repository-scoped release App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: write
+      - name: Create the immutable candidate or acknowledge trusted staging
+        id: controller
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RELEASE_APP_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
+          COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          if [ "$COMPLETED_WORKFLOW" = 'CI' ]; then
+            python3 -u infra/gcp/control/releases.py candidate
+          else
+            python3 -u infra/gcp/control/releases.py staging
+          fi
+      - name: Report step outcomes without private inputs
+        if: ${{ always() }}
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          CONTEXT_OUTCOME: ${{ steps.context.outcome }}
+          APP_OUTCOME: ${{ steps.app.outcome }}
+          CONTROLLER_OUTCOME: ${{ steps.controller.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          allowed = {"success", "failure", "cancelled", "skipped"}
+          outcomes = {}
+          for step in ["checkout", "context", "app", "controller"]:
+              value = os.environ.get(step.upper() + "_OUTCOME", "")
+              outcomes[step] = value if value in allowed else "unknown"
+          print(json.dumps({"component": "release", "event": "workflow.steps", "outcomes": outcomes}))
+          PY

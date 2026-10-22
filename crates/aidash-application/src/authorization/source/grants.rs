@@ -48,7 +48,7 @@ async fn inspect<R: GrantRepository>(
 		.await?;
 	require_peer(scope, node).await?;
 	let identity = scope.identity();
-	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity).await?;
+	let inspection:Inspection=repository.source_request(&scope.home_address(),node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity).await?;
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,

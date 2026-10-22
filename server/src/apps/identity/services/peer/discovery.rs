@@ -41,6 +41,13 @@ pub(crate) async fn discover_in(
 	// The agents found here are the sending Node's, and carry its address.
 	let sending = routes::sending_node(&mut *access.tx, &sender).await?;
 	access.set_node(sending.clone());
+	let resource = access.resource("node", sending.as_str(), json!({}));
+	access
+		.require(
+			&resource,
+			aidash_domain::identity::tenant_administration::NODE_USE,
+		)
+		.await?;
 	let own = f.config.deployment.node(sending).to_string();
 	let local = catalog::list_in(access, &query).await?;
 	let mut result = Discovery {
@@ -56,16 +63,6 @@ pub(crate) async fn discover_in(
 	// Configuration changes wait for this admitted read: the routes are held
 	// with a shared lock until the authority transaction ends.
 	let routes = routes::all(&mut *access.tx, &f.config.deployment, &sender, true).await?;
-	if let Some(route) = routes.first() {
-		// Sending from a Node is working in it.
-		let sending = access.resource("node", route.sender.node.as_str(), json!({}));
-		access
-			.require(
-				&sending,
-				aidash_domain::identity::tenant_administration::NODE_USE,
-			)
-			.await?;
-	}
 	let mut targets = vec![];
 	for route in routes {
 		let target = route.target.to_string();

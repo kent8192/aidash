@@ -69,8 +69,15 @@ pub trait TransferRepository: Send + Sync {
 	async fn snapshot(&self, id: Uuid) -> Result<Record>;
 	async fn begin_sender(&self, record: &Record) -> Result<Box<dyn TransferScope + '_>>;
 	async fn begin_receipt(&self, id: Uuid) -> Result<Box<dyn ReceiptScope + '_>>;
-	/// A request from the Node of `tenant` that owns the transfer.
-	async fn request(&self, tenant: &str, node: &str, path: &str, body: &Value) -> Result<Value>;
+	/// A request from the recorded source Node of `tenant` that owns the transfer.
+	async fn request(
+		&self,
+		tenant: &str,
+		source: &str,
+		node: &str,
+		path: &str,
+		body: &Value,
+	) -> Result<Value>;
 	async fn jobs(&self) -> Result<Vec<Uuid>>;
 	async fn record_failure(&self, id: Uuid, terminal: bool) -> Result<()>;
 }

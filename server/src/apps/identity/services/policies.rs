@@ -80,6 +80,12 @@ impl PolicyAdministration {
 				serde_json::json!({}),
 			);
 			access.require(&resource, "registry.read").await?;
+			crate::apps::identity::repositories::nodes::get(
+				&mut *access.tx,
+				&tenant,
+				node.as_str(),
+			)
+			.await?;
 			Ok(AuthorizationCatalog::objects()
 				.filter(AuthorizationCatalog::field_tenant().eq(identity.tenant.clone()))
 				.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))

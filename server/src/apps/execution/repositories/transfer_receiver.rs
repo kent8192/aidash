@@ -1,8 +1,5 @@
 //! Receiver primitives retain destination row locks, admitted-generation filtering and quota ownership.
-use super::{
-	capability_records::domain,
-	transfer::{Authority, Repository, Scope},
-};
+use super::transfer::{Authority, Repository, Scope, incoming_record_id, logical_record};
 use crate::apps::execution::capabilities::{
 	serializers::{
 		contracts::{Area as NativeArea, FileEntry},
@@ -35,6 +32,33 @@ use uuid::Uuid;
 const INBOUND: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::FederationInbound);
 fn missing() -> Error {
 	Error::External("transfer receiver scope invariant".into())
+}
+
+/// An area's Home can be another Node. Its admitted Runs name the Node that
+/// actually receives files here.
+fn runs_on(node: &aidash_domain::nodes::NodeName) -> SimpleExpr {
+	Expr::exists(
+		Query::select()
+			.expr(Expr::cust("1"))
+			.from_as(Alias::new("core_runs"), Alias::new("q"))
+			.join(
+				reinhardt::query::JoinType::InnerJoin,
+				reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("r")),
+				Expr::col((Alias::new("r"), Alias::new("id")))
+					.equals((Alias::new("q"), Alias::new("run_id"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("q"), Alias::new("area_id")))
+					.equals((Alias::new("core_areas"), Alias::new("id"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("q"), Alias::new("generation")))
+					.equals((Alias::new("core_areas"), Alias::new("generation"))),
+			)
+			.and_where(Expr::col((Alias::new("r"), Alias::new("node"))).eq(node.as_str()))
+			.to_owned(),
+	)
+	.into()
 }
 impl From<NativeChunk> for Chunk {
 	fn from(v: NativeChunk) -> Self {
@@ -82,6 +106,7 @@ impl ReceiverRepository for Repository<'_> {
 		Ok(Box::new(Scope {
 			store: Some(&self.federation.store),
 			authority: Authority::Owned(Box::new(access)),
+			receiving: Some(self.receiving()?.node.clone()),
 			pending: None,
 		}))
 	}
@@ -89,7 +114,7 @@ impl ReceiverRepository for Repository<'_> {
 		let result: NativeResult<NativeRecord> = async {
 			let f = self.federation;
 			{
-				let query_bind_1 = id;
+				let query_bind_1 = incoming_record_id(id, &self.receiving()?.node);
 				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
@@ -107,13 +132,15 @@ impl ReceiverRepository for Repository<'_> {
 			.ok_or_else(|| NativeError::NotFound("transfer unavailable".into()))
 		}
 		.await;
-		result.map(domain).map_err(Into::into)
+		result
+			.map(|row| logical_record(row, id))
+			.map_err(Into::into)
 	}
 	async fn status_snapshot(&self, id: Uuid) -> Result<Record> {
 		let result: NativeResult<NativeRecord> = async {
 			let f = self.federation;
 			{
-				let query_bind_1 = id;
+				let query_bind_1 = incoming_record_id(id, &self.receiving()?.node);
 				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
@@ -131,7 +158,9 @@ impl ReceiverRepository for Repository<'_> {
 			.ok_or_else(|| NativeError::NotFound("transfer unavailable".into()))
 		}
 		.await;
-		result.map(domain).map_err(Into::into)
+		result
+			.map(|row| logical_record(row, id))
+			.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -148,7 +177,7 @@ impl ReceiverScope for Scope<'_> {
 				let query_bind_2 = &access.identity.subject;
 				let query_bind_3 = description.target.thread_id;
 				let query_bind_4 = &description.target.agent_id;
-				let query_bind_5 = node_id;
+				let node = aidash_domain::nodes::NodeAddress::parse(node_id)?.node;
 				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
@@ -181,7 +210,7 @@ impl ReceiverScope for Scope<'_> {
 									vec![Expr::value(query_bind_4.to_owned()).into()],
 								)),
 						)
-						.and_where(Expr::col(Alias::new("home_node")).eq(query_bind_5))
+						.and_where(runs_on(&node))
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)
@@ -195,6 +224,7 @@ impl ReceiverScope for Scope<'_> {
 	async fn admitted(&mut self, area: &Area, version: &str) -> Result<Option<Uuid>> {
 		let result: NativeResult<Option<Uuid>> = async {
 			let access = self.authority.get_mut();
+			let node = access.catalog_node().await?;
 			Ok({
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
@@ -203,6 +233,9 @@ impl ReceiverScope for Scope<'_> {
 					&Query::select()
 						.column((Alias::new("r"), Alias::new("id")))
 						.from_as(Alias::new("runs"), Alias::new("r"))
+						.and_where(
+							Expr::col((Alias::new("r"), Alias::new("node"))).eq(node.as_str()),
+						)
 						.join(
 							reinhardt::query::JoinType::InnerJoin,
 							reinhardt::query::TableRef::table_alias(
@@ -237,12 +270,14 @@ impl ReceiverScope for Scope<'_> {
 	async fn recipient_rows(&mut self, cursor: Option<Uuid>) -> Result<Vec<Area>> {
 		let result: NativeResult<Vec<NativeArea>> = async {
 			let access = self.authority.get_mut();
+			let node = access.catalog_node().await?;
 			Ok({
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = &access.identity.subject;
 				let query_bind_3 = cursor.unwrap_or(Uuid::nil());
 				crate::database::native::query_as(
 					&sessions::select("core_areas")
+						.and_where(runs_on(&node))
 						.and_where(
 							Expr::col(Alias::new("tenant"))
 								.eq(Expr::value(query_bind_1.to_owned())),
@@ -273,6 +308,7 @@ impl ReceiverScope for Scope<'_> {
 	async fn versions(&mut self, area: &Area) -> Result<Vec<String>> {
 		let result: NativeResult<Vec<String>> = async {
 			let access = self.authority.get_mut();
+			let node = access.catalog_node().await?;
 			Ok({
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
@@ -281,6 +317,9 @@ impl ReceiverScope for Scope<'_> {
 						.distinct()
 						.column((Alias::new("r"), Alias::new("agent_version")))
 						.from_as(Alias::new("runs"), Alias::new("r"))
+						.and_where(
+							Expr::col((Alias::new("r"), Alias::new("node"))).eq(node.as_str()),
+						)
 						.join(
 							reinhardt::query::JoinType::InnerJoin,
 							reinhardt::query::TableRef::table_alias(

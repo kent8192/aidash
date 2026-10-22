@@ -44,11 +44,11 @@ struct Submission {
 }
 
 impl Repository {
-	/// A preflight is sent as the source subject, from its Tenant's default Node.
+	/// A preflight is sent as the source subject, from the coordinator Node.
 	fn source_sender(input: &Preflight) -> Result<aidash_domain::federation::route::Sender> {
 		Ok(aidash_domain::federation::route::Sender {
 			tenant: aidash_domain::tenancy::TenantName::new(input.origin.tenant.clone())?,
-			node: None,
+			node: Some(aidash_domain::nodes::NodeAddress::parse(&input.coordinator)?.node),
 			subject: Some(input.origin.subject.clone()),
 		})
 	}

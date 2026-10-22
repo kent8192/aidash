@@ -96,15 +96,59 @@ pub(crate) async fn mapped_access(
 	source: &str,
 	subject: &str,
 ) -> Result<Access> {
+	mapped_access_mode(f, receiver, source, subject, false).await
+}
+
+/// Grant and transfer callbacks recover the described subject at the receiving
+/// Node. Siblings in one Tenant use its policy without a Peer Mapping.
+pub(crate) async fn mapped_access_mode(
+	f: &Federation,
+	receiver: &aidash_domain::nodes::NodeName,
+	source: &str,
+	subject: &str,
+	exclusive: bool,
+) -> Result<Access> {
 	let tenant = f.node_tenant_of(receiver).await?;
 	let source = aidash_domain::nodes::NodeAddress::parse(source)?;
+	if source.deployment == f.config.deployment && f.node_tenant_of(&source.node).await? == tenant {
+		let admitted = Admitted {
+			tenant,
+			receiver: f.config.deployment.node(receiver.clone()),
+			sender: source,
+			acting: aidash_application::federation::inbound::Acting::SameTenant {
+				subject: subject.into(),
+			},
+		};
+		let mut access = access_mode(f, &admitted, exclusive).await?;
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			receiver.as_str(),
+		)
+		.await?;
+		let resource = access.resource(
+			"node",
+			receiver.as_str(),
+			json!({"label":node.label,"default":node.default}),
+		);
+		let result = access
+			.require(
+				&resource,
+				aidash_domain::identity::tenant_administration::NODE_USE,
+			)
+			.await;
+		if let Err(error) = result {
+			return access.finish::<Access>(Err(error)).await;
+		}
+		return Ok(access);
+	}
 	aidash_application::authorization::peer::mappings::mapped(
 		&crate::bootstrap::peer_mapping_repository(f),
 		&tenant,
 		receiver,
 		&source,
 		subject,
-		false,
+		exclusive,
 	)
 	.await
 	.map(|scope| *scope.access)
@@ -247,7 +291,11 @@ pub(crate) async fn access_mode(
 		exclusive,
 	)
 	.await
-	.map(|scope| *scope.access)
+	.map(|scope| {
+		let mut access = *scope.access;
+		access.set_node(admitted.receiver.node.clone());
+		access
+	})
 	.map_err(Into::into)
 }
 #[path = "peer/dependencies.rs"]
@@ -265,7 +313,17 @@ pub(crate) async fn discover_for(
 ) -> Result<Vec<Entry>> {
 	let mut access = access(&f, &admitted).await?;
 	let result = async {
-		let resource = access.resource("node", f.config.deployment.as_str(), json!({}));
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *access.tx,
+			&admitted.tenant.to_string(),
+			admitted.receiver.node.as_str(),
+		)
+		.await?;
+		let resource = access.resource(
+			"node",
+			node.name.as_str(),
+			json!({"label":node.label,"default":node.default}),
+		);
 		access.require(&resource, "federation.discover").await?;
 		let mut search = input.search;
 		search.kind = Some("agent".into());

@@ -67,6 +67,10 @@ impl Cloud {
 			settings(),
 			Offering::Cloud,
 		);
+		federation.config.tier_limits = aidash_enterprise_server::BUILD
+			.extension
+			.tier_limits(&federation.store)
+			.unwrap();
 		let app = common::application(federation.clone()).await;
 		Self {
 			federation,
@@ -348,6 +352,69 @@ impl Cloud {
 		drop(self.app);
 		common::cleanup(self.federation, &self.url, &self.database).await;
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_creation_uses_the_enterprise_adapter_and_current_subscription(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	// Arrange
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_of(&alice).await;
+	d.make_personal(&tenant).await;
+	let path = format!("/api/tenants/{tenant}/nodes");
+	// Act / Assert: Free covers its existing default Node only.
+	let (status, refused) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Second"}),
+		)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(refused["error"], "node_limit_reached");
+	let account = d.account(&alice, Some("team")).await;
+	let (_, (status, attached)) = d.attach(&alice, &context, &alice, &tenant, account).await;
+	assert_eq!(status, 200, "{attached}");
+	assert_eq!(attached["state"], "attached");
+	let (status, created) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Second"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	// Billing reads the real count before allowing a Tier change as well.
+	let mut billing = aidash_enterprise_server::billing::billing(&d.federation).unwrap();
+	let mut limits = sandbox_defaults();
+	limits["tiers"]["team"]["nodes"] = json!(1);
+	billing.settings = Arc::new(Settings::from_value(limits).unwrap());
+	let changed = billing.change_tier(alice.identity, account, "team").await;
+	assert!(
+		matches!(changed, Err(aidash_server::Error::Conflict(ref code)) if code == "tier_node_limit"),
+		"{changed:?}"
+	);
+	// The adapter reads a later Subscription state, rather than caching the Tier.
+	d.subscribe(account, "team", Status::Suspended).await;
+	let (status, refused) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Third"}),
+		)
+		.await;
+	assert_eq!(status, 409, "{refused}");
+	assert_eq!(refused["error"], "billing_suspended");
+	d.finish().await;
 }
 
 fn refusal(result: aidash_server::Result<()>) -> String {

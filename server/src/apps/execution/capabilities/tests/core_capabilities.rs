@@ -1267,7 +1267,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	}
 	.unwrap();
 	let source = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":c.f.config.deployment,"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
 	let share_path = format!("/api/runs/{}/files/share", sender.id);
 	let (status, receipt) = request(&c.app, &c.token, "POST", &share_path, input.clone()).await;
 	assert_eq!(status, 200, "{receipt}");

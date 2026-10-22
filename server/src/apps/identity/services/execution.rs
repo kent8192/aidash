@@ -115,14 +115,34 @@ pub async fn delegate(
 	node: &str,
 	agent: &EntityRef,
 ) -> Result<Delegation> {
-	if aidash_domain::nodes::deployment_of(node) != f.config.deployment.as_str() {
+	let target = (node != f.config.deployment)
+		.then(|| aidash_domain::nodes::NodeAddress::parse(node))
+		.transpose()?;
+	if target
+		.as_ref()
+		.is_some_and(|target| target.deployment != f.config.deployment)
+	{
 		return super::remote::execution::delegate(f, identity, task, node, agent).await;
 	}
 	let mut access = Access::begin(&f.store, identity).await?;
-	let result = delegate_in(f, &mut access, task, agent).await;
+	let result = async {
+		let current = access.task_read(task).await?;
+		let home = access.workspace_node(current.workspace_id).await?;
+		if target.as_ref().is_none_or(|target| target.node == home) {
+			delegate_in(f, &mut access, task, agent).await.map(Some)
+		} else {
+			Ok(None)
+		}
+	}
+	.await;
 	let result = access.finish(result).await?;
-	f.notify.notify_waiters();
-	Ok(result)
+	match result {
+		Some(result) => {
+			f.notify.notify_waiters();
+			Ok(result)
+		}
+		None => super::remote::execution::delegate(f, identity, task, node, agent).await,
+	}
 }
 
 pub(crate) async fn delegate_in(

@@ -1380,8 +1380,10 @@ async fn home_describe_reports_the_corpus_digest_and_it_changes_with_the_corpus(
 			.unwrap()
 			.workspace_id;
 	let describe = || async {
+		let started = std::time::Instant::now();
 		let (status, body) = describe_from_receiver(&p).await;
 		assert_eq!(status, 200, "{body}");
+		eprintln!("scoped describe (0.4): {:?}", started.elapsed());
 		body
 	};
 	let expected = || async {

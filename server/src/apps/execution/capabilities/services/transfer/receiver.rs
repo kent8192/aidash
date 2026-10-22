@@ -66,9 +66,11 @@ pub(crate) async fn recipient_list(
 	access: &mut Access,
 	cursor: Option<Uuid>,
 ) -> Result<Value> {
+	let node = access.catalog_node().await?;
+	let address = f.config.deployment.node(node).to_string();
 	application::recipient_list(
 		&mut crate::bootstrap::transfer_scope(Some(&f.store), access),
-		f.config.deployment.as_str(),
+		&address,
 		cursor,
 	)
 	.await

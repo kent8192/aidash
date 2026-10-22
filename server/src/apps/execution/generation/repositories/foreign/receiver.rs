@@ -65,18 +65,9 @@ impl ForeignGenerationReceiver for NativeReceiver {
 		source: &str,
 		subject: &str,
 	) -> Result<Box<dyn ForeignGenerationReceiverScope>> {
-		let tenant = self.federation.node_tenant_of(&self.receiver).await?;
-		let source = aidash_domain::nodes::NodeAddress::parse(source)?;
-		let access = aidash_application::authorization::peer::mappings::mapped(
-			&crate::bootstrap::peer_mapping_repository(&self.federation),
-			&tenant,
-			&self.receiver,
-			&source,
-			subject,
-			true,
-		)
-		.await
-		.map(|scope| *scope.access)?;
+		let access =
+			peer::mapped_access_mode(&self.federation, &self.receiver, source, subject, true)
+				.await?;
 		Ok(Box::new(Scope {
 			federation: self.federation.clone(),
 			access,

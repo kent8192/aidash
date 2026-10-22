@@ -417,6 +417,74 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_large_scoped_response_retains_every_authorization_decision(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange: visibility and event checks for 55 Workspaces cross an audit batch.
+	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let mut ids = vec![workspace["id"].as_str().unwrap().to_owned()];
+	for index in 1..55 {
+		let workspace = store
+			.create_workspace(
+				&scope,
+				"alice",
+				&format!("Audit {index}"),
+				"Audit visibility",
+			)
+			.await
+			.unwrap();
+		ids.push(workspace.id.to_string());
+	}
+	let authorization = Authorization {
+		pool: store.pool.clone(),
+	};
+	let cursor = authorization
+		.decisions("acme", 0, 200)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()["sequence"]
+		.as_i64()
+		.unwrap();
+	// Act: the real HTTP boundary commits every pending decision with its response.
+	let (status, state) = scoped_request(
+		&app,
+		credential["token"].as_str().unwrap(),
+		"GET",
+		"/api/state",
+		Value::Null,
+	)
+	.await;
+	// Assert: batching preserves the allowed decisions, their identities and order.
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["workspaces"].as_array().unwrap().len(), 55);
+	let audit = authorization.decisions("acme", cursor, 200).await.unwrap();
+	assert!(audit.len() > 100, "the response must cross an audit batch");
+	for id in ids {
+		for action in ["workspace.read", "workspace.events"] {
+			let decisions = audit
+				.iter()
+				.filter(|row| row["resource_id"] == id && row["action"] == action)
+				.collect::<Vec<_>>();
+			assert_eq!(decisions.len(), 1, "{action} for {id}");
+			let row = decisions[0];
+			assert_eq!(row["tenant"], "acme");
+			assert_eq!(row["subject"], "alice");
+			assert_eq!(row["revision"], 1);
+			assert_eq!(row["decision"]["allowed"], true);
+		}
+	}
+	assert!(
+		audit
+			.windows(2)
+			.all(|pair| pair[0]["sequence"].as_i64().unwrap()
+				< pair[1]["sequence"].as_i64().unwrap())
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn subject_receives_thread_opened_event_for_a_visible_root_message(
 	#[future] endpoint: EndpointFixture,
 ) {
@@ -793,15 +861,19 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 }
 
 #[rstest::rstest]
+#[case::read("workspace.read", None)]
+#[case::update("workspace.update", Some("workspace.read"))]
 #[tokio::test]
-async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses(
+async fn denied_workspace_permissions_prevent_updates_and_preserve_audit(
 	#[future] endpoint: EndpointFixture,
+	#[case] denied_action: &str,
+	#[case] earlier_allowed: Option<&str>,
 ) {
 	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
 	let mut policy = workspace_policy("acme");
 	policy["policies"].as_array_mut().unwrap().push(json!({
-		"id":"read-denied","effect":"deny","subjects":{"any":true},
-		"actions":["workspace.read"],"resources":{"kinds":["workspace"]}
+		"id":"workspace-denied","effect":"deny","subjects":{"any":true},
+		"actions":[denied_action],"resources":{"kinds":["workspace"]}
 	}));
 	assert_eq!(
 		request(
@@ -835,7 +907,8 @@ async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses(
 		.database
 		.fixture(async |tx| {
 			Ok(AuthorizationDecision::objects()
-				.filter(AuthorizationDecision::field_action().eq("workspace.read"))
+				.filter(AuthorizationDecision::field_resource_id().eq(id.to_string()))
+				.filter(AuthorizationDecision::field_revision().eq(2))
 				.all_with_db(tx)
 				.await?)
 		})
@@ -848,6 +921,19 @@ async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses(
 		rejected, 1,
 		"denied request must remain in the audit without committing a mutation"
 	);
+	assert!(
+		decisions
+			.iter()
+			.any(|record| record.action == denied_action && record.decision.0["allowed"] == false)
+	);
+	if let Some(action) = earlier_allowed {
+		assert!(
+			decisions
+				.iter()
+				.any(|record| record.action == action && record.decision.0["allowed"] == true),
+			"the denied boundary retains earlier allowed checks too"
+		);
+	}
 }
 
 #[rstest::rstest]
