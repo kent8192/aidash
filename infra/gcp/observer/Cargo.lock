@@ -1861,8 +1861,8 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reinhardt-core"
-version = "0.4.0-alpha.21"
-source = "git+https://github.com/kent8192/reinhardt-web?rev=3728d89b80a973f6c108fecc11afa677f295fd6c#3728d89b80a973f6c108fecc11afa677f295fd6c"
+version = "0.4.0-alpha.22"
+source = "git+https://github.com/kent8192/reinhardt-web?rev=14dc81dec2a2cc10641a8f15c455bbaafc2c774e#14dc81dec2a2cc10641a8f15c455bbaafc2c774e"
 dependencies = [
  "async-trait",
  "base64",
@@ -1905,8 +1905,8 @@ dependencies = [
 
 [[package]]
 name = "reinhardt-db"
-version = "0.4.0-alpha.21"
-source = "git+https://github.com/kent8192/reinhardt-web?rev=3728d89b80a973f6c108fecc11afa677f295fd6c#3728d89b80a973f6c108fecc11afa677f295fd6c"
+version = "0.4.0-alpha.22"
+source = "git+https://github.com/kent8192/reinhardt-web?rev=14dc81dec2a2cc10641a8f15c455bbaafc2c774e#14dc81dec2a2cc10641a8f15c455bbaafc2c774e"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -1956,8 +1956,8 @@ dependencies = [
 
 [[package]]
 name = "reinhardt-macros"
-version = "0.4.0-alpha.21"
-source = "git+https://github.com/kent8192/reinhardt-web?rev=3728d89b80a973f6c108fecc11afa677f295fd6c#3728d89b80a973f6c108fecc11afa677f295fd6c"
+version = "0.4.0-alpha.22"
+source = "git+https://github.com/kent8192/reinhardt-web?rev=14dc81dec2a2cc10641a8f15c455bbaafc2c774e#14dc81dec2a2cc10641a8f15c455bbaafc2c774e"
 dependencies = [
  "ctor",
  "inventory",
@@ -1970,8 +1970,8 @@ dependencies = [
 
 [[package]]
 name = "reinhardt-query"
-version = "0.4.0-alpha.21"
-source = "git+https://github.com/kent8192/reinhardt-web?rev=3728d89b80a973f6c108fecc11afa677f295fd6c#3728d89b80a973f6c108fecc11afa677f295fd6c"
+version = "0.4.0-alpha.22"
+source = "git+https://github.com/kent8192/reinhardt-web?rev=14dc81dec2a2cc10641a8f15c455bbaafc2c774e#14dc81dec2a2cc10641a8f15c455bbaafc2c774e"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -1984,8 +1984,8 @@ dependencies = [
 
 [[package]]
 name = "reinhardt-query-macros"
-version = "0.4.0-alpha.21"
-source = "git+https://github.com/kent8192/reinhardt-web?rev=3728d89b80a973f6c108fecc11afa677f295fd6c#3728d89b80a973f6c108fecc11afa677f295fd6c"
+version = "0.4.0-alpha.22"
+source = "git+https://github.com/kent8192/reinhardt-web?rev=14dc81dec2a2cc10641a8f15c455bbaafc2c774e#14dc81dec2a2cc10641a8f15c455bbaafc2c774e"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1995,8 +1995,8 @@ dependencies = [
 
 [[package]]
 name = "reinhardt-query-sqlx"
-version = "0.4.0-alpha.21"
-source = "git+https://github.com/kent8192/reinhardt-web?rev=3728d89b80a973f6c108fecc11afa677f295fd6c#3728d89b80a973f6c108fecc11afa677f295fd6c"
+version = "0.4.0-alpha.22"
+source = "git+https://github.com/kent8192/reinhardt-web?rev=14dc81dec2a2cc10641a8f15c455bbaafc2c774e#14dc81dec2a2cc10641a8f15c455bbaafc2c774e"
 dependencies = [
  "reinhardt-query",
  "sqlx",
