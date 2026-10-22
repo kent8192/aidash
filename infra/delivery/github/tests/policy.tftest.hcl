@@ -264,6 +264,40 @@ run "controlled_activation_uses_only_explicit_flags" {
   }
 }
 
+run "activated_nonproduction_defaults_notifications_on" {
+  command = plan
+  variables {
+    bootstrap_code_installed = true
+    activation_validated     = true
+    enablement               = { nonproduction = true }
+  }
+  assert {
+    condition = (
+      github_actions_variable.delivery["GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED"].value == "true" &&
+      github_actions_variable.delivery["GCP_ENVIRONMENTS_ENABLED"].value == "true" &&
+      github_actions_variable.delivery["GCP_PRODUCTION_ENABLED"].value == "false" &&
+      github_actions_variable.delivery["GCP_CERTIFICATE_RENEWAL_ENABLED"].value == "false"
+    )
+    error_message = "Validated nonproduction activation must enable deployment mail by default without enabling production or certificates."
+  }
+}
+
+run "activated_nonproduction_can_disable_notifications" {
+  command = plan
+  variables {
+    bootstrap_code_installed = true
+    activation_validated     = true
+    enablement               = { nonproduction = true, notifications = false }
+  }
+  assert {
+    condition = (
+      github_actions_variable.delivery["GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED"].value == "false" &&
+      github_actions_variable.delivery["GCP_ENVIRONMENTS_ENABLED"].value == "true"
+    )
+    error_message = "An explicit notification opt-out must remain effective without disabling nonproduction."
+  }
+}
+
 run "production_needs_numeric_human_reviewer" {
   command = plan
   variables {
