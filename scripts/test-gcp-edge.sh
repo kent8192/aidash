@@ -145,8 +145,8 @@ docker run --rm --network none -v "$edge_test_dir:/fixture:ro" "$caddy_image" \
   caddy validate --config /fixture/Caddyfile --adapter caddyfile
 caddy_container=$(docker run -d --network none --label purpose=aidash-random-edge-check \
   -v "$edge_test_dir:/fixture:ro" "$caddy_image" caddy run --config /fixture/Caddyfile --adapter caddyfile)
-docker run --rm --platform linux/amd64 --network "container:$caddy_container" \
-  -v "$edge_test_dir:/fixture:ro" --entrypoint bash "$image" -euc '
+docker run --rm -i --platform linux/amd64 --network "container:$caddy_container" \
+  -v "$edge_test_dir:/fixture:ro" --entrypoint bash "$image" -eu <<'BASH'
 known=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.preview.aidash.run
 unknown=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.preview.aidash.run
 for attempt in $(seq 50); do
@@ -170,4 +170,4 @@ check https "$unknown" 404
 check http "$unknown" 404
 check http "$known" 308
 printf "%s\n" "Chart Caddy: static wildcard TLS, exact-host routing, unknown-host HTTPS/HTTP rejected, redirect and backend responses enforce no-referrer, application responses deny framing"
-'
+BASH
