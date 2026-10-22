@@ -746,7 +746,7 @@ async fn an_mcp_tool_hint_needs_registry_create_and_stores_nothing(
 			.await
 			.unwrap()
 	};
-	let stored = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
+	let stored = assert_json(owner.get(&versions_path("acme")).await.unwrap(), 200);
 	// Act
 	let read_only = hint(owner.clone(), mcp.clone(), "lookup").await;
 	let writes = hint(owner.clone(), mcp.clone(), "write").await;
@@ -783,7 +783,7 @@ async fn an_mcp_tool_hint_needs_registry_create_and_stores_nothing(
 	assert_eq!(administrator.status_code(), 403, "{}", administrator.text());
 	assert_eq!(anonymous.status_code(), 401, "{}", anonymous.text());
 	assert_eq!(
-		assert_json(owner.get("/api/registry/versions").await.unwrap(), 200),
+		assert_json(owner.get(&versions_path("acme")).await.unwrap(), 200),
 		stored,
 		"reading a hint registers and approves nothing"
 	);
