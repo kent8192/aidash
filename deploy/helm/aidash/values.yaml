@@ -54,6 +54,8 @@ metadataServerEgress:
 # Managed Provider Credential descriptor {fingerprint_key, store, broker}; null
 # renders nothing. Rendered as {"provider_credentials": ...} for
 # AIDASH_PROVIDER_CREDENTIAL_SETTINGS. Never key material.
+# PostgreSQL stores use master_key: {env: AIDASH_PROVIDER_STORE_MASTER_KEY},
+# fingerprint_key: {env: AIDASH_PROVIDER_FINGERPRINT_KEY}, and broker: null.
 providerCredentials:
   settings: null
 # Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;

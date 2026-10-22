@@ -78,7 +78,7 @@ clients retain no total timeout while reinhardt-web#6689 remains open.
 
 ### One-command Kubernetes start
 
-With Docker, kind, kubectl, Helm, curl, and cargo-make installed, run:
+With Docker, kind, kubectl, Helm, curl, Python 3, and cargo-make installed, run:
 
 ```sh
 cargo make k8s-up
@@ -90,6 +90,13 @@ starts persistent PostgreSQL with pgvector/PGroonga and JetStream NATS, deploys 
 worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
+
+The server and worker use a PostgreSQL [Secret Store](docs/provider-credentials.md).
+Startup generates its Master Key and fingerprint key once in the `aidash-local-app`
+Secret, so Tenants can connect OpenRouter under **Provider connections** without
+manual Store setup. Re-running `k8s-up` preserves both keys; `k8s-down` deletes
+them together with the local database. Partial or invalid keys stop startup
+instead of replacing keys that may protect existing credentials.
 
 The built-in loopback endpoint is plain HTTP, so it does not support browser sign-in; the dashboard shows setup guidance, while `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Browser sessions require a trusted HTTPS dashboard origin. To enable OIDC, publish the frontend Service and its API/auth proxy through HTTPS, add `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and that HTTPS `AIDASH_OIDC_PUBLIC_ORIGIN` to the `aidash-local-app` Secret, then re-run `cargo make k8s-up` to restart the Pods. Register the matching `https://<dashboard-origin>/auth/callback` URI in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
