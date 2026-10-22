@@ -153,11 +153,14 @@ records remain externally owned. Destination verification remains a human step.
 
 Once this code is on the execution branch and, with the first release, protected main, a reviewed GitHub
 plan may set `bootstrap_code_installed=true`, `activation_validated=true` and
-individual `enablement` fields. First enable certificates and dispatch
+individual `enablement` fields. First use
+`enablement={certificates=true,notifications=false}` to enable certificates
+while mail setup is still pending, and dispatch
 **Deployment preview certificate** on `develop/0.1.0`; inspect the first valid
 Secret Manager version. Its daily schedule renews within 30 days, preserves the
 ACME account privately, and a normal lifecycle reconcile refreshes running edges.
-Then run nonproduction/mail acceptance. Require the release App's staging check
+Then explicitly set `enablement.notifications=true`, retaining the other
+selected enablement fields, and run nonproduction/mail acceptance. Require the release App's staging check
 only after the bootstrap main merge; this check affects every main-target PR.
 Production additionally requires nonproduction enablement and that staging gate.
 
