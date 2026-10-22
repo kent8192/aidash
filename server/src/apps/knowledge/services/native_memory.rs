@@ -692,16 +692,32 @@ pub(crate) async fn scope(
 	if aidash_domain::nodes::deployment_of(&bank.home) != store.deployment {
 		return Err(Error::Forbidden);
 	}
-	let tenant: Option<String> = native::query_scalar(
+	let node: Option<String> = native::query_scalar(
 		&Query::select()
-			.column(Alias::new("tenant"))
+			.column(("workspaces", "node"))
 			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(bank.workspace)))
+			.inner_join(
+				Alias::new("workspaces"),
+				Expr::col(("authorization_workspaces", "workspace_id"))
+					.equals(("workspaces", "id")),
+			)
+			.and_where(Expr::col(("workspaces", "id")).eq(Expr::value(bank.workspace)))
+			.and_where(
+				Expr::col(("authorization_workspaces", "tenant"))
+					.eq(Expr::value(bank.tenant.clone())),
+			)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **lease.tx())
 	.await?;
-	if tenant.as_deref() != Some(bank.tenant.as_str()) {
+	let Some(node) = node else {
+		return Err(Error::Forbidden);
+	};
+	let home = store
+		.deployment
+		.node(aidash_domain::nodes::NodeName::parse(&node)?)
+		.to_string();
+	if bank.home != home {
 		return Err(Error::Forbidden);
 	}
 	units::authorize(lease, bank, action).await

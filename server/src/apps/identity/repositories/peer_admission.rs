@@ -122,6 +122,12 @@ where
 			.node(self.receiver.clone())
 			.to_string()
 	}
+	async fn receiver_resource(&mut self) -> Result<Resource> {
+		self.access
+			.node_resource(&self.receiver)
+			.await
+			.map_err(Into::into)
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		let id = &self.access.identity;
 		ExecutionPrincipal {

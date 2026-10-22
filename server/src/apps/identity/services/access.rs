@@ -563,26 +563,34 @@ impl Access {
 		}
 	}
 
-	/// Authorize work on an owned Node using its current policy attributes,
-	/// then select its Catalog and Federation identity.
-	pub(crate) async fn use_node(&mut self, name: aidash_domain::nodes::NodeName) -> Result<()> {
+	/// Load an owned Node's policy resource in this authority transaction.
+	pub(crate) async fn node_resource(
+		&mut self,
+		name: &aidash_domain::nodes::NodeName,
+	) -> Result<Resource> {
 		let node = crate::apps::identity::repositories::nodes::get(
 			&mut *self.tx,
 			&self.identity.tenant,
 			name.as_str(),
 		)
 		.await?;
-		let resource = self.resource(
+		Ok(self.resource(
 			"node",
 			node.name.as_str(),
 			json!({"label":node.label,"default":node.default}),
-		);
+		))
+	}
+
+	/// Authorize work on an owned Node using its current policy attributes,
+	/// then select its Catalog and Federation identity.
+	pub(crate) async fn use_node(&mut self, name: aidash_domain::nodes::NodeName) -> Result<()> {
+		let resource = self.node_resource(&name).await?;
 		self.require(
 			&resource,
 			aidash_domain::identity::tenant_administration::NODE_USE,
 		)
 		.await?;
-		self.set_node(node.name);
+		self.set_node(name);
 		Ok(())
 	}
 

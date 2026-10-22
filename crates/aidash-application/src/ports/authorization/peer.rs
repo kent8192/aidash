@@ -19,9 +19,12 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 pub trait PeerInspectionScope: Send {
+	/// The Deployment identity used by Registry references.
 	fn node_id(&self) -> &str;
 	/// The address of the receiving Node, which an inspection reports.
 	fn receiver_address(&self) -> String;
+	/// The receiving Node's name and current label/default policy attributes.
+	async fn receiver_resource(&mut self) -> Result<Resource>;
 	fn identity(&self) -> ExecutionPrincipal;
 	fn bundle(&self) -> &PolicyBundle;
 	fn subjects(&self) -> &[String];

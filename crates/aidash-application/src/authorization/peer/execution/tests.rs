@@ -49,6 +49,13 @@ impl PeerInspectionScope for Scope {
 	fn receiver_address(&self) -> String {
 		receiver_address()
 	}
+	async fn receiver_resource(&mut self) -> Result<Resource> {
+		Ok(self.resource(
+			"node",
+			aidash_domain::nodes::NodeName::derived("receiver").as_str(),
+			json!({"label":"Receiver","default":true}),
+		))
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
 			tenant: "local".into(),

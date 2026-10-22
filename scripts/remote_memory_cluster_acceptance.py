@@ -138,7 +138,10 @@ class RemoteMemory(Cluster):
         self.apply({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "provider"}, "spec": {
             "replicas": 1, "selector": {"matchLabels": {"app": "provider"}}, "template": {
                 "metadata": {"labels": {"app": "provider"}}, "spec": {"containers": [{"name": "provider", "image": "python:3.12-alpine",
-                    "command": ["python3", "/fixture/fixture.py"], "volumeMounts": [{"name": "fixture", "mountPath": "/fixture"}]}],
+                    "command": ["python3", "/fixture/fixture.py"],
+                    "env": [{"name": "AIDASH_FIXTURE_HOME_NODE", "value": self.nodes[0]["address"]},
+                            {"name": "AIDASH_FIXTURE_EXECUTOR_NODE", "value": self.nodes[1]["address"]}],
+                    "volumeMounts": [{"name": "fixture", "mountPath": "/fixture"}]}],
                     "volumes": [{"name": "fixture", "configMap": {"name": "provider"}}]}}}})
         self.service("provider", 8080, {"app": "provider"})
         self.rollout("provider")

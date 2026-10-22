@@ -96,6 +96,97 @@ async fn inspect(
 }
 
 #[rstest::rstest]
+#[case::label(Some(("/label", json!("Default"))))]
+#[case::default(Some(("/default", json!(true))))]
+#[case::denied(None)]
+#[tokio::test]
+async fn receiver_preflight_uses_the_selected_nodes_policy_resource(
+	#[future] execution: ExecutionFixture,
+	#[case] condition: Option<(&str, Value)>,
+) {
+	let execution = Box::pin(execution).await;
+	let app = &execution.app;
+	let remote = Remote::start(SOURCE).await;
+	let f = &peering::enable(&app.runtime, &app.context);
+	peering::permit(f, &remote.endpoint);
+	let receiving = endpoint::default_node(&f.store, "acme").await.node;
+	assert_eq!(
+		decoded(
+			app.deployment_administrator
+				.post(
+					&peering::registration_path("acme", receiving.as_str()),
+					&remote.registration(&sender()),
+					"json",
+				)
+				.await
+				.unwrap()
+		)
+		.0,
+		200,
+	);
+	let (_, issued) = deployment_administrator(
+		app,
+		"/api/authorization/acme/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	assert_eq!(
+		deployment_administrator(
+			app,
+			"/api/authorization/acme/peer-mappings",
+			json!({
+				"node":receiving,"source_node":remote.node(&sender()),"source_subject":"bob",
+				"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
+			})
+		)
+		.await
+		.0,
+		200
+	);
+	let mut policy = execution.policy.clone();
+	let expected = if let Some((path, value)) = condition {
+		policy["policies"] = json!([
+			{"id":"definitions","effect":"allow","subjects":{"any":true},
+			 "actions":["registry.read","agent.execute","model.infer","tool.invoke","skill.use","cluster.execute","decision.invoke"],"resources":{"kinds":["*"]}},
+			{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["federation.execute"],
+			 "resources":{"kinds":["node"],"ids":[receiving]},
+			 "condition":{"op":"eq","left":{"source":"resource","path":path},"right":{"source":"literal","value":value}}},
+		]);
+		200
+	} else {
+		policy["policies"].as_array_mut().unwrap().push(json!({
+			"id":"deny-receiver","effect":"deny","subjects":{"any":true},"actions":["federation.execute"],
+			"resources":{"kinds":["node"],"ids":[receiving]},
+		}));
+		403
+	};
+	assert_eq!(
+		deployment_administrator(
+			app,
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, result) = inspect(
+		app,
+		Bearer::Signed(&remote, sender()),
+		"bob",
+		json!({"agent":{"id":"research","version":"1.0.0"},"requirements":{}}),
+	)
+	.await;
+	assert_eq!(status, expected, "{result}");
+	if expected == 200 {
+		assert_eq!(
+			result["node_id"],
+			f.config.deployment.node(receiving).to_string()
+		);
+	}
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_run(
 	#[future] execution: ExecutionFixture,

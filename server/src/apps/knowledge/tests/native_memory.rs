@@ -60,6 +60,88 @@ struct RecoveryFence {
 }
 
 #[rstest]
+#[case::read(false)]
+#[case::write(true)]
+#[tokio::test]
+async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] write: bool,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(
+			&bank,
+			Change::Add {
+				id,
+				content: content("Owned memory"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let mut spoofed = bank.clone();
+	spoofed.home = aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "sibling")
+		.to_string();
+	assert_ne!(spoofed.home, bank.home);
+	if write {
+		let result = memory::mutate(
+			&store,
+			&Actor::DeploymentAdministrator,
+			mutation(
+				&spoofed,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: content("Spoofed memory"),
+				},
+			),
+		)
+		.await;
+		assert!(
+			matches!(result, Err(aidash_server::Error::Forbidden)),
+			"{result:?}"
+		);
+	} else {
+		let result = memory::list(
+			&store,
+			&Actor::DeploymentAdministrator,
+			memory::ReadBank {
+				provider: reference("p"),
+				bank: spoofed,
+			},
+		)
+		.await;
+		assert!(
+			matches!(result, Err(aidash_server::Error::Forbidden)),
+			"{result:?}"
+		);
+	}
+	let visible = memory::list(
+		&store,
+		&Actor::DeploymentAdministrator,
+		memory::ReadBank {
+			provider: reference("p"),
+			bank,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(visible.len(), 1);
+	assert_eq!(visible[0].id, id);
+}
+
+#[rstest]
 #[tokio::test]
 async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_restore(
 	#[future] database: DatabaseFixture,
