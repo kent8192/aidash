@@ -78,13 +78,18 @@ export function RemoteRunManagement({ id }: { id: string }) {
           </Button>
         </div>
       )}
-      {state.control === "PAUSED" && !terminal && (
-        <Hint>
-          {ja
-            ? "元の Home Node で権限と参照元を確認して再開してください。"
-            : "Resume from the original Home node after rechecking authority and sources."}
-        </Hint>
-      )}
+      {state.control === "PAUSED" &&
+        !terminal &&
+        (!state.semantic_recovery ||
+          state.semantic_recovery.actions.includes(
+            "retry_unchanged_binding",
+          )) && (
+          <Hint>
+            {ja
+              ? "元の Home Node で権限と参照元を確認して再開してください。"
+              : "Resume from the original Home node after rechecking authority and sources."}
+          </Hint>
+        )}
       {error && <Alert>{error}</Alert>}
     </section>
   );
@@ -126,6 +131,10 @@ const reasons: Record<RemoteSemanticFailure, [string, string]> = {
   context_budget: [
     "Semantic context does not fit the model's available context budget.",
     "記憶の参照結果がモデルのコンテキスト上限に収まりません。",
+  ],
+  durable_memory_budget: [
+    "The memory operation has exhausted its cumulative budget. Create a follow-up task.",
+    "記憶処理の累積予算を使い切りました。Follow-up Task を作成してください。",
   ],
   allowance: [
     "A generated ancestor has insufficient call or token allowance.",

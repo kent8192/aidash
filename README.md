@@ -409,6 +409,8 @@ Protocol fixtures verify transport, coordination and recovery. They do not estab
 
 The Rust Hindsight provider stores memory units, facts and graph edges in PostgreSQL with pgvector and PGroonga. Qdrant is not used. Retrieval combines semantic, keyword, graph and temporal rankings; a reranker is a required policy role (a registered model or the explicit `Rrf` passthrough). Agents bind the immutable Memory provider and workspace Sources through Binding contract 1. Recovery journals and visibility checks retain the admitted provider identities across restarts.
 
+An authorized manual retry renews a native-memory operation's retry ledger while preserving its cumulative call, token and cost totals. Exhausting any of those durable budgets pauses local and remote Runs with `durable_memory_budget` without failing their Tasks. Recovery offers only a new follow-up Task, whose Run receives a new operation; retrying the unchanged Binding cannot restore the spent budget.
+
 Three contracts own different parts of this behavior: Run-context continuity and compaction (#113, #116), persistent source ingestion and semantic retrieval (#110), and extraction, review and consolidation of reusable knowledge (#118, #141). See [architecture](docs/architecture.md#memory-contracts), the [traceability matrix](docs/memory-traceability.md) for the status of each requirement, [memory evaluation](docs/memory-evaluation.md) and [memory recovery](docs/memory-recovery.md).
 
 ## Database migrations

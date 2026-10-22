@@ -75,13 +75,13 @@ class GitHubTransport:
                 "head": {"ref": f"release/20261012T010203Z-{sha[:12]}", "sha": sha, "repo": {"full_name": REPOSITORY}},
                 "base": {"ref": "main", "repo": {"full_name": REPOSITORY}}, "body": f"<!-- aidash-release:{json.dumps(metadata)} -->"}
 
-    def __call__(self, *args, data=None, timeout=None):
+    def __call__(self, *args, data=None, timeout=None, env=None):
         if args[:2] != ("gh", "api"):
             raise AssertionError("The release owner must use the gh API transport")
-        if len(args) == 3 and args[2].endswith("/zip"):
-            return self.zipfiles[int(args[2].split("/")[-2])]
         self.assert_api(args, data)
         method, endpoint = args[3], args[4]
+        if endpoint.endswith("/zip"):
+            return b"HTTP/2.0 200 OK\r\n\r\n" + self.zipfiles[int(endpoint.split("/")[-2])]
         parsed = urlsplit(endpoint)
         path = parsed.path.removeprefix(f"repos/{REPOSITORY}/")
         query = parse_qs(parsed.query)
@@ -150,10 +150,12 @@ class GitHubTransport:
             response.update(body)
         else:
             raise AssertionError((method, path, body))
-        return json.dumps(deepcopy(response)).encode()
+        status = 201 if method == "POST" and endpoint != "graphql" else 200
+        return f"HTTP/2.0 {status} Response\r\n\r\n".encode() + json.dumps(deepcopy(response)).encode()
 
     def assert_api(self, args, data):
-        if args[2] != "--method" or (data is not None and args[5:] != ("--input", "-")):
+        body_options = tuple(arg for arg in args[5:] if arg != "--include")
+        if args[2] != "--method" or (data is not None and body_options != ("--input", "-")):
             raise AssertionError("API bodies must be passed as JSON stdin without a shell")
 
 

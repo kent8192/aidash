@@ -304,9 +304,8 @@ impl Access {
 		}
 	}
 	pub(crate) async fn flush_audit(&mut self) -> Result<()> {
-		for (input, decision) in &self.pending_decisions {
-			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
-		}
+		Authorization::record_many(&mut self.tx, &self.identity.tenant, &self.pending_decisions)
+			.await?;
 		self.pending_decisions.clear();
 		Ok(())
 	}
@@ -432,9 +431,8 @@ impl Access {
 	/// Commit the completed authorization checks and release their row locks
 	/// while the worker waits on an external provider.
 	pub async fn suspend(&mut self) -> Result<()> {
-		for (input, decision) in &self.pending_decisions {
-			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
-		}
+		Authorization::record_many(&mut self.tx, &self.identity.tenant, &self.pending_decisions)
+			.await?;
 		let previous = self
 			.tx
 			.take()
@@ -540,15 +538,8 @@ impl Access {
 				.begin(&self.identity.tenancy()?)
 				.await?
 				.into_executor()?;
-			for (input, decision) in records {
-				AuthorizationDecision::append(
-					audit.as_mut(),
-					&self.identity.tenant,
-					input,
-					decision,
-				)
+			AuthorizationDecision::append_many(audit.as_mut(), &self.identity.tenant, records)
 				.await?;
-			}
 			audit.commit().await?;
 		} else {
 			self.pending_decisions.extend_from_slice(records);
@@ -591,10 +582,12 @@ impl Access {
 		if result.is_ok() {
 			let mut tx =
 				tx.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
-			for (input, decision) in &self.pending_decisions {
-				AuthorizationDecision::append(tx.as_mut(), &self.identity.tenant, input, decision)
-					.await?;
-			}
+			AuthorizationDecision::append_many(
+				tx.as_mut(),
+				&self.identity.tenant,
+				&self.pending_decisions,
+			)
+			.await?;
 			tx.commit().await?;
 		} else {
 			if let Some(tx) = tx {
@@ -607,15 +600,12 @@ impl Access {
 					.begin(&self.identity.tenancy()?)
 					.await?
 					.into_executor()?;
-				for (input, decision) in &self.pending_decisions {
-					AuthorizationDecision::append(
-						audit.as_mut(),
-						&self.identity.tenant,
-						input,
-						decision,
-					)
-					.await?;
-				}
+				AuthorizationDecision::append_many(
+					audit.as_mut(),
+					&self.identity.tenant,
+					&self.pending_decisions,
+				)
+				.await?;
 				audit.commit().await?;
 			}
 		}
