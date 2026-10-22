@@ -332,6 +332,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
+      - run: python3 -m unittest discover -s scripts -p test_local_k8s_credentials.py
       - run: python3 -m unittest discover -s scripts -p test_ci_success_aggregate.py
       # Fixed-task evaluator (#122): deterministic corpus, oracles and guard rails; no Docker or credentials.
       - run: python3 -m unittest discover -s scripts -p test_fixed_task_evaluation.py

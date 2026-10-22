@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import subprocess
+import tempfile
 
 KEYS = ("AIDASH_PROVIDER_FINGERPRINT_KEY", "AIDASH_PROVIDER_STORE_MASTER_KEY")
 
@@ -27,10 +28,14 @@ def initialize(kubectl):
             raise RuntimeError("The local Secret Store key pair is incomplete; recover its original keys")
         for key in KEYS:
             try:
-                value = base64.b64decode(data[key], validate=True).decode("ascii")
+                value = base64.b64decode(data[key], validate=True).decode("utf-8").strip()
             except (ValueError, UnicodeError) as error:
                 raise RuntimeError("The existing local Secret Store keys are invalid") from error
-            if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            if key == "AIDASH_PROVIDER_FINGERPRINT_KEY":
+                valid = len(value.encode("utf-8")) >= 32
+            else:
+                valid = re.fullmatch(r"[0-9a-fA-F]{64}", value)
+            if not valid:
                 raise RuntimeError("The existing local Secret Store keys are invalid")
         return
     # The resource-version test prevents two initializers from replacing one
@@ -41,12 +46,16 @@ def initialize(kubectl):
         patch.append({"op": "add", "path": "/data", "value": keys})
     else:
         patch.extend({"op": "add", "path": "/data/" + key, "value": value} for key, value in keys.items())
-    result = subprocess.run(
-        [*kubectl, "patch", "secret", "aidash-local-app", "--type=json", "--patch-file", "-"],
-        input=json.dumps(patch).encode(),
-        capture_output=True,
-        check=False,
-    )
+    # kubectl reads --patch-file as a path, not stdin. Keep keys out of argv
+    # and remove the private file as soon as kubectl has finished reading it.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as patch_file:
+        json.dump(patch, patch_file)
+        patch_file.flush()
+        result = subprocess.run(
+            [*kubectl, "patch", "secret", "aidash-local-app", "--type=json", "--patch-file", patch_file.name],
+            capture_output=True,
+            check=False,
+        )
     if result.returncode:
         raise RuntimeError("Cannot initialize the local Secret Store keys; retry k8s-up")
 
