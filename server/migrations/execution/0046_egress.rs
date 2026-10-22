@@ -6,6 +6,13 @@ pub(super) fn migration() -> Migration {
 		.add_dependency("identity", "0038_tenant_secrets_state")
 		.atomic(true)
 		.database_only(true)
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_operations".into(),
+			constraint: Constraint::Unique {
+				name: "core_operations_tenant_id_key".into(),
+				columns: vec!["tenant".into(), "id".into()],
+			},
+		})
 		.add_operation(Operation::CreateTable {
 			name: "egress_budgets".into(),
 			columns: vec![
@@ -62,9 +69,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "egress_budgets_operation_fkey".into(),
-					columns: vec!["operation_id".into()],
+					columns: vec!["tenant".into(), "operation_id".into()],
 					referenced_table: "core_operations".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::NoAction,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,
@@ -136,9 +143,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "egress_requests_operation_fkey".into(),
-					columns: vec!["operation_id".into()],
+					columns: vec!["tenant".into(), "operation_id".into()],
 					referenced_table: "core_operations".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::NoAction,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,
