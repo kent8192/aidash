@@ -1,3 +1,4 @@
+import { TenantSecrets } from "./tenant-secrets";
 import type { ReactNode } from "react";
 import { ApprovalDeciderPanel } from "./approval-decider";
 import { TenantPolicyAdministration } from "./authorization";
@@ -44,6 +45,13 @@ export function TenantAccess({
         // A member without administration actions still leaves from here.
         fallback={subject ? <LeaveTenantButton tenant={tenant} /> : fallback}
       />
+      {(can("secret.manage") || can("secret.use")) && (
+        <TenantSecrets
+          key={tenant}
+          tenant={tenant}
+          canManage={can("secret.manage")}
+        />
+      )}
       {can("policy.read") && (
         <TenantPolicyAdministration tenant={tenant} can={can} />
       )}

@@ -25,6 +25,7 @@ impl ExecutionRepository for Repository {
 			tenant_actions: self.tenant_actions.clone(),
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
+			tenant_secrets: self.store.tenant_secrets.clone(),
 		}))
 	}
 	async fn read_session(&self, id: Uuid) -> Result<TestSession> {

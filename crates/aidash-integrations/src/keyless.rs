@@ -101,7 +101,7 @@ fn refused(error: &(dyn std::error::Error + 'static)) -> bool {
 	false
 }
 
-struct PublicDns;
+pub(crate) struct PublicDns;
 
 impl reqwest::dns::Resolve for PublicDns {
 	fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {

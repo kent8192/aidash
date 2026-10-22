@@ -283,6 +283,7 @@ impl RealToolTransport for Repository {
 		_: Uuid,
 		_: &RealToolRule,
 		_: &ToolCall,
+		_: Option<&secrecy::SecretString>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
 		panic!("fixtures must never use transport")
 	}
@@ -1176,6 +1177,7 @@ async fn a_real_tool_profile_never_dispatches_a_plugin_tool(#[case] fixture: boo
 	};
 	repository.rules = vec![RealToolRule {
 		read_only_verified: true,
+		secret: None,
 		tool: permitted.clone(),
 		endpoint: "https://test.example/rpc".into(),
 		allowed_actions: vec!["read".into()],

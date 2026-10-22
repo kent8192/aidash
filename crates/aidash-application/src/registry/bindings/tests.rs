@@ -264,14 +264,13 @@ async fn missing_required_and_tampered_definitions_fail_closed() {
 	);
 }
 #[tokio::test]
-async fn python_start_operations_share_pinned_companions() {
+async fn a_python_start_pins_its_poll_and_cancel_companions() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	let code = catalog.core("code_interpreter");
-	let install = catalog.core("python_install");
 	catalog.core("python_poll");
 	catalog.core("python_cancel");
-	let bundle = catalog.bundle("python", vec![code, install]);
+	let bundle = catalog.bundle("python", vec![code]);
 	config.bindings.push(Binding {
 		kind: BindingKind::Bundle,
 		target: bundle,
@@ -281,12 +280,7 @@ async fn python_start_operations_share_pinned_companions() {
 		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
-	for operation in [
-		"code_interpreter",
-		"python_install",
-		"python_poll",
-		"python_cancel",
-	] {
+	for operation in ["code_interpreter", "python_poll", "python_cancel"] {
 		assert_eq!(
 			saved
 				.bindings
@@ -310,10 +304,12 @@ async fn selecting_async_start_also_pins_companions_but_not_other_starts() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	let code = catalog.core("code_interpreter");
-	let install = catalog.core("python_install");
+	let shell = catalog.core("shell");
+	catalog.core("shell_poll");
+	catalog.core("shell_cancel");
 	catalog.core("python_poll");
 	catalog.core("python_cancel");
-	let bundle = catalog.bundle("python", vec![code.clone(), install]);
+	let bundle = catalog.bundle("host", vec![code.clone(), shell]);
 	config.bindings.push(Binding {
 		kind: BindingKind::Bundle,
 		target: bundle,
@@ -333,7 +329,7 @@ async fn selecting_async_start_also_pins_companions_but_not_other_starts() {
 		!saved
 			.bindings
 			.iter()
-			.any(|binding| binding.alias.as_deref() == Some("python_install"))
+			.any(|binding| binding.alias.as_deref() == Some("shell"))
 	);
 }
 #[tokio::test]
@@ -431,7 +427,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 
 	let mut run = admitted_run().await;
 	run.context.binding_snapshot = None;
-	run.home_node = "aidash://home".into();
+	run.home_node = "aidash://home/brave-otter-k3m9q2xa".into();
 	run.bind(recovered).unwrap();
 	let live = Arc::new(Live::new());
 	let resolver = execution::PinnedResolver {
@@ -1047,7 +1043,6 @@ async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 		"shell_poll",
 		"shell_cancel",
 		"code_interpreter",
-		"python_install",
 		"python_poll",
 		"python_cancel",
 	];
@@ -1230,7 +1225,7 @@ async fn bound_run(config: &AgentBindings) -> Run {
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
-		home_node: NODE.into(),
+		home_node: format!("{NODE}/brave-otter-k3m9q2xa"),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
 		state_version: Default::default(),
@@ -1423,10 +1418,12 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 		});
 	}
 	let code = catalog.core("code_interpreter");
-	let install = catalog.core("python_install");
+	let shell = catalog.core("shell");
+	catalog.core("shell_poll");
+	catalog.core("shell_cancel");
 	catalog.core("python_poll");
 	catalog.core("python_cancel");
-	let bundle = catalog.bundle("python", vec![code.clone(), install.clone()]);
+	let bundle = catalog.bundle("host", vec![code.clone(), shell.clone()]);
 	config.bindings.push(Binding {
 		kind: BindingKind::Bundle,
 		target: bundle,
@@ -1478,7 +1475,7 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 	let expanded = snapshot(&mut catalog, &expanded_config, false)
 		.await
 		.unwrap();
-	for identity in [install, QualifiedRef::builtin(NODE, "apply_patch")] {
+	for identity in [shell, QualifiedRef::builtin(NODE, "apply_patch")] {
 		let mut added = recovered.clone();
 		added.bindings.push(
 			expanded
@@ -1978,7 +1975,7 @@ fn snapshot_run(saved: BindingSnapshot) -> Run {
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
-		home_node: NODE.into(),
+		home_node: format!("{NODE}/brave-otter-k3m9q2xa"),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
 		state_version: Default::default(),
@@ -2198,4 +2195,40 @@ async fn the_workspace_slot_degrades_only_when_every_source_feeding_it_opted_in(
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
 	assert_eq!(settings.workspace_context, !policies.is_empty());
 	assert_eq!(settings.workspace_degrades, degrades);
+}
+
+#[rstest::rstest]
+#[case::local("aidash://node-a/brave-otter-k3m9q2xa", false, true)]
+#[case::sibling("aidash://node-a/brave-lynx-k3m9q2xa", true, true)]
+#[case::foreign("aidash://elsewhere/brave-otter-k3m9q2xa", true, true)]
+#[case::false_remote("aidash://node-a/brave-otter-k3m9q2xa", true, false)]
+#[case::false_local("aidash://node-a/brave-lynx-k3m9q2xa", false, false)]
+#[tokio::test]
+async fn admitted_bindings_compare_the_home_with_the_full_executing_node(
+	#[case] home: &str,
+	#[case] remote: bool,
+	#[case] accepted: bool,
+) {
+	let config = agent_config();
+	let saved = resolve(
+		&mut Catalog::new(),
+		&CurrentProviders,
+		reference("agent"),
+		&agent_entry(&config),
+		remote,
+	)
+	.await
+	.unwrap();
+	let mut run = crate::test_support::run_of(saved.clone());
+	run.home_node = home.into();
+	run.context.binding_snapshot = None;
+	assert_eq!(run.bind(saved.clone()).is_ok(), accepted);
+	// A worker independently rejects a mismatched durable snapshot.
+	run.context.binding_snapshot = Some(Box::new(saved));
+	let resolver = execution::PinnedResolver {
+		providers: Arc::new(CurrentProviders),
+		authority: Arc::new(CurrentProviders),
+		sessions: None,
+	};
+	assert_eq!(resolver.tools(&run).await.is_ok(), accepted);
 }

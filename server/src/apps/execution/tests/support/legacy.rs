@@ -870,6 +870,8 @@ pub struct RuntimeFixture {
 	pub federation: Federation,
 	pub url: String,
 	pub schema: String,
+	/// A native child process's port, retained through asynchronous fixture setup.
+	pub process_listener: Option<Arc<std::sync::Mutex<Option<std::net::TcpListener>>>>,
 	_database: Arc<ExecutionDatabase>,
 }
 
@@ -1017,6 +1019,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			federation,
 			url: database.url.clone(),
 			schema: database.schema.clone(),
+			process_listener: None,
 			_database: database,
 		}
 	}

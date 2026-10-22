@@ -1,4 +1,5 @@
-//! Runner HTTP retains TLS/loopback admission, rotating credentials and a ten-second timeout.
+//! Runner HTTP admits TLS, loopback, or an explicitly configured cluster Service,
+//! with rotating credentials, no proxy and a ten-second timeout.
 use aidash_application::{
 	Error, Result,
 	ports::{Credentials, capabilities::runner::RunnerTransport},
@@ -18,10 +19,12 @@ impl RunnerTransport for RunnerHttp {
 		let url = reqwest::Url::parse(&self.endpoint)
 			.map_err(|_| Error::Invalid("invalid runner endpoint".into()))?;
 		if url.scheme() != "https"
-			&& !(url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "::1")))
-		{
+			&& !(url.scheme() == "http"
+				&& url.host_str().is_some_and(|host| {
+					matches!(host, "127.0.0.1" | "[::1]") || host.ends_with(".svc.cluster.local")
+				})) {
 			return Err(Error::Invalid(
-				"runner transport requires TLS or loopback".into(),
+				"runner transport requires TLS, loopback or a cluster Service".into(),
 			));
 		}
 		let token = self
@@ -31,6 +34,7 @@ impl RunnerTransport for RunnerHttp {
 				Error::Conflict("RUNTIME_UNAVAILABLE: runner credential unavailable".into())
 			})?;
 		let client = reqwest::Client::builder()
+			.no_proxy()
 			.timeout(Duration::from_secs(10))
 			.redirect(reqwest::redirect::Policy::none())
 			.build()

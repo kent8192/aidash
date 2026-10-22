@@ -4,11 +4,14 @@ use crate::Result;
 use aidash_domain::capabilities::{
 	operations::MountedFile, records::Record, sessions::Area, transfer::Description,
 };
+use aidash_domain::policy::Resource;
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 pub trait ReceiverScope: TransferScope {
+	/// The owned receiving Node with the name and attributes used by its policy.
+	async fn node_resource(&mut self) -> Result<Resource>;
 	async fn recipient(&mut self, description: &Description, node_id: &str)
 	-> Result<Option<Area>>;
 	async fn admitted(&mut self, area: &Area, version: &str) -> Result<Option<Uuid>>;

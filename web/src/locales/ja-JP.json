@@ -106,6 +106,7 @@
   "agent": "エージェント",
   "cluster": "クラスター",
   "skill": "スキル",
+  "external_service": "外部サービス",
   "tool": "ツール",
   "target": "コーディネーター",
   "targetKind": "会話の相手",

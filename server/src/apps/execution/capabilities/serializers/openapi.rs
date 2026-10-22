@@ -318,18 +318,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::contracts::Envelope>(
 			document,
-			views::management::python_install,
-			200,
-			"application/json",
-		)?;
-	contracts.request::<_, crate::apps::execution::capabilities::serializers::packages::Install>(
-		document,
-		views::management::python_install,
-	)?;
-	contracts.path(document, views::management::python_install, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::contracts::Envelope>(
-			document,
 			views::management::python_poll,
 			200,
 			"application/json",

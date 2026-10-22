@@ -333,7 +333,7 @@ async fn admit_providers(
 	use reinhardt::query::{Alias, IntoValue, OnConflict};
 	if !providers.is_empty() && !configured {
 		return Err(crate::Error::Invalid(
-			"Provider Credential Store is not configured".into(),
+			"Secret Store is not configured".into(),
 		));
 	}
 	if !providers.is_empty() && tenant.is_empty() {
@@ -494,10 +494,11 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 }
 impl AdmittedAccess {
 	fn tenant(&self) -> Result<aidash_application::provider_access::TenantAccess> {
-		let service =
-			self.store.provider_credentials.as_ref().ok_or_else(|| {
-				Error::Invalid("Provider Credential Store is not configured".into())
-			})?;
+		let service = self
+			.store
+			.provider_credentials
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("Secret Store is not configured".into()))?;
 		Ok(aidash_application::provider_access::TenantAccess {
 			keyless: self.store.keyless.clone(),
 			repository: service.repository.clone(),
@@ -562,9 +563,7 @@ impl AdmittedAccess {
 			return Ok(context.clone());
 		};
 		if self.store.provider_credentials.is_none() {
-			return Err(Error::Invalid(
-				"Provider Credential Store is not configured".into(),
-			));
+			return Err(Error::Invalid("Secret Store is not configured".into()));
 		}
 		let scope = aidash_application::tenancy::TenancyScope::tenant(&context.tenant)?;
 		let mut tx = self

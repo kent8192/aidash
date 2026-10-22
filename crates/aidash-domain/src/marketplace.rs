@@ -68,6 +68,8 @@ pub struct InstallationRevision {
 	pub config: Value,
 	pub dependencies: Vec<EntityRef>,
 	pub bindings: Vec<DependencyBinding>,
+	/// Package slot names mapped to the installing Tenant's Secret names.
+	pub secrets: std::collections::BTreeMap<String, String>,
 	pub approved: bool,
 	pub actions: Vec<String>,
 }

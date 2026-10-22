@@ -674,7 +674,24 @@ impl WorkerAuthority {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
-		let lease = self.access.write().await;
+		let mut lease = self.access.write().await;
+		if !run.is_local(f.config.deployment.as_str())
+			|| !aidash_domain::nodes::names_home(node, &run.home_node)
+		{
+			return Err(Error::Forbidden);
+		}
+		// Prepare the child's closure on the outer transaction: an inner shared
+		// lock could queue behind a writer waiting for this same parent lease.
+		// Admission below still checks the complete subject chain including the child.
+		let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
+		crate::marketplace::check_pinned(&mut lease, &entry).await?;
+		crate::apps::registry::repositories::bindings::authorized(
+			&mut lease,
+			&entry,
+			false,
+			f.store.provider_credentials.is_some(),
+		)
+		.await?;
 		let mut access = Access::under_lease(&lease).await?;
 		let result = aidash_application::authorization::worker_tasks::delegate(
 			&mut crate::bootstrap::worker_task_scope(f, &mut access),
@@ -1472,6 +1489,7 @@ pub async fn details_page(
 	)
 	.await?;
 	Ok(RunDetails {
+		egress_requests: details.egress_requests,
 		run: details.run,
 		invocations: details.invocations.into_iter().map(Into::into).collect(),
 		memory: details.memory,

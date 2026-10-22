@@ -108,6 +108,30 @@ impl ProfileRepository for Repository<'_> {
 		actions.record_denial(pool).await?;
 		result.map_err(Into::into)
 	}
+	async fn tenant_secret_hosts(&self, tenant: &str, name: &str) -> Result<Option<Vec<String>>> {
+		let pool = &self.runtime.store.pool;
+		let actions = self.tenant_actions();
+		// A Subject names a Tenant Secret only with `secret.use`, which is
+		// separate from the `secret.manage` that chose its hosts (ADR 0051).
+		let result = pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				actions
+					.require(
+						&mut *tx,
+						pool.dashboard_policy().as_ref(),
+						tenant,
+						aidash_domain::identity::tenant_administration::SECRET_USE,
+						name,
+					)
+					.await?;
+				crate::apps::identity::repositories::tenant_secrets::active_hosts(&mut *tx, name)
+					.await
+					.map_err(Into::into)
+			})
+			.await;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
+	}
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
 			.registry

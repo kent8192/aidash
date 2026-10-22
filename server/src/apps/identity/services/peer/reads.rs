@@ -137,7 +137,7 @@ impl PeerReads {
 		let result = aidash_application::federation::registry_reads::verify(
 			&mut crate::bootstrap::registry_verification_scope(
 				&mut access,
-				f.config.deployment.as_str(),
+				&admitted.receiver.node,
 			),
 			&input.references,
 		)

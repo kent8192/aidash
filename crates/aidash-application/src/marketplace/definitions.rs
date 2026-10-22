@@ -7,7 +7,7 @@ use aidash_domain::{
 	registry::{AgentConfig, ClusterConfig, EntityRef, Entry},
 };
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 	let mut refs = vec![];
 	match entry.kind.as_str() {
@@ -36,6 +36,9 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 					aidash_domain::registry::bindings::BindingKind::Memory => "memory",
 					aidash_domain::registry::bindings::BindingKind::Source => "source",
 					aidash_domain::registry::bindings::BindingKind::Decider => "decider",
+					aidash_domain::registry::bindings::BindingKind::ExternalService => {
+						"external_service"
+					}
 				};
 				refs.push((binding.target.local(), kind.into()));
 			}
@@ -235,10 +238,19 @@ pub async fn resolve(
 	source: &Version,
 	config: &Value,
 	submitted: &[DependencyBinding],
+	secrets: &BTreeMap<String, String>,
 	node: &str,
 ) -> Result<(Entry, Vec<EntityRef>, Vec<DependencyBinding>)> {
 	let package = manifest(source)?;
 	let mut entry = package.entity;
+	// Whoever installs picks which of their Tenant Secrets fills each one the
+	// package declares; the installed copy names those (ADR 0051).
+	if config.get("secret").is_some() || config.pointer("/transport/secret").is_some() {
+		return Err(Error::Invalid(
+			"Tenant Secrets are chosen with `secrets`, not configuration".into(),
+		));
+	}
+	fill_secrets(&mut entry, &package.secrets, secrets)?;
 	// Configuration may tune local behavior, but executable references must
 	// pass through the exact dependency bindings below (including tool kind).
 	let protected: &[&str] = match entry.kind.as_str() {
@@ -374,6 +386,10 @@ pub async fn resolve(
 	let graph = local_graph(scope, roots, node).await?;
 	// Structural validation never resolves node-local secret references.
 	validation.validate_in(&entry, false)?;
+	if let Some((name, endpoint)) = aidash_domain::tenant_secrets::definition_target(&entry) {
+		let hosts = scope.tenant_secret_hosts(&name).await?;
+		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
+	}
 	if entry.kind == "agent" {
 		let snapshot = crate::registry::bindings::resolve(
 			&mut Bindings { scope, node },
@@ -390,6 +406,29 @@ pub async fn resolve(
 		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
 	}
 	Ok((entry, graph.iter().map(reference).collect(), bindings))
+}
+/// Maps each Tenant Secret a package declares to the installing Tenant's own.
+fn fill_secrets(
+	entry: &mut Entry,
+	declared: &[String],
+	chosen: &BTreeMap<String, String>,
+) -> Result<()> {
+	if declared.len() != chosen.len() || declared.iter().any(|slot| !chosen.contains_key(slot)) {
+		return Err(Error::Invalid(format!(
+			"choose one of your Tenant Secrets for each the package declares: {}",
+			declared.join(", ")
+		)));
+	}
+	for name in chosen.values() {
+		aidash_domain::tenant_secrets::validate_name(name)?;
+	}
+	if let Some(slot) = aidash_domain::tenant_secrets::definition_secret(entry) {
+		let target = chosen.get(&slot).ok_or_else(|| {
+			Error::Invalid("the package names an undeclared Tenant Secret".into())
+		})?;
+		aidash_domain::tenant_secrets::rename_definition_secret(entry, target);
+	}
+	Ok(())
 }
 pub async fn private_context(scope: &mut dyn DefinitionScope, entry: &Entry) -> Result<()> {
 	if entry.kind != "agent" {

@@ -55,7 +55,7 @@ export function nodeView(
     node: { id: node.address, endpoint },
     workspaces,
     tasks: state.tasks.filter((task) => ids.has(task.workspace_id)),
-    runs: state.runs.filter((run) => run.node === node.name),
+    runs: state.runs.filter((run) => ids.has(run.workspace_id)),
     human_requests: state.human_requests.filter((request) =>
       ids.has(request.workspace_id),
     ),

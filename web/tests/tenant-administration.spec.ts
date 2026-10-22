@@ -751,3 +751,124 @@ test("a policy reader allowed to issue credentials but not to list them can stil
   await page.waitForTimeout(1_000);
   expect(listed).toEqual([]);
 });
+
+test("Tenant Secrets clear values after writing and edit hosts without returning the value", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture", {
+    tenant: "alpha",
+    name: "alice",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const writes: { method: string; body: Record<string, unknown> }[] = [];
+  let items: Record<string, unknown>[] = [];
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({ json: { access, node_id: "aidash://test" } });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access,
+          deployment: {
+            id: "aidash://test",
+            endpoint: "http://localhost",
+            protocol_version: "0.4",
+            key: null,
+          },
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+        },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/administration")
+      return route.fulfill({
+        json: {
+          tenant: "alpha",
+          actions: ["secret.manage", "secret.use"],
+          assignable_groups: [],
+          policy_revision: 1,
+        },
+      });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
+    if (path === "/api/tenants/alpha/secrets")
+      return route.fulfill({ json: items });
+    if (path === "/api/tenants/alpha/secrets/image-key") {
+      const body = request.postDataJSON();
+      writes.push({ method: request.method(), body });
+      items =
+        request.method() === "DELETE"
+          ? []
+          : [
+              {
+                name: "image-key",
+                hosts: body.hosts,
+                revision: Number(body.expected_revision) + 1,
+                fingerprint: "fingerprint-296",
+                last4: "-296",
+              },
+            ];
+      return route.fulfill({ json: items[0] ?? {} });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+  const panel = page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: "Tenant Secrets", exact: true }),
+  });
+  await panel.getByLabel("Name", { exact: true }).fill("image-key");
+  await panel.getByLabel("Allowed hosts").fill("api.example.test");
+  await panel
+    .getByLabel("Value (leave empty to keep the current value)")
+    .fill("browser-canary-never-persist-296");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(
+    panel.getByText("fingerprint-296", { exact: false }),
+  ).toBeVisible();
+  await expect(panel.locator('input[type="password"]')).toHaveValue("");
+  expect(writes[0]).toEqual({
+    method: "PUT",
+    body: {
+      expected_revision: 0,
+      hosts: ["api.example.test"],
+      value: "browser-canary-never-persist-296",
+    },
+  });
+  const persisted = await page.evaluate(() =>
+    JSON.stringify([
+      Object.entries(localStorage),
+      Object.entries(sessionStorage),
+    ]),
+  );
+  expect(persisted).not.toContain("browser-canary-never-persist-296");
+  await panel.getByRole("button", { name: "Edit", exact: true }).click();
+  await panel.getByLabel("Allowed hosts").fill("other.example.test");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1].body).toEqual({
+    expected_revision: 1,
+    hosts: ["other.example.test"],
+  });
+  await panel.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(3);
+  expect(writes[2]).toEqual({
+    method: "DELETE",
+    body: { expected_revision: 2 },
+  });
+  await expect(
+    panel.getByText("fingerprint-296", { exact: false }),
+  ).toHaveCount(0);
+});

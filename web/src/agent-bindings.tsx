@@ -9,7 +9,7 @@ import { disambiguateLabels } from "./display-labels";
 import { hasPluginSkills, type AgentPluginRef } from "./agent-plugins";
 import { groupByKind } from "./registry-kinds";
 export type Binding = {
-  kind: "tool" | "bundle" | "skill" | "memory" | "source";
+  kind: "tool" | "bundle" | "skill" | "memory" | "source" | "external_service";
   target: { registry_deployment: string; id: string; version: string };
   alias?: string;
   narrow: {
@@ -135,7 +135,14 @@ export function AgentBindings({
   const [target, setTarget] = useState("");
   const origin = node;
   const available = entries.filter((e) =>
-    ["tool", "bundle", "skill", "memory", "source"].includes(e.kind),
+    [
+      "tool",
+      "bundle",
+      "skill",
+      "memory",
+      "source",
+      "external_service",
+    ].includes(e.kind),
   );
   const labels = disambiguateLabels(
     available,

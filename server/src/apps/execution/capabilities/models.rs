@@ -23,3 +23,6 @@ pub use core_records::CoreRecords;
 
 mod core_operations;
 pub use core_operations::CoreOperations;
+
+pub(crate) mod egress;
+pub use egress::RequestRecord as EgressRequest;

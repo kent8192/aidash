@@ -127,6 +127,9 @@ async fn provider_credentials(store: &Store, tenant: &str) -> Result<()> {
 	if let Some(service) = &store.provider_credentials {
 		service.purge_tenant(tenant, ACTOR).await?;
 	}
+	if let Some(service) = &store.tenant_secrets {
+		service.purge_tenant(tenant).await?;
+	}
 	Ok(())
 }
 

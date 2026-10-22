@@ -99,7 +99,7 @@ pub async fn verify(
 	references: &[Reference],
 ) -> Result<bool> {
 	aidash_domain::federation::registry_reads::validate(references)?;
-	let node = scope.resource("node", scope.node(), json!({}));
+	let node = scope.node_resource().await?;
 	scope.require(&node, "federation.discover").await?;
 	for reference in references {
 		let entry = match scope.entry(&reference.entry).await {

@@ -22,12 +22,8 @@ pub async fn prepare(
 	}
 	let mut scope = repository.begin(source, &intent.source_subject).await?;
 	let result = async {
-		scope
-			.require(
-				&scope.resource("node", repository.node_id(), json!({})),
-				"federation.execute",
-			)
-			.await?;
+		let node = scope.node_resource().await?;
+		scope.require(&node, "federation.execute").await?;
 		scope
 			.require(
 				&scope.resource(

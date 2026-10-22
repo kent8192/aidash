@@ -288,6 +288,18 @@ async fn the_versions_list_reports_the_approvals_of_the_node_it_names(
 		"a new Node starts without approvals: {other}"
 	);
 	assert_eq!(missing.status_code(), 400, "{}", missing.text());
+	// Selecting a Node outside this Tenant must not fabricate approval subjects.
+	tenant(&fixture, "other").await;
+	for node in [
+		aidash_domain::nodes::NodeName::derived("other"),
+		aidash_domain::nodes::NodeName::derived("unowned"),
+	] {
+		let response = owner
+			.get(&format!("/api/registry/versions?node={node}"))
+			.await
+			.unwrap();
+		assert_eq!(response.status_code(), 404, "{}", response.text());
+	}
 }
 
 #[rstest]

@@ -3808,6 +3808,7 @@ impl Scripted {
 				&aidash_domain::tool::ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: "unsafe".into(),
+					secret: None,
 				},
 			),
 			external_target: Some("https://example.invalid".into()),
@@ -3829,6 +3830,7 @@ impl Scripted {
 				&aidash_domain::tool::ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
 					replay: "read_only".into(),
+					secret: None,
 				},
 			),
 			external_target: Some("https://example.invalid".into()),

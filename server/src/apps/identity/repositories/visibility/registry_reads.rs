@@ -180,15 +180,15 @@ impl RegistryReadScope for NativeReads<'_> {
 }
 pub(crate) struct VerificationScope<'a> {
 	pub access: &'a mut Access,
-	pub node: &'a str,
+	pub node: &'a aidash_domain::nodes::NodeName,
 }
 #[async_trait]
 impl RegistryVerificationScope for VerificationScope<'_> {
-	fn node(&self) -> &str {
-		self.node
-	}
-	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
-		self.access.resource(kind, id, attributes)
+	async fn node_resource(&mut self) -> Result<Resource> {
+		self.access
+			.node_resource(self.node)
+			.await
+			.map_err(Into::into)
 	}
 	fn catalog_resource(&self, entry: &Entry) -> Resource {
 		crate::authorization::catalog::resource(self.access, entry)

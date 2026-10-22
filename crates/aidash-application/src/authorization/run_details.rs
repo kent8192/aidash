@@ -44,6 +44,7 @@ pub async fn inspect_in(
 	let memory = scope.memory(&run.metadata).await?;
 	let media_input_routes = scope.media_input_routes(&run.metadata).await?;
 	Ok(RunDetails {
+		egress_requests: scope.egress_requests(id, offset).await?,
 		run,
 		invocations,
 		memory,

@@ -810,7 +810,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		"research",
 		"1.0.0",
 	);
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/http@1.0.0",f.config.deployment)]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/child-http@1.0.0",f.config.deployment)]}}));
 	assert_eq!(
 		request(
 			&app,
@@ -835,10 +835,39 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	)
 	.unwrap();
 	entry["id"] = json!("child");
+	entry["config"]["bindings"][0]["target"]["id"] = json!("child-http");
 	entry
 		.as_object_mut()
 		.unwrap()
 		.remove("binding_normalization");
+	let mut tool = serde_json::to_value(
+		f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"http",
+				"1.0.0",
+			)
+			.await
+			.unwrap(),
+	)
+	.unwrap();
+	tool["id"] = json!("child-http");
+	assert_eq!(
+		request(&app, &token, "POST", "/api/registry", tool).await.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"child-http","version":"1.0.0"},"expected_revision":0,"enabled":true})
+		)
+		.await
+		.0,
+		200
+	);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/registry", entry)
 			.await
@@ -874,6 +903,17 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	};
 	harness.worker_once().await.unwrap();
 	let parent_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert!(
+		!parent_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.unwrap()
+			.definitions
+			.iter()
+			.any(|definition| definition.identity.id == "child-http"),
+		"the delegated tool must be outside the parent's Binding closure"
+	);
 	let (_, task) = request(
 		&app,
 		&token,
@@ -911,7 +951,87 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.await
 	}
 	.unwrap();
-	harness.worker_once().await.unwrap();
+	// Hold the child's approval so the worker has its parent lease before
+	// a distribution writer queues. New child definitions must then be checked
+	// on that outer transaction, never by taking another inner shared lease.
+	let mut approval = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	aidash_server::database::native::query(
+		&reinhardt::query::Query::select()
+			.column(reinhardt::query::Alias::new("enabled"))
+			.from(reinhardt::query::Alias::new("authorization_catalog"))
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("entry_id").eq("child"))
+			.and_where(Expr::col("entry_version").eq("1.0.0"))
+			.lock(reinhardt::query::LockType::Update)
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.execute(&mut *approval)
+	.await
+	.unwrap();
+	let mut concurrent = tokio::task::JoinSet::new();
+	concurrent.spawn({
+		let f = f.clone();
+		async move {
+			assert!(Harness { federation: f }.worker_once().await?);
+			Ok::<_, aidash_server::Error>(())
+		}
+	});
+	wait_for_delegation_lock(
+		&f.store.pool,
+		Expr::col("application_name").eq(schema.as_str()),
+		"authorization_catalog",
+	)
+	.await;
+	let mut writer = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let writer_pid: i32 = aidash_server::database::native::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				reinhardt::query::IntoIden::into_iden("pg_backend_pid"),
+				vec![],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *writer)
+	.await
+	.unwrap();
+	concurrent.spawn(async move {
+		aidash_server::database::native::query(
+			&reinhardt::query::Query::select()
+				.expr(SimpleExpr::FunctionCall(
+					reinhardt::query::IntoIden::into_iden("pg_advisory_xact_lock"),
+					vec![Expr::value(74003201_i64).into()],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.execute(&mut *writer)
+		.await?;
+		writer.commit().await
+	});
+	wait_for_delegation_lock(
+		&f.store.pool,
+		Expr::col("pid").eq(writer_pid),
+		"pg_advisory_xact_lock",
+	)
+	.await;
+	approval.commit().await.unwrap();
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		while let Some(result) = concurrent.join_next().await {
+			result.unwrap().unwrap();
+		}
+	})
+	.await
+	.expect("local delegation and the queued distribution writer must both finish");
+	let parent_after = f.store.run(&TEST_FIXTURE, parent_run.id).await.unwrap();
+	assert_ne!(
+		parent_after.control.as_str(),
+		"PAUSED",
+		"delegation must admit the child's own definitions: {:?}",
+		parent_after.error
+	);
+	assert_eq!(
+		parent_after.context.binding_snapshot, parent_run.context.binding_snapshot,
+		"preparing the child must not add Tools to the parent's frozen Binding snapshot"
+	);
 	let child_run = f
 		.store
 		.runs(&TEST_FIXTURE)
@@ -920,6 +1040,17 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.into_iter()
 		.find(|r| r.task_id == child_task)
 		.expect("parent tool must admit a child run");
+	assert!(
+		child_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.unwrap()
+			.definitions
+			.iter()
+			.any(|definition| definition.identity.id == "child-http"),
+		"the child must retain its own exact tool definition"
+	);
 	let chain: Vec<String> = {
 		let query_bind_1 = child_run.id;
 		sqlx::query_scalar(
@@ -1125,6 +1256,38 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		"CANCELLED"
 	);
 	cleanup(f, &url, &schema).await;
+}
+
+async fn wait_for_delegation_lock(
+	pool: &aidash_server::database::native::Pool,
+	connection: SimpleExpr,
+	query_fragment: &str,
+) {
+	let query = reinhardt::query::Query::select()
+		.expr(Expr::exists(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("1"))
+				.from(reinhardt::query::Alias::new("pg_stat_activity"))
+				.and_where(connection)
+				.and_where(Expr::col("wait_event_type").eq("Lock"))
+				.and_where(Expr::col("query").like(format!("%{query_fragment}%")))
+				.to_owned(),
+		))
+		.to_string(reinhardt::query::PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let waiting: bool = sqlx::query_scalar(&query)
+				.fetch_one(pool.fixture_driver())
+				.await
+				.unwrap();
+			if waiting {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.unwrap_or_else(|_| panic!("delegation did not reach its {query_fragment} lock wait"));
 }
 
 #[rstest::rstest]
@@ -1684,6 +1847,7 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+use reinhardt::query::ExprTrait as _;
 
 #[rstest::rstest]
 #[tokio::test]

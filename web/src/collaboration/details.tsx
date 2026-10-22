@@ -455,7 +455,9 @@ function RunPanel({
     initialPageParam: 0,
     queryFn: ({ pageParam }) => runGet(id, { offset: pageParam }),
     getNextPageParam: (last, pages) =>
-      last.invocations.length === 100 ? pages.length * 100 : undefined,
+      last.invocations.length === 100 || last.egress_requests?.length === 100
+        ? pages.length * 100
+        : undefined,
     refetchInterval: 2000,
     retry: false,
   });
@@ -751,6 +753,20 @@ function RunPanel({
             </Button>
           </div>
         </form>
+      )}
+      {query.data?.pages.some((page) => page.egress_requests?.length) && (
+        <Panel title="External services">
+          {query.data.pages
+            .flatMap((page) => page.egress_requests ?? [])
+            .map((request) => (
+              <Disclosure
+                key={request.id}
+                summary={`${request.service} · ${request.method} ${request.path} · ${request.status}`}
+              >
+                <JsonView value={request} />
+              </Disclosure>
+            ))}
+        </Panel>
       )}
       <Panel title={t("toolCalls")}>
         {invocations.length === 0 && <Hint>{t("empty")}</Hint>}

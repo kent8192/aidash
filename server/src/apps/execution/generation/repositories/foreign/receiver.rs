@@ -76,6 +76,10 @@ impl ForeignGenerationReceiver for NativeReceiver {
 }
 #[async_trait]
 impl ForeignGenerationReceiverScope for Scope {
+	async fn node_resource(&mut self) -> Result<Resource> {
+		let node = self.access.catalog_node().await?;
+		self.access.node_resource(&node).await.map_err(Into::into)
+	}
 	fn authority(&self) -> Authority {
 		Authority {
 			tenant: self.access.identity.tenant.clone(),

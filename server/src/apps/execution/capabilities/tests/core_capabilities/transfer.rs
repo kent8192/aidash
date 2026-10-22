@@ -1099,3 +1099,71 @@ fn peer_listeners(
 		recipient_listener,
 	}
 }
+
+#[rstest::rstest]
+#[case::name(None)]
+#[case::label(Some(("/label", json!("Default"))))]
+#[case::default(Some(("/default", json!(true))))]
+#[tokio::test]
+async fn inbound_file_transfers_use_the_receiving_nodes_policy_resource(
+	#[future] two_nodes: TransferFixture,
+	#[case] condition: Option<(&str, Value)>,
+) {
+	let c = Box::pin(two_nodes).await;
+	let (_, pending) = prepare_file(&c).await;
+	let receiver = common::default_node(&c.b.f.store, "acme").await;
+	let mut policy = c.b.policy.clone();
+	policy["policies"] = json!([
+		{"id":"files","effect":"allow","subjects":{"any":true},"actions":["node.use","workspace.read","file.receive","registry.read","agent.execute","tool.invoke"],"resources":{"kinds":["*"]}},
+		{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"],"ids":[receiver.node]}},
+	]);
+	if let Some((path, value)) = condition {
+		policy["policies"][1]["condition"] = json!({"op":"eq","left":{"source":"resource","path":path},"right":{"source":"literal","value":value}});
+	}
+	common::replace_policy(&c.b.f.store, "acme", policy.clone()).await;
+	let requester = json!({"tenant":"acme","subject":"alice","cursor":null});
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder as _};
+	let transfer = Uuid::parse_str(pending["transfer_id"].as_str().unwrap()).unwrap();
+	let data: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(transfer)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.a.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let identity = json!({"transfer_id":pending["transfer_id"],"input_digest":data["description"]["input_digest"]});
+	for (operation, input) in [
+		("negotiate", requester.clone()),
+		("recipients", requester.clone()),
+		("prepare", identity.clone()),
+	] {
+		let (status, body) = peer_request(&c.b, &c.a, operation, input).await;
+		assert_eq!(status, 200, "{operation}: {body}");
+		if operation == "negotiate" {
+			assert_eq!(body["node_id"], receiver.to_string());
+		}
+		if operation == "recipients" {
+			assert!(!body["items"].as_array().unwrap().is_empty(), "{body}");
+		}
+	}
+	for id in [
+		json!(aidash_domain::nodes::NodeName::derived("other")),
+		json!(receiver.to_string()),
+		json!(receiver.deployment),
+	] {
+		policy["policies"][1]["resources"]["ids"] = json!([id]);
+		common::replace_policy(&c.b.f.store, "acme", policy.clone()).await;
+		for (operation, input) in [
+			("negotiate", requester.clone()),
+			("recipients", requester.clone()),
+			("prepare", identity.clone()),
+		] {
+			let (status, body) = peer_request(&c.b, &c.a, operation, input).await;
+			assert_eq!(status, 403, "{operation}: {body}");
+		}
+	}
+	c.close().await;
+}

@@ -46,6 +46,8 @@ pub(crate) struct Fixture {
 	pub(crate) hidden: BTreeSet<String>,
 	pub(crate) source_refs: Vec<EntityRef>,
 	pub(crate) source_pages: Vec<(usize, u64)>,
+	/// The hosts of the installing Tenant's Tenant Secrets, by name.
+	pub(crate) secret_hosts: BTreeMap<String, Vec<String>>,
 }
 impl Fixture {
 	fn new() -> Self {
@@ -113,6 +115,9 @@ impl DefinitionScope for Fixture {
 	}
 	async fn require_reference_read(&mut self, _: Uuid) -> Result<()> {
 		self.record("reference.read")
+	}
+	async fn tenant_secret_hosts(&mut self, name: &str) -> Result<Option<Vec<String>>> {
+		Ok(self.secret_hosts.get(name).cloned())
 	}
 }
 #[async_trait]
@@ -281,6 +286,7 @@ pub(crate) fn published() -> Fixture {
 		author: "Fixture".into(),
 		permissions: vec![],
 		dependencies: vec![],
+		secrets: vec![],
 	};
 	let manifest_source = serde_json::to_string(&package).unwrap();
 	use sha2::{Digest, Sha256};
@@ -310,6 +316,7 @@ pub(crate) fn input(scope: &Fixture) -> InstallCommand {
 		digest: scope.versions["package"].digest.clone(),
 		config: json!({}),
 		bindings: vec![],
+		secrets: Default::default(),
 		idempotency_key: Uuid::nil(),
 	}
 }
@@ -357,6 +364,7 @@ async fn unchanged_configuration_with_an_older_revision_does_not_create_new_pend
 		expected_revision: 1,
 		config: json!({"instructions":"Changed instructions"}),
 		bindings: vec![],
+		secrets: Default::default(),
 		idempotency_key: Uuid::from_u128(1),
 	};
 	let second = configure(
@@ -682,5 +690,120 @@ async fn provenance_propagation_preserves_ancestor_edges_without_manufacturing_e
 			.filter(|c| c.as_str() == "save_provenance")
 			.count(),
 		usize::from(tracked)
+	);
+}
+
+const NODE: &str = "aidash://node";
+/// A published Tool whose endpoint needs a Tenant Secret the installer fills.
+fn published_with_secret_slot() -> Fixture {
+	let mut scope = published();
+	let mut tool = crate::test_support::http_tool(NODE, "source", "lookup");
+	tool.config["transport"]["secret"] = json!("publisher-key");
+	scope.entries.insert("source".into(), tool.clone());
+	let package = aidash_domain::registry::Package {
+		entity: tool.clone(),
+		author: "Fixture".into(),
+		permissions: vec![],
+		dependencies: vec![],
+		secrets: vec!["publisher-key".into()],
+	};
+	let manifest_source = serde_json::to_string(&package).unwrap();
+	use sha2::{Digest, Sha256};
+	let version = scope.versions.get_mut("package").unwrap();
+	version.repository = NODE.into();
+	version.kind = tool.kind.clone();
+	version.source = reference(&tool);
+	version.digest = format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes()));
+	version.manifest_source = manifest_source;
+	scope
+}
+fn with_secrets(scope: &Fixture, secrets: &[(&str, &str)]) -> InstallCommand {
+	InstallCommand {
+		secrets: secrets
+			.iter()
+			.map(|(slot, name)| ((*slot).to_owned(), (*name).to_owned()))
+			.collect(),
+		..input(scope)
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_installer_fills_each_declared_secret_with_a_tenant_secret_that_records_the_host() {
+	let validation = validation().with_tenant_secrets(true);
+	let mut scope = published_with_secret_slot();
+	scope
+		.secret_hosts
+		.insert("mine".into(), vec!["production.example".into()]);
+	// Not choosing, or choosing a name the package never declared, is refused.
+	for chosen in [&[][..], &[("other", "mine")][..]] {
+		let command = with_secrets(&scope, chosen);
+		assert!(
+			install(&mut scope, &validation, "package", &command, NODE)
+				.await
+				.is_err(),
+			"{chosen:?}"
+		);
+	}
+	// The chosen Tenant Secret must exist.
+	let command = with_secrets(&scope, &[("publisher-key", "absent")]);
+	assert!(
+		install(&mut scope, &validation, "package", &command, NODE)
+			.await
+			.is_err()
+	);
+	// The installer needs `secret.use` on it.
+	scope.denied = Some("secret.use".into());
+	let command = with_secrets(&scope, &[("publisher-key", "mine")]);
+	assert!(matches!(
+		install(&mut scope, &validation, "package", &command, NODE).await,
+		Err(Error::Forbidden)
+	));
+	scope.denied = None;
+	// The installed copy names the installer's Tenant Secret, not the publisher's.
+	let installed = install(&mut scope, &validation, "package", &command, NODE)
+		.await
+		.unwrap();
+	assert_eq!(
+		aidash_domain::tenant_secrets::definition_secret(&installed.entry).as_deref(),
+		Some("mine")
+	);
+	assert!(scope.calls.iter().any(|c| c == "secret.use"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_package_whose_endpoint_is_not_among_a_tenant_secrets_hosts_cannot_be_given_it() {
+	let validation = validation().with_tenant_secrets(true);
+	let mut scope = published_with_secret_slot();
+	scope
+		.secret_hosts
+		.insert("mine".into(), vec!["elsewhere.example".into()]);
+	let command = with_secrets(&scope, &[("publisher-key", "mine")]);
+	let Err(error) = install(&mut scope, &validation, "package", &command, NODE).await else {
+		panic!("a Tenant Secret that does not record the host was accepted");
+	};
+	assert!(
+		error.to_string().contains("does not record the host"),
+		"{error}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn configuration_cannot_name_a_tenant_secret() {
+	let validation = validation().with_tenant_secrets(true);
+	let mut scope = published_with_secret_slot();
+	scope
+		.secret_hosts
+		.insert("mine".into(), vec!["production.example".into()]);
+	let mut command = with_secrets(&scope, &[("publisher-key", "mine")]);
+	command.config = json!({"transport": {"transport": "http", "secret": "mine"}});
+	let Err(error) = install(&mut scope, &validation, "package", &command, NODE).await else {
+		panic!("configuration named a Tenant Secret");
+	};
+	assert!(
+		error.to_string().contains("chosen with `secrets`"),
+		"{error}"
 	);
 }

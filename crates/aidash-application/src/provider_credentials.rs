@@ -17,7 +17,9 @@ pub struct Validation {
 pub trait KeyValidator: Send + Sync {
 	async fn validate(&self, provider: Provider, key: &SecretString) -> Result<Validation>;
 }
-/// Deliberately no access/read-payload operation, even for the fake adapter.
+/// The write port of the Secret Store: Key Material, Plan Tokens and Tenant
+/// Secret values. Deliberately no access/read-payload operation, even for the
+/// fake adapter.
 #[async_trait]
 pub trait Store: Send + Sync {
 	fn resource(&self, id: Uuid) -> String;
@@ -39,7 +41,20 @@ pub trait Store: Send + Sync {
 	/// Tokens, such as Cloud's Secret Manager until #248, refuses.
 	async fn create_plan(&self, _tenant: &str, _id: Uuid) -> Result<()> {
 		Err(Error::Invalid(
-			"this Provider Credential Store does not hold Plan Tokens".into(),
+			"this Secret Store does not hold Plan Tokens".into(),
+		))
+	}
+	/// The resource holding one Tenant Secret's values, under its own
+	/// namespace (ADR 0051).
+	fn secret_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/tenant-secrets/{id}")
+	}
+	/// Creates one Tenant Secret's resource. A Store that cannot hold Tenant
+	/// Secrets, such as Cloud's Secret Manager until the Credential Broker
+	/// carries tool calls (#310), refuses.
+	async fn create_secret(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::Invalid(
+			"this Secret Store does not hold Tenant Secrets".into(),
 		))
 	}
 }

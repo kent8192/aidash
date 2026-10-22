@@ -26,8 +26,9 @@ pub(crate) async fn page(
 	);
 	access.require(&resource, "registry.read").await?;
 	let tenant = access.identity.tenant.clone();
-	// Approvals and agent subjects are per Node, and the caller names the Node.
-	// Like the catalog read, a name no Node of the Tenant holds has no approvals.
+	// Approvals and agent subjects belong to an owned Node of this Tenant.
+	crate::apps::identity::repositories::nodes::get(&mut *access.tx, &tenant, node_name.as_str())
+		.await?;
 	access.set_node(node_name.clone());
 	let address = aidash_domain::nodes::NodeAddress {
 		deployment: aidash_domain::nodes::DeploymentId::parse(deployment)?,

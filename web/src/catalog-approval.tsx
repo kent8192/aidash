@@ -1,3 +1,4 @@
+import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -274,6 +275,7 @@ export function CatalogApprovalSection({
         ) : (
           <KeylessOrigin origin={origin} />
         ))}
+      <SecretDisclosure entry={entry} />
       {recipients && <DeciderRecipients recipients={recipients} />}
       {readOnly && decides && state !== "approved" && (
         <Notice tone="warning" role="status" className="read-only-notice">

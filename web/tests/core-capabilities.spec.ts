@@ -1059,9 +1059,7 @@ test("outbound retries reuse an ambiguous request key and a new fetch uses a fre
     });
   });
   await openThread(page);
-  await page
-    .locator("summary", { hasText: "External files and Python packages" })
-    .click();
+  await page.locator("summary", { hasText: "External files" }).click();
   await page.getByLabel("HTTPS URL").fill("https://example.org/current.csv");
   const fetch = page.getByRole("button", {
     name: "Request fetch",
@@ -1236,9 +1234,7 @@ test("generated image and outbound downloads use the authenticated file endpoint
     .getByRole("button", { name: "Download output", exact: true })
     .click();
   expect((await imageDownload).suggestedFilename()).toBe("plot.png");
-  await page
-    .locator("summary", { hasText: "External files and Python packages" })
-    .click();
+  await page.locator("summary", { hasText: "External files" }).click();
   const outboundDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download", exact: true }).click();
   expect((await outboundDownload).suggestedFilename()).toBe("plot.png");

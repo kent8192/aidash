@@ -1091,7 +1091,7 @@ async fn unreadable_tokens_ask_for_reconnection() {
 	let pin = only_row(&fixture).await.pin();
 	fixture
 		.service
-		.mark_unreadable(pin.connection, "provider-credential-store-recovery")
+		.mark_unreadable(pin.connection, "secret-store-recovery")
 		.await
 		.unwrap();
 	let row = only_row(&fixture).await;
@@ -1104,7 +1104,7 @@ async fn unreadable_tokens_ask_for_reconnection() {
 	let revision = row.revision;
 	fixture
 		.service
-		.mark_unreadable(pin.connection, "provider-credential-store-recovery")
+		.mark_unreadable(pin.connection, "secret-store-recovery")
 		.await
 		.unwrap();
 	assert_eq!(only_row(&fixture).await.revision, revision);

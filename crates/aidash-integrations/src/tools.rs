@@ -14,6 +14,7 @@ use rmcp::{
 		StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
 	},
 };
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 mod mcp;
 
@@ -43,7 +44,13 @@ pub struct HttpTools {
 }
 #[async_trait]
 impl ToolTransport for HttpTools {
-	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value> {
+	async fn invoke(
+		&self,
+		configuration: &ToolConfig,
+		input: Value,
+		key: &str,
+		secret: Option<&SecretString>,
+	) -> Result<Value> {
 		match configuration {
 			ToolConfig::Native {
 				operation,
@@ -80,14 +87,17 @@ impl ToolTransport for HttpTools {
 				web_fetch_response(response, &url).await
 			}
 			ToolConfig::Http { endpoint, .. } => {
-				let response = self
+				let mut request = self
 					.client
 					.post(endpoint)
 					.header("idempotency-key", key)
-					.json(&input)
-					.send()
-					.await
-					.map_err(crate::http_error)?;
+					.json(&input);
+				// A Tenant Secret goes as the bearer credential, to the host the
+				// application layer already checked against its recorded hosts.
+				if let Some(secret) = secret {
+					request = request.bearer_auth(secret.expose_secret());
+				}
+				let response = request.send().await.map_err(crate::http_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -102,7 +112,7 @@ impl ToolTransport for HttpTools {
 				idempotency_argument,
 				..
 			} => {
-				let service = mcp_session(&self.client, endpoint).await?;
+				let service = mcp_session(&self.client, endpoint, secret).await?;
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -129,15 +139,18 @@ impl ToolTransport for HttpTools {
 }
 /// An initialized session with the MCP server at `endpoint`, over the bounded
 /// transport. Invocation and the registration form's hint share it, so both
-/// reach a server the same way and send it no credential.
+/// share the same bounded transport. Only invocation may attach a Tenant Secret.
 async fn mcp_session(
 	client: &reqwest::Client,
 	endpoint: &str,
+	secret: Option<&SecretString>,
 ) -> Result<RunningService<RoleClient, ()>> {
-	let transport = StreamableHttpClientTransport::with_client(
-		mcp::BoundedClient(client.clone()),
-		StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned()),
-	);
+	let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned());
+	if let Some(secret) = secret {
+		config = config.auth_header(secret.expose_secret());
+	}
+	let transport =
+		StreamableHttpClientTransport::with_client(mcp::BoundedClient(client.clone()), config);
 	().serve(transport)
 		.await
 		.map_err(|e| Error::External(format!("MCP initialization failed: {e}")))
@@ -162,7 +175,7 @@ pub async fn mcp_read_only_hint(
 	// One budget covers the handshake and every page; dropping the session on
 	// timeout closes it.
 	tokio::time::timeout(MCP_LIST_TIMEOUT, async {
-		let service = mcp_session(client, endpoint).await?;
+		let service = mcp_session(client, endpoint, None).await?;
 		let hint = listed_hint(&service, tool_name).await;
 		let _ = service.cancel().await;
 		hint

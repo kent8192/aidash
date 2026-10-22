@@ -6934,3 +6934,53 @@ async fn remote_human_authorization_uses_the_home_nodes_address(
 	}
 	p.close().await;
 }
+
+#[rstest::rstest]
+#[case::name(None)]
+#[case::label(Some(("/label", json!("Default"))))]
+#[case::default(Some(("/default", json!(true))))]
+#[tokio::test]
+async fn foreign_generation_uses_the_receiving_nodes_policy_resource(
+	#[with(false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+	#[case] condition: Option<(&str, Value)>,
+) {
+	let p = scoped_pair;
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let (input, _) = p.generation.as_ref().unwrap();
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"] = json!([
+		{"id":"generation","effect":"allow","subjects":{"any":true},"actions":["node.use","task.read","generation.read","generation.request"],"resources":{"kinds":["*"]}},
+		{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[receiver.node]}},
+	]);
+	if let Some((path, value)) = condition {
+		policy["policies"][1]["condition"] = json!({"op":"eq","left":{"source":"resource","path":path},"right":{"source":"literal","value":value}});
+	}
+	for (denied, id) in [
+		(false, json!(receiver.node)),
+		(
+			true,
+			json!(aidash_domain::nodes::NodeName::derived("other")),
+		),
+		(true, json!(receiver.to_string())),
+		(true, json!(receiver.deployment)),
+	] {
+		policy["policies"][1]["resources"]["ids"] = json!([id]);
+		common::replace_policy(&p.b.store, "acme", policy.clone()).await;
+		let (status, body) = common::peer_request(
+			&p.ba,
+			(&p.a, "acme"),
+			&receiver,
+			"",
+			"/federation/v0.1/scoped/generation/prepare",
+			json!({"intent_id":input["id"]}),
+		)
+		.await;
+		assert_eq!(status, if denied { 403 } else { 200 }, "{body}");
+		if !denied {
+			assert_eq!(body["node_id"], receiver.to_string());
+		}
+	}
+	p.close().await;
+}

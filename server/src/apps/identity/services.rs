@@ -19,7 +19,6 @@ pub(crate) mod dashboard_rules;
 pub(crate) mod desktop_cors;
 
 pub mod approval_preferences;
-pub mod credential_store_recovery;
 
 pub mod demo_data;
 pub mod invitations;
@@ -28,8 +27,10 @@ pub mod nodes;
 pub mod plan_connections;
 pub mod provider_authorizations;
 pub mod provider_credentials;
+pub mod secret_store_recovery;
 pub mod sign_in;
 pub mod tenant_administration;
 pub mod tenant_deletions;
 pub mod tenant_purge;
+pub mod tenant_secrets;
 pub mod tenants;

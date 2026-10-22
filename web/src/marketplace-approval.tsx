@@ -1,3 +1,4 @@
+import { SecretDisclosure } from "./tenant-secrets";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
@@ -110,6 +111,7 @@ export function ApprovalSetReview({
         <ul className="divide-y divide-border border-y border-border">
           {pending.map((item) => (
             <li className="grid gap-1 py-2" key={item.installation.id}>
+              <SecretDisclosure entry={item.entry} />
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <Check
                   className="font-mono text-xs"

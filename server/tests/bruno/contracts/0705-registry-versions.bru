@@ -1,18 +1,18 @@
 meta {
-  name: 0705 registry-versions - Missing scoped authority cannot disclose application data
+  name: 0705 registry-versions - Subject without registry.read cannot list the versions
   type: http
   seq: 705
 }
 
 get {
-  url: {{base_url}}/api/registry/versions?node=brave-otter-k3m9q2xa
+  url: {{base_url}}/api/registry/versions?node={{tenant_node}}
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{denied_token}}
 }
 
 tests {

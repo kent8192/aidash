@@ -186,4 +186,17 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		Ok(self.0.store.capabilities.0.limits.read_bytes)
 	}
+	async fn tenant_secret(&self, name: &str, endpoint: &str) -> Result<secrecy::SecretString> {
+		// The value is read from this node's own Secret Store, in the Run's
+		// Tenant: under Federation it never leaves the owning Tenant's Node.
+		let unavailable = || {
+			aidash_application::Error::Invalid(aidash_domain::tenant_secrets::UNAVAILABLE.into())
+		};
+		let (Some(service), Some(tenant)) =
+			(&self.0.store.tenant_secrets, self.0.scope.tenant_name())
+		else {
+			return Err(unavailable());
+		};
+		service.resolve(tenant.as_str(), name, endpoint).await
+	}
 }

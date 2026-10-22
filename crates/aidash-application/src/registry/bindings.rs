@@ -310,6 +310,7 @@ pub async fn resolve(
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
 				BindingKind::Decider => "decider",
+				BindingKind::ExternalService => "external_service",
 				_ => unreachable!(),
 			};
 			if entry.kind != expected {
@@ -338,7 +339,11 @@ pub async fn resolve(
 				}
 				source_skill_support |= descriptor.requires_skill_support();
 			}
-			catalog.source(&entry).await?;
+			if kind == BindingKind::ExternalService {
+				aidash_domain::egress::definition(&entry)?;
+			} else {
+				catalog.source(&entry).await?;
+			}
 		}
 		let binding = ResolvedBinding {
 			identity: target.clone(),

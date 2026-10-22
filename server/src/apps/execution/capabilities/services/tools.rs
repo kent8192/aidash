@@ -67,7 +67,6 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	use super::{
 		approvals::Outbound,
 		contracts::*,
-		packages::Install,
 		python::Python,
 		sharing::Share,
 		skills::{SkillList, SkillLoad, SkillRead},
@@ -104,18 +103,13 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 			schema::<Python>(),
 		),
 		(
-			"python_install",
-			"Install an explicit set of broker-fetched, hash-verified wheels offline. Each dependency must be supplied or already present in the base image. Replaces the writable package overlay and resets Python memory; no credentials or implicit downloads.",
-			schema::<Install>(),
-		),
-		(
 			"python_poll",
-			"Observe Python execution or installation and bounded output continuation.",
+			"Observe Python execution and bounded output continuation.",
 			schema::<OperationInput>(),
 		),
 		(
 			"python_cancel",
-			"Cancel Python execution or installation; earlier filesystem effects may remain.",
+			"Cancel Python execution; earlier filesystem effects may remain.",
 			schema::<OperationInput>(),
 		),
 		(

@@ -277,6 +277,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 		author: "fixture".into(),
 		permissions: vec![],
 		dependencies: vec![original.clone()],
+		secrets: vec![],
 	})
 	.unwrap();
 	let source = Version {
@@ -313,6 +314,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 		&source,
 		&json!({}),
 		&submitted,
+		&BTreeMap::new(),
 		receiving,
 	)
 	.await
@@ -345,6 +347,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 			&source,
 			&json!({}),
 			&submitted,
+			&BTreeMap::new(),
 			receiving
 		)
 		.await,
@@ -360,6 +363,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 			&changed,
 			&json!({}),
 			&submitted,
+			&BTreeMap::new(),
 			receiving
 		)
 		.await,
@@ -374,6 +378,7 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 			&undeclared,
 			&json!({}),
 			&submitted,
+			&BTreeMap::new(),
 			receiving
 		)
 		.await,

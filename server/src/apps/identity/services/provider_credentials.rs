@@ -87,7 +87,7 @@ impl Management {
 			.store
 			.provider_credentials
 			.clone()
-			.ok_or_else(|| Error::NotFound("Provider Credential Store is not configured".into()))
+			.ok_or_else(|| Error::NotFound("Secret Store is not configured".into()))
 	}
 	fn tenant(&self, actor: &Actor, tenant: &str) -> Result<()> {
 		aidash_domain::policy::identifier(tenant)?;

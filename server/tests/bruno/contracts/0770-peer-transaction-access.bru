@@ -1,5 +1,5 @@
 meta {
-  name: 0770 peer-transaction-access - Reject unsupported federation protocol
+  name: 0770 peer-transaction-access - Refuse a token that does not verify
   type: http
   seq: 770
 }
@@ -13,7 +13,7 @@ post {
 headers {
   Accept: application/json
   Authorization: Bearer not-a-federation-token
-  X-Aidash-Protocol: 9.9
+  X-Aidash-Protocol: 0.4
 }
 
 script:pre-request {
@@ -29,7 +29,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
-  test("Reject unsupported federation protocol contract", function () { expect(res.getBody().error).to.equal("unsupported federation protocol"); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

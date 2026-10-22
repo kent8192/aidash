@@ -13,12 +13,7 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	("shell", &["shell", "shell_poll", "shell_cancel"]),
 	(
 		"python",
-		&[
-			"code_interpreter",
-			"python_install",
-			"python_poll",
-			"python_cancel",
-		],
+		&["code_interpreter", "python_poll", "python_cancel"],
 	),
 	("outbound_get", &["outbound_get"]),
 	("apply_patch", &["apply_patch"]),

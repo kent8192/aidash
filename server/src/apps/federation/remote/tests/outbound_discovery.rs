@@ -673,3 +673,89 @@ async fn source_filters_search_results_and_rejects_invalid_peer_metadata(
 		);
 	}
 }
+
+#[rstest]
+#[case::name(None)]
+#[case::label(Some(("/label", json!("Default"))))]
+#[case::default(Some(("/default", json!(true))))]
+#[tokio::test]
+async fn registry_verification_uses_the_receiving_nodes_policy_resource(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+	#[case] condition: Option<(&str, Value)>,
+) {
+	let fixture = Box::pin(execution).await;
+	let app = &fixture.app;
+	let f = peering::enable(&app.runtime, &app.context);
+	let receiver = endpoint::default_node(&f.store, "acme").await;
+	let remote = peering::Remote::start("aidash://registry-source").await;
+	let sender = aidash_domain::nodes::NodeName::derived("source").to_string();
+	peering::permit(&f, &remote.endpoint);
+	deployment_administrator(
+		app,
+		&peering::registration_path("acme", receiver.node.as_str()),
+		remote.registration(&sender),
+	)
+	.await;
+	let issued = deployment_administrator(
+		app,
+		"/api/authorization/acme/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	deployment_administrator(
+		app,
+		"/api/authorization/acme/peer-mappings",
+		json!({
+			"node":receiver.node,"source_node":remote.node(&sender),"source_subject":"bob",
+			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
+		}),
+	)
+	.await;
+	let entry = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
+	let input = json!({"references":[{"entry":{"id":"research","version":"1.0.0"},"digest":aidash_server::registry::digest(&serde_json::to_value(entry).unwrap())}]});
+	let mut policy = fixture.policy.clone();
+	policy["policies"] = json!([
+		{"id":"definitions","effect":"allow","subjects":{"any":true},"actions":["node.use","registry.read","agent.execute"],"resources":{"kinds":["*"]}},
+		{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["federation.discover"],"resources":{"kinds":["node"],"ids":[receiver.node]}},
+	]);
+	if let Some((path, value)) = condition {
+		policy["policies"][1]["condition"] = json!({"op":"eq","left":{"source":"resource","path":path},"right":{"source":"literal","value":value}});
+	}
+	for (denied, id) in [
+		(false, json!(receiver.node)),
+		(
+			true,
+			json!(aidash_domain::nodes::NodeName::derived("other")),
+		),
+		(true, json!(receiver.to_string())),
+		(true, json!(receiver.deployment)),
+	] {
+		policy["policies"][1]["resources"]["ids"] = json!([id]);
+		endpoint::replace_policy(&f.store, "acme", policy.clone()).await;
+		let response = peering::post_as(
+			&app.anonymous,
+			&receiver.to_string(),
+			peering::Bearer::Signed(&remote, sender.clone()),
+			"bob",
+			"/federation/v0.1/scoped/registry/verify",
+			&input,
+		)
+		.await;
+		let status = response.status_code();
+		let body = response.json_value().unwrap();
+		assert_eq!(status, if denied { 403 } else { 200 }, "{body}");
+		if !denied {
+			assert_eq!(body, true);
+		}
+	}
+}

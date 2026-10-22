@@ -17,7 +17,7 @@ release:
 # pair-specific AIDASH_SECRET_* variables. DATABASE_URL names the aidash_server
 # login; servers and workers refuse a superuser, BYPASSRLS or owning login and
 # start only on a migrated database, so run `aidash migrate` as aidash_owner
-# before every install or upgrade (docs/orchestration.md). For a postgres Provider Credential Store,
+# before every install or upgrade (docs/orchestration.md). For a postgres Secret Store,
 # include AIDASH_PROVIDER_STORE_MASTER_KEY and AIDASH_PROVIDER_FINGERPRINT_KEY.
 # existingSecret reaches both server and worker through envFrom; role overrides
 # must each carry the keys. No secret values belong in Helm values.
@@ -192,6 +192,13 @@ execution:
     resources:
       requests: { cpu: 100m, memory: 128Mi }
       limits: { cpu: "1", memory: 512Mi }
+  egress:
+    enabled: false
+    # Reserve an unused Service IP in the cluster's Service CIDR before enabling.
+    clusterIP: ""
+    port: 8950
+    limits:
+      { sent_bytes: 1073741824, received_bytes: 1073741824, requests: 1000 }
   limits:
     cpu: 2
     memory_bytes: 2147483648

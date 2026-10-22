@@ -157,7 +157,7 @@ async fn journey_fixture(
 	_core: CoreFuture,
 	#[future(awt)]
 	#[from(super::transfer_tests::connected_nodes)]
-	#[with(3,"aidash://journey","aidash://journey-_state.recipient",_core.clone())]
+	#[with(3,"aidash://journey","aidash://journey-recipient",_core.clone())]
 	peers: super::transfer_tests::ConnectedNodes,
 ) -> Journey {
 	let JourneyState {
@@ -173,7 +173,7 @@ async fn journey_fixture(
 	} = peers;
 	let server = _provider.await;
 	let receiver = admit(&peer).await;
-	*recipient.lock().unwrap() = json!({"node_id":peer.f.config.deployment,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
+	*recipient.lock().unwrap() = json!({"node_id":common::default_node(&peer.f.store,"acme").await,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
 	let (status, result) = request(
 		&c.app,
 		&c.token,

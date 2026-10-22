@@ -294,7 +294,10 @@ pub(crate) fn run_of(snapshot: BindingSnapshot) -> aidash_domain::Run {
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
-		home_node: snapshot.agent.registry_deployment.clone(),
+		home_node: format!(
+			"{}/brave-otter-k3m9q2xa",
+			snapshot.agent.registry_deployment
+		),
 		agent_id: snapshot.agent.id.clone(),
 		agent_version: snapshot.agent.version.clone(),
 		state_version: StateVersion::default(),

@@ -50,12 +50,8 @@ async fn mapped<'a>(
 		{
 			return Err(Error::Forbidden);
 		}
-		scope
-			.require(
-				&scope.resource("node", &description.target.node_id, json!({})),
-				"file.transfer",
-			)
-			.await?;
+		let node = scope.node_resource().await?;
+		scope.require(&node, "file.transfer").await?;
 		let mut subjects = scope.subjects().to_vec();
 		subjects.push(aidash_domain::agent_subject(
 			&description.target.node_id,
@@ -68,12 +64,7 @@ async fn mapped<'a>(
 			.await?
 			.ok_or_else(|| Error::NotFound("recipient unavailable".into()))?;
 		scope.authorize(&area, "file.receive").await?;
-		scope
-			.require(
-				&scope.resource("node", &description.target.node_id, json!({})),
-				"file.transfer",
-			)
-			.await?;
+		scope.require(&node, "file.transfer").await?;
 		let entry = scope
 			.entry(
 				&EntityRef {
@@ -124,12 +115,11 @@ pub async fn negotiate(
 	input: Requester,
 ) -> Result<Value> {
 	let mut scope = repository.begin_peer(node, &input.subject).await?;
-	let result = scope
-		.require(
-			&scope.resource("node", repository.node_id(), json!({})),
-			"file.transfer",
-		)
-		.await;
+	let result = async {
+		let node = scope.node_resource().await?;
+		scope.require(&node, "file.transfer").await
+	}
+	.await;
 	finish(scope, result).await?;
 	if !repository.limits().admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
@@ -335,9 +325,8 @@ pub async fn recipient_list(
 	node: &str,
 	cursor: Option<Uuid>,
 ) -> Result<Value> {
-	scope
-		.require(&scope.resource("node", node, json!({})), "file.transfer")
-		.await?;
+	let resource = scope.node_resource().await?;
+	scope.require(&resource, "file.transfer").await?;
 	let rows: Vec<Area> = scope.recipient_rows(cursor).await?;
 	let next_cursor = if rows.len() == 51 {
 		Some(rows[49].id)

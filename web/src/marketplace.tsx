@@ -54,6 +54,7 @@ import { useI18n, Panel, Field, type StatusTone } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
 import { ApprovalSetReview } from "./marketplace-approval";
+import { TenantSecretAssignments } from "./tenant-secrets";
 import {
   Alert,
   Disclosure,
@@ -151,6 +152,7 @@ export function ScopedMarketplace({
   const [denied, setDenied] = useState(false);
   const [config, setConfig] = useState("{}");
   const [bindings, setBindings] = useState("[]");
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [source, setSource] = useState("");
   const [sourceOffsets, setSourceOffsets] = useState([0]);
   const sourceOffset = sourceOffsets.at(-1)!;
@@ -263,6 +265,7 @@ export function ScopedMarketplace({
     setEditing(undefined);
     setSource("");
     setConfig("{}");
+    setSecrets({});
     setBindings("[]");
     setConsentDraft(undefined);
   }
@@ -284,6 +287,7 @@ export function ScopedMarketplace({
         setEditing(undefined);
         setSource("");
         setConfig("{}");
+        setSecrets({});
         setBindings("[]");
         setConsentDraft(undefined);
         cache.removeQueries({ queryKey: ["marketplace"] });
@@ -448,6 +452,7 @@ export function ScopedMarketplace({
                             setAudience(undefined);
                             setEditing(undefined);
                             setConfig("{}");
+                            setSecrets({});
                             setBindings("[]");
                           }}
                         >
@@ -668,6 +673,12 @@ export function ScopedMarketplace({
                     onChange={(e) => setConfig(e.target.value)}
                   />
                 </Field>
+                <TenantSecretAssignments
+                  tenant={tenant}
+                  slots={view.manifest.secrets ?? []}
+                  value={secrets}
+                  onChange={setSecrets}
+                />
                 <Field label={copy.bindings}>
                   <Textarea
                     className="min-h-20 font-mono text-xs"
@@ -693,6 +704,7 @@ export function ScopedMarketplace({
                           digest: latest.summary.digest,
                           config: json(config),
                           bindings: bindingInput(),
+                          secrets,
                           idempotency_key: crypto.randomUUID(),
                         });
                         setInstalling(false);
@@ -765,6 +777,7 @@ export function ScopedMarketplace({
                                 },
                               );
                               setEditing(active);
+                              setSecrets({});
                               setConfig(JSON.stringify(active.config, null, 2));
                               setBindings(
                                 JSON.stringify(active.bindings, null, 2),
@@ -781,6 +794,7 @@ export function ScopedMarketplace({
                         size="sm"
                         onClick={() => {
                           setEditing(item);
+                          setSecrets({});
                           setSelected(undefined);
                           setConfig(JSON.stringify(item.config, null, 2));
                           setBindings(JSON.stringify(item.bindings, null, 2));
@@ -810,6 +824,12 @@ export function ScopedMarketplace({
                 onChange={(e) => setConfig(e.target.value)}
               />
             </Field>
+            <TenantSecretAssignments
+              tenant={tenant}
+              slots={Object.keys(editingView.secrets ?? {})}
+              value={{ ...editingView.secrets, ...secrets }}
+              onChange={setSecrets}
+            />
             <Field label={copy.bindings}>
               <Textarea
                 className="min-h-20 font-mono text-xs"
@@ -830,6 +850,7 @@ export function ScopedMarketplace({
                             editingView.installation.latest_revision,
                           config: json(config),
                           bindings: bindingInput(),
+                          secrets: { ...editingView.secrets, ...secrets },
                           idempotency_key: crypto.randomUUID(),
                         },
                       );

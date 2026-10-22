@@ -54,6 +54,8 @@ const state = () => ({
   runs: [
     { id: "r1", node: "first", workspace_id: "w1" },
     { id: "r2", node: "second", workspace_id: "w2" },
+    { id: "r3", node: "first", workspace_id: "w2" },
+    { id: "r4", node: "second", workspace_id: "remote-workspace" },
   ],
   human_requests: [
     { id: "h1", workspace_id: "w1" },
@@ -84,7 +86,7 @@ test("a Node's view holds only what its Workspaces own, and names the Node", () 
   );
   const expected = {
     tasks: ["t2"],
-    runs: ["r2"],
+    runs: ["r2", "r3"],
     human_requests: ["h2"],
     conversations: ["c2"],
     artifacts: ["a2"],

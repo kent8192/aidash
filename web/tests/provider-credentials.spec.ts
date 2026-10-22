@@ -110,7 +110,7 @@ async function setup(
       if (options.disabled)
         return route.fulfill({
           status: 404,
-          json: { error: "Provider Credential Store is not configured" },
+          json: { error: "Secret Store is not configured" },
         });
       await options.holdRows;
       return route.fulfill({ json: records });
@@ -314,7 +314,7 @@ test("missing Store disables management without offering a paste path", async ({
 }) => {
   await setup(page, { subject: true, disabled: true });
   await expect(page.getByRole("status")).toContainText(
-    "Provider Credential Store is not configured",
+    "Secret Store is not configured",
   );
   await expect(
     page.getByRole("combobox", {

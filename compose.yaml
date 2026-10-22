@@ -79,7 +79,7 @@ services:
     depends_on:
       postgres-extensions:
         condition: service_completed_successfully
-  # Generates this machine's Provider Credential Store keys once. They live in
+  # Generates this machine's Secret Store keys once. They live in
   # a volume, so `down -v` deletes them together with the credentials they encrypt.
   provider-credential-keys:
     profiles: [dev]

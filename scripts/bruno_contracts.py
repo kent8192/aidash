@@ -880,6 +880,27 @@ def render():
                 add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
                     path=path.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/tenant_secrets.rs":
+            body = json.dumps({"expected_revision": 0}) if route["json"] else None
+            add(endpoint, "Forged bearer cannot manage Tenant Secrets", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Missing Store fails closed for the Deployment Administrator", DEPLOYMENT_ADMINISTRATOR),
+                ("Missing Store fails closed for the subject", SUBJECT),
+            ]:
+                add(endpoint, label, 404, headers=headers, body=body,
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Tenant Secrets are not available on this Deployment"});',
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    headers=SUBJECT, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{", immutable=True)
+                add(endpoint, "Required revision cannot be omitted", 422,
+                    headers=SUBJECT, body="{}", immutable=True)
+                add(endpoint, "Unknown lifecycle fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"expected_revision": 0, "unexpected": True}), immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
             uri = path.replace("{provider}", "openrouter")
             body = (
@@ -896,7 +917,7 @@ def render():
                 ("Missing Store fails closed for the subject", SUBJECT),
             ]:
                 add(endpoint, label, 404, path=uri, headers=headers, body=body,
-                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Provider Credential Store is not configured"});',
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Secret Store is not configured"});',
                     immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,

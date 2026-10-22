@@ -46,7 +46,7 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		crate::semantic::services::memory_recovery::Command,
 	));
 	registry.register_capability(Box::new(
-		crate::apps::identity::services::credential_store_recovery::Command,
+		crate::apps::identity::services::secret_store_recovery::Command,
 	));
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::demo_data::Command,
@@ -115,9 +115,11 @@ pub async fn initialize(
 	)?;
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
+	configure_tenant_secrets(&mut store);
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_provider_credentials(store.provider_credentials.is_some())
-		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
+		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
+		.with_tenant_secrets(store.tenant_secrets.is_some());
 	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
 		.timeout(Duration::from_secs(120))
@@ -172,6 +174,26 @@ impl RuntimeTasks {
 		let (stopping, mut requested) = watch::channel(false);
 		let mut tasks = aidash_runtime::Supervisor::new(Duration::from_secs(20));
 		let receiver = tasks.stop_receiver();
+		if event_streams.is_some()
+			&& let Some(egress) = &federation.store.capabilities.0.egress
+		{
+			if build::offering() != aidash_domain::offering::Offering::SelfHosted {
+				return Err(Error::Invalid(
+					"Cloud and Dedicated Egress gateways require the Credential Broker (#310)"
+						.into(),
+				));
+			}
+			let listener = tokio::net::TcpListener::bind(egress.listen).await?;
+			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway {
+				store: federation.store.clone(),
+			});
+			let stopping = receiver.clone();
+			tasks.spawn_service(runtime_task(async move {
+				aidash_integrations::egress::serve(listener, authority, stopping)
+					.await
+					.map_err(Into::into)
+			}));
+		}
 		tasks.spawn_worker(federation.sandbox.clone().run(receiver.clone()));
 		tasks.spawn_service(runtime_task(
 			crate::apps::execution::services::metrics::run(coordinator.clone()),
@@ -238,6 +260,32 @@ impl RuntimeTasks {
 			.services(&federation, receiver.clone())
 		{
 			tasks.spawn_service(runtime_task(service));
+		}
+		if let Some(tenant_secrets) = federation.store.tenant_secrets.clone() {
+			let mut stopping = receiver.clone();
+			tasks.spawn_service(runtime_task(async move {
+				let mut cursor = None;
+				loop {
+					if *stopping.borrow() {
+						return Ok(());
+					}
+					match tenant_secrets.reconcile_page(cursor).await {
+						Ok(result) => {
+							cursor = result.next;
+							if result.failed != 0 {
+								tracing::warn!(
+									failed = result.failed,
+									"Tenant Secret cleanup is pending"
+								);
+							}
+						}
+						Err(_) => {
+							tracing::warn!("Tenant Secret reconciliation inventory unavailable")
+						}
+					}
+					tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
+				}
+			}));
 		}
 		let activation = crate::activation::Runtime::new(
 			worker_runtime.clone(),
@@ -584,6 +632,10 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 		s.plan_connections.enabled
 			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
+	// Tenant Secrets live in a PostgreSQL Secret Store only (ADR 0051).
+	.with_tenant_secrets(settings.as_ref().is_some_and(|s| {
+		matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
+	}))
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -591,6 +643,16 @@ pub fn registry_validation_for(
 	registry_validation()
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
+		.with_tenant_secrets(store.tenant_secrets.is_some())
+		.with_egress_limits(
+			store
+				.capabilities
+				.0
+				.egress
+				.as_ref()
+				.map(|e| e.limits)
+				.unwrap_or_default(),
+		)
 }
 struct NativeCoreToolCatalog;
 impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCatalog {
@@ -1225,7 +1287,7 @@ pub(crate) fn native_registry_transport(
 }
 pub(crate) fn registry_verification_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
-	node: &'a str,
+	node: &'a aidash_domain::nodes::NodeName,
 ) -> crate::apps::identity::repositories::visibility::registry_reads::VerificationScope<'a> {
 	crate::apps::identity::repositories::visibility::registry_reads::VerificationScope {
 		access,
@@ -2367,7 +2429,7 @@ pub async fn configure_provider_credentials(
 		StoreConfig::Postgres { .. } => {
 			let (current, retired) = config.load_postgres_keys().await?;
 			let adapter = Arc::new(
-				crate::apps::identity::repositories::credential_store::PostgresStore::new(
+				crate::apps::identity::repositories::secret_store::PostgresStore::new(
 					store.control_pool.clone(),
 					current,
 					retired,
@@ -2403,7 +2465,7 @@ pub async fn configure_provider_credentials(
 	Ok(())
 }
 
-/// Plan Tokens live only in a PostgreSQL Provider Credential Store (ADR 0008):
+/// Plan Tokens live only in a PostgreSQL Secret Store (ADR 0008):
 /// Cloud and Dedicated wait for OpenAI's approval of a hosted flow (#248), so a
 /// server whose Store is in Secret Manager, or that has none, refuses to start
 /// with Plan Connections on. The service exists whenever the Store could hold
@@ -2418,7 +2480,7 @@ pub fn configure_plan_connections(
 	let postgres = matches!(credentials.store, Some(StoreConfig::Postgres { .. }));
 	if settings.enabled && !postgres {
 		return Err(Error::Invalid(
-			"Plan Connections need a PostgreSQL Provider Credential Store; \
+			"Plan Connections need a PostgreSQL Secret Store; \
 			 turn off [plan_connections] enabled"
 				.into(),
 		));
@@ -2448,6 +2510,34 @@ pub fn configure_plan_connections(
 		tracing::info!("Plan Connections enabled");
 	}
 	Ok(())
+}
+
+/// The most Tenant Secrets one Tenant may hold.
+const TENANT_SECRETS_PER_TENANT: usize = 64;
+
+/// Tenant Secrets exist only where the Store holds their values and the server
+/// may read them: a PostgreSQL Secret Store on a self-hosted node. A Secret
+/// Manager Store (Cloud, Dedicated) is write-only to the application host, so
+/// no Tenant Secret is offered until the Credential Broker carries tool calls
+/// (#310); definitions that name one are then refused at registration.
+pub fn configure_tenant_secrets(store: &mut Store) {
+	let (Some(credentials), Some(reader)) = (
+		store.provider_credentials.as_ref(),
+		store.provider_key_material_reader.clone(),
+	) else {
+		return;
+	};
+	store.tenant_secrets = Some(Arc::new(aidash_application::tenant_secrets::Service {
+		repository: Arc::new(
+			crate::apps::identity::repositories::tenant_secrets::NativeRepository {
+				pool: store.control_pool.clone(),
+			},
+		),
+		store: credentials.store.clone(),
+		reader,
+		fingerprint_key: credentials.fingerprint_key.clone(),
+		max_per_tenant: TENANT_SECRETS_PER_TENANT,
+	}));
 }
 
 /// Worker inference is bound to local admission evidence, never a mutable binding.

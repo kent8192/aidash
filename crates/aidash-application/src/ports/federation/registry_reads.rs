@@ -35,8 +35,8 @@ pub trait RegistryReadScope: Send {
 }
 #[async_trait]
 pub trait RegistryVerificationScope: Send {
-	fn node(&self) -> &str;
-	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
+	/// The owned receiving Node, named for policy and carrying its current attributes.
+	async fn node_resource(&mut self) -> Result<Resource>;
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;

@@ -663,3 +663,38 @@ test("changing Source adapter clears unsupported settings and prior validation",
     source: { adapter: "workspace_retrieval" },
   });
 });
+
+test("an External service form submits its destination, methods and Secret attachment", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("external_service");
+  await dialog
+    .getByLabel("Destination HTTPS URL")
+    .fill("https://images.example.test/v1/");
+  await dialog.getByRole("checkbox", { name: "POST", exact: true }).check();
+  await dialog
+    .getByLabel("Tenant Secret (optional)", { exact: true })
+    .fill("image-key");
+  await dialog
+    .getByLabel("Authentication", { exact: true })
+    .selectOption("header");
+  await dialog.getByLabel("Header name", { exact: true }).fill("X-API-Key");
+  await expect(dialog.locator('textarea[name="config"]')).toHaveCount(0);
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON()).toMatchObject({
+    kind: "external_service",
+    config: {
+      base_url: "https://images.example.test/v1/",
+      methods: ["GET", "POST"],
+      secret: "image-key",
+      authentication: { type: "header", name: "X-API-Key" },
+    },
+  });
+});

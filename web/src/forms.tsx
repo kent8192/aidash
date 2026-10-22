@@ -540,6 +540,7 @@ export function EntityForm({
               "agent",
               "model",
               "tool",
+              "external_service",
               "skill",
               "memory",
               "source",

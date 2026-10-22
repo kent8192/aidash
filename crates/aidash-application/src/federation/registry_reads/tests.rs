@@ -130,11 +130,12 @@ impl RegistryReadScope for Scope {
 }
 #[async_trait]
 impl RegistryVerificationScope for Scope {
-	fn node(&self) -> &str {
-		"aidash://local"
-	}
-	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
-		Self::resource_for(kind, id, attributes)
+	async fn node_resource(&mut self) -> Result<Resource> {
+		Ok(Self::resource_for(
+			"node",
+			"brave-otter-k3m9q2xa",
+			json!({"label":"Default","default":true}),
+		))
 	}
 	fn catalog_resource(&self, entry: &Entry) -> Resource {
 		Self::resource_for(
@@ -510,7 +511,7 @@ async fn inbound_proof_requires_discovery_then_exact_current_definition_and_exec
 	let references = references(&scope);
 	assert!(verify(&mut scope, &references).await.unwrap());
 	assert_eq!(scope.calls, vec!["require", "entry", "agent.execute"]);
-	assert_eq!(scope.decisions[0].0.id, "aidash://local");
+	assert_eq!(scope.decisions[0].0.id, "brave-otter-k3m9q2xa");
 	assert_eq!(scope.decisions[0].1, "federation.discover");
 }
 #[rstest]

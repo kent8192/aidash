@@ -18,8 +18,9 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- define "aidash.capabilityProfile" -}}
 {{- $e := .Values.execution -}}
 {{- $maximum := int $e.limits.maximum_seconds -}}
-{{- $runner := dict "endpoint" (printf "http://%s-execution-runner:8949" .Release.Name) "token_env" "AIDASH_CORE_RUNNER_TOKEN" "image" $e.sandboxImage "runtime_class" (include "aidash.runtimeClassName" .) "namespace" (include "aidash.sandboxNamespace" .) -}}
+{{- $runner := dict "endpoint" (printf "http://%s-execution-runner.%s.svc.cluster.local:8949" .Release.Name .Release.Namespace) "token_env" "AIDASH_CORE_RUNNER_TOKEN" "image" $e.sandboxImage "runtime_class" (include "aidash.runtimeClassName" .) "namespace" (include "aidash.sandboxNamespace" .) -}}
 {{- $profile := dict "admission" true "storage" (include "aidash.capabilityStorage" .) "operation_seconds" (min 120 $maximum) "install_seconds" (min 300 $maximum) "runner" $runner -}}
+{{- if $e.egress.enabled -}}{{- $_ := set $profile "egress" (include "aidash.egressSettings" . | fromJson) -}}{{- end -}}
 {{- toJson (mergeOverwrite (omit (deepCopy $e.limits) "host_tasks") $profile) -}}
 {{- end -}}
 
@@ -59,4 +60,12 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- if or (not (kindIs "string" $g.project_id)) (not $g.project_id) (not (kindIs "string" $g.web_api_key)) (not (trim $g.web_api_key)) (not (kindIs "map" $g.tenant_bindings)) -}}{{ fail "gcip.settings needs project_id, web_api_key and tenant_bindings" }}{{- end -}}
 {{- if or (not .Values.deployment.endpoint) (ne (toJson $g.public_origin) (toJson .Values.deployment.endpoint)) -}}{{ fail "gcip.settings public_origin must equal deployment.endpoint" }}{{- end -}}
 {{- toJson $s -}}
+{{- end -}}
+
+{{- define "aidash.egressSettings" -}}
+{{- $e := .Values.execution.egress -}}
+{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" $e.clusterIP) -}}{{ fail "execution.egress.clusterIP must be a reserved internal IPv4 Service IP" }}{{- end -}}
+{{- if not .Values.execution.runner.enabled -}}{{ fail "execution.egress requires execution.runner.enabled" }}{{- end -}}
+{{- if .Values.providerCredentials.settings -}}{{ fail "Cloud and Dedicated Egress gateways require #310" }}{{- end -}}
+{{- toJson (dict "endpoint" (printf "http://%s:%d" $e.clusterIP (int $e.port)) "listen" (printf "0.0.0.0:%d" (int $e.port)) "namespace" .Release.Namespace "pod_selector" (dict "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "server") "limits" $e.limits) -}}
 {{- end -}}

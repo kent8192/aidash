@@ -165,6 +165,11 @@ impl ReceiverRepository for Repository<'_> {
 }
 #[async_trait]
 impl ReceiverScope for Scope<'_> {
+	async fn node_resource(&mut self) -> Result<aidash_domain::policy::Resource> {
+		let access = self.authority.get_mut();
+		let node = access.catalog_node().await?;
+		access.node_resource(&node).await.map_err(Into::into)
+	}
 	async fn recipient(
 		&mut self,
 		description: &Description,
