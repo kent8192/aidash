@@ -2,8 +2,15 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
 import unittest
+from unittest.mock import patch
 
+import inspect_operations
 from inspect_operations import inspect, Refused
 
 
@@ -37,6 +44,21 @@ class OperationalObservationTests(unittest.TestCase):
             "name": plan + "/backups/observed", "state": "SUCCEEDED", "createTime": "2026-10-12T19:00:00Z", "completeTime": "2026-10-12T19:15:00Z",
             "clusterMetadata": {"cluster": cluster}, "selectedApplications": {"namespacedNames": [APPLICATION]},
             "containsVolumeData": True, "containsSecrets": True, "volumeCount": 5,
+        }
+        ledger = {
+            "kind": "PersistentVolumeClaim", "metadata": {
+                "namespace": "aidash-production", "name": "memory-recovery", "labels": {"aidash.run/backup": "exclude"},
+            },
+        }
+        self.membership = {
+            "application": {
+                "metadata": deepcopy(APPLICATION),
+                "spec": {"resourceSelection": {"type": "Selector", "selector": {"matchExpressions": [
+                    {"key": "aidash.run/backup", "operator": "NotIn", "values": ["exclude"]},
+                ]}}},
+            },
+            "claims": [ledger, {"kind": "PersistentVolumeClaim", "metadata": {"namespace": "aidash-production", "name": "capability-objects"}}],
+            "excluded": [deepcopy(ledger)],
         }
         self.channel = {"name": channel, "type": "email", "labels": {"email_address": "prod.deployment@aidash.run"}, "enabled": True}
         self.uptime = {
@@ -81,11 +103,13 @@ class OperationalObservationTests(unittest.TestCase):
         return inspect(
             self.config, self.operations, self.cluster, self.plan, backups if backups is not None else [self.backup],
             self.channel, self.uptime, self.policies, self.now, self.pre_update, self.restore,
+            membership=self.membership,
         )
 
     def test_successful_snapshot_and_config_never_prove_restore_or_mail_delivery(self):
         observation = self.observe()
         self.assertTrue(observation["successful_backup_observed"])
+        self.assertTrue(observation["protected_application_membership_verified"])
         self.assertFalse(observation["restore_verified"])
         self.assertFalse(observation["notification_delivery_proven"])
         self.assertIn("independent_native_home_ledger", observation["required_next_evidence"])
@@ -107,6 +131,58 @@ class OperationalObservationTests(unittest.TestCase):
             mutate()
             with self.assertRaises(Refused):
                 self.observe()
+
+    def test_daily_inspection_requires_a_live_application_membership_observation(self):
+        self.membership = None
+        with self.assertRaisesRegex(Refused, "membership was not observed"):
+            self.observe()
+
+    def test_daily_inspection_rejects_a_drifted_application_selector(self):
+        for selection in (
+            {},
+            {"type": "All"},
+            {"type": "Selector", "selector": {}},
+            {"type": "Selector", "selector": {"matchExpressions": [
+                {"key": "aidash.run/backup", "operator": "In", "values": ["exclude"]},
+            ]}},
+            {"type": "Selector", "selector": {"matchExpressions": [
+                {"key": "aidash.run/backup", "operator": "NotIn", "values": ["exclude"]},
+            ], "matchLabels": {"app.kubernetes.io/instance": "app"}}},
+        ):
+            with self.subTest(selection=selection):
+                self.setUp()
+                self.membership["application"]["spec"]["resourceSelection"] = selection
+                with self.assertRaisesRegex(Refused, "ProtectedApplication selector"):
+                    self.observe()
+
+    def test_daily_inspection_rejects_missing_or_included_ledger_claims(self):
+        for mutate in (
+            lambda: self.membership.update(application=None),
+            lambda: self.membership["application"]["metadata"].update(namespace="other"),
+            lambda: self.membership["claims"].pop(0),
+            lambda: self.membership["claims"][0]["metadata"].pop("labels"),
+            lambda: self.membership["claims"][0]["metadata"]["labels"].update({"aidash.run/backup": "include"}),
+            lambda: self.membership.update(excluded=[]),
+        ):
+            with self.subTest(mutate=mutate):
+                self.setUp()
+                mutate()
+                with self.assertRaises(Refused):
+                    self.observe()
+
+    def test_daily_inspection_rejects_missing_retained_claims_and_other_exclusions(self):
+        for kind, name in (("PersistentVolumeClaim", "capability-objects"), ("Secret", "app-runtime")):
+            with self.subTest(kind=kind, name=name):
+                self.setUp()
+                self.membership["excluded"].append({
+                    "kind": kind, "metadata": {"namespace": "aidash-production", "name": name, "labels": {"aidash.run/backup": "exclude"}},
+                })
+                with self.assertRaisesRegex(Refused, "other than the ledger"):
+                    self.observe()
+        self.setUp()
+        self.membership["claims"].pop()
+        with self.assertRaisesRegex(Refused, "Retained volumes are missing"):
+            self.observe()
 
     def test_pre_update_plans_must_stay_unscheduled_application_scoped_and_unable_to_delete_the_namespace(self):
         mutations = [
@@ -214,6 +290,72 @@ class OperationalObservationTests(unittest.TestCase):
                 mutate()
                 with self.assertRaisesRegex(Refused, message):
                     self.observe()
+
+
+class ApplicationMembershipReadTests(unittest.TestCase):
+    def setUp(self):
+        self.kubeconfigs = []
+        self.kinds = b"persistentvolumeclaims\nsecrets\n"
+        self.failure = False
+
+    def command(self, args, *, env, timeout, stderr):
+        kubeconfig = Path(env["KUBECONFIG"])
+        self.kubeconfigs.append(kubeconfig)
+        self.assertTrue(kubeconfig.is_file())
+        self.assertEqual(stat.S_IMODE(kubeconfig.stat().st_mode), 0o600)
+        self.assertEqual(env["CLOUDSDK_AUTH_ACCESS_TOKEN"], "inspection-token")
+        self.assertNotIn("inspection-token", args)
+        if args[0] == "gcloud":
+            self.assertEqual(tuple(args[1:5]), ("container", "clusters", "get-credentials", "aidash"))
+            self.assertIn("--dns-endpoint", args)
+            self.assertEqual(args[args.index("--project") + 1], "aidash-production")
+            return b""
+        self.assertEqual(args[0], "kubectl")
+        self.assertEqual(args[args.index("--kubeconfig") + 1], str(kubeconfig))
+        if "api-resources" in args:
+            self.assertIn("--namespaced=true", args)
+            self.assertIn("--verbs=list", args)
+            return self.kinds
+        self.assertIn("get", args)
+        self.assertEqual(args[args.index("--namespace") + 1], "aidash-production")
+        kind = args[args.index("get") + 1]
+        if kind == "protectedapplication":
+            self.assertIn("aidash", args)
+            return json.dumps({"metadata": APPLICATION}).encode()
+        if kind == "persistentvolumeclaims":
+            return json.dumps({"items": [{"metadata": {"name": "memory-recovery"}}]}).encode()
+        self.assertEqual(kind, "persistentvolumeclaims,secrets")
+        self.assertEqual(args[args.index("--selector") + 1], "aidash.run/backup=exclude")
+        if self.failure:
+            raise subprocess.CalledProcessError(1, args, stderr=b"listing denied")
+        return json.dumps({"items": [{"kind": "PersistentVolumeClaim", "metadata": {"name": "memory-recovery"}}]}).encode()
+
+    def test_membership_reads_are_scoped_and_temporary_credentials_are_removed(self):
+        with patch.dict(os.environ, {"KUBECONFIG": "/unchanged/user-config"}), \
+                patch.object(inspect_operations.subprocess, "check_output", self.command):
+            membership = inspect_operations.observe_membership("aidash-production", "inspection-token")
+            self.assertEqual(os.environ["KUBECONFIG"], "/unchanged/user-config")
+        self.assertEqual(membership["application"]["metadata"], APPLICATION)
+        self.assertEqual(membership["claims"][0]["metadata"]["name"], "memory-recovery")
+        self.assertEqual(membership["excluded"][0]["kind"], "PersistentVolumeClaim")
+        self.assertTrue(self.kubeconfigs)
+        self.assertTrue(all(not path.exists() for path in self.kubeconfigs))
+
+    def test_incomplete_discovery_cannot_approve_a_partial_exclusion_inventory(self):
+        self.kinds = b""
+        with patch.object(inspect_operations.subprocess, "check_output", self.command):
+            with self.assertRaisesRegex(Refused, "enumerate"):
+                inspect_operations.observe_membership("aidash-production", "inspection-token")
+        self.assertTrue(self.kubeconfigs)
+        self.assertTrue(all(not path.exists() for path in self.kubeconfigs))
+
+    def test_exclusion_listing_failure_is_not_treated_as_an_empty_inventory(self):
+        self.failure = True
+        with patch.object(inspect_operations.subprocess, "check_output", self.command):
+            with self.assertRaises(subprocess.CalledProcessError):
+                inspect_operations.observe_membership("aidash-production", "inspection-token")
+        self.assertTrue(self.kubeconfigs)
+        self.assertTrue(all(not path.exists() for path in self.kubeconfigs))
 
 
 if __name__ == "__main__":

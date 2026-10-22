@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,10 +36,43 @@ def timestamp(value):
 
 
 APPLICATION = [{"namespace": "aidash-production", "name": "aidash"}]
+BACKUP_LABEL = "aidash.run/backup"
+LEDGER_CLAIM = "memory-recovery"
 
 
 def application_scope(scope):
     return scope.get("selectedApplications", {}).get("namespacedNames") == APPLICATION and "selectedNamespaces" not in scope
+
+
+def inspect_membership(membership):
+    """The live selector must include the whole namespace except the ledger claim."""
+    if membership is None:
+        raise Refused("The live ProtectedApplication membership was not observed")
+    application = membership.get("application") or {}
+    metadata = application.get("metadata", {})
+    selection = application.get("spec", {}).get("resourceSelection", {})
+    selector = selection.get("selector") or {}
+    if ({key: metadata.get(key) for key in ("namespace", "name")} != APPLICATION[0]
+            or selection.get("type") != "Selector" or selector.get("matchLabels")
+            or selector.get("matchExpressions") != [{"key": BACKUP_LABEL, "operator": "NotIn", "values": ["exclude"]}]):
+        raise Refused("The live ProtectedApplication selector differs from configuration")
+    namespace = APPLICATION[0]["namespace"]
+    claims = {
+        claim["metadata"]["name"]: claim for claim in membership.get("claims", [])
+        if claim.get("metadata", {}).get("namespace") == namespace
+    }
+    if not {LEDGER_CLAIM, "capability-objects"} <= claims.keys():
+        raise Refused("Retained volumes are missing from the production namespace")
+    if claims[LEDGER_CLAIM]["metadata"].get("labels", {}).get(BACKUP_LABEL) != "exclude":
+        raise Refused("The Home recovery ledger is not excluded from the ProtectedApplication")
+    excluded = {
+        (item.get("kind"), item.get("metadata", {}).get("namespace"), item.get("metadata", {}).get("name"))
+        for item in membership.get("excluded", [])
+    }
+    if (excluded != {("PersistentVolumeClaim", namespace, LEDGER_CLAIM)}
+            or any(claim["metadata"].get("labels", {}).get(BACKUP_LABEL) == "exclude"
+                   for name, claim in claims.items() if name != LEDGER_CLAIM)):
+        raise Refused("The ProtectedApplication excludes resources other than the ledger, or its exclusion inventory is incomplete")
 
 
 CLUSTER_SCOPES = ("allGroupKinds", "selectedGroupKinds", "excludedGroupKinds")
@@ -90,7 +124,7 @@ def inspect_pre_update(operations, expected_cluster, plan, restore):
         raise Refused("The in-place restore plan could delete more than the protected application")
 
 
-def inspect(config, operations, cluster, plan, backups, channel, uptime, policies, now, pre_update=None, pre_update_restore=None):
+def inspect(config, operations, cluster, plan, backups, channel, uptime, policies, now, pre_update=None, pre_update_restore=None, membership=None):
     """Check actual API observations against the nonsecret configured contract."""
     if config.get("deployment_tier") != "production":
         raise Refused("Only the isolated production profile can be inspected")
@@ -136,6 +170,7 @@ def inspect(config, operations, cluster, plan, backups, channel, uptime, policie
             or not latest.get("containsVolumeData") or not latest.get("containsSecrets")
             or latest.get("volumeCount", 0) < 1):
         raise Refused("The successful backup does not contain the configured production data")
+    inspect_membership(membership)
     configured = bool(operations.get("pre_update_backup_plan"))
     if configured:
         if pre_update is None or pre_update_restore is None:
@@ -196,6 +231,7 @@ def inspect(config, operations, cluster, plan, backups, channel, uptime, policie
         "backup_completed_at": latest["completeTime"],
         "backup_age_seconds": age,
         "configuration_verified": True,
+        "protected_application_membership_verified": True,
         "successful_backup_observed": True,
         "pre_update_plans_verified": configured,
         "notification_delivery_proven": False,
@@ -207,6 +243,35 @@ def inspect(config, operations, cluster, plan, backups, channel, uptime, policie
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, target):
         return None
+
+
+def observe_membership(project, token):
+    """Read the production selector, claims and every labelled exclusion without
+    changing the caller's kubeconfig or any cluster resources."""
+    with TemporaryDirectory(prefix="aidash-operations-") as directory:
+        kubeconfig = Path(directory) / "kubeconfig"
+        kubeconfig.touch(mode=0o600)
+        environment = dict(os.environ, KUBECONFIG=str(kubeconfig), CLOUDSDK_AUTH_ACCESS_TOKEN=token)
+
+        def command(*args):
+            return subprocess.check_output(args, env=environment, timeout=120, stderr=subprocess.PIPE)
+
+        command(
+            "gcloud", "container", "clusters", "get-credentials", "aidash",
+            "--location", "us-central1", "--project", project, "--dns-endpoint",
+        )
+        kubectl = ("kubectl", "--kubeconfig", str(kubeconfig), "--request-timeout=60s")
+
+        def get(*args):
+            return json.loads(command(*kubectl, "get", *args, "--namespace", APPLICATION[0]["namespace"], "-o", "json"))
+
+        application = get("protectedapplication", APPLICATION[0]["name"])
+        claims = get("persistentvolumeclaims")["items"]
+        kinds = command(*kubectl, "api-resources", "--namespaced=true", "--verbs=list", "-o", "name").decode().split()
+        if not kinds:
+            raise Refused("Cannot enumerate namespaced resources for backup exclusions")
+        excluded = get(",".join(kinds), "--selector", f"{BACKUP_LABEL}=exclude")["items"]
+        return {"application": application, "claims": claims, "excluded": excluded}
 
 
 def main():
@@ -261,7 +326,8 @@ def main():
     channel = get("monitoring", operations["notification_channel"])
     uptime = get("monitoring", operations["uptime_check"])
     policies = [get("monitoring", name) for name in operations["alert_policies"]]
-    evidence = inspect(config, operations, cluster, plan, backups, channel, uptime, policies, datetime.now(timezone.utc), pre_update, pre_update_restore)
+    membership = observe_membership(project, token)
+    evidence = inspect(config, operations, cluster, plan, backups, channel, uptime, policies, datetime.now(timezone.utc), pre_update, pre_update_restore, membership)
     print(json.dumps(evidence, indent=2))
 
 

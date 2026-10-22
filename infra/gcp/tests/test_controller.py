@@ -1816,6 +1816,64 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.cloud.gcip = {"tenant_ids": ["pool"], "tenant_bindings": {"pool": "acme"}}
         return patch.object(controller, "reconcile_environment", lambda *args: None)
 
+    def test_the_backup_waits_for_the_protected_application_to_be_ready(self):
+        plan = self.config.pop("pre_update_backup_plan")
+        self.running_production()
+        self.assertIsNone(self.kube.get("protectedapplication", "aidash", "aidash-production"))
+        self.config["pre_update_backup_plan"] = plan
+        self.production_request(UPDATE)
+        statuses = [None, {}, {"readyToBackup": False}, {"readyToBackup": "true"}, {"readyToBackup": True}]
+        get = self.kube.get
+
+        def observe(kind, name, namespace=None):
+            application = get(kind, name, namespace)
+            if kind == "protectedapplication":
+                status = statuses.pop(0)
+                self.calls.append(("backup_readiness", status))
+                if status is None:
+                    return None
+                application["status"] = status
+            return application
+
+        with patch.object(self.kube, "get", observe):
+            self.reconcile()
+        self.assertEqual(statuses, [])
+        ready = self.calls.index(("backup_readiness", {"readyToBackup": True}))
+        self.assertLess(ready, self.event("backup_create"))
+        self.assertEqual(self.entry()["status"], "ready")
+
+    def test_application_readiness_timeout_preserves_the_deployment_budget_and_applies_nothing(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        baseline = len(self.cloud.plans)
+        get = self.kube.get
+        elapsed = [0]
+
+        def observe(kind, name, namespace=None):
+            application = get(kind, name, namespace)
+            if kind == "protectedapplication":
+                application.pop("status", None)
+            return application
+
+        def sleep(seconds):
+            elapsed[0] += seconds
+
+        with patch.object(self.kube, "get", observe), \
+                patch.object(controller.kube.time, "monotonic", lambda: elapsed[0]), \
+                patch.object(controller.kube.time, "sleep", sleep), \
+                operation_budget(backup.DEPLOY_RESERVE + 7):
+            with self.assertRaises(RuntimeError):
+                self.reconcile()
+        self.assertEqual(elapsed[0], 7)
+        self.assertEqual(self.api.requests, [])
+        self.assertEqual(len(self.cloud.plans), baseline)
+        self.assertNotIn("helm", [call[0] for call in self.calls])
+        self.assertEqual(self.entry()["status"], "failed")
+        self.assertNotIn("pre_update_backup", self.entry())
+        self.assertEqual(self.writers(), 1)
+        with self.assertRaisesRegex(controller.Refused, "retry_failed"):
+            self.retry_request(retry=False)
+
     def test_a_shared_apply_takes_the_backup_before_terraform_and_keeps_writers_sealed(self):
         self.running_production()
         baseline = len(self.cloud.plans)
@@ -2016,10 +2074,11 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertEqual(self.api.requests, [])
         self.assertEqual(len(self.cloud.plans), baseline)
 
-    def test_a_failed_shared_apply_after_the_backup_records_the_started_writers(self):
+    def test_a_failed_broker_only_apply_after_the_backup_records_the_started_writers(self):
         self.running_production()
         self.production_request(UPDATE)
-        with patch.object(self.cloud, "apply", side_effect=RuntimeError("apply unavailable")), self.shared_change():
+        self.config["credential_brokers"] = {"production": {"enabled": True}}
+        with patch.object(self.cloud, "apply", side_effect=RuntimeError("apply unavailable")):
             with self.assertRaisesRegex(RuntimeError, "apply unavailable"):
                 self.reconcile()
         entry = self.entry()
@@ -2034,6 +2093,26 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
         self.assertIsNone(controller.pending_production_update(
             self.config, self.store, self.cloud, self.cloud.managed
         ))
+
+    def test_a_failed_shared_gcip_apply_keeps_the_old_release_and_runner_stopped(self):
+        self.running_production()
+        self.production_request(UPDATE)
+        with self.shared_change(), patch.object(
+            self.cloud, "apply", side_effect=RuntimeError("partially applied GCIP change")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "partially applied GCIP change"):
+                self.reconcile()
+        entry = self.entry()
+        self.assertTrue(entry["gcip_pending"])
+        self.assertTrue(entry["gcip_quiesced"])
+        self.assertEqual(self.writers(), 0)
+        self.assertEqual(self.kube.replicas("aidash-production", "statefulset", "app-execution-runner"), 0)
+        self.assertNotIn(("admission", "production", "open"), self.calls)
+        self.assertNotIn("writers_started", entry)
+        self.assertTrue(backup.restorable(entry))
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(entry["start_pending"])
 
     def test_update_discovery_failure_restores_the_preflight_seals(self):
         self.running_production()

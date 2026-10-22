@@ -176,6 +176,8 @@ class FakeCluster:
     def apply(self, manifest):
         if manifest["kind"] == "ProtectedApplication":
             self.record("protect", identity(manifest["metadata"]["namespace"]))
+            manifest = deepcopy(manifest)
+            manifest["status"] = {"readyToBackup": True}
         bounded_timeout(1)
         self.put(deepcopy(manifest))
 

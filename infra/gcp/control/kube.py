@@ -274,9 +274,10 @@ def namespace_of(identity):
 def wait_until(predicate, message, seconds=300, interval=5):
     deadline = time.monotonic() + seconds
     while not predicate():
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise RuntimeError(message)
-        time.sleep(bounded_timeout(interval))
+        time.sleep(bounded_timeout(min(interval, remaining)))
 
 
 def live_pods(cluster, namespace, selector=None):

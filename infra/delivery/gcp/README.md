@@ -69,9 +69,15 @@ python3 infra/delivery/gcp/inspect_operations.py --terraform-output /private/pat
 ```
 
 The command uses `GOOGLE_OAUTH_ACCESS_TOKEN` when supplied, otherwise the
-explicit project's active gcloud identity. It performs only API GETs: cluster,
+explicit project's active gcloud identity. It needs `gcloud`, `kubectl` and the
+GKE gcloud auth plugin, plus read access to the production ProtectedApplication,
+PVCs and listable namespaced resources. It uses a temporary private kubeconfig
+and leaves the caller's Kubernetes context unchanged. It performs only API GETs: cluster,
 backup plan, paginated backup inventory, Pre-update Backup and in-place restore
-plans, uptime check, channel and alert policy metadata. It rejects paused plans,
+plans, uptime check, channel and alert policy metadata, and the live application
+selector, retained claims and resources labelled `aidash.run/backup=exclude`.
+The selector must include the whole namespace except the labelled
+`memory-recovery` PVC; exclusions on any other resource are refused. It rejects paused plans,
 stale capture times, missing volume data, a namespace-scoped backup or restore
 plan, a scheduled Pre-update plan, changed destinations and alert/TLS drift. The JSON observation explicitly keeps
 `restore_verified` and `notification_delivery_proven` false. They require

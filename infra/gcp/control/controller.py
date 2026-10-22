@@ -840,6 +840,17 @@ def pre_update_backup(config, store, terraform, identity, generation, entry):
         return
     kube.protect(cluster, identity)
     require_backup_covers_retained_volumes(cluster, identity)
+    # Applying the object does not wait for the backup agent's reconciliation.
+    # Keep the same deployment reserve as the subsequent backup wait.
+    def ready_to_backup():
+        application = cluster.get("protectedapplication", kube.PROTECTED_APPLICATION, kube.namespace_of(identity)) or {}
+        return (application.get("status") or {}).get("readyToBackup") is True
+
+    kube.wait_until(
+        ready_to_backup,
+        "The ProtectedApplication did not become ready for backup",
+        seconds=min(300, backup.wait_window()),
+    )
     shared = terraform.shared_outputs().get("cluster") or {}
     expected_cluster = f"projects/{shared.get('project_id')}/locations/{shared.get('location')}/clusters/{shared.get('name')}"
     name = backup.take(plan, generation, entry["sha"], expected_cluster)
@@ -1032,7 +1043,16 @@ def reconcile_locked(config, store, terraform, managed):
                     )
                     print(f"Deferred/failed: production: {type(error).__name__}")
             if presealed:
-                restore_broker_admission(terraform, presealed, store)
+                # A partial GCIP apply may have changed the old release's
+                # identity infrastructure. Keep those writers and their Runner
+                # stopped, just as the per-environment failure cleanup does.
+                state, _ = store.read("lifecycle/state.json")
+                entries = state["environments"]
+                reopen = {
+                    identity for identity in presealed
+                    if not (entries[identity].get("gcip_quiesced") or entries[identity].get("gcip_pending"))
+                }
+                restore_broker_admission(terraform, reopen, store)
             raise
     state, _ = store.read("lifecycle/state.json")
     if shared_apply and deploy_pending:
