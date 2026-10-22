@@ -1379,11 +1379,13 @@ async fn artifact_state_page_is_filled_after_task_denials(
 }
 
 #[rstest::rstest]
-#[case::default_node(false)]
-#[case::named_node(true)]
+#[case::default_node(false, false)]
+#[case::named_node(true, false)]
+#[case::sibling_metadata(true, true)]
 #[tokio::test]
 async fn discovered_registry_entries_remain_live_journal_dependencies(
 	#[case] named_node: bool,
+	#[case] sibling_metadata: bool,
 	#[future(awt)]
 	#[from(discovered_registry_entries_remain_live_journal_dependencies_provider)]
 	fixture: DiscoveredRegistryEntriesRemainLiveJournalDependenciesProvider,
@@ -1403,6 +1405,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		)
 		.await
 		.unwrap();
+	let default_node = common::default_node(&f.store, "acme").await.node;
 	let node = if named_node {
 		let node = f
 			.config
@@ -1443,9 +1446,10 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		task = created["id"].as_str().unwrap().parse().unwrap();
 		node.node
 	} else {
-		common::default_node(&f.store, "acme").await.node
+		default_node.clone()
 	};
 	entry.id = "discovered-only".into();
+	entry.capabilities = vec!["journal.discovery".into()];
 	entry.binding_normalization = None;
 	entry
 		.description
@@ -1469,6 +1473,20 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		.0,
 		200
 	);
+	if sibling_metadata {
+		assert_eq!(
+			request(
+				&app,
+				&token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			)
+			.await
+			.0,
+			200
+		);
+	}
 	assert_eq!(
 		request(
 			&app,
@@ -1525,8 +1543,9 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	.await
 	.unwrap();
 	assert_eq!(
-		remote, 0,
-		"the Run's own Node uses local registry dependencies"
+		remote,
+		if sibling_metadata { 1 } else { 0 },
+		"only a sibling Node's metadata uses remote registry dependencies"
 	);
 	// Act: rebuild the HTTP application over persisted reads before changing policy.
 	drop(app);
@@ -1563,6 +1582,26 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		request(&app, &token, "GET", &path, Value::Null).await.0,
 		200
 	);
+	if sibling_metadata {
+		for (revision, enabled, expected_status) in [(1, false, 403), (2, true, 200)] {
+			assert_eq!(
+				request(
+					&app,
+					&token,
+					"POST",
+					"/api/authorization/acme/catalog",
+					json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":revision,"enabled":enabled})
+				)
+				.await
+				.0,
+				200
+			);
+			assert_eq!(
+				request(&app, &token, "GET", &path, Value::Null).await.0,
+				expected_status
+			);
+		}
+	}
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-discovered-registry","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["discovered-only"]}}));
 	common::replace_policy(&f.store, "acme", bundle.clone()).await;
 	assert_eq!(
@@ -1788,7 +1827,7 @@ fn discovered_registry_entries_remain_live_journal_dependencies_provider_router(
 	let server=reinhardt::test::stub::StubRouter::new()
 .route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
         let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
-            json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{\"capability\":\"journal.discovery\"}"}}]})
         } else { json!({"role":"assistant","content":"Completed discovery"}) };
         let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
