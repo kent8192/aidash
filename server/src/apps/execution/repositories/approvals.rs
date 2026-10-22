@@ -13,19 +13,23 @@ use crate::apps::execution::capabilities::{
 		sessions,
 	},
 };
+use crate::apps::identity::repositories::approval_preferences as identity;
 use crate::{Result as NativeResult, authorization::access::Access, domain::Run, store::Store};
 use aidash_application::{
 	Error, Result,
+	capabilities::approvals::KINDS,
 	ports::capabilities::approvals::{ApprovalScope, Creation, Limits},
 };
 use aidash_domain::{
 	RunMetadata,
+	approval_rules::{ApprovalRule, AutoBlocks, Settings},
 	capabilities::{
 		approvals::{ApprovalChoice, ApprovalDecision, Outbound, Revoke},
 		operations::MountedFile,
 		records::Record,
 	},
 	policy::{Evaluation, PolicyBundle, Resource},
+	run_input::RunInput,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -67,6 +71,7 @@ impl From<NativeDecision> for ApprovalDecision {
 			choice: match value.choice {
 				NativeChoice::AllowOnce => ApprovalChoice::AllowOnce,
 				NativeChoice::AllowRun => ApprovalChoice::AllowRun,
+				NativeChoice::AllowAlways => ApprovalChoice::AllowAlways,
 				NativeChoice::Deny => ApprovalChoice::Deny,
 			},
 			targets: value.targets,
@@ -300,5 +305,108 @@ impl ApprovalScope for Scope<'_> {
 			.read(self.access, &FileEntry::from(file.clone()))
 			.await
 			.map_err(Into::into)
+	}
+	async fn approval_settings(&mut self, run: &RunMetadata) -> Result<Option<Settings>> {
+		// Without the Store this scope does not know its Node, so no Run is
+		// known to execute on its home Node.
+		let Some(store) = self.store else {
+			return Ok(None);
+		};
+		let access = &mut *self.access;
+		identity::settings_for_run(
+			&mut *access.tx,
+			&access.snapshot.bundle,
+			&access.identity.tenant,
+			store.deployment.as_str(),
+			access.subjects.first().map(String::as_str),
+			run,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn create_rule(&mut self, owner: &str, rule: ApprovalRule) -> Result<Uuid> {
+		let tenant = self.access.identity.tenant.clone();
+		let tx = &mut *self.access.tx;
+		identity::lock_owner(tx, &tenant, owner).await?;
+		Ok(identity::add_rule(tx, &tenant, owner, &rule).await?)
+	}
+	async fn approval_records(&mut self, run: &RunMetadata) -> Result<Vec<Record>> {
+		let result: NativeResult<Vec<NativeRecord>> = async {
+			let records: Vec<NativeRecord> = {
+				let query_bind_1 = &self.access.identity.tenant;
+				let query_bind_2 = run.id.to_string();
+				crate::database::native::query_as(
+					&sessions::select("core_records")
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
+								SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								),
+							),
+						)
+						.and_where(Expr::col(Alias::new("kind")).is_in(KINDS))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(data->>'run_id' = ?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.order_by(Alias::new("id"), Order::Asc)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **self.access.tx)
+				.await?
+			};
+			Ok(records)
+		}
+		.await;
+		result
+			.map(|records| records.into_iter().map(domain).collect())
+			.map_err(Into::into)
+	}
+	async fn run_inputs(&mut self, run: &RunMetadata) -> Result<Vec<RunInput>> {
+		crate::apps::execution::models::RunInput::for_run(&mut *self.access.tx, run.id)
+			.await
+			.map_err(Into::into)
+	}
+	/// One query that reads only what decided an approval, for every record of
+	/// the Run that a person, a rule, a mode or the Decider decided; the counts
+	/// are then the domain's, so there is one definition of them.
+	async fn auto_blocks(&mut self, run: &RunMetadata) -> Result<AutoBlocks> {
+		let result: NativeResult<Vec<Value>> = async {
+			let decisions: Vec<Value> = {
+				let query_bind_1 = &self.access.identity.tenant;
+				let query_bind_2 = run.id.to_string();
+				crate::database::native::query_scalar(
+					&reinhardt::query::Query::select()
+						.expr(Expr::cust(
+							"jsonb_build_object('decided_at', data->'decided_at', 'given_by', data->'given_by', 'refused_by', data->'refused_by', 'approval_mode', data->'approval_mode')",
+						))
+						.from(Alias::new("core_records"))
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
+								SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								),
+							),
+						)
+						.and_where(Expr::col(Alias::new("kind")).is_in(KINDS))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(data->>'run_id' = ?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.and_where(Expr::cust(
+							"(data->>'decided_at' IS NOT NULL AND (data#>>'{given_by,mode}' = 'auto' OR data#>>'{refused_by,mode}' = 'auto' OR data->>'approval_mode' IN ('allow_once', 'allow_run')))",
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_all(&mut **self.access.tx)
+				.await?
+			};
+			Ok(decisions)
+		}
+		.await;
+		let decisions = result.map_err(Error::from)?;
+		Ok(AutoBlocks::from_data(&decisions))
 	}
 }

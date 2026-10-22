@@ -539,6 +539,50 @@ pub(crate) async fn file_share(
 	dispatch(f, actor, id, "file_share", json!(input)).await
 }
 
+/// Checks that `thread` is a live Thread of `workspace` that the caller may
+/// read, holding the Thread's row lock like Thread deletion does so a deletion
+/// that already passed its final area page cannot race the caller's write.
+pub(crate) async fn readable_thread(
+	access: &mut Access,
+	workspace: Uuid,
+	thread: Uuid,
+) -> Result<()> {
+	let channel: crate::apps::workspaces::models::ChannelThread = {
+		let query_bind_1 = thread;
+		let query_bind_2 = workspace;
+		crate::database::query_as(
+			&sessions::select("channel_threads")
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						),
+					),
+				)
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						),
+					),
+				)
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **access.tx)
+		.await?
+	}
+	.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
+	let channel = crate::collaboration::ChannelThread::from(channel);
+	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
+	access
+		.workspace_record(workspace, "message", channel.root_message_id)
+		.await?;
+	Ok(())
+}
+
 pub(crate) async fn thread_run(
 	f: Federation,
 	actor: Actor,
@@ -798,13 +842,20 @@ pub(crate) async fn approval_list(
 			let expired = matches!(row.state.as_str(), "pending" | "active")
 				&& row.expires_at.is_some_and(|t| t < chrono::Utc::now());
 			let data = &row.data;
+			let state = if run_ended { "closed" } else if expired { "expired" } else { &row.state };
+			// A rule can name an outbound read, a Web disclosure or a tool call, and
+			// only the person the Run's delegation chain starts at may make one.
+			let allow_always = state == "pending"
+				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
+				&& data["subjects"][0] == json!(subject)
+				&& super::approvals::can_allow_always(&f.store, &mut access, &row).await?;
 			// Designated approvers see only the scoped card, never Run output.
 			items.push(json!({
 				"id": row.id,
 				"kind": row.kind,
 				"run_id": run,
 				"area_id": row.area_id,
-				"state": if run_ended { "closed" } else if expired { "expired" } else { &row.state },
+				"state": state,
 				"revision": row.revision,
 				"requester": row.owner,
 				"approver": data["approver"],
@@ -825,6 +876,9 @@ pub(crate) async fn approval_list(
 				"query": data["query"],
 				"decided_by": data["decided_by"],
 				"decided_at": data["decided_at"],
+				"given_by": data["given_by"],
+				"refused_by": data["refused_by"],
+				"allow_always": allow_always,
 				"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
 			}));
 		}

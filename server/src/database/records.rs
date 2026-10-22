@@ -88,16 +88,19 @@ record!(Conversation {
 	target_kind,
 	created_at
 });
-record!(HumanRequest {
-	answered_by,
-	id,
-	workspace_id,
-	run_id,
-	kind,
-	prompt,
-	response,
-	created_at
-});
+record!(
+	HumanRequest {
+		answered_by,
+		id,
+		workspace_id,
+		run_id,
+		kind,
+		prompt,
+		response,
+		created_at
+	},
+	answer_by = |_| NativeResult::Ok(None)
+);
 record!(Message {
 	id,
 	workspace_id,

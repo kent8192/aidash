@@ -1,5 +1,6 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
+use aidash_application::capabilities::approvals::JudgeRequest;
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_domain::capabilities::skills::SkillMetadata;
 use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
@@ -165,6 +166,32 @@ struct State {
 	tool_call_approvals: Mutex<VecDeque<ToolCallApproval>>,
 	/// The requests `tool_call_approval` received.
 	tool_call_requests: Mutex<Vec<ToolCallRequest>>,
+	/// The Approval Mode of the person the Run's chain starts at.
+	approval_mode: Option<aidash_domain::approval_rules::ApprovalMode>,
+	/// Whether that mode is Auto and effective now.
+	auto_judging: bool,
+	/// A child Task failed and the others are unfinished, so the Run's final
+	/// answer waits for a person to intervene.
+	failed_children: bool,
+	/// The Answer Deadline, in seconds, of the person the Run's chain starts at.
+	answer_deadline: Option<i64>,
+	/// A person's answer that lands just before the system closes the Home
+	/// request, as when both race for it.
+	answered_just_before_close: Mutex<Option<Value>>,
+	/// Answers of `approval_judgement` in call order; once empty, nothing is the
+	/// approval Decider's to judge.
+	approval_judgements: Mutex<VecDeque<Option<JudgeRequest>>>,
+	/// What `settle_judgement` was asked to record.
+	settlements: Mutex<Vec<aidash_application::capabilities::approvals::Settlement>>,
+	/// Settle nothing, as when a person or a withdrawn Auto mode wins the race.
+	settle_ignored: bool,
+	/// How the Tenant's approval Decider answers; `None` when Auto is not
+	/// available to the Run.
+	approval_decider: Option<decider::ApprovalDecider>,
+	/// The decisions the approval Decider recorded.
+	approval_evidence: Mutex<Vec<aidash_domain::decision::ApprovalEvidence>>,
+	/// The state of every question batch the approval Decider was asked.
+	judged_states: Mutex<Vec<Value>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -669,6 +696,7 @@ impl ExecutionHome for Backend {
 			response: None,
 			created_at: run.updated_at,
 			answered_by: None,
+			answer_by: None,
 		};
 		*self.0.human.lock().unwrap() = Some(request.clone());
 		Ok(request)
@@ -684,6 +712,10 @@ impl ExecutionHome for Backend {
 		let mut human = self.0.human.lock().unwrap();
 		let request = human.as_mut().expect("Home request");
 		assert_eq!(request.id, id);
+		if let Some(answer) = self.0.answered_just_before_close.lock().unwrap().take() {
+			request.response = Some(answer);
+			request.answered_by = Some("alice".into());
+		}
 		if request.response.is_some() {
 			return Err(Error::Conflict("human request already answered".into()));
 		}
@@ -763,8 +795,8 @@ impl ExecutionHome for Backend {
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let _ = parent;
 		Ok(ChildTaskSummary {
-			has_pending: false,
-			has_failed: false,
+			has_pending: self.0.failed_children,
+			has_failed: self.0.failed_children,
 		})
 	}
 	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
@@ -848,6 +880,47 @@ impl ExecutionAuthority for Backend {
 			.unwrap()
 			.pop_front()
 			.expect("scripted tool call approval"))
+	}
+	async fn approval_mode(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		self.record("authority.approval_mode");
+		Ok(self.0.approval_mode)
+	}
+	async fn auto_judging(&self, _run: &Run) -> Result<bool> {
+		self.record("authority.auto_judging");
+		Ok(self.0.auto_judging)
+	}
+	async fn answer_deadline(&self, _run: &Run) -> Result<Option<i64>> {
+		self.record("authority.answer_deadline");
+		Ok(self.0.answer_deadline)
+	}
+	async fn approval_judgement(
+		&self,
+		_run: &Run,
+		_approval: Uuid,
+	) -> Result<Option<JudgeRequest>> {
+		self.record("authority.approval_judgement");
+		Ok(self
+			.0
+			.approval_judgements
+			.lock()
+			.unwrap()
+			.pop_front()
+			.flatten())
+	}
+	async fn settle_judgement(
+		&self,
+		_run: &Run,
+		_approval: Uuid,
+		settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<bool> {
+		if self.0.settle_ignored {
+			return Ok(false);
+		}
+		self.0.settlements.lock().unwrap().push(settlement);
+		Ok(true)
 	}
 	async fn model_media(
 		&self,
@@ -1157,6 +1230,13 @@ impl ExecutionEnvironment for Backend {
 	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
 		Ok(decider::ports(self, self.node_id(), run))
 	}
+	async fn approval_decider(
+		&self,
+		run: &Run,
+		_token: Uuid,
+	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
+		Ok(decider::approval_ports(self, self.node_id(), run))
+	}
 	async fn summary_dependencies_current(
 		&self,
 		run: &Run,
@@ -1437,6 +1517,17 @@ fn fixture() -> Fixture {
 		permit_tools: false,
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
+		approval_mode: None,
+		auto_judging: false,
+		failed_children: false,
+		answer_deadline: None,
+		answered_just_before_close: Mutex::new(None),
+		approval_judgements: Mutex::new(VecDeque::new()),
+		settlements: Mutex::new(vec![]),
+		settle_ignored: false,
+		approval_decider: None,
+		approval_evidence: Mutex::new(vec![]),
+		judged_states: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }
 }
@@ -1457,9 +1548,11 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		response: None,
 		created_at: fixture.run.updated_at,
 		answered_by: None,
+		answer_by: None,
 	});
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Human {
 		request_id: id,
+		answer_by: None,
 		resume: ResumeState::Ready(ReadyState::default()),
 	}));
 	for _ in 0..2 {
@@ -1645,6 +1738,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 		boundary,
 		[
 			"authority.inference",
+			"authority.auto_judging",
 			"save",
 			"authority.inference",
 			"reservation.admit",
@@ -3657,6 +3751,7 @@ async fn url_intents_of_run_messages_taken_in_by_media_intake_are_carried_forwar
 struct Scripted {
 	specification: ToolSpec,
 	contract: aidash_domain::tool::ToolContract,
+	external_target: Option<String>,
 	outputs: Mutex<std::collections::VecDeque<Value>>,
 	invocations: Mutex<usize>,
 	/// The invocation key of each call.
@@ -3667,6 +3762,7 @@ impl Scripted {
 		Arc::new(Self {
 			specification,
 			contract: aidash_domain::tool::builtin_contract(contract).expect("declared builtin"),
+			external_target: None,
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3690,6 +3786,7 @@ impl Scripted {
 				parameters: json!({"type":"object"}),
 			},
 			contract,
+			external_target: None,
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3713,6 +3810,28 @@ impl Scripted {
 					replay: "unsafe".into(),
 				},
 			),
+			external_target: Some("https://example.invalid".into()),
+			outputs: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
+		})
+	}
+	/// A Tenant's HTTP tool whose version declares its operation read-only.
+	fn tenant_read_only(name: &str) -> Arc<Self> {
+		let tool = Self::tenant(name);
+		Arc::new(Self {
+			specification: tool.specification.clone(),
+			contract: aidash_domain::tool::ToolContract::registry(
+				EntityRef {
+					id: name.into(),
+					version: "1.0.0".into(),
+				},
+				&aidash_domain::tool::ToolConfig::Http {
+					endpoint: "https://example.invalid".into(),
+					replay: "read_only".into(),
+				},
+			),
+			external_target: Some("https://example.invalid".into()),
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3732,6 +3851,7 @@ impl Scripted {
 				parameters: json!({"type":"object"}),
 			},
 			contract: aidash_domain::tool::providers::research_contract(operation),
+			external_target: None,
 			outputs: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
@@ -3745,6 +3865,9 @@ impl ExecutionTool for Scripted {
 	}
 	fn contract(&self) -> aidash_domain::tool::ToolContract {
 		self.contract.clone()
+	}
+	fn external_target(&self) -> Option<String> {
+		self.external_target.clone()
 	}
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()
@@ -4581,6 +4704,7 @@ async fn compaction_leaves_the_exposure_set_intact(mut fixture: Fixture) {
 	assert_eq!(context.exposure, exposure);
 }
 
+mod answer_deadline;
 mod approvals;
 mod batch;
 mod decider;

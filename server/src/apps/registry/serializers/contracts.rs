@@ -58,3 +58,19 @@ pub struct VersionPage {
 	#[serde(default)]
 	pub offset: u64,
 }
+
+/// Which MCP tool the registration form is about to register.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpToolHintRequest {
+	pub endpoint: String,
+	pub tool_name: String,
+}
+/// What an MCP server says about one of its own tools. It only prefills the
+/// registration form; a definition version declares a Read-only operation
+/// itself (ADR 0078).
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct McpToolHint {
+	/// The tool's `annotations.readOnlyHint`, or null when the server gives none.
+	pub read_only_hint: Option<bool>,
+}

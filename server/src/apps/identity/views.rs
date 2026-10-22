@@ -15,6 +15,7 @@ pub mod dependencies;
 
 pub mod sessions;
 
+pub mod approval_preferences;
 pub mod plan_connections;
 pub mod provider_authorizations;
 

@@ -275,6 +275,12 @@ pub const TABLES: &[Table] = &[
 	// any scope opens (#241)
 	table("identity", "node_names", DeploymentWide),
 	table("identity", "nodes", TenantOwned),
+	// a person's own Approval Mode and Approval Rules (ADR 0076)
+	table("identity", "identity_approval_preferences", TenantOwned),
+	table("identity", "identity_approval_rules", TenantOwned),
+	table("identity", "identity_thread_approval_modes", TenantOwned),
+	// the approval Decider a Tenant chose for the Auto Approval Mode (ADR 0077)
+	table("identity", "identity_tenant_approval_settings", TenantOwned),
 	// the identity's one Personal Tenant, read at sign-in; purge keeps it, or
 	// signing in would provision a new Personal Tenant for an identity that deleted its own
 	tombstone("identity", "personal_tenants"),

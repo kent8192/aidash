@@ -1087,6 +1087,91 @@ test("channel intervention answers a human request without settings navigation",
   expect(errors).toEqual([]);
 });
 
+test("a waiting question says when its Run continues on its own", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, {
+    subject: true,
+    answerBy: "2026-10-21T10:30:00Z",
+  });
+  await page.goto("/");
+  const card = page
+    .getByRole("button")
+    .filter({ hasText: "Which market should I examine?" });
+  await expect(card).toContainText(
+    /The Run continues on its own at Oct \d+, \d{2}:\d{2}/,
+  );
+  await card.click();
+  await expect(page.getByRole("dialog")).toContainText(
+    /The Run continues on its own at Oct \d+, \d{2}:\d{2}/,
+  );
+  expect(errors).toEqual([]);
+});
+
+test("a question without an Answer Deadline names no time to continue", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  await page.goto("/");
+  const card = page
+    .getByRole("button")
+    .filter({ hasText: "Which market should I examine?" });
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("continues on its own");
+});
+
+test("a waiting question names its time to continue in Japanese", async ({
+  page,
+}) => {
+  await setup(page, {
+    subject: true,
+    locale: "ja-JP",
+    answerBy: "2026-10-21T10:30:00Z",
+  });
+  await page.goto("/");
+  await expect(
+    page
+      .getByRole("button")
+      .filter({ hasText: "Which market should I examine?" }),
+  ).toContainText("に Run が自身の判断で続行します");
+});
+
+test("a question closed at the Answer Deadline reads as unanswered", async ({
+  page,
+}) => {
+  const { errors, passAnswerDeadline } = await setup(page, {
+    subject: true,
+    answerBy: "2026-10-21T10:30:00Z",
+  });
+  await page.goto("/");
+  await page
+    .getByRole("button")
+    .filter({ hasText: "Which market should I examine?" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("textbox", { name: "Answer", exact: true }),
+  ).toBeVisible();
+
+  passAnswerDeadline();
+  await expect(dialog.getByRole("status")).toHaveText(
+    "No answer before the Answer Deadline",
+    { timeout: 15_000 },
+  );
+  await expect(dialog).toContainText("Which market should I examine?");
+  await expect(dialog.getByRole("textbox")).toHaveCount(0);
+  await expect(dialog).not.toContainText("continues on its own");
+
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.goto("/collaboration?channel=workspace-one");
+  await expect(
+    page.getByText(
+      "No answer before the Answer Deadline: Which market should I examine?",
+    ),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("revoked history is hidden rather than retaining a stale conversation", async ({
   page,
 }) => {

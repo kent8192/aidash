@@ -55,7 +55,7 @@ pub fn build_compaction_state(
 		let bytes = serde_json::to_vec(&built.state)?.len();
 		// Each question repeats its tool input, so a stage fits only when the
 		// largest request it needs, the state with one question, fits too.
-		let request = single_question_request_bytes(&built)?;
+		let request = single_question_request_bytes(&built.state, &built.questions)?;
 		if bytes <= budget.default_state_bytes && request <= budget.default_request_bytes {
 			return Ok(built);
 		}
@@ -79,11 +79,11 @@ const REQUEST_ENVELOPE_BYTES: usize = 256;
 
 /// The encoded size of the largest request a stage needs: its state with the
 /// one question whose encoding is largest. Larger batches split per question.
-fn single_question_request_bytes(built: &BuiltState) -> Result<usize> {
+pub(super) fn single_question_request_bytes(state: &Value, questions: &Questions) -> Result<usize> {
 	let mut largest = 0;
-	for (id, question) in &built.questions {
+	for (id, question) in questions {
 		let request = json!({
-			"state": built.state,
+			"state": state,
 			"questions": {id: {"type": "noul", "instructions": question.description}},
 		});
 		largest = largest.max(serde_json::to_vec(&request)?.len());
@@ -119,7 +119,7 @@ pub fn compaction_disclosure(context: &Context, pinned: &Value) -> Disclosure {
 	disclosure
 }
 
-fn abridge(input: &Value, limit: Option<usize>) -> Value {
+pub(super) fn abridge(input: &Value, limit: Option<usize>) -> Value {
 	let Some(limit) = limit else {
 		return input.clone();
 	};

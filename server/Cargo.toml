@@ -180,6 +180,10 @@ name = "plan_connections"
 path = "src/apps/identity/tests/plan_connections.rs"
 
 [[test]]
+name = "approval_preferences"
+path = "src/apps/identity/tests/approval_preferences.rs"
+
+[[test]]
 name = "endpoints"
 path = "src/apps/execution/tests/endpoint_suite.rs"
 

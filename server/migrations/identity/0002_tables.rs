@@ -448,6 +448,83 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		// A person's own Approval Mode and Approval Rules (#411, ADR 0076).
+		.add_operation(Operation::CreateTable {
+			name: "identity_approval_preferences".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("default_mode", FieldType::Text)
+					.with_not_null(true)
+					.with_default(Some(r#"'manual'::text"#.to_owned())),
+				ColumnDefinition::new("answer_deadline_seconds", FieldType::BigInteger),
+				ColumnDefinition::new("bypass_accepted_at", FieldType::TimestampTz),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "identity_approval_preferences_values".to_owned(),
+				expression: r#"(default_mode IN ('manual', 'auto', 'dont_ask', 'bypass') AND (default_mode <> 'bypass' OR bypass_accepted_at IS NOT NULL) AND (answer_deadline_seconds IS NULL OR answer_deadline_seconds > 0) AND revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "identity_approval_rules".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("target", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("effect", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "identity_approval_rules_values".to_owned(),
+				expression: r#"(kind IN ('tool_call', 'outbound', 'web_search', 'page_reading', 'generation') AND effect IN ('allow', 'ask', 'deny') AND jsonb_typeof(target) IN ('string', 'object'))"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "identity_thread_approval_modes".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("thread_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("mode", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "identity_thread_approval_modes_values".to_owned(),
+				expression: r#"(mode IN ('manual', 'auto', 'dont_ask', 'bypass') AND revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		// The approval Decider a Tenant chose for the Auto Approval Mode (#412, ADR 0077).
+		.add_operation(Operation::CreateTable {
+			name: "identity_tenant_approval_settings".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("decider_id", FieldType::Text),
+				ColumnDefinition::new("decider_version", FieldType::Text),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "identity_tenant_approval_settings_values".to_owned(),
+				expression: r#"((decider_id IS NULL) = (decider_version IS NULL) AND revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
 		.add_operation(Operation::CreateTable {
 			name: "tenants".into(),
 			columns: vec![

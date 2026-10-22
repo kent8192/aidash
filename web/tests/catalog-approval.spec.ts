@@ -496,3 +496,77 @@ test("withdrawing fences on the approval revision and reports a conflict", async
     node: defaultNode.name,
   });
 });
+
+test("a tool version shows what a call does, and approving it covers a read-only declaration", async ({
+  page,
+}) => {
+  const tool = (id: string, transport: Record<string, unknown>) =>
+    entry(id, "tool", {
+      registry_deployment: "aidash://node",
+      provider: `integration.${transport.transport}@1`,
+      operation: "invoke",
+      default_alias: id,
+      tier: "integration",
+      narrow: {},
+      transport,
+    });
+  const reads = tool("lookup", {
+    transport: "http",
+    endpoint: "https://example.com/lookup",
+    replay: "read_only",
+  });
+  const writes = tool("update", {
+    transport: "mcp",
+    endpoint: "https://example.com/mcp",
+    tool_name: "update",
+    replay: "unsafe",
+    idempotency_argument: null,
+  });
+  const delegate = tool("delegate", {
+    transport: "agent",
+    node_id: `aidash://node/${defaultNode.name}`,
+    agent: ref("worker"),
+  });
+  const approved = new Set<string>();
+  const { decisions } = await dashboard(
+    page,
+    tenantSubject,
+    () =>
+      [reads, writes, delegate].map((value) =>
+        registryVersion(value, approved.has(value.id) ? {} : unapproved),
+      ),
+    ({ body }) => {
+      approved.add((body.entry as { id: string }).id);
+      return { json: {} };
+    },
+  );
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.goto("/settings?view=registry");
+  const dialog = page.getByRole("dialog");
+  const effect = (value: string) =>
+    dialog.locator("dl").filter({ hasText: "What a call does" }).filter({
+      hasText: value,
+    });
+
+  await row(page, "lookup").click();
+  await expect(effect("Reads only (needs no approval)")).toBeVisible();
+  const notice = approval(page).locator(".read-only-notice");
+  await expect(notice).toContainText(
+    "Approving the version approves that declaration.",
+  );
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  await expect(notice).toHaveCount(0);
+  await expect(effect("Reads only (needs no approval)")).toBeVisible();
+  expect(decisions.map(({ body }) => body.entry)).toEqual([ref("lookup")]);
+  await page.keyboard.press("Escape");
+
+  await row(page, "update").click();
+  await expect(effect("May change things (asks for approval)")).toBeVisible();
+  await expect(approval(page).locator(".read-only-notice")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await row(page, "delegate").click();
+  await expect(dialog.getByText("What a call does")).toHaveCount(0);
+});

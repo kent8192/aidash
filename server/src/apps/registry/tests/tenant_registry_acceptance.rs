@@ -3,6 +3,8 @@
 mod native_database;
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod support;
+#[path = "../../execution/tests/support/upstream.rs"]
+mod upstream;
 
 use aidash_application::{
 	ports::registry::{AgentPluginSource, FetchedPlugin, PluginFetch, PluginImportRequest},
@@ -672,6 +674,199 @@ async fn the_versions_list_decides_each_version_and_shows_agent_subjects_to_appr
 		find(&administered, "helper").unwrap()["subject"]["groups"],
 		json!([MEMBERS])
 	);
+}
+
+/// An MCP server over streamable HTTP that lists one tool per kind of
+/// annotation: a read-only hint, a write hint and none. It counts the requests
+/// it receives.
+async fn mcp_server(
+	requests: Arc<std::sync::atomic::AtomicUsize>,
+) -> reinhardt::test::fixtures::server::TestServerGuard {
+	let router = reinhardt::test::stub::StubRouter::new()
+		.route(
+			"/mcp",
+			http::Method::POST,
+			upstream::reply(move |request: reinhardt::Request| {
+				requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+				async move {
+					let message = request.json::<Value>().unwrap();
+					let result = match message["method"].as_str().unwrap() {
+						"initialize" => json!({
+							"protocolVersion": message["params"]["protocolVersion"],
+							"capabilities": {"tools": {}},
+							"serverInfo": {"name": "fixture", "version": "1.0.0"}
+						}),
+						"tools/list" => json!({"tools": [
+							{"name":"lookup","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},
+							{"name":"write","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":false}},
+							{"name":"plain","inputSchema":{"type":"object"}}
+						]}),
+						_ => return reinhardt::Response::new(reinhardt::StatusCode::ACCEPTED),
+					};
+					reinhardt::Response::ok()
+						.with_json(&json!({"jsonrpc":"2.0","id":message["id"],"result":result}))
+						.unwrap()
+				}
+			}),
+		)
+		.into_server_router();
+	upstream::upstream(Arc::new(router)).await
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_mcp_tool_hint_needs_registry_create_and_stores_nothing(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange: the owner may register definitions, the reader only reads them.
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	let owner = credential(&fixture, "acme", "owner").await;
+	let reader = credential(&fixture, "acme", "reader").await;
+	let requests = Arc::<std::sync::atomic::AtomicUsize>::default();
+	let server = mcp_server(requests.clone()).await;
+	let mcp = format!("{}/mcp", server.url);
+	let unreachable_endpoint = "http://127.0.0.1:1/mcp";
+	// The Deployment permits these private origins; nothing else is reachable.
+	for endpoint in [&mcp, unreachable_endpoint] {
+		fixture
+			.runtime
+			.store
+			.keyless
+			.permit_origin_of(endpoint)
+			.unwrap();
+	}
+	let hint = |client: Arc<APIClient>, endpoint: String, tool: &'static str| async move {
+		client
+			.post(
+				"/api/registry/mcp-tool-hint",
+				&json!({"endpoint": endpoint, "tool_name": tool}),
+				"json",
+			)
+			.await
+			.unwrap()
+	};
+	let stored = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
+	// Act
+	let read_only = hint(owner.clone(), mcp.clone(), "lookup").await;
+	let writes = hint(owner.clone(), mcp.clone(), "write").await;
+	let unannotated = hint(owner.clone(), mcp.clone(), "plain").await;
+	let unlisted = hint(owner.clone(), mcp.clone(), "missing").await;
+	let not_http = hint(owner.clone(), "ftp://example.com/mcp".into(), "lookup").await;
+	let unreachable = hint(owner.clone(), unreachable_endpoint.into(), "lookup").await;
+	let reading_only = hint(reader, mcp.clone(), "lookup").await;
+	let administrator = hint(
+		fixture.deployment_administrator.clone(),
+		mcp.clone(),
+		"lookup",
+	)
+	.await;
+	let anonymous = hint(fixture.anonymous.clone(), mcp, "lookup").await;
+	// Assert
+	assert_eq!(assert_json(read_only, 200), json!({"read_only_hint": true}));
+	assert_eq!(assert_json(writes, 200), json!({"read_only_hint": false}));
+	assert_eq!(
+		assert_json(unannotated, 200),
+		json!({"read_only_hint": null})
+	);
+	assert_eq!(
+		assert_json(unlisted, 400)["error"],
+		"the MCP server lists no tool with that name"
+	);
+	assert_json(not_http, 400);
+	assert_eq!(
+		assert_json(unreachable, 400)["error"],
+		"the MCP server could not be read",
+		"a refused connection must not describe the network behind the URL"
+	);
+	assert_eq!(reading_only.status_code(), 403, "{}", reading_only.text());
+	assert_eq!(administrator.status_code(), 403, "{}", administrator.text());
+	assert_eq!(anonymous.status_code(), 401, "{}", anonymous.text());
+	assert_eq!(
+		assert_json(owner.get("/api/registry/versions").await.unwrap(), 200),
+		stored,
+		"reading a hint registers and approves nothing"
+	);
+}
+
+/// The endpoint is the owner's choice and nothing approves it first, so the
+/// server reaches only public addresses and the Deployment's permitted origins
+/// (ADR 0036), and a refusal reads like an unreachable server.
+#[rstest]
+#[tokio::test]
+async fn an_mcp_tool_hint_reaches_no_private_address_the_deployment_does_not_permit(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange: a loopback MCP server that no permitted origin names.
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	let owner = credential(&fixture, "acme", "owner").await;
+	let requests = Arc::<std::sync::atomic::AtomicUsize>::default();
+	let server = mcp_server(requests.clone()).await;
+	let port = server.url.rsplit(':').next().unwrap().to_owned();
+	let aimed = [
+		format!("{}/mcp", server.url),
+		format!("http://localhost:{port}/mcp"),
+		"http://10.0.0.1/mcp".to_owned(),
+		"http://169.254.169.254/mcp".to_owned(),
+		"http://[::1]/mcp".to_owned(),
+	];
+	// Act
+	let mut refused = Vec::new();
+	for endpoint in &aimed {
+		let response = owner
+			.post(
+				"/api/registry/mcp-tool-hint",
+				&json!({"endpoint": endpoint, "tool_name": "lookup"}),
+				"json",
+			)
+			.await
+			.unwrap();
+		refused.push((endpoint, response));
+	}
+	// Assert
+	for (endpoint, response) in refused {
+		assert_eq!(
+			assert_json(response, 400)["error"],
+			"the MCP server could not be read",
+			"{endpoint}: a refused address must read like an unreachable server"
+		);
+	}
+	assert_eq!(
+		requests.load(std::sync::atomic::Ordering::SeqCst),
+		0,
+		"the MCP server received a request from an address the Deployment does not permit"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_changed_read_only_declaration_needs_a_new_version(#[future] endpoint: EndpointFixture) {
+	// Arrange
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	let owner = credential(&fixture, "acme", "owner").await;
+	let tool = |version: &str, replay: &str| {
+		json!({"id":"lookup","version":version,"kind":"tool","name":{"en":"Lookup"},"description":{"en":"Acceptance"},
+			"schema":{"type":"object"},
+			"config":{"registry_deployment":NODE,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup",
+				"tier":"integration","narrow":{},
+				"transport":{"transport":"http","endpoint":"https://example.com/lookup","replay":replay}}})
+	};
+	// Act
+	let (first, first_body) = register(&owner, &tool("1.0.0", "unsafe")).await;
+	let (declared, declared_body) = register(&owner, &tool("1.0.0", "read_only")).await;
+	let (next, next_body) = register(&owner, &tool("1.1.0", "read_only")).await;
+	let (repeated, _) = register(&owner, &tool("1.0.0", "unsafe")).await;
+	// Assert
+	assert_eq!(first, 200, "{first_body}");
+	assert_eq!(declared, 409, "{declared_body}");
+	assert!(
+		declared_body.to_string().contains("immutable"),
+		"{declared_body}"
+	);
+	assert_eq!(next, 200, "{next_body}");
+	assert_eq!(repeated, 200, "the unchanged version still registers again");
 }
 
 const PLUGIN_SOURCE: &str =

@@ -23,6 +23,7 @@ import {
   Rocket,
   Server,
   Settings2,
+  ShieldCheck,
   ShieldHalf,
   Store,
   Sun,
@@ -49,6 +50,7 @@ import {
 } from "../components/ui/tooltip";
 import { collaborationCopy } from "../collaboration/copy";
 import {
+  personalSettingsSections,
   visibleSettingsSections,
   type Destination,
   type SettingsSection,
@@ -96,6 +98,7 @@ const settingsIcons: Record<
   deployment: Rocket,
   providerCredentials: KeyRound,
   marketplace: Store,
+  approvals: ShieldCheck,
 };
 const railButton =
   "relative grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-surface hover:text-foreground aria-expanded:bg-surface aria-expanded:text-foreground [&_svg]:size-[18px]";
@@ -155,9 +158,10 @@ function SettingsLinks({
   return (
     <div className="grid gap-px">
       {visibleSettingsSections
-        .filter(
-          (value) =>
-            deploymentAdministrator || !deploymentAdministratorSettings[value],
+        .filter((value) =>
+          deploymentAdministrator
+            ? !personalSettingsSections[value]
+            : !deploymentAdministratorSettings[value],
         )
         .map((value) => {
           const Icon = settingsIcons[value];

@@ -1,0 +1,26 @@
+meta {
+  name: 1282 approval-decider-update - Forged bearer cannot reach a person's approval settings
+  type: http
+  seq: 1282
+}
+
+put {
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-decider?node={{tenant_node}}
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
+}
+
+body:text {
+  {"expected_revision": 0, "decider": null}
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

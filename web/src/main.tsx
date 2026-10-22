@@ -1032,6 +1032,7 @@ function Dashboard({
                     disconnect={disconnect}
                     integration={route.integration}
                     channel={currentChannel}
+                    focus={route.focus}
                   />
                 </Suspense>
               )}

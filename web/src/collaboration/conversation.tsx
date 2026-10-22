@@ -1,5 +1,6 @@
 import { Button } from "../components/ui/button";
 import { ThreadCapabilities } from "../capabilities/thread";
+import { ThreadApprovalMode } from "../thread-approval-mode";
 import {
   Fragment,
   useCallback,
@@ -207,6 +208,10 @@ function ConversationFeed({
   const client = useQueryClient();
   const target = thread ?? "channel",
     draft = drafts[target] ?? emptyDraft;
+  // A person in a Thread sets their Approval Mode beside the composer, which
+  // takes the room of the Enter-to-send hint in the narrow Thread panel.
+  const approvalTenant =
+    thread && data.access.kind === "subject" ? data.access.tenant : null;
   const updateDraft = (update: (draft: Draft) => Draft) =>
     setDrafts((current) => ({
       ...current,
@@ -826,13 +831,21 @@ function ConversationFeed({
                   >
                     <Code2 />
                   </Button>
-                  <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-faint lg:flex">
-                    <Kbd>Enter</Kbd>
-                    {locale === "ja-JP" ? "で送信" : "to send"}
-                  </span>
+                  {thread && approvalTenant !== null && (
+                    <ThreadApprovalMode workspace={workspace} thread={thread} />
+                  )}
+                  {approvalTenant === null && (
+                    <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-faint lg:flex">
+                      <Kbd>Enter</Kbd>
+                      {locale === "ja-JP" ? "で送信" : "to send"}
+                    </span>
+                  )}
                   <Button
                     size="sm"
-                    className="ml-auto lg:ml-1"
+                    className={cn(
+                      "ml-auto",
+                      approvalTenant === null && "lg:ml-1",
+                    )}
                     aria-label={thread ? threads.sendReply : copy.send}
                     title={words.enterHint}
                     disabled={

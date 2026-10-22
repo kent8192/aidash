@@ -270,7 +270,7 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 		.scalar_all(&mut **access.tx)
 		.await?;
 
-	for entry in aidash_application::registry::system::entries(
+	for entry in aidash_application::registry::system::declarations(
 		&crate::bootstrap::registry_validation(),
 		&access.node_id,
 	)? {
@@ -290,7 +290,7 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 
 /// Reserved spelling alone is insufficient: persisted bytes must match Node composition.
 async fn system_document(access: &mut Access, reference: &EntityRef) -> Result<Value> {
-	let expected = aidash_application::registry::system::entries(
+	let expected = aidash_application::registry::system::declarations(
 		&crate::bootstrap::registry_validation(),
 		&access.node_id,
 	)?

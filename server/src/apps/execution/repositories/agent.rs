@@ -576,6 +576,68 @@ impl ExecutionAuthority for Authority<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn approval_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.approval_mode(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn auto_judging(&self, run: &Run) -> Result<bool> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(false);
+		};
+		authority
+			.auto_judging(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn answer_deadline(&self, run: &Run) -> Result<Option<i64>> {
+		// A Run executing for another Node is covered by nobody's settings here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.answer_deadline(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn approval_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<Option<aidash_application::capabilities::approvals::JudgeRequest>> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.approval_judgement(&self.federation.store, run, approval)
+			.await
+			.map_err(Into::into)
+	}
+	async fn settle_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+		settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<bool> {
+		let authority = self
+			.guard
+			.local_authority()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.settle_judgement(&self.federation.store, run, approval, settlement)
+			.await
+			.map_err(Into::into)
+	}
 	async fn model_media(&self, selections: &[ModelMedia]) -> Result<Vec<ContentPart>> {
 		self.guard
 			.model_media(&self.federation.store, selections)
@@ -1015,6 +1077,81 @@ impl ExecutionEnvironment for Environment<'_> {
 					.map(Some)
 			}
 		}
+	}
+	async fn approval_decider(
+		&self,
+		run: &Run,
+		_token: Uuid,
+	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
+		use crate::apps::execution::repositories::decisions::{ChainAllowance, RunDecisionJournal};
+		use aidash_domain::decision::{BoundDecider, DeciderConfig, DeciderPin, Hook};
+		// Only a worker holding the Run's authority on its home Node may call a
+		// Decider for it. A Run executing for another Node asks that Node.
+		let Some(authority) = &self.authority else {
+			return Ok(None);
+		};
+		if authority.guard.local_authority().is_none() {
+			return Ok(None);
+		}
+		let reference = authority.guard.approval_decider_reference().await?;
+		// The Decider runs only under its Catalog Approval for this exact version.
+		let definition = match authority.guard.decider_entry(&reference).await {
+			Ok(entry) => entry,
+			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
+			Err(error) => return Err(error.into()),
+		};
+		let Ok(config) = serde_json::from_value::<DeciderConfig>(definition.config.clone()) else {
+			return Ok(None);
+		};
+		if definition.kind != "decider" || config.hook != Hook::Approval {
+			return Ok(None);
+		}
+		let identity = aidash_domain::registry::bindings::QualifiedRef {
+			registry_deployment: self.node_id().to_owned(),
+			id: definition.id.clone(),
+			version: definition.version.clone(),
+		};
+		// An Agent's Binding can only make the chosen Decider's thresholds
+		// stricter: its narrowing applies whichever Decider the Tenant chose,
+		// and the Decider it names is never the judge.
+		let restrictions = match &self.step_run.context.binding_snapshot {
+			Some(snapshot) => snapshot
+				.bound_decider(Hook::Approval)?
+				.map(|(bound, _)| bound.restrictions)
+				.unwrap_or_default(),
+			None => Default::default(),
+		};
+		if restrictions.validate(&config).is_err() {
+			tracing::warn!(
+				decider = %identity.id,
+				"the Agent's Binding narrows the approval Decider beyond its version; a person is asked"
+			);
+			return Ok(None);
+		}
+		let decider = BoundDecider {
+			pin: DeciderPin {
+				definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
+					&definition,
+				)?),
+				configuration_digest: config.digest()?,
+				provider_implementation:
+					aidash_application::registry::validation::decision_implementation_id(),
+				identity,
+			},
+			config,
+			restrictions,
+		};
+		// The pin is constant for the step: a withdrawn Catalog Approval is
+		// caught by the Decision Authority before every dispatch.
+		let journal = RunDecisionJournal::new(
+			&self.federation.store,
+			run.clone(),
+			decider.allowance(),
+			ChainAllowance(decider.allowance()),
+		)?;
+		self.decision_ports(authority, run, decider, definition, Box::new(journal))
+			.await
+			.map(Some)
 	}
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
 		self.worker()

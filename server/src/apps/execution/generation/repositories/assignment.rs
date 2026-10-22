@@ -1,4 +1,5 @@
 //! Native admission queries retain locks, bind values and the caller's transaction.
+use crate::apps::identity::repositories::approval_preferences as identity;
 use crate::{
 	Error,
 	authorization::{access::Access, catalog, execution, identity::SubjectIdentity},
@@ -10,6 +11,7 @@ use aidash_application::ports::generation::assignment::{
 };
 use aidash_domain::{
 	Task,
+	approval_rules::Settings,
 	federation::Delegation,
 	generation::{
 		policy::{Allowances, Policy},
@@ -486,6 +488,42 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		)
 		.await
 	}
+	async fn approval_settings(&mut self) -> aidash_application::Result<Option<Settings>> {
+		let access = &mut *self.access;
+		let Some(root) = access.subjects.first().cloned() else {
+			return Ok(None);
+		};
+		let Some(node) = access.node.clone() else {
+			return Ok(None);
+		};
+		identity::settings_for_root(
+			&mut *access.tx,
+			&access.snapshot.bundle,
+			&access.identity.tenant,
+			&node,
+			&root,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn root_allows(
+		&mut self,
+		kind: &str,
+		id: &str,
+		attributes: Value,
+		action: &str,
+	) -> aidash_application::Result<bool> {
+		let access = &*self.access;
+		let Some(root) = access.subjects.first() else {
+			return Ok(false);
+		};
+		let resource = access.resource(kind, id, attributes);
+		Ok(access
+			.snapshot
+			.bundle
+			.evaluate(&access.evaluation(root, &resource, action))
+			.allowed)
+	}
 }
 #[async_trait]
 impl GenerationAssignmentScope for NativeAssignment<'_> {
@@ -794,6 +832,18 @@ impl GenerationCreationScope for Session {
 	}
 	async fn visible(&mut self, job: &Request) -> aidash_application::Result<bool> {
 		self.scope().visible(job).await
+	}
+	async fn approval_settings(&mut self) -> aidash_application::Result<Option<Settings>> {
+		self.scope().approval_settings().await
+	}
+	async fn root_allows(
+		&mut self,
+		kind: &str,
+		id: &str,
+		attributes: Value,
+		action: &str,
+	) -> aidash_application::Result<bool> {
+		self.scope().root_allows(kind, id, attributes, action).await
 	}
 }
 #[async_trait]

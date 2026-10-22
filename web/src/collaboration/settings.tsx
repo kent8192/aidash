@@ -9,15 +9,19 @@ import {
   Plus,
   Search,
   Server,
+  ShieldCheck,
   Store,
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge as Tag } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
+import { focusedVersion } from "../approval-decider-model";
+import { ApprovalSettingsPage } from "../approval-settings";
+import { approvalCopy } from "../approval-settings-copy";
 import { DeploymentPage } from "../deployment";
 import { UsagePanel } from "@slots/usage";
 import {
@@ -52,6 +56,7 @@ import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import type { Selection } from "./details";
 import {
+  personalSettingsSections,
   visibleSettingsSections,
   type IntegratedView,
   type SettingsSection,
@@ -71,6 +76,7 @@ const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   deployment: Container,
   providerCredentials: KeyRound,
   marketplace: Store,
+  approvals: ShieldCheck,
 };
 
 const listCopy = {
@@ -108,9 +114,10 @@ function SettingsFrame({
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const label = useSectionLabel();
-  const sections = visibleSettingsSections.filter(
-    (value) =>
-      deploymentAdministrator || !deploymentAdministratorSections[value],
+  const sections = visibleSettingsSections.filter((value) =>
+    deploymentAdministrator
+      ? !personalSettingsSections[value]
+      : !deploymentAdministratorSections[value],
   );
   return (
     <section className="collab-settings flex h-full min-h-0 flex-col">
@@ -462,14 +469,25 @@ function TenantRegistry({
   data,
   section,
   open,
+  focus,
 }: {
   data: State;
   section: "agents" | "registry" | "clusters";
   open: (selection: Selection) => void;
+  /** `<id>@<version>` of a version a link asks to see, such as the Tenant's
+   *  approval Decider whose Catalog Approval Auto needs. */
+  focus?: string;
 }) {
   const { t } = useI18n();
   const versions = useRegistryVersions(data.access);
   const { can } = useTenantActions(data.access);
+  const opened = useRef("");
+  useEffect(() => {
+    if (!focus || !versions.data || opened.current === focus) return;
+    opened.current = focus;
+    const version = focusedVersion(versions.data, focus);
+    if (version) open({ kind: "entityDetail", entity: version.entry });
+  }, [focus, versions.data, open]);
   if (versions.isError) return <Alert>{t("catalogRegistryUnavailable")}</Alert>;
   if (!versions.data) return <Loading />;
   const kind = { agents: "agent", clusters: "cluster", registry: null }[
@@ -506,6 +524,7 @@ export function Configuration({
   disconnect,
   integration,
   channel,
+  focus,
 }: {
   data: State;
   section: SettingsSection;
@@ -514,6 +533,7 @@ export function Configuration({
   disconnect: () => void;
   integration?: IntegratedView;
   channel?: string;
+  focus?: string;
 }) {
   const { t, locale } = useI18n();
   const { can } = useTenantActions(data.access);
@@ -552,6 +572,7 @@ export function Configuration({
                 data={data}
                 section={section}
                 open={open}
+                focus={section === "registry" ? focus : undefined}
               />
             ))}
           {section === "registry" && (
@@ -585,6 +606,15 @@ export function Configuration({
           {section === "marketplace" && deploymentAdministrator && (
             <MarketplaceAdministration />
           )}
+          {section === "approvals" &&
+            (data.access.kind === "subject" ? (
+              <ApprovalSettingsPage
+                key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                tenant={data.access.tenant}
+              />
+            ) : (
+              <Notice role="status">{approvalCopy[locale].personalOnly}</Notice>
+            ))}
           {section === "node" && (
             <NodeView data={data} disconnect={disconnect} />
           )}

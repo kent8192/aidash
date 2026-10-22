@@ -8,8 +8,16 @@ use crate::{
 };
 use aidash_domain::{
 	Task, TaskStatus,
+	approval_rules::{
+		APPROVAL_ADVANCE, ApprovalKind, MODE_RESOURCE, RefusedBy, Resolution, Standing,
+		TenantStance, resolve,
+	},
 	federation::Delegation,
-	generation::{intent::Intent, policy::Policy, requests::Assignment},
+	generation::{
+		intent::Intent,
+		policy::Policy,
+		requests::{Assignment, resource_attributes},
+	},
 	policy::{Resource, SubjectKind},
 	qualified_agent,
 	registry::{EntityRef, Entry, Search},
@@ -179,6 +187,73 @@ pub async fn assign_in(
 	}
 	create_in(scope, &task, policy, reason, None, validation).await
 }
+/// What the person the chain starts at decided in advance about a generation
+/// request that needs an approver (ADR 0076). They may give what they could
+/// approve themselves: `generation.approve` on the request and
+/// `catalog.approve` on the generated definition.
+async fn advise(
+	scope: &mut dyn GenerationCreationScope,
+	task: &Task,
+	policy: &Policy,
+	definition: &Entry,
+	id: Uuid,
+) -> Result<Resolution> {
+	let Some(settings) = scope.approval_settings().await? else {
+		return Ok(Resolution::Ask);
+	};
+	let request = id.to_string();
+	let attributes = resource_attributes(&policy.id, scope.subject(), task.id);
+	let catalog = format!(
+		"{}/{}@{}",
+		definition.kind, definition.id, definition.version
+	);
+	let approver = scope
+		.root_allows(
+			"generation",
+			&request,
+			attributes.clone(),
+			"generation.approve",
+		)
+		.await?
+		&& scope
+			.root_allows(
+				"registry",
+				&catalog,
+				crate::authorization::catalog::attributes(definition),
+				"catalog.approve",
+			)
+			.await?;
+	let advance = scope
+		.root_allows("generation", &request, attributes, APPROVAL_ADVANCE)
+		.await?;
+	let mode = match settings.mode.policy_requirement() {
+		None => true,
+		Some((action, mode)) => {
+			scope
+				.root_allows(MODE_RESOURCE, mode, json!({}), action)
+				.await?
+		}
+	};
+	let ceiling = settings.ceiling(Standing {
+		approver,
+		advance,
+		mode,
+	});
+	Ok(resolve(
+		TenantStance::NeedsApproval,
+		Some(&settings),
+		ceiling,
+		ApprovalKind::Generation,
+		&policy.id,
+		false,
+	))
+}
+/// A generation request creates no record when a rule or mode refuses it:
+/// there is nothing to approve and no quota to reserve.
+fn refusal(by: RefusedBy) -> Error {
+	tracing::info!(refused_by = %by.data(), "generation request refused in advance");
+	Error::Forbidden
+}
 pub async fn create_in(
 	scope: &mut dyn GenerationCreationScope,
 	task: &Task,
@@ -249,10 +324,21 @@ pub async fn create_in(
 			"generation template does not satisfy task requirements".into(),
 		));
 	}
-	let status = if policy.spec.approval_required {
-		"PENDING_APPROVAL"
+	// A request that arrived through Federation is never covered by anyone's rules.
+	let resolution = if policy.spec.approval_required && foreign.is_none() {
+		advise(scope, task, &policy, &definition, id).await?
 	} else {
+		Resolution::Ask
+	};
+	let given = match resolution {
+		Resolution::Refuse(by) => return Err(refusal(by)),
+		Resolution::Approve(by) => Some(by),
+		Resolution::Ask | Resolution::Judge | Resolution::Proceed => None,
+	};
+	let status = if !policy.spec.approval_required || given.is_some() {
 		"QUEUED"
+	} else {
+		"PENDING_APPROVAL"
 	};
 	let lifetime_seconds = foreign.map_or(policy.spec.limits.lifetime_seconds, |intent| {
 		(intent.expires_at - scope.now())
@@ -274,7 +360,17 @@ pub async fn create_in(
 		.await?;
 	scope.allocate(&policy, &allowances).await?;
 	scope.budget(id, &policy, &allowances).await?;
-	scope.history(id, status, reason).await?;
+	match given {
+		// The request is recorded as asked, then as approved by the person whose
+		// rule or mode gave the approval.
+		Some(by) => {
+			scope.history(id, "PENDING_APPROVAL", reason).await?;
+			scope
+				.history(id, status, &format!("approved in advance through {by}"))
+				.await?;
+		}
+		None => scope.history(id, status, reason).await?,
+	}
 	if foreign.is_none() {
 		scope
 			.event(

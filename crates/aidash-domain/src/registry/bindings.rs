@@ -526,10 +526,10 @@ impl Narrowing {
 		let result = Self {
 			decision: match (&self.decision, &other.decision) {
 				(Some(a), Some(b)) => Some(crate::decision::Restrictions {
-					keep_threshold: if a.keep_threshold.value() <= b.keep_threshold.value() {
-						a.keep_threshold
+					threshold: if a.threshold.value() <= b.threshold.value() {
+						a.threshold
 					} else {
-						b.keep_threshold
+						b.threshold
 					},
 					preserve_recent: a.preserve_recent.max(b.preserve_recent),
 					forbid_apply: a.forbid_apply || b.forbid_apply,
@@ -659,7 +659,7 @@ impl Binding {
 					.narrow
 					.decision
 					.as_ref()
-					.is_some_and(|r| r.keep_threshold.value() > 0.5 || r.preserve_recent < 6)
+					.is_some_and(|r| r.threshold.value() > 0.5 || r.preserve_recent < 6)
 			{
 				return Err(Error::Invalid(
 					"invalid Decider Binding restrictions".into(),

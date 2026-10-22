@@ -7046,7 +7046,8 @@
             "agent_id",
             "agent_version",
             "decided_by",
-            "decided_at"
+            "decided_at",
+            "allow_always"
           ],
           "properties": {
             "action": {
@@ -7057,6 +7058,10 @@
             },
             "agent_version": {
               "type": ["string", "null"]
+            },
+            "allow_always": {
+              "type": "boolean",
+              "description": "Whether the reader may choose \"Always allow\": they are the person the\nRun's delegation chain starts at, the approval is still pending and its\nkind can have a rule."
             },
             "approver": {
               "type": ["string", "null"]
@@ -7092,6 +7097,9 @@
               "type": ["string", "null"],
               "format": "date-time"
             },
+            "given_by": {
+              "description": "What gave the approval in advance, under its owner's name: `{\"rule\": id}`\nfor one of their Approval Rules, `{\"mode\": \"bypass\"}` for the Bypass\nmode, `{\"mode\": \"auto\", \"decision\": id}` for the approval Decider and its\nDecision Evidence, and none when a person decided it."
+            },
             "grant_id": {
               "type": ["string", "null"],
               "format": "uuid"
@@ -7113,6 +7121,9 @@
             },
             "query": {
               "description": "The validated search query in provider-independent form."
+            },
+            "refused_by": {
+              "description": "What refused the approval in advance, with no one asked: `{\"rule\": id}`\nfor one of the owner's Approval Rules, `{\"mode\": \"dont_ask\"}` for the\nDon't ask mode, and `{\"mode\": \"auto\", \"reason\": ...}` for the approval\nDecider, whose reason names a block category or `unavailable`. None when\na person decided it or it is still open."
             },
             "requester": {
               "type": "string"
@@ -16141,9 +16152,9 @@
         },
         "Restrictions": {
           "type": "object",
-          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
           "required": [
-            "keep_threshold",
+            "threshold",
             "preserve_recent",
             "forbid_apply",
             "max_calls_per_run"
@@ -16152,10 +16163,6 @@
             "forbid_apply": {
               "type": "boolean",
               "default": false
-            },
-            "keep_threshold": {
-              "type": "string",
-              "default": "3fe0000000000000"
             },
             "max_calls_per_run": {
               "type": ["integer", "null"],
@@ -16169,6 +16176,11 @@
               "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
+            },
+            "threshold": {
+              "type": "string",
+              "description": "The probability at which an answer takes the conservative action; lower\nis stricter. A Route's own threshold is intersected in when it is asked.",
+              "default": "3fe0000000000000"
             }
           },
           "additionalProperties": false
@@ -21672,6 +21684,11 @@
             "created_at"
           ],
           "properties": {
+            "answer_by": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state."
+            },
             "answered_by": {
               "type": ["string", "null"]
             },
@@ -21988,9 +22005,9 @@
         },
         "Restrictions": {
           "type": "object",
-          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
           "required": [
-            "keep_threshold",
+            "threshold",
             "preserve_recent",
             "forbid_apply",
             "max_calls_per_run"
@@ -21999,10 +22016,6 @@
             "forbid_apply": {
               "type": "boolean",
               "default": false
-            },
-            "keep_threshold": {
-              "type": "string",
-              "default": "3fe0000000000000"
             },
             "max_calls_per_run": {
               "type": ["integer", "null"],
@@ -22016,6 +22029,11 @@
               "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
+            },
+            "threshold": {
+              "type": "string",
+              "description": "The probability at which an answer takes the conservative action; lower\nis stricter. A Route's own threshold is intersected in when it is asked.",
+              "default": "3fe0000000000000"
             }
           },
           "additionalProperties": false
@@ -24529,6 +24547,11 @@
               "type": "object",
               "required": ["reason", "request_id", "resume"],
               "properties": {
+                "answer_by": {
+                  "type": ["string", "null"],
+                  "format": "date-time",
+                  "description": "When the Run continues without an answer: a model's question of a\nperson who set an Answer Deadline. Every other request waits for\nits answer."
+                },
                 "reason": {
                   "type": "string",
                   "enum": ["human"]
@@ -25444,6 +25467,17 @@
                 "$ref": "#/components/schemas/MessageReadCoverage"
               }
             },
+            "plugin_tools": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PluginTools"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The plugin tools the Run pinned, with everything left out."
+            },
             "run_message_summary": {
               "type": "string"
             },
@@ -25833,9 +25867,9 @@
         },
         "Restrictions": {
           "type": "object",
-          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
           "required": [
-            "keep_threshold",
+            "threshold",
             "preserve_recent",
             "forbid_apply",
             "max_calls_per_run"
@@ -25844,10 +25878,6 @@
             "forbid_apply": {
               "type": "boolean",
               "default": false
-            },
-            "keep_threshold": {
-              "type": "string",
-              "default": "3fe0000000000000"
             },
             "max_calls_per_run": {
               "type": ["integer", "null"],
@@ -25861,6 +25891,11 @@
               "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
+            },
+            "threshold": {
+              "type": "string",
+              "description": "The probability at which an answer takes the conservative action; lower\nis stricter. A Route's own threshold is intersected in when it is asked.",
+              "default": "3fe0000000000000"
             }
           },
           "additionalProperties": false
@@ -26563,6 +26598,30 @@
                     "skill_id": {
                       "type": "string",
                       "format": "uuid"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "A tool of a remote MCP server that the Run pinned from an Agent Plugin.",
+              "required": ["agent_plugin_tool"],
+              "properties": {
+                "agent_plugin_tool": {
+                  "type": "object",
+                  "required": ["plugin", "server", "tool"],
+                  "properties": {
+                    "plugin": {
+                      "$ref": "#/components/schemas/PluginName"
+                    },
+                    "server": {
+                      "$ref": "#/components/schemas/ServerName"
+                    },
+                    "tool": {
+                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -27685,6 +27744,11 @@
               "type": "object",
               "required": ["reason", "request_id", "resume"],
               "properties": {
+                "answer_by": {
+                  "type": ["string", "null"],
+                  "format": "date-time",
+                  "description": "When the Run continues without an answer: a model's question of a\nperson who set an Answer Deadline. Every other request waits for\nits answer."
+                },
                 "reason": {
                   "type": "string",
                   "enum": ["human"]
@@ -27934,6 +27998,221 @@
         "NodeName": {
           "type": "string",
           "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "Component": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["manifest", "mcp"]
+            },
+            {
+              "type": "object",
+              "required": ["skill"],
+              "properties": {
+                "skill": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["server"],
+              "properties": {
+                "server": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "Finding": {
+          "type": "object",
+          "description": "A part of a plugin that was ignored or skipped, reported next to the accepted ones.",
+          "required": ["component", "outcome", "reason", "detail"],
+          "properties": {
+            "component": {
+              "$ref": "#/components/schemas/Component"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/Outcome"
+            },
+            "reason": {
+              "$ref": "#/components/schemas/Reason"
+            }
+          }
+        },
+        "Outcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The plugin loads; the offending part has no effect.",
+              "enum": ["ignored"]
+            },
+            {
+              "type": "string",
+              "description": "The component is left out; the rest of the plugin loads.",
+              "enum": ["skipped"]
+            }
+          ]
+        },
+        "PinnedServer": {
+          "type": "object",
+          "description": "The tools one remote server contributed, tied to the plugin copy that declared it.",
+          "required": ["plugin", "digest", "server", "tools"],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "description": "The [`AgentPluginRef::digest`] of the copy."
+            },
+            "plugin": {
+              "$ref": "#/components/schemas/PluginName"
+            },
+            "server": {
+              "$ref": "#/components/schemas/ServerName"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedTool"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "PinnedTool": {
+          "type": "object",
+          "description": "One tool a Run pinned at its start.",
+          "required": [
+            "name",
+            "alias",
+            "description",
+            "input_schema",
+            "schema_digest",
+            "read_only",
+            "eager"
+          ],
+          "properties": {
+            "alias": {
+              "type": "string",
+              "description": "What the model calls it: [`model_alias`] of the plugin, the server and the name."
+            },
+            "description": {
+              "type": "string"
+            },
+            "eager": {
+              "type": "boolean",
+              "description": "The server's settings choose eager exposure."
+            },
+            "input_schema": {},
+            "name": {
+              "type": "string",
+              "description": "The server's own name for the tool."
+            },
+            "read_only": {
+              "type": "boolean",
+              "description": "Declared Read-only against exactly this `schema_digest`."
+            },
+            "schema_digest": {
+              "type": "string",
+              "description": "[`schema_digest`] of `input_schema`."
+            }
+          },
+          "additionalProperties": false
+        },
+        "PluginFinding": {
+          "type": "object",
+          "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
+          "required": ["plugin", "finding"],
+          "properties": {
+            "finding": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "plugin": {
+              "$ref": "#/components/schemas/PluginName"
+            }
+          },
+          "additionalProperties": false
+        },
+        "PluginName": {
+          "type": "string",
+          "description": "A plugin name: 1-64 characters of `a-z0-9.-`, starting and ending alphanumeric, with neither\n`--` nor `..`."
+        },
+        "PluginTools": {
+          "type": "object",
+          "description": "What a Run pinned at its start: the servers it reached and everything left out.",
+          "required": ["servers", "findings"],
+          "properties": {
+            "findings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PluginFinding"
+              }
+            },
+            "servers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedServer"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "unknown_field",
+                "extensions_not_object",
+                "mcp_invalid",
+                "mcp_version_mismatch",
+                "server_name",
+                "server_invalid",
+                "unsupported_transport",
+                "unsupported_command",
+                "missing_command",
+                "path_outside_root",
+                "skill_invalid",
+                "skill_limit",
+                "tool_invalid",
+                "tool_limit"
+              ]
+            },
+            {
+              "type": "string",
+              "description": "A Run-start listing of a remote server failed or was never made.",
+              "enum": ["server_unavailable"]
+            },
+            {
+              "type": "string",
+              "description": "The Agent's allowlist names a tool the server did not list.",
+              "enum": ["tool_not_listed"]
+            },
+            {
+              "type": "string",
+              "description": "The tool's alias is one the Run's Bindings or the reserved names already use.",
+              "enum": ["reserved_alias"]
+            },
+            {
+              "type": "string",
+              "description": "An earlier plugin tool of the Run has the tool's alias.",
+              "enum": ["alias_collision"]
+            },
+            {
+              "type": "string",
+              "description": "A Read-only declaration was made against a different input schema.",
+              "enum": ["read_only_changed"]
+            }
+          ]
+        },
+        "ServerName": {
+          "type": "string",
+          "description": "Aidash's name for a server: 1-64 characters of `A-Za-z0-9_.-`."
         }
       }
     }
@@ -28128,6 +28407,17 @@
               "additionalProperties": {
                 "$ref": "#/components/schemas/MessageReadCoverage"
               }
+            },
+            "plugin_tools": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PluginTools"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The plugin tools the Run pinned at its first step (ADR 0073). `None` means not pinned yet;\na Run without Agent Plugins never sets it."
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
@@ -28556,9 +28846,9 @@
         },
         "Restrictions": {
           "type": "object",
-          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
           "required": [
-            "keep_threshold",
+            "threshold",
             "preserve_recent",
             "forbid_apply",
             "max_calls_per_run"
@@ -28567,10 +28857,6 @@
             "forbid_apply": {
               "type": "boolean",
               "default": false
-            },
-            "keep_threshold": {
-              "type": "string",
-              "default": "3fe0000000000000"
             },
             "max_calls_per_run": {
               "type": ["integer", "null"],
@@ -28584,6 +28870,11 @@
               "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
+            },
+            "threshold": {
+              "type": "string",
+              "description": "The probability at which an answer takes the conservative action; lower\nis stricter. A Route's own threshold is intersected in when it is asked.",
+              "default": "3fe0000000000000"
             }
           },
           "additionalProperties": false
@@ -29406,6 +29697,30 @@
                     "skill_id": {
                       "type": "string",
                       "format": "uuid"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "A tool of a remote MCP server that the Run pinned from an Agent Plugin.",
+              "required": ["agent_plugin_tool"],
+              "properties": {
+                "agent_plugin_tool": {
+                  "type": "object",
+                  "required": ["plugin", "server", "tool"],
+                  "properties": {
+                    "plugin": {
+                      "$ref": "#/components/schemas/PluginName"
+                    },
+                    "server": {
+                      "$ref": "#/components/schemas/ServerName"
+                    },
+                    "tool": {
+                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -30571,6 +30886,11 @@
               "type": "object",
               "required": ["reason", "request_id", "resume"],
               "properties": {
+                "answer_by": {
+                  "type": ["string", "null"],
+                  "format": "date-time",
+                  "description": "When the Run continues without an answer: a model's question of a\nperson who set an Answer Deadline. Every other request waits for\nits answer."
+                },
                 "reason": {
                   "type": "string",
                   "enum": ["human"]
@@ -30820,6 +31140,221 @@
         "NodeName": {
           "type": "string",
           "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "Component": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["manifest", "mcp"]
+            },
+            {
+              "type": "object",
+              "required": ["skill"],
+              "properties": {
+                "skill": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["server"],
+              "properties": {
+                "server": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "Finding": {
+          "type": "object",
+          "description": "A part of a plugin that was ignored or skipped, reported next to the accepted ones.",
+          "required": ["component", "outcome", "reason", "detail"],
+          "properties": {
+            "component": {
+              "$ref": "#/components/schemas/Component"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/Outcome"
+            },
+            "reason": {
+              "$ref": "#/components/schemas/Reason"
+            }
+          }
+        },
+        "Outcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The plugin loads; the offending part has no effect.",
+              "enum": ["ignored"]
+            },
+            {
+              "type": "string",
+              "description": "The component is left out; the rest of the plugin loads.",
+              "enum": ["skipped"]
+            }
+          ]
+        },
+        "PinnedServer": {
+          "type": "object",
+          "description": "The tools one remote server contributed, tied to the plugin copy that declared it.",
+          "required": ["plugin", "digest", "server", "tools"],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "description": "The [`AgentPluginRef::digest`] of the copy."
+            },
+            "plugin": {
+              "$ref": "#/components/schemas/PluginName"
+            },
+            "server": {
+              "$ref": "#/components/schemas/ServerName"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedTool"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "PinnedTool": {
+          "type": "object",
+          "description": "One tool a Run pinned at its start.",
+          "required": [
+            "name",
+            "alias",
+            "description",
+            "input_schema",
+            "schema_digest",
+            "read_only",
+            "eager"
+          ],
+          "properties": {
+            "alias": {
+              "type": "string",
+              "description": "What the model calls it: [`model_alias`] of the plugin, the server and the name."
+            },
+            "description": {
+              "type": "string"
+            },
+            "eager": {
+              "type": "boolean",
+              "description": "The server's settings choose eager exposure."
+            },
+            "input_schema": {},
+            "name": {
+              "type": "string",
+              "description": "The server's own name for the tool."
+            },
+            "read_only": {
+              "type": "boolean",
+              "description": "Declared Read-only against exactly this `schema_digest`."
+            },
+            "schema_digest": {
+              "type": "string",
+              "description": "[`schema_digest`] of `input_schema`."
+            }
+          },
+          "additionalProperties": false
+        },
+        "PluginFinding": {
+          "type": "object",
+          "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
+          "required": ["plugin", "finding"],
+          "properties": {
+            "finding": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "plugin": {
+              "$ref": "#/components/schemas/PluginName"
+            }
+          },
+          "additionalProperties": false
+        },
+        "PluginName": {
+          "type": "string",
+          "description": "A plugin name: 1-64 characters of `a-z0-9.-`, starting and ending alphanumeric, with neither\n`--` nor `..`."
+        },
+        "PluginTools": {
+          "type": "object",
+          "description": "What a Run pinned at its start: the servers it reached and everything left out.",
+          "required": ["servers", "findings"],
+          "properties": {
+            "findings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PluginFinding"
+              }
+            },
+            "servers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PinnedServer"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "unknown_field",
+                "extensions_not_object",
+                "mcp_invalid",
+                "mcp_version_mismatch",
+                "server_name",
+                "server_invalid",
+                "unsupported_transport",
+                "unsupported_command",
+                "missing_command",
+                "path_outside_root",
+                "skill_invalid",
+                "skill_limit",
+                "tool_invalid",
+                "tool_limit"
+              ]
+            },
+            {
+              "type": "string",
+              "description": "A Run-start listing of a remote server failed or was never made.",
+              "enum": ["server_unavailable"]
+            },
+            {
+              "type": "string",
+              "description": "The Agent's allowlist names a tool the server did not list.",
+              "enum": ["tool_not_listed"]
+            },
+            {
+              "type": "string",
+              "description": "The tool's alias is one the Run's Bindings or the reserved names already use.",
+              "enum": ["reserved_alias"]
+            },
+            {
+              "type": "string",
+              "description": "An earlier plugin tool of the Run has the tool's alias.",
+              "enum": ["alias_collision"]
+            },
+            {
+              "type": "string",
+              "description": "A Read-only declaration was made against a different input schema.",
+              "enum": ["read_only_changed"]
+            }
+          ]
+        },
+        "ServerName": {
+          "type": "string",
+          "description": "Aidash's name for a server: 1-64 characters of `A-Za-z0-9_.-`."
         }
       }
     }
@@ -30875,6 +31410,11 @@
             "created_at"
           ],
           "properties": {
+            "answer_by": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state."
+            },
             "answered_by": {
               "type": ["string", "null"]
             },
@@ -31538,6 +32078,11 @@
             "created_at"
           ],
           "properties": {
+            "answer_by": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state."
+            },
             "answered_by": {
               "type": ["string", "null"]
             },
@@ -33809,6 +34354,950 @@
             }
           },
           "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/registry/mcp-tool-hint",
+    "name": "registry-mcp-tool-hint",
+    "source": "server/src/apps/registry/views/management.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/McpToolHint"
+      },
+      "definitions": {
+        "McpToolHint": {
+          "type": "object",
+          "description": "What an MCP server says about one of its own tools. It only prefills the\nregistration form; a definition version declares a Read-only operation\nitself (ADR 0078).",
+          "required": ["read_only_hint"],
+          "properties": {
+            "read_only_hint": {
+              "type": ["boolean", "null"],
+              "description": "The tool's `annotations.readOnlyHint`, or null when the server gives none."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/approval-preferences/mine",
+    "name": "approval-preferences",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["node"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalPreferences"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
+            }
+          }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
+        },
+        "ApprovalPreferences": {
+          "type": "object",
+          "description": "One person's default Approval Mode, Answer Deadline and acceptance of Bypass.",
+          "required": [
+            "default_mode",
+            "answer_deadline_seconds",
+            "bypass_accepted_at",
+            "revision",
+            "modes"
+          ],
+          "properties": {
+            "answer_deadline_seconds": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "How long the person's Runs wait for an answer to their model's\nquestion; none means unlimited."
+            },
+            "bypass_accepted_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the person accepted the risk of Bypass; none before then."
+            },
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              },
+              "description": "Every mode, with whether the Tenant's policy lets this person use it now."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the person first saves their preferences."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/approval-preferences/mine",
+    "name": "approval-preferences-update",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": ["node"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalPreferences"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
+            }
+          }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
+        },
+        "ApprovalPreferences": {
+          "type": "object",
+          "description": "One person's default Approval Mode, Answer Deadline and acceptance of Bypass.",
+          "required": [
+            "default_mode",
+            "answer_deadline_seconds",
+            "bypass_accepted_at",
+            "revision",
+            "modes"
+          ],
+          "properties": {
+            "answer_deadline_seconds": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "How long the person's Runs wait for an answer to their model's\nquestion; none means unlimited."
+            },
+            "bypass_accepted_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the person accepted the risk of Bypass; none before then."
+            },
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              },
+              "description": "Every mode, with whether the Tenant's policy lets this person use it now."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the person first saves their preferences."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/approval-rules/mine",
+    "name": "approval-rules",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalRules"
+      },
+      "definitions": {
+        "ApprovalKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
+              "enum": ["tool_call"]
+            },
+            {
+              "type": "string",
+              "description": "An outbound read. The target is its origin.",
+              "enum": ["outbound"]
+            },
+            {
+              "type": "string",
+              "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
+              "enum": ["web_search"]
+            },
+            {
+              "type": "string",
+              "description": "A Page reading disclosure. The target is the page host.",
+              "enum": ["page_reading"]
+            },
+            {
+              "type": "string",
+              "description": "A generated Agent request. The target is the Generation policy id.",
+              "enum": ["generation"]
+            }
+          ],
+          "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
+        },
+        "ApprovalRuleView": {
+          "type": "object",
+          "description": "A stored Approval Rule, and whether the Tenant's policy still lets its\nowner approve what it names in advance.",
+          "required": [
+            "id",
+            "kind",
+            "target",
+            "effect",
+            "effective",
+            "created_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/RuleEffect"
+            },
+            "effective": {
+              "type": "boolean",
+              "description": "`false` for an allow rule when the ceiling no longer lets the owner\napprove this kind and target in advance: it is kept but has no effect.\nA deny or ask rule always holds, as it relaxes nothing."
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/ApprovalKind"
+            },
+            "target": {
+              "$ref": "#/components/schemas/RuleTarget"
+            }
+          }
+        },
+        "ApprovalRules": {
+          "type": "object",
+          "required": ["rules"],
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalRuleView"
+              }
+            }
+          }
+        },
+        "RuleEffect": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"]
+        },
+        "RuleTarget": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["every"]
+            },
+            {
+              "type": "object",
+              "required": ["exact"],
+              "properties": {
+                "exact": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The targets of one kind that a rule covers. Serialized as the string\n`\"every\"` or as `{\"exact\": \"<target>\"}`, so no target string can be mistaken\nfor the wildcard."
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/approval-rules/mine",
+    "name": "approval-rule-create",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/approval-rules/mine/{id}",
+    "name": "approval-rule-delete",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/subjects/{subject}/approval-settings",
+    "name": "approval-settings",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalSettings"
+      },
+      "definitions": {
+        "ApprovalKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
+              "enum": ["tool_call"]
+            },
+            {
+              "type": "string",
+              "description": "An outbound read. The target is its origin.",
+              "enum": ["outbound"]
+            },
+            {
+              "type": "string",
+              "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
+              "enum": ["web_search"]
+            },
+            {
+              "type": "string",
+              "description": "A Page reading disclosure. The target is the page host.",
+              "enum": ["page_reading"]
+            },
+            {
+              "type": "string",
+              "description": "A generated Agent request. The target is the Generation policy id.",
+              "enum": ["generation"]
+            }
+          ],
+          "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
+        },
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalRuleView": {
+          "type": "object",
+          "description": "A stored Approval Rule, and whether the Tenant's policy still lets its\nowner approve what it names in advance.",
+          "required": [
+            "id",
+            "kind",
+            "target",
+            "effect",
+            "effective",
+            "created_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/RuleEffect"
+            },
+            "effective": {
+              "type": "boolean",
+              "description": "`false` for an allow rule when the ceiling no longer lets the owner\napprove this kind and target in advance: it is kept but has no effect.\nA deny or ask rule always holds, as it relaxes nothing."
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/ApprovalKind"
+            },
+            "target": {
+              "$ref": "#/components/schemas/RuleTarget"
+            }
+          }
+        },
+        "ApprovalSettings": {
+          "type": "object",
+          "description": "A member's settings as a Tenant Administrator with `approval.read` sees them.",
+          "required": [
+            "subject",
+            "default_mode",
+            "answer_deadline_seconds",
+            "bypass_accepted_at",
+            "revision",
+            "rules"
+          ],
+          "properties": {
+            "answer_deadline_seconds": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "bypass_accepted_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalRuleView"
+              }
+            },
+            "subject": {
+              "type": "string"
+            }
+          }
+        },
+        "RuleEffect": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"]
+        },
+        "RuleTarget": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["every"]
+            },
+            {
+              "type": "object",
+              "required": ["exact"],
+              "properties": {
+                "exact": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The targets of one kind that a rule covers. Serialized as the string\n`\"every\"` or as `{\"exact\": \"<target>\"}`, so no target string can be mistaken\nfor the wildcard."
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/approval-decider",
+    "name": "approval-decider",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["node"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalDecider"
+      },
+      "definitions": {
+        "ApprovalDecider": {
+          "type": "object",
+          "description": "The approval Decider that judges the Tenant's Auto Approval Mode.",
+          "required": [
+            "decider",
+            "built_in",
+            "registered",
+            "approved",
+            "revision"
+          ],
+          "properties": {
+            "approved": {
+              "type": "boolean",
+              "description": "The exact version holds a Catalog Approval on this Node, which Auto needs."
+            },
+            "built_in": {
+              "type": "boolean",
+              "description": "The Tenant has named no other, so the built-in Decider judges."
+            },
+            "decider": {
+              "$ref": "#/components/schemas/ApprovalDeciderReference"
+            },
+            "registered": {
+              "type": "boolean",
+              "description": "The Decider is registered in the Tenant as one of hook `approval`."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the Tenant first names a Decider or resets to the built-in."
+            }
+          }
+        },
+        "ApprovalDeciderReference": {
+          "type": "object",
+          "description": "A Decider by its Registry identity.",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/approval-decider",
+    "name": "approval-decider-update",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": ["node"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalDecider"
+      },
+      "definitions": {
+        "ApprovalDecider": {
+          "type": "object",
+          "description": "The approval Decider that judges the Tenant's Auto Approval Mode.",
+          "required": [
+            "decider",
+            "built_in",
+            "registered",
+            "approved",
+            "revision"
+          ],
+          "properties": {
+            "approved": {
+              "type": "boolean",
+              "description": "The exact version holds a Catalog Approval on this Node, which Auto needs."
+            },
+            "built_in": {
+              "type": "boolean",
+              "description": "The Tenant has named no other, so the built-in Decider judges."
+            },
+            "decider": {
+              "$ref": "#/components/schemas/ApprovalDeciderReference"
+            },
+            "registered": {
+              "type": "boolean",
+              "description": "The Decider is registered in the Tenant as one of hook `approval`."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "`0` until the Tenant first names a Decider or resets to the built-in."
+            }
+          }
+        },
+        "ApprovalDeciderReference": {
+          "type": "object",
+          "description": "A Decider by its Registry identity.",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
+    "name": "thread-approval-mode",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": false,
+    "uuid_parameters": ["workspace", "thread"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ThreadApprovalModeView"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
+            }
+          }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
+        },
+        "ThreadApprovalModeView": {
+          "type": "object",
+          "description": "The caller's Approval Mode for one Thread.",
+          "required": ["mode", "default_mode", "modes"],
+          "properties": {
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The mode the caller set for this Thread; none when their default applies."
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
+    "name": "thread-approval-mode-update",
+    "source": "server/src/apps/identity/views/approval_preferences.rs",
+    "json": true,
+    "uuid_parameters": ["workspace", "thread"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ThreadApprovalModeView"
+      },
+      "definitions": {
+        "ApprovalMode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Designated approver is asked.",
+              "enum": ["manual"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider decides.",
+              "enum": ["auto"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is refused, so the Run never waits.",
+              "enum": ["dont_ask"]
+            },
+            {
+              "type": "string",
+              "description": "The approval is given, within the ceiling.",
+              "enum": ["bypass"]
+            }
+          ],
+          "description": "Who decides, for one person's Runs, an approval they would otherwise wait for."
+        },
+        "ApprovalModeChoice": {
+          "type": "object",
+          "description": "One Approval Mode and whether the Tenant's policy and this Node let this\nperson use it.",
+          "required": ["mode", "allowed", "reason"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalModeReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the mode is not available, or not yet in effect; none when it is\nsimply available."
+            }
+          }
+        },
+        "ApprovalModeReason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The Tenant's policy does not let this person use the mode.",
+              "enum": ["policy"]
+            },
+            {
+              "type": "string",
+              "description": "The mode is the person's to choose, yet takes effect only once they\naccept its risk (Bypass).",
+              "enum": ["not_accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider has no Catalog Approval on this Node (Auto).",
+              "enum": ["decider_unapproved"]
+            },
+            {
+              "type": "string",
+              "description": "The Tenant's approval Decider is not registered as one (Auto).",
+              "enum": ["no_decider"]
+            }
+          ],
+          "description": "What stands in the way of an Approval Mode."
+        },
+        "ThreadApprovalModeView": {
+          "type": "object",
+          "description": "The caller's Approval Mode for one Thread.",
+          "required": ["mode", "default_mode", "modes"],
+          "properties": {
+            "default_mode": {
+              "$ref": "#/components/schemas/ApprovalMode"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The mode the caller set for this Thread; none when their default applies."
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalModeChoice"
+              }
+            }
+          }
         }
       }
     }

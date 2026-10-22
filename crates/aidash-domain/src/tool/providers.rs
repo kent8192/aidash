@@ -154,6 +154,7 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 			// A viewed page reaches the model as an image (ADR 0053).
 			yields_model_media: operation == ResearchOperation::View,
 			tool_call_approval: false,
+			read_only_operation: false,
 			// Web disclosure approval takes the worker's outer authority lease.
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,

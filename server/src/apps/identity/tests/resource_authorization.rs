@@ -943,13 +943,15 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	use reinhardt::db::orm::{Json, Model};
 
 	let mut journal = aidash_server::context::Context::default();
-	journal.push(
-		aidash_server::context::ContextEvent::ModelMediaObservation {
-			text: "private journal content".into(),
-			through_seq: None,
-			truncated: false,
-		},
-	);
+	for _ in 0..512 {
+		journal.push(
+			aidash_server::context::ContextEvent::ModelMediaObservation {
+				text: "private journal content".repeat(16),
+				through_seq: None,
+				truncated: false,
+			},
+		);
+	}
 	let runs = f
 		.store
 		.pool
@@ -1004,6 +1006,33 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		})
 		.await
 		.unwrap();
+	for index in 0..100 {
+		f.store
+			.emit(
+				&TEST_FIXTURE,
+				Some(workspace),
+				"run.updated",
+				json!({"run_id":runs[index % 2].id}),
+			)
+			.await
+			.unwrap();
+	}
+	for _ in 0..3 {
+		let started = std::time::Instant::now();
+		let (status, state) = tokio::time::timeout(
+			std::time::Duration::from_secs(10),
+			request(&app, &token, "GET", "/api/state", Value::Null),
+		)
+		.await
+		.expect("Tenant state polling must remain responsive with retained Run journals");
+		eprintln!(
+			"Tenant state with cyclic Run journals: {:?}",
+			started.elapsed()
+		);
+		assert_eq!(status, 200, "{state}");
+		assert_eq!(state["runs"].as_array().unwrap().len(), 2);
+		assert_eq!(state["events"].as_array().unwrap().len(), 100);
+	}
 	for run in &runs {
 		assert_eq!(
 			tokio::time::timeout(
@@ -1034,6 +1063,16 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		.await
 		.0,
 		200
+	);
+	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["runs"], json!([]));
+	assert!(
+		!state["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|event| event["kind"] == "run.updated")
 	);
 	for run in &runs {
 		assert_eq!(

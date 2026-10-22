@@ -48,9 +48,12 @@ pub const NODE_REGISTRATION_UPDATE: &str = "node_registration.update";
 pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
 /// Writing the Tenant's Workbench Test Profiles.
 pub const TEST_PROFILE_UPDATE: &str = "workbench.test_profile.update";
+/// Reading a member's default Approval Mode and Approval Rules (ADR 0076). The
+/// owner alone writes them, so there is no matching update action.
+pub const APPROVAL_READ: &str = "approval.read";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 23] = [
+pub const ACTIONS: [&str; 24] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -74,6 +77,7 @@ pub const ACTIONS: [&str; 23] = [
 	NODE_REGISTRATION_UPDATE,
 	TEST_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
+	APPROVAL_READ,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
@@ -121,6 +125,10 @@ pub fn resource_kind(action: &str) -> &'static str {
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
 		TEST_PROFILE_UPDATE => "test_profile",
+		APPROVAL_READ => "subject",
+		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {
+			crate::approval_rules::MODE_RESOURCE
+		}
 		crate::identity::tenancy::TENANT_UPDATE
 		| crate::identity::tenancy::TENANT_DELETE
 		| crate::identity::tenancy::BILLING_ATTACH

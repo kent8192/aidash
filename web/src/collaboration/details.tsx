@@ -54,6 +54,11 @@ import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
+import {
+  answeredAtDeadline,
+  continuesAt,
+  deadlineTime,
+} from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
@@ -115,6 +120,7 @@ export function OperationsDialog({
   const request = data.human_requests.find(
     (value) => value.id === d.request?.id,
   );
+  const continues = request ? continuesAt(request) : null;
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const unavailable =
@@ -237,6 +243,14 @@ export function OperationsDialog({
                     <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
                       {request.prompt}
                     </p>
+                    {continues && (
+                      <Hint>
+                        {copy.continuesAt.replace(
+                          "{time}",
+                          deadlineTime(continues, locale),
+                        )}
+                      </Hint>
+                    )}
                   </div>
                   <Field label={t("answer")}>
                     <Textarea name="answer" rows={5} required />
@@ -245,6 +259,14 @@ export function OperationsDialog({
                     <Button type="submit">{copy.send}</Button>
                   </div>
                 </form>
+              ) : request && answeredAtDeadline(request) ? (
+                <div className="grid min-w-0 justify-items-start gap-2">
+                  <Badge value={request.kind} />
+                  <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+                    {request.prompt}
+                  </p>
+                  <Hint role="status">{copy.noAnswerBeforeDeadline}</Hint>
+                </div>
               ) : (
                 <Hint role="status">{copy.unavailable}</Hint>
               ))}

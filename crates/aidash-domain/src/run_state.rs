@@ -226,6 +226,11 @@ pub enum WaitingState {
 	},
 	Human {
 		request_id: Uuid,
+		/// When the Run continues without an answer: a model's question of a
+		/// person who set an Answer Deadline. Every other request waits for
+		/// its answer.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		answer_by: Option<DateTime<Utc>>,
 		resume: ResumeState,
 	},
 	/// Waiting for an approval of the call at `resume`'s cursor, which then runs.
@@ -251,6 +256,7 @@ impl WaitingState {
 			| Self::Children { wake_at, .. }
 			| Self::Timer { wake_at, .. }
 			| Self::FailureDelivery { wake_at, .. } => Some(*wake_at),
+			Self::Human { answer_by, .. } => *answer_by,
 			Self::Approval {
 				approval: ApprovalRef::Home { expires_at, .. },
 				..

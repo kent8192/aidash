@@ -478,6 +478,58 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "identity_approval_preferences".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "identity_approval_preferences_pkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "subject".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "identity_approval_rules".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "identity_approval_rules_pkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "identity_thread_approval_modes".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "identity_thread_approval_modes_pkey".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"thread_id".to_owned(),
+					"subject".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "identity_tenant_approval_settings".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "identity_tenant_approval_settings_pkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+			},
+		})
+		// One owner's rules are read by their prefix on every approval; the
+		// whole key also refuses a rule stored twice.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "identity_approval_rules".to_owned(),
+			name: "identity_approval_rules_owner".to_owned(),
+			columns: vec![
+				"tenant".to_owned(),
+				"subject".to_owned(),
+				"kind".to_owned(),
+				"effect".to_owned(),
+				"target".to_owned(),
+			],
+			unique: true,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
 		.add_operation(Operation::CreateNamedIndex {
 			table: "tenants".into(),
 			name: "tenants_creator".into(),

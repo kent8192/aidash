@@ -152,7 +152,7 @@ test("generation dashboard manages policy, approval, completion and retained his
             {
               provider_contract: "typesafe.jev/1",
               model: "typesafe/jev-1.14",
-              keep_threshold: "3fe0000000000000",
+              threshold: "3fe0000000000000",
             },
           ],
           builder: "aidash.compaction/2",

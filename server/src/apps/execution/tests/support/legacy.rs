@@ -495,6 +495,7 @@ async fn bootstrap_with_resources(
 		endpoint,
 		semantic,
 		files,
+		false,
 		policy(f.config.deployment.as_str()),
 	)
 	.await
@@ -509,7 +510,20 @@ pub async fn bootstrap_requiring_tool_call_approval(
 ) -> (Value, String, Uuid) {
 	let mut policy = policy(f.config.deployment.as_str());
 	require_tool_call_approval(&mut policy);
-	bootstrap_with_policy(f, app, endpoint, false, false, policy).await
+	bootstrap_with_policy(f, app, endpoint, false, false, false, policy).await
+}
+/// Like [`bootstrap_requiring_tool_call_approval`], and the Agent also binds
+/// `http-read` as `plugin_1`: its version declares the one operation read-only,
+/// and the endpoint's `/read` route serves it. `plugin_0` still asks.
+#[allow(dead_code)]
+pub async fn bootstrap_with_read_only_tool(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	let mut policy = policy(f.config.deployment.as_str());
+	require_tool_call_approval(&mut policy);
+	bootstrap_with_policy(f, app, endpoint, false, false, true, policy).await
 }
 /// Narrow `approved-work` so that no subject may call a Tenant's tool without a
 /// Tool call approval: agents keep every action, and users keep what members
@@ -590,6 +604,7 @@ async fn bootstrap_with_policy(
 	endpoint: &str,
 	semantic: bool,
 	files: bool,
+	read_only_tool: bool,
 	policy: Value,
 ) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
@@ -614,6 +629,9 @@ async fn bootstrap_with_policy(
 	let mut agent_bindings = vec![
 		json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
+	if read_only_tool {
+		agent_bindings.push(json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
+	}
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
@@ -646,7 +664,7 @@ async fn bootstrap_with_policy(
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
 	f.store.keyless.permit_origin_of(endpoint).unwrap();
-	for (kind, id, config) in [
+	let mut definitions = vec![
 		(
 			"model",
 			"model",
@@ -662,7 +680,18 @@ async fn bootstrap_with_policy(
 			"research",
 			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
-	] {
+	];
+	if read_only_tool {
+		definitions.insert(
+			2,
+			(
+				"tool",
+				"http-read",
+				json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
+			),
+		);
+	}
+	for (kind, id, config) in definitions {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		f.registry
 			.register(&tenant, serde_json::from_value(entry).unwrap())

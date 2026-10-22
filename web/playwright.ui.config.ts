@@ -37,6 +37,7 @@ export default defineConfig({
     "citations.spec.ts",
     "community-sign-in.spec.ts",
     "nodes.spec.ts",
+    "approval-modes.spec.ts",
   ],
   workers: 1,
   retries: 0,

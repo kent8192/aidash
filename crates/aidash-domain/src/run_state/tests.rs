@@ -399,6 +399,34 @@ fn only_an_approval_asked_of_another_node_has_a_deadline_and_a_human_request() {
 }
 
 #[rstest::rstest]
+fn a_question_with_an_answer_deadline_wakes_the_run_then_and_any_other_waits_for_its_answer() {
+	let id = Uuid::from_u128(7);
+	let date: DateTime<Utc> = "2026-10-19T00:00:00Z".parse().unwrap();
+	let human = |answer_by| WaitingState::Human {
+		request_id: id,
+		answer_by,
+		resume: ResumeState::Ready(ReadyState {}),
+	};
+
+	assert_eq!(human(Some(date)).deadline(), Some(date));
+	assert_eq!(human(None).deadline(), None);
+	assert_eq!(human(Some(date)).request_id(), Some(id));
+}
+
+#[rstest::rstest]
+fn the_answer_deadline_is_stored_only_when_there_is_one() {
+	let id = "0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf";
+	let without = json!({"reason":"human","request_id":id,"resume":{"phase":"READY","data":{}}});
+	let with = json!({"reason":"human","request_id":id,"answer_by":"2026-10-19T00:00:00Z","resume":{"phase":"READY","data":{}}});
+
+	for data in [without, with] {
+		let (state, recovery) = decode(RunPhase::Waiting, envelope(data.clone())).unwrap();
+		let stored = encode(&state, &recovery).unwrap();
+		assert_eq!(stored["data"], data);
+	}
+}
+
+#[rstest::rstest]
 fn the_retired_approval_waits_cannot_become_executable() {
 	let id = "0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf";
 	for data in [

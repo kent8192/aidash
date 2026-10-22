@@ -102,6 +102,7 @@ test("undocumented views open their existing contextual owner", () => {
     "deployment",
     "providerCredentials",
     "marketplace",
+    "approvals",
   ]);
 });
 test("legacy conversation and workspaces routes lead to collaboration", () => {
