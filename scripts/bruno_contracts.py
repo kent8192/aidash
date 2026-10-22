@@ -46,7 +46,7 @@ COOKIE = {
 BUILTIN = {"id": "aidash.workspace_read", "version": "1.0.0"}
 # A well-formed Node name no Tenant holds.
 NODE = "brave-otter-k3m9q2xa"
-APPROVAL = {"node": NODE, "entry": BUILTIN, "enabled": True, "expected_revision": 0}
+APPROVAL = {"entry": BUILTIN, "enabled": True, "expected_revision": 0}
 AGENT = {"id": "research", "version": "1.0.0"}
 # Tenant routes: a Deployment Administrator reaches no Tenant's Registry,
 # catalog or work (ADR 0029, ADR 0043). Each body passes its JSON extractor and
@@ -73,11 +73,11 @@ TENANT_ROUTES = {
         "refusal": "Subject without registry.create cannot import an Agent Plugin",
     },
     "POST /api/authorization/{tenant}/catalog": {
-        "body": APPROVAL,
+        "body": {"node": "{{tenant_node}}", **APPROVAL},
         "refusal": "Subject without catalog.approve cannot approve a version",
     },
     "POST /api/authorization/{tenant}/catalog/approvals": {
-        "body": {"node": NODE, "approvals": [{**APPROVAL}]},
+        "body": {"node": "{{tenant_node}}", "approvals": [{**APPROVAL}]},
         "refusal": "Subject without catalog.approve cannot approve a closure",
     },
     "POST /api/marketplace/installations/{id}/activation": {
@@ -240,6 +240,8 @@ def render():
                 value = (
                     "{{tenant}}"
                     if parameter == "tenant"
+                    else NODE
+                    if parameter == "node"
                     else MISSING
                     if parameter in route["uuid_parameters"]
                     else "__bruno_missing__"
@@ -249,6 +251,8 @@ def render():
             value = (
                 "{{tenant}}"
                 if parameter == "tenant"
+                else NODE
+                if parameter == "node"
                 else MISSING
                 if parameter in route["uuid_parameters"]
                 else "__bruno_missing__"
@@ -601,7 +605,7 @@ def render():
                 if path == "/health":
                     checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
-                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.3");'
+                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.4");'
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
@@ -1132,7 +1136,7 @@ def render():
             label = "Subject without file transfer permission cannot list recipients"
         if route["name"] in {"marketplace-administration", "workbench-test-profiles"}:
             uri = path + "?tenant={{tenant}}"
-        if route["name"] == "authorization-catalog":
+        if route["name"] in {"authorization-catalog", "registry-versions"}:
             uri = path + "?node=" + NODE
         if route["name"] in {
             "generation-history",

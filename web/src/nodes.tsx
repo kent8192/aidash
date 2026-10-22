@@ -8,7 +8,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { discover, tenantNodes } from "./generated/aidash";
 import { chooseNode, nodeStorageKey, type TenantNode } from "./node-selection";
-import { ApiError, apiFetch } from "./transport";
+import { ApiError } from "./transport";
 
 /** The Nodes of the signed-in Tenant and the one this browser works in. */
 export type NodeSelection = {

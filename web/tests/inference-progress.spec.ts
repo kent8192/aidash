@@ -73,7 +73,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     page,
   }) => {
     const copy = COPY[locale];
-    const { errors } = await setup(page, { locale });
+    const { errors } = await setup(page, { subject: true, locale });
     const cursors: (string | null)[] = [];
     await page.route("**/api/runs/*/inference/stream", (route) => {
       cursors.push(route.request().headers()["last-event-id"] ?? null);
@@ -142,7 +142,10 @@ for (const locale of ["en-US", "ja-JP"] as const) {
 test("a pending attempt keeps streaming until its outcome after the Run ends", async ({
   page,
 }) => {
-  const { errors, finishRuns } = await setup(page, { locale: "en-US" });
+  const { errors, finishRuns } = await setup(page, {
+    subject: true,
+    locale: "en-US",
+  });
   const cursors: (string | null)[] = [];
   let outcome = false;
   await page.route("**/api/runs/*/inference/stream", (route) => {

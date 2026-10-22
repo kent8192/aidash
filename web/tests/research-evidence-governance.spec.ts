@@ -71,7 +71,7 @@ async function openRun(page: Page) {
 test("a permitted reader revokes a Run's evidence with a reason and then sees the record", async ({
   page,
 }) => {
-  const { errors } = await setup(page, { locale: "en-US" });
+  const { errors } = await setup(page, { subject: true, locale: "en-US" });
   let revokedAt: string | null = null;
   const posted: unknown[] = [];
   await page.route("**/api/runs/*/research**", (route: Route) => {
@@ -132,7 +132,7 @@ test("a permitted reader revokes a Run's evidence with a reason and then sees th
 test("a reader without the permission is not offered revocation and sees only that it happened", async ({
   page,
 }) => {
-  await setup(page, { locale: "en-US" });
+  await setup(page, { subject: true, locale: "en-US" });
   let revokedAt: string | null = null;
   const reads: string[] = [];
   await page.route("**/api/runs/*/research**", (route: Route) => {
@@ -162,7 +162,7 @@ test("a reader without the permission is not offered revocation and sees only th
 test("a reader who loses the permission no longer sees the record read before", async ({
   page,
 }) => {
-  await setup(page, { locale: "en-US" });
+  await setup(page, { subject: true, locale: "en-US" });
   let can = true;
   await page.route("**/api/runs/*/research**", (route: Route) => {
     const path = new URL(route.request().url()).pathname;

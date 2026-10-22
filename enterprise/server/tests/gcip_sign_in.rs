@@ -3133,9 +3133,10 @@ async fn removing_the_gcip_sign_in_refuses_its_identities_durable_credentials(
 		.unwrap()
 		.to_owned();
 	// A Tenant boundary, which locks the credential's Mapping and its holder.
+	let node = common::default_node(&f.store, "acme").await.node;
 	let session = |app: &common::TestApplication| {
 		browser()
-			.get(app.url("/api/registry/versions"))
+			.get(app.url(format!("/api/registry/versions?node={node}")))
 			.bearer_auth(&token)
 			.send()
 	};

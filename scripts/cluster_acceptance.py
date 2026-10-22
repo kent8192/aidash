@@ -106,7 +106,7 @@ def main():
             wait_for(lambda base=base: api_request(base, "/health"), label="cluster server")
         base_a, base_b = bases
         # Each Deployment has one Tenant, whose default Node accepts the other's.
-        tenants = {base: tenant_subject(base, "ops", "operator")[0] for base in bases}
+        tenants = {base: tenant_subject(base, "ops", "alice")[0] for base in bases}
         addresses = {base: default_node(base, tenants[base])[1] for base in bases}
         for base, other_base, other in [(base_a, base_b, "b"), (base_b, base_a, "a")]:
             register_node(base, tenants[base], addresses[other_base], f"http://ops-{other}-backend:8080", reachable=other_base)

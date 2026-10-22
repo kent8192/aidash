@@ -723,6 +723,8 @@ def main():
         tenant_b, subject_b = tenant_subject(base_b, "golden-plugins", "bob")
         tokens.update({base_a: subject_a["token"], base_b: subject_b["token"]})
         tenants = {base_a: tenant_a, base_b: tenant_b}
+        _, address_a = default_node(base_a, tenant_a)
+        fixture.node_a = fixture.node_b = address_a
 
         def register(base, entries):
             for entry in entries:
@@ -742,7 +744,7 @@ def main():
         ])
         register(base_b, [model])
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"}, token=tokens[base_a])
-        assert {a["node_id"] for a in discovered["agents"]} == {node_a}
+        assert {a["node_id"] for a in discovered["agents"]} == {address_a}
         threading.Thread(target=sse, daemon=True).start()
         worker_a = launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")

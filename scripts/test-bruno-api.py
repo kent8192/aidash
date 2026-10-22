@@ -375,6 +375,19 @@ def create_tenant(base, deployment_administrator, label):
         return json.load(response)["name"]
 
 
+def default_node(base, deployment_administrator, tenant):
+    """Use the Tenant's assigned Node for writes that check its existence."""
+    request = urllib.request.Request(
+        base + f"/api/tenants/{tenant}/nodes",
+        headers={"Authorization": "Bearer " + deployment_administrator},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        nodes = [node for node in json.load(response) if node["default"]]
+    if len(nodes) != 1:
+        raise RuntimeError("the fixture Tenant must have exactly one default Node")
+    return nodes[0]["name"]
+
+
 def wait_for_health(child, base, log, environment):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -733,10 +746,12 @@ def main():
                 stream_factories.append(start_stream)
                 stream_bases.append(stream_base)
             control = resources.enter_context(StreamController(stream_factories))
+            tenant = create_tenant(base, deployment_administrator, "bruno-" + run_id)
             variables = {
                 "base_url": base,
                 "node_id": node_id,
-                "tenant": create_tenant(base, deployment_administrator, "bruno-" + run_id),
+                "tenant": tenant,
+                "tenant_node": default_node(base, deployment_administrator, tenant),
                 "issuer": provider.issuer,
                 "deployment_administrator_token": deployment_administrator,
                 "control_url": control.origin,
