@@ -41,7 +41,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 ) {
 	if std::env::var_os(RUNNER_TOKEN_ENV).is_none() {
 		// Give only this fixture process a Runner credential without mutating the
-		// environment shared by other tests or requiring operator configuration.
+		// environment shared by other tests or requiring manual credential setup.
 		let status = tokio::process::Command::new(std::env::current_exe().unwrap())
 			.args([
 				"--exact",
