@@ -8,6 +8,12 @@ pub struct Profile {
 	pub name: String,
 	pub origin: String,
 }
+impl Profile {
+	/// Refresh credentials may leave the process only through authenticated TLS.
+	pub fn protects_refresh_credentials(&self) -> bool {
+		Url::parse(&self.origin).is_ok_and(|url| url.scheme() == "https")
+	}
+}
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
 	pub profiles: Vec<Profile>,
@@ -115,6 +121,19 @@ mod tests {
 	#[case("https://[::1]:8080/", "https://[::1]:8080")]
 	fn accepts_supported_origins(#[case] value: &str, #[case] expected: &str) {
 		assert_eq!(origin(value).unwrap(), expected);
+	}
+	#[rstest::rstest]
+	#[case("http://localhost:8080", false)]
+	#[case("http://127.0.0.1:8080", false)]
+	#[case("https://aidash.example", true)]
+	#[case("not a URL", false)]
+	fn only_https_protects_refresh_credentials(#[case] value: &str, #[case] expected: bool) {
+		let profile = Profile {
+			id: "test".into(),
+			name: "test".into(),
+			origin: value.into(),
+		};
+		assert_eq!(profile.protects_refresh_credentials(), expected);
 	}
 	#[test]
 	fn unsupported_http_ipv6_has_actionable_guidance() {

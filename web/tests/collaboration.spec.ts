@@ -229,6 +229,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     const ja = locale === "ja-JP";
     const { errors } = await setup(page, { subject: true, locale });
     let control = "PAUSED";
+    let semanticReason = "invalidated";
     const actions: unknown[] = [];
     await page.route("**/api/runs/run-0**", async (route) => {
       if (new URL(route.request().url()).pathname.endsWith("/management")) {
@@ -241,7 +242,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             id: "run-0",
             phase: "THINKING",
             control,
-            semantic_reason: "invalidated",
+            semantic_reason: semanticReason,
+            semantic_recovery: {
+              cause: semanticReason,
+              actions: ["create_follow_up_task"],
+            },
             memory_cleanup: {
               state: "failed",
               invalidated: true,
@@ -287,6 +292,13 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         .getByRole("dialog")
         .getByRole("button", { name: ja ? "再開" : "Resume", exact: true }),
     ).toHaveCount(0);
+    semanticReason = "durable_memory_budget";
+    await expect(panel).toContainText(ja ? "累積予算" : "cumulative budget");
+    await expect(panel).not.toContainText(
+      ja
+        ? "元の Home Node で権限と参照元を確認して再開"
+        : "Resume from the original Home node",
+    );
     await panel
       .getByRole("button", {
         name: ja ? "実行を中止" : "Cancel execution",
@@ -694,33 +706,43 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(panel.getByRole("status")).toContainText(
       ja ? "現在の権限" : "current authority",
     );
-    // A context budget pause authorizes only a follow-up: retrying the same
-    // request cannot change the outcome, so resume is not offered.
-    semantic.state = "paused";
-    semantic.reason = "context_budget";
-    semantic.recovery = {
-      cause: "context_budget",
-      actions: ["create_follow_up_task"],
-    };
+    // A spent budget offers only a follow-up, with its specific explanation.
     execution.control = "PAUSED";
-    await panel
-      .getByRole("button", {
-        name: ja ? "状態を再読み込み" : "Refresh status",
-        exact: true,
-      })
-      .click();
-    await expect(
-      panel.getByRole("button", {
-        name: ja ? "Follow-up Task を作成" : "Create follow-up task",
-        exact: true,
-      }),
-    ).toBeVisible();
-    await expect(
-      panel.getByRole("button", {
-        name: ja ? "権限を再確認して再開" : "Recheck authority and resume",
-        exact: true,
-      }),
-    ).toHaveCount(0);
+    for (const cause of ["context_budget", "durable_memory_budget"]) {
+      semantic.state = "paused";
+      semantic.reason = cause;
+      semantic.recovery = {
+        cause,
+        actions: ["create_follow_up_task"],
+      };
+      await panel
+        .getByRole("button", {
+          name: ja ? "状態を再読み込み" : "Refresh status",
+          exact: true,
+        })
+        .click();
+      await expect(
+        panel.getByRole("button", {
+          name: ja ? "Follow-up Task を作成" : "Create follow-up task",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(
+        panel.getByRole("button", {
+          name: ja ? "権限を再確認して再開" : "Recheck authority and resume",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      await expect(panel.getByRole("status")).toContainText(
+        cause === "durable_memory_budget"
+          ? ja
+            ? "累積予算"
+            : "cumulative budget"
+          : ja
+            ? "コンテキスト上限"
+            : "context budget",
+      );
+    }
     // An unscheduled outage authorizes the unchanged retry and a follow-up.
     semantic.reason = "unavailable";
     semantic.recovery = {
@@ -2202,39 +2224,63 @@ for (const width of [1440, 390]) {
   });
 }
 
-test("invalid execution remains inspectable and cancellable with resume disabled", async ({
-  page,
-}) => {
-  const { submissions, errors } = await setup(page, { invalidRun: true });
-  await page.goto("/collaboration?channel=workspace-one");
-  await page
-    .getByRole("button", { name: "Execution history", exact: true })
-    .click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button")
-    .filter({ hasText: "Researcher" })
-    .click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("alert")).toContainText(
-    "invalid execution context",
-  );
-  await expect(
-    dialog.getByRole("button", { name: "Resume", exact: true }),
-  ).toBeDisabled();
-  page.once("dialog", (dialog) => dialog.accept());
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect
-    .poll(
-      () =>
-        submissions.filter(
-          (item) =>
-            item.path.endsWith("/control") && item.body.action === "cancel",
-        ).length,
-    )
-    .toBe(1);
-  expect(errors).toEqual([]);
-});
+for (const pause of [
+  "invalid_context",
+  "invalidated",
+  "context_budget",
+  "durable_memory_budget",
+]) {
+  test(`paused ${pause} remains inspectable and cancellable with resume disabled`, async ({
+    page,
+  }) => {
+    const { submissions, errors } = await setup(
+      page,
+      pause === "invalid_context"
+        ? { invalidRun: true }
+        : { semanticPause: pause },
+    );
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", { name: "Show channel status", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "Resume runs in this channel",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("button", { name: "Execution history", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button")
+      .filter({ hasText: "Researcher" })
+      .click();
+    const dialog = page.getByRole("dialog");
+    if (pause === "invalid_context") {
+      await expect(dialog.getByRole("alert")).toContainText(
+        "invalid execution context",
+      );
+    }
+    await expect(
+      dialog.getByRole("button", { name: "Resume", exact: true }),
+    ).toBeDisabled();
+    page.once("dialog", (dialog) => dialog.accept());
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect
+      .poll(
+        () =>
+          submissions.filter(
+            (item) =>
+              item.path.endsWith("/control") && item.body.action === "cancel",
+          ).length,
+      )
+      .toBe(1);
+    expect(errors).toEqual([]);
+  });
+}
 
 test("paused failure delivery can resume while retaining its invalid Context diagnostic", async ({
   page,

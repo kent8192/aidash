@@ -14,6 +14,16 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
+#[allow(dead_code)] // Browser-authentication suites seed current-format sessions directly.
+pub fn browser_session_digest(value: impl AsRef<[u8]>) -> Vec<u8> {
+	use sha2::Digest as _;
+
+	let mut digest = sha2::Sha256::new();
+	digest.update(b"aidash-browser-session-v2\0");
+	digest.update(value.as_ref());
+	digest.finalize().to_vec()
+}
+
 #[path = "environment.rs"]
 mod environment;
 #[allow(unused_imports)] // Only suites whose tests have hung use the whole-test backstop.

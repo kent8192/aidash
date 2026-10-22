@@ -35,7 +35,8 @@ pub enum Claim {
 }
 pub fn reason(value: Option<&str>) -> Failure {
 	value
-		.and_then(|s| serde_json::from_value(json!(s)).ok())
+		// A future permanent cause must not become an outage or an unchanged retry.
+		.map(|s| serde_json::from_value(json!(s)).unwrap_or(Failure::ContextBudget))
 		.unwrap_or(Failure::Unavailable)
 }
 /// Five automatic retries follow the initial attempt. This counter is stored

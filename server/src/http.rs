@@ -614,6 +614,14 @@ fn private_response(mut response: Response, id: &str, private: bool) -> Response
 		header::X_CONTENT_TYPE_OPTIONS,
 		HeaderValue::from_static("nosniff"),
 	);
+	response.headers.append(
+		HeaderName::from_static("content-security-policy"),
+		HeaderValue::from_static("frame-ancestors 'none'"),
+	);
+	response.headers.insert(
+		HeaderName::from_static("x-frame-options"),
+		HeaderValue::from_static("DENY"),
+	);
 	if private {
 		response
 			.headers

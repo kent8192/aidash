@@ -37,7 +37,7 @@ PEER = {
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
-    "Origin": "{{base_url}}",
+    "Origin": "{{browser_origin}}",
     "X-Aidash-CSRF": "{{csrf}}",
 }
 # A built-in every Tenant's Registry holds from its creation (ADR 0033).
@@ -422,7 +422,7 @@ def render():
         "POST /auth/activity",
         "Browser activity rejects missing CSRF",
         403,
-        headers={"Cookie": "{{session_cookie}}", "Origin": "{{base_url}}"},
+        headers={"Cookie": "{{session_cookie}}", "Origin": "{{browser_origin}}"},
         seq=41,
     )
     add(
@@ -452,7 +452,7 @@ def render():
         "POST /auth/logout-all",
         "All-session logout requires CSRF",
         403,
-        headers={"Cookie": "{{session_cookie}}", "Origin": "{{base_url}}"},
+        headers={"Cookie": "{{session_cookie}}", "Origin": "{{browser_origin}}"},
         seq=60,
     )
     add(
@@ -477,7 +477,7 @@ def render():
     desktop_start = {"redirect_uri":"http://127.0.0.1:43217/callback","state":"ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss","code_challenge":"2RMjpSmPO5-BTbKe-qJx8k-9zO390GJJG4q8jge3-2k"}
     add("POST /auth/desktop/start", "Start a bound S256 desktop handoff", 200,
         body=json.dumps(desktop_start), seq=45,
-        checks='expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("base_url")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url);const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request);')
+        checks='expect(res.getBody()).to.have.all.keys("authorization_url");expect(res.getBody().authorization_url).to.include(bru.getEnvVar("browser_origin")+"/auth/desktop/authorize?request=");bru.setVar("desktop_authorize_url",res.getBody().authorization_url.replace(bru.getEnvVar("browser_origin"),bru.getEnvVar("base_url")));const request=res.getBody().authorization_url.split("?request=")[1];expect(request).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);bru.setVar("desktop_request",request);')
     add("GET /auth/desktop/authorize", "Browser consent binds the handoff", 200,
         path="{{desktop_authorize_url}}", headers={"Cookie":"{{session_cookie}}"}, seq=46,
         checks='expect(res.getHeader("content-type")).to.include("text/html");expect(String(res.getBody())).to.include(bru.getVar("desktop_request"));expect(res.getHeader("content-security-policy")).to.include("http://127.0.0.1:43217");')
@@ -627,9 +627,9 @@ def render():
             # Sign-in Domain discovery exists only for GCIP deployments. Bruno
             # URL-encodes these typed form fields itself.
             for label, body, headers in [
-                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{base_url}}"}),
+                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{browser_origin}}"}),
                 ("OIDC deployment refuses foreign-origin discovery", "email=alice@acme.example", {"Origin": "https://untrusted.example"}),
-                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{base_url}}"}),
+                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{browser_origin}}"}),
             ]:
                 add(
                     endpoint,
@@ -673,7 +673,7 @@ def render():
                 "Tampered login cookie cannot bind the callback",
                 401,
                 path=path + "?state=invalid&code=invalid",
-                headers={"Cookie": "aidash-login=tampered"},
+                headers={"Cookie": "__Host-aidash-login=tampered"},
             )
             continue
         if path == "/auth/provider-authorizations/{provider}/callback":
@@ -734,14 +734,14 @@ def render():
             add(endpoint, "No opaque session cannot open an Invitation", 401,
                 body=link, immutable=True)
             add(endpoint, "Forged opaque session cannot open an Invitation", 401,
-                headers={"Cookie": "aidash-session=forged"}, body=link, immutable=True)
+                headers={"Cookie": "__Host-aidash-session=forged"}, body=link, immutable=True)
             add(endpoint, "Malformed JSON cannot reach the use case", 400,
                 body="{", immutable=True)
             continue
         if path.startswith("/auth/"):
             for label, headers in [
                 ("No opaque session", {}),
-                ("Forged opaque session", {"Cookie": "aidash-session=forged"}),
+                ("Forged opaque session", {"Cookie": "__Host-aidash-session=forged"}),
                 ("Revoked browser session", {"Cookie": "{{session_cookie}}"}),
             ]:
                 add(endpoint, label, 401, headers=headers)
