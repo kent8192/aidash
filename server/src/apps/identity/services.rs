@@ -18,7 +18,10 @@ pub(crate) mod dashboard_rules;
 
 pub(crate) mod desktop_cors;
 
+pub mod approval_preferences;
 pub mod credential_store_recovery;
+
+pub mod demo_data;
 pub mod invitations;
 pub mod plan_connections;
 pub mod provider_authorizations;

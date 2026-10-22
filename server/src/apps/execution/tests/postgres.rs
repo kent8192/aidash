@@ -736,6 +736,7 @@ fn federation(
 				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 					aidash_domain::offering::Offering::SelfHosted,
 				),
+				demo_data: false,
 				oidc: None,
 				sign_in: None,
 			},
@@ -2218,6 +2219,7 @@ fn authenticated_runtime(
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
+			demo_data: false,
 			oidc: None,
 			sign_in: None,
 		};

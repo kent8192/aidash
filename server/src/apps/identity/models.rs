@@ -28,6 +28,10 @@ mod authorization_task_origins;
 pub use authorization_task_origins::AuthorizationTaskOrigin;
 mod authorization_workspaces;
 pub use authorization_workspaces::AuthorizationWorkspace;
+mod approval_preferences;
+pub use approval_preferences::{
+	ApprovalPreference, ApprovalRuleRecord, TenantApprovalSettings, ThreadApprovalMode,
+};
 mod dashboard_administration_history;
 pub use dashboard_administration_history::DashboardAdministrationHistory;
 mod dashboard_execution_origins;
@@ -46,6 +50,10 @@ mod dashboard_registration_requests;
 pub use dashboard_registration_requests::DashboardRegistrationRequest;
 mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
+mod demo_data;
+pub use demo_data::{DemoDataLoad, DemoReservation, DemoTenant};
+mod demo_reservations;
+pub use demo_reservations::{Fulfilment, Skip};
 mod personal_tenants;
 pub use personal_tenants::PersonalTenantLink;
 mod tenant_invitations;

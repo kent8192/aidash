@@ -2416,6 +2416,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			api_token: "fixture-deployment-administrator".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			demo_data: false,
 			oidc: None,
 			sign_in: None,
 		},

@@ -57,6 +57,7 @@ async fn home_owned_human_waits_poll_without_querying_local_requests(
 	row.pending = aidash_domain::run_state::encode(
 		&RunState::Waiting(Box::new(WaitingState::Human {
 			request_id: Uuid::new_v4(),
+			answer_by: None,
 			resume: aidash_domain::ResumeState::Ready(ReadyState {}),
 		})),
 		&Default::default(),
@@ -130,6 +131,7 @@ async fn newer_input_makes_only_a_completion_review_due(
 	row.pending = aidash_domain::run_state::encode(
 		&RunState::Waiting(Box::new(WaitingState::Human {
 			request_id: request,
+			answer_by: None,
 			resume: aidash_domain::ResumeState::ToolCall(Box::new(aidash_domain::ToolCallState {
 				included_input_seq: 4,
 				..Default::default()
@@ -155,6 +157,47 @@ async fn newer_input_makes_only_a_completion_review_due(
 			.map(|seq| seq.parse::<i64>().unwrap()),
 		asked,
 		"{events:?}"
+	);
+}
+
+/// A model's question waits for its answer, and past the person's Answer
+/// Deadline the Run is due so its step can continue without one.
+#[rstest]
+#[case::deadline_ahead(Some(60), false, Some(60))]
+#[case::no_deadline(None, false, None)]
+#[case::answered_before_the_deadline(Some(60), true, Some(0))]
+#[tokio::test]
+async fn a_question_with_an_answer_deadline_is_due_then_and_an_answered_one_at_once(
+	now: DateTime<Utc>,
+	repository: Repository,
+	#[case] seconds: Option<i64>,
+	#[case] answered: bool,
+	#[case] due_in: Option<i64>,
+) {
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Human {
+			request_id: Uuid::from_u128(9),
+			answer_by: seconds.map(|seconds| now + chrono::Duration::seconds(seconds)),
+			resume: aidash_domain::ResumeState::Ready(ReadyState {}),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	repository.0.answered.store(answered, Ordering::Release);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+
+	let due = due(&mut scope, &row, now, repository.node_id())
+		.await
+		.unwrap();
+
+	assert_eq!(
+		due,
+		due_in.map(|seconds| now + chrono::Duration::seconds(seconds))
 	);
 }
 

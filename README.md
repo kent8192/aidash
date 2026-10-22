@@ -91,7 +91,7 @@ worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
 
-The dashboard requires a configured Google OAuth client. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Kubernetes startup uses the example Secrets in `deploy/local-k8s/` and does not load `.env`. Add the three `AIDASH_OIDC_*` connection values (`CLIENT_ID`, `CLIENT_SECRET`, and `PUBLIC_ORIGIN`) to the `aidash-local-app` Secret, including `AIDASH_OIDC_PUBLIC_ORIGIN=http://127.0.0.1:8080`, then re-run `cargo make k8s-up` to restart the Pods. Register `http://127.0.0.1:8080/auth/callback` in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
+The built-in loopback endpoint is plain HTTP, so it does not support browser sign-in; the dashboard shows setup guidance, while `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Browser sessions require a trusted HTTPS dashboard origin. To enable OIDC, publish the frontend Service and its API/auth proxy through HTTPS, add `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and that HTTPS `AIDASH_OIDC_PUBLIC_ORIGIN` to the `aidash-local-app` Secret, then re-run `cargo make k8s-up` to restart the Pods. Register the matching `https://<dashboard-origin>/auth/callback` URI in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
 ```sh
 kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
@@ -138,24 +138,45 @@ generates the Store's Master Key and fingerprint key once, in the
 `provider-credentials` volume. `docker compose --profile dev down -v` deletes
 them together with the database that holds the encrypted credentials.
 
+The Compose backend admits core work through a [capability execution profile](docs/operations/core-capabilities.md)
+with the default limits, so Goals for Agents with core capabilities run instead
+of failing with `CAPABILITIES_DISABLED`. Working files live in the
+`capabilities` volume. The stack has no isolated Runner, so Sandboxed tools
+such as shell and Python stay unavailable.
+
 The Compose backend also turns on Personal Tenants (`[tenancy] personal_tenants = true`,
 mounted as its `local.toml`), so your first Google sign-in gets a Personal
 Tenant without approval. Other Self-hosted deployments keep the Offering's default, `false`
 (see [Tenancy Rules](docs/authorization.md#tenancy-rules-tenant-creation-and-invitations)).
 
-To sign in without a Google client, add this Compose override to `.env`:
+To sign in without a Google client, first expose the frontend and its API/auth
+proxy at a trusted HTTPS origin and set that origin in `.env`, together with
+this Compose override:
 
 ```dotenv
 COMPOSE_FILE=compose.yaml:deploy/local-oidc/compose.yaml
+AIDASH_OIDC_PUBLIC_ORIGIN=https://dashboard.example.test
 ```
 
 Run `cargo make dev` to start a generic local OIDC issuer and its loopback relay
-with the development stack, and to point the backend at it. The issuer signs in
-whatever subject you type on its page, so it is for local development only. The
-relay makes `http://127.0.0.1:18099` reachable inside the backend's network
-namespace, so the browser and backend use the same issuer. Both use the
-official Node.js image independently of the frontend build, including on the
-first start or with a custom `COMPOSE_PROJECT_NAME`.
+with the development stack, and to point the backend at it. The HTTPS proxy must
+route the dashboard, `/api`, and `/auth` to the Compose frontend without changing
+the configured public origin. The issuer signs in whatever subject you type on
+its page, so it is for local development only. The relay makes
+`http://127.0.0.1:18099` reachable inside the backend's network namespace, so
+the browser and backend use the same issuer. Both use the official Node.js image
+independently of the frontend build, including on the first start or with a
+custom `COMPOSE_PROJECT_NAME`.
+
+Demo data (fictional Tenants, subjects, Registry entries and Catalog Approvals) loads by hand into the running backend. The command refuses unless `[demo_data] enabled` is set, which the Compose `local-settings` config does:
+
+```sh
+docker compose --profile dev exec backend aidash demo-data \
+  --from /app/deploy/demo-data/structure.json \
+  --people /app/deploy/demo-data/local-people.json
+```
+
+Each input digest loads once; a rerun with unchanged inputs prints `Demo data unchanged`. The local people file reserves `alex@example.test` for the `acme` administrator and `globex` member Demo Tenants, and `taylor@example.test` for a member of `acme`. Sign in with the local issuer above as subject `alex` to land in them. Demo data holds no Provider Credentials, so a Demo agent runs only after a Tenant Administrator connects OpenRouter with **Connect OpenRouter** and binds the resulting Provider Credential. Environments (develop, `pr-N` and test) load Demo data automatically; see [infra/gcp/README.md](infra/gcp/README.md).
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. Where the Tenancy Rules turn Personal Tenants on, Google sign-in creates personal Tenant authority; otherwise a new identity files a registration request. Shared Tenant membership requires approval and Deployment Administrator access requires a separate explicit grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Deployment Administrators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and Deployment Administrator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
@@ -209,10 +230,10 @@ Then register `https://<public origin host>/__/auth/handler` as each identity pr
 Self-hosted Aidash signs in through any OpenID Connect issuer, directly with Google by default, using Authorization Code with PKCE. The backend verifies the ID token's signature, issuer, audience, expiry and nonce before creating an HttpOnly session; it never exposes the issuer's tokens or the client secret to the browser. Identity is keyed by issuer and `sub`, never by email. The steps below use Google; for another issuer, set `AIDASH_OIDC_ISSUER` to its issuer URL and register the same redirect URI with it.
 
 1. In [Google Auth Platform](https://console.cloud.google.com/auth/overview), configure your application's branding and audience. Add permitted test users while the app is in testing.
-2. Create an OAuth client of type **Web application**. Register the exact authorized redirect URI `<origin>/auth/callback`, for example `http://127.0.0.1:5173/auth/callback` for Vite or `http://127.0.0.1:8080/auth/callback` for local Kubernetes.
+2. Create an OAuth client of type **Web application**. Register the exact authorized redirect URI `<origin>/auth/callback`, for example `https://dashboard.example.test/auth/callback`.
 3. Set `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and `AIDASH_OIDC_PUBLIC_ORIGIN` on the backend as shown in `.env.example`, then restart it. `AIDASH_OIDC_ISSUER` defaults to `https://accounts.google.com`. Keep the client secret on the backend only.
 
-The Vite proxy forwards `/auth` to the backend. Production requires an HTTPS dashboard origin, which enables Secure host-only session cookies. Sessions expire after 12 hours or 30 minutes without user activity by default. See [Google's OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect) for provider setup.
+The Vite proxy forwards `/auth` to the backend. Every dashboard origin that enables browser sign-in must use trusted HTTPS, which enables Secure host-only session cookies. Upgrading from a release that allowed loopback HTTP signs existing browser sessions out once; desktop credentials are unaffected. Sessions expire after 12 hours or 30 minutes without user activity by default. See [Google's OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect) for provider setup.
 
 Aidash reads no account status from an OIDC issuer: a valid ID token is the whole admission. An issuer may still send back-channel logout notifications to `POST /auth/backchannel-logout`; Google sends none. Account changes at the issuer therefore do not immediately revoke existing Aidash sessions or pause admitted work. Aidash continues checking local identity disablement, subject policy, mappings and credentials at execution boundaries; use local mapping/deployment-administrator-grant revocation to remove access. Aidash logout affects Aidash sessions, not the Google browser session. No offline Google access or refresh token is requested.
 
@@ -248,7 +269,7 @@ Direct OpenAI and Anthropic inference configurations are no longer supported. Re
 
 **Upgrading past #108 (breaking):** the `compactor` Registry kind is gone, and `registry/0035_decider_kind` refuses to run while a compactor entry exists. Register a `decider` entry instead (an exact `typesafe/jev-X.Y` release, its mode, per-Run call limit and state budget), approve its exact version in each Node's tenant catalog, and bind it to the Agents that should be pruned. Generation policies and RequiredHome remote execution name Decider versions where they named compactors, and the `compaction.invoke` action is now `decision.invoke`. Decision Evidence moved to version 3; `execution/0036_decision_evidence_v3` refuses to run while version 2 Decision Attempts exist. The `prune_unavailable` pause reason is replaced by `decider_unapproved`, `decider_calls_exhausted` and `decider_unavailable`.
 
-**Upgrading past #153 (breaking):** a `decider` configuration lists its models as ordered `routes` (ADR 0066). Move `provider_contract`, `model`, `keep_threshold` and `state_budget` into one entry of `routes`; an entry may add a later Route such as `{"provider_contract":"openrouter.decisions/1","model":"cloudflare/clef","hosts":["cloudflare","deepinfra","primeintellect"],...}`. Decision Evidence moved to version 4 and records the Route it asked. `execution/0044_decision_routes` refuses to run while a Decision Attempt exists.
+**Upgrading past #153 (breaking):** a `decider` configuration lists its models as ordered `routes` (ADR 0066). Move `provider_contract`, `model`, `threshold` and `state_budget` into one entry of `routes` (#412 renamed `keep_threshold` to `threshold`); an entry may add a later Route such as `{"provider_contract":"openrouter.decisions/1","model":"cloudflare/clef","hosts":["cloudflare","deepinfra","primeintellect"],...}`. Decision Evidence moved to version 4 and records the Route it asked. `execution/0044_decision_routes` refuses to run while a Decision Attempt exists.
 
 **Upgrading past #256 (breaking):** a model or embedding configuration without `provider_credential` now connects only to public addresses. An existing one that points at a private, loopback or in-cluster server, such as a local Ollama, stops with an authority failure until a Deployment Administrator lists its origin in `[keyless_endpoints] permitted_private_origins`, `AIDASH_KEYLESS_PRIVATE_ORIGINS` or the Helm value `keylessEndpoints.permittedPrivateOrigins`.
 
@@ -387,6 +408,8 @@ Protocol fixtures verify transport, coordination and recovery. They do not estab
 ## Native memory
 
 The Rust Hindsight provider stores memory units, facts and graph edges in PostgreSQL with pgvector and PGroonga. Qdrant is not used. Retrieval combines semantic, keyword, graph and temporal rankings; a reranker is a required policy role (a registered model or the explicit `Rrf` passthrough). Agents bind the immutable Memory provider and workspace Sources through Binding contract 1. Recovery journals and visibility checks retain the admitted provider identities across restarts.
+
+An authorized manual retry renews a native-memory operation's retry ledger while preserving its cumulative call, token and cost totals. Exhausting any of those durable budgets pauses local and remote Runs with `durable_memory_budget` without failing their Tasks. Recovery offers only a new follow-up Task, whose Run receives a new operation; retrying the unchanged Binding cannot restore the spent budget.
 
 Three contracts own different parts of this behavior: Run-context continuity and compaction (#113, #116), persistent source ingestion and semantic retrieval (#110), and extraction, review and consolidation of reusable knowledge (#118, #141). See [architecture](docs/architecture.md#memory-contracts), the [traceability matrix](docs/memory-traceability.md) for the status of each requirement, [memory evaluation](docs/memory-evaluation.md) and [memory recovery](docs/memory-recovery.md).
 

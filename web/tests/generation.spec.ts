@@ -150,7 +150,7 @@ test("generation dashboard manages policy, approval, completion and retained his
             {
               provider_contract: "typesafe.jev/1",
               model: "typesafe/jev-1.14",
-              keep_threshold: "3fe0000000000000",
+              threshold: "3fe0000000000000",
             },
           ],
           builder: "aidash.compaction/2",
@@ -325,10 +325,10 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("モデル", { exact: true })
       .selectOption(`${id}@1.0.0`);
     await dialog
-      .getByLabel("追加する定義", { exact: true })
+      .getByLabel("追加するもの", { exact: true })
       .selectOption(`memory:${memoryDescriptor}@1.0.0`);
     await dialog
-      .getByRole("button", { name: "Bindingを追加", exact: true })
+      .getByRole("button", { name: "このエージェントに追加", exact: true })
       .click();
     await dialog
       .getByLabel("追加の指示（任意）", { exact: true })

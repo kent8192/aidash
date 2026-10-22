@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { builtInApprovalDecider } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 const mapping = (
@@ -64,6 +65,8 @@ test("a Tenant Administrator is not offered controls the server marks as its own
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -169,6 +172,8 @@ test("an approval submits only the proposed groups that are still assignable", a
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -405,6 +410,8 @@ test("deleting the Tenant needs its name typed, and leaving asks to confirm", as
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -619,6 +626,8 @@ test("a member issues its own API token, and a policy reader simulates without r
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -731,6 +740,8 @@ test("a policy reader allowed to issue credentials but not to list them can stil
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/approval-decider")
+      return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {

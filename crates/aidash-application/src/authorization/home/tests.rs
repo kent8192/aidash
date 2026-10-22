@@ -588,6 +588,7 @@ async fn slow_peer_status_preserves_home_owned_human_continuations() {
 		prompt: "Approve the saved effect".into(),
 		response: None,
 		answered_by: None,
+		answer_by: None,
 		created_at: Utc.timestamp_opt(1, 0).unwrap(),
 	};
 	{

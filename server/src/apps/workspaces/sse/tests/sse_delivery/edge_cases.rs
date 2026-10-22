@@ -366,7 +366,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 	.unwrap();
 	{
 		let query_bind_1 = session;
-		let query_bind_2 = Sha256::digest(b"sse-browser-session").to_vec();
+		let query_bind_2 = common::browser_session_digest(b"sse-browser-session");
 		let query_bind_3 = Sha256::digest(b"csrf").to_vec();
 		let query_bind_4 = identity;
 		sqlx::query(
@@ -472,7 +472,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 				Request::get(format!(
 					"/api/events/stream?after={after}&workspace_id={workspace}"
 				))
-				.header("cookie", "aidash-session=sse-browser-session")
+				.header("cookie", "__Host-aidash-session=sse-browser-session")
 				.header("x-aidash-context", &selector)
 				.body(bytes::Bytes::new())
 				.unwrap(),
@@ -583,7 +583,7 @@ fn browser_sse_runtime(sse_runtime: common::RuntimeFuture) -> common::RuntimeFut
 			issuer: "https://accounts.google.com".into(),
 			client_id: "aidash".into(),
 			client_secret: "fixture".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 43200,
 			session_idle_seconds: 1800,
 		});

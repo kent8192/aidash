@@ -17,17 +17,27 @@ struct Deployment {
 
 impl Deployment {
 	async fn new(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
+		Self::with_demo_data(runtime, rules, false).await
+	}
+
+	/// Like [`Self::new`], with `[demo_data] enabled` as given.
+	async fn with_demo_data(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		demo_data: bool,
+	) -> Self {
 		let runtime = runtime.await;
 		let (mut federation, url, database) = runtime.parts();
 		federation.config.oidc = Some(OidcConfig {
 			issuer: "https://accounts.google.com".into(),
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
 		federation.config.tenancy = rules;
+		federation.config.demo_data = demo_data;
 		let app = common::application(federation.clone()).await;
 		Self {
 			federation,
@@ -58,7 +68,7 @@ impl Deployment {
 			 VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), clock_timestamp() + interval '12 hours')",
 		)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(name.as_bytes()).to_vec())
+		.bind(common::browser_session_digest(name.as_bytes()))
 		.bind(Sha256::digest(name.as_bytes()).to_vec())
 		.bind(identity)
 		.execute(pool)
@@ -89,8 +99,8 @@ impl Deployment {
 			.header("content-type", "application/json");
 		if let Some(person) = person {
 			request = request
-				.header("cookie", format!("aidash-session={}", person.name))
-				.header("origin", "http://127.0.0.1:8080")
+				.header("cookie", format!("__Host-aidash-session={}", person.name))
+				.header("origin", "https://127.0.0.1:8080")
 				.header("x-aidash-csrf", person.name.as_str());
 		}
 		if let Some(context) = context {
@@ -586,7 +596,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 	let secret = invitation["secret"].as_str().unwrap().to_owned();
 	assert_eq!(
 		invitation["link"],
-		format!("http://127.0.0.1:8080/invitations/{tenant}#{secret}")
+		format!("https://127.0.0.1:8080/invitations/{tenant}#{secret}")
 	);
 	let link = json!({"tenant":tenant,"secret":secret});
 	// Opening the link shows the Tenant and spends nothing.
@@ -877,8 +887,9 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	let actions = overview["actions"].as_array().unwrap();
 	// Every Tenant Administrator and Registry action, `tenant.update`,
 	// `tenant.delete` and `credential.create` for its own subject.
-	assert_eq!(actions.len(), 25, "{overview}");
+	assert_eq!(actions.len(), 26, "{overview}");
 	for action in [
+		"approval.read",
 		"tenant.delete",
 		"registry.create",
 		"catalog.approve",
@@ -1299,5 +1310,7 @@ async fn display_retention_follows_the_request_that_ended_last(
 
 #[path = "tenancy/deletion.rs"]
 mod deletion;
+#[path = "tenancy/demo_data.rs"]
+mod demo_data;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;

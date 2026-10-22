@@ -6,7 +6,7 @@ System One API and once to the candidate model on each host it names, through
 OpenRouter's Decisions API, all with zero data retention. Then it reports, for
 each candidate threshold, how often the candidate's keep/truncate/drop branch
 agrees with Jev's at 0.5, how often it removes more than Jev would, and how much
-it removes. The chosen threshold goes into the Route's `keep_threshold`.
+it removes. The chosen threshold goes into the Route's `threshold`.
 
   OPENROUTER_API_KEY=... python3 -I scripts/evaluate-decider-routes.py --out result.json
 

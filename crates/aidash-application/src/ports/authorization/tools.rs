@@ -30,6 +30,9 @@ pub trait AgentToolScope: Send {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	/// Whether the policy explicitly denies `action` on `resource` for any
+	/// subject of the current authority. A missing allow is not a denial.
+	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource>;

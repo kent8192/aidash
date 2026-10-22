@@ -263,10 +263,24 @@ pub const TABLES: &[Table] = &[
 	),
 	// sessions
 	table("identity", "dashboard_sessions", DeploymentWide),
+	// the digests of the Demo data the `demo-data` command finished loading
+	table("identity", "demo_data_loads", DeploymentWide),
+	// a Demo Reservation, spent by the sign-in of the email it names
+	table("identity", "demo_reservations", TenantOwned),
+	// The Tenant each Demo data structure key was assigned. Purge keeps this
+	// pointer: a later load resolves the purged Tenant through it and, seeing
+	// the Tenant deleted, leaves it deleted instead of creating a replacement.
+	table("identity", "demo_tenants", DeploymentWide),
 	// desktop sign-in
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
+	// a person's own Approval Mode and Approval Rules (ADR 0076)
+	table("identity", "identity_approval_preferences", TenantOwned),
+	table("identity", "identity_approval_rules", TenantOwned),
+	table("identity", "identity_thread_approval_modes", TenantOwned),
+	// the approval Decider a Tenant chose for the Auto Approval Mode (ADR 0077)
+	table("identity", "identity_tenant_approval_settings", TenantOwned),
 	// the identity's one Personal Tenant, read at sign-in; purge keeps it, or
 	// signing in would provision a new Personal Tenant for an identity that deleted its own
 	tombstone("identity", "personal_tenants"),

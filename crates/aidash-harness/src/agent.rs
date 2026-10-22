@@ -1,11 +1,15 @@
 //! Durable agent execution use case. All effects cross application ports.
 use aidash_application::{
 	Error, Result,
-	capabilities::approvals::{INVOKE, ToolCallApproval, ToolCallRequest},
+	capabilities::approvals::{
+		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
+		answer_deadline_response, answer_for_model,
+	},
 	execution::*,
 	ports::execution::*,
 };
 use aidash_domain::{
+	approval_rules::ApprovalMode,
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
 	media::ModelMedia,
@@ -17,7 +21,7 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
+	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -1338,6 +1342,13 @@ impl<'a> Executor<'a> {
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
+				if !run_message_catchup
+					&& home.local()
+					&& let Some(guard) = guard
+					&& guard.auto_judging(run).await?
+				{
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(AUTO_MODE_INSTRUCTION);
+				}
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"agent_state":{"phase":run.phase(),"step":run.step}});
 				if let Some(deferred_read) = &thinking.deferred_workspace_read {
 					pinned["deferred_workspace_read"] = json!(deferred_read);
@@ -2314,6 +2325,7 @@ impl<'a> Executor<'a> {
 								let h=home.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
 								run.state = RunState::Waiting(Box::new(WaitingState::Human {
 									request_id: h.id,
+									answer_by: None,
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							} else {
@@ -2522,6 +2534,14 @@ impl<'a> Executor<'a> {
 						Err(error) => return Err(error),
 					}
 				}
+				// A person who asked not to be asked is not asked by the model either.
+				if contract.behavior.continuation == Continuation::Human
+					&& home.local()
+					&& let Some(guard) = guard
+					&& guard.approval_mode(run).await? == Some(ApprovalMode::DontAsk)
+				{
+					return self.tool_error(run, token, &call, cursor, DONT_ASK_HUMAN_REQUEST.into()).await;
+				}
 				let mut prepared_result = None;
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
 					let (range, saved) = match tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor) {
@@ -2570,8 +2590,12 @@ impl<'a> Executor<'a> {
 					Some(approval) => format!("{call_key}:approval:{approval}"),
 					None => call_key.clone(),
 				};
-				// Approval follows the admitted provider contract for every Agent.
-				if contract.behavior.tool_call_approval {
+				// Approval follows the admitted provider contract for every Agent. A
+				// Read-only operation needs none, yet only the Tenant's own authority
+				// can tell whether its policy forbids the call outright.
+				if contract.behavior.tool_call_approval
+					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
+				{
 					let (reference_id, reference_version) = match &contract.identity {
 						ToolIdentity::Descriptor(reference) => (reference.id.clone(), reference.version.clone()),
 						ToolIdentity::Registry(reference) => (reference.id.clone(), reference.version.clone()),
@@ -2593,8 +2617,17 @@ impl<'a> Executor<'a> {
 							operation: INVOKE.into(),
 							call: call.clone(),
 							area: None,
+							read_only: contract.behavior.read_only_operation,
 						};
-						match guard.tool_call_approval(run, request).await? {
+						let mut outcome = guard.tool_call_approval(run, request.clone()).await?;
+						if let ToolCallApproval::Pending { approval_id, .. } = outcome {
+							let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
+							// Asked again, the approval answers as the Decider settled it.
+							if self.judge_approval(run, token, guard, &pending, approval_id).await?.settled() {
+								outcome = guard.tool_call_approval(run, request).await?;
+							}
+						}
+						match outcome {
 							ToolCallApproval::Approved { .. } => {}
 							ToolCallApproval::Pending { approval_id, .. } => {
 								run.state = RunState::Waiting(Box::new(WaitingState::Approval {
@@ -2784,7 +2817,7 @@ impl<'a> Executor<'a> {
 				};
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
-				let framework = if contract.behavior.tool_call_approval {
+				let framework = if contract.behavior.tenant_tool_call() {
 					FrameworkResult::Ordinary
 				} else {
 					FrameworkResult::decode(&contract, &output)?
@@ -2792,6 +2825,21 @@ impl<'a> Executor<'a> {
 				// An approval raised inside the call is not its result. The Run waits,
 				// then makes the same call again under the approval's own key.
 				if let FrameworkResult::Approval(approval_id) = framework {
+					if let Some(guard) = guard {
+						let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
+						match self.judge_approval(run, token, guard, &pending, approval_id).await? {
+							// The call runs again at once under the approval's own key.
+							approval::Judged::Allowed => {
+								run.state.tool_mut()?.approval = Some(approval_id);
+								store.save_run(run, token, "run.approved_by_auto").await?;
+								return Ok(());
+							}
+							approval::Judged::Blocked(reason) => {
+								return self.tool_error(run, token, call, cursor, reason.refusal_message().into()).await;
+							}
+							approval::Judged::Undecided => {}
+						}
+					}
 					let mut resume = run.state.tool()?.clone();
 					resume.approval = Some(approval_id);
 					run.state = RunState::Waiting(Box::new(WaitingState::Approval {
@@ -2824,9 +2872,17 @@ impl<'a> Executor<'a> {
 				progress.advance(cursor + 1);
 				match framework {
 					FrameworkResult::Human(request_id) => {
+						// Only a model's question of a person on this Node has an
+						// Answer Deadline; the person's settings are read now.
+						let seconds = match guard {
+							Some(guard) if home.local() => guard.answer_deadline(run).await?,
+							_ => None,
+						};
 						run.step += 1;
 						run.state = RunState::Waiting(Box::new(WaitingState::Human {
 							request_id,
+							answer_by: seconds
+								.map(|seconds| chrono::Utc::now() + chrono::Duration::seconds(seconds)),
 							resume: ResumeState::Thinking(ThinkingState::default()),
 						}));
 					}
@@ -2864,12 +2920,22 @@ impl<'a> Executor<'a> {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
-                    let h = home.human_request_by_id(id).await?;
+                    let mut h = home.human_request_by_id(id).await?;
 					if !home.local() && h.response.is_none() {
 						// A remote scheduler polls Home; an unanswered continuation
 						// remains waiting and advances the next polling deadline.
 						store.save_run(run, token, "run.waiting").await?;
 						return Ok(());
+					}
+					if h.response.is_none()
+						&& let WaitingState::Human { answer_by: Some(answer_by), .. } = &waiting
+					{
+						if *answer_by > chrono::Utc::now() {
+							// Woken by a clock that runs ahead of this one.
+							store.save_run(run, token, "run.waiting").await?;
+							return Ok(());
+						}
+						h = answer_at_deadline(home.as_ref(), id).await?;
 					}
 					let response = h.response.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
@@ -2919,7 +2985,7 @@ impl<'a> Executor<'a> {
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,
-							response,
+							response: answer_for_model(response),
 						});
 					}
 				}
@@ -2944,6 +3010,19 @@ impl<'a> Executor<'a> {
 			}
 		}
 		Ok(())
+	}
+}
+
+/// Answer a model's question on the system's behalf because its person's
+/// Answer Deadline passed. A person who answered first wins, and so does a
+/// system answer given before a crash.
+async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<HumanRequest> {
+	match home
+		.close_human_request(request, answer_deadline_response())
+		.await
+	{
+		Err(Error::Conflict(_)) => home.human_request_by_id(request).await,
+		closed => closed,
 	}
 }
 
@@ -3496,6 +3575,7 @@ fn summary_dependencies(
 	dependencies
 }
 
+mod approval;
 mod completion;
 mod progress;
 #[cfg(test)]

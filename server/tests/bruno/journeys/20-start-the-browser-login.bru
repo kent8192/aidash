@@ -25,7 +25,7 @@ tests {
   if (res.getStatus() === 307) {
     const cookies = res.getHeader("set-cookie");
     const values = Array.isArray(cookies) ? cookies : [cookies];
-    bru.setVar("login_cookie", values.find(value => value.startsWith("aidash-login=")).split(";")[0]);
+    bru.setVar("login_cookie", values.find(value => value.startsWith("__Host-aidash-login=")).split(";")[0]);
     bru.setVar("authorization_url", res.getHeader("location"));
   }
 }

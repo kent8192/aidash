@@ -56,6 +56,7 @@ fn human(id: u128) -> HumanRequest {
 		prompt: String::new(),
 		response: None,
 		answered_by: None,
+		answer_by: None,
 		created_at: chrono::Utc::now(),
 	}
 }

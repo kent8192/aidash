@@ -37,7 +37,7 @@ PEER = {
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
-    "Origin": "{{base_url}}",
+    "Origin": "{{browser_origin}}",
     "X-Aidash-CSRF": "{{csrf}}",
 }
 # A built-in every Tenant's Registry holds from its creation (ADR 0033).
@@ -59,6 +59,10 @@ TENANT_ROUTES = {
         "body": {"entry": {"id": "bruno.personal", "version": "1.0.0", "kind": "agent",
                            "name": {"en": "Bruno"}, "description": {"en": "Contract probe"}},
                  "documents": []},
+    },
+    "POST /api/registry/mcp-tool-hint": {
+        "body": {"endpoint": "https://bruno.example/mcp", "tool_name": "probe"},
+        "refusal": "Subject without registry.create cannot read an MCP tool's hint",
     },
     "POST /api/skills/import": {
         "body": {"url": "https://github.com/bruno/skills"},
@@ -418,7 +422,7 @@ def render():
         "POST /auth/activity",
         "Browser activity rejects missing CSRF",
         403,
-        headers={"Cookie": "{{session_cookie}}", "Origin": "{{base_url}}"},
+        headers={"Cookie": "{{session_cookie}}", "Origin": "{{browser_origin}}"},
         seq=41,
     )
     add(
@@ -448,7 +452,7 @@ def render():
         "POST /auth/logout-all",
         "All-session logout requires CSRF",
         403,
-        headers={"Cookie": "{{session_cookie}}", "Origin": "{{base_url}}"},
+        headers={"Cookie": "{{session_cookie}}", "Origin": "{{browser_origin}}"},
         seq=60,
     )
     add(
@@ -623,9 +627,9 @@ def render():
             # Sign-in Domain discovery exists only for GCIP deployments. Bruno
             # URL-encodes these typed form fields itself.
             for label, body, headers in [
-                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{base_url}}"}),
+                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{browser_origin}}"}),
                 ("OIDC deployment refuses foreign-origin discovery", "email=alice@acme.example", {"Origin": "https://untrusted.example"}),
-                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{base_url}}"}),
+                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{browser_origin}}"}),
             ]:
                 add(
                     endpoint,
@@ -669,7 +673,7 @@ def render():
                 "Tampered login cookie cannot bind the callback",
                 401,
                 path=path + "?state=invalid&code=invalid",
-                headers={"Cookie": "aidash-login=tampered"},
+                headers={"Cookie": "__Host-aidash-login=tampered"},
             )
             continue
         if path == "/auth/provider-authorizations/{provider}/callback":
@@ -730,14 +734,14 @@ def render():
             add(endpoint, "No opaque session cannot open an Invitation", 401,
                 body=link, immutable=True)
             add(endpoint, "Forged opaque session cannot open an Invitation", 401,
-                headers={"Cookie": "aidash-session=forged"}, body=link, immutable=True)
+                headers={"Cookie": "__Host-aidash-session=forged"}, body=link, immutable=True)
             add(endpoint, "Malformed JSON cannot reach the use case", 400,
                 body="{", immutable=True)
             continue
         if path.startswith("/auth/"):
             for label, headers in [
                 ("No opaque session", {}),
-                ("Forged opaque session", {"Cookie": "aidash-session=forged"}),
+                ("Forged opaque session", {"Cookie": "__Host-aidash-session=forged"}),
                 ("Revoked browser session", {"Cookie": "{{session_cookie}}"}),
             ]:
                 add(endpoint, label, 401, headers=headers)
@@ -974,6 +978,37 @@ def render():
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
                 add(endpoint, "Plan Tokens are not an accepted field", 422,
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"access_token": "pasted"}),
+                    immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/approval_preferences.rs":
+            # A person's Approval Mode and Approval Rules are their own: only the
+            # owner's dashboard or desktop session reaches them, and a Tenant
+            # Administrator's read needs a Mapping session too, never a bearer.
+            body = (
+                json.dumps({"expected_revision": 0, "default_mode": "manual"})
+                if path.endswith("/approval-preferences/mine")
+                else json.dumps({"expected_revision": 0, "decider": None})
+                if path.endswith("/approval-decider")
+                else json.dumps({"kind": "tool_call", "target": "every", "effect": "ask"})
+                if method == "POST"
+                else json.dumps({"mode": None})
+                if route["json"]
+                else None
+            )
+            add(endpoint, "Forged bearer cannot reach a person's approval settings", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Deployment Administrator bearer owns no approval settings", DEPLOYMENT_ADMINISTRATOR),
+                ("Subject Credential bearer never reaches approval settings", SUBJECT),
+            ]:
+                add(endpoint, label, 403, headers=headers, body=body, immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                add(endpoint, "Unknown approval fields are rejected", 422,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":

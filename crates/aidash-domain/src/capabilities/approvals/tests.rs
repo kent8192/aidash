@@ -131,3 +131,16 @@ fn the_decision_defaults_and_unknown_fields_match_the_http_contract() {
 	unexpected["unexpected"] = json!(true);
 	assert!(serde_json::from_value::<ApprovalDecision>(unexpected).is_err());
 }
+
+#[rstest]
+#[case::once("allow_once", |c: &ApprovalChoice| matches!(c, ApprovalChoice::AllowOnce))]
+#[case::run("allow_run", |c: &ApprovalChoice| matches!(c, ApprovalChoice::AllowRun))]
+#[case::always("allow_always", |c: &ApprovalChoice| matches!(c, ApprovalChoice::AllowAlways))]
+#[case::deny("deny", |c: &ApprovalChoice| matches!(c, ApprovalChoice::Deny))]
+fn the_decision_choices_use_their_wire_names(
+	#[case] name: &str,
+	#[case] is: fn(&ApprovalChoice) -> bool,
+) {
+	let choice: ApprovalChoice = serde_json::from_value(json!(name)).unwrap();
+	assert!(is(&choice), "{name}");
+}

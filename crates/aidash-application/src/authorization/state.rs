@@ -4,9 +4,11 @@ use crate::{
 	ports::authorization::state::{WorkspaceListingScope, WorkspaceStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, Task, Workspace, registry::Entry,
-	workspaces::TaskPage,
+	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, Task, WaitingState,
+	Workspace, registry::Entry, workspaces::TaskPage,
 };
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use uuid::Uuid;
 pub struct WorkspaceState {
 	pub registry: Vec<Entry>,
@@ -94,6 +96,13 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 		}
 		offset += 500;
 	}
+	let continues_by = answer_deadlines(&state.runs);
+	for request in &mut state.human_requests {
+		request.answer_by = continues_by
+			.get(&request.id)
+			.copied()
+			.filter(|_| request.response.is_none());
+	}
 	let mut offset = 0_i64;
 	loop {
 		let batch: Vec<Conversation> = scope.conversation_rows(&visible, offset).await?;
@@ -114,6 +123,22 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 	}
 
 	Ok(state)
+}
+/// When each question that Runs wait on continues without an answer, by request.
+fn answer_deadlines(runs: &[RunInspection]) -> HashMap<Uuid, DateTime<Utc>> {
+	runs.iter()
+		.filter_map(|run| match &run.state {
+			Some(RunState::Waiting(wait)) => match wait.as_ref() {
+				WaitingState::Human {
+					request_id,
+					answer_by: Some(by),
+					..
+				} => Some((*request_id, *by)),
+				_ => None,
+			},
+			_ => None,
+		})
+		.collect()
 }
 #[cfg(test)]
 mod tests;

@@ -527,7 +527,10 @@ fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static s
 		// A model call whose retry ledger is spent cannot succeed on a later claim.
 		Err(
 			Error::Invalid(_)
-			| Error::RemoteSemantic(crate::semantic::remote::Failure::RetriesExhausted),
+			| Error::RemoteSemantic(
+				crate::semantic::remote::Failure::RetriesExhausted
+				| crate::semantic::remote::Failure::DurableMemoryBudget,
+			),
 		) => ("failed", Some("invalid_or_exhausted_work"), true),
 		Err(_) => (
 			if last { "failed" } else { "pending" },

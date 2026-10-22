@@ -469,6 +469,7 @@ impl EventVisibilityScope for Events {
 			prompt: String::new(),
 			response: None,
 			answered_by: None,
+			answer_by: None,
 			created_at: chrono::Utc::now(),
 		}))
 	}

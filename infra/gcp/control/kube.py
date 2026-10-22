@@ -35,11 +35,23 @@ PREVIEW_SIZE = "10Gi"
 PREVIEW_TLS_SECRET = "aidash-preview-tls"
 PREVIEW_HOST = re.compile(r"[a-f0-9]{32}\.preview\.aidash\.run")
 CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
+# Backup for GKE has no per-claim exclusion, so backups select this application:
+# every resource of the namespace except the Home recovery ledger claim, which a
+# restore must never rewind (ADR 0082).
+LEDGER_CLAIM = "memory-recovery"
+BACKUP_LABEL = "aidash.run/backup"
+BACKUP_EXCLUDE = "exclude"
+PROTECTED_APPLICATION = "aidash"
 # The Home ledger lives in a child of its claim. A fresh disk's root belongs to
 # root, so the application UID can create the child (fsGroup grants group write)
 # but could never chmod the root itself as ledger initialization requires.
 RECOVERY_ROOT = "/var/lib/aidash/memory-recovery"
 RECOVERY_HOME = "home"
+# Demo data: the structure ships in the image; the people come from a Secret
+# mounted only into the migration Job (ADR 0080).
+DEMO_STRUCTURE = "/app/deploy/demo-data/structure.json"
+DEMO_PEOPLE_DIR = "/run/aidash/demo-data"
+DEMO_SECRET = "app-demo-data"
 # Deployments outside production; see `target`.
 SERVER = "deployment/app-aidash-server"
 WORKER = "deployment/app-aidash-worker"
@@ -130,6 +142,25 @@ class Cluster:
     def items(self, kind, namespace=None, selector=None):
         selection = ("--selector", selector) if selector else ()
         return json.loads(self.kubectl("get", kind, *self.scope(namespace), *selection, "-o", "json"))["items"]
+
+    def excluded(self, namespace, label, match):
+        """Every listable namespaced resource carrying an exclusion label."""
+        try:
+            kinds = run(
+                "kubectl", "--kubeconfig", self.kubeconfig,
+                "api-resources", "--namespaced=true", "--verbs=list", "-o", "name",
+                timeout=60,
+            ).decode().split()
+            if not kinds:
+                raise Refused("Cannot enumerate namespaced resources for backup exclusions")
+            return json.loads(self.kubectl(
+                "get", ",".join(kinds), *self.scope(namespace),
+                "--selector", f"{label}={match}", "-o", "json", timeout=120,
+            ))["items"]
+        except Refused:
+            raise
+        except Exception as error:
+            raise Refused("Cannot verify every namespaced resource for backup exclusions") from error
 
     def apply(self, manifest):
         # Server-side apply keeps no last-applied annotation copy of Secret data.
@@ -243,9 +274,10 @@ def namespace_of(identity):
 def wait_until(predicate, message, seconds=300, interval=5):
     deadline = time.monotonic() + seconds
     while not predicate():
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise RuntimeError(message)
-        time.sleep(bounded_timeout(interval))
+        time.sleep(bounded_timeout(min(interval, remaining)))
 
 
 def live_pods(cluster, namespace, selector=None):
@@ -282,7 +314,10 @@ def claim(namespace, name, size, volume=None):
     }
     if volume:
         spec["volumeName"] = volume
-    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": name, "namespace": namespace}, "spec": spec}
+    metadata = {"name": name, "namespace": namespace}
+    if name == LEDGER_CLAIM:
+        metadata["labels"] = {BACKUP_LABEL: BACKUP_EXCLUDE}
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": metadata, "spec": spec}
 
 
 def identity_tokens(cluster, namespace):
@@ -426,7 +461,24 @@ def bind_preview_tls(cluster, identity, volume_handle):
         cluster.create(claim(namespace, PREVIEW_CLAIM, PREVIEW_SIZE, PREVIEW_VOLUME))
 
 
-def prepare(cluster, identity, preview_handle=None):
+def protect(cluster, identity):
+    """Select what Backup for GKE backs up. The ProtectedApplication CRD exists only
+    where the backup agent runs, so callers ask only when a backup plan is configured."""
+    namespace = namespace_of(identity)
+    # Label first, so no backup can see the application while the ledger is unlabelled.
+    ledger = cluster.get("persistentvolumeclaim", LEDGER_CLAIM, namespace)
+    if ledger is not None and ledger["metadata"].get("labels", {}).get(BACKUP_LABEL) != BACKUP_EXCLUDE:
+        cluster.patch("persistentvolumeclaim", LEDGER_CLAIM, {"metadata": {"labels": {BACKUP_LABEL: BACKUP_EXCLUDE}}}, namespace)
+    cluster.apply({
+        "apiVersion": "gkebackup.gke.io/v1", "kind": "ProtectedApplication",
+        "metadata": {"name": PROTECTED_APPLICATION, "namespace": namespace},
+        "spec": {"resourceSelection": {"type": "Selector", "selector": {"matchExpressions": [
+            {"key": BACKUP_LABEL, "operator": "NotIn", "values": [BACKUP_EXCLUDE]},
+        ]}}},
+    })
+
+
+def prepare(cluster, identity, preview_handle=None, protected=False):
     namespace = namespace_of(identity)
     desired = storage_class(cluster, identity)
     existing = cluster.get("storageclass", STORAGE_CLASS)
@@ -446,6 +498,8 @@ def prepare(cluster, identity, preview_handle=None):
     for name, size in CLAIMS.items():
         if cluster.get("persistentvolumeclaim", name, namespace) is None:
             cluster.create(claim(namespace, name, size))
+    if protected:
+        protect(cluster, identity)
     if identity.startswith("pr-") and preview_handle is not None:
         bind_preview_tls(cluster, identity, preview_handle)
 
@@ -547,6 +601,12 @@ def materialize(cluster, identity, project, output, runtime):
         AIDASH_API_TOKEN=tokens["api"],
         AIDASH_CORE_RUNNER_TOKEN=tokens["runner"],
     )
+    if identity != PRODUCTION:
+        # Every non-production pod reads this Secret through `envFrom`, and the
+        # migration Job copies the server template. Enabling it here reaches
+        # both the servers that fulfil Demo Reservations (ADR 0079) and the Job
+        # that loads Demo data (ADR 0080); production keeps the false default.
+        values["AIDASH_DEMO_DATA_ENABLED"] = "true"
     if gcip is None:
         values.update(AIDASH_OIDC_ISSUER="https://accounts.google.com", AIDASH_OIDC_PUBLIC_ORIGIN="https://" + output["hostname"])
     for manifest in (
@@ -832,7 +892,7 @@ def gate(cluster, identity):
     admission(cluster, identity, "close")
 
 
-def deploy(cluster, identity, output, release, sha, settings):
+def deploy(cluster, identity, output, release, sha, settings, demo_people=None, fork=False):
     """Install both releases with writers stopped, start dependencies, then migrate."""
     namespace = namespace_of(identity)
     # An edge started by this deploy stays closed until readiness opens it, even
@@ -850,14 +910,21 @@ def deploy(cluster, identity, output, release, sha, settings):
     cluster.scale(namespace, target(identity, RUNNER), 1)
     cluster.rollout(namespace, target(identity, RUNNER))
     database_roles(cluster, identity)
-    migrate(cluster, identity, sha)
+    migrate(cluster, identity, sha, demo_people, fork)
     observer_role(cluster, identity)
     cluster.rollout(namespace, target(identity, EDGE))
 
 
-def migrate(cluster, identity, sha):
-    """One-shot Job with the server's exact image, env, mounts and identity."""
+def migrate(cluster, identity, sha, demo_people=None, fork=False):
+    """One-shot Job with the server's exact image, env, mounts and identity.
+
+    Every Environment but production also loads Demo data in the Job (ADR 0080).
+    `demo_people` is the people file's JSON; an Environment built from a fork
+    never receives it, whatever the caller passes.
+    """
     namespace = namespace_of(identity)
+    demo = identity != PRODUCTION
+    people = demo_people if demo and not fork else None
     template = deepcopy(cluster.get(*target(identity, SERVER).split("/", 1), namespace)["spec"]["template"])
     spec = template["spec"]
     container = next(item for item in spec["containers"] if item["name"] == "aidash")
@@ -879,6 +946,18 @@ def migrate(cluster, identity, sha):
         'aidash migrate && aidash memory-recovery init-if-missing --directory "$AIDASH_MEMORY_RECOVERY_DIR"'
         " && aidash activation-provision"
     ]
+    if demo:
+        # The copied server template's `app-runtime` envFrom already carries
+        # AIDASH_DEMO_DATA_ENABLED for a non-production Environment; the same
+        # Secret gives the server pods the setting that fulfils reservations.
+        container["args"][0] += f" && aidash demo-data --from {DEMO_STRUCTURE}"
+        if people is not None:
+            # Mounted into this Job's container only, never into a server or worker.
+            container["args"][0] += f" --people {DEMO_PEOPLE_DIR}/people.json"
+            spec.setdefault("volumes", []).append({"name": "demo-data", "secret": {"secretName": DEMO_SECRET}})
+            container.setdefault("volumeMounts", []).append(
+                {"name": "demo-data", "mountPath": DEMO_PEOPLE_DIR, "readOnly": True},
+            )
     spec["restartPolicy"] = "Never"
     # Never matches the backend Service or the writer drain selector. The copied
     # template keeps the required co-location term for the shared RWO claims;
@@ -899,21 +978,37 @@ def migrate(cluster, identity, sha):
         960,
     )
     name = f"migrate-{sha[:12]}-{secrets.token_hex(3)}"
-    cluster.create({
-        "apiVersion": "batch/v1", "kind": "Job",
-        "metadata": {"name": name, "namespace": namespace, "labels": labels},
-        "spec": {
-            "backoffLimit": 0,
-            "activeDeadlineSeconds": 900,
-            "ttlSecondsAfterFinished": 3600,
-            "template": {
-                "metadata": {"labels": labels},
-                "spec": spec,
+    if demo:
+        # Whatever an earlier deploy left is gone before this Job can mount it,
+        # so a fork or an unconfigured Environment never sees old people.
+        drop_demo_people(cluster, namespace)
+        if people is not None:
+            cluster.apply(secret(namespace, DEMO_SECRET, {"people.json": people}, environment=False))
+    try:
+        cluster.create({
+            "apiVersion": "batch/v1", "kind": "Job",
+            "metadata": {"name": name, "namespace": namespace, "labels": labels},
+            "spec": {
+                "backoffLimit": 0,
+                "activeDeadlineSeconds": 900,
+                "ttlSecondsAfterFinished": 3600,
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": spec,
+                },
             },
-        },
-    })
-    if not wait_job(cluster, namespace, name, 900):
-        raise RuntimeError("Migration Job failed; the retained database was not replaced")
+        })
+        if not wait_job(cluster, namespace, name, 900):
+            raise RuntimeError("Migration Job failed; the retained database was not replaced")
+    finally:
+        if demo:
+            # The finished Job needs the people no longer; do not leave them in the namespace.
+            drop_demo_people(cluster, namespace)
+
+
+def drop_demo_people(cluster, namespace):
+    if cluster.get("secret", DEMO_SECRET, namespace) is not None:
+        cluster.delete("secret", DEMO_SECRET, namespace)
 
 
 # A table owned by another role predates the owner and server roles: the

@@ -1,4 +1,4 @@
-use super::cookie_value;
+use super::{browser_session_digest, cookie_value, digest};
 use http::{HeaderValue, header};
 use reinhardt::Request;
 use rstest::rstest;
@@ -62,4 +62,20 @@ fn duplicate_cookie_names_keep_the_first_value_and_missing_names_stay_absent() {
 		Some("first")
 	);
 	assert_eq!(cookie_value(&request.headers, "aidash-login"), None);
+}
+
+#[rstest]
+fn browser_session_tokens_are_domain_separated_from_legacy_hashes() {
+	let mut request = Request::builder().uri("/auth/session").build().unwrap();
+	request.headers.append(
+		header::COOKIE,
+		HeaderValue::from_static("__Host-aidash-session=fixture-session"),
+	);
+	let secret = cookie_value(&request.headers, "__Host-aidash-session").unwrap();
+
+	assert_ne!(browser_session_digest(secret), digest(secret));
+	assert_eq!(
+		browser_session_digest(secret),
+		browser_session_digest("fixture-session")
+	);
 }

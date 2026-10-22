@@ -22,16 +22,26 @@ Backup for GKE agent. A second reviewed bootstrap plan can then set
 backup resource checks the actual cluster agent before creation. It never
 creates another cluster.
 
-The backup plan captures only `aidash-production`, including namespaced config,
-Secrets and PVC volume data. Daily backups default to 19:00 UTC (04:00
-Asia/Tokyo), 30-day retention and a 7-day delete lock. The plan is protected
+The backup plans select the `aidash` ProtectedApplication of `aidash-production`,
+including namespaced config, Secrets and PVC volume data. It excludes the
+`memory-recovery` claim (the Home recovery ledger), which carries
+`aidash.run/backup: exclude`; a backup scope cannot exclude one claim otherwise.
+A second, unscheduled plan (14-day retention, 2-day delete lock) holds the
+Pre-update Backup that the production update controller takes after sealing
+writers. The deploy identity may only create backups on that plan. An in-place
+restore plan scoped to the same application is for a person to run; its
+`DELETE_AND_RESTORE` mode then cannot delete the ledger claim or any
+cluster-scoped resource. The restore plan is created in the cluster's region even
+when the backup plan uses a cross-region backup location. Daily backups
+default to 19:00 UTC (04:00 Asia/Tokyo), 30-day retention and a 7-day delete
+lock. The plan is protected
 against deletion; its retention policy remains adjustable. These settings are
 explicit inputs. Google encrypts all backup artifacts at rest by default.
 [Backup plans](https://docs.cloud.google.com/kubernetes-engine/docs/add-on/backup-for-gke/how-to/backup-plan),
 [agent installation](https://docs.cloud.google.com/kubernetes-engine/docs/add-on/backup-for-gke/how-to/enable-gke-cluster),
 [default encryption](https://docs.cloud.google.com/kubernetes-engine/docs/add-on/backup-for-gke/concepts/about-cmek).
 
-Without a ProtectedApplication that coordinates application hooks, PVC backups
+The ProtectedApplication declares no application hooks, so PVC backups
 are crash-consistent. Configuration and successful snapshot completion do not
 prove that PostgreSQL, JetStream, Runner journals or the independent native Home
 ledger can be recovered together. Retain and validate the Home ledger
@@ -59,10 +69,17 @@ python3 infra/delivery/gcp/inspect_operations.py --terraform-output /private/pat
 ```
 
 The command uses `GOOGLE_OAUTH_ACCESS_TOKEN` when supplied, otherwise the
-explicit project's active gcloud identity. It performs only API GETs: cluster,
-backup plan, paginated backup inventory, uptime check, channel and alert policy
-metadata. It rejects paused plans, stale capture times, missing volume data,
-changed destinations and alert/TLS drift. The JSON observation explicitly keeps
+explicit project's active gcloud identity. It needs `gcloud`, `kubectl` and the
+GKE gcloud auth plugin, plus read access to the production ProtectedApplication,
+PVCs and listable namespaced resources. It uses a temporary private kubeconfig
+and leaves the caller's Kubernetes context unchanged. It performs only API GETs: cluster,
+backup plan, paginated backup inventory, Pre-update Backup and in-place restore
+plans, uptime check, channel and alert policy metadata, and the live application
+selector, retained claims and resources labelled `aidash.run/backup=exclude`.
+The selector must include the whole namespace except the labelled
+`memory-recovery` PVC; exclusions on any other resource are refused. It rejects paused plans,
+stale capture times, missing volume data, a namespace-scoped backup or restore
+plan, a scheduled Pre-update plan, changed destinations and alert/TLS drift. The JSON observation explicitly keeps
 `restore_verified` and `notification_delivery_proven` false. They require
 separate recovery and actual email-arrival evidence. Neither the inspection nor
 Terraform configuration changes GitHub enable flags or approves a release PR.

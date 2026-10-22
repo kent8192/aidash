@@ -17,16 +17,16 @@ private input templates and existing-resource adoption. These tools cover the
 Terraform and credential handoff portions below; acceptance and approvals remain
 explicit manual actions.
 
-| Step | Automated setup                                                                                                                                                                                                                     | Manual completion evidence                                                                                                                                                                                                                                                                       |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1    | Four workflow enablement variables remain false                                                                                                                                                                                     | Review/merge the privileged code into main and default develop; synchronize main history into develop                                                                                                                                                                                            |
-| 2    | Five protected Environments, exact branch policies, additive CI/App checks; release App manifest and protected key handoff                                                                                                          | Owner Create/Install consent for only Aidash; live reviewer/branch protections; enable the App staging check only after bootstrap main merge                                                                                                                                                     |
-| 3    | Dedicated production project on the same billing account, two isolated bootstrap stacks, private state/release/notification buckets, exact WIF and staging read grants; public config composition and protected secret installation | Supply separate runtime/IdP credentials and public GCIP pool definitions; verify cross-tier and unauthorized WIF denial                                                                                                                                                                          |
-| 4    | TLS/ACME Secret metadata, dedicated renewal identity and daily DNS-01 certificate workflow; refresh running preview edges                                                                                                           | Fill the scoped DNS token and ACME contact; verify wildcard issuance and external OAuth/SSO callbacks with authenticated access                                                                                                                                                                  |
-| 5    | Discover configured Sending domain and verified destination, apply three Email Routing aliases and optional guarded Routing DNS; install the separate Sending token                                                                 | Fill account/token/private destination locally; verify that stg/prod/test mail reaches the intended inbox                                                                                                                                                                                        |
-| 6    | Exact-CI staging and release automation, explicit `/preview up`, independent mail retry                                                                                                                                             | Supervised nonproduction acceptance: random host lifetime, sign-in, Host/CSRF boundaries, fork rejection, stop/resume/retirement and actual stg/test mail                                                                                                                                        |
-| 7    | Prepare Backup for GKE agent; after live cluster exists, apply daily volume/Secret backups and production uptime/capacity/restart/backup-failure alerts; inspect backup freshness/configuration                                     | Isolated restore drill including the independent Home ledger, approved RPO/RTO and maintenance/migration recovery, plus a zone failover drill (primary zone made unreachable; web/API and Runs recover in the other zone with no acknowledged write lost); configuration does not prove recovery |
-| 8    | Exact main CI, original staged digest promotion and fixed production notification                                                                                                                                                   | Explicitly enable production after readiness, human-merge the validated release PR, approve the Environment, verify HTTPS/sign-in/digests and actual prod mail                                                                                                                                   |
+| Step | Automated setup                                                                                                                                                                                                                                    | Manual completion evidence                                                                                                                                                                                                                                                                       |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1    | Four workflow enablement variables remain false                                                                                                                                                                                                    | Review/merge the privileged code into default develop first, then main with the first release; synchronize main history into develop                                                                                                                                                             |
+| 2    | Five protected Environments, exact branch policies, additive CI/App checks; release App manifest and protected key handoff                                                                                                                         | Owner Create/Install consent for only Aidash; live reviewer/branch protections; enable the App staging check only after bootstrap main merge                                                                                                                                                     |
+| 3    | Dedicated production project on the same billing account, two isolated bootstrap stacks, private state/release/notification buckets, exact WIF and staging read grants; public config composition and protected secret installation                | Supply separate runtime/IdP credentials and public GCIP pool definitions; verify cross-tier and unauthorized WIF denial                                                                                                                                                                          |
+| 4    | TLS/ACME Secret metadata, dedicated renewal identity and daily DNS-01 certificate workflow; refresh running preview edges                                                                                                                          | Fill the scoped DNS token and ACME contact; verify wildcard issuance and external OAuth/SSO callbacks with authenticated access                                                                                                                                                                  |
+| 5    | Discover configured Sending domain and verified destination, apply three Email Routing aliases and optional guarded Routing DNS; install the separate Sending token                                                                                | Fill account/token/private destination locally; verify that stg/prod/test mail reaches the intended inbox                                                                                                                                                                                        |
+| 6    | Exact-CI staging and release automation, explicit `/preview up`, independent mail retry                                                                                                                                                            | Supervised nonproduction acceptance: random host lifetime, sign-in, Host/CSRF boundaries, fork rejection, stop/resume/retirement and actual stg/test mail                                                                                                                                        |
+| 7    | Prepare Backup for GKE agent; after live cluster exists, apply daily volume/Secret backups, the Pre-update Backup and in-place restore plans, and production uptime/capacity/restart/backup-failure alerts; inspect backup freshness/configuration | Isolated restore drill including the independent Home ledger, approved RPO/RTO and maintenance/migration recovery, plus a zone failover drill (primary zone made unreachable; web/API and Runs recover in the other zone with no acknowledged write lost); configuration does not prove recovery |
+| 8    | Exact main CI, original staged digest promotion and fixed production notification                                                                                                                                                                  | Explicitly enable production after readiness, human-merge the validated release PR, approve the Environment, verify HTTPS/sign-in/digests and actual prod mail                                                                                                                                   |
 
 After each production release, merge main back into develop through review.
 For PR environments, use the explicit comment commands below. Inspect failed
@@ -71,8 +71,9 @@ evidence expires. The schedule never retries failed migrations or execution.
 
 S and M usually differ because a merge creates a new commit. Do not rebuild
 images merely to relabel S as M. Record S, M and the bundle's trusted controller
-SHA **T** separately. T must be an approved ancestor of protected `main`; the
-bundle includes app, postgres, sandbox, observer, nats, control, edge and caddy.
+SHA **T** separately. T equals S, because nonproduction trusts the protected
+development branch head it deploys; production refuses any bundle whose T is not
+S. The bundle includes app, postgres, sandbox, observer, nats, control, edge and caddy.
 Fresh production admission requires staging evidence no older than seven days
 (`staging_max_age_seconds` defaults to 604800). Revalidate expired evidence; do
 not edit a stored receipt. Each validation writes an immutable archive at
@@ -102,14 +103,43 @@ requires the reviewed full head SHA, for example
 can authorize this operation. `/preview stop` preserves the environment;
 `/preview destroy` removes its owned data. These actions cannot operate production.
 
+## Release PR diagnostics
+
+The Release PR workflow records JSON events for configuration validation,
+candidate validation and creation, staging receipt discovery and validation,
+and readiness publication. Each phase reports its outcome and elapsed time;
+failures include the exception type and source line without exception text.
+An always-run final step reports checkout, configuration, App authentication
+and controller outcomes, including failures before the controller starts.
+
+Each GitHub request records its method, route template, request sequence and
+elapsed time. Responses include the HTTP status, GitHub Request ID and available
+rate-limit/retry metadata. Known API and transport failures receive fixed
+categories such as `integration_permission_denied`, `no_commits_between` or
+`connection_reset`. Validation details include only allowlisted resource,
+field, code and GraphQL error types. Unknown errors retain the status and
+Request ID with `unclassified`; arbitrary server text remains withheld.
+
+Configuration is passed to the reusable execution workflow as a secret so
+GitHub masks it before printing any step environment. The existing
+`release-automation` Environment still supplies the App private key. Logs never
+include request/response bodies, GraphQL variables, configuration values,
+credentials, arbitrary stderr, signed download URLs or archive contents.
+The controller disables inherited `GH_DEBUG` output. Do not add `--verbose`,
+shell tracing or environment dumps when investigating a failure. Use the
+recorded UTC time, Request ID, source/controller SHA and phase to correlate
+the failure with GitHub support and the exact trusted source revision.
+
 ## Account and GitHub setup
 
 Publish the reviewed workflow and controller changes to the appropriate
 protected branches before enabling them. `automation_branch` is the protected
 repository default branch, currently `develop/0.1.0`, on which nonproduction
-workflow-run, comment and scheduled automation executes. `trusted_branch` is
-`main`: privileged jobs pin one reviewed main commit and never execute PR code.
-Run manual **GCP environments** operations on `automation_branch`, not on the
+workflow-run, comment and scheduled automation executes. Nonproduction
+privileged jobs pin one commit of that protected branch and never execute PR
+code. `trusted_branch` stays `main` and now names only production's code anchor:
+the production dispatcher and notifications check out `main`, and production
+applies the checkout of S. Run manual **GCP environments** operations on `automation_branch`, not on the
 source branch being deployed or on the trusted-code checkout ref. These names
 have different purposes. WIF checks the workflow execution ref and
 GitHub Environment, independently of the code checkout. Changing the default
@@ -195,6 +225,9 @@ After privileged code/account inputs are installed, explicitly enable
 `GCP_CERTIFICATE_RENEWAL_ENABLED` and dispatch the first issuance on the execution
 branch. The daily schedule renews certificates within 30 days of expiry. Verify
 the first successful certificate version before enabling random preview deploys.
+For this initial certificate-only Terraform activation, explicitly set
+`enablement.notifications=false` while mail setup is pending. After configuring
+mail, set `enablement.notifications=true` and retain the other selected flags.
 
 The trusted controller validates the wildcard SAN, validity and matching key,
 then mounts the PEM only in the edge. Normal reconcile also refreshes quiet
@@ -343,3 +376,59 @@ git diff --check
 Record actual command results, tested Git SHA, manifests/digests, the person running it and
 private evidence location. These commands are instructions, not a claim that
 tests, hosted CI, infrastructure, mail forwarding or restore drills have passed.
+
+## Pre-update Backup
+
+After the seal and before Terraform or Helm changes anything, a production
+update takes a Pre-update Backup under the plan `aidash-production-pre-update`
+(ADR 0082). The backup is named `pre-update-g<generation>-<sha>`. It holds every
+resource in `aidash-production`, with volume data and Secrets, except the Home
+recovery ledger claim. If the backup fails, or takes longer than 30 minutes or
+the time the deploy still needs, the update fails before it changes anything and
+unseals. Read its diagnostic, repair the cause, then dispatch on `main` with
+`retry_failed=true`. A retry is a new generation and takes a new backup.
+Production refuses to update without this plan. Apply it in step 7 of the
+activation checklist before the second production update.
+
+The update entry in the lifecycle state records `pre_update_backup` (the backup's
+full name). It records `writers_started` before any writer starts again: the new
+release's writers, or the old release's writers when a failure unseals. The
+deployment receipt carries both. Both backup plans back up the ProtectedApplication
+`aidash`, which the next production deploy after step 7 applies. Until then the
+daily plan has nothing to back up and the inspection refuses.
+
+Restore a Pre-update Backup only when all of these hold:
+
+- the update failed, and its entry names `pre_update_backup`;
+- the entry has no `writers_started`, so nothing was written after the backup;
+- the inspection shows that a forward fix cannot repair the failure.
+
+If `writers_started` is set, a restore loses writes. Fix forward, or treat the
+daily backup as the last resort below.
+
+Production deploys only the current protected `main` SHA, so a restore goes
+with a release that reverts the failed one. Keep production sealed and prepare
+that revert release through the normal release PR. Then run the in-place
+restore plan:
+
+```sh
+gcloud beta container backup-restore restores create "restore-g<generation>" \
+  --project <production-project> --location us-central1 \
+  --restore-plan aidash-production-pre-update-in-place \
+  --backup "<pre_update_backup>" --wait-for-completion
+```
+
+The restore plan selects the application `aidash` and excludes cluster resources,
+so `DELETE_AND_RESTORE` replaces only what that application selects. The ledger
+claim stays in place with its current contents. Then dispatch `gcp-production.yml` on `main` with the
+revert release's `main_sha` and `retry_failed=true`. That update takes its own
+Pre-update Backup of the restored state before it deploys. Confirm health and
+admission as for a normal update.
+
+## Daily backup: last resort
+
+A daily backup is up to 24 hours old. Restoring it rewinds PostgreSQL, NATS,
+the Runner journal and the capability objects, while the ledger stays current.
+Authority, Run control and evidence continuity across such a rewind are not
+designed yet (#433). Use it only when no Pre-update Backup applies and the data
+is otherwise lost, and record what the rewind removed.

@@ -82,7 +82,11 @@ function fixture(reference = false) {
         deferred_run_message_reads: [],
       },
     } as unknown,
-    recovery: { retry: null, lease_recovered: false },
+    recovery: {
+      retry: null,
+      lease_recovered: false,
+      semantic_reason: null as string | null,
+    },
     state_error: null as string | null,
     observed_input_seq: 0,
     ledger_worker_ready: true,
@@ -118,7 +122,8 @@ function fixture(reference = false) {
         kind: "INFORMATION_REQUEST",
         prompt: "Which market should I examine?",
         response: null as unknown,
-        answered_by: null,
+        answered_by: null as string | null,
+        answer_by: null as string | null,
         created_at: "2026-09-22T10:10:00Z",
       },
     ],
@@ -248,6 +253,7 @@ export async function setup(
     coreVersion?: boolean;
     runMediaRoutes?: string[][];
     invalidRun?: boolean;
+    semanticPause?: string;
     failureDeliveryRun?: boolean;
     openTask?: boolean;
     foreignRun?: boolean;
@@ -258,6 +264,8 @@ export async function setup(
     /** Run-published text citing evidence, beside a person's pasted marker. */
     citations?: boolean;
     tenantActions?: string[];
+    /** When the Run waiting for the question continues without an answer. */
+    answerBy?: string;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -296,6 +304,10 @@ export async function setup(
         workspace_id: "workspace-one",
       }))
     : [];
+  if (options.semanticPause) {
+    data.runs[0].control = "PAUSED";
+    data.runs[0].recovery.semantic_reason = options.semanticPause;
+  }
   if (options.invalidRun || options.failureDeliveryRun) {
     data.runs[0].control = "PAUSED";
     data.runs[0].context = null;
@@ -397,6 +409,8 @@ export async function setup(
     });
   }
   if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";
+  if (options.answerBy) data.human_requests[0].answer_by = options.answerBy;
+  const deadlineEvents: unknown[] = [];
   const messages: Record<string, Message[]> = {
     "workspace-one": [
       ...Array.from({ length: options.olderMessages ?? 0 }, (_, index) => ({
@@ -819,7 +833,10 @@ export async function setup(
           artifacts: data.artifacts.filter(
             (artifact) => artifact.workspace_id === workspace.id,
           ),
-          events: workspace.id === "workspace-one" ? referenceEvents : [],
+          events:
+            workspace.id === "workspace-one"
+              ? [...referenceEvents, ...deadlineEvents]
+              : [],
         },
       });
     }
@@ -862,6 +879,22 @@ export async function setup(
     },
     finishRuns: () => {
       for (const run of data.runs) run.phase = "COMPLETED";
+    },
+    /** The person's Answer Deadline passes: the system closes the question. */
+    passAnswerDeadline: () => {
+      const request = data.human_requests[0];
+      request.response = { answered: false, reason: "answer_deadline" };
+      request.answered_by = "system";
+      request.answer_by = null;
+      deadlineEvents.push({
+        id: "deadline-event",
+        kind: "human.answered",
+        created_at: "2026-09-22T10:20:00Z",
+        data: { ...request },
+        node_id: data.node.id,
+        sequence: 100,
+        workspace_id: request.workspace_id,
+      });
     },
   };
 }

@@ -4,6 +4,7 @@
 //! Execute an individual target with `cargo test -p aidash-server --test <target>`.
 //!
 //! - `dashboard_oidc`
+//! - `demo_data`
 //! - `execution_authorization`
 //! - `interaction_authorization`
 //! - `policy`

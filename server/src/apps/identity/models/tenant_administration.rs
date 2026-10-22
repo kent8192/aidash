@@ -43,6 +43,9 @@ pub(crate) enum AdministrationActor {
 		identity: Uuid,
 		mapping: Option<Uuid>,
 	},
+	/// A Demo Reservation, spent by the sign-in or the load that maps its
+	/// External Identity (ADR 0079). Nobody decides it.
+	DemoData,
 }
 
 /// The fields of one administration history row other than its actor.
@@ -66,6 +69,7 @@ impl AdministrationActor {
 				format!("oidc:{}", administrator.identity_id)
 			}
 			Self::Identity { identity, .. } => format!("oidc:{identity}"),
+			Self::DemoData => "demo-data".into(),
 		}
 	}
 
@@ -88,6 +92,7 @@ impl AdministrationActor {
 				Some(administrator.mapping_id),
 			),
 			Self::Identity { identity, mapping } => ("identity", Some(*identity), *mapping),
+			Self::DemoData => ("demo_data", None, None),
 		}
 	}
 
