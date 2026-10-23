@@ -273,6 +273,9 @@ class BrokerImageTests(unittest.TestCase):
 class DeployEntryPointTests(unittest.TestCase):
     """Every job that can obtain Google credentials runs in its protected Environment."""
 
+    # The only deliberate negative experiments; never exempt deployment jobs.
+    NEGATIVE_PROBES = {"wif-without-environment", "wif-unprotected-ref"}
+
     # The only workflows the WIF providers trust, and the one GitHub Environment the
     # provider condition accepts for each of them.
     CREDENTIALED = {
@@ -298,6 +301,8 @@ class DeployEntryPointTests(unittest.TestCase):
             jobs = self.credentialed_jobs(self.workflow(name))
             self.assertTrue(jobs, name)
             for job_name, job in jobs.items():
+                if name == "gcp-environments.yml" and job_name in self.NEGATIVE_PROBES:
+                    continue
                 # A literal name: an expression could select an Environment WIF does not gate.
                 self.assertEqual(job.get("environment"), environment, f"{name}:{job_name}")
 
@@ -309,7 +314,32 @@ class DeployEntryPointTests(unittest.TestCase):
     def test_credentialed_jobs_request_tokens_and_uncredentialed_jobs_do_not(self):
         for name, job in self.workflow("gcp-environments.yml")["jobs"].items():
             wants_token = (job.get("permissions") or {}).get("id-token") == "write"
-            self.assertEqual(wants_token, name in {"prepare", "publish", "apply"}, name)
+            self.assertEqual(wants_token, name in {"prepare", "publish", "apply"} | self.NEGATIVE_PROBES, name)
+
+    def test_negative_probes_are_dispatch_only_and_cannot_reach_deployment(self):
+        jobs = self.workflow("gcp-environments.yml")["jobs"]
+        for name in self.NEGATIVE_PROBES:
+            job = jobs[name]
+            self.assertTrue(job["if"].startswith(
+                "github.event_name == 'workflow_dispatch' && inputs.action == 'verify-boundaries' &&"))
+            self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
+            self.assertNotIn("needs", job)
+            self.assertFalse(any("google-github-actions/auth" in step.get("uses", "") for step in job["steps"]))
+        self.assertNotIn("environment", jobs["wif-without-environment"])
+        self.assertEqual(jobs["wif-unprotected-ref"]["environment"], "nonproduction")
+        self.assertTrue(jobs["intake"]["if"].startswith("inputs.action != 'verify-boundaries' &&"))
+
+        def ancestors(name):
+            needs = jobs[name].get("needs", [])
+            if isinstance(needs, str):
+                needs = [needs]
+            return set(needs).union(*(ancestors(dependency) for dependency in needs))
+
+        # Every lifecycle job stays behind intake; no later always() job may
+        # independently admit a boundary dispatch that skipped intake.
+        for name in jobs.keys() - self.NEGATIVE_PROBES - {"intake"}:
+            self.assertIn("intake", ancestors(name), name)
+        self.assertIn("needs.prepare.result == 'success'", jobs["apply"]["if"])
 
     def test_infrastructure_checks_hold_no_cloud_credentials(self):
         workflow = self.workflow("gcp-check.yml")
