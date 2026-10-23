@@ -80,6 +80,26 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 	}
 }
 
+async fn prepare_summary_usage(store: &Store, run: &Run, token: Uuid, dispatch: &UsageDispatch) {
+	use aidash_application::ports::execution::ExecutionStore;
+	use aidash_domain::context::recovery::{Attempt, Stage};
+	let attempt = Attempt {
+		id: dispatch.attempt,
+		run_id: run.id,
+		stage: Stage::Summary,
+		policy_version: "context-recovery/1".into(),
+		provider: "summarizer@1.0.0#sha256:fixture".into(),
+		source_from_seq: 1,
+		source_through_seq: 1,
+		base_revision: run.revision,
+		observed_input_seq: run.observed_input_seq,
+		before_tokens: dispatch.estimate.tokens,
+	};
+	ExecutionStore::begin_compaction(&store.for_run((*ACME).clone()), run, token, &attempt, 10)
+		.await
+		.unwrap();
+}
+
 fn unreported(outcome: &str, rejection: Option<&str>, completed: bool) -> UsageRow {
 	(
 		outcome.into(),
@@ -317,6 +337,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 		purpose: UsagePurpose::Summary,
 		..dispatch(crashed)
 	};
+	prepare_summary_usage(&store, &run, crashed, &auxiliary).await;
 	store
 		.record_usage_dispatch(&ACME, &run, crashed, &auxiliary)
 		.await
@@ -708,6 +729,7 @@ async fn summary_usage_is_independent_from_main_and_keeps_prompt_free_evidence(
 		..dispatch(token)
 	};
 	let main = dispatch(token);
+	prepare_summary_usage(&store, &run, token, &auxiliary).await;
 	for attempt in [&auxiliary, &main] {
 		store
 			.record_usage_dispatch(&ACME, &run, token, attempt)
@@ -876,5 +898,124 @@ async fn evaluation_export_keeps_usage_and_recovery_without_private_context(
 		assert_eq!(rows, vec![]);
 	}
 	tx.rollback().await.unwrap();
+	cleanup(store, &url, &schema).await;
+}
+
+/// The same unavailable outcome can occur before I/O, after I/O, or in a
+/// historical row with unknown dispatch state. Only the explicit false flag
+/// proves that a missing provider Usage Record means no call occurred.
+#[rstest::rstest]
+#[tokio::test]
+async fn summary_dispatch_proof_is_atomic_and_independent_from_compaction_outcome(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	use aidash_application::ports::execution::ExecutionStore;
+	use aidash_domain::context::recovery::{Outcome, Settlement};
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let mut expected = std::collections::BTreeMap::new();
+	let mut physical = None;
+	for (historical, dispatched) in [(true, false), (false, false), (false, true)] {
+		let dispatch = UsageDispatch {
+			purpose: UsagePurpose::Summary,
+			..dispatch(token)
+		};
+		prepare_summary_usage(&store, &run, token, &dispatch).await;
+		if historical {
+			let sql = Query::update()
+				.table(Alias::new("context_compaction_attempts"))
+				.value_expr(
+					Alias::new("provider_dispatched"),
+					Expr::value(Option::<bool>::None),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(dispatch.attempt)))
+				.to_string(PostgresQueryBuilder);
+			sqlx::query(&sql)
+				.execute(store.pool.fixture_driver())
+				.await
+				.unwrap();
+		}
+		if dispatched {
+			store
+				.record_usage_dispatch(&ACME, &run, token, &dispatch)
+				.await
+				.unwrap();
+			store
+				.complete_usage_record(&ACME, &run, dispatch.attempt, &UsageOutcome::Unknown)
+				.await
+				.unwrap();
+			physical = Some(dispatch.attempt);
+		}
+		ExecutionStore::settle_compaction(
+			&store.for_run((*ACME).clone()),
+			&run,
+			token,
+			dispatch.attempt,
+			&Settlement {
+				outcome: Outcome::Unavailable,
+				reason: None,
+				candidate_digest: None,
+				after_tokens: None,
+			},
+		)
+		.await
+		.unwrap();
+		expected.insert(
+			dispatch.attempt.to_string(),
+			if historical { None } else { Some(dispatched) },
+		);
+	}
+	let document = evaluation_queries::document();
+	let mut tx = store.pool.begin(&ACME).await.unwrap();
+	let journals: Vec<serde_json::Value> = aidash_server::database::native::query_scalar(
+		document["context_compaction_attempts"].as_str().unwrap(),
+	)
+	.scalar_all(&mut *tx)
+	.await
+	.unwrap();
+	let usage: Vec<serde_json::Value> = aidash_server::database::native::query_scalar(
+		document["inference_usage"].as_str().unwrap(),
+	)
+	.scalar_all(&mut *tx)
+	.await
+	.unwrap();
+	tx.rollback().await.unwrap();
+	assert_eq!(journals.len(), 3);
+	for row in journals {
+		assert_eq!(row["outcome"], "unavailable");
+		assert_eq!(
+			row["provider_dispatched"],
+			serde_json::json!(expected[row["attempt_id"].as_str().unwrap()])
+		);
+	}
+	assert_eq!(usage.len(), 1);
+	assert_eq!(usage[0]["attempt_id"], serde_json::json!(physical.unwrap()));
+	assert_eq!(usage[0]["outcome"], "unknown");
+	// A caller cannot create a physical Summary Usage Record without its
+	// matching open journal. The failed transaction retains neither row.
+	let orphan = UsageDispatch {
+		purpose: UsagePurpose::Summary,
+		..dispatch(token)
+	};
+	assert!(
+		store
+			.record_usage_dispatch(&ACME, &run, token, &orphan)
+			.await
+			.is_err()
+	);
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("inference_usage"))
+			.and_where(Expr::col("attempt_id").eq(Expr::value(orphan.attempt)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(count, 0);
 	cleanup(store, &url, &schema).await;
 }

@@ -88,6 +88,7 @@ struct State {
 	summary_reservation: bool,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
+	summary_estimate_diagnostics: Option<Value>,
 	/// Provider scripts consumed one per inference; an empty queue answers at once.
 	scripts: Mutex<VecDeque<Vec<Step>>>,
 	attempts: Mutex<Vec<(InferenceAttemptId, Vec<ProgressOutcome>)>>,
@@ -252,6 +253,11 @@ impl Backend {
 		let mut config = json!({
 			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
+		if id == "summarizer"
+			&& let Some(diagnostics) = &self.0.summary_estimate_diagnostics
+		{
+			config["estimate_diagnostics"] = diagnostics.clone();
+		}
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
@@ -1489,6 +1495,7 @@ fn fixture() -> Fixture {
 		summary_reservation: false,
 		terminal: None,
 		summarizer_output_tokens: 4096,
+		summary_estimate_diagnostics: None,
 		scripts: Mutex::new(VecDeque::new()),
 		attempts: Mutex::new(vec![]),
 		progress: Mutex::new(vec![]),

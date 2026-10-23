@@ -1,6 +1,6 @@
 //! One Usage Record per Inference Attempt. Reported counts, provider cost and the
 //! request estimate stay separate; unknown values stay NULL.
-use crate::Result;
+use crate::{Error, Result};
 use aidash_domain::provider::usage::{UsageDispatch, UsageOutcome};
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -158,6 +158,29 @@ impl InferenceUsage {
 			.insert_with_executor(tx, &record)
 			.await
 			.map_err(FrameworkError::from)?;
+		if dispatch.purpose.as_str() == "summary" {
+			// Creation of a compaction journal precedes authorization and may
+			// finish without I/O. Only this durable dispatch establishes that the
+			// provider could incur work; commit it with its Usage Record.
+			let (sql, values) = Query::update()
+				.table(Alias::new("context_compaction_attempts"))
+				.value_expr(Alias::new("provider_dispatched"), Expr::value(true))
+				.and_where(Expr::col("id").eq(Expr::value(dispatch.attempt)))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("stage").eq(Expr::value("summary")))
+				.and_where(Expr::col("outcome").is_null())
+				.build(PostgresQueryBuilder);
+			if tx
+				.execute(&sql, convert_values(values))
+				.await?
+				.rows_affected
+				!= 1
+			{
+				return Err(Error::Conflict(
+					"Summary dispatch has no open compaction attempt".into(),
+				));
+			}
+		}
 		Ok(())
 	}
 
