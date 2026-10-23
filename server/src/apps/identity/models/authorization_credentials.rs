@@ -35,6 +35,7 @@ use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{AtomicTransaction, Model, OrmExecutor};
 
 impl AuthorizationCredential {
@@ -53,7 +54,7 @@ impl AuthorizationCredential {
 
 	/// One page of the Tenant's exportable credentials, or only those issued
 	/// through `issued_through`.
-	pub(crate) async fn visible_page<E: OrmExecutor>(
+	pub(crate) async fn visible_page<E: OrmExecutor + TransactionExecutor>(
 		db: &mut E,
 		tenant: &str,
 		issued_through: Option<Uuid>,
@@ -67,9 +68,10 @@ impl AuthorizationCredential {
 			credentials = credentials.filter(Self::field_mapping_id().eq(Some(mapping)));
 		}
 		if active {
+			let now = super::dashboard_administration::database_time(db).await?;
 			credentials = credentials
 				.filter(Self::field_revoked_at().is_null())
-				.filter(Self::field_expires_at().gt(Utc::now()));
+				.filter(Self::field_expires_at().gt(now));
 		}
 		Ok(credentials
 			.order_by(&["-created_at", "id"])
@@ -83,17 +85,18 @@ impl AuthorizationCredential {
 	}
 
 	/// Returns the subset of `ids` whose credentials are neither revoked nor expired.
-	pub(crate) async fn active_ids<E: OrmExecutor>(
+	pub(crate) async fn active_ids<E: OrmExecutor + TransactionExecutor>(
 		db: &mut E,
 		ids: Vec<Uuid>,
 	) -> Result<std::collections::HashSet<Uuid>> {
 		if ids.is_empty() {
 			return Ok(Default::default());
 		}
+		let now = super::dashboard_administration::database_time(db).await?;
 		Ok(Self::objects()
 			.filter(Self::field_id().is_in(ids))
 			.filter(Self::field_revoked_at().is_null())
-			.filter(Self::field_expires_at().gt(Utc::now()))
+			.filter(Self::field_expires_at().gt(now))
 			.all_with_db(db)
 			.await?
 			.into_iter()
