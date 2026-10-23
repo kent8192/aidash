@@ -140,6 +140,7 @@ fn context_compaction_attempts() -> String {
 			[
 				"run_id",
 				"stage",
+				"provider_dispatched",
 				"policy_version",
 				"provider",
 				"source_from_seq",

@@ -613,7 +613,7 @@ impl<'a> Executor<'a> {
 					response_epoch: response_epoch(run.revision, run.step),
 					model_id: summary.model.id.clone(),
 					model_version: summary.model.version.clone(),
-					projection_version: fitting.budget.projection.version().number(),
+					projection_version: request.context.projection_version().number(),
 					upstream_model: model_cfg.model_id.clone(),
 					purpose: UsagePurpose::Summary,
 					requested_route: model_cfg
@@ -624,7 +624,7 @@ impl<'a> Executor<'a> {
 					shadow_estimates: diagnostic_estimates(
 						&request,
 						&model_cfg,
-						fitting.budget.projection.version(),
+						request.context.projection_version(),
 						run.step,
 					),
 					calibration_sample: false,
