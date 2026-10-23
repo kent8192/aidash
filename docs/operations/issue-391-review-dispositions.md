@@ -54,12 +54,12 @@ PR #478 makes recorded Research account IDs nonrenewable: a new agreement uses a
 
 ## Validation references
 
-| PR   | Local evidence                                                                                                                                                          |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #471 | Slow successful catalog fetch regression failed on baseline, then 19 catalog tests passed; strict Application Clippy.                                                   |
-| #474 | 101-profile endpoint boundary; three removed-Binding bearer boundaries; browser form validation; strict Server Clippy.                                                  |
-| #475 | Overlapping HTTP restore regression failed on baseline, then waited in PostgreSQL before returning Conflict; all 14 deletion/restore/purge tests; strict Server Clippy. |
-| #476 | All 10 Tenant administration browser tests; all eight native Tenant authority tests; TypeScript/build and strict Server Clippy.                                         |
-| #477 | Domain 52, Application 100 and Integrations 15 decision tests; full Harness 322; strict all-target Clippy for changed crates.                                           |
-| #478 | Domain Research 129, Application Research 77, full Harness 323 (including ordinary completed replay cases), native account terms four; strict all-target Clippy.        |
-| #479 | Full Application 3,748; native Web Research 13 with capability admission enabled; strict all-target Server/Application Clippy.                                          |
+| PR   | Local evidence                                                                                                                                                                                                             |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #471 | Slow successful catalog fetch regression failed on baseline, then 19 catalog tests passed; strict Application Clippy.                                                                                                      |
+| #474 | 101-profile endpoint boundary; three removed-Binding bearer boundaries; browser form validation; strict Server Clippy.                                                                                                     |
+| #475 | Overlapping HTTP restore regression failed on baseline, then waited in PostgreSQL before returning Conflict; all 14 deletion/restore/purge tests; strict Server Clippy.                                                    |
+| #476 | All 10 Tenant administration browser tests; all eight native Tenant authority tests; TypeScript/build and strict Server Clippy.                                                                                            |
+| #477 | Domain 52, Application 100 and Integrations 15 decision tests; full Harness 322; strict all-target Clippy for changed crates.                                                                                              |
+| #478 | Domain Research 129, Application Research 77, full Harness 323 (including ordinary completed replay cases), native account terms four; strict all-target Clippy.                                                           |
+| #479 | Full Application 3,748; native Web Research 13 with capability admission enabled; final Research/seed regressions 78 include cached page reuse at eight selected media items; strict all-target Server/Application Clippy. |
