@@ -2006,9 +2006,9 @@ impl<'a> Executor<'a> {
 				}
 				// Automatic recall is fetched evidence until this response is adopted.
 				// Refresh every staged bank under the resumed subject authority while
-				// its lease remains held through the fenced Run save below.
-				if let Some(observation) = &context.source_observation
-					&& let Err(error) = self.environment.recheck_source_observation(run, &observation.content).await
+				// its lease remains held through the fenced Run save below. Use this
+				// request's data even when degraded retrieval deliberately bypasses caching.
+				if let Err(error) = self.environment.recheck_source_observation(run, &pinned).await
 				{
 					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked).await;
 					return Err(error);
