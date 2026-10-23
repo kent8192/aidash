@@ -260,14 +260,19 @@ leaf crate, using wire strings rather than a new dependency on domain.
 and returns `Result<String, SignError>`; `verify_transition(compact, trusted,
 deployment, now)` returns `Result<RolloverClaims, FederationFailure>`.
 
-- [ ] Add contract tests for the exact 24-hour/7-day boundaries, forged proof,
+- [x] Add contract tests for the exact 24-hour/7-day boundaries, forged proof,
       wrong Deployment, successor key digest mismatch, future activation, retirement,
       replayed predecessor and oversized token. Existing request-binding tests remain.
-- [ ] Add one optional compact proof to Federation claims within the total
+- [x] Add one optional compact proof to Federation claims within the total
       8192-byte limit. Verify both transition and successor-signed outer token,
       including the original request binding; a proof alone never admits a request.
-- [ ] Run capability/domain tests and commit
+- [x] Run capability/domain tests and commit
       `feat(federation): authenticate bounded Deployment Key transitions`.
+
+Task 6 local evidence: 2,228 capability/domain tests and strict clippy passed;
+independent specification and quality review approved. The integrated commits
+are `1d45dfedf4` and the consumer initialization `4696173d7b`. Receiving
+persistence and deployed sender continuity remain Tasks 7 and 8.
 
 ## Task 7: Persistent receiving keysets and automatic advancement
 
@@ -424,6 +429,12 @@ must retain confirmed timestamps and undelivered reports across restart.
 Run Enterprise billing/Stripe tests and the owning storage, allocation journal
 and withdrawal tests. Actual preview acceptance also requires Issue 405's runtime.
 Do not rerun cryptographic negative cases here.
+
+Task 11a local evidence: the physical-purge regression failed with stale 4,000
+bytes before the repair, then passed; all 12 existing billing tests passed.
+Independent review approved the scoped sampler change, integrated as
+`639c182bc8`. Actual Node purge, allocation lifetime, coverage attribution and
+processor export remain separate acceptance requirements above.
 
 ## Task 12: Billing dashboard and actual sandbox end-to-end acceptance
 
