@@ -100,8 +100,8 @@ impl Task {
 		let tenant = crate::database::scope::parent_tenant(tx, "tasks", "id", task.id).await?;
 		let draft = Artifact::build()
 			.tenant(tenant)
-			.workspace_id(task.workspace_id)
-			.task_id(task.id)
+			.workspace(task.workspace_id)
+			.task(task.id)
 			.kind(serde_json::from_value(Value::String(
 				artifact.kind.clone(),
 			))?)

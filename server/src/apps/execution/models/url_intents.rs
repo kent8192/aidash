@@ -5,6 +5,7 @@ use crate::Result;
 use aidash_domain::research::intent::UrlIntent;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{Json, Model};
 use reinhardt::model;
@@ -18,8 +19,15 @@ pub struct UrlIntentRecord {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "url_intents_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text", null = true)]
 	pub input_key: Option<String>,
 	#[field]
@@ -58,7 +66,7 @@ impl UrlIntentRecord {
 		let record = Self::build()
 			.tenant(tenant)
 			.id(Uuid::now_v7())
-			.run_id(run)
+			.run(run)
 			.input_key(input_key.map(str::to_owned))
 			.pages(Json(pages.to_vec()))
 			.requested_by(requested_by.to_owned())
