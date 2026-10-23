@@ -1353,7 +1353,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&old_ref.id,
 		&old_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["manager"]});
 	policy(&f, "a", 1, authority.clone()).await;
 	let workspace = request(
 		&app,
@@ -1402,7 +1402,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&new_ref.id,
 		&new_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["manager"]});
 	policy(&f, "a", 2, authority).await;
 	let task2 = request(
 		&app,

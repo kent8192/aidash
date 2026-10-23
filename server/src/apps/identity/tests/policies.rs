@@ -95,7 +95,7 @@ fn bundle() -> Value {
 		"tenant":"acme",
 		"subjects":{
 			"alice":{"kind":"user","roles":["editor"],"groups":["research"],"attributes":{"department":"research"}},
-			"agent":{"kind":"agent","roles":["editor"],"attributes":{"department":"research"},"delegated_by":"alice"}
+			"agent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["editor"],"attributes":{"department":"research"},"delegated_by":"alice"}
 		},
 		"groups":{"research":{"roles":["reader"]}},
 		"roles":{"reader":{},"editor":{"inherits":["reader"]}},

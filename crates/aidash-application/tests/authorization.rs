@@ -32,7 +32,7 @@ struct Transaction {
 fn bundle() -> PolicyBundle {
 	serde_json::from_value(json!({
 		"tenant": "acme",
-		"subjects": {"worker": {"kind": "agent"}},
+		"subjects": {"worker": {"kind": "agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},
 		"policies": [{"id":"read", "effect":"allow", "subjects":{"any":true},
 			"actions":["workspace.read"], "resources":{"kinds":["workspace"]}}]
 	}))

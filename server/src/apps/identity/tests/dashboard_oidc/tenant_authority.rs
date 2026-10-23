@@ -6,6 +6,7 @@ use super::*;
 struct Team {
 	d: Deployment,
 	tenant: String,
+	node: String,
 	alice: Person,
 	alice_context: String,
 	bob: Person,
@@ -29,10 +30,15 @@ impl Team {
 		assert_eq!(status, 201, "{created}");
 		let tenant = created["name"].as_str().unwrap().to_owned();
 		let alice_context = d.context(&alice, &tenant).await;
+		let node = d.nodes_of(&alice, &alice_context, &tenant).await[0]["name"]
+			.as_str()
+			.unwrap()
+			.to_owned();
 		let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
 		Self {
 			d,
 			tenant,
+			node,
 			alice,
 			alice_context,
 			bob,
@@ -389,9 +395,11 @@ async fn an_administrator_issues_credentials_only_for_subjects_no_person_was_map
 	let t = Team::new(runtime).await;
 	let (status, body) = t
 		.replace(|bundle| {
-			bundle["subjects"]["ci"] = json!({"kind":"service","groups":["members"]});
+			bundle["subjects"]["ci"] =
+				json!({"kind":"service", "node": t.node,"groups":["members"]});
 			// A person's subject stays theirs even after its kind changes.
 			bundle["subjects"]["bob"]["kind"] = json!("service");
+			bundle["subjects"]["bob"]["node"] = json!(t.node);
 		})
 		.await;
 	assert_eq!(status, 200, "{body}");
@@ -438,7 +446,8 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		.await;
 	let (status, body) = t
 		.replace(|bundle| {
-			bundle["subjects"]["ci"] = json!({"kind":"service","groups":["members"]});
+			bundle["subjects"]["ci"] =
+				json!({"kind":"service", "node": t.node,"groups":["members"]});
 		})
 		.await;
 	assert_eq!(status, 200, "{body}");

@@ -246,6 +246,7 @@ pub fn add_user_subject(
 		subject.into(),
 		Subject {
 			kind: SubjectKind::User,
+			node: None,
 			groups: groups.clone(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),
@@ -270,6 +271,7 @@ pub fn default_agent_groups(bundle: &PolicyBundle) -> BTreeSet<String> {
 pub fn add_agent_subject(
 	bundle: &mut PolicyBundle,
 	subject: &str,
+	node: &crate::nodes::NodeName,
 	groups: &BTreeSet<String>,
 ) -> Result<()> {
 	if bundle.subjects.contains_key(subject) {
@@ -280,6 +282,7 @@ pub fn add_agent_subject(
 		subject.into(),
 		Subject {
 			kind: SubjectKind::Agent,
+			node: Some(node.clone()),
 			groups: groups.clone(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),

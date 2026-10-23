@@ -49,7 +49,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	assert_eq!(status, 200, "{approved}");
 	let mut policy = c.policy.clone();
 	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.1.0")] =
-		json!({"kind":"agent"});
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, workspace) = request(
 		&c.app,
@@ -634,7 +634,7 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 	b.f.config.endpoint = format!("http://{}", bl.local_addr().unwrap());
 	a.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(b.f.config.deployment.as_str(), "acme"), "research", "1.1.0")] =
-		json!({"kind":"agent"});
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	let (status, result) = request(
 		&a.app,
 		&a.f.config.api_token,
@@ -940,7 +940,10 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 			&entry.id,
 			&entry.version,
 		),
-		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
+		serde_json::from_value(
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}),
+		)
+		.unwrap(),
 	);
 	auth.replace(
 		"acme",
@@ -996,7 +999,10 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 			&receiver.agent_id,
 			&receiver.agent_version,
 		),
-		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
+		serde_json::from_value(
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}),
+		)
+		.unwrap(),
 	);
 	auth.replace(
 		"acme",
@@ -1208,7 +1214,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	assert_eq!(status, 200, "{body}");
 	let mut policy = c.a.policy.clone();
 	policy["subjects"][aidash_domain::agent_subject(sibling_address, "research", "1.1.0")] =
-		json!({"kind":"agent"});
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	common::replace_policy(&c.a.f.store, "acme", policy.clone()).await;
 	let (status, workspace) = request(
 		&c.a.app,

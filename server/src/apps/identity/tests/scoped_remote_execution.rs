@@ -408,7 +408,8 @@ mod scoped_pair_composition {
 			200
 		);
 		source_policy["subjects"]
-			[aidash_domain::agent_subject(&node_of(&b), "research", "1.0.0")] = json!({"kind":"agent"});
+			[aidash_domain::agent_subject(&node_of(&b), "research", "1.0.0")] =
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		assert_eq!(
 			request(
 				&aa,
@@ -494,7 +495,7 @@ mod scoped_pair_composition {
 			.await;
 			source_policy["subjects"]
 				[aidash_domain::agent_subject(&node_of(&b), "research-native", "1.0.0")] =
-				json!({"kind":"agent"});
+				json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
 			Some(data)
 		} else {
@@ -665,7 +666,8 @@ async fn ordered_receiver_agent(
 			Value::Null,
 		)
 		.await;
-		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		policy["bundle"]["subjects"][&subject] =
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		let (status, body) = request(
 			app,
 			&runtime.config.api_token,
@@ -676,7 +678,8 @@ async fn ordered_receiver_agent(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	source_policy["subjects"][&subject] = json!({"kind":"agent"});
+	source_policy["subjects"][&subject] =
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 }
 
 async fn native_remote_fixture(
@@ -811,7 +814,7 @@ async fn native_remote_fixture(
 			let revision = policy["revision"].clone();
 			policy["bundle"]["subjects"]
 				[aidash_domain::agent_subject(&node_of(b), "research-native", "1.0.0")] =
-				json!({"kind":"agent"});
+				json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 			let (status, body) = request(
 				app,
 				&runtime.config.api_token,

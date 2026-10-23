@@ -34,7 +34,8 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		"skilled",
 		"1.0.0",
 	);
-	policy["subjects"][&agent_subject] = json!({"kind":"agent"});
+	policy["subjects"][&agent_subject] =
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
 		request(
 			&app,
@@ -804,7 +805,8 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		"child",
 		"1.0.0",
 	);
-	policy["subjects"][&child] = json!({"kind":"agent"});
+	policy["subjects"][&child] =
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	let parent = qualified_agent(
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research",

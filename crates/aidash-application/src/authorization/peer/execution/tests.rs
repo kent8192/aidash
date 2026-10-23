@@ -23,7 +23,7 @@ impl Scope {
 		let executor = aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0");
 		Self {
 			bundle: serde_json::from_value(
-				json!({"tenant":"local","subjects":{executor:{"kind":"agent","delegated_by":null}}}),
+				json!({"tenant":"local","subjects":{executor:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}}),
 			)
 			.unwrap(),
 			subjects: vec!["mapped".into()],

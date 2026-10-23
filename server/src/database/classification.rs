@@ -277,6 +277,8 @@ pub const TABLES: &[Table] = &[
 	// any scope opens (#241)
 	table("identity", "node_names", DeploymentWide),
 	table("identity", "nodes", TenantOwned),
+	// Deletion history outlives Node data and is expired by the audit sweep.
+	audit("identity", "node_deletions"),
 	// a person's own Approval Mode and Approval Rules (ADR 0076)
 	table("identity", "identity_approval_preferences", TenantOwned),
 	table("identity", "identity_approval_rules", TenantOwned),

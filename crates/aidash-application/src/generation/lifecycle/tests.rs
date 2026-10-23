@@ -46,6 +46,7 @@ impl Repository {
 			job.executor_subject("aidash://local"),
 			Subject {
 				kind: SubjectKind::Agent,
+				node: Some(aidash_domain::nodes::NodeName::derived("acme")),
 				groups: BTreeSet::new(),
 				roles: BTreeSet::new(),
 				attributes: json!({}),

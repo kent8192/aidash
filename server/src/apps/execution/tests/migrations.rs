@@ -105,7 +105,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		50
+		51
 	);
 	let tables = migrations
 		.iter()
@@ -698,7 +698,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		50
+		51
 	);
 }
 
@@ -2819,4 +2819,86 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		"{error}"
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![deferred]).await);
+}
+
+/// PostgreSQL owns immutable grace deadlines and one open deletion per Node;
+/// a restored deletion remains historical and does not block a later deletion.
+#[rstest]
+#[tokio::test]
+async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("sibling").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let insert = "INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) VALUES ($1,$2,$3,CURRENT_TIMESTAMP,'deployment_administrator',CURRENT_TIMESTAMP + INTERVAL '30 days',0)";
+	let first = Uuid::new_v4();
+	sqlx::query(insert)
+		.bind(first)
+		.bind("acme")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	assert!(
+		sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("acme")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.is_err(),
+		"one unresolved deletion per Node"
+	);
+	assert!(
+		sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("sibling")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.is_err(),
+		"a Tenant must own the permanent Node name"
+	);
+	assert!(
+		sqlx::query(
+			"UPDATE node_deletions SET purge_after=purge_after + INTERVAL '1 day' WHERE id=$1"
+		)
+		.bind(first)
+		.execute(&pool)
+		.await
+		.is_err(),
+		"progress cannot extend the fixed grace period"
+	);
+	sqlx::query("UPDATE node_deletions SET restored_at=CURRENT_TIMESTAMP, restored_by_kind='deployment_administrator' WHERE id=$1").bind(first).execute(&pool).await.unwrap();
+	sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind("acme")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let retained: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM node_deletions WHERE tenant='acme' AND node=$1")
+			.bind(&node)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(retained, 2, "purging a Node preserves its deletion history");
+	let names: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM node_names WHERE tenant='acme' AND name=$1")
+			.bind(&node)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(names, 1, "the name claim is permanent");
+	pool.close().await;
 }
