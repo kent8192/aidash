@@ -223,6 +223,23 @@ impl Access {
 	pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
 		Self::begin_with_lock(store, identity, false).await
 	}
+	/// Revalidate saved authority for recovery without auditing or retiring live identities.
+	/// The same policy, credential and session locks still delimit the proof.
+	pub(crate) async fn begin_proof(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
+		identity.check_binding_read_only(&store.pool).await?;
+		let mut tx = store.pool.begin(&identity.tenancy()?).await?;
+		let snapshot = identity.lock_with_mode(&mut tx, false).await?;
+		let mut access = Self::from_transaction(
+			tx,
+			&store.pool,
+			&store.node_id,
+			store.semantic_client.clone(),
+			identity,
+			snapshot,
+		);
+		access.audit = false;
+		Ok(access)
+	}
 
 	pub async fn begin_exclusive(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
 		Self::begin_with_lock(store, identity, true).await
@@ -537,7 +554,8 @@ impl Access {
 				.pool
 				.begin(&self.identity.tenancy()?)
 				.await?
-				.into_executor()?;
+				.into_executor()
+				.await?;
 			AuthorizationDecision::append_many(audit.as_mut(), &self.identity.tenant, records)
 				.await?;
 			audit.commit().await?;
@@ -559,7 +577,10 @@ impl Access {
 		if result.is_err() && self.tx.is_active() {
 			self.tx.discard_memory_fences();
 		}
-		let tx = self.tx.take().map(|tx| tx.into_executor()).transpose()?;
+		let tx = match self.tx.take() {
+			Some(tx) => Some(tx.into_executor().await?),
+			None => None,
+		};
 		self.complete(tx, result).await
 	}
 
@@ -599,7 +620,8 @@ impl Access {
 					.pool
 					.begin(&self.identity.tenancy()?)
 					.await?
-					.into_executor()?;
+					.into_executor()
+					.await?;
 				AuthorizationDecision::append_many(
 					audit.as_mut(),
 					&self.identity.tenant,

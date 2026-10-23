@@ -244,7 +244,9 @@ class FakeCluster:
         if container == "postgres":
             sql = (data or b"").decode()
             # Database roles run as three psql sessions; the observer as one.
-            if "pg_depend" in sql:
+            if "aidash_memory_job_read_only" in sql:
+                step = "memory_role"
+            elif "pg_depend" in sql:
                 step = "legacy_ownership"
             elif "pgroonga" in sql:
                 step = "pgroonga"

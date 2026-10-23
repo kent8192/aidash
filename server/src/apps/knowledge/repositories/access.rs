@@ -57,6 +57,21 @@ impl Lease<'_> {
 	}
 	/// Restore the authority saved with work on `workspace`.
 	pub(crate) async fn restore(store: &Store, authority: Value, workspace: Uuid) -> Result<Self> {
+		Self::restore_with_mode(store, authority, workspace, false).await
+	}
+	pub(crate) async fn restore_proof(
+		store: &Store,
+		authority: Value,
+		workspace: Uuid,
+	) -> Result<Self> {
+		Self::restore_with_mode(store, authority, workspace, true).await
+	}
+	async fn restore_with_mode(
+		store: &Store,
+		authority: Value,
+		workspace: Uuid,
+		proof: bool,
+	) -> Result<Self> {
 		let authority: SavedAuthority = serde_json::from_value(authority)?;
 		match authority.credential {
 			None if authority.subject == WITHOUT_SUBJECT
@@ -66,16 +81,17 @@ impl Lease<'_> {
 				Self::within(store, &store.workspace_tenancy(workspace).await?).await
 			}
 			Some(credential_id) => {
-				let mut access = Access::begin(
-					store,
-					&SubjectIdentity {
-						http_session: None,
-						credential_id,
-						tenant: authority.tenant,
-						subject: authority.subject,
-					},
-				)
-				.await?;
+				let identity = SubjectIdentity {
+					http_session: None,
+					credential_id,
+					tenant: authority.tenant,
+					subject: authority.subject,
+				};
+				let mut access = if proof {
+					Access::begin_proof(store, &identity).await?
+				} else {
+					Access::begin(store, &identity).await?
+				};
 				if authority.subjects.is_empty()
 					|| !authority.subjects.contains(&access.identity.subject)
 				{

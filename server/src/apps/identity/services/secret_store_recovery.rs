@@ -165,7 +165,7 @@ async fn unreadable_plan_connections(
 		let scope = aidash_application::tenancy::TenancyScope::Deployment(
 			aidash_application::tenancy::DeploymentScopeReason::SecretStoreRecovery,
 		);
-		let mut tx = pool.begin(&scope).await?.into_executor()?;
+		let mut tx = pool.begin(&scope).await?.into_executor().await?;
 		let rows = tx.fetch_all(&sql, convert_values(values)).await?;
 		tx.commit().await?;
 		let page = rows

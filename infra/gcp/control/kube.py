@@ -87,12 +87,13 @@ GCIP_KEYS = {
     "providers", "password_sign_up", "auth_helper", "sign_in_domains", "mfa_mandatory",
     "session_absolute_seconds", "session_idle_seconds",
 }
-IDENTITY_TOKENS = ("database", "api", "runner", "observer", "owner", "server")
+IDENTITY_TOKENS = ("database", "api", "runner", "observer", "owner", "server", "memory-recovery")
 # Migrations log in as the owner of every table. Servers and workers log in as a
 # role that holds only DML, so row-level security binds it (#262). The bootstrap
 # superuser (the "database" token) only provisions these roles and extensions.
 OWNER_ROLE = "aidash_owner"
 SERVER_ROLE = "aidash_server"
+MEMORY_ROLE = "aidash_memory_recovery"
 # The activity observer's own login. It reads only the tables queried by
 # infra/gcp/observer/src/main.rs, plus pg_read_all_stats: without it,
 # pg_stat_activity hides other sessions' state and in-flight work would look idle.
@@ -612,6 +613,12 @@ def materialize(cluster, identity, project, output, runtime):
     for manifest in (
         secret(namespace, "app-runtime", values),
         secret(namespace, "app-migration", {"DATABASE_URL": owner}),
+        secret(namespace, "app-memory-recovery", {
+            "DATABASE_URL": f"postgres://{MEMORY_ROLE}:{tokens['memory-recovery']}@env-environment-postgres:5432/{DATABASE}",
+            # Native settings require a Node token and derive a framework key
+            # from it. This isolated value is never admitted by any server.
+            "AIDASH_API_TOKEN": hashlib.sha256(("aidash-memory-maintenance:" + tokens["memory-recovery"]).encode()).hexdigest(),
+        }),
         secret(namespace, "app-runner", {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
         secret(namespace, "env-postgres", {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": tokens["database"], "POSTGRES_DB": DATABASE}),
         secret(namespace, "env-activity", {"DATABASE_URL": observer, "AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
@@ -658,6 +665,17 @@ def app_values(cluster, identity, output, release, sha, settings):
         # Writers start only through start_writers, after migration and checks.
         return {"replicas": 0, "serviceAccount": {"annotations": {"iam.gke.io/gcp-service-account": account}}}
 
+    protection = output.get("memory_recovery", {"required": False})
+    if identity == PRODUCTION and not protection.get("required"):
+        raise Refused("Production requires independent Home ledger protection infrastructure")
+    recovery = {"required": bool(protection.get("required"))}
+    if recovery["required"]:
+        if not all(protection.get(key) for key in ("history_bucket", "archive_bucket", "backup_service_account", "prune_service_account")):
+            raise Refused("Home ledger protection infrastructure is incomplete")
+        recovery.update(historyBucket=protection["history_bucket"], archiveBucket=protection["archive_bucket"],
+                        existingSecret="app-memory-recovery",
+                        backupServiceAccount={"annotations": {"iam.gke.io/gcp-service-account": protection["backup_service_account"]}},
+                        pruneServiceAccount={"annotations": {"iam.gke.io/gcp-service-account": protection["prune_service_account"]}})
     return {
         "image": {"repository": repository, "digest": digest},
         "node": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
@@ -666,6 +684,7 @@ def app_values(cluster, identity, output, release, sha, settings):
             "existingClaim": "memory-recovery",
             "directory": f"{RECOVERY_ROOT}/{RECOVERY_HOME}",
             "subPath": RECOVERY_HOME,
+            "protection": recovery,
         },
         "capabilities": {"storage": {"existingClaim": "capability-objects"}},
         "frontend": {"enabled": False},
@@ -912,6 +931,7 @@ def deploy(cluster, identity, output, release, sha, settings, demo_people=None, 
     database_roles(cluster, identity)
     migrate(cluster, identity, sha, demo_people, fork)
     observer_role(cluster, identity)
+    memory_role(cluster, identity)
     cluster.rollout(namespace, target(identity, EDGE))
 
 
@@ -963,6 +983,8 @@ def migrate(cluster, identity, sha, demo_people=None, fork=False):
     # template keeps the required co-location term for the shared RWO claims;
     # with the writers at zero the Job Pod can only satisfy it by matching it.
     labels = {"app.kubernetes.io/instance": "app", "app.kubernetes.io/component": "migration"}
+    if any(item.get("name") == "AIDASH_MEMORY_RECOVERY_REQUIRED" and item.get("value") == "true" for item in container.get("env", [])):
+        labels["aidash.run/metadata-server"] = "allowed"
     if template.get("metadata", {}).get("labels", {}).get("aidash.run/co-located") == "true":
         labels["aidash.run/co-located"] = "true"
     # An interrupted reconciliation can leave its Job running. A second one would
@@ -1138,6 +1160,7 @@ def reload(cluster, identity, output, settings):
     # materialize() points the runtime Secrets at the server and observer logins.
     database_roles(cluster, identity)
     observer_role(cluster, identity)
+    memory_role(cluster, identity)
     start_writers(cluster, identity)
 
 
@@ -1221,3 +1244,50 @@ def destroy(cluster, identity):
         # The disk goes first: a retry still finds it through the remaining PV.
         cluster.delete_disk(*disk)
         cluster.delete("persistentvolume", name)
+
+
+def memory_role_sql(password, database=DATABASE):
+    """Read-only maintenance login, with column grants solely for FOR SHARE.
+
+    PostgreSQL requires UPDATE privilege for row locks. A before-row trigger
+    refuses every actual mutation by this login, including a no-op UPDATE.
+    It owns no object, inherits no role, and cannot disable these owner guards.
+    """
+    if not re.fullmatch(r"[0-9a-f]{64}", password):
+        raise Refused("Memory recovery database token is invalid")
+    return f"""
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{MEMORY_ROLE}')
+ THEN CREATE ROLE {MEMORY_ROLE}; END IF; END $$;
+ALTER ROLE {MEMORY_ROLE} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT PASSWORD '{password}';
+GRANT CONNECT ON DATABASE {database} TO {MEMORY_ROLE};
+GRANT USAGE ON SCHEMA public TO {MEMORY_ROLE};
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO {MEMORY_ROLE};
+CREATE OR REPLACE FUNCTION public.aidash_memory_job_read_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF current_user = '{MEMORY_ROLE}' THEN RAISE EXCEPTION 'memory recovery Jobs are read only' USING ERRCODE = '25006'; END IF;
+ IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DO $$ DECLARE item record; BEGIN
+ FOR item IN
+  SELECT c.relname, a.attname FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = (
+    SELECT min(first.attnum) FROM pg_attribute first WHERE first.attrelid = c.oid AND first.attnum > 0 AND NOT first.attisdropped)
+  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+ LOOP
+  EXECUTE format('GRANT UPDATE (%I) ON TABLE public.%I TO {MEMORY_ROLE}', item.attname, item.relname);
+  EXECUTE format('DROP TRIGGER IF EXISTS aidash_memory_job_read_only ON public.%I', item.relname);
+  EXECUTE format('CREATE TRIGGER aidash_memory_job_read_only BEFORE INSERT OR UPDATE OR DELETE ON public.%I FOR EACH ROW EXECUTE FUNCTION public.aidash_memory_job_read_only()', item.relname);
+ END LOOP;
+END $$;
+"""
+
+
+def memory_role(cluster, identity):
+    """Provision only after migrations; no scheduled Job receives owner/server credentials."""
+    namespace = namespace_of(identity)
+    cluster.exec(namespace, POSTGRES, "postgres", "sh", "-ec",
+                 'exec psql --no-psqlrc --quiet --single-transaction -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
+                 data=memory_role_sql(identity_tokens(cluster, namespace)["memory-recovery"]).encode())

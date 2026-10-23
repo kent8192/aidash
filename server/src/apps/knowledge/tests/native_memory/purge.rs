@@ -391,6 +391,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		reopened,
 		database.recovery_directory.path().to_owned(),
 	)
+	.await
 	.unwrap();
 	due(&reopened).await;
 	aidash_server::semantic::worker::sweep(&reopened)

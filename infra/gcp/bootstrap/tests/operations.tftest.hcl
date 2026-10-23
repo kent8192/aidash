@@ -145,7 +145,7 @@ run "production_backup_and_monitoring_are_scoped" {
       google_monitoring_uptime_check_config.production[0].content_matchers[0].content == "aidash://aidash-production-" &&
       google_monitoring_notification_channel.production[0].labels.email_address == "prod.deployment@aidash.run" &&
       google_monitoring_alert_policy.production_uptime[0].conditions[0].condition_threshold[0].trigger[0].count == 2 &&
-      length(output.operations_configuration.alert_policies) == 4 &&
+      length(output.operations_configuration.alert_policies) == 7 &&
       output.operations_configuration.restore_test_required &&
       output.operations_configuration.native_home_ledger_required &&
       !output.delivery_configuration.release_flow_enabled &&

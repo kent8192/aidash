@@ -39,8 +39,9 @@ async fn retention_transaction(
 	store
 		.pool
 		.begin(&TenancyScope::Deployment(DeploymentScopeReason::Retention))
+		.await?
+		.into_executor()
 		.await
-		.and_then(crate::database::native::Transaction::into_executor)
 }
 
 #[derive(Clone)]
@@ -122,8 +123,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let revoked = ResearchRevocation::exists(tx.as_mut(), run).await?;
 				tx.commit().await?;
 				Ok(revoked)
@@ -138,8 +140,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let state = ResearchAttempt::find(tx.as_mut(), run, key).await?;
 				tx.commit().await?;
 				Ok(state)
@@ -154,8 +157,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let search_attempts =
 					ResearchAttempt::count(tx.as_mut(), run, Operation::Search).await?;
 				let fetch_attempts =
@@ -183,8 +187,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let spent = ResearchAttempt::spend(tx.as_mut(), account, since).await?;
 				tx.commit().await?;
 				Ok(spent)
@@ -199,8 +204,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let reserved = ResearchAttempt::reserve(tx.as_mut(), run, reservation).await?;
 				tx.commit().await?;
 				Ok(reserved)
@@ -221,8 +227,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				// An attempt dispatched before its Run was revoked, or before
 				// account terms expired it, records no evidence: it settles,
 				// still charged, with a tombstone, which is also what its
@@ -260,8 +267,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
@@ -288,8 +296,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let source = ResearchSource::get(tx.as_mut(), run, id).await?;
 				tx.commit().await?;
 				Ok(source)
@@ -312,8 +321,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
@@ -383,8 +393,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let snapshot = ResearchSnapshot::get(tx.as_mut(), run, id).await?;
 				tx.commit().await?;
 				Ok(snapshot)
@@ -399,8 +410,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let original = ResearchOriginal::get(tx.as_mut(), run, snapshot).await?;
 				tx.commit().await?;
 				Ok(original)
@@ -422,8 +434,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
@@ -467,8 +480,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
@@ -511,8 +525,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let viewed = if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					None
 				} else {
@@ -535,8 +550,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				let image = if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					None
 				} else {
@@ -573,8 +589,9 @@ impl EvidenceStore for Evidence {
 					.store
 					.pool
 					.begin(&self.scope)
-					.await
-					.and_then(crate::database::native::Transaction::into_executor)?;
+					.await?
+					.into_executor()
+					.await?;
 				// Revoked evidence is never delivered: later citations of it are
 				// unknown, and readers get the uniform absence (ADR 0046). The
 				// Run's research lock, which a revocation holds, keeps the check
@@ -608,11 +625,7 @@ pub(crate) async fn run_research(
 	}
 	.usage(run)
 	.await?;
-	let mut tx = store
-		.pool
-		.begin(scope)
-		.await
-		.and_then(crate::database::native::Transaction::into_executor)?;
+	let mut tx = store.pool.begin(scope).await?.into_executor().await?;
 	let (estimated_micro_usd, uncertain_attempts, in_flight_attempts) =
 		ResearchAttempt::run_charges(tx.as_mut(), run).await?;
 	let url_intents =

@@ -167,6 +167,10 @@ class CloudFixture:
                 server_service_account=f"{key}-server@{PROJECT}.iam.gserviceaccount.com",
                 worker_service_account=f"{key}-worker@{PROJECT}.iam.gserviceaccount.com",
                 provider_credentials=None,
+                memory_recovery={"required": key == "production", "history_bucket": key + "-history",
+                                 "archive_bucket": key + "-archives",
+                                 "backup_service_account": f"{key}-backup@{PROJECT}.iam.gserviceaccount.com",
+                                 "prune_service_account": f"{key}-prune@{PROJECT}.iam.gserviceaccount.com"},
                 gcip=deepcopy(self.gcip),
             )
             for key in self.managed

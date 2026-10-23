@@ -93,7 +93,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0035_foreign_key_relations_state");
+	assert_eq!(knowledge[0].name, "0036_memory_recovery_eligibility");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations

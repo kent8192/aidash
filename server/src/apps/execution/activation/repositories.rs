@@ -62,7 +62,9 @@ impl ActivationRepository for Repository {
 					DeploymentScopeReason::ActivationClaim,
 				))
 				.await
-				.and_then(crate::database::native::Transaction::into_executor)
+				.map_err(error)?
+				.into_executor()
+				.await
 				.map_err(error)?,
 		}))
 	}

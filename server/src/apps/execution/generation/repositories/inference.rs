@@ -56,7 +56,7 @@ impl GenerationInferenceRepository for NativeInferenceRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationInferenceSession>> {
 		Ok(Box::new(Session {
-			transaction: self.pool.begin(&self.scope).await?.into_executor()?,
+			transaction: self.pool.begin(&self.scope).await?.into_executor().await?,
 		}))
 	}
 }

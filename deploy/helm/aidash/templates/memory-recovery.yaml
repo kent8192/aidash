@@ -1,0 +1,127 @@
+{{- $p := .Values.memoryRecovery.protection -}}
+{{- $gcip := "" -}}
+{{- if not (kindIs "invalid" .Values.gcip.settings) -}}{{- $gcip = include "aidash.gcip" . -}}{{- end -}}
+{{- if $p.required -}}
+{{- if or (empty .Values.memoryRecovery.existingClaim) (empty $p.historyBucket) (empty $p.archiveBucket) (empty $p.existingSecret) -}}
+{{- fail "protected memory requires a ledger claim, distinct history/archive buckets and a maintenance Secret" -}}
+{{- end -}}
+{{- if eq $p.historyBucket $p.archiveBucket -}}{{ fail "memory history and body archives require separate buckets" }}{{- end -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest) -}}{{ fail "memory recovery Jobs require a digest-pinned application image" }}{{- end -}}
+{{- if or (lt (int $p.spoolMaxFiles) 1) (lt (int64 $p.spoolMaxBytes) 67108864) -}}{{ fail "memory recovery spool must admit at least one bounded archive" }}{{- end -}}
+{{- $root := . -}}
+{{- range $role := list "backup" "prune" }}
+{{- $name := printf "%s-aidash-memory-%s" $root.Release.Name $role }}
+{{- $account := ternary $p.backupServiceAccount $p.pruneServiceAccount (eq $role "backup") }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  annotations: {{ toYaml $account.annotations | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ printf "memory-%s" $role }}
+spec:
+  schedule: {{ ternary $p.backupSchedule $p.pruneSchedule (eq $role "backup") | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ ternary 7200 600 (eq $role "backup") }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/instance: {{ $root.Release.Name }}
+            app.kubernetes.io/component: {{ printf "memory-%s" $role }}
+            aidash.run/metadata-server: allowed
+            {{- if eq $role "backup" }}
+            aidash.run/co-located: "true"
+            {{- end }}
+        spec:
+          serviceAccountName: {{ $name }}
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          {{- if eq $role "backup" }}
+          affinity: {{ include "aidash.affinity" $root | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.environment.nodeSelector }}
+          nodeSelector: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.environment.tolerations }}
+          tolerations: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.image.pullSecrets }}
+          imagePullSecrets: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: {{ printf "memory-%s" $role }}
+              image: {{ printf "%s@%s" $root.Values.image.repository $root.Values.image.digest | quote }}
+              imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+              args:
+                - memory-recovery
+                - {{ ternary "backup-all" "prune-remote" (eq $role "backup") }}
+                - --directory
+                - {{ $root.Values.memoryRecovery.directory | quote }}
+              envFrom:
+                - secretRef: { name: {{ $p.existingSecret | quote }} }
+              env:
+                - { name: AIDASH_NODE_ID, value: {{ $root.Values.node.id | quote }} }
+                - { name: AIDASH_ENDPOINT, value: {{ $root.Values.node.endpoint | default "http://127.0.0.1:8000" | quote }} }
+                {{- if $gcip }}
+                - { name: AIDASH_GCIP_SETTINGS, value: /etc/aidash/gcip/settings.json }
+                {{- end }}
+                - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $root.Values.memoryRecovery.directory | quote }} }
+                - { name: AIDASH_MEMORY_RECOVERY_REQUIRED, value: "true" }
+                {{- if eq $role "backup" }}
+                - { name: AIDASH_MEMORY_RECOVERY_HISTORY_BUCKET, value: {{ $p.historyBucket | quote }} }
+                {{- end }}
+                - { name: AIDASH_MEMORY_RECOVERY_ARCHIVE_BUCKET, value: {{ $p.archiveBucket | quote }} }
+                - { name: AIDASH_MEMORY_RECOVERY_SPOOL_MAX_FILES, value: {{ $p.spoolMaxFiles | int | toString | quote }} }
+                - { name: AIDASH_MEMORY_RECOVERY_SPOOL_MAX_BYTES, value: {{ $p.spoolMaxBytes | int64 | toString | quote }} }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { cpu: "1", memory: 512Mi }
+              volumeMounts:
+                - { name: temporary, mountPath: /tmp }
+                {{- if $gcip }}
+                - { name: gcip, mountPath: /etc/aidash/gcip, readOnly: true }
+                {{- end }}
+                {{- if eq $role "backup" }}
+                - name: memory-recovery
+                  mountPath: {{ $root.Values.memoryRecovery.directory | quote }}
+                  {{- with $root.Values.memoryRecovery.subPath }}
+                  subPath: {{ . | quote }}
+                  {{- end }}
+                {{- end }}
+          volumes:
+            - name: temporary
+              emptyDir: { sizeLimit: 64Mi }
+            {{- if $gcip }}
+            - name: gcip
+              configMap: { name: {{ printf "%s-aidash-gcip" $root.Release.Name }} }
+            {{- end }}
+            {{- if eq $role "backup" }}
+            - name: memory-recovery
+              persistentVolumeClaim: { claimName: {{ $root.Values.memoryRecovery.existingClaim | quote }} }
+            {{- end }}
+{{- end }}
+{{- end }}

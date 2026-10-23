@@ -417,6 +417,8 @@ pub struct MemoryBankSettings {
 	pub revision: i64,
 	#[field]
 	pub next_maintenance: DateTime<Utc>,
+	#[field]
+	pub recovery_eligible_at: DateTime<Utc>,
 }
 
 #[model(app_label = "knowledge", table_name = "memory_engine_jobs")]

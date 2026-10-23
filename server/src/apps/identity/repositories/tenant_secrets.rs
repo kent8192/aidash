@@ -37,7 +37,7 @@ fn failed(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 impl Repository for NativeRepository {
 	async fn begin(&self, tenant: &str) -> Result<Box<dyn Scope>> {
 		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		let (sql, values) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				"pg_advisory_xact_lock".into_iden(),
@@ -65,7 +65,7 @@ impl Repository for NativeRepository {
 		let scope = aidash_application::tenancy::TenancyScope::Deployment(
 			aidash_application::tenancy::DeploymentScopeReason::CredentialReconcile,
 		);
-		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		let mut query = Record::objects()
 			.filter(
 				Record::field_state()
@@ -83,7 +83,7 @@ impl Repository for NativeRepository {
 	}
 	async fn all(&self, tenant: &str) -> Result<Vec<TenantSecret>> {
 		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		let rows = Record::objects()
 			.filter(Record::field_tenant().eq(tenant))
 			.order_by(&["id"])

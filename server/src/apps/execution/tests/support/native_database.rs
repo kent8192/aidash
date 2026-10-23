@@ -216,6 +216,7 @@ impl DatabaseFixture {
 			restarted,
 			self.recovery_directory.path().to_owned(),
 		)
+		.await
 		.unwrap()
 	}
 }

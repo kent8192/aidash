@@ -58,11 +58,17 @@ impl SemanticIndexingRepository for NativeIndexing {
 	async fn maintenance(&self) -> Result<()> {
 		super::receiver_caches::sweep(&self.store).await?;
 		if let Some(directory) = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR") {
-			crate::semantic::services::memory_recovery::prune_expired(
+			if crate::semantic::services::memory_recovery::prune_expired(
 				&self.store,
 				std::path::Path::new(&directory),
 			)
-			.await?;
+			.await
+			.is_err()
+			{
+				// Remote body expiry has an independent Job. A missing local disk
+				// must not prevent unrelated semantic cleanup in this sweep.
+				tracing::warn!("local memory archive pruning unavailable");
+			}
 		}
 		super::retention::sweep(&self.store).await?;
 		super::purge::sweep(&self.store).await?;
@@ -206,8 +212,9 @@ impl SemanticIndexingRepository for NativeIndexing {
 				.store
 				.pool
 				.begin(&MAINTENANCE)
-				.await
-				.and_then(crate::database::native::Transaction::into_executor)?,
+				.await?
+				.into_executor()
+				.await?,
 		}))
 	}
 }
