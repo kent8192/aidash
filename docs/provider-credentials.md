@@ -45,7 +45,8 @@ Key Material.
 
 ## Keyless endpoints
 
-A model or embedding configuration without `provider_credential` is a Keyless
+A model configuration without both `provider_credential` and `plan_connection`,
+or an embedding configuration without `provider_credential`, is a Keyless
 endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
 and Aidash promises nothing about what it retains (ADR 0036). It may connect
 only to public addresses unless the Deployment Administrators list its exact
@@ -70,6 +71,12 @@ extend to another port or scheme on the same host.
 Choose a Secret Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
 unavailable.
+
+[ChatGPT Plan Connections](plan-connections.md) belong to one subject, use
+`plan_connection: "chatgpt"` in model configurations and remain separate from a
+Tenant's Provider Credential Binding. They are available only on opted-in
+Self-hosted Deployments with the PostgreSQL Store; Cloud and Dedicated support
+is deferred to #248 pending hosted-app approval.
 
 ## Provider Authorization
 
