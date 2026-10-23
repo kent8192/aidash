@@ -270,7 +270,10 @@ pub(crate) async fn list_live(tx: &mut dyn TransactionExecutor, tenant: &str) ->
 
 pub(crate) async fn count_live(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<u32> {
 	let (sql, values) = Query::select()
-		.expr_as(Expr::cust("count(*)"), Alias::new("total"))
+		.expr_as(
+			reinhardt::query::Func::count(Expr::col(Alias::new("name")).into()),
+			Alias::new("total"),
+		)
 		.from(Alias::new(NodeRow::table_name()))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.and_where(live_condition())
