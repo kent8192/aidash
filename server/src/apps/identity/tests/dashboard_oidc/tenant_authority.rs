@@ -510,3 +510,57 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 	assert_eq!(status, 403, "{body}");
 	t.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn overview_lists_item_scoped_credential_targets_without_policy_read(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, response) = t.replace(|bundle| {
+  bundle["subjects"]["ci"] = json!({"kind":"service"});
+  bundle["subjects"]["other-ci"] = json!({"kind":"service"});
+  bundle["policies"].as_array_mut().unwrap().extend([
+   json!({"id":"issue-ci","effect":"allow","subjects":{"ids":["bob"]},"actions":["credential.issue"],"resources":{"kinds":["*"],"ids":["ci"]}}),
+   json!({"id":"no-policy-read","effect":"deny","subjects":{"ids":["bob"]},"actions":["policy.read"],"resources":{"kinds":["*"]}}),
+  ]);
+ }).await;
+	assert_eq!(status, 200, "{response}");
+	let (status, overview) =
+		t.d.as_person(
+			&t.bob,
+			"GET",
+			&format!("/api/tenants/{}/administration", t.tenant),
+			Some(&t.bob_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{overview}");
+	assert_eq!(overview["issuable_subjects"], json!(["ci"]));
+	assert!(
+		!overview["actions"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("policy.read"))
+	);
+	assert!(
+		!overview["actions"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("credential.issue")),
+		"an item grant must not imply a collection grant"
+	);
+	assert_eq!(
+		t.bob("POST", "/credentials", json!({"subject":"ci"}))
+			.await
+			.0,
+		200
+	);
+	assert_eq!(
+		t.bob("POST", "/credentials", json!({"subject":"other-ci"}))
+			.await
+			.0,
+		403
+	);
+	t.finish().await;
+}

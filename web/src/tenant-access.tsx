@@ -52,8 +52,21 @@ export function TenantAccess({
           canManage={can("secret.manage")}
         />
       )}
-      {can("policy.read") && (
-        <TenantPolicyAdministration tenant={tenant} can={can} />
+      {([
+        "policy.read",
+        "credential.read",
+        "credential.issue",
+        "peer_mapping.read",
+        "peer_mapping.update",
+        "decision.read",
+      ].some(can) ||
+        !!overview.data?.issuable_subjects?.length) && (
+        <TenantPolicyAdministration
+          key={tenant}
+          tenant={tenant}
+          can={can}
+          issuableSubjects={overview.data?.issuable_subjects ?? []}
+        />
       )}
     </>
   );

@@ -34,7 +34,17 @@ export function OwnCredentials({
   const [error, setError] = useState("");
   const credentials = useQuery({
     queryKey: ["authorization", tenant, "credentials", "mine"],
-    queryFn: () => authorizationCredentials(path, { mine: true }),
+    queryFn: async () => {
+      const all: Credential[] = [];
+      for (let offset = 0; ; offset += 200) {
+        const page = await authorizationCredentials(path, {
+          mine: true,
+          offset,
+        });
+        all.push(...page);
+        if (page.length < 200) return all;
+      }
+    },
     refetchInterval: 5000,
   });
   const act = async (action: () => Promise<unknown>) => {
