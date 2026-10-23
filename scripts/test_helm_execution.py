@@ -39,6 +39,25 @@ class ChartsTest(unittest.TestCase):
     base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
+    def test_local_postgres_secret_store_is_mounted_without_key_material(self):
+        values = yaml.safe_load((ROOT / 'deploy/local-k8s/values.yaml').read_text())
+        values.update(self.base)
+        objects = render(self.aidash, values)
+        expected = {
+            'provider_credentials': {
+                'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'},
+                'store': {'kind': 'postgres', 'master_key': {'env': 'AIDASH_PROVIDER_STORE_MASTER_KEY'}},
+                'broker': None,
+            }
+        }
+        for role in ('server', 'worker'):
+            self.assertEqual(json.loads(self.mounted(objects, role, 'AIDASH_PROVIDER_CREDENTIAL_SETTINGS')), expected)
+        for store in ({'kind': 'postgres', 'master_key': {'value': 'plaintext'}},
+                      {'kind': 'postgres', 'master_key': {'env': 'OTHER_KEY'}}):
+            values['providerCredentials']['settings']['store'] = store
+            with self.subTest(store=store), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, values)
+
     def test_chart_installs_the_release_the_runner_image_bundles(self):
         # The installer reads only the archive bundled in its image (#394), so a
         # chart pin that differs from runner/gvisor.json can never install.

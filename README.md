@@ -78,7 +78,7 @@ clients retain no total timeout while reinhardt-web#6689 remains open.
 
 ### One-command Kubernetes start
 
-With Docker, kind, kubectl, Helm, curl, and cargo-make installed, run:
+With Docker, kind, kubectl, Helm, curl, Python 3, and cargo-make installed, run:
 
 ```sh
 cargo make k8s-up
@@ -90,6 +90,13 @@ starts persistent PostgreSQL with pgvector/PGroonga and JetStream NATS, deploys 
 worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
+
+The server and worker use a PostgreSQL [Secret Store](docs/provider-credentials.md).
+Startup generates its Master Key and fingerprint key once in the `aidash-local-app`
+Secret, so Tenants can connect OpenRouter under **Provider connections** without
+manual Store setup. Re-running `k8s-up` preserves both keys; `k8s-down` deletes
+them together with the local database. Partial or invalid keys stop startup
+instead of replacing keys that may protect existing credentials.
 
 Before starting the application, a one-shot Job provisions the Node's JetStream
 activation stream and durable worker consumer. Re-running `k8s-up` safely

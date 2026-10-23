@@ -16,6 +16,7 @@ description = "Build and start Aidash with PostgreSQL and NATS in a local kind c
 dependencies = [
   "k8s-prepare",
   "k8s-apply-config",
+  "k8s-provider-credentials",
   "k8s-build-postgres",
   "k8s-build-backend",
   "k8s-build-frontend",
@@ -62,6 +63,15 @@ args = [
   "deploy/local-k8s/namespace.yaml",
   "-f",
   "deploy/local-k8s/secrets.yaml",
+]
+
+[tasks.k8s-provider-credentials]
+private = true
+command = "python3"
+args = [
+  "scripts/local-k8s-credentials.py",
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
 ]
 
 [tasks.k8s-build-postgres]
@@ -183,6 +193,8 @@ args = [
   "--install",
   "aidash",
   "deploy/helm/aidash",
+  "--values",
+  "deploy/local-k8s/values.yaml",
   "--namespace",
   "aidash-local",
   "--set-string",
