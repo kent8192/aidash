@@ -408,3 +408,16 @@ rollout/rollback setting. Existing immutable definitions and Runs must keep
 their pinned Projection Version; do not rewrite historical omitted fields to
 apply a new default. Until those measured gates are met, rollback is simply to
 retain Legacy for new definitions, with no migration of existing Runs.
+
+## Rust construction API compatibility
+
+Persisted JSON additions are optional/defaulted and migrations are additive.
+Public Rust structs gain fields, so consumers using explicit struct literals
+must update them. Initialize `ModelConfig.provider_route` and
+`ModelConfig.estimate_diagnostics` to `None` for unchanged behavior; initialize
+`ReportedUsage.provider_identity` to `None` when unreported. Main inference
+dispatches use `UsagePurpose::Main`, with `requested_route: None` and an empty
+`shadow_estimates` collection when these observations are unavailable. Summary
+dispatches use their actual request projection and `UsagePurpose::Summary`.
+This source compatibility change is labeled `breaking-change`; it does not
+change persisted Projection Version defaults.
