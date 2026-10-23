@@ -68,6 +68,7 @@ pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entr
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut declared = entries(validation, node)?;
 	declared.push(approval_decider()?);
+	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
 	Ok(declared)
 }
 

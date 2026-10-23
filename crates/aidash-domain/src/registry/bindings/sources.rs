@@ -251,6 +251,9 @@ pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<Nati
 			.validate()?,
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			if let Some(declaration) = &source.context_source {
+				declaration.validate()?;
+			}
 			if source.max_tokens == 0 || source.max_tokens > i32::MAX as usize {
 				return Err(Error::Invalid(
 					"memory Source requires a finite context cap".into(),
@@ -345,18 +348,36 @@ mod tests {
 /// frozen Tool descriptors pin each operation/provider edge without duplicating schemas.
 pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result<()> {
 	use crate::context::source::PinPolicy;
-	for source in snapshot.bindings.iter().filter(|b| {
-		matches!(b.definition.kind.as_str(), "source" | "memory")
-			&& b.definition.config.get("schema_version").is_some()
-	}) {
-		let native: NativeContext = serde_json::from_value(source.definition.config.clone())?;
-		let Some(declaration) = &native.context_source else {
+	for source in snapshot
+		.bindings
+		.iter()
+		.filter(|b| matches!(b.definition.kind.as_str(), "source" | "memory"))
+	{
+		let (declaration, baseline) = if source.definition.config.get("schema_version").is_some() {
+			let native: NativeContext = serde_json::from_value(source.definition.config.clone())?;
+			let Some(declaration) = native.context_source.clone() else {
+				continue;
+			};
+			let mut baseline = native;
+			baseline.context_source = None;
+			(declaration, baseline.declaration(&source.identity))
+		} else if source.definition.kind == "source" {
+			let config: crate::memory::SourceConfig =
+				serde_json::from_value(source.definition.config.clone())?;
+			let Some(declaration) = config.context_source else {
+				continue;
+			};
+			let baseline = NativeContext {
+				schema_version: 1,
+				source: NativeSource::SemanticMemory {},
+				context_source: None,
+			}
+			.declaration(&source.identity);
+			(declaration, baseline)
+		} else {
 			continue;
 		};
 		declaration.validate()?;
-		let mut baseline = native.clone();
-		baseline.context_source = None;
-		let baseline = baseline.declaration(&source.identity);
 		if declaration.provider != baseline.provider || declaration.operation != baseline.operation
 		{
 			return Err(Error::Invalid(

@@ -51,6 +51,8 @@ pub struct Context {
 	pub source_contributions: Vec<source::SourceContribution>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub source_deliveries: Vec<source::SourceDelivery>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_selections: Vec<source::SelectionEvidence>,
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
@@ -130,6 +132,8 @@ struct StoredContext {
 	source_contributions: Vec<source::SourceContribution>,
 	#[serde(default)]
 	source_deliveries: Vec<source::SourceDelivery>,
+	#[serde(default)]
+	source_selections: Vec<source::SelectionEvidence>,
 	#[serde(default)]
 	binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
 	#[serde(default)]
@@ -236,6 +240,7 @@ impl<'de> Deserialize<'de> for Context {
 			source_observation: stored.source_observation,
 			source_contributions: stored.source_contributions,
 			source_deliveries: stored.source_deliveries,
+			source_selections: stored.source_selections,
 			binding_snapshot: stored.binding_snapshot,
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,

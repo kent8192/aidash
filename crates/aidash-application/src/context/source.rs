@@ -9,7 +9,7 @@ pub async fn fetch(
 	provider: &dyn ContextSourceProvider,
 	request: &SourceRequest,
 ) -> Result<SourceBatch> {
-	request.declaration.validate()?;
+	request.validate()?;
 	if matches!(request.declaration.pin, PinPolicy::OnDemand) {
 		return Ok(SourceBatch {
 			candidates: vec![],
@@ -108,3 +108,38 @@ pub fn fit_with(
 		digest,
 	})
 }
+
+/// Follow only the declared exact Tool and immutable item revision. Providers
+/// must still check current resource and Tool authority independently.
+pub async fn detail(
+	provider: &dyn ContextSourceProvider,
+	request: &DetailRequest,
+) -> Result<SourceBatch> {
+	request.request.validate()?;
+	if request.request.declaration.tools.detail.as_ref() != Some(&request.route.tool)
+		|| request.route.revision != request.identity.revision
+		|| request.identity.source != request.request.source
+	{
+		return Err(Error::Invalid(
+			"detail request differs from source Tool or revision".into(),
+		));
+	}
+	let batch = provider.detail(request).await?;
+	batch.validate(
+		&request.request.source,
+		&request.request.declaration,
+		request.request.max_bytes,
+	)?;
+	if batch.candidates.iter().any(|candidate| {
+		candidate.identity.item != request.identity.item
+			|| candidate.identity.revision != request.identity.revision
+	}) {
+		return Err(Error::Invalid(
+			"source detail returned a different item revision".into(),
+		));
+	}
+	Ok(batch)
+}
+
+#[cfg(test)]
+mod tests;

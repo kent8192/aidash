@@ -2163,3 +2163,5 @@ fn a_question_budget_matches_the_largest_encoded_request_with_escaped_text() {
 		largest + framing_reserve
 	);
 }
+
+mod source_selection_tests;
