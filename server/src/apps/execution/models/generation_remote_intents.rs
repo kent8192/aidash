@@ -1,4 +1,5 @@
 //! Durable generation_remote_intents rows.
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -7,12 +8,22 @@ use serde::{Deserialize, Serialize};
 pub struct GenerationRemoteIntents {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
-	#[field]
-	pub task_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_remote_intents_task_id_fkey",
+		db_index = false
+	)]
+	pub task: ForeignKeyField<crate::apps::workspaces::models::Task>,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub credential_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_remote_intents_credential_id_fkey",
+		db_index = false
+	)]
+	pub credential: ForeignKeyField<crate::apps::identity::models::AuthorizationCredential>,
 	#[field(field_type = "text")]
 	pub root_subject: String,
 	#[field]

@@ -15,6 +15,7 @@ use aidash_domain::research::{
 };
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Json, Model, QueryRow};
@@ -53,8 +54,15 @@ pub struct ResearchAttempt {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "research_attempts_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub invocation_key: String,
 	#[field(field_type = "text")]
@@ -98,8 +106,15 @@ pub struct ResearchSource {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "research_sources_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub url: String,
 	#[field(field_type = "text")]
@@ -509,7 +524,7 @@ impl ResearchAttempt {
 		let record = Self::build()
 			.tenant(tenant)
 			.id(Uuid::now_v7())
-			.run_id(run)
+			.run(run)
 			.invocation_key(reservation.key.clone())
 			.operation(reservation.operation.as_str().to_owned())
 			.provider(reservation.provider.clone())
@@ -588,7 +603,7 @@ impl ResearchSource {
 		let record = Self::build()
 			.tenant(tenant)
 			.id(Uuid::now_v7())
-			.run_id(run)
+			.run(run)
 			.url(url.to_owned())
 			.title(title.to_owned())
 			.attempt_key(Some(key.to_owned()))
