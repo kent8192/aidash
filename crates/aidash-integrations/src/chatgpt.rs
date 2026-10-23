@@ -290,20 +290,35 @@ impl Authorization for ChatgptAuthorization {
 			.map_err(RefreshFailure::Ambiguous)?;
 		match reply {
 			TokenReply::Issued(issued) => Ok(issued),
-			TokenReply::Rejected { code, .. } if domain::refresh_is_terminal(code.as_deref()) => {
-				Err(RefreshFailure::Terminal)
-			}
-			TokenReply::Rejected { code, .. } if code.as_deref() == Some("invalid_client") => {
+			TokenReply::Rejected {
+				status: 400 | 401,
+				code,
+			} if domain::refresh_is_terminal(code.as_deref()) => Err(RefreshFailure::Terminal),
+			TokenReply::Rejected {
+				status: 400 | 401,
+				code,
+			} if code.as_deref() == Some("invalid_client") => {
 				tracing::error!("Sign in with ChatGPT rejected a Plan Connection's client");
 				Err(RefreshFailure::Unavailable(Error::Plan(
 					domain::Failure::Misconfigured,
 				)))
 			}
-			TokenReply::Rejected { code: Some(_), .. } => {
+			TokenReply::Rejected { status: 400, code }
+				if matches!(
+					code.as_deref(),
+					Some(
+						"invalid_request"
+							| "unauthorized_client"
+							| "unsupported_grant_type"
+							| "invalid_scope"
+					)
+				) =>
+			{
 				Err(RefreshFailure::Unavailable(unavailable()))
 			}
-			// A proxy/server failure without an OAuth rejection cannot establish
+			// Unknown/empty error codes and proxy/server failures cannot establish
 			// whether the upstream consumed the refresh token before failing.
+			// Even an OAuth-looking 5xx body is not a confirmed token rejection.
 			TokenReply::Rejected { .. } => Err(RefreshFailure::Ambiguous(unavailable())),
 		}
 	}

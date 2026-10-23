@@ -296,7 +296,10 @@ async fn refreshes_keep_the_grant_and_classify_rejections() {
 		(StatusCode::BAD_REQUEST, "invalid_grant", true),
 		(StatusCode::BAD_REQUEST, "refresh_token_reused", true),
 		(StatusCode::UNAUTHORIZED, "invalid_client", false),
-		(StatusCode::SERVICE_UNAVAILABLE, "server_error", false),
+		(StatusCode::BAD_REQUEST, "invalid_request", false),
+		(StatusCode::BAD_REQUEST, "invalid_scope", false),
+		(StatusCode::BAD_REQUEST, "unauthorized_client", false),
+		(StatusCode::BAD_REQUEST, "unsupported_grant_type", false),
 	] {
 		let (authorization, _, _server) =
 			fake((status, json!({"error":code})), StatusCode::OK, ok_models()).await;
@@ -428,16 +431,19 @@ fn earliest_refresh_times_are_read_leniently() {
 /// A malformed successful refresh response can follow upstream rotation.
 /// Its uncertainty must not be classified as permission to replay the grant.
 #[rstest::rstest]
-#[case::malformed_success(StatusCode::OK)]
-#[case::proxy_failure(StatusCode::BAD_GATEWAY)]
+#[case::malformed_success(StatusCode::OK, json!({"access_token":"incomplete-response"}))]
+#[case::proxy_failure(StatusCode::BAD_GATEWAY, json!({}))]
+#[case::proxy_error(StatusCode::BAD_GATEWAY, json!({"error":"upstream_reset"}))]
+#[case::empty_error(StatusCode::BAD_REQUEST, json!({"error":""}))]
+#[case::unknown_error(StatusCode::BAD_REQUEST, json!({"error":"unknown_error"}))]
+#[case::server_error(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"server_error"}))]
+#[case::proxy_terminal_code(StatusCode::BAD_GATEWAY, json!({"error":"invalid_grant"}))]
 #[tokio::test]
-async fn refresh_reply_loss_is_distinct_from_a_confirmed_rejection(#[case] status: StatusCode) {
-	let (authorization, seen, _server) = fake(
-		(status, json!({"access_token":"incomplete-response"})),
-		StatusCode::OK,
-		ok_models(),
-	)
-	.await;
+async fn refresh_reply_loss_is_distinct_from_a_confirmed_rejection(
+	#[case] status: StatusCode,
+	#[case] body: serde_json::Value,
+) {
+	let (authorization, seen, _server) = fake((status, body), StatusCode::OK, ok_models()).await;
 	let result = authorization
 		.refresh("oaiapp_1", &"refresh-0".to_owned().into())
 		.await;
