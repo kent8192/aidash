@@ -893,6 +893,14 @@ class ExperimentNodeContractTest(unittest.TestCase):
         requests = []
         def call(method, path, body, token, timeout=None):
             requests.append((method, path, body))
+            if path == "/api/registry" or path.endswith("/catalog"):
+                # Current HTTP services require Actor::Subject for Tenant-owned definitions and approvals.
+                if token != "subject-token":
+                    return 403, {"error": "Tenant subject authority required"}
+                # ModelConfig and EmbeddingConfig deny unknown fields, including legacy null keys.
+                if path == "/api/registry" and body["kind"] in ("model", "embedding") and \
+                        "credential_env" in body["config"]:
+                    return 400, {"error": "unknown field credential_env"}
             if path == "/api/tenants":
                 return 201, {"name": "tenant-12345678"}
             if path.endswith("/nodes"):
@@ -904,6 +912,9 @@ class ExperimentNodeContractTest(unittest.TestCase):
 
         experiment.authorize(["agent"])
         experiment.register("agent", "agent", {})
+        experiment.register("model", "model", runner.model_config(
+            {"model_id": "fixture/m", "context_window": 128000, "max_output_tokens": 4096},
+            "http://127.0.0.1:8080", "standard"))
 
         policy = next(body["bundle"] for method, path, body in requests if body and "bundle" in body)
         self.assertIn("aidash://evaluation/build-abcdef12/agents/agent@1.0.0", policy["subjects"])
@@ -1537,6 +1548,20 @@ class LiveGuardTest(unittest.TestCase):
             except BaseException as raised:
                 status = raised
             return status, json.loads(output.read_text()) if output.exists() else None
+
+    def test_live_reads_tenant_registry_models_with_the_subject_authority(self):
+        transport, _ = self.live_node()
+        observed = []
+        def tenant_registry(method, path, body, token, timeout=None):
+            if method == "GET" and path.startswith("/api/registry/"):
+                observed.append(token)
+                if token != self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]:
+                    return 403, {"error": "Deployment Administrators cannot read Tenant Registry entries"}
+            return transport(method, path, body, token, timeout)
+        status, result = self.run_live(tenant_registry, ceiling="1000000")
+        self.assertEqual(status, 0)
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(observed, [self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]])
 
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
         # One Run's worst case is 24 steps * 6 attempts * (1000 * max(1, 1) + 100 * 5) = 216000 nanocredits.
