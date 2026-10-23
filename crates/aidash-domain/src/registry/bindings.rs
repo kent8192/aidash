@@ -139,6 +139,10 @@ pub fn definition_references(
 		"memory" => {
 			let provider: crate::memory::ProviderConfig =
 				serde_json::from_value(entry.config.clone())?;
+			if let Some(declaration) = provider.context_source {
+				declaration.validate()?;
+				result.extend(declaration.references());
+			}
 			result.extend(
 				[
 					(provider.policy.extraction, "model"),
