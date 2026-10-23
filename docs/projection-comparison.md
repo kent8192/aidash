@@ -124,6 +124,19 @@ and approved auxiliary work. If the complete phase cannot fit, it does not
 start, and Legacy stays selected. The child runner also enforces its route
 ceiling, time limit and approval expiry before admitting a Run.
 
+The generic live runner executes these Runs sequentially. Each route's
+`upper_wall_seconds` must therefore be at least its planned Run count multiplied
+by the frozen `run_timeout_seconds`; a shorter declared duration is refused.
+The default pilot plans 390 automatic-route Runs and 650 explicit-route Runs:
+1040 × 180 seconds is 187200 seconds (52 hours), exceeding the shared four-hour
+ceiling before any overhead. **The default complete pilot cannot fit its
+conservative time admission bound and does not start paid work.** This is a
+planning feasibility result, not a measured provider duration. An operator may
+predeclare a different bounded Run timeout in a new frozen configuration, but
+the entire phase, overhead and remaining campaign work must still fit the same
+shared limits. Do not understate the bound, reset the state or assume unbounded
+parallelism to bypass admission.
+
 Use one state path throughout the campaign:
 
 ```sh
@@ -150,7 +163,7 @@ contains no bearer token or raw provider credential:
 | `disclosure_approval`                                    | Private local path to that route's exact approval document                        |
 | `source_attestation`                                     | Private local path to the operator's exact deployed-source attestation            |
 | `tool_endpoint`                                          | The exact approved synthetic fixture-service endpoint, when needed                |
-| `upper_wall_seconds`                                     | Conservative complete-route duration used in phase admission                      |
+| `upper_wall_seconds`                                     | Conservative complete-route duration, at least planned Runs × frozen Run timeout  |
 
 Each disclosure approval binds `campaign_plan_sha256`, `corpus_sha256`,
 `models`, `model_config_digests`, `source_attestation_sha256`, `prices`, an actual `approver`, aware
@@ -271,12 +284,12 @@ Import the result and its matching operator export per route:
 ```sh
 python3 scripts/evaluate-projections.py report \
   --plan private/evaluation/projection-pilot-plan.json \
+  --execution-manifest private/evaluation/projection-execution.json \
   --result automatic=private/evaluation/projection-pilot/pilot-automatic.json \
   --result explicit=private/evaluation/projection-pilot/pilot-explicit.json \
   --export automatic=private/evaluation/projection-pilot/operator-automatic.json \
   --export explicit=private/evaluation/projection-pilot/operator-explicit.json \
   --candidate native --explicit-cache off \
-  --analysis-config private/evaluation/projection-analysis-settings.json \
   --output private/evaluation/projection-pilot-analysis.json \
   --markdown private/evaluation/projection-pilot-report.md
 ```
@@ -284,13 +297,27 @@ python3 scripts/evaluate-projections.py report \
 `--candidate` selects the candidate being explored in a pilot. A confirmation
 report uses its frozen candidate. `--explicit-cache explicit` names the combined
 projection-and-explicit-cache treatment on the explicit route. The analysis
-configuration must bind `plan_sha256`; it may supply independently established
-block design and enforced per-Run cost bounds. It cannot replace the frozen
-routes, population, phase or candidate. A Boolean assertion cannot substitute
-for actual route, deployment, guard or provider measurements.
+configuration must bind `plan_sha256`. Post hoc `--analysis-config` cannot
+set statistical cost bounds, their enforcement, independent-block readiness,
+confirmation/deployment readiness, or replace the frozen routes, population,
+phase, candidate or cache-arm selection.
+
+For statistical bounds, `report --execution-manifest PATH` imports the actual
+predispatch-approved execution document. The report derives each per-Run bound
+`B` from its exact approved prices and model configurations, checks the approval
+digest recorded by the result, and verifies the actual spend ledger's exact
+Run reservations and phase ceiling. It does not accept an independently typed
+post hoc bound. Omit this evidence and `cost_bounds_enforced` remains false;
+the economic gate is inconclusive. A Boolean assertion cannot substitute for
+actual route, deployment, guard or provider measurements.
 
 The JSON artifact retains configuration and digest, every experiment identity,
 all Run metrics, separate route decisions, denominators and unknown counts.
+All imported phases, including pilot and deployment-mode work, controls,
+diagnostics and unsuccessful work, remain in campaign accounting; they do not
+all enter the primary confirmation gates. Supply retained evidence for every
+prior campaign phase rather than presenting a favorable subset as the complete
+campaign. An unimported phase does not become measured or cost-free.
 The Markdown report is derived from it. Without complete operator exports the
 report remains useful for fixture diagnostics but is inconclusive for adoption.
 Reported metrics include outcome/quality and variance, each token component or
@@ -333,13 +360,15 @@ exact intended Bytes or calibrated estimator snapshot and uses independent
 Runs. Tokenized deployment execution is not supported by this declaration. Primary execution
 remains Bytes. To combine actual prior phases without rerunning them, `report`
 accepts `--retained-evidence PATH`; that JSON descriptor names a prior `plan`,
-its `results` mapping and its `exports` mapping. For example, this descriptor
+its `results` mapping, its `exports` mapping and, when proving reservation bounds,
+`execution_manifest`. For example, this descriptor
 has valid JSON syntax and names local evidence paths; the named files must
 contain the actual immutable artifacts:
 
 ```json
 {
   "plan": "private/evaluation/projection-pilot-plan.json",
+  "execution_manifest": "private/evaluation/projection-execution.json",
   "results": {
     "automatic": "private/evaluation/projection-pilot/pilot-automatic.json",
     "explicit": "private/evaluation/projection-pilot/pilot-explicit.json"
