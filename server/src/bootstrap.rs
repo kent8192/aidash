@@ -630,6 +630,7 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 	// keeps a management command from admitting what the server would not.
 	.with_plan_connections(settings.as_ref().is_some_and(|s| {
 		s.plan_connections.enabled
+			&& build::offering() == aidash_domain::offering::Offering::SelfHosted
 			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
 	// Tenant Secrets live in a PostgreSQL Secret Store only (ADR 0051).
@@ -2472,9 +2473,10 @@ pub async fn configure_provider_credentials(
 
 /// Plan Tokens live only in a PostgreSQL Secret Store (ADR 0008):
 /// Cloud and Dedicated wait for OpenAI's approval of a hosted flow (#248), so a
-/// server whose Store is in Secret Manager, or that has none, refuses to start
-/// with Plan Connections on. The service exists whenever the Store could hold
-/// Plan Tokens, so owners can still read and disconnect their connections
+/// server refuses their enablement at the settings boundary regardless of its
+/// Store. Self-hosted also refuses enablement without a PostgreSQL Store.
+/// The service exists whenever the Store could hold Plan Tokens, so owners
+/// can still read and disconnect their connections
 /// after `enabled` is turned off (ADR 0007).
 pub fn configure_plan_connections(
 	store: &mut Store,
