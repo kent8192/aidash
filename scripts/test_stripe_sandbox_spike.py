@@ -303,6 +303,83 @@ class SpikeBoundaryTests(unittest.TestCase):
         self.assertEqual((code, result["reason"]), (2, "retry_window_expired"))
         network.assert_not_called()
 
+    def test_uncertain_first_write_keeps_identity_through_nocredential_and_resume(self):
+        started = 1800000000
+        attempts = []
+
+        def timeout(request, timeout):
+            journal = json.loads(self.output.read_text())
+            key = request.get_header("Idempotency-key")
+            self.assertEqual(key, journal["run_id"] + "-product")
+            attempts.append((key, request.data, journal["created_at"], journal.get("write_attempted")))
+            raise TimeoutError("synthetic first-response loss")
+
+        with patch.object(spike.time, "time", return_value=started):
+            _, first, _ = self.invoke(transport=timeout)
+        self.assertEqual(first["reason"], "network_error")
+        self.assertIs(attempts[0][3], True, "first write identity must be durable before transport")
+        self.assertEqual((first["object_ids"], first["requests"]), ({}, []))
+        with patch.object(spike.time, "time", return_value=started + 120):
+            _, without_key, network = self.invoke(credentials=False)
+        network.assert_not_called()
+        self.assertEqual(without_key["run_id"], first["run_id"])
+        with patch.object(spike.time, "time", return_value=started + 3600):
+            _, resumed, _ = self.invoke(transport=timeout)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[1], attempts[0])
+        self.assertEqual((resumed["run_id"], resumed["created_at"]),
+                         (first["run_id"], first["created_at"]))
+
+    def test_uncertain_first_write_retains_cutoff_after_nocredential_run(self):
+        started = 1800000000
+        for earlier_journal in (False, True):
+            with self.subTest(earlier_journal=earlier_journal):
+                self.output.unlink(missing_ok=True)
+                with patch.object(spike.time, "time", return_value=started):
+                    _, first, _ = self.invoke(transport=TimeoutError("synthetic response loss"))
+                if earlier_journal:
+                    # Previously emitted journals did not record the attempt marker.
+                    previous = dict(first)
+                    previous.pop("write_attempted", None)
+                    self.output.write_text(json.dumps(previous))
+                with patch.object(spike.time, "time", return_value=started + 22 * 3600):
+                    _, without_key, network = self.invoke(credentials=False)
+                network.assert_not_called()
+                self.assertEqual(without_key["reason"], "credential_required")
+                with patch.object(spike.time, "time", return_value=started + 23 * 3600):
+                    code, expired, network = self.invoke(transport=TimeoutError("must not be sent"))
+                self.assertEqual((code, expired["reason"]), (2, "retry_window_expired"))
+                network.assert_not_called()
+                self.assertEqual((expired["run_id"], expired["created_at"]),
+                                 (first["run_id"], first["created_at"]))
+
+    def test_nested_persisted_ids_never_reemit_secret_or_personal_fields(self):
+        marker = "rk_test_DifferentSyntheticSecretNeverUsedForAuthentication"
+        email = "synthetic-private-buyer@example.invalid"
+        for slot in ("object", "top_request", "history_request", "compatibility_request"):
+            for with_credentials in (False, True):
+                with self.subTest(slot=slot, credentials=with_credentials):
+                    state = self.partial_state()
+                    nested = {"id": "req_fixture", "unexpected": {"secret": marker, "email": email}}
+                    if slot == "object":
+                        nested["id"] = "prod_fixture"
+                        state["object_ids"]["product"] = nested
+                    elif slot == "top_request":
+                        state["request_id"] = nested
+                    elif slot == "history_request":
+                        state["requests"] = [{"step": "product", "status": 200, "request_id": nested}]
+                    else:
+                        state["compatibility_error"] = {
+                            "kind": "metered_managed_payments_unsupported", "status": 400, "request_id": nested}
+                    self.output.write_text(json.dumps(state))
+                    code, result, network = self.invoke(credentials=with_credentials)
+                    self.assertNotIn(marker, json.dumps(result))
+                    self.assertNotIn(email, json.dumps(result))
+                    self.assertNotIn(marker, self.output.read_text())
+                    self.assertNotIn(email, self.output.read_text())
+                    self.assertEqual((code, result["winner"]), (2, "inconclusive"))
+                    network.assert_not_called()
+
     def test_arbitrary_state_fields_are_not_reemitted(self):
         state = self.partial_state()
         state["unexpected"] = KEY

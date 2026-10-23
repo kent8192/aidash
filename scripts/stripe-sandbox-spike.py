@@ -86,6 +86,9 @@ def number(value):
 def request_id(value):
     if value is None:
         return None
+    # Request IDs are scalar headers/journal values, never expanded API objects.
+    if not isinstance(value, str):
+        raise Pending("state_invalid")
     return identifier(value, "req_")
 
 
@@ -142,6 +145,11 @@ class Client:
             # duplicate a timed-out creation/event when resuming an old run.
             if int(time.time()) - self.state["created_at"] >= 23 * 3600:
                 raise Pending("retry_window_expired")
+            if not self.state["write_attempted"]:
+                # A lost first response leaves no object/request ID. Persist the
+                # attempt before transport so resuming cannot reset its identity.
+                self.state["write_attempted"] = True
+                self.save()
             headers["Idempotency-Key"] = self.state["run_id"] + "-" + step
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
@@ -212,13 +220,17 @@ def credentials(path):
 def fresh_state():
     return {"schema": 1, "winner": "inconclusive", "api_version": API_VERSION,
             "run_id": uuid.uuid4().hex, "created_at": int(time.time()) // 60 * 60,
-            "request_id": None, "object_ids": {}, "compatibility_error": None,
+            "write_attempted": False, "request_id": None, "object_ids": {}, "compatibility_error": None,
             "reason": "pending", "requests": [], "evidence": dict(EVIDENCE)}
 
 
 def validate_state(state):
     """Reject arbitrary state fields before re-emitting any local input."""
     template = fresh_state()
+    if isinstance(state, dict) and set(state) == set(template) - {"write_attempted"}:
+        # Earlier journals cannot distinguish an unsent run from a lost first
+        # response. Preserve their original identity/window conservatively.
+        state["write_attempted"] = True
     if not isinstance(state, dict) or set(state) != set(template):
         raise Pending("state_invalid")
     if (state["schema"] != 1 or state["api_version"] != API_VERSION
@@ -227,11 +239,16 @@ def validate_state(state):
             or not re.fullmatch(r"[a-f0-9]{32}", state["run_id"])):
         raise Pending("state_invalid")
     number(state["created_at"])
+    if type(state["write_attempted"]) is not bool:
+        raise Pending("state_invalid")
     request_id(state["request_id"])
     ids = state["object_ids"]
     if not isinstance(ids, dict) or not set(ids) <= set(ID_PREFIXES):
         raise Pending("state_invalid")
     for name, value in ids.items():
+        # API responses may expand IDs into objects; persisted journals may not.
+        if not isinstance(value, str):
+            raise Pending("state_invalid")
         identifier(value, ID_PREFIXES[name])
     evidence = state["evidence"]
     if not isinstance(evidence, dict) or set(evidence) != set(EVIDENCE):
@@ -528,8 +545,10 @@ def main(argv=None):
             os.replace(temporary, output)
 
         key = credentials(args.credential_file)
-        if not state["object_ids"] and not state["requests"]:
-            state = fresh_state()
+        if not state["write_attempted"] and not state["object_ids"] and not state["requests"]:
+            # A known-never-sent journal can begin its write window now. Keep
+            # its run ID; once any write is attempted this time is immutable.
+            state["created_at"] = int(time.time()) // 60 * 60
         # A loaded state can never reflect this key through allowed ID fields.
         if key in json.dumps(state):
             raise Pending("state_invalid")

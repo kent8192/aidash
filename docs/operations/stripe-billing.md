@@ -63,8 +63,14 @@ same phase when pending. POSTs use a stable run/step idempotency key, and usage
 also has a stable event identifier. Writes are refused after 23 hours because
 Stripe can prune [idempotency keys](https://docs.stripe.com/api/idempotent_requests)
 after 24 hours. For an old uncertain write, inspect its request ID in Workbench;
-do not discard the journal and blindly recreate it. A run with no request or
-object IDs starts a fresh write window when credentials first become available.
+do not discard the journal and blindly recreate it. A journal explicitly marked
+as never attempted may start its write window when credentials become available.
+A durable `write_attempted` marker is saved before the first POST is sent.
+Even if that POST times out before returning any request/object ID, its run ID,
+idempotency key and original write window survive retries and no-credential
+invocations. Earlier journals without the marker are conservatively treated as
+possibly attempted, retaining their original window. All persisted ID slots
+require string scalars; expanded API objects are never retained in those slots.
 Run only one process against a journal at a time.
 
 ## Metered experiment and operator checkpoints
