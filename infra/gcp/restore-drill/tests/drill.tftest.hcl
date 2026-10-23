@@ -2,7 +2,7 @@ mock_provider "google" {
 
   mock_resource "google_service_account" {
     defaults = {
-      name = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+      name   = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
       email  = "drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
       member = "serviceAccount:drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
     }
@@ -19,16 +19,16 @@ mock_provider "google-beta" {
 override_resource {
   target = google_service_account.workload["server"]
   values = {
-    name = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
-    email = "drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    name   = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    email  = "drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
     member = "serviceAccount:drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
   }
 }
 override_resource {
   target = google_service_account.workload["worker"]
   values = {
-    name = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
-    email = "drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    name   = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    email  = "drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
     member = "serviceAccount:drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
   }
 }
