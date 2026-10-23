@@ -842,8 +842,22 @@ impl BindingResolver for Bench {
 
 #[async_trait]
 impl ExecutionEnvironment for Bench {
-	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead {
+	async fn context_source(
+		&self,
+		request: ContextSourceRead<'_>,
+		_worker: Uuid,
+	) -> SemanticContextRead {
 		let result = match request {
+			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(
+				blocks
+					.iter()
+					.map(|block| block.text.as_str())
+					.collect::<String>()
+			))),
+			ContextSourceRead::RegistrySkills { .. } => unexpected("Registry Skill source"),
+			ContextSourceRead::WorkspaceObservation { run, offset, limit } => {
+				self.home(run).observation(offset, limit).await.map(Some)
+			}
 			ContextSourceRead::References { run: _, entry } => {
 				self.documents(entry).await.map(Some)
 			}
@@ -866,6 +880,8 @@ impl ExecutionEnvironment for Bench {
 			}
 		};
 		SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
 			workspace_retrieved: false,
 			result,
 		}

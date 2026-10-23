@@ -527,13 +527,33 @@ pub trait ExecutionVisibility: Send {
 /// executor persists recovery of an earlier outage before propagating `result`.
 #[derive(Debug)]
 pub struct SemanticContextRead {
+	pub selections: Vec<aidash_domain::context::source::SelectionEvidence>,
+	pub contributions: Vec<aidash_domain::context::source::SourceContribution>,
 	pub workspace_retrieved: bool,
 	pub result: Result<Option<Value>>,
 }
 
 /// In-memory execution frame used by native providers; private Task/input data
 /// does not become part of a Registry declaration.
+pub struct PreparedSkillSource {
+	pub identity: aidash_domain::exposure::CapabilityIdentity,
+	pub digest: String,
+	pub text: String,
+	pub preview: String,
+}
 pub enum ContextSourceRead<'a> {
+	ResidentSkills {
+		run: &'a Run,
+		blocks: &'a [PreparedSkillSource],
+	},
+	RegistrySkills {
+		run: &'a Run,
+	},
+	WorkspaceObservation {
+		run: &'a Run,
+		offset: usize,
+		limit: usize,
+	},
 	References {
 		run: &'a Run,
 		entry: &'a Entry,
@@ -606,7 +626,11 @@ pub trait ExecutionEnvironment: Send + Sync {
 		None
 	}
 	/// Read an admitted context source under the current execution authority.
-	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead;
+	async fn context_source(
+		&self,
+		request: ContextSourceRead<'_>,
+		worker: Uuid,
+	) -> SemanticContextRead;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	/// Direct Skills pinned for this Run, as deferred-exposure catalog input. Empty
 	/// when Skills are off, nothing is pinned, or the Home has no local authority.

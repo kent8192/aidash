@@ -47,6 +47,7 @@ fn text(value: &str) -> Step {
 struct Backend(Arc<State>);
 struct State {
 	conversation_memory: bool,
+	source_receipts: bool,
 	deny_source: bool,
 	memory_value: Mutex<Value>,
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
@@ -1030,8 +1031,38 @@ impl ExecutionAuthority for Backend {
 
 #[async_trait]
 impl ExecutionEnvironment for Backend {
-	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead {
+	async fn context_source(
+		&self,
+		request: ContextSourceRead<'_>,
+		_worker: Uuid,
+	) -> SemanticContextRead {
 		let result = match request {
+			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(
+				blocks
+					.iter()
+					.map(|block| block.text.as_str())
+					.collect::<String>()
+			))),
+			ContextSourceRead::RegistrySkills { run } => {
+				let mut text = String::new();
+				for skill in &self.0.skills {
+					let entry = self
+						.catalog()
+						.get_for_run(run, &skill.id, &skill.version)
+						.await
+						.unwrap();
+					text.push_str(&format!(
+						"\nSkill {}@{}:\n{}",
+						skill.id,
+						skill.version,
+						self.catalog().skill_instructions(&entry).unwrap()
+					));
+				}
+				Ok(Some(json!(text)))
+			}
+			ContextSourceRead::WorkspaceObservation { run, offset, limit } => {
+				self.home(run).observation(offset, limit).await.map(Some)
+			}
 			ContextSourceRead::References { run: _, entry } => {
 				self.documents(entry).await.map(Some)
 			}
@@ -1054,6 +1085,8 @@ impl ExecutionEnvironment for Backend {
 			}
 		};
 		SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
 			workspace_retrieved: false,
 			result,
 		}
@@ -1416,6 +1449,7 @@ fn fixture() -> Fixture {
 	};
 	let backend = Backend(Arc::new(State {
 		conversation_memory: false,
+		source_receipts: false,
 		deny_source: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
 		semantic_failure: Mutex::new(None),
@@ -5383,6 +5417,8 @@ impl Backend {
 		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
 		{
 			return SemanticContextRead {
+				selections: vec![],
+				contributions: vec![],
 				workspace_retrieved,
 				result: Err(Error::RemoteSemantic(reason)),
 			};
@@ -5404,8 +5440,85 @@ impl Backend {
 				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
 		});
 		SemanticContextRead {
+			selections: vec![],
+			contributions: if self.0.source_receipts {
+				result
+					.as_ref()
+					.ok()
+					.and_then(|value| value.as_ref())
+					.map(|content| {
+						let digest = aidash_domain::registry::rules::digest(content);
+						context::source::SourceContribution {
+							identity: context::source::CandidateIdentity {
+								source: QualifiedRef::builtin("aidash://node", "source"),
+								item: "semantic_memory".into(),
+								revision: digest.clone(),
+								range: None,
+							},
+							content: content.clone(),
+							provenance: vec![aidash_domain::decision::SourcePin {
+								resource: "test-source".into(),
+								revision_digest: digest.clone(),
+							}],
+							dependencies: vec![aidash_domain::decision::SourcePin {
+								resource: "test-source".into(),
+								revision_digest: digest.clone(),
+							}],
+							completeness: context::source::Completeness::Complete,
+							detail: None,
+							fetched_digest: digest.clone(),
+							content_digest: digest,
+						}
+					})
+					.into_iter()
+					.collect()
+			} else {
+				vec![]
+			},
 			workspace_retrieved,
 			result,
 		}
 	}
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	// A failed physical inference saves authorized retrieval bytes for recovery,
+	// but cannot grant evidence that a model accepted those bytes.
+	{
+		let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+		state.projection = projection;
+		state.source_receipts = true;
+	}
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	assert_eq!(canonical.run.context.source_contributions.len(), 1);
+	assert!(canonical.run.context.source_deliveries.is_empty());
+	let fetched = canonical.run.context.source_contributions[0].clone();
+	Arc::get_mut(&mut canonical.backend.0)
+		.unwrap()
+		.provider_status = None;
+	advance_sources(&mut canonical).await.unwrap();
+	assert_eq!(
+		count(&canonical, "source.memory"),
+		1,
+		"the recovered boundary reuses its authorized read"
+	);
+	let [receipt] = canonical.run.context.source_deliveries.as_slice() else {
+		panic!("exactly the accepted source envelope is delivered")
+	};
+	assert_eq!(receipt.identity, fetched.identity);
+	assert_eq!(receipt.content_digest, fetched.content_digest);
+	let usage = canonical.backend.0.usage.lock().unwrap();
+	assert_eq!(receipt.accepted_inference, usage.last().unwrap().0.attempt);
+	assert_ne!(receipt.accepted_inference, usage.first().unwrap().0.attempt);
 }

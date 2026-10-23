@@ -954,33 +954,12 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
-	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead {
-		let result = match request {
-			ContextSourceRead::References { run: _, entry } => {
-				self.documents(entry).await.map(Some)
-			}
-			ContextSourceRead::Skills { run } => self
-				.skill_context(run)
-				.await
-				.map(|text| Some(serde_json::json!(text))),
-			ContextSourceRead::Semantic {
-				run,
-				task,
-				inputs,
-				budget,
-				entry,
-				key,
-				degrade_on_outage,
-			} => {
-				return self
-					.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
-					.await;
-			}
-		};
-		SemanticContextRead {
-			workspace_retrieved: false,
-			result,
-		}
+	async fn context_source(
+		&self,
+		request: ContextSourceRead<'_>,
+		worker: Uuid,
+	) -> SemanticContextRead {
+		self.collect_context_source(request, worker).await
 	}
 
 	fn node_id(&self) -> &str {
@@ -1536,11 +1515,13 @@ impl Environment<'_> {
 				&self.run_store.scope,
 			)
 			.await?;
-			let mut query = format!("{}\n{}", task.title, task.description);
-			for (_, text) in inputs {
-				query.push('\n');
-				query.push_str(text);
-			}
+			let query = aidash_application::execution::semantic_context::query_material(
+				run,
+				task,
+				inputs,
+				aidash_domain::context::source::MAX_SOURCE_BYTES,
+			)?
+			.text;
 			let semantic = crate::semantic::service::context_in(
 				&self.federation.store,
 				&mut lease,
@@ -1590,8 +1571,12 @@ impl Environment<'_> {
 		}
 		.await;
 		SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
 			workspace_retrieved,
 			result,
 		}
 	}
 }
+
+mod sources;
