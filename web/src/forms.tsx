@@ -423,7 +423,7 @@ export function EntityForm({
               : kind === "model"
                 ? {
                     provider:
-                      modelSource === "keyless" ? "openai" : modelSource,
+                      modelSource === "keyless" ? "openrouter" : modelSource,
                     ...(modelSource === "chatgpt"
                       ? {
                           plan_connection: "chatgpt",

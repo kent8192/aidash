@@ -481,7 +481,10 @@ for (const selected of [
         },
         {
           id: "local-model",
-          config: { provider: "openai", endpoint: "http://localhost:11434/v1" },
+          config: {
+            provider: "openrouter",
+            endpoint: "http://localhost:11434/v1",
+          },
         },
       ].map((entry) => ({
         ...entry,

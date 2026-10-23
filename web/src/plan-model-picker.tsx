@@ -44,7 +44,10 @@ export function PlanModelPicker({
   const model = usable
     ? models.data?.models.find((value) => value.slug === chosen)
     : undefined;
-  const manual = !status.isPending && (!usable || models.isError);
+  const manual =
+    status.data?.enabled === true &&
+    !status.isPending &&
+    (!usable || models.isError);
   return (
     <>
       <Notice>
@@ -80,6 +83,13 @@ export function PlanModelPicker({
             </a>
           </Notice>
         )}
+      {status.data?.enabled === false && (
+        <Notice role="status" tone="warning">
+          {ja
+            ? "この Deployment では Plan モデルを登録できません。Plan 使用を有効にしてから登録してください。"
+            : "Plan model registration is disabled on this deployment. Enable plan usage before registering."}
+        </Notice>
+      )}
       {(status.isError || models.isError) && (
         <Alert>
           {ja

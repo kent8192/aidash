@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
@@ -383,16 +384,21 @@ test("switching to a Keyless endpoint discards a provider catalog selection", as
     .getByRole("button", { name: "エンティティを登録", exact: true })
     .click();
   const config = (await submitted).postDataJSON().config;
-  expect(config).toMatchObject({
-    provider: "openai",
-    endpoint: "http://127.0.0.1:11434/v1",
-    model_id: "local-model",
-  });
+  const acceptedContract = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../crates/aidash-application/src/registry/tests/fixtures/keyless-dashboard-model.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  expect(config).toMatchObject(acceptedContract);
   expect(config).not.toHaveProperty("provider_credential");
   expect(config).not.toHaveProperty("plan_connection");
 });
 
-test("Plan configuration disablement retires discovery and permits manual metadata", async ({
+test("Plan configuration disablement blocks model registration until enabled", async ({
   page,
 }) => {
   let enabled = true;
@@ -421,10 +427,34 @@ test("Plan configuration disablement retires discovery and permits manual metada
       await page.evaluate(() =>
         window.dispatchEvent(new Event("visibilitychange")),
       );
-      return model.evaluate((element) => element.tagName);
+      return model.isDisabled();
     })
-    .toBe("INPUT");
+    .toBe(true);
   await expect(model).toHaveValue("");
+  await expect(
+    dialog.getByText(
+      "この Deployment では Plan モデルを登録できません。Plan 使用を有効にしてから登録してください。",
+    ),
+  ).toBeVisible();
+  let submitted = false;
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/registry" &&
+      request.method() === "POST"
+    )
+      submitted = true;
+  });
+  await dialog.getByLabel("名前").fill("Disabled Plan");
+  await dialog.getByLabel("説明").fill("Registration must remain blocked");
+  await dialog.getByLabel("コンテキスト上限").fill("128000");
+  await dialog.getByLabel("最大出力トークン数").fill("16384");
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "一覧からモデルを選択してください。",
+  );
+  expect(submitted).toBe(false);
 });
 
 test("registers a manually entered Plan slug without a connection using disclosed code defaults", async ({

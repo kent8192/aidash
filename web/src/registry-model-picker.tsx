@@ -93,11 +93,14 @@ export function RegistryModelPicker({
       (!selfHostedPlanConnections || access.kind !== "subject")
     )
       continue;
+    // The model's wire adapter remains openrouter for Keyless OpenAI-compatible endpoints.
     const provider =
-      config.plan_connection ??
-      config.provider_credential ??
-      config.provider ??
-      "openai";
+      source === "keyless"
+        ? "openai"
+        : (config.plan_connection ??
+          config.provider_credential ??
+          config.provider ??
+          "openai");
     const key = `${source}:${provider}`;
     if (!groups.has(key)) groups.set(key, { provider, source, entries: [] });
     groups.get(key)!.entries.push(entry);
