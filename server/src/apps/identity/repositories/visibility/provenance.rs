@@ -116,6 +116,10 @@ impl ReadProvenanceScope for Reads<'_> {
 						.into_iter()
 						.filter(|definition| {
 							definition.identity.registry_deployment == this.node_id
+                                // A dormant Decider is pinned metadata, not a
+                                // completed read. Actual journaled reads above
+                                // keep their current visibility checks.
+                                && !aidash_domain::registry::bindings::defaults::is_compaction_decider(&definition.definition)
 						})
 						.map(|definition| (definition.identity.id, definition.identity.version)),
 				);

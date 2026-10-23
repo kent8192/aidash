@@ -59,7 +59,9 @@ fn pinned_for(plugins: &[(&str, &[&str])]) -> Vec<PinnedAgentPlugin> {
 /// A closure that is valid by construction: the Agent, its model and exactly the builtin Tools its
 /// normalization asks for.
 fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> BindingSnapshot {
-	let mut root = entry("agent", "agent", serde_json::to_value(agent).unwrap());
+	let mut config = agent.clone();
+	config.remove_default.push(COMPACTION_DEFAULT.into());
+	let mut root = entry("agent", "agent", serde_json::to_value(config).unwrap());
 	root.normalize_agent(NODE).unwrap();
 	let mut definitions = vec![
 		ResolvedDefinition::new(qualified("model"), entry("model", "model", json!({}))).unwrap(),

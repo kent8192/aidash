@@ -175,7 +175,9 @@ async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 	assert!(config.conversation_memory);
 	assert!(!config.core_capabilities.enabled());
 	assert!(!scope.calls.contains(&"context".into()));
-	for definition in &scope.snapshot.definitions {
+	for definition in scope.snapshot.definitions.iter().filter(|definition| {
+		!aidash_domain::registry::bindings::defaults::is_compaction_decider(&definition.definition)
+	}) {
 		assert!(
 			scope
 				.calls
@@ -408,7 +410,12 @@ async fn foreign_closures_do_not_require_local_namesakes_or_match_their_digests(
 		.snapshot
 		.definitions
 		.iter()
-		.filter(|saved| saved.identity.registry_deployment == "aidash://local")
+		.filter(|saved| {
+			saved.identity.registry_deployment == "aidash://local"
+				&& !aidash_domain::registry::bindings::defaults::is_compaction_decider(
+					&saved.definition,
+				)
+		})
 		.count();
 	assert!(authorize(&mut scope, &run, true).await.is_ok());
 	assert_eq!(

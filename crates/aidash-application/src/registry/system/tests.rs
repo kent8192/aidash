@@ -112,9 +112,10 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	let declared = declarations(&validation, NODE).unwrap();
 
-	assert_eq!(declared.len(), builtins.len() + 1);
+	assert_eq!(declared.len(), builtins.len() + 2);
 	assert_eq!(declared[..builtins.len()], builtins);
-	assert_eq!(declared.last(), Some(&approval_decider().unwrap()));
+	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
+	assert_eq!(declared.last(), Some(&compaction_decider().unwrap()));
 	assert!(
 		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
 		"only a built-in tool is admitted without a Catalog Approval"
@@ -192,6 +193,13 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 		.await
 		.unwrap();
 	assert_eq!(decider, approval_decider().unwrap());
+	assert_eq!(
+		writer
+			.definition(COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION)
+			.await
+			.unwrap(),
+		compaction_decider().unwrap()
+	);
 	// The tools stay as they were: the Decider is one definition beyond them.
 	assert!(seeded > entries(&validation, NODE).unwrap().len());
 	seed(&mut writer, &validation, NODE).await.unwrap();
@@ -265,4 +273,34 @@ async fn adding_page_views_preserves_existing_immutable_research_bundle_bytes(
 				.any(|member| member["id"].as_str().unwrap().ends_with(".view"))
 		);
 	}
+}
+
+#[test]
+fn compaction_declaration_pins_the_evaluated_routes_without_granting_authority() {
+	let entry = compaction_decider().unwrap();
+	DefinitionValidation::new(Arc::new(Contracts))
+		.validate_in(&entry, false)
+		.unwrap();
+	assert!(!is_builtin(&entry));
+	assert!(is_deployment_definition(&entry));
+	assert!(matches!(
+		reject_owner_definition(&entry),
+		Err(crate::Error::Forbidden)
+	));
+	let config: DeciderConfig = serde_json::from_value(entry.config).unwrap();
+	assert_eq!(config.hook, Hook::Compaction);
+	assert_eq!(config.mode, Mode::Enforce);
+	assert_eq!(config.max_calls_per_run, 100);
+	assert_eq!(config.routes[0], DeciderRoute::jev("typesafe/jev-1.14"));
+	let fallback = &config.routes[1];
+	assert_eq!(fallback.model, "cloudflare/clef");
+	assert_eq!(fallback.threshold.value(), 0.15);
+	assert_eq!(
+		fallback.hosts,
+		["cloudflare", "deepinfra", "primeintellect"]
+	);
+	assert_eq!(fallback.state_budget.default_request_bytes, 16_000);
+	assert_eq!(fallback.state_budget.default_state_bytes, 12_000);
+	assert!(fallback.state_budget.long_context_request_bytes.is_none());
+	assert!(!config.state_retention.enabled);
 }

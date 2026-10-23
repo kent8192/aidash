@@ -54,7 +54,9 @@ pub async fn authorize(
 	// Foreign Agent closures are refreshed at their owning Node by the Binding
 	// authority; never resolve their unqualified IDs through this local catalog.
 	for saved in &snapshot.definitions {
-		if saved.identity.registry_deployment != scope.node_id() {
+		if saved.identity.registry_deployment != scope.node_id()
+			|| aidash_domain::registry::bindings::defaults::is_compaction_decider(&saved.definition)
+		{
 			continue;
 		}
 		let current = scope

@@ -244,7 +244,15 @@ pub async fn register(
 	if entry.binding_normalization.is_some() {
 		return Err(Error::Invalid("Binding normalization is read-only".into()));
 	}
-	entry.normalize_agent(node)?;
+	bindings::normalize_agent(
+		&mut bindings::catalog::LookupCatalog {
+			definitions: scope,
+			node,
+		},
+		&mut entry,
+		node,
+	)
+	.await?;
 	if tracked {
 		scope.assign_id(&mut entry, key).await?;
 		scope.authorize(&entry).await?;
@@ -269,7 +277,15 @@ pub async fn register_definition(
 ) -> Result<bool> {
 	system::reject_owner_definition(entry)?;
 	let mut entry = entry.clone();
-	entry.normalize_agent(node)?;
+	bindings::normalize_agent(
+		&mut bindings::catalog::LookupCatalog {
+			definitions: scope,
+			node,
+		},
+		&mut entry,
+		node,
+	)
+	.await?;
 	validate_references(scope, validation, &entry, node).await?;
 	scope.insert_definition(&entry).await
 }
