@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kent8192/aidash/tests/evaluation/schema/projection-evidence.schema.json",
+  "title": "Tenant-scoped offline projection operator export",
+  "description": "Operator attests this complete inventory was read under the authorized Tenant scope. Source and canonical manifest digest must match exactly. Every planned Run is recorded or explicitly skipped; every attempted Run and table attempt joins exactly. Table rows use the prompt-free diagnostics metadata allowlists in projection_evaluation.py. Shared memory attempts list all source_run_ids and are charged once, without invented per-Run allocation. This is an operator file format, not a public HTTP API.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "manifest_sha256",
+    "source",
+    "tenant_id",
+    "planned_run_keys",
+    "run_inventory",
+    "inference_usage",
+    "decision_attempts",
+    "memory_model_attempts",
+    "context_compaction_attempts",
+    "run_recovery",
+    "generation_embedding_usage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "experiment_id": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source": {
+      "type": "object"
+    },
+    "tenant_id": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "planned_run_keys": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "run_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "run_id", "attempt_ids"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "run_id": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "attempt_ids": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "inference_usage",
+              "decision_attempts",
+              "memory_model_attempts",
+              "context_compaction_attempts",
+              "generation_embedding_usage"
+            ],
+            "properties": {
+              "inference_usage": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "decision_attempts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "memory_model_attempts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "context_compaction_attempts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "generation_embedding_usage": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "inference_usage": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "decision_attempts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "memory_model_attempts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "context_compaction_attempts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "run_recovery": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "generation_embedding_usage": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}
