@@ -376,9 +376,49 @@ impl Tool for ResearchTool {
 				{
 					return Ok(failure(Operation::View, Failure::ImageInputRequired));
 				}
-				research
-					.view(&call, providers.renderer(&self.provider)?.as_ref(), &input)
-					.await
+				let pending = run.state.tool()?;
+				let selections = aidash_application::execution::pending_selected_media(pending);
+				if selections.len() >= 8 {
+					return Ok(failure(Operation::View, Failure::ResponseTooLarge));
+				}
+				let selected_parts = if selections.is_empty() {
+					Vec::new()
+				} else {
+					context
+						.home
+						.authority
+						.as_ref()
+						.ok_or(Error::Forbidden)?
+						.model_media(&context.store, run, &selections)
+						.await?
+				};
+				let snapshot = run
+					.context
+					.binding_snapshot
+					.as_ref()
+					.ok_or(Error::Forbidden)?;
+				let agent = aidash_domain::registry::AgentConfig::from_snapshot(snapshot)?;
+				let model: aidash_domain::model::ModelConfig = serde_json::from_value(
+					snapshot
+						.definitions
+						.iter()
+						.find(|definition| {
+							definition.identity.registry_node == snapshot.agent.registry_node
+								&& definition.identity.local() == agent.model
+						})
+						.ok_or(Error::Forbidden)?
+						.definition
+						.config
+						.clone(),
+				)?;
+				let renderer = providers.renderer(&self.provider)?;
+				let fitting = aidash_application::research::page_image::FittingRenderer {
+					renderer: renderer.as_ref(),
+					model: &model,
+					headroom: context.home.federation.run_request_headroom(run).await?,
+					selected_parts,
+				};
+				research.view(&call, &fitting, &input).await
 			}
 		};
 		result.map_err(Into::into)
