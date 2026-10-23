@@ -43,7 +43,7 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	assert_eq!(
 		normalized
 			.iter()
-			.filter(|b| b.origin == BindingOrigin::Required)
+			.filter(|b| b.origin == BindingOrigin::Required && b.binding.kind == BindingKind::Tool)
 			.count(),
 		2
 	);

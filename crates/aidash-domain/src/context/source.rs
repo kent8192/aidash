@@ -92,17 +92,19 @@ impl SourceDeclaration {
 				"invalid context source provider operation or tool bound".into(),
 			));
 		}
-		let mut tools = BTreeSet::new();
-		for tool in self
-			.tools
-			.read
-			.iter()
-			.chain(&self.tools.write)
-			.chain(self.tools.detail.iter())
-		{
+		for group in [&self.tools.read, &self.tools.write] {
+			let mut seen = BTreeSet::new();
+			for tool in group {
+				tool.validate()?;
+				if !seen.insert(tool) {
+					return Err(Error::Invalid(
+						"duplicate Tool in source operation role".into(),
+					));
+				}
+			}
+		}
+		if let Some(tool) = &self.tools.detail {
 			tool.validate()?;
-			// A read Tool may also be the detail route; other duplicates add no authority.
-			tools.insert(tool);
 		}
 		if let PinPolicy::Scored { mode, decider } = &self.pin {
 			decider.validate()?;
@@ -186,6 +188,7 @@ impl SourceCandidate {
 			|| self.preview.len() > MAX_PREVIEW_BYTES
 			|| serde_json::to_vec(&self.content)?.len() > MAX_SOURCE_BYTES
 			|| self.identity.range.is_some_and(|[start, end]| start >= end)
+			|| self.completeness == Completeness::Partial && self.detail.is_none()
 			|| self.provenance.is_empty()
 			|| self.dependencies.is_empty()
 			|| self.provenance.len() > 128
@@ -329,6 +332,27 @@ pub struct SourceRequest {
 	pub max_bytes: usize,
 }
 impl SourceRequest {
+	pub fn validate(&self) -> Result<()> {
+		self.source.validate()?;
+		self.declaration.validate()?;
+		crate::decision::validate_digest(&self.query.input_digest)?;
+		if self.run_id.is_nil()
+			|| self.boundary.is_empty()
+			|| self.boundary.len() > 1024
+			|| self.max_bytes == 0
+			|| self.max_bytes > MAX_SOURCE_BYTES
+			|| self.query.text.len() > MAX_SOURCE_BYTES
+			|| self.query.policy != self.declaration.query
+			|| self.query.query_digest
+				!= digest(
+					&json!({"policy":self.query.policy,"text":self.query.text,"inputs":self.query.input_digest}),
+				) {
+			return Err(Error::Invalid(
+				"invalid bounded source request or query commitment".into(),
+			));
+		}
+		Ok(())
+	}
 	pub fn refresh_key(&self) -> String {
 		digest(
 			&json!({"run":self.run_id,"source":self.source,"declaration":self.declaration,"query":self.query.query_digest,"inputs":self.query.input_digest,"boundary":if self.declaration.volatility==Volatility::Run {"run"} else {&self.boundary},"max_bytes":self.max_bytes}),
@@ -386,7 +410,12 @@ pub fn accepted_delivery(
 	accepted_inference: Uuid,
 ) -> Result<SourceDelivery> {
 	crate::decision::validate_digest(&request_digest)?;
-	if accepted_inference.is_nil() || contribution.content_digest != digest(&contribution.content) {
+	if accepted_inference.is_nil()
+		|| contribution.content_digest != digest(&contribution.content)
+		|| contribution.content_digest != contribution.fetched_digest
+			&& contribution.completeness == Completeness::Complete
+		|| contribution.completeness == Completeness::Partial && contribution.detail.is_none()
+	{
 		return Err(Error::Invalid(
 			"source delivery lacks accepted inference or fitted-byte integrity".into(),
 		));
@@ -448,3 +477,6 @@ impl SelectionFailure {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests;
