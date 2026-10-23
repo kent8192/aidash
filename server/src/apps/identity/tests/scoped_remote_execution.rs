@@ -1073,6 +1073,47 @@ async fn configure_semantic(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn foreign_run_events_keep_the_executing_node(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let events =
+		p.b.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap();
+	let run_events: Vec<_> = events
+		.iter()
+		.filter(|event| event.workspace_id.is_none() && event.data["run_id"] == json!(p.admission))
+		.collect();
+	assert!(
+		!run_events.is_empty(),
+		"remote inference writes Run events without a local Workspace"
+	);
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	for event in run_events {
+		assert_eq!(event.node.as_ref(), Some(&node), "{}", event.kind);
+		assert_eq!(
+			event.cloud_event(p.b.config.deployment.as_str())["source"],
+			node_of(&p.b)
+		);
+	}
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let tenant_event =
+		p.b.store
+			.emit(&scope, None, "tenant.fixture", json!({}))
+			.await
+			.unwrap();
+	assert_eq!(tenant_event.node, None);
+	assert_eq!(
+		tenant_event.cloud_event(p.b.config.deployment.as_str())["source"],
+		p.b.config.deployment.as_str()
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
 	#[with(true, false, false, false, false, (false, false, 32), false, true)]
 	#[future(awt)]

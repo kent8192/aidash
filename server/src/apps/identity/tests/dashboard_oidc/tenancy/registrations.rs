@@ -6,14 +6,17 @@ use aidash_domain::nodes::DeploymentKeyId;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A loopback server that answers every request with `document` as JSON.
-async fn serve(document: Value) -> String {
+async fn serve(document: Value) -> (String, Arc<AtomicUsize>) {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let requests = Arc::new(AtomicUsize::new(0));
+	let observed = requests.clone();
 	tokio::spawn(async move {
 		loop {
 			let Ok((mut stream, _)) = listener.accept().await else {
 				return;
 			};
+			observed.fetch_add(1, Ordering::SeqCst);
 			let body = document.to_string();
 			tokio::spawn(async move {
 				let mut request = vec![0; 4096];
@@ -27,7 +30,7 @@ async fn serve(document: Value) -> String {
 			});
 		}
 	});
-	endpoint
+	(endpoint, requests)
 }
 
 fn key(seed: u8) -> (InMemorySigner, DeploymentKeyId) {
@@ -100,6 +103,135 @@ impl Deployment {
 		)
 		.await
 	}
+}
+
+#[rstest::rstest]
+#[case::list_nodes("GET", "")]
+#[case::create_node("POST", "")]
+#[case::relabel_node("PATCH", "/:node")]
+#[case::list_registrations("GET", "/:node/registrations")]
+#[case::registration_history("GET", "/:node/registration-history")]
+#[case::register_node("POST", "/:node/registrations")]
+#[tokio::test]
+async fn deleted_tenants_refuse_node_administration_before_external_requests(
+	#[case] method: &str,
+	#[case] suffix: &str,
+	#[values(false, true)] purged: bool,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let carol = d.person("carol").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(carol.identity)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (tenant, context) = d.node_tenant(&alice, "Deleted Node administration").await;
+	let node = d.default_node(&alice, &context, &tenant).await;
+	let (signer, key_id) = key(7);
+	let (endpoint, requests) = serve(identity(&signer, &key_id)).await;
+	d.federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
+	let registrations = format!("/api/tenants/{tenant}/nodes/{node}/registrations");
+	let (status, body) = d
+		.as_deployment_administrator(
+			"POST",
+			&registrations,
+			json!({"source_node":"aidash://calm-heron/able-oak-abcd1234","endpoint":endpoint,"key_id":key_id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(
+		requests.load(Ordering::SeqCst) > 0,
+		"the live registration contacts its counterpart"
+	);
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/deletion"),
+			Some(&context),
+			json!({"confirmation":tenant}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	if purged {
+		let (status, body) = d
+			.as_deployment_administrator(
+				"POST",
+				&format!("/api/tenants/{tenant}/purge"),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+		// The HTTP command starts the purge asynchronously; wait for its receipt.
+		for _ in 0..100 {
+			aidash_server::apps::identity::services::tenant_purge::sweep(&d.federation.store, 365)
+				.await
+				.unwrap();
+			if d.count(&format!(
+				"SELECT count(*) FROM tenant_deletions WHERE tenant = '{tenant}' AND purged_at IS NOT NULL"
+			))
+			.await == 1
+			{
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+		}
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM tenant_deletions WHERE tenant = '{tenant}' AND purged_at IS NOT NULL"
+			))
+			.await,
+			1
+		);
+	}
+	let before = requests.load(Ordering::SeqCst);
+	let path = format!(
+		"/api/tenants/{tenant}/nodes{}",
+		suffix.replace(":node", &node)
+	);
+	let input = if suffix.ends_with("/registrations") && method == "POST" {
+		// A different source has no cached pin: accepting it requires a new lookup.
+		json!({"source_node":"aidash://calm-heron/bold-pine-1234abcd","endpoint":endpoint,"key_id":key_id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0})
+	} else {
+		json!({"label":"Deleted Tenant mutation"})
+	};
+	// Browser installation administration permits these reads; its existing
+	// request guard refuses Node mutations before they reach the service.
+	for browser in [false, true]
+		.into_iter()
+		.filter(|browser| !browser || method == "GET")
+	{
+		let (status, body) = if browser {
+			d.as_person(
+				&carol,
+				method,
+				&path,
+				Some("deployment_administrator"),
+				input.clone(),
+			)
+			.await
+		} else {
+			d.as_deployment_administrator(method, &path, input.clone())
+				.await
+		};
+		assert_eq!(
+			requests.load(Ordering::SeqCst),
+			before,
+			"deleted Tenant administration must not contact another Deployment"
+		);
+		assert_eq!(
+			status, 410,
+			"browser={browser} purged={purged} {method} {path}: {body}"
+		);
+		assert_eq!(body["error"], "tenant_deleted");
+	}
+	d.finish().await;
 }
 
 #[rstest::rstest]
@@ -345,7 +477,7 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 	let node = d.default_node(&alice, &context, &tenant).await;
 	let (signer, id) = key(5);
 	let (other_signer, other_id) = key(6);
-	let endpoint = serve(identity(&signer, &id)).await;
+	let (endpoint, _) = serve(identity(&signer, &id)).await;
 	d.federation
 		.store
 		.keyless
@@ -385,7 +517,7 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 			.await;
 		assert_eq!(status, 422, "{what}: {refused}");
 	}
-	let lying = serve(json!({
+	let (lying, _) = serve(json!({
 		"id": "aidash://calm-heron",
 		"protocol_version": aidash_domain::federation::protocol::CURRENT,
 		"key": {"id": other_id.as_str(), "public_key_pem": signer.public_key_pem()},
@@ -411,7 +543,7 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 		assert_eq!(status, 400, "{refused}");
 	}
 	// A loopback endpoint nobody permitted is refused with the one generic reason.
-	let unpermitted = serve(identity(&signer, &id)).await;
+	let (unpermitted, _) = serve(identity(&signer, &id)).await;
 	let (status, refused) = d
 		.register(
 			&alice,

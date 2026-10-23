@@ -6,7 +6,8 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{AtomicTransaction, Model};
 use reinhardt::query::{
-	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait as _, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -17,7 +18,15 @@ pub(crate) async fn append(
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	insert(tx, workspace, event_tenant(workspace), kind, data).await?;
+	insert(
+		tx,
+		workspace,
+		event_tenant(workspace),
+		event_node(workspace),
+		kind,
+		data,
+	)
+	.await?;
 	Ok(())
 }
 
@@ -29,29 +38,45 @@ pub(crate) async fn append_for_tenant(
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	insert(tx, None, Expr::value(tenant.to_owned()).into(), kind, data).await?;
+	insert(
+		tx,
+		None,
+		Expr::value(tenant.to_owned()).into(),
+		event_node(None),
+		kind,
+		data,
+	)
+	.await?;
 	Ok(())
 }
 
 /// An event with no Workspace that concerns the Run `run`, such as the end of a
-/// Run whose Home is another Node: it belongs to the Run's Tenant.
+/// Run whose Home is another Node: it belongs to the Run's Tenant and Node.
 pub(crate) async fn append_for_run(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	let tenant = SimpleExpr::CustomWithExpr(
-		"(SELECT tenant FROM runs WHERE id = ?)".to_owned(),
-		vec![Expr::value(run).into()],
-	);
-	insert(tx, None, tenant, kind, data).await?;
+	let owner = |column: &str| {
+		SimpleExpr::SubQuery(
+			None,
+			Box::new(
+				Query::select()
+					.column(Alias::new(column))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("id").eq(Expr::value(run)))
+					.to_owned(),
+			),
+		)
+	};
+	insert(tx, None, owner("tenant"), owner("node"), kind, data).await?;
 	Ok(())
 }
 
 /// An event of the Run `run`. `workspace` is the Run's Workspace when the Run
 /// executes where its Workspace lives; otherwise the event has none and belongs
-/// to the Run's Tenant, whatever scope the transaction holds.
+/// to the Run's Tenant and executing Node, whatever scope the transaction holds.
 pub(crate) async fn append_run(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
@@ -71,7 +96,15 @@ pub(crate) async fn create(
 	kind: &str,
 	data: Value,
 ) -> Result<Event> {
-	let id = insert(tx, workspace, event_tenant(workspace), kind, data).await?;
+	let id = insert(
+		tx,
+		workspace,
+		event_tenant(workspace),
+		event_node(workspace),
+		kind,
+		data,
+	)
+	.await?;
 	Ok(Event::objects()
 		.filter(Event::field_id().eq(id))
 		.get_with_db(tx)
@@ -87,6 +120,7 @@ async fn insert(
 	tx: &mut dyn TransactionExecutor,
 	workspace: Option<Uuid>,
 	tenant: SimpleExpr,
+	node: SimpleExpr,
 	kind: &str,
 	data: Value,
 ) -> Result<Uuid> {
@@ -112,7 +146,7 @@ async fn insert(
 		])
 		.values_expr(vec![
 			IntoValue::into_value(id).into(),
-			event_node(workspace),
+			node,
 			IntoValue::into_value(workspace).into(),
 			IntoValue::into_value(kind).into(),
 			IntoValue::into_value(data).into(),

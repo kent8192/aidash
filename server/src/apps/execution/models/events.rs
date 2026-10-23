@@ -17,7 +17,7 @@ pub struct Event {
 	pub tenant: String,
 	#[field]
 	pub id: uuid::Uuid,
-	/// The Node of the Workspace the event concerns; none for a Tenant-level event.
+	/// The Node of the Workspace or executing Run; none for a Tenant-level event.
 	#[field(field_type = "text", null = true)]
 	pub node: Option<String>,
 

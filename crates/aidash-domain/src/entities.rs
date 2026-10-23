@@ -240,7 +240,7 @@ impl ArtifactInput {
 pub struct Event {
 	pub sequence: i64,
 	pub id: Uuid,
-	/// The Node of the Workspace the event concerns; none for a Tenant-level event.
+	/// The Node of the Workspace or executing Run; none for a Tenant-level event.
 	pub node: Option<crate::nodes::NodeName>,
 	pub workspace_id: Option<Uuid>,
 	pub kind: String,

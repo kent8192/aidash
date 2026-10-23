@@ -1,7 +1,7 @@
 //! A Tenant's Nodes: listing, creating within "Nodes per Tenant" and
 //! relabeling (#241). Members list them; Tenant Administrators create and
 //! relabel them, as do Deployment Administrators.
-use crate::apps::identity::models::{AdministrationActor, AdministrationEvent, Tenant};
+use crate::apps::identity::models::{AdministrationActor, AdministrationEvent};
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::{nodes, tenants::Creator};
 use crate::apps::identity::serializers::nodes::{NodeCreation, NodeLabelUpdate, NodeRecord};
@@ -55,9 +55,7 @@ impl Nodes {
 				f.store
 					.pool
 					.atomic(&scope, async |tx| {
-						if !Tenant::exists(tx, &tenant).await? {
-							return Err(Error::NotFound("tenant not found".into()));
-						}
+						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
 						nodes::list(tx, &tenant).await
 					})
 					.await?
@@ -95,9 +93,7 @@ impl Nodes {
 				f.store
 					.pool
 					.atomic(&scope, async |tx| {
-						if !Tenant::exists(tx, &tenant).await? {
-							return Err(Error::NotFound("tenant not found".into()));
-						}
+						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
 						let actor = AdministrationActor::DeploymentAdministratorBearer;
 						create_in(
 							&f,
@@ -158,6 +154,7 @@ impl Nodes {
 				f.store
 					.pool
 					.atomic(&scope, async |tx| {
+						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
 						relabel_in(
 							tx,
 							&tenant,

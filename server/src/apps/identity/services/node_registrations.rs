@@ -2,7 +2,7 @@
 //! (#241). Tenant Administrators decide with `node_registration.update`, and a
 //! Deployment Administrator may too. Registering a Node of another Deployment
 //! pins the key that Deployment publishes.
-use crate::apps::identity::models::{AdministrationActor, AdministrationEvent, Tenant};
+use crate::apps::identity::models::{AdministrationActor, AdministrationEvent};
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::node_registrations as records;
 use crate::apps::identity::serializers::node_registrations::{
@@ -183,13 +183,16 @@ impl NodeRegistrations {
 		let f = self.runtime.clone();
 		let stored = match actor {
 			Actor::DeploymentAdministrator => {
+				f.store
+					.pool
+					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+						require_node(tx, &tenant, &node).await
+					})
+					.await?;
 				let counterpart = self.counterpart(&tenant, &node, &input, &requested).await?;
 				f.store
 					.pool
 					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
-						if !Tenant::exists(tx, &tenant).await? {
-							return Err(Error::NotFound("tenant not found".into()));
-						}
 						require_node(tx, &tenant, &node).await?;
 						write(
 							tx,
@@ -269,6 +272,7 @@ impl NodeRegistrations {
 				.store
 				.pool
 				.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+					require_node(tx, tenant, node).await?;
 					records::get(tx, tenant, node.as_str(), &input.source_node).await
 				})
 				.await?
@@ -279,6 +283,7 @@ impl NodeRegistrations {
 					.store
 					.pool
 					.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+						require_node(tx, tenant, node).await?;
 						records::name_tenant(tx, input.source_node.node.as_str()).await
 					})
 					.await?;
@@ -300,6 +305,7 @@ impl NodeRegistrations {
 					.store
 					.pool
 					.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+						require_node(tx, tenant, node).await?;
 						records::get(tx, tenant, node.as_str(), &input.source_node).await
 					})
 					.await?;
@@ -336,6 +342,7 @@ async fn require_node(
 	tenant: &str,
 	node: &NodeName,
 ) -> Result<()> {
+	super::remote::deployment_administrator::tenant(tx, tenant).await?;
 	crate::apps::identity::repositories::nodes::get(tx, tenant, node.as_str())
 		.await
 		.map(|_| ())
