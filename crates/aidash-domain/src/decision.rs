@@ -30,6 +30,9 @@ pub const RULE: &str = "compaction.keep/1";
 pub const APPROVAL_BUILDER: &str = "aidash.approval/1";
 pub const APPROVAL_OPTION_SOURCE: &str = "approval_call/1";
 pub const APPROVAL_RULE: &str = "approval.block/1";
+pub const SOURCE_BUILDER: &str = "aidash.context-selection/1";
+pub const SOURCE_OPTION: &str = "source_candidate/1";
+pub const SOURCE_RULE: &str = "context-source.keep/1";
 pub const EVIDENCE_VERSION: u8 = 4;
 /// Versions `ApprovalEvidence`, which is a record of its own beside `Evidence`.
 pub const APPROVAL_EVIDENCE_VERSION: u8 = 1;
@@ -46,6 +49,7 @@ pub const STATE_READ: &str = "decision.state.read";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Hook {
+	ContextSelection,
 	Compaction,
 	/// Whether a pending Tool call may run without a person approving it
 	/// (the Auto Approval Mode, ADR 0077).
@@ -58,6 +62,11 @@ impl Hook {
 	/// which fix the questions it asks and how its answers are read.
 	pub const fn contract(self) -> HookContract {
 		match self {
+			Self::ContextSelection => HookContract {
+				builder: SOURCE_BUILDER,
+				option_source: SOURCE_OPTION,
+				rule: SOURCE_RULE,
+			},
 			Self::Compaction => HookContract {
 				builder: BUILDER,
 				option_source: OPTION_SOURCE,

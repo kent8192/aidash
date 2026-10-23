@@ -385,3 +385,5 @@ pub fn record_tokens(stage: &'static str, before: usize, after: usize) {
 
 #[cfg(test)]
 mod tests;
+
+pub mod source;

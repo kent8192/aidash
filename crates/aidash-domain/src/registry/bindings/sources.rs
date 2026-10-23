@@ -13,10 +13,13 @@ use std::collections::BTreeSet;
 pub struct NativeContext {
 	pub schema_version: u8,
 	pub source: NativeSource,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_source: Option<crate::context::source::SourceDeclaration>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeSource {
+	WorkspaceObservation {},
 	ConversationMemory {},
 	SemanticMemory {},
 	WorkspaceRetrieval {
@@ -56,6 +59,9 @@ impl OnUnavailable {
 
 impl NativeContext {
 	pub fn validate(&self, kind: &str) -> Result<()> {
+		if let Some(declaration) = &self.context_source {
+			declaration.validate()?;
+		}
 		if self.schema_version != super::BINDING_SCHEMA
 			|| self.memory() != (kind == "memory")
 			|| !matches!(kind, "memory" | "source")
@@ -117,6 +123,65 @@ impl NativeContext {
 			_ => {}
 		}
 		Ok(())
+	}
+	/// Native providers preserve the existing bounded automatic behavior unless opted in.
+	pub fn declaration(
+		&self,
+		identity: &super::QualifiedRef,
+	) -> crate::context::source::SourceDeclaration {
+		use crate::context::source::*;
+		if let Some(declaration) = &self.context_source {
+			return declaration.clone();
+		}
+		let operation = match self.source {
+			NativeSource::WorkspaceObservation { .. } => "workspace_observation",
+			NativeSource::ConversationMemory { .. } => "conversation_memory",
+			NativeSource::SemanticMemory { .. } => "semantic_memory",
+			NativeSource::WorkspaceRetrieval { .. } => "workspace_retrieval",
+			NativeSource::PrivateReferences { .. } | NativeSource::ReferenceAttachments { .. } => {
+				"references"
+			}
+			NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. } => "skills",
+		};
+		let read = match self.source {
+			NativeSource::ConversationMemory { .. } | NativeSource::SemanticMemory { .. } => {
+				vec!["memory_recall"]
+			}
+			NativeSource::WorkspaceObservation { .. } => {
+				vec!["workspace_observe", "workspace_read"]
+			}
+			NativeSource::WorkspaceRetrieval { .. } => vec!["workspace_read"],
+			NativeSource::PrivateReferences { .. } | NativeSource::ReferenceAttachments { .. } => {
+				vec!["file_read"]
+			}
+			NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. } => {
+				vec!["skill_read"]
+			}
+		};
+		SourceDeclaration {
+			provider: "aidash.native-context/1".into(),
+			operation: operation.into(),
+			tools: SourceTools {
+				detail: read
+					.first()
+					.map(|op| super::QualifiedRef::builtin(&identity.registry_deployment, op)),
+				read: read
+					.into_iter()
+					.map(|op| super::QualifiedRef::builtin(&identity.registry_deployment, op))
+					.collect(),
+				..Default::default()
+			},
+			pin: PinPolicy::Always,
+			volatility: if operation == "skills" || operation == "references" {
+				Volatility::Run
+			} else {
+				Volatility::Step
+			},
+			query: QueryPolicy::default(),
+			refresh: RefreshPolicy::default(),
+			disclosure: SourceDisclosure::default(),
+			required_home: false,
+		}
 	}
 	pub fn memory(&self) -> bool {
 		matches!(
@@ -189,6 +254,9 @@ pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<Nati
 			.validate()?,
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			if let Some(declaration) = &source.context_source {
+				declaration.validate()?;
+			}
 			if source.max_tokens == 0 || source.max_tokens > i32::MAX as usize {
 				return Err(Error::Invalid(
 					"memory Source requires a finite context cap".into(),
@@ -252,6 +320,7 @@ mod tests {
 	fn private_sources_pin_digest_and_validate_roots_without_implying_authority() {
 		let private = NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::PrivateReferences {
 				digest: "0".repeat(64),
 			},
@@ -260,6 +329,7 @@ mod tests {
 		assert!(!private.memory());
 		let roots = NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::SkillRoots {
 				roots: vec![".agents/skills".into()],
 			},
@@ -268,10 +338,111 @@ mod tests {
 		assert!(roots.requires_skill_support());
 		let invalid = NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::SkillRoots {
 				roots: vec!["../.agents/skills".into()],
 			},
 		};
 		assert!(invalid.validate("source").is_err());
 	}
+}
+
+/// Explicit source policies name capabilities in the same admitted closure. The
+/// frozen Tool descriptors pin each operation/provider edge without duplicating schemas.
+pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result<()> {
+	use crate::context::source::PinPolicy;
+	for source in snapshot
+		.bindings
+		.iter()
+		.filter(|b| matches!(b.definition.kind.as_str(), "source" | "memory"))
+	{
+		let (declaration, baseline) = if source.definition.config.get("schema_version").is_some() {
+			let native: NativeContext = serde_json::from_value(source.definition.config.clone())?;
+			let Some(declaration) = native.context_source.clone() else {
+				continue;
+			};
+			let mut baseline = native;
+			baseline.context_source = None;
+			(declaration, baseline.declaration(&source.identity))
+		} else if source.definition.kind == "source" {
+			let config: crate::memory::SourceConfig =
+				serde_json::from_value(source.definition.config.clone())?;
+			let Some(declaration) = config.context_source else {
+				continue;
+			};
+			let baseline = NativeContext {
+				schema_version: 1,
+				source: NativeSource::SemanticMemory {},
+				context_source: None,
+			}
+			.declaration(&source.identity);
+			(declaration, baseline)
+		} else {
+			continue;
+		};
+		declaration.validate()?;
+		if snapshot.remote
+			&& matches!(
+				baseline.operation.as_str(),
+				"semantic_memory" | "workspace_retrieval" | "conversation_memory"
+			) && matches!(
+			declaration.pin,
+			PinPolicy::Scored {
+				mode: crate::decision::Mode::Enforce,
+				..
+			}
+		) {
+			return Err(Error::Invalid(
+				"required-Home semantic contribution cannot enforce Scored selection".into(),
+			));
+		}
+		if declaration.provider != baseline.provider || declaration.operation != baseline.operation
+		{
+			return Err(Error::Invalid(
+				"context source provider operation is unavailable".into(),
+			));
+		}
+		for (identity, kind) in declaration.references() {
+			let binding = snapshot
+				.bindings
+				.iter()
+				.find(|b| {
+					b.identity == identity
+						&& b.definition.kind == kind
+						&& b.excluded_reason.is_none()
+				})
+				.ok_or_else(|| {
+					Error::Invalid(
+						"context source dependency requires an active exact Binding".into(),
+					)
+				})?;
+			if kind == "tool" {
+				let descriptor: crate::tool::providers::ToolDescriptor =
+					serde_json::from_value(binding.definition.config.clone())?;
+				let contract = descriptor.declared_contract(identity)?;
+				if binding
+					.provider_implementation
+					.as_ref()
+					.is_none_or(|id| id.is_empty())
+					|| binding
+						.provider_contract_digest
+						.as_deref()
+						.is_none_or(|d| contract.pinned(d).ok().flatten().is_none())
+				{
+					return Err(Error::Invalid(
+						"context source Tool provider operation is not pinned".into(),
+					));
+				}
+			} else if let PinPolicy::Scored { mode, .. } = &declaration.pin {
+				let config: crate::decision::DeciderConfig =
+					serde_json::from_value(binding.definition.config.clone())?;
+				if config.hook != crate::decision::Hook::ContextSelection || config.mode != *mode {
+					return Err(Error::Invalid(
+						"source selection Decider hook or mode differs from declaration".into(),
+					));
+				}
+			}
+		}
+	}
+	Ok(())
 }
