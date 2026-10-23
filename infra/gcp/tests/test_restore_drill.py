@@ -4,9 +4,11 @@ import urllib.error
 import importlib.util
 import pathlib
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 SPEC = importlib.util.spec_from_file_location("restore_drill", pathlib.Path(__file__).parents[1] / "restore_drill.py")
 drill = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(drill)
@@ -16,7 +18,15 @@ BACKUP = {"name": NAME, "state": "SUCCEEDED", "containsVolumeData": True, "volum
 VOLUMES = [{"sourcePvc": {"namespace": "aidash-production", "name": "postgres"}, "state": "SUCCEEDED"}]
 
 
+def sealed_release(first="b", second="c"):
+    return {"source_sha":"a" * 40, "images":{kind:f"us-central1-docker.pkg.dev/aidash-production/aidash/{kind}@sha256:" + (second if kind == "control" else first) * 64 for kind in ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")}}
+
+
 class RestoreDrillTests(unittest.TestCase):
+    def seal_release(self, directory, receipt):
+        receipt.update(project_id="aidash-drill-012345abcdef", settings=SETTINGS, state_bucket="aidash-production-state", backup=NAME)
+        drill.image_references(directory, receipt, sealed_release())
+
     def test_baseline_refuses_later_writers_wrong_cluster_and_incomplete_volumes(self):
         drill.validate_baseline({"pre_update_backup": NAME}, SETTINGS, BACKUP, VOLUMES)
         for mutation in ["writers", "cluster", "scope", "permissive", "volumes", "ledger"]:
@@ -86,9 +96,10 @@ class RestoreDrillTests(unittest.TestCase):
 
     def test_human_acceptance_requires_every_check_and_the_two_hour_target(self):
         for seconds, accepted in [(3600, True), (7201, False)]:
-            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as root:
+            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as root, patch.object(drill.subprocess, "check_output", return_value=json.dumps({"environments":{"production":{"pre_update_backup":NAME}}})):
                 receipt = {"phase": "resources_restored", "prepared_at": "2026-10-23T00:00:00Z", "restore_completed_at": "2026-10-23T00:30:00Z"}
-                evidence = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64], "fault_at": "2026-10-23T00:00:00+00:00", "verified_at": "2026-10-23T01:00:00+00:00" if seconds == 3600 else "2026-10-23T02:00:01+00:00", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+                evidence = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64, "sha256:" + "c" * 64], "fault_at": "2026-10-23T00:00:00+00:00", "verified_at": "2026-10-23T01:00:00+00:00" if seconds == 3600 else "2026-10-23T02:00:01+00:00", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+                self.seal_release(pathlib.Path(root), receipt)
                 drill.record(pathlib.Path(root), receipt, evidence)
                 self.assertEqual(receipt["application_verified"], accepted)
                 self.assertEqual(receipt["measured_rto_seconds"], seconds)
@@ -108,15 +119,16 @@ class RestoreDrillTests(unittest.TestCase):
                 self.assertTrue(all(call.args[0] == "GET" for call in cloud.call_args_list))
 
     def test_release_evidence_requires_typed_revision_digests_and_receipt_milestones(self):
-        valid = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64], "fault_at": "2026-10-23T00:00:00Z", "verified_at": "2026-10-23T01:00:00Z", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+        valid = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64, "sha256:" + "c" * 64], "fault_at": "2026-10-23T00:00:00Z", "verified_at": "2026-10-23T01:00:00Z", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
         invalid = [("revision", True), ("revision", "short"), ("image_digests", [""]), ("image_digests", "sha256:" + "b" * 64), ("image_digests", [True]), ("image_digests", ["sha256:fixture"]), ("report", {"path": "report"}), ("performed_by", "  "), ("fault_at", "2026-10-23T00:10:00Z"), ("verified_at", "2026-10-23T00:20:00Z")]
         for field, value in invalid:
             with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as root:
                 receipt = {"phase": "resources_restored", "prepared_at": "2026-10-23T00:00:00Z", "restore_completed_at": "2026-10-23T00:30:00Z"}
                 evidence = {**valid, field: value}
+                self.seal_release(pathlib.Path(root), receipt)
                 with self.assertRaises(ValueError):
                     drill.record(pathlib.Path(root), receipt, evidence)
-                self.assertNotIn("application_verified", receipt)
+                self.assertFalse(receipt["application_verified"])
                 self.assertFalse((pathlib.Path(root) / "human-evidence.json").exists())
 
     def test_cleanup_deletes_child_volume_restores_before_destroying_infrastructure(self):
@@ -137,18 +149,43 @@ class RestoreDrillTests(unittest.TestCase):
 
     def test_copied_release_images_use_target_repository_and_preserve_exact_digests(self):
         receipt = {"project_id": "aidash-drill-012345abcdef", "settings": SETTINGS}
-        release = {"trusted_sha": "a" * 40, "images": {"app": "us-central1-docker.pkg.dev/aidash-production/aidash/app@sha256:" + "1" * 64, "control": "us-central1-docker.pkg.dev/aidash-production/aidash/control@sha256:" + "2" * 64}}
+        release = sealed_release("1", "2")
         with tempfile.TemporaryDirectory() as root:
             directory = pathlib.Path(root)
             drill.image_references(directory, receipt, release)
             copied = drill.read(directory / "release.json")
-            self.assertEqual(copied["trusted_sha"], release["trusted_sha"])
+            self.assertEqual(copied["source_sha"], release["source_sha"])
             self.assertEqual(copied["images"]["app"], "us-central1-docker.pkg.dev/aidash-drill-012345abcdef/restore-drill/app@sha256:" + "1" * 64)
             self.assertEqual(copied["images"]["control"], "us-central1-docker.pkg.dev/aidash-drill-012345abcdef/restore-drill/control@sha256:" + "2" * 64)
             self.assertEqual(drill.read(directory / "image-map.json")["app"]["source"], release["images"]["app"])
             for invalid in ["app:latest", "app@sha256:short"]:
                 with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "SHA-256"):
-                    drill.image_references(directory, receipt, {"images": {"app": invalid}})
+                    drill.image_references(directory, receipt, {**release, "images": {**release["images"], "app": invalid}})
+
+    def test_acceptance_binds_the_complete_sealed_release_and_rechecks_live_quiescence(self):
+        release = sealed_release()
+        valid = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64, "sha256:" + "c" * 64], "fault_at": "2026-10-23T00:00:00Z", "verified_at": "2026-10-23T01:00:00Z", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+        for mutation in ["no_images_step", "revision", "missing_image", "changed_release", "writers"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as root:
+                directory = pathlib.Path(root)
+                receipt = {"project_id":"aidash-drill-012345abcdef", "settings":SETTINGS, "state_bucket":"aidash-production-state", "backup":NAME, "phase":"resources_restored", "prepared_at":"2026-10-23T00:00:00Z", "restore_completed_at":"2026-10-23T00:30:00Z"}
+                evidence = copy.deepcopy(valid)
+                if mutation != "no_images_step":
+                    drill.image_references(directory, receipt, release)
+                if mutation == "revision":
+                    evidence["revision"] = "d" * 40
+                elif mutation == "missing_image":
+                    evidence["image_digests"].pop()
+                elif mutation == "changed_release":
+                    drill.write(directory / "release.json", {**release, "source_sha":"d" * 40})
+                entry = {"pre_update_backup":NAME, "writers_started":mutation == "writers"}
+                with patch.object(drill.subprocess,"check_output",return_value=json.dumps({"environments":{"production":entry}})), self.assertRaises(ValueError):
+                    drill.record(directory,receipt,evidence)
+
+    def test_a_mistyped_ledger_claim_cannot_admit_a_backup_of_the_real_ledger(self):
+        volumes = [{"sourcePvc":{"namespace":"aidash-production","name":"memory-recovery"},"state":"SUCCEEDED"}]
+        with self.assertRaisesRegex(ValueError,"ledger"):
+            drill.validate_baseline({"pre_update_backup":NAME},{**SETTINGS,"ledger_claim":"memory-recovrey"},BACKUP,volumes)
 
     def test_cleanup_refuses_a_source_project_restore(self):
         receipt = {"project_id": "aidash-drill-012345abcdef", "restore": "projects/aidash-production/locations/us-central1/restorePlans/production/restores/real"}

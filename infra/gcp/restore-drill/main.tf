@@ -150,6 +150,7 @@ resource "google_container_cluster" "drill" {
   name                = "restore-drill"
   location            = var.region
   initial_node_count  = 1
+  datapath_provider   = "ADVANCED_DATAPATH"
   deletion_protection = false
   network             = google_compute_network.drill.id
   subnetwork          = google_compute_subnetwork.drill.id

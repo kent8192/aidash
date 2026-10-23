@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from control.policy import IMAGE_KINDS
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MODULE = pathlib.Path(__file__).with_name("restore-drill")
 API = "https://gkebackup.googleapis.com/v1/"
@@ -66,6 +68,7 @@ def volume_inventory(backup):
 
 
 def validate_baseline(entry, settings, backup, volumes):
+    require(settings.get("ledger_claim") == "memory-recovery", "The production Home ledger claim is memory-recovery")
     name = entry.get("pre_update_backup", "")
     require(BACKUP.fullmatch(name), "Use the dedicated production Pre-update Backup plan")
     require(not entry.get("writers_started"), "Writers started after this backup; use forward repair instead")
@@ -90,7 +93,7 @@ def restore_body(receipt):
              ("apps", "DaemonSet"), ("batch", "Job"), ("batch", "CronJob")]
     exclusions = [{"groupKind": {"resourceGroup": group, "resourceKind": kind}} for group, kind in kinds]
     exclusions.append({"groupKind": {"resourceGroup": "", "resourceKind": "PersistentVolumeClaim"},
-                       "namespace": namespace, "name": receipt["settings"]["ledger_claim"]})
+                       "namespace": namespace, "name": "memory-recovery"})
     return {"backup": receipt["backup"], "labels": {"application": "aidash", "lifecycle": "restore-drill"},
             "filter": {"inclusionFilters": [{"groupKind": {"resourceGroup": "", "resourceKind": kind}} for kind in ["PersistentVolumeClaim", "ConfigMap"]], "exclusionFilters": exclusions}}
 
@@ -203,30 +206,50 @@ def restore(directory, receipt):
 def image_references(directory, receipt, release):
     """Keep sealed content digests while naming only the target project's copies."""
     images = release.get("images")
-    require(isinstance(images, dict) and images, "Supply the sealed release receipt's images")
+    require(isinstance(images, dict) and set(images) == set(IMAGE_KINDS), "Supply the complete sealed release image inventory")
     copied = {}
     for kind, source in images.items():
         require(isinstance(kind, str) and re.fullmatch(r"[a-z][a-z0-9_-]*", kind), "Invalid release image kind")
         require(isinstance(source, str) and re.fullmatch(r"[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", source), "Every release image must be pinned by a SHA-256 digest")
         copied[kind] = f"{receipt['settings']['region']}-docker.pkg.dev/{receipt['project_id']}/restore-drill/{kind}@{source.split('@')[1]}"
-    write(directory / "image-map.json", {kind: {"source": images[kind], "target": target} for kind, target in copied.items()})
-    write(directory / "release.json", {**release, "images": copied})
+    revision = release.get("source_sha", release.get("trusted_sha", ""))
+    require(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{40}", revision), "Supply the sealed release source commit SHA")
+    target_release = {**release, "images": copied}
+    mapping = {kind: {"source": images[kind], "target": target} for kind, target in copied.items()}
+    if receipt.get("sealed_release"):
+        require(read(directory / "release.json") == target_release and read(directory / "image-map.json") == mapping, "This drill already pins another sealed release; choose a new drill")
+        require(all(digest(directory / name) == expected for name, expected in receipt["sealed_release"]["sha256"].items()), "The pinned release files changed")
+        return
+    write(directory / "image-map.json", mapping)
+    write(directory / "release.json", target_release)
+    receipt["sealed_release"] = {"revision": revision, "sha256": {name: digest(directory / name) for name in ["release.json", "image-map.json"]}}
+    write(directory / "receipt.json", receipt)
 
 
 def record(directory, receipt, evidence):
     require(receipt["phase"] == "resources_restored", "Complete the isolated data restore first")
+    receipt["application_verified"] = False
+    write(directory / "receipt.json", receipt)
     require(set(evidence) == {"performed_by", "revision", "image_digests", "fault_at", "verified_at", "checks", "report"}, "Use the documented human evidence fields")
     require(isinstance(evidence["checks"], dict) and set(evidence["checks"]) == CHECKS and all(type(v) is bool for v in evidence["checks"].values()), "Record every acceptance check as true or false")
     require(all(isinstance(evidence[k], str) and evidence[k].strip() for k in ["performed_by", "report"]), "Name the person running the drill and the raw report")
     require(isinstance(evidence["revision"], str) and re.fullmatch(r"[a-fA-F0-9]{40}", evidence["revision"]), "Record the full release commit SHA")
     images = evidence["image_digests"]
     require(isinstance(images, list) and images and all(isinstance(image, str) and re.fullmatch(r"sha256:[a-f0-9]{64}", image) for image in images), "Record every image as a SHA-256 content digest")
+    sealed = receipt.get("sealed_release")
+    require(isinstance(sealed, dict) and set(sealed.get("sha256", {})) == {"release.json", "image-map.json"}, "Generate and pin the sealed release images before acceptance")
+    require(all(digest(directory / name) == expected for name, expected in sealed["sha256"].items()), "The pinned release files changed")
+    release = read(directory / "release.json")
+    require(evidence["revision"].lower() == sealed["revision"], "Acceptance names another sealed release revision")
+    expected_images = {reference.split("@")[1] for reference in release["images"].values()}
+    require(set(images) == expected_images and len(images) == len(set(images)), "Acceptance must name the complete sealed image digest set")
     timestamps = [evidence["fault_at"], receipt["prepared_at"], receipt["restore_completed_at"], evidence["verified_at"]]
     require(all(isinstance(value, str) for value in timestamps), "Use timestamps with time zones")
     start, prepared, restored, end = [dt.datetime.fromisoformat(value) for value in timestamps]
     require(all(value.utcoffset() is not None for value in [start, prepared, restored, end]) and start <= prepared <= restored <= end, "The recovery interval must include preparation and the completed restore")
     seconds = (end - start).total_seconds()
     passed = all(evidence["checks"].values()) and seconds <= 7200
+    current_entry(receipt["state_bucket"], receipt["backup"])
     write(directory / "human-evidence.json", evidence)
     receipt.update(application_verified=passed, measured_rto_seconds=seconds, human_evidence_sha256=digest(directory / "human-evidence.json"))
     write(directory / "receipt.json", receipt)

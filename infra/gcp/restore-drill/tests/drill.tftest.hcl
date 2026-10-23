@@ -80,6 +80,7 @@ run "isolated_cross_project_restore" {
   }
   assert {
     condition = (
+      google_container_cluster.drill.datapath_provider == "ADVANCED_DATAPATH" &&
       google_container_cluster.drill.private_cluster_config[0].enable_private_nodes &&
       google_compute_subnetwork.drill.private_ip_google_access &&
       google_container_cluster.drill.node_config[0].image_type == "UBUNTU_CONTAINERD" &&

@@ -50,7 +50,7 @@ Restore operation is a data restoration milestone; application acceptance follow
      "region": "us-central1",
      "client_cidr": "<client-ip>/32",
      "namespace": "aidash-production",
-     "ledger_claim": "<exact-memory-recovery-pvc-name>",
+     "ledger_claim": "memory-recovery",
      "source_cluster": "projects/<source-project>/locations/us-central1/clusters/<cluster>"
    }
    ```
@@ -94,7 +94,11 @@ Restore operation is a data restoration milestone; application acceptance follow
    Use only the generated `release.json` when rendering release values, including
    app, control, frontend and installer images. Preserve the sealed release SHA;
    never feed the source receipt back into `app_values` or other chart values.
-   Retain the copy/digest evidence and rendered workload image inventory.
+   Retain the copy/digest evidence and rendered workload image inventory. The
+   receipt pins hashes of both generated files and the source commit. The images
+   step is idempotent for that same release; switching releases requires a new
+   drill. `record` refuses missing/changed files, another revision, and incomplete
+   digest sets.
    Install the release's pinned upstream gVisor and compatible storage/runtime
    prerequisites on the Ubuntu nodes. Re-provision Secrets from Secret Manager
    into the target using cloud access; never restore backed-up Secrets or
@@ -102,6 +106,8 @@ Restore operation is a data restoration milestone; application acceptance follow
    peer/provider destinations with owned, isolated fixtures before starting any
    workload. The drill nodes carry the production placement label and enable
    Stateful HA, so the production selectors and HA custom resources are supported.
+   Dataplane V2 enforces the production charts' NetworkPolicies; verify denied
+   sandbox, metadata, backend and database traffic before accepting the drill.
    Terraform also enables Workload Identity and creates target-only server/worker
    accounts. Read `terraform output -json workload_accounts` and override the
    chart's server/worker KSA annotations with those accounts before rendering.
@@ -173,7 +179,10 @@ Restore operation is a data restoration milestone; application acceptance follow
    python3 infra/gcp/restore_drill.py destroy --directory private/drill-2026-10
    ```
 
-   Acceptance requires every check plus an elapsed RTO at most two hours. A failed
+   `record` rereads the live production update entry again; resumed writers or
+   another baseline refuse acceptance. A new record attempt clears the previous
+   acceptance flag until all checks succeed. Acceptance requires every check,
+   the complete pinned release digest set, and an elapsed RTO at most two hours. A failed
    check or missed target remains a failed result. Always clean up after retaining
    evidence, including on failure: `destroy` removes only this drill's Restore,
    Terraform-managed channel/binding and dedicated project. If cleanup fails,
