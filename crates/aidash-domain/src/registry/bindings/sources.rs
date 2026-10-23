@@ -162,6 +162,9 @@ impl NativeContext {
 			provider: "aidash.native-context/1".into(),
 			operation: operation.into(),
 			tools: SourceTools {
+				detail: read
+					.first()
+					.map(|op| super::QualifiedRef::builtin(&identity.registry_deployment, op)),
 				read: read
 					.into_iter()
 					.map(|op| super::QualifiedRef::builtin(&identity.registry_deployment, op))
@@ -378,6 +381,21 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 			continue;
 		};
 		declaration.validate()?;
+		if snapshot.remote
+			&& matches!(
+				baseline.operation.as_str(),
+				"semantic_memory" | "workspace_retrieval" | "conversation_memory"
+			) && matches!(
+			declaration.pin,
+			PinPolicy::Scored {
+				mode: crate::decision::Mode::Enforce,
+				..
+			}
+		) {
+			return Err(Error::Invalid(
+				"required-Home semantic contribution cannot enforce Scored selection".into(),
+			));
+		}
 		if declaration.provider != baseline.provider || declaration.operation != baseline.operation
 		{
 			return Err(Error::Invalid(

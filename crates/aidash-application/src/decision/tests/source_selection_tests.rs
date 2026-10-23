@@ -99,10 +99,14 @@ fn fixture(mode: Mode) -> Fixture {
 }
 #[tokio::test]
 async fn enforce_uses_charged_noul_answer_and_recovery_reuses_it_without_dispatch() {
-	let fixture = fixture(Mode::Enforce);
+	let fixture = Fixture {
+		keep: Probability::half(),
+		..fixture(Mode::Enforce)
+	};
 	let first = select(&fixture, Mode::Enforce, true).await.unwrap();
-	assert!(first.selected.is_empty());
+	assert_eq!(first.selected, vec![candidate().identity.key()]);
 	assert!(first.evidence.failure.is_none());
+	assert_eq!(first.evidence.replay().unwrap(), first.selected);
 	assert_eq!(first.evidence.answers.len(), 1);
 	assert_eq!(first.evidence.attempts[0].status, AttemptStatus::Answered);
 	assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
@@ -117,6 +121,7 @@ async fn shadow_proposal_preserves_candidates_and_forbidden_disclosure_never_dis
 	let result = select(&fixture, Mode::Shadow, true).await.unwrap();
 	assert_eq!(result.selected, vec![candidate().identity.key()]);
 	assert!(result.evidence.proposed.is_empty());
+	assert_eq!(result.evidence.replay().unwrap(), result.selected);
 	let calls = fixture.calls.load(Ordering::SeqCst);
 	let denied = select(&fixture, Mode::Shadow, false).await.unwrap();
 	assert_eq!(
@@ -124,6 +129,7 @@ async fn shadow_proposal_preserves_candidates_and_forbidden_disclosure_never_dis
 		Some(SelectionFailure::ForbiddenDisclosure)
 	);
 	assert_eq!(denied.selected, result.selected);
+	assert_eq!(denied.evidence.replay().unwrap(), denied.selected);
 	assert_eq!(fixture.calls.load(Ordering::SeqCst), calls);
 }
 #[tokio::test]

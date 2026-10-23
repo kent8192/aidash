@@ -67,6 +67,13 @@ impl DecisionGate<'_> {
 			.map(|c| c.identity.key())
 			.collect::<Vec<_>>();
 		let mut evidence = SelectionEvidence {
+			candidates: candidates
+				.iter()
+				.map(|c| aidash_domain::context::source::SelectionCandidate {
+					identity: c.identity.clone(),
+					mandatory: c.mandatory,
+				})
+				.collect(),
 			boundary: input.boundary.clone(),
 			decider: input.decider.pin.clone(),
 			mode: config.mode,

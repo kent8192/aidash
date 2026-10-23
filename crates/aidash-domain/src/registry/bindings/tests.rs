@@ -243,7 +243,9 @@ fn deferred_normalization_swaps_skill_tools_for_exposure_tools() {
 	);
 	for binding in &normalized {
 		let operation = binding.binding.target.id.trim_start_matches("aidash.");
-		let required = REQUIRED_TOOLS.contains(&operation) || EXPOSURE_TOOLS.contains(&operation);
+		let required = REQUIRED_TOOLS.contains(&operation)
+			|| EXPOSURE_TOOLS.contains(&operation)
+			|| binding.binding.target.id == source_defaults::WORKSPACE_OBSERVATION_ID;
 		assert_eq!(
 			binding.origin == BindingOrigin::Required,
 			required,
