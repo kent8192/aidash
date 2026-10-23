@@ -13,6 +13,8 @@ use std::collections::BTreeSet;
 pub struct NativeContext {
 	pub schema_version: u8,
 	pub source: NativeSource,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_source: Option<crate::context::source::SourceDeclaration>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
@@ -56,6 +58,9 @@ impl OnUnavailable {
 
 impl NativeContext {
 	pub fn validate(&self, kind: &str) -> Result<()> {
+		if let Some(declaration) = &self.context_source {
+			declaration.validate()?;
+		}
 		if self.schema_version != super::BINDING_SCHEMA
 			|| self.memory() != (kind == "memory")
 			|| !matches!(kind, "memory" | "source")
@@ -117,6 +122,58 @@ impl NativeContext {
 			_ => {}
 		}
 		Ok(())
+	}
+	/// Native providers preserve the existing bounded automatic behavior unless opted in.
+	pub fn declaration(
+		&self,
+		identity: &super::QualifiedRef,
+	) -> crate::context::source::SourceDeclaration {
+		use crate::context::source::*;
+		if let Some(declaration) = &self.context_source {
+			return declaration.clone();
+		}
+		let operation = match self.source {
+			NativeSource::ConversationMemory { .. } => "conversation_memory",
+			NativeSource::SemanticMemory { .. } => "semantic_memory",
+			NativeSource::WorkspaceRetrieval { .. } => "workspace_retrieval",
+			NativeSource::PrivateReferences { .. } | NativeSource::ReferenceAttachments { .. } => {
+				"references"
+			}
+			NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. } => "skills",
+		};
+		let read = match self.source {
+			NativeSource::ConversationMemory { .. } | NativeSource::SemanticMemory { .. } => {
+				vec!["memory_recall"]
+			}
+			NativeSource::WorkspaceRetrieval { .. } => vec!["workspace_read"],
+			NativeSource::PrivateReferences { .. } | NativeSource::ReferenceAttachments { .. } => {
+				vec!["file_read"]
+			}
+			NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. } => {
+				vec!["skill_read"]
+			}
+		};
+		SourceDeclaration {
+			provider: "aidash.native-context/1".into(),
+			operation: operation.into(),
+			tools: SourceTools {
+				read: read
+					.into_iter()
+					.map(|op| super::QualifiedRef::builtin(&identity.registry_deployment, op))
+					.collect(),
+				..Default::default()
+			},
+			pin: PinPolicy::Always,
+			volatility: if operation == "skills" || operation == "references" {
+				Volatility::Run
+			} else {
+				Volatility::Step
+			},
+			query: QueryPolicy::default(),
+			refresh: RefreshPolicy::default(),
+			disclosure: SourceDisclosure::default(),
+			required_home: false,
+		}
 	}
 	pub fn memory(&self) -> bool {
 		matches!(
@@ -252,6 +309,7 @@ mod tests {
 	fn private_sources_pin_digest_and_validate_roots_without_implying_authority() {
 		let private = NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::PrivateReferences {
 				digest: "0".repeat(64),
 			},
@@ -260,6 +318,7 @@ mod tests {
 		assert!(!private.memory());
 		let roots = NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::SkillRoots {
 				roots: vec![".agents/skills".into()],
 			},
@@ -268,6 +327,7 @@ mod tests {
 		assert!(roots.requires_skill_support());
 		let invalid = NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::SkillRoots {
 				roots: vec!["../.agents/skills".into()],
 			},

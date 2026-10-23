@@ -127,7 +127,11 @@ pub fn definition_references(
 			}
 		}
 		"memory" | "source" if entry.config.get("schema_version").is_some() => {
-			sources::validate_definition(entry)?;
+			if let Some(native) = sources::validate_definition(entry)? {
+				if let Some(declaration) = native.context_source {
+					result.extend(declaration.references());
+				}
+			}
 		}
 		"memory" => {
 			let provider: crate::memory::ProviderConfig =
