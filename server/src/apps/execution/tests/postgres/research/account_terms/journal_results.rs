@@ -4,22 +4,31 @@ use aidash_domain::{
 	context::{ContextEvent, summary::entries_digest},
 	provider::ToolCall,
 };
+use reinhardt::query::{Func, Order};
 
 async fn journal_bytes(store: &Store, run: Uuid) -> Vec<(Value, String)> {
-	sqlx::query_as("SELECT event, digest FROM run_context_events WHERE run_id=$1 ORDER BY seq")
-		.bind(run)
+	let sql = Query::select()
+		.columns([Alias::new("event"), Alias::new("digest")])
+		.from(Alias::new("run_context_events"))
+		.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+		.order_by(Alias::new("seq"), Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_as(&sql)
 		.fetch_all(store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
 async fn payload_count(store: &Store, run: Uuid) -> i64 {
-	sqlx::query_scalar(
-		"SELECT count(*) FROM research_journal_results WHERE run_id=$1 AND bytes IS NOT NULL",
-	)
-	.bind(run)
-	.fetch_one(store.pool.fixture_driver())
-	.await
-	.unwrap()
+	let sql = Query::select()
+		.expr(Func::count(Expr::col(Alias::new("run_id")).into()))
+		.from(Alias::new("research_journal_results"))
+		.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+		.and_where(Expr::col(Alias::new("bytes")).is_not_null())
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&sql)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap()
 }
 
 #[rstest::rstest]
@@ -230,15 +239,21 @@ async fn journal_references_never_resolve_to_unverified_content(
 		.unwrap();
 	let before = journal_bytes(&store, run.id).await;
 	if corrupt {
-		sqlx::query("UPDATE research_journal_results SET bytes=$1 WHERE run_id=$2")
-			.bind(b"{\"different\":true}".as_slice())
-			.bind(run.id)
+		let sql = Query::update()
+			.table(Alias::new("research_journal_results"))
+			.value(Alias::new("bytes"), b"{\"different\":true}".to_vec())
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
 			.execute(store.pool.fixture_driver())
 			.await
 			.unwrap();
 	} else {
-		sqlx::query("DELETE FROM research_journal_results WHERE run_id=$1")
-			.bind(run.id)
+		let sql = Query::delete()
+			.from_table(Alias::new("research_journal_results"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
 			.execute(store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -284,8 +299,30 @@ async fn legacy_inline_journals_are_refused_without_rewriting_their_commitments(
 	);
 	let original = serde_json::to_value(&event).unwrap();
 	let digest = aidash_domain::registry::rules::digest(&original);
-	sqlx::query("INSERT INTO run_context_events(run_id,seq,tenant,origin,event,digest) VALUES ($1,1,'acme','appended',$2,$3)")
-		.bind(run.id).bind(original).bind(digest).execute(store.pool.fixture_driver()).await.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("run_context_events"))
+		.columns([
+			Alias::new("run_id"),
+			Alias::new("seq"),
+			Alias::new("tenant"),
+			Alias::new("origin"),
+			Alias::new("event"),
+			Alias::new("digest"),
+		])
+		.values_expr(vec![
+			Expr::value(run.id).into(),
+			Expr::value(1_i64).into(),
+			Expr::value("acme").into(),
+			Expr::value("appended").into(),
+			Expr::value(original).into(),
+			Expr::value(digest).into(),
+		])
+		.unwrap()
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let before = journal_bytes(&store, run.id).await;
 	let error = store
 		.for_run(ACME.clone())

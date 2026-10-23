@@ -76,6 +76,14 @@ export function PeerMappings({
   });
   const rows = readable && !mappings.isError ? mappings.data : undefined;
   const revisions = readable && !history.isError ? history.data : undefined;
+  // A readable mapping discloses its credential ID even when credential details
+  // are unavailable. Keep that opaque choice usable without credential.read.
+  const credentialChoices = [
+    ...new Set([
+      ...credentials.map((credential) => credential.id),
+      ...(rows ?? []).map((mapping) => mapping.credential_id),
+    ]),
+  ];
   const save = async (input: PeerMappingInput) => {
     if (busy) return;
     setBusy(true);
@@ -339,18 +347,22 @@ export function PeerMappings({
                 defaultValue={editing === "new" ? "" : editing.credential_id}
               >
                 <option value="">{t("authSelectCredential")}</option>
-                {credentials.map((credential) => (
-                  <option
-                    key={credential.id}
-                    value={credential.id}
-                    disabled={
-                      !!credential.revoked_at ||
-                      Date.parse(credential.expires_at) <= now
-                    }
-                  >
-                    {credentialLabels.get(credential.id)}
-                  </option>
-                ))}
+                {credentialChoices.map((id) => {
+                  const credential = credentials.find((item) => item.id === id);
+                  return (
+                    <option
+                      key={id}
+                      value={id}
+                      disabled={
+                        !!credential &&
+                        (!!credential.revoked_at ||
+                          Date.parse(credential.expires_at) <= now)
+                      }
+                    >
+                      {credentialLabels.get(id) ?? id}
+                    </option>
+                  );
+                })}
               </NativeSelect>
             </Field>
             <Hint>{t("authPeerMappingSaveHelp")}</Hint>

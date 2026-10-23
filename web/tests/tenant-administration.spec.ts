@@ -908,7 +908,7 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
   ).toHaveCount(0);
 });
 
-test("item-scoped issuance and peer writes work without policy or credential reads", async ({
+test("readable mappings and item-scoped issuance support peer writes without credential reads", async ({
   page,
 }) => {
   await setup(page, {
@@ -918,6 +918,19 @@ test("item-scoped issuance and peer writes work without policy or credential rea
   });
   let policyReads = 0;
   let credentialReads = 0;
+  const mappedCredential = "00000000-0000-4000-8000-000000000002";
+  const writes: unknown[] = [];
+  const existing = {
+    tenant: "acme",
+    source_node: "aidash://home",
+    source_tenant: "remote",
+    source_subject: "ci",
+    credential_id: mappedCredential,
+    enabled: true,
+    revision: 7,
+    actor: "alice",
+    updated_at: "2026-10-23T00:00:00Z",
+  };
   const issued = {
     id: "00000000-0000-4000-8000-000000000001",
     tenant: "acme",
@@ -957,14 +970,38 @@ test("item-scoped issuance and peer writes work without policy or credential rea
     if (!new URL(request.url()).searchParams.has("mine")) credentialReads++;
     return route.fulfill({ json: [] });
   });
-  await page.route("**/api/authorization/acme/peer-mappings**", (route) =>
-    route.fulfill({ json: [] }),
-  );
+  await page.route("**/api/authorization/acme/peer-mappings**", (route) => {
+    if (route.request().method() === "GET")
+      return route.fulfill({ json: [existing] });
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ...existing, revision: 8 } });
+  });
   await page.goto("/trust?view=authorization");
+  await page
+    .getByRole("button", { name: "Edit peer mapping", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByLabel("Local credential", { exact: true }),
+  ).toHaveValue(mappedCredential);
+  await expect(
+    dialog.locator(`option[value="${mappedCredential}"]`),
+  ).toHaveText(mappedCredential);
+  await dialog
+    .getByRole("button", { name: "Save and enable mapping", exact: true })
+    .click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({
+    source_node: existing.source_node,
+    source_tenant: existing.source_tenant,
+    source_subject: existing.source_subject,
+    credential_id: mappedCredential,
+    enabled: true,
+    expected_revision: 7,
+  });
   await page
     .getByRole("button", { name: "Issue credential", exact: true })
     .click();
-  const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel("Subject", { exact: true })).toHaveValue("ci");
   await dialog
     .getByRole("button", { name: "Issue credential", exact: true })
@@ -976,6 +1013,12 @@ test("item-scoped issuance and peer writes work without policy or credential rea
   await page
     .getByRole("button", { name: "Add peer mapping", exact: true })
     .click();
+  await dialog
+    .getByLabel("Local credential", { exact: true })
+    .selectOption(mappedCredential);
+  await expect(
+    dialog.getByLabel("Local credential", { exact: true }),
+  ).toHaveValue(mappedCredential);
   await expect(
     dialog
       .getByLabel("Local credential", { exact: true })
