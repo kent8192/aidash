@@ -66,23 +66,24 @@ Deployment decisions; a Tenant chooses its values within those ceilings.
 policy action and removing the Deployment Administrator bypass. It does not mean
 that a Deployment Administrator grant becomes a Tenant policy allowance.
 
-| ID  | Path                                                                                           | Decision and reason                                                                                                                                                                        | Implementation track                           |
-| --- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| P01 | Local Graph View, including Goal bodies                                                        | Move into a Tenant. Graph projection is content access, even when many other body fields are omitted                                                                                       | I1                                             |
-| P02 | Remote Graph View through a Peer Graph Grant, and grant list/set                               | Remove the special grant and administrator projection paths. Use normal Subject federation and the receiving Tenant's policy                                                               | I3                                             |
-| P03 | Workspace events, event SSE, and Run inference-progress SSE                                    | Move into a Tenant. Replay and live delivery must enforce the same authority as the underlying Workspace and Run                                                                           | I1                                             |
-| P04 | Run details, Research usage, and cited evidence                                                | Move into a Tenant. These disclose execution context and evidence, not infrastructure status                                                                                               | I1                                             |
-| P05 | General `run_control`, including resume                                                        | Move into a Tenant. Both administrator browser and shared bearer authority are refused; administrator pause/cancel use P06 instead                                                         | I1                                             |
-| P06 | `GET`/`POST /api/runs/{id}/management`                                                         | Keep a narrowed safety path. Permit only the metadata and pause/cancel contract below, with Tenant scope and durable audit                                                                 | I2                                             |
-| P07 | Provider Credential list/detail, OAuth connect/reconnect, Binding reads/changes, revoke/delete | Move into a Tenant. Metadata reveals a Tenant's provider setup, while changes affect its execution and spending                                                                            | I1                                             |
-| P08 | Workbench agent-version inspection and drafts                                                  | Already moved by #243. The shared application gates reject a Deployment Administrator; retain those denials and remove obsolete native bypass code when touched                            | Existing #243 behavior; I1 regression coverage |
-| P09 | `/api/state`, Workspace snapshots, Task lists, artifacts, conversations, and human requests    | Move Tenant collections into Tenant authority. Deployment state may expose its access profile and Deployment identity/infrastructure, with no Tenant content collections                   | I1                                             |
-| P10 | Task abandon                                                                                   | Move into a Tenant. This changes Tenant work and is broader than the Run safety exception                                                                                                  | I1                                             |
-| P11 | Channel history, attachment downloads, and Channel writes                                      | Move into a Tenant. Audit the shared access lease and API-token routes as well as browser restrictions. Any remaining administrator execution is a correction to #243, not a new exception | I1                                             |
-| P12 | Knowledge entries/search/history, Semantic Index configuration/status, and knowledge mutations | Move into a Tenant. #360 explicitly left its administrator path for this decision; content and settings use their existing policy actions                                                  | I1                                             |
-| P13 | Workbench Tenant Test Profiles and Test Limits                                                 | Move into a Tenant. The Tenant selects these within Deployment ceilings; draft-specific controls continue to require draft authority                                                       | I1                                             |
-| P14 | Research Retention Rules, their history, Evidence Revocation, and revocation records           | Move into a Tenant. The Tenant decides retention within Deployment ceilings and whether to revoke its evidence; workers apply those decisions                                              | I1                                             |
-| P15 | Tenant audit history during deletion and after purge                                           | Close ordinary audit APIs while deleted or purged. A valid restore re-enables ordinary Tenant-authorized reads; retained history is erased under `audit_retention_days`                    | I1, coordinated with #368                      |
+| ID  | Path                                                                                                     | Decision and reason                                                                                                                                                                                                                  | Implementation track               |
+| --- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| P01 | Local Graph View, including Goal bodies                                                                  | Move into a Tenant. Graph projection is content access, even when many other body fields are omitted                                                                                                                                 | I1                                 |
+| P02 | Remote Graph View through a Peer Graph Grant, and grant list/set                                         | Remove the special grant and administrator projection paths. Use normal Subject federation and the receiving Tenant's policy                                                                                                         | I3                                 |
+| P03 | Workspace events, event SSE, and Run inference-progress SSE                                              | Move into a Tenant. Replay and live delivery must enforce the same authority as the underlying Workspace and Run                                                                                                                     | I1                                 |
+| P04 | Run details, Research usage, and cited evidence                                                          | Move into a Tenant. These disclose execution context and evidence, not infrastructure status                                                                                                                                         | I1                                 |
+| P05 | General `run_control`, including resume                                                                  | Move into a Tenant. Both administrator browser and shared bearer authority are refused; administrator pause/cancel use P06 instead                                                                                                   | I1                                 |
+| P06 | `GET`/`POST /api/runs/{id}/management`                                                                   | Keep a narrowed safety path. Permit only the metadata and pause/cancel contract below, with Tenant scope and durable audit                                                                                                           | I2                                 |
+| P07 | Provider Credential list/detail, OAuth connect/reconnect, Binding reads/changes, revoke/delete           | Move into a Tenant. Metadata reveals a Tenant's provider setup, while changes affect its execution and spending                                                                                                                      | I1                                 |
+| P08 | Workbench inspection, drafts, incidents, audit, permission context, and reports                          | Preserve the #243 inspection/draft denials. Move incident reads/writes/events, catalog audit, permission context, and reports with copied incident evidence into Tenant authority; administrator lists cannot omit the Tenant filter | I1; preserve existing #243 denials |
+| P09 | `/api/state`, Workspace snapshots, Task lists, artifacts, conversations, and human requests              | Move Tenant collections into Tenant authority. Deployment state may expose its access profile and Deployment identity/infrastructure, with no Tenant content collections                                                             | I1                                 |
+| P10 | Task abandon                                                                                             | Move into a Tenant. This changes Tenant work and is broader than the Run safety exception                                                                                                                                            | I1                                 |
+| P11 | Channel history, attachment downloads, and Channel writes                                                | Move into a Tenant. Audit the shared access lease and API-token routes as well as browser restrictions. Any remaining administrator execution is a correction to #243, not a new exception                                           | I1                                 |
+| P12 | Knowledge entries/search/history, Semantic Index configuration/status, and knowledge mutations           | Move into a Tenant. #360 explicitly left its administrator path for this decision; content and settings use their existing policy actions                                                                                            | I1                                 |
+| P13 | Workbench Tenant Test Profiles and Test Limits                                                           | Move into a Tenant. The Tenant selects these within Deployment ceilings; draft-specific controls continue to require draft authority                                                                                                 | I1                                 |
+| P14 | Research Retention Rules, their history, Evidence Revocation, and revocation records                     | Move into a Tenant. The Tenant decides retention within Deployment ceilings and whether to revoke its evidence; workers apply those decisions                                                                                        | I1                                 |
+| P15 | Tenant audit history during deletion and after purge                                                     | Close ordinary audit APIs while deleted or purged. A valid restore re-enables ordinary Tenant-authorized reads; retained history is erased under `audit_retention_days`                                                              | I1, coordinated with #368          |
+| P16 | Agent Generation policies, assignments, requests, history, usage, specifications, and lifecycle controls | Move into a Tenant. Policy configuration, request reasons and generated specifications are Tenant content, and every mutation requires its existing Tenant action                                                                    | I1                                 |
 
 ### Inventory anchors
 
@@ -103,6 +104,16 @@ at implementation time:
   `services/service.rs`: knowledge and Semantic access without Subject policy.
 - `server/src/apps/registry/workbench/repositories/authority.rs`, `profile.rs`,
   and `sandbox.rs`: Tenant settings with an administrator allowance.
+- `server/src/apps/execution/generation/urls.rs`, `services/requests.rs`, and
+  `repositories/policy.rs`, `reads.rs`, and `controls.rs`: Agent Generation
+  policy list/set, assignment, request reads/history/usage/specification and
+  lifecycle control. Include the portable `generation::{policy,reads,lifecycle}`
+  gates and authenticated foreign-generation request/cancel paths.
+- `server/src/apps/registry/workbench/urls.rs`,
+  `repositories/incidents.rs`, `audit.rs`, `permissions.rs`, and `report.rs`:
+  incident creation/list/detail/update/events, catalog audit, permission context
+  and reports. Trace the shared application gates and copied evidence as well
+  as the native adapters; these routes are not covered by draft/inspection denial.
 - `server/src/apps/identity/repositories/retention.rs` and
   `server/src/apps/execution/repositories/research/revocation.rs`: administrator
   retention and revocation decisions.
@@ -253,15 +264,17 @@ execution lifecycle in harness, and HTTP/persistence composition in server.
 The following Issues track implementation; #301 is the decision record. All
 three carry `bug`, `breaking-change`, and `severity:high`.
 
-| Track | Proposed Issue title                                                                                                                             | Completion boundary                                                                                        |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| I1    | [#484: Enforce Tenant authority on remaining Deployment Administrator content and settings paths](https://github.com/kent8192/aidash/issues/484) | P01, P03–P05, P07, P09–P15, plus P08 regression coverage and cleanup                                       |
-| I2    | [#485: Make Run management an audited content-free safety control](https://github.com/kent8192/aidash/issues/485)                                | P06, including minimal GET, expected Tenant/control version, retries, receipts, audit, and lifecycle gates |
-| I3    | [#486: Remove Deployment Administrator Peer Graph Grants and remote Graph bypasses](https://github.com/kent8192/aidash/issues/486)               | P02, including grant persistence/routes, administrator protocol branches, and #241 design reconciliation   |
+| Track | Proposed Issue title                                                                                                                             | Completion boundary                                                                                                                                                    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| I1    | [#484: Enforce Tenant authority on remaining Deployment Administrator content and settings paths](https://github.com/kent8192/aidash/issues/484) | P01, P03–P05, P07–P16; preserve P08 inspection/draft denials and enforce its remaining content boundaries                                                              |
+| I2    | [#485: Make Run management an audited content-free safety control](https://github.com/kent8192/aidash/issues/485)                                | P06, including minimal GET, expected Tenant/control version, retries, receipts, audit, lifecycle gates, and same-release refusal of ordinary administrator Run control |
+| I3    | [#486: Remove Deployment Administrator Peer Graph Grants and remote Graph bypasses](https://github.com/kent8192/aidash/issues/486)               | P02, including grant persistence/routes, administrator protocol branches, and #241 design reconciliation                                                               |
 
-Land the safety contract before removing the ordinary administrator control
-path, or land the changes together. No intermediate result may retain resume as
-an administrator fallback. The full boundary is complete only after all three
+Enable P06 only in a release that also refuses every ordinary Deployment
+Administrator `/api/runs/{id}/control` operation, including shared-bearer resume.
+If I2 lands before the rest of I1, I2 must carry that refusal; otherwise deliver
+the control changes atomically. No intermediate result may retain resume as an
+administrator fallback. The full boundary is complete only after all three
 tracks meet their acceptance criteria. A coherent implementation PR may close
 multiple tracks where shared authorization code makes separate delivery risky.
 
@@ -288,8 +301,16 @@ until those changes land.
 - Assert refusal before content serialization or effects on moved paths. Cover
   cross-Tenant collections, events/SSE replay and revocation, attachments,
   knowledge mutations, Credential/Binding/OAuth operations, and Tenant settings.
-- Preserve Workbench inspection/draft denials; ensure no empty-list or alternate
-  repository path becomes a content disclosure or a write bypass.
+  Cover Agent Generation policy reads/writes, assignments, request lists, history,
+  usage, specifications, lifecycle and foreign-generation controls before any
+  content is serialized or effects occur.
+- Preserve Workbench inspection/draft denials. Cover incident create/list/detail/
+  update/events, catalog audit, permission context, and reports with copied
+  evidence; require Tenant filtering even for collections. Ensure no empty-list
+  or alternate repository path becomes a content disclosure or a write bypass.
+- Exercise the release containing P06 with both browser and shared-bearer
+  requests to ordinary `/control`, including resume, and prove refusal before
+  mutation or content serialization. This is part of I2 even if I1 is incomplete.
 - Safety tests must show the response allowlist, wrong-Tenant refusal, mandatory
   reason, terminal/cancelled no-ops, version conflicts, identical replay, changed
   input conflict, and an old retry after Tenant-authorized resume without a
