@@ -6,7 +6,7 @@
 //! Cache identities are digests; prompts, salts, leases and raw context are excluded.
 use reinhardt::query::{
 	Alias, Expr, IntoIden, JoinType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SelectStatement, SimpleExpr,
+	SelectStatement, SimpleExpr, TableRef,
 };
 
 /// Every prompt-free Usage Record column, excluding leases. Estimation error is
@@ -104,10 +104,9 @@ fn memory_model_attempts() -> String {
 			Alias::new("provider_version"),
 		)
 		.from_as(Alias::new("memory_model_attempts"), Alias::new("a"))
-		.join_as(
+		.join(
 			JoinType::InnerJoin,
-			Alias::new("memory_model_operations"),
-			Alias::new("o"),
+			TableRef::table_alias(Alias::new("memory_model_operations"), Alias::new("o")),
 			Expr::col(("a", "operation_id")).equals(("o", "id")),
 		)
 		.order_by(("a", "created_at"), Order::Asc)
