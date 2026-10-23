@@ -9,6 +9,8 @@ use aidash_domain::{context::recovery::Failure, decision::Hook};
 #[case::approved("approved", None)]
 #[case::removed("removed", Some(Failure::ContextUnreducible))]
 #[case::override_decider("override", None)]
+#[case::small_private("small_private", None)]
+#[case::revoked_metadata("revoked_metadata", None)]
 #[tokio::test]
 async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_approval_and_credentials(
 	#[future(awt)]
@@ -19,7 +21,11 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 ) {
 	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
+	let small = matches!(state, "small_private" | "revoked_metadata");
+	let private = state == "override" || small;
 	let calls = Arc::new(AtomicUsize::new(0));
+	let model_calls = Arc::new(AtomicUsize::new(0));
+	let seen_model = model_calls.clone();
 	let seen = calls.clone();
 	let router = reinhardt::test::stub::StubRouter::new()
         .route("/systemone", http::Method::POST, reply(move |request: reinhardt::Request| {
@@ -30,9 +36,11 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
                 .map(|key| (key.clone(), json!({"noul":0.0}))).collect();
             async move { reinhardt::Response::ok().with_json(&json!({"model":"typesafe/jev-1.14","answers":answers})).unwrap() }
         }))
-        .route("/v1/chat/completions", http::Method::POST, reply(|_| async {
+        .route("/v1/chat/completions", http::Method::POST, reply(move |_| {
+            seen_model.fetch_add(1, Ordering::SeqCst);
+            async {
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap()
-        })).into_server_router();
+        }})).into_server_router();
 	let upstream = reinhardt::test::fixtures::server::test_server_guard(router).await;
 	let openrouter = tenant_openrouter::install(&mut f);
 	app.context.set_singleton(f.clone());
@@ -56,26 +64,28 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let version = if matches!(state, "removed" | "override") {
-		if state == "override" {
+	let version = if state == "removed" || private {
+		if private {
 			let mut replacement =
 				aidash_application::registry::system::compaction_decider().unwrap();
 			replacement.id = "custom.compaction".into();
 			let (status, body) =
 				request(&app, &token, "POST", "/api/registry", json!(replacement)).await;
 			assert_eq!(status, 200, "{body}");
-			let (status, body) = request(
-				&app,
-				&token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({
-					"node":aidash_domain::nodes::NodeName::derived("acme"),
-					"entry":{"id":"custom.compaction","version":"1.0.0"},"expected_revision":0,"enabled":true
-				}),
-			)
-			.await;
-			assert_eq!(status, 200, "{body}");
+			if !small {
+				let (status, body) = request(
+					&app,
+					&token,
+					"POST",
+					"/api/authorization/acme/catalog",
+					json!({
+						"node":aidash_domain::nodes::NodeName::derived("acme"),
+						"entry":{"id":"custom.compaction","version":"1.0.0"},"expected_revision":0,"enabled":true
+					}),
+				)
+				.await;
+				assert_eq!(status, 200, "{body}");
+			}
 		}
 		let (_, mut agent) = request(
 			&app,
@@ -160,7 +170,7 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 	if let Some((bound, _)) = bound {
 		assert_eq!(
 			bound.pin.identity.id,
-			if state == "override" {
+			if private {
 				"custom.compaction"
 			} else {
 				COMPACTION_DECIDER_ID
@@ -168,11 +178,62 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 		);
 		assert_eq!(bound.pin.identity.version, COMPACTION_DECIDER_VERSION);
 	}
-	seed_history(&f, &run).await;
+	if state == "revoked_metadata" {
+		let snapshot = aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.snapshot("acme")
+		.await
+		.unwrap();
+		let mut bundle = json!(snapshot.bundle);
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":"deny-private-compaction-metadata","effect":"deny",
+			"subjects":{"ids":[aidash_server::domain::qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				&run.agent_id,&run.agent_version)]},
+			"actions":["registry.read"],
+			"resources":{"kinds":["decider"],"ids":["custom.compaction"]}
+		}));
+		let (status, body) = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":snapshot.revision,"bundle":bundle}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	if !small {
+		seed_history(&f, &run).await;
+	}
 	for _ in 0..6 {
 		worker.worker_once().await.unwrap();
 	}
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	if state == "revoked_metadata" {
+		assert_eq!(
+			current.control,
+			aidash_domain::RunControl::Paused,
+			"phase={:?}, error={:?}",
+			current.phase(),
+			current.error
+		);
+		assert_eq!(
+			current.phase(),
+			run.phase(),
+			"no worker output may be accepted"
+		);
+		assert_eq!(
+			model_calls.load(Ordering::SeqCst),
+			0,
+			"metadata revocation fences model IO even below the context window"
+		);
+		assert_eq!(calls.load(Ordering::SeqCst), 0);
+		assert_eq!(current.context.compactions, 0);
+		cleanup(f, &url, &schema).await;
+		return;
+	}
 	assert_eq!(
 		current.recovery.context_reason,
 		expected,
@@ -194,7 +255,8 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 			current.control,
 			current.error
 		);
-		assert_eq!(current.context.compactions, 1);
+		assert_eq!(current.context.compactions, usize::from(!small) as u32);
+		assert_eq!(model_calls.load(Ordering::SeqCst), 1);
 	} else {
 		assert_eq!(
 			current.control,
