@@ -143,6 +143,8 @@ impl SourceDeclaration {
 #[serde(deny_unknown_fields)]
 pub struct CandidateIdentity {
 	pub source: QualifiedRef,
+	/// Identity of this bounded candidate, which may be a native envelope.
+	/// It does not assert a complete read of every underlying resource.
 	pub item: String,
 	pub revision: String,
 	/// Byte range within this revision; absent means the complete item.
@@ -155,6 +157,8 @@ impl CandidateIdentity {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+/// Completeness of the identified candidate envelope, never a replacement-write
+/// permission or proof that all underlying memory/page content was read.
 pub enum Completeness {
 	Complete,
 	Partial,
@@ -396,6 +400,8 @@ impl From<SourceCandidate> for SourceContribution {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// Accepted inference delivery of exact candidate bytes. Existing resource-specific
+/// full-read/receipt contracts remain the sole authority for replacement writes.
 pub struct SourceDelivery {
 	pub identity: CandidateIdentity,
 	pub request_digest: String,
@@ -443,7 +449,14 @@ pub enum SelectionFailure {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SelectionCandidate {
+	pub identity: CandidateIdentity,
+	pub mandatory: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SelectionEvidence {
+	pub candidates: Vec<SelectionCandidate>,
 	pub boundary: crate::decision::Boundary,
 	pub decider: crate::decision::DeciderPin,
 	pub mode: Mode,
@@ -480,3 +493,73 @@ impl SelectionFailure {
 
 #[cfg(test)]
 mod tests;
+
+impl SelectionEvidence {
+	/// Replay only declared candidate questions and version-pinned threshold code.
+	/// This is classification evidence, never accepted-inference/read coverage.
+	pub fn replay(&self) -> Result<Vec<String>> {
+		self.boundary.validate()?;
+		self.decider.validate()?;
+		crate::decision::validate_digest(&self.query_digest)?;
+		crate::decision::validate_digest(&self.candidate_digest)?;
+		crate::decision::validate_digest(&self.state_digest)?;
+		let keys = self
+			.candidates
+			.iter()
+			.map(|c| c.identity.key())
+			.collect::<Vec<_>>();
+		if keys.len() > MAX_CANDIDATES || keys.iter().collect::<BTreeSet<_>>().len() != keys.len() {
+			return Err(Error::Invalid(
+				"selection evidence has invalid candidate identities".into(),
+			));
+		}
+		let proposed = if self.failure.is_some() || keys.is_empty() {
+			vec![]
+		} else {
+			let threshold = self
+				.threshold
+				.ok_or_else(|| Error::Invalid("selection evidence lacks threshold".into()))?;
+			if threshold.value() <= 0.0 || threshold.value() > 0.5 {
+				return Err(Error::Invalid(
+					"selection evidence has invalid threshold".into(),
+				));
+			}
+			if self.questions.len() != keys.len() || self.answers.len() != keys.len() {
+				return Err(Error::Invalid(
+					"selection evidence has incomplete answers".into(),
+				));
+			}
+			let mut proposed = vec![];
+			for (candidate, key) in self.candidates.iter().zip(&keys) {
+				let question = format!("keep_{}", key.trim_start_matches("sha256:"));
+				if !self.questions.contains_key(&question) {
+					return Err(Error::Invalid(
+						"selection question has a different identity".into(),
+					));
+				}
+				let answer = self
+					.answers
+					.get(&question)
+					.ok_or_else(|| Error::Invalid("selection answer missing".into()))?;
+				if candidate.mandatory || answer.value() >= threshold.value() {
+					proposed.push(key.clone());
+				}
+			}
+			proposed
+		};
+		let selected = if self.mode == Mode::Shadow {
+			keys
+		} else {
+			proposed.clone()
+		};
+		if self.proposed != proposed
+			|| self.selected != selected
+			|| self.mode == Mode::Enforce && self.candidates.iter().any(|c| c.mandatory)
+		{
+			return Err(Error::Invalid(
+				"selection outcome does not follow its recorded answers".into(),
+			));
+		}
+		Ok(selected)
+	}
+}

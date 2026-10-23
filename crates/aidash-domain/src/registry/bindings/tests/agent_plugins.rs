@@ -68,6 +68,23 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 	let mut bindings = vec![];
 	for normalized in root.normalized_bindings(NODE).unwrap() {
 		let target = normalized.binding.target;
+		if normalized.binding.kind == BindingKind::Source {
+			let source = source_defaults::workspace_observation().unwrap();
+			bindings.push(ResolvedBinding {
+				identity: target.clone(),
+				digest: crate::registry::rules::digest(&serde_json::to_value(&source).unwrap()),
+				installation: None,
+				definition: source.clone(),
+				origin: normalized.origin,
+				alias: None,
+				narrow: Narrowing::default(),
+				provider_contract_digest: None,
+				provider_implementation: None,
+				excluded_reason: None,
+			});
+			definitions.push(ResolvedDefinition::new(target, source).unwrap());
+			continue;
+		}
 		let operation = target.id.strip_prefix("aidash.").unwrap();
 		let descriptor = core_descriptor(NODE, operation).unwrap();
 		let tool = entry(
