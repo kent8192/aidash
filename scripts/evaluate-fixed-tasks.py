@@ -74,9 +74,9 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
-    "External compaction is refused by default. An explicit bounded allowance pins each Decider/Summary "
-    "configuration and reserves every permitted call. Actual auxiliary charges remain unknown until imported "
-    "from complete operator-mediated accounting evidence; reservations are not provider-reported cost.",
+    "Auxiliary definitions can describe planned Decider/Summary work, but live dispatch is refused until an "
+    "enforced provider/broker monetary bound exists. An operator-declared reservation is not a provider cap "
+    "or a reported charge; recovery diagnostics remain not measured in this live tier.",
 ]
 
 
@@ -761,6 +761,12 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         models[reference] = api.get(f"/api/registry/{identifier}/{version}")["config"]
     approval = read_json(args.disclosure_approval) if args.disclosure_approval else None
     evaluation.check_model_config_digests(approval, models, required=corpus["version"] != "fixed-task-corpus-v1")
+    execution_estimator = getattr(args, "execution_estimator", "bytes")
+    evaluation.check_execution_estimator_approval(approval, execution_estimator)
+    source_attestation = None
+    if getattr(args, "source_attestation", None):
+        source_attestation = evaluation.validate_source_attestation(read_json(args.source_attestation), approval,
+                                                                   args.server_revision)
     expires_at = evaluation.require_live_authorization(credential, binding, approval, corpus["_snapshot"]["sha256"],
                                                        models, args.max_spend_nanocredits, args.max_wall_seconds,
                                                        wall_now())
@@ -786,12 +792,13 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             identifier, _, version = allowance["reference"].partition("@")
             auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}")["config"]
     evaluation.verify_auxiliary_configs(auxiliary, auxiliary_entries, credential["provider"])
+    evaluation.require_enforceable_auxiliary_bound(auxiliary)
     missing = sorted({p["task"]["id"] for p in planned_runs if p["task"].get("requires_compaction")
                       and (not auxiliary["decider"] or p["task"].get("requires_summary") and not auxiliary["summary"])})
     if missing:
         raise evaluation.GuardRefusal(f"tasks {missing} require approved bounded Decider/Summary allowances; "
                                       "declare their exact references, configuration digests and all-call cost caps")
-    evaluation.check_matched_live_models(corpus, planned_runs, mapping, models)
+    evaluation.check_matched_live_models(corpus, planned_runs, mapping, models, execution_estimator=execution_estimator)
     if code_oracle:
         try:
             checked(["docker", "image", "inspect", code_oracle.image], timeout=20)
@@ -849,8 +856,9 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             try:
                 runs.append(evaluation.run_result(corpus, planned, repeat, observation, "live", code_oracle or False))
             except Exception as failure:  # A grading fault must not discard the record of paid work.
+                runs.append(evaluation.failed_run_result(corpus, planned, repeat, observation, "live", failure))
                 error = (error + "; " if error else "") + f"grading failed for run {repeat} of " \
-                    f"{planned['task']['id']}: {type(failure).__name__}: {failure}"
+                    f"{planned['task']['id']}: {type(failure).__name__}"
         dispatched = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
                       for planned, repeat, _ in observations}
         graded = {run["key"] for run in runs}
@@ -861,15 +869,17 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
             for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
             if key not in graded and key not in listed]
-        source = evaluation.source_identity(server_revision=args.server_revision)
-        source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
+        source = source_attestation or evaluation.source_identity(server_revision=args.server_revision)
+        if source_attestation is None:
+            source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
         # Neither Usage Records nor model.completed events expose the provider-reported identity (I-5).
         model = {"kind": "live-provider", "registrations": model_refs, "reported_identities": None,
                  "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True,
-                 "requested_routes": {reference: {"model_id": config["model_id"],
-                     "endpoint": config.get("endpoint"), "provider_routing": config.get("provider_routing")}
-                     for reference, config in models.items()}, "reported_routes": None}
+                 "requested_routes": evaluation.requested_model_routes(models), "reported_routes": None}
         harness = {"compaction": "server-configured", "cache_salt": True,
+                   "execution_estimator": execution_estimator,
+                   "source_provenance": "operator-attestation" if source_attestation else "remote-unverified",
+                   "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
                    "jev_classifier": "bounded approved Decider" if auxiliary["decider"] else
@@ -963,6 +973,10 @@ def main(argv=None):
     live_command.add_argument("--tool-endpoint", default="http://127.0.0.1:9/aidash-fixed-task-evaluation",
                               help="endpoint declared by fixture tools; approvals for them are denied")
     live_command.add_argument("--provider-credential", help="connected Tenant Provider Credential ID")
+    live_command.add_argument("--execution-estimator", choices=("bytes", "calibrated"), default="bytes",
+                              help="Bytes primary comparison; calibrated requires an explicit matching disclosure approval")
+    live_command.add_argument("--source-attestation", type=Path,
+                              help="operator-attested clean remote source/binary identity, bound by disclosure approval")
     live_command.add_argument("--model", action="append", default=[],
                               help="corpus model name=Registry model id@version (repeatable)")
     live_command.add_argument("--disclosure-approval", type=Path)

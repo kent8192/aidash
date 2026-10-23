@@ -186,6 +186,7 @@ comparisons = ["projection", "explicit-projection", "prompt-cache"]
 fixture_agent = "pricing-visible-only-fix"
 [tasks.oracle]
 kind = "python-tests"
+cases = "oracles/pricing_cases.json"
 target = "pricing.py"
 visible = ["snapshots/pricing/test_pricing.py"]
 hidden = ["oracles/pricing_hidden.py"]
@@ -210,6 +211,7 @@ comparisons = ["projection", "explicit-projection"]
 fixture_agent = "pricing-complete-fix"
 [tasks.oracle]
 kind = "python-tests"
+cases = "oracles/pricing_cases.json"
 target = "pricing.py"
 visible = ["snapshots/pricing/test_pricing.py"]
 hidden = ["oracles/pricing_hidden.py"]

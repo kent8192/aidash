@@ -108,6 +108,14 @@
       ],
       "properties": {
         "compaction": { "type": "string" },
+        "execution_estimator": { "enum": ["bytes", "calibrated"] },
+        "source_provenance": {
+          "enum": ["operator-attestation", "remote-unverified"]
+        },
+        "source_attestation_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "cache_salt": { "type": "boolean" },
         "provider_credential": { "type": ["string", "null"] },
         "disclosure_approval": { "type": ["string", "null"] },

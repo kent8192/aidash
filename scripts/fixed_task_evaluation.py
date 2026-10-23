@@ -21,6 +21,8 @@ import re
 import random
 import uuid
 import statistics
+import selectors
+import time
 import subprocess
 import sys
 import tempfile
@@ -31,7 +33,7 @@ from fixed_task_fixture import FIXTURE_PATCHES
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "2.0.0"
+EVALUATOR_VERSION = "2.1.0"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
@@ -73,7 +75,7 @@ ORACLE_FIELDS = {
     "multi-call": {"expected_tools": "strings", "answer_pattern": "pattern"},
     "compaction-retention": {"budget_usd": "integer", "excluded_vendors": "strings", "operation": "string"},
 }
-OPTIONAL_ORACLE_FIELDS = {"python-tests": {"timeout_seconds": "positive"},
+OPTIONAL_ORACLE_FIELDS = {"python-tests": {"timeout_seconds": "positive", "cases": "string"},
                           "answer-pattern": {"forbidden_pattern": "pattern"}}
 # Messages that identify a failed compaction or an over-window request.
 OVERFLOW_PATTERNS = (re.compile(r"(?i)compaction could not fit"), re.compile(r"(?i)context (window|length|overflow)"),
@@ -780,7 +782,7 @@ def load_corpus(path=None):
         if oracle_problems:
             continue  # Its file fields are malformed; the errors above already refuse the corpus.
         for relative in task.get("inputs", []) + oracle.get("visible", []) + oracle.get("hidden", []) + (
-                [oracle["source"]] if "source" in oracle else []):
+                [oracle["source"]] if "source" in oracle else []) + ([oracle["cases"]] if "cases" in oracle else []):
             if not (base / relative).is_file():
                 errors.append(f"task {tid} references missing file {relative}")
             files.append(relative)
@@ -985,38 +987,111 @@ def run_python_tests(directory, pattern, timeout):
             "detail": " | ".join(tail)[:500]}
 
 
+def bounded_subprocess(command, input_bytes, timeout, max_output_bytes=65536):
+    """Collect candidate output without allowing a subprocess to allocate unbounded host memory."""
+    deadline = time.monotonic() + timeout
+    output = bytearray()
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")}) as process:
+        try:
+            process.stdin.write(input_bytes)
+            process.stdin.close()
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fd, 8192)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        elif len(output) + len(chunk) > max_output_bytes:
+                            raise ValueError("candidate output exceeds the 65536-byte limit")
+                        else:
+                            output.extend(chunk)
+            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            return subprocess.CompletedProcess(command, process.returncode, output.decode(errors="replace"))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
+# This child program receives inputs only. Expected answers and the verdict are kept in the
+# trusted evaluator process, so candidate imports cannot replace unittest or its assertions.
+CANDIDATE_RUNNER = """import importlib.util, json, sys
+requests = json.loads(sys.stdin.read())
+spec = importlib.util.spec_from_file_location('candidate', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+function = getattr(module, sys.argv[2])
+values = [function(*request['args'], **request['kwargs']) for request in requests]
+sys.stdout.write(json.dumps(values, allow_nan=False))
+"""
+
+
 class ContainerCodeOracle:
-    """Execute untrusted code in a pinned, disposable, networkless Docker image."""
+    """Compare isolated candidate outputs with trusted, frozen expected values."""
     def __init__(self, image):
         if not isinstance(image, str) or not re.fullmatch(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[0-9a-f]{64}", image):
             raise GuardRefusal("code oracle image must be pinned by a sha256 digest")
         self.image = image
 
-    def __call__(self, directory, pattern, timeout):
+    def __call__(self, directory, cases, timeout, target="pricing.py", entrypoint="discounted_total"):
         name = "aidash-code-oracle-" + uuid.uuid4().hex
         command = ["docker", "run", "--rm", "--pull", "never", "--name", name, "--network", "none",
                    "--read-only", "--pids-limit", "64", "--cpus", "1", "--memory", "128m",
                    "--memory-swap", "128m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                    "--user", "65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--mount",
                    f"type=bind,src={Path(directory).resolve()},dst=/work,readonly", "--workdir", "/work",
-                   "--env", "PYTHONDONTWRITEBYTECODE=1", self.image, "python", "-I", "-m", "unittest",
-                   "discover", "-s", "/work", "-p", pattern]
-        # TemporaryDirectory is private to its owner by default; container uid may only read these
-        # controlled oracle inputs, never the evaluator's environment or another host directory.
+                   "--env", "PYTHONDONTWRITEBYTECODE=1", self.image, "python", "-I", "-c", CANDIDATE_RUNNER,
+                   "/work/" + target, entrypoint]
         Path(directory).chmod(0o755)
         for path in Path(directory).iterdir():
             path.chmod(0o444)
+        requests = [{"args": case["args"], "kwargs": case["kwargs"]} for case in cases]
+        expected = [case["expected"] for case in cases]
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=min(timeout, 20),
-                                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
-            output = result.stderr or result.stdout
-            ran = re.findall(r"(?m)^Ran (\d+) tests? in ", output)
-            return {"pattern": pattern, "passed": result.returncode == 0, "tests": int(ran[-1]) if ran else None,
-                    "detail": " | ".join(output.strip().splitlines()[-3:])[:500]}
-        except subprocess.TimeoutExpired:
-            return {"pattern": pattern, "passed": False, "tests": None, "detail": "container oracle timed out"}
+            completed = bounded_subprocess(command, json.dumps(requests).encode(), min(timeout, 20))
+            try:
+                observed = json.loads(completed.stdout)
+            except ValueError:
+                observed = None
+            passed = completed.returncode == 0 and not non_finite_numbers(observed) and json_equal(observed, expected)
+            return {"pattern": "frozen-input-vectors", "passed": passed, "tests": len(cases),
+                    "detail": "candidate outputs match trusted expected values" if passed else
+                              "candidate outputs differ or the isolated process returned invalid output"}
+        except (subprocess.TimeoutExpired, ValueError) as error:
+            return {"pattern": "frozen-input-vectors", "passed": False, "tests": len(cases),
+                    "detail": "container oracle timed out" if isinstance(error, subprocess.TimeoutExpired) else
+                              "candidate output exceeds the 65536-byte limit"}
         finally:
             subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=20)
+
+
+def independent_code_vectors(corpus, oracle):
+    """Read the trusted vectors from the frozen corpus, never from candidate output."""
+    relative = oracle.get("cases")
+    if relative not in corpus["_files"]:
+        raise GuardRefusal("live code oracle needs frozen independent input/expected vectors in oracle.cases")
+    try:
+        vectors = json.loads(corpus["_files"][relative])
+        if vectors["version"] != 1 or not isinstance(vectors["entrypoint"], str) or not re.fullmatch(
+                r"[a-zA-Z_][a-zA-Z0-9_]*", vectors["entrypoint"]):
+            raise ValueError("invalid vector contract")
+        for suite in ("visible", "hidden"):
+            if not isinstance(vectors[suite], list) or not vectors[suite]:
+                raise ValueError("empty vector suite")
+            for case in vectors[suite]:
+                if not isinstance(case, dict) or set(case) != {"args", "kwargs", "expected"} or \
+                        not isinstance(case["args"], list) or not isinstance(case["kwargs"], dict) or non_finite_numbers(case):
+                    raise ValueError("malformed vector")
+        if Path(oracle["target"]).name != oracle["target"]:
+            raise ValueError("invalid candidate target")
+    except (KeyError, TypeError, ValueError):
+        raise GuardRefusal("live code oracle has malformed independent input/expected vectors") from None
+    return vectors
 
 
 def container_code_execution(image):
@@ -1032,6 +1107,16 @@ def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
     files = corpus["_files"]
     checks = [{"check": "patch-present", "passed": True}]
     timeout = oracle.get("timeout_seconds", 20)
+    if isinstance(allow_code_execution, ContainerCodeOracle):
+        vectors = independent_code_vectors(corpus, oracle)
+        for name, label in (("visible", "visible-tests"), ("hidden", "hidden-regression")):
+            # No tests or expected values enter the sandbox, including the held-out suite.
+            with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-oracle-") as directory:
+                Path(directory, oracle["target"]).write_text(blocks[-1])
+                result = allow_code_execution(directory, vectors[name], timeout, oracle["target"], vectors["entrypoint"])
+            checks.append({"check": label, **result})
+        passed = all(check["passed"] for check in checks)
+        return passed, checks, None if passed else "independent candidate-output checks failed"
 
     def suite(tests, prefix, pattern):
         # Each suite gets a fresh directory and a fresh copy of the patch. The held-out
@@ -1093,8 +1178,9 @@ def oracle_constraints(oracle, answer):
     checks = [{"check": "json-present", "passed": True},
               {"check": "budget", "passed": value.get("budget_usd") == oracle["budget_usd"],
                "expected": oracle["budget_usd"], "observed": value.get("budget_usd")},
-              {"check": "exclusions", "passed": sorted(value.get("excluded_vendors") or []) ==
-               sorted(oracle["excluded_vendors"]), "expected": sorted(oracle["excluded_vendors"]),
+              {"check": "exclusions", "passed": isinstance(value.get("excluded_vendors"), list) and
+               all(isinstance(vendor, str) for vendor in value["excluded_vendors"]) and
+               sorted(value["excluded_vendors"]) == sorted(oracle["excluded_vendors"]), "expected": sorted(oracle["excluded_vendors"]),
                "observed": value.get("excluded_vendors")}]
     passed = all(check["passed"] for check in checks)
     return passed, checks, None if passed else "a constraint or correction was not retained"
@@ -1345,7 +1431,30 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
     execution = allow_code_execution if not live or isinstance(allow_code_execution, ContainerCodeOracle) else False
     grading_observation = dict(observation, native_projection=planned.get("agent_fields", {}).get(
         "projection_version") == "native")
-    oracle = grade(corpus, task, grading_observation, execution, required_loads)
+    try:
+        oracle = grade(corpus, task, grading_observation, execution, required_loads)
+    except Exception as error:
+        if not live:
+            raise
+        return failed_run_result(corpus, planned, repeat, observation, tier, error)
+    return record_run_result(corpus, planned, repeat, observation, tier, oracle)
+
+
+def failed_run_result(corpus, planned, repeat, observation, tier, failure):
+    """Keep the durable identity and failed denominator of work whose grader failed."""
+    detail = f"evaluator grading failed ({type(failure).__name__})"
+    safe = {"run_id": observation.get("run_id"), "phase": observation.get("phase"),
+            "final_answer": observation.get("final_answer") if isinstance(observation.get("final_answer"), str) else None,
+            "error": detail, "infrastructure_error": detail, "interrupted": bool(observation.get("interrupted")),
+            "wall_ms": observation.get("wall_ms", 0), "steps": observation.get("steps"),
+            "compactions": observation.get("compactions"), "recovery_operations": observation.get("recovery_operations", [])}
+    oracle = {"kind": planned["task"]["oracle"]["kind"], "passed": None, "checks": [], "detail": detail}
+    return record_run_result(corpus, planned, repeat, safe, tier, oracle)
+
+
+def record_run_result(corpus, planned, repeat, observation, tier, oracle):
+    task = planned["task"]
+    live = tier == "live"
     outcome = classify(task, observation, oracle)
     answer = observation.get("final_answer")
     tool_calls = observation.get("tool_calls", [])
@@ -1552,12 +1661,12 @@ def positive_int(value):
 
 
 def auxiliary_allowance(approval):
-    """Validate the exact bounded auxiliary-work contract; never infer a free call.
+    """Validate declared auxiliary work for offline planning; never infer a free call.
 
-    Every allowance is an upper bound enforced by the pinned Registry configuration,
-    not a price estimate from an unbounded provider. Callers verify each config digest
-    and binding before dispatch. A Decider reservation uses an approved per-physical-
-    request upper price, because token-only pricing cannot price arbitrary questions.
+    Call counts are checked against pinned Registry configurations. The operator's
+    per-call amount is only a reservation, not proof of an upstream monetary cap.
+    Execution must additionally pass require_enforceable_auxiliary_bound; until an
+    enforced provider/broker contract exists, live auxiliary dispatch is refused.
     """
     value = approval.get("external_compaction")
     if value == "disabled":
@@ -1588,6 +1697,15 @@ def auxiliary_allowance(approval):
     return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total}
 
 
+def require_enforceable_auxiliary_bound(auxiliary):
+    """Refuse paid Decider work until an upstream-enforced monetary bound exists."""
+    if auxiliary.get("decider") or auxiliary.get("summary"):
+        raise GuardRefusal("bounded Decider/Summary live dispatch is unavailable: max_nanocredits_per_call is an "
+                           "operator-declared reservation, not an enforceable per-physical-request monetary limit "
+                           "or receipt. An enforced provider/broker bound is required before the hard campaign "
+                           "ceiling can authorize these calls; retain recovery diagnostics as not measured")
+
+
 def verify_auxiliary_configs(auxiliary, entries, provider):
     """Verify independently fetched Registry configs before binding approved work."""
     for kind in ("decider", "summary"):
@@ -1602,8 +1720,8 @@ def verify_auxiliary_configs(auxiliary, entries, provider):
         if kind == "decider":
             if config.get("hook") != "compaction" or config.get("mode") != "enforce" or \
                     not positive_int(config.get("max_calls_per_run")) or \
-                    config["max_calls_per_run"] < allowance["max_calls_per_run"]:
-                raise GuardRefusal("approved Decider must enforce compaction with the bounded Run call allowance")
+                    config["max_calls_per_run"] != allowance["max_calls_per_run"]:
+                raise GuardRefusal("approved Decider must enforce compaction with exactly the approved Run call allowance")
             if not isinstance(config.get("routes"), list) or len(config["routes"]) != 1:
                 raise GuardRefusal("approved Decider must pin one exact route; implicit fallback is refused")
         else:
@@ -1641,7 +1759,34 @@ def live_task_support(approval, corpus, planned, fixture_endpoint):
             raise GuardRefusal("python-tests oracles run model-written code; an explicit code_oracle approval for a "
                                "pinned disposable Docker image, network none, 128 MiB, 1 CPU, 64 pids and 20s is required")
         code = ContainerCodeOracle(contract["image"])
+        for item in planned:
+            if item["task"]["oracle"]["kind"] == "python-tests":
+                independent_code_vectors(corpus, item["task"]["oracle"])
     return endpoint, code
+
+
+def check_execution_estimator_approval(approval, estimator):
+    if estimator not in ("bytes", "calibrated"):
+        raise GuardRefusal("execution estimator must be bytes or calibrated")
+    declared = approval.get("execution_estimator") if isinstance(approval, dict) else None
+    if (estimator != "bytes" or declared is not None) and declared != estimator:
+        raise GuardRefusal("disclosure approval execution_estimator must exactly authorize the selected estimator; "
+                           "the primary comparison defaults to Bytes")
+
+
+def validate_source_attestation(source, approval, server_revision):
+    """Validate operator-supplied remote provenance; this is not local autodetection."""
+    fields = {"commit", "dirty", "dirty_diff_sha256", "binary_sha256", "server_revision"}
+    if not isinstance(source, dict) or set(source) != fields or source.get("dirty") is not False or \
+            source.get("dirty_diff_sha256") is not None or not isinstance(source.get("commit"), str) or \
+            not re.fullmatch(r"[0-9a-f]{40}", source["commit"]) or not isinstance(source.get("binary_sha256"), str) or \
+            not re.fullmatch(r"[0-9a-f]{64}", source["binary_sha256"]) or \
+            source.get("server_revision") != source["commit"] or server_revision != source["commit"]:
+        raise GuardRefusal("source attestation must name a clean full commit, its binary sha256 and an exactly "
+                           "matching full --server-revision")
+    if not isinstance(approval, dict) or approval.get("source_attestation_sha256") != canonical_sha256(source):
+        raise GuardRefusal("disclosure approval source_attestation_sha256 must bind the exact operator source attestation")
+    return dict(source)
 
 
 def check_model_config_digests(approval, models, required=False):
@@ -1753,7 +1898,34 @@ def require_live_authorization(credential, binding, approval, corpus_sha256, mod
     return check_approval(approval, corpus_sha256, models, ceiling, now)
 
 
-def check_matched_live_models(corpus, planned, mapping, models):
+def provider_route_evidence(config, reference):
+    """Validate the actual model schema's requested exact-tag evidence."""
+    pin = config.get("provider_route")
+    if not isinstance(pin, dict) or set(pin) != {"tag", "source", "verified_at", "expires_at"}:
+        raise GuardRefusal(f"primary model {reference} needs exact provider_route tag/source/time approval evidence")
+    tag, source = pin.get("tag"), pin.get("source")
+    if not isinstance(tag, str) or len(tag) > 256 or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", tag) or any(segment in (".", "..") for segment in tag.split("/")):
+        raise GuardRefusal(f"primary model {reference} has an invalid provider_route exact endpoint tag")
+    if not isinstance(source, str) or not source.strip() or len(source) > 1024 or any(ord(char) < 32 for char in source):
+        raise GuardRefusal(f"primary model {reference} needs provider_route source evidence")
+    verified = parse_timestamp(pin["verified_at"], "provider_route.verified_at")
+    expires = parse_timestamp(pin["expires_at"], "provider_route.expires_at")
+    now = datetime.datetime.now(datetime.UTC)
+    if not verified <= now < expires or expires <= verified:
+        raise GuardRefusal(f"primary model {reference} provider_route approval evidence is future-dated or expired")
+    return dict(pin)
+
+
+def requested_model_routes(models):
+    """Requested configuration evidence, kept separate from provider-reported identities."""
+    return {reference: {"model_id": config["model_id"], "endpoint": config.get("endpoint"),
+                        "provider_route": config.get("provider_route"),
+                        "request_estimator": config.get("request_estimator", "bytes")}
+            for reference, config in models.items()}
+
+
+def check_matched_live_models(corpus, planned, mapping, models, *, execution_estimator="bytes"):
     """Preflight the frozen v2 primary routes before registrations or paid work."""
     if not corpus.get("execution_estimator"):
         return  # Historical experiments did not declare this comparison contract.
@@ -1766,8 +1938,8 @@ def check_matched_live_models(corpus, planned, mapping, models):
             if config[field] != corpus["models"][name][field]:
                 raise GuardRefusal(f"model {reference} {field} must match frozen corpus model {name} "
                                    f"({corpus['models'][name][field]})")
-        if config.get("request_estimator") != corpus["execution_estimator"]:
-            raise GuardRefusal(f"primary model {reference} must explicitly select request_estimator=bytes")
+        if config.get("request_estimator") != execution_estimator:
+            raise GuardRefusal(f"model {reference} must explicitly select request_estimator={execution_estimator}")
         route = item.get("route_id")
         if route is None:
             continue
@@ -1779,8 +1951,9 @@ def check_matched_live_models(corpus, planned, mapping, models):
             raise GuardRefusal(f"model {reference} does not explicitly support projection {version}")
         if item["agent_fields"].get("prompt_cache") == "explicit" and config.get("cache_mode") != "explicit":
             raise GuardRefusal(f"explicit route model {reference} must declare cache_mode=explicit")
+        provider_route_evidence(config, reference)
         identity = {key: config.get(key) for key in ("provider", "model_id", "endpoint", "provider_credential",
-                    "plan_connection", "reasoning_effort", "request_estimator", "provider_routing", "routing",
+                    "plan_connection", "reasoning_effort", "request_estimator", "provider_route",
                     "streaming", "cache_mode")}
         previous = routes.setdefault(route, identity)
         if not json_equal(previous, identity):
