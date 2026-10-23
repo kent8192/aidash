@@ -1,6 +1,7 @@
 //! Execution evidence retains the supplied version, never the latest task prose.
 use crate::{Error, Result, database::native};
 use aidash_domain::{Run, Task};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, OnConflict, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
@@ -94,6 +95,7 @@ pub(crate) async fn complete(
 				id: row.try_get("id")?,
 				tenant: row.try_get("tenant")?,
 				run_id: row.try_get("run_id")?,
+				run: ForeignKeyField::new(),
 				task_revision: row.try_get("task_revision")?,
 				step: row.try_get("step")?,
 				input_seq: row.try_get("input_seq")?,
