@@ -17,6 +17,20 @@ fn federate(app: &EndpointFixture, reachable: &[&str]) -> aidash_server::federat
 	runtime
 }
 
+async fn create_empty_policy(app: &EndpointFixture) {
+	assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/authorization/acme",
+				&json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{},"policies":[]}}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+}
+
 async fn post(app: &EndpointFixture, node: &str, body: &Value, status: u16) -> Value {
 	let response = app
 		.deployment_administrator
@@ -56,6 +70,7 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	let remote_runtime = federate(&remote, &[]);
 	let local_runtime = federate(&local, &[&remote.server.url, &relocated.url]);
 	tenant_root(&local_runtime, "acme").await;
+	create_empty_policy(&local).await;
 	tenant_root(&remote_runtime, "other").await;
 	let owner = default_node(&local_runtime.store, "acme").await.node;
 	let source = default_node(&remote_runtime.store, "other")
@@ -151,6 +166,7 @@ async fn a_registration_refuses_a_stranger_a_stale_revision_and_a_self_registrat
 	let remote_runtime = federate(&remote, &[]);
 	let local_runtime = federate(&local, &[&remote.server.url]);
 	tenant_root(&local_runtime, "acme").await;
+	create_empty_policy(&local).await;
 	tenant_root(&remote_runtime, "other").await;
 	let owner = default_node(&local_runtime.store, "acme").await;
 	let source = default_node(&remote_runtime.store, "other")
@@ -213,6 +229,7 @@ async fn concurrent_first_registrations_of_one_node_create_exactly_one_revision(
 	let remote_runtime = federate(&remote, &[]);
 	let local_runtime = federate(&local, &[&remote.server.url]);
 	tenant_root(&local_runtime, "acme").await;
+	create_empty_policy(&local).await;
 	tenant_root(&remote_runtime, "other").await;
 	let owner = default_node(&local_runtime.store, "acme").await.node;
 	let source = default_node(&remote_runtime.store, "other")

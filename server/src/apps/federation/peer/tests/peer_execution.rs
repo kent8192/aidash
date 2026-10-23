@@ -379,6 +379,16 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		(&home, &home_runtime, &child, &child_runtime),
 		(&child, &child_runtime, &home, &home_runtime),
 	] {
+		assert_eq!(
+			deployment_administrator(
+				owner,
+				"/api/authorization/acme",
+				json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{},"policies":[]}}),
+			)
+			.await
+			.0,
+			200
+		);
 		peering::permit(runtime, &peer.server.url);
 		let node = endpoint::default_node(&runtime.store, "acme").await;
 		let remote = endpoint::default_node(&peer_runtime.store, "acme").await;
