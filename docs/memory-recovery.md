@@ -109,6 +109,22 @@ previously disclosed information, hosted backups outside this managed directory,
 or a PostgreSQL replica/failover profile. Full database rewind requires a separate
 authority/control/evidence continuity design and acceptance result.
 
+## Ledger disk loss
+
+The commands above require an existing valid ledger; they do not currently
+recover a lost ledger disk. The accepted #434 design adds synchronous GCS
+protection of the epoch and non-body floors, six-hour all-bank off-disk archives
+and fifteen-minute archive pruning. Supervised disk reconstruction keeps the
+same epoch, reconciles every bank against independently recovered floors and
+current PostgreSQL, and withholds uncertain bodies. Its two-hour RTO is an
+unverified target for ledger-only loss with an unrewound database.
+
+See [ADR 0083](adr/0083-home-recovery-ledger-loss-preserves-the-never-rewind-guarantee.md)
+and the [ledger-loss recovery design](operations/home-ledger-recovery.md) for the
+accepted decisions, publication protocol and required drill. Implementation and
+production acceptance are pending; this does not extend today's restore command
+or permit initialization of a replacement epoch.
+
 The disposable cluster runner creates an application-owned child directory under
 each Home volume. Run `scripts/test-cluster.sh kubernetes native-memory`. This
 command uses an explicit temporary kubeconfig and preserve the current context.
