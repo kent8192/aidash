@@ -196,6 +196,7 @@ pub(super) async fn setup_endpoint_policy(
 			"memory",
 			"p",
 			serde_json::to_value(ProviderConfig {
+				context_source: None,
 				engine: EngineKind::HindsightRust,
 				policy: Policy {
 					extraction: reference("m"),

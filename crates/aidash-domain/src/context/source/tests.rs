@@ -65,6 +65,11 @@ fn explicit_policy_rejects_duplicate_tools_and_required_home_enforcement() {
 	declaration.tools.read.push(tool);
 	assert!(declaration.validate().is_err());
 	declaration.tools.read.pop();
+	declaration.pin = PinPolicy::OnDemand;
+	assert!(
+		declaration.validate().is_err(),
+		"declared required-Home source cannot opt out of automatic contribution"
+	);
 	declaration.pin = PinPolicy::Scored {
 		mode: Mode::Enforce,
 		decider: QualifiedRef::builtin("aidash://node", "selection"),
@@ -93,6 +98,7 @@ fn altered_or_partial_fitted_bytes_cannot_claim_full_delivery() {
 	let source = QualifiedRef::builtin("aidash://node", "source");
 	let content = json!("original full source");
 	let mut contribution = SourceContribution {
+		placement: None,
 		identity: CandidateIdentity {
 			source,
 			item: "item".into(),

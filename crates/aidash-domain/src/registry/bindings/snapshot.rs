@@ -39,6 +39,37 @@ impl BindingSnapshot {
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
 		self.validate_agent_plugins(config)?;
+		let root = &definitions
+			.get(&self.agent)
+			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
+			.definition;
+		let saved_replacement = root
+			.binding_normalization
+			.as_ref()
+			.and_then(|normalization| normalization.compaction_override.as_ref());
+		let mut expected_replacement = None;
+		for binding in config
+			.bindings
+			.iter()
+			.filter(|binding| binding.kind == BindingKind::Decider)
+		{
+			let definition = definitions.get(&binding.target).ok_or_else(|| {
+				Error::Invalid("snapshot lacks explicit Decider definition".into())
+			})?;
+			let decider: crate::decision::DeciderConfig =
+				serde_json::from_value(definition.definition.config.clone())?;
+			if decider.hook == crate::decision::Hook::Compaction
+				&& expected_replacement.replace(&binding.target).is_some()
+			{
+				return Err(Error::Invalid("duplicate compaction replacement".into()));
+			}
+		}
+		if saved_replacement != expected_replacement {
+			return Err(Error::Invalid(
+				"compaction replacement differs from its exact Decider hook".into(),
+			));
+		}
+
 		let normalized = definitions
 			.get(&self.agent)
 			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
@@ -179,6 +210,10 @@ impl BindingSnapshot {
 				config.validate()?;
 				binding.validate()?;
 				if binding.target.registry_deployment != self.agent.registry_deployment
+					|| normalized.origin == BindingOrigin::Default
+						&& (binding.target
+							!= defaults::compaction_reference(&self.agent.registry_deployment)
+							|| config.hook != crate::decision::Hook::Compaction)
 					|| !decision_hooks.insert(config.hook)
 				{
 					return Err(Error::Invalid(
@@ -322,6 +357,7 @@ impl BindingSnapshot {
 			.collect::<std::result::Result<Vec<_>, _>>()?;
 		sources::validate_mounts(contexts)?;
 		sources::validate_dependencies(self)?;
+		sources::semantic_query_policy(self)?;
 		Ok(())
 	}
 }

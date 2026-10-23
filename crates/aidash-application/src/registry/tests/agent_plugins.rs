@@ -3,7 +3,6 @@ use crate::{
 	ports::bindings::StoredAgentPlugin,
 	test_support::{plugin_reference, stored_plugin},
 };
-use aidash_domain::tool::providers::core_descriptor;
 
 const HOME: &str = "aidash://home";
 
@@ -14,13 +13,7 @@ fn scope_with_core() -> Scope {
 		"model",
 		json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 	));
-	for operation in system::operations() {
-		scope.put(definition(
-			&format!("aidash.{operation}"),
-			"tool",
-			serde_json::to_value(core_descriptor(HOME, operation).unwrap()).unwrap(),
-		));
-	}
+	scope.put_builtins(HOME);
 	scope
 }
 

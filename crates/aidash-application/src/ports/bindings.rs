@@ -86,4 +86,10 @@ pub trait BindingAuthority: Send + Sync {
 		Ok(())
 	}
 	async fn check(&self, run: &Run, binding: &ResolvedBinding) -> Result<()>;
+	/// Current metadata policy and exact digest, without granting invocation or
+	/// requiring a dormant Decider's Catalog Approval. Adapters that cannot
+	/// separate these authorities retain their stricter full check.
+	async fn check_metadata(&self, run: &Run, binding: &ResolvedBinding) -> Result<()> {
+		self.check(run, binding).await
+	}
 }

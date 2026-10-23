@@ -273,7 +273,13 @@ pub async fn create_in(
 	for (reference, action) in snapshot
 		.definitions
 		.iter()
-		.filter(|d| d.identity != snapshot.agent)
+		.filter(|d| {
+			d.identity != snapshot.agent
+				&& !aidash_domain::registry::bindings::defaults::is_implicit_compaction(
+					&snapshot,
+					&d.identity,
+				)
+		})
 		.map(|d| {
 			(
 				d.identity.local(),
@@ -317,7 +323,27 @@ pub async fn create_in(
 	if !definition.tags.iter().any(|t| t == "generated") {
 		definition.tags.push("generated".into());
 	}
-	definition.normalize_agent(scope.node_id())?;
+	// Generated chains use only their generation policy's exact Decider and
+	// ancestor budgets, never an ordinary Agent's implicit compaction default.
+	let mut generated: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(definition.config.clone())?;
+	if !generated
+		.remove_default
+		.iter()
+		.any(|key| key == aidash_domain::registry::bindings::COMPACTION_DEFAULT)
+	{
+		generated
+			.remove_default
+			.push(aidash_domain::registry::bindings::COMPACTION_DEFAULT.into());
+	}
+	definition.config = serde_json::to_value(generated)?;
+	let replacement = snapshot
+		.definitions
+		.iter()
+		.find(|entry| entry.identity == snapshot.agent)
+		.and_then(|entry| entry.definition.binding_normalization.as_ref())
+		.and_then(|saved| saved.compaction_override.as_ref());
+	definition.normalize_agent_with_compaction(scope.node_id(), replacement)?;
 	validation.validate_in(&definition, true)?;
 	if !search.matches(&definition) {
 		return Err(Error::Invalid(

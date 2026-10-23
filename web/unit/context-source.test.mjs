@@ -45,12 +45,25 @@ test("source policy submits exact qualified dependencies and versioned query sel
   assert.equal(value.query, "accepted-inputs-first@1");
   assert.equal(value.refresh, "revision-bound@1");
 });
-test("required Home may be observed but cannot be filtered through Enforce", () => {
-  const input = form();
-  input.set("source_required_home", "on");
-  assert.equal(contextSourceConfiguration(input).required_home, true);
-  input.set("source_mode", "enforce");
-  assert.throws(() => contextSourceConfiguration(input), /cannot enforce/);
+test("required Home retains Always or Shadow and rejects OnDemand or Enforce", () => {
+  for (const { policy, mode, allowed } of [
+    { policy: "always", mode: "shadow", allowed: true },
+    { policy: "scored", mode: "shadow", allowed: true },
+    { policy: "on_demand", mode: "shadow", allowed: false },
+    { policy: "scored", mode: "enforce", allowed: false },
+  ]) {
+    const input = form();
+    input.set("source_required_home", "on");
+    input.set("source_pin", policy);
+    input.set("source_mode", mode);
+    if (allowed)
+      assert.equal(contextSourceConfiguration(input).required_home, true);
+    else
+      assert.throws(
+        () => contextSourceConfiguration(input),
+        /Required-Home sources cannot/,
+      );
+  }
 });
 test("Scored requires declared preview and query disclosure and a complete exact reference", () => {
   const input = form();
