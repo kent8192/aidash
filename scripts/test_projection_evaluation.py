@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import projection_evaluation as projection
-from test_fixed_task_evaluation import corpus, full_result
+from test_fixed_task_evaluation import cli, corpus, full_result, observation
 
 
 def example():
@@ -74,6 +74,35 @@ def configuration(manifest, **overrides):
               "independent_blocks": True, "cost_bounds_enforced": True}
     config.update(overrides)
     return config
+
+
+def zero_dispatch_control():
+    """A real fixed-task manifest with local overflow and an empty physical ledger."""
+    value = corpus()
+    seed = full_result(value)
+    planned = projection.evaluation.plan(value, ["terminal-context-overflow"], ["projection"])
+    experiment = copy.deepcopy(seed["experiment"])
+    experiment["repeat_count"] = 1
+    experiment["variants"] = []
+    runs = []
+    for index, item in enumerate(planned):
+        variant = dict(seed["experiment"]["variants"][0], task=item["task"]["id"], comparison=item["comparison"]["id"],
+                       arm=item["arm"], label=item["label"], agent_fields=item["agent_fields"])
+        experiment["variants"].append(variant)
+        runs.append(projection.evaluation.run_result(value, item, 1,
+            observation(run_id=f"zero-control-{index}", phase="FAILED", error="Context window overflow during local fitting",
+                        usage_records=[], steps=0, compactions=0), "deterministic", False))
+    manifest = cli.assemble(value, experiment, runs, projection.evaluation.feature_availability(value),
+                            seed["memory_matrix"], True, None, [], None)
+    export = {"schema_version": 1, "experiment_id": experiment["experiment_id"],
+              "manifest_sha256": projection.canonical_sha256(manifest), "source": experiment["aidash"],
+              "tenant_id": "evaluation", "planned_run_keys": [r["key"] for r in runs],
+              "run_inventory": [{"key": r["key"], "run_id": r["run_id"],
+                                  "attempt_ids": {table: [] for table in projection.TABLES}} for r in runs],
+              "run_recovery": [{"run_id": r["run_id"], "guard_evidence_complete": True, "safety_violation": False,
+                                 "control_accepted": True, "local_fitting_failures": 1, "context_reason": "context_unreducible"}
+                                for r in runs], **{table: [] for table in projection.TABLES}}
+    return manifest, export
 
 
 class EvidenceImportTest(unittest.TestCase):
@@ -377,6 +406,55 @@ class AdoptionPrerequisiteTest(unittest.TestCase):
         report = self.analyze()
         self.assertEqual(report["decision"]["status"], "pass", report["routes"]["automatic"]["reasons"])
         self.assertFalse(report["decision"]["keep_legacy"])
+
+    def test_complete_zero_dispatch_control_is_not_applicable_without_exempting_unknown_or_primary_work(self):
+        manifest, export = zero_dispatch_control()
+        evidence = projection.load_evidence(manifest, export)
+        report = projection.analyze_campaign([evidence], configuration(manifest))
+        for row in report["runs"]:
+            self.assertTrue(row["route_complete"])
+            self.assertTrue(row["no_provider_dispatch_control"])
+            self.assertEqual(row["route_evidence_status"], "not-applicable")
+            self.assertEqual(row["measurement_status"], "not-applicable")
+            self.assertEqual(row["cache"]["identity_status"], "not-applicable")
+            self.assertIsNone(row["cache"]["identity_transitions"])
+            self.assertEqual(row["routes"], [])
+            self.assertEqual(row["selected_estimators"], [])
+            self.assertEqual(row["cost"]["total_nanocredits"], 0)
+            self.assertEqual(row["tokens"]["input_tokens"]["known_count"], 0)
+            self.assertIsNone(row["tokens"]["input_tokens"]["total"])
+        unknown = projection.load_evidence(manifest)
+        unknown_report = projection.analyze_campaign([unknown], configuration(manifest))
+        self.assertTrue(unknown_report["decision"]["keep_legacy"])
+        self.assertTrue(all(not r["no_provider_dispatch_control"] for r in unknown_report["runs"]))
+        # Exercise the same public-import control through the full prerequisite
+        # gate. Remaining synthetic observations supply the independently tested
+        # statistical bounds, not an assertion of live provider performance.
+        imports = copy.deepcopy(self.imports)
+        ordered = next(r for r in evidence["runs"] if r["projection"] == "ordered")
+        index = next(i for i, r in enumerate(imports[0]["runs"]) if r["arm"] == "ordered" and r["task"] == "terminal-context-overflow" and r["repeat"] == 1)
+        original = imports[0]["runs"][index]
+        replacement = copy.deepcopy(ordered)
+        replacement.update({k: original[k] for k in ("key", "run_id", "arm", "repeat", "comparison", "matched_configuration_sha256")})
+        imports[0]["runs"][index] = replacement
+        self.assertEqual(self.analyze(imports)["decision"]["status"], "pass")
+        for phase_import in imports[1:3]:
+            # Native controls share the same no-I/O applicability contract in
+            # confirmation and deployment, with their independently pinned arm.
+            target = next(r for r in phase_import["runs"] if r["projection"] == "native" and r["task"] == "terminal-context-overflow")
+            target.update(inference_usage=[], outcome="overflow_failure", oracle_passed=None)
+        self.assertEqual(self.analyze(imports)["decision"]["status"], "pass")
+        for invalid in ("incomplete export", "control not accepted", "primary completion"):
+            with self.subTest(invalid=invalid):
+                changed = copy.deepcopy(imports)
+                if invalid == "incomplete export":
+                    changed[0]["complete_export"] = False
+                elif invalid == "control not accepted":
+                    changed[0]["runs"][index]["recovery"]["control_accepted"] = None
+                else:
+                    primary = next(r for r in changed[1]["runs"] if r["task"] in projection.PRIMARY_WEIGHTS)
+                    primary["inference_usage"] = []
+                self.assertTrue(self.analyze(changed)["decision"]["keep_legacy"])
 
     def test_confirmation_boolean_cannot_replace_missing_pilot_or_deployment_imports(self):
         for phase in ("pilot", "deployment-mode"):

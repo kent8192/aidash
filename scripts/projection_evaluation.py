@@ -688,15 +688,36 @@ def _run_metrics(run, complete, settings):
               "constraint_loss": run["constraint_retention"] is False or recovery.get("constraint_loss") is True,
               "guard_evidence_complete": recovery.get("guard_evidence_complete") is True,
               "control_accepted": recovery.get("control_accepted")}
+    cost = _cost(run, complete)
+    # A terminal control can stop in local fitting before provider dispatch.
+    # Only the complete physical inventory and independent control acceptance
+    # establish this; an empty/unavailable partial usage view cannot do so.
+    no_dispatch_control = (complete and run["usage_available"] and run["task"] in CONTROLS
+                           and run["outcome"] != "success" and not all_usage
+                           and guards["guard_evidence_complete"] and guards["control_accepted"] is True
+                           and cost["provider_work_count"] == 0 and cost["embedding_reservations"] == 0
+                           and cost["total_nanocredits"] == 0)
+    measurement_gaps = [] if no_dispatch_control else _measurement_gaps(all_usage, settings)
+    if no_dispatch_control:
+        tokens = {field: {**_summary([]), "total": None, "status": "not-applicable"} for field in TOKENS}
+        cache.update(identity_status="not-applicable", identity_transitions=None,
+                     history_prefix_transitions=None, attempt_order="not-applicable",
+                     applicability_reason="complete control inventory proves no provider dispatch")
+        for population in ("first_attempt", "later_attempts"):
+            cache[population] = {field: {**_summary([]), "total": None, "status": "not-applicable"}
+                                 for field in ("cache_read_tokens", "cache_write_tokens")}
     return {**run, "inference_usage": None, "decision_attempts": None, "memory_model_attempts": None,
             "context_compaction_attempts": None, "recovery": None,
             "generation_embedding_usage": None,
             "success": run["outcome"] == "success" and run["oracle_passed"] is True,
-            "tokens": tokens, "cost": _cost(run, complete), "cache": cache, "routes": route_rows,
-            "route_complete": bool(route_rows) and all(row["status"] == "matched" for row in route_rows),
+            "tokens": tokens, "cost": cost, "cache": cache, "routes": route_rows,
+            "no_provider_dispatch_control": no_dispatch_control,
+            "route_complete": no_dispatch_control or bool(route_rows) and all(row["status"] == "matched" for row in route_rows),
+            "route_evidence_status": "not-applicable" if no_dispatch_control else "matched" if route_rows and all(row["status"] == "matched" for row in route_rows) else "unknown-or-mismatched",
+            "measurement_status": "not-applicable" if no_dispatch_control else "unknown" if measurement_gaps else "reported",
             "selected_estimators": sorted({str(row.get("estimator") or "unknown") for row in main}),
             "selected_estimate_identities": [_estimates(row)[0] for row in main],
-            "measurement_gaps": _measurement_gaps(all_usage, settings),
+            "measurement_gaps": measurement_gaps,
             "estimator_errors": dict(estimates), "overflow": overflow, "guards": guards}
 
 
@@ -751,7 +772,8 @@ def _group(runs):
                                  for name in sorted(set(estimator_rows) | {"bytes", "calibrated", "tokenized"})},
             "overflow": {name: _summary([r["overflow"][name] for r in runs]) for name in
                          ("provider_rejections", "local_fitting_failures", "recovery_attempts", "compaction_attempts", "pruning_adopted", "summary_adopted")},
-            "cache": {"legacy_identity_not_applicable_runs": sum(r["cache"]["identity_status"] == "not-applicable" for r in runs),
+            "cache": {"legacy_identity_not_applicable_runs": sum(r["projection"] == "legacy" and r["cache"]["identity_status"] == "not-applicable" for r in runs),
+                      "no_dispatch_not_applicable_runs": sum(r["no_provider_dispatch_control"] for r in runs),
                       "identity_unknown_runs": sum(r["cache"]["identity_status"] == "unknown" for r in runs),
                       "identity_transitions": _summary([r["cache"]["identity_transitions"] for r in runs if r["cache"]["identity_status"] != "not-applicable"]),
                       "first_attempt": {field: {"known": sum(r["cache"]["first_attempt"][field]["known"] for r in runs),
@@ -1012,10 +1034,10 @@ def analyze_campaign(experiments, config):
             if any(r["task"] in CONTROLS and r["guards"]["control_accepted"] is not True for r in phase_rows):
                 reasons.append(f"{phase}: independent control acceptance is missing or failed.")
             if phase in ("pilot", "confirmation"):
-                if any(not r["selected_estimators"] or any(e != "bytes" for e in r["selected_estimators"]) for r in phase_rows):
+                if any(not r["no_provider_dispatch_control"] and (not r["selected_estimators"] or any(e != "bytes" for e in r["selected_estimators"])) for r in phase_rows):
                     reasons.append(f"{phase}: the primary execution estimator is not the frozen Bytes mode.")
             elif expected_deployment is not None:
-                if any(not r["selected_estimate_identities"] or any(_estimate_gaps(e, "deployment", expected_deployment) for e in r["selected_estimate_identities"]) for r in phase_rows):
+                if any(not r["no_provider_dispatch_control"] and (not r["selected_estimate_identities"] or any(_estimate_gaps(e, "deployment", expected_deployment) for e in r["selected_estimate_identities"])) for r in phase_rows):
                     reasons.append("Deployment-mode attempts do not verify the frozen deployment estimator.")
         pilot_strata, pilot_reasons = _paired_strata([r for r in pilot if r["projection"] == "legacy" and r["prompt_cache"] == "off"],
                                                     [r for r in pilot if _candidate_run(r, candidate, selected, cache_policy)],
@@ -1030,7 +1052,7 @@ def analyze_campaign(experiments, config):
             reasons.append("Independent matched confirmation Runs are missing.")
         if any(not r["route_complete"] for r in primary):
             reasons.append("Some provider attempts have missing or mismatched actual route evidence.")
-        if any(not r["selected_estimators"] or any(e.lower() != "bytes" for e in r["selected_estimators"]) for r in primary):
+        if any(not r["no_provider_dispatch_control"] and (not r["selected_estimators"] or any(e.lower() != "bytes" for e in r["selected_estimators"])) for r in primary):
             reasons.append("Primary execution does not consistently record the frozen Bytes estimator.")
         for task in set(r["task"] for r in primary):
             if len({r["matched_configuration_sha256"] for r in primary if r["task"] == task}) > 1:
