@@ -966,7 +966,13 @@ impl Guard {
 			} else {
 				crate::semantic::services::memory_context::workspace_budget(budget)?
 			};
-			let semantic = aidash_application::execution::semantic_context::retrieve(
+			let query = aidash_application::execution::semantic_context::query_material(
+				&self.run,
+				task,
+				inputs,
+				aidash_domain::context::source::MAX_SOURCE_BYTES,
+			)?;
+			let semantic = aidash_application::execution::semantic_context::retrieve_with_query(
 				&crate::bootstrap::run_semantic_repository(
 					store,
 					self.remote.as_ref(),
@@ -976,6 +982,7 @@ impl Guard {
 				),
 				task,
 				inputs,
+				&query.text,
 				workspace_budget,
 				// Required-Home semantic context never degrades (ADR 0059).
 				degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
@@ -1014,6 +1021,8 @@ impl Guard {
 		}
 		.await;
 		aidash_application::ports::execution::SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
 			workspace_retrieved,
 			result: result.map_err(Into::into),
 		}
