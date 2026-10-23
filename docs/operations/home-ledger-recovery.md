@@ -1,9 +1,9 @@
 # Home recovery ledger protection and recovery
 
 Status: design decisions accepted on 2026-10-23 in
-[#434](https://github.com/kent8192/aidash/issues/434). Implementation and live
-acceptance are pending. The protocols below specify the intended behavior;
-they do not describe commands already available in production.
+[#434](https://github.com/kent8192/aidash/issues/434). The implementation provides the protected profile, management commands,
+scheduled Jobs and drill helper described below. Production apply, activation,
+notification delivery and live lost-ledger acceptance remain pending.
 
 ## Accepted decisions
 
@@ -48,8 +48,7 @@ not activate #433's daily-database-backup recovery target.
 
 ## Engineering choices for the protected profile
 
-The following choices implement the accepted constraints. Exact CLI names,
-serialization structures and module names remain implementation details.
+The following choices implement the accepted constraints.
 
 - Keep the existing single-attach, shared local filesystem and its cross-process
   Home lock. This work does not introduce replicated server/worker writers or a
@@ -94,8 +93,9 @@ ledger, including conservative floors whose SQL transaction failed and identitie
 no longer present in current bank rows. Never seed from canonical bodies alone.
 
 Write and verify all seed chunks before creating the final immutable manifest.
-That manifest is the complete seed's publication point. Verify the seed before
-persisting the local protection-required marker and applied history position.
+That manifest is the complete seed's publication point. Persist the protection-required and activation markers before publishing the
+seed so an interrupted activation stays closed. Verify the complete seed before
+persisting the applied history position and restoring the prior serving gate.
 No old binary or local-only writer may resume between seeding and activation.
 Failed or partial activation remains closed and resumable with the same epoch.
 Do not hold the filesystem lock while waiting for SQL locks in the reverse of
@@ -303,11 +303,166 @@ persistence, commands and Jobs through server and deployment composition. Domain
 application and harness must not acquire cloud SDK or HTTP client dependencies.
 Use existing migration and ORM rules for any durable observations or new state.
 
-The work needs meaningful crash/unknown-outcome, ordering, stale-body rejection,
-all-bank coverage, expiry, Job isolation and live lost-ledger drill checks. Keep
+Local regression tests cover unknown outcomes, delayed old writers, failed SQL
+commits, seed retries, stale-body rejection, all-bank coverage, policy expiry,
+Job isolation and lost-ledger reconciliation. Live drill checks remain required. Keep
 the existing local profile's failure behavior unless the protected profile is
 explicitly active. Command names, retry intervals within the accepted deadlines,
 object encoding and internal module boundaries can be settled by the implementer.
+
+## Commands and production composition
+
+Set the same Home identity, database and absolute directory as the server. The
+protected profile adds these settings:
+
+| Setting                                  | Purpose                                                                             |
+| ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| `AIDASH_MEMORY_RECOVERY_REQUIRED=true`   | Require independently published floors even before the durable local marker exists. |
+| `AIDASH_MEMORY_RECOVERY_HISTORY_BUCKET`  | Create-only safety objects under the hashed Home prefix.                            |
+| `AIDASH_MEMORY_RECOVERY_ARCHIVE_BUCKET`  | Expiring body copies; separate from history.                                        |
+| `AIDASH_MEMORY_RECOVERY_SPOOL_MAX_FILES` | Scheduled spool file limit, default 128.                                            |
+| `AIDASH_MEMORY_RECOVERY_SPOOL_MAX_BYTES` | Scheduled spool byte limit, default 536870912.                                      |
+
+The ordinary local profile remains available outside production. Removing
+settings after protection has been established cannot override the on-disk
+`protection-required` marker. Protected startup verifies the complete history;
+an incomplete pending append is retried with its original identity and sequence.
+A failed verification closes memory while management remains available.
+
+Bootstrap Terraform provisions fixed custom storage roles and the deployment
+identity's limited bucket creation/configuration permissions. Environment
+Terraform provisions the separate buckets and Workload Identities. Production
+always enables the protected values. Nonproduction requires both
+`memory_recovery_nonproduction_enabled=true` in bootstrap and
+`recovery_protected=true` in that Environment's desired Terraform configuration.
+Apply bootstrap before the Environment resources. This provisioned configuration
+is not evidence of activation or a successful restore.
+
+The Helm `memoryRecovery.protection` values select the buckets, dedicated
+backup/prune service accounts and `app-memory-recovery` Secret. The controller
+creates a separate PostgreSQL maintenance login with read access and column
+privileges needed for PostgreSQL `FOR SHARE` locks. Owner-managed row triggers
+reject every actual mutation by that login. It cannot own/alter schema, inherit
+the server/owner role or disable those guards. Jobs receive its database URL and
+an isolated configuration-validation token that no server admits. The shared
+settings loader derives its otherwise unused framework key from that token.
+Jobs do not receive the server's runtime Secret or migration credentials. The
+backup identity reads history and creates/verifies body objects; only the prune
+identity deletes body objects, and it has no safety-history grant.
+
+Both Jobs mount the same public GCIP settings as the serving processes and build
+the same Dashboard AccountPolicy. Saved Subject and Run authority is rechecked
+under policy/credential locks without writing authorization audit records or
+disabling live Identities. Refused authority still rejects that bank's backup.
+
+The migration Job needs the metadata-server network label when protection is
+required so new-Home initialization can establish its GCS anchor. Prune has that
+network label and its own identity but no ledger claim or co-location affinity.
+Its policy lookup does not consult the local ledger or serving gate. Corrupt
+objects and per-object failures do not short-circuit cleanup of other objects.
+
+After sealing admission and stopping every floor-advancing server, worker and
+maintenance command, activate an existing Home with the candidate binary and
+its configured history bucket:
+
+```sh
+aidash memory-recovery protect --directory "$AIDASH_MEMORY_RECOVERY_DIR" --writers-fenced
+aidash memory-recovery status --directory "$AIDASH_MEMORY_RECOVERY_DIR" --json
+```
+
+`protect` seeds every local shard, including conservative floors absent from
+PostgreSQL. Interrupted seeding can be retried. A previously closed restore gate
+stays closed; this command cannot finish an unrelated recovery. For an empty new
+Home, `init-if-missing` publishes the anchor before creating the local epoch.
+Existing unprotected/corrupt state fails that bootstrap until supervised repair.
+
+The scheduled commands also work as explicit maintenance invocations:
+
+```sh
+aidash memory-recovery backup-all --directory "$AIDASH_MEMORY_RECOVERY_DIR"
+aidash memory-recovery prune-remote --directory "$AIDASH_MEMORY_RECOVERY_DIR"
+```
+
+They print structured receipts and return failure for an incomplete inventory or
+prune. A failed bank does not stop the next bank. The spool retains a valid file
+when an upload acknowledgement is lost; retry verifies its exact remote generation
+before removing it. Invalid/expired unsent files are removed. Oversized banks and
+spool exhaustion produce an explicit failed result. Manual `backup` archives
+remain in `archives/` with their separate existing 128-file guard.
+The locked spool scan reclaims recognized abandoned atomic-write temporaries;
+all remaining entries count toward its bounds, including unknown regular files.
+
+The fifteen-minute prune checks current copies and emits stale-bank observations
+after eight hours from the last verified archive's original creation time, or
+from the bank's durable `recovery_eligible_at` when no eligible copy exists. A
+policy replacement starts a new eligibility interval. Job restarts cannot reset
+that timestamp. Structured failure/stale-copy receipts notify the existing
+production mailbox. Cloud Monitoring retains prune-success observations across
+Pods and alerts when none occurred in thirty minutes, including Jobs that never
+start. An unresolved floor publication or failed protected startup emits a
+sanitized `memory_recovery_closed` event and immediately notifies the same
+destination. The safety alert selects serving/migration containers, so the prune
+Job's deliberately absent ledger does not trigger it. Exercise the first
+successful observation and all three notification paths during
+activation; configuration and mock-provider tests do not prove delivery.
+
+For a lost ledger, keep current unrewound PostgreSQL, fence every old writer and
+mount a new empty directory with the same UID/GID and Home identity. Do not run
+`init`. Use the safety writer's supervised identity for reconstruction/resume:
+
+```sh
+aidash memory-recovery reconstruct --directory "$AIDASH_MEMORY_RECOVERY_DIR" --writers-fenced
+aidash memory-recovery reconcile-all --directory "$AIDASH_MEMORY_RECOVERY_DIR" --writers-fenced \
+  --report "$AIDASH_MEMORY_RECOVERY_DIR/reconciliation.cbor"
+aidash memory-recovery resume --directory "$AIDASH_MEMORY_RECOVERY_DIR" --writers-fenced \
+  --report "$AIDASH_MEMORY_RECOVERY_DIR/reconciliation.cbor"
+```
+
+`reconcile-all` keeps the gate closed and reports the complete bank inventory,
+applied head and restored/withheld counts. Absent and retired identities remain
+accounted for by their retained floors. Current matching bodies take precedence;
+the archive bucket is not contacted when those bodies suffice. If optional
+archive lookup is unavailable, the report says `archive_unavailable`; uncertain
+bodies remain withheld. Resume rechecks all-bank authority, sources, retention,
+semantic projections, inventory and the same history head. Changed results need
+a fresh report. An identical resume can finish after a lost acknowledgement.
+
+## Executable drill evidence
+
+[The drill helper](../../scripts/home_ledger_drill.py) sequences the same commands
+and writes a private JSON receipt outside the tested disk. It requires Python 3
+and the candidate `aidash` binary in a supervised maintenance environment with
+its PostgreSQL, GCS identity and volume mounts. The normal application image does
+not include Python. Run the helper in a maintenance image built from the same
+application revision, or run the commands above and retain equivalent evidence.
+
+Record the protected Home before the fault:
+
+```sh
+python3 scripts/home_ledger_drill.py record --binary aidash \
+  --directory "$AIDASH_MEMORY_RECOVERY_DIR" --evidence /evidence/lost-ledger.json
+```
+
+Stop all writers, record the actual fault time and replace the disk outside this
+program. Then run:
+
+```sh
+python3 scripts/home_ledger_drill.py recover --binary aidash \
+  --directory "$AIDASH_MEMORY_RECOVERY_DIR" --evidence /evidence/lost-ledger.json \
+  --fault-at 2026-10-23T00:00:00Z --writers-fenced
+```
+
+Replace the example timestamp with the observed fault time. The helper refuses
+to delete an existing ledger, reconstructs behind a barrier, saves the all-bank
+report, resumes, verifies the same epoch and open serving state, and measures
+RTO from the fault. Interrupted recovery keeps the original clock and report;
+rerun with the same evidence and omit `--fault-at`. A missed two-hour target is
+recorded as a failed drill even if recovery eventually succeeds.
+
+The receipt supplements the required image/revision, canary, object-generation,
+volume/topology and notification evidence above. It cannot certify those external
+facts by itself. Run the pre-activation and quarterly drills under Deployment
+Administrator supervision and attach their receipts to the release evidence.
 
 ## Primary references
 
@@ -323,3 +478,8 @@ object encoding and internal module boundaries can be settled by the implementer
 - [Soft delete](https://docs.cloud.google.com/storage/docs/soft-delete): supported
   new buckets default to retaining deleted objects; disabling it later does not
   remove copies already retained under the earlier policy.
+
+- [PostgreSQL SELECT privileges](https://www.postgresql.org/docs/current/sql-select.html):
+  row-locking clauses require an UPDATE privilege in addition to SELECT.
+- [Cloud Monitoring PromQL mapping](https://docs.cloud.google.com/monitoring/promql):
+  the prune heartbeat aggregates persisted log-derived metrics across disposable Jobs.

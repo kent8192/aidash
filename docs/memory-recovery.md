@@ -19,7 +19,10 @@ commit. Partial filesystem failures retain conservative floors and withhold
 uncertain bodies. Normal reads inspect only the selected unit's fence;
 recovery and status combine the shards. The 64 MiB per-file guard therefore
 does not impose an aggregate Home unit capacity. Retain the whole directory,
-including every unit shard, independently of database snapshots.
+including every unit shard, independently of database snapshots. Production also
+uses [independent GCS floor history and scheduled body copies](operations/home-ledger-recovery.md#commands-and-production-composition).
+The protected profile publishes floors before local fsync and SQL commit; a
+periodic body archive cannot replace its non-body history.
 
 Initialize once after native schema creation, before creating native memory
 participants or banks. Initialization requires empty new-format memory and
