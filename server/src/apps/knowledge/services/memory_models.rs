@@ -748,7 +748,9 @@ impl Models {
 			provider.infer(request, &aidash_application::ports::NoProgress),
 		)
 		.await
-		.map_err(|_| Error::SemanticUnavailable)
+		// Keep the application error until its terminal provider facts have
+		// been observed; converting to the server error would erase that usage.
+		.map_err(|_| aidash_application::Error::SemanticUnavailable)
 		.and_then(|response| response);
 		let observed = match &response {
 			Ok(response) => Some(response),
