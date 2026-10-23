@@ -1,11 +1,8 @@
-import { selfHostedPlanConnections } from "@slots/plan-connections";
-import type { PlanConnectionStatus } from "./generated/models";
 import {
-  planConnectionStatus,
-  planConnectionDisconnect,
-  planAuthorizationStart,
-  planAuthorizationComplete,
-} from "./generated/aidash";
+  selfHostedPlanConnections,
+  planConnectionApi,
+} from "@slots/plan-connections";
+import type { PlanConnectionStatus } from "./generated/models";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
@@ -40,8 +37,7 @@ export function usePlanConnection(tenant: string, subject: string) {
   }, []);
   return useQuery({
     queryKey: ["personal-plan", ...ownerKey(tenant, subject), epoch],
-    queryFn: ({ signal }) =>
-      planConnectionStatus(encodeURIComponent(tenant), "chatgpt", { signal }),
+    queryFn: ({ signal }) => planConnectionApi.status(tenant, { signal }),
     enabled: selfHostedPlanConnections,
     retry: false,
     gcTime: 0,
@@ -189,9 +185,8 @@ export function PlanConnectionsPage({
     if (!holds(flow)) return;
     setBusy(true);
     try {
-      const result = await planAuthorizationComplete(
-        encodeURIComponent(tenant),
-        "chatgpt",
+      const result = await planConnectionApi.complete(
+        tenant,
         { callback_url: callbackUrl },
         { signal: flow.signal },
       );
@@ -242,9 +237,8 @@ export function PlanConnectionsPage({
         listener.current = opened.id;
         port = opened.port;
       }
-      const started = await planAuthorizationStart(
-        encodeURIComponent(tenant),
-        "chatgpt",
+      const started = await planConnectionApi.start(
+        tenant,
         port ? { port } : {},
         { signal: flow.signal },
       );
@@ -352,9 +346,8 @@ export function PlanConnectionsPage({
               const flow = begin();
               setBusy(true);
               try {
-                const result = await planConnectionDisconnect(
-                  encodeURIComponent(tenant),
-                  "chatgpt",
+                const result = await planConnectionApi.disconnect(
+                  tenant,
                   { expected_revision: connection.revision },
                   { signal: flow.signal },
                 );

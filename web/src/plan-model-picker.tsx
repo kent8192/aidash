@@ -5,7 +5,7 @@ import { Hint, Alert, Notice, pairClass } from "./components/patterns";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import { dashboardContext, transportGeneration } from "./transport";
-import { planConnectionModels } from "./generated/aidash";
+import { planConnectionApi } from "@slots/plan-connections";
 import { usePlanConnection } from "./plan-connections";
 
 export function PlanModelPicker({
@@ -34,8 +34,7 @@ export function PlanModelPicker({
       transportGeneration(),
       status.data?.connection?.revision,
     ],
-    queryFn: ({ signal }) =>
-      planConnectionModels(encodeURIComponent(tenant), "chatgpt", { signal }),
+    queryFn: ({ signal }) => planConnectionApi.models(tenant, { signal }),
     enabled: usable,
     gcTime: 0,
     retry: false,
