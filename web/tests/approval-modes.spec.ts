@@ -3,6 +3,7 @@ import { installBearerDashboard } from "./auth-fixture";
 import { setup } from "./collaboration-fixture";
 import {
   builtInApprovalDecider,
+  defaultNode,
   registryVersion,
   routeRegistryVersions,
 } from "./registry-fixture";
@@ -46,6 +47,8 @@ async function approvals(
     approvedDeciders?: string[];
     /** The stored Answer Deadline in seconds; `null` waits without limit. */
     answerDeadline?: number | null;
+    /** Nodes where the chosen approval Decider holds a Catalog Approval. */
+    approvedNodes?: string[];
   } = {},
 ) {
   const allowed = options.allowed ?? ["manual", "dont_ask"];
@@ -82,60 +85,86 @@ async function approvals(
         : mode === "bypass" && state.bypass_accepted_at === null
           ? "not_accepted"
           : null;
-  const choices = () =>
-    modes.map((mode) => ({
-      mode,
-      allowed: reasonOf(mode) === null || reasonOf(mode) === "not_accepted",
-      reason: reasonOf(mode),
-    }));
-  const preferences = () => ({
+  const choices = (node: string = defaultNode.name) =>
+    modes.map((mode) => {
+      const reason =
+        reasonOf(mode) ??
+        (mode === "auto" &&
+        options.approvedNodes &&
+        !options.approvedNodes.includes(node)
+          ? "decider_unapproved"
+          : null);
+      return {
+        mode,
+        allowed: reason === null || reason === "not_accepted",
+        reason,
+      };
+    });
+  const preferences = (node: string) => ({
     default_mode: state.default_mode,
     answer_deadline_seconds: state.answer_deadline_seconds,
     bypass_accepted_at: state.bypass_accepted_at,
     revision: state.revision,
-    modes: choices(),
+    modes: choices(node),
   });
-  await page.route("**/api/tenants/acme/approval-preferences/mine", (route) => {
-    const request = route.request();
-    if (request.method() === "PUT") {
-      const body = request.postDataJSON();
-      calls.preferences.push(body);
-      if (body.default_mode === options.refuseMode)
-        return route.fulfill({
-          status: 400,
-          json: { error: "Auto needs the Tenant's approval Decider" },
-        });
-      state.default_mode = body.default_mode;
-      state.answer_deadline_seconds = body.answer_deadline_seconds ?? null;
-      if (body.accept_bypass && body.default_mode === "bypass")
-        state.bypass_accepted_at ??= "2026-10-20T00:00:00Z";
-      state.revision += 1;
-    }
-    return route.fulfill({ json: preferences() });
-  });
-  await page.route("**/api/tenants/acme/approval-decider", (route) => {
-    const request = route.request();
-    if (request.method() === "PUT") {
-      const body = request.postDataJSON();
-      calls.deciders.push(body);
-      if (body.expected_revision !== state.decider.revision)
-        return route.fulfill({ status: 409, json: { error: "stale" } });
-      const named = body.decider as { id: string; version: string } | null;
-      state.decider = {
-        decider: named ?? { id: BUILT_IN.id, version: BUILT_IN.version },
-        built_in: named === null,
-        registered: true,
-        approved:
-          named === null
-            ? true
-            : (options.approvedDeciders ?? []).includes(
-                `${named.id}@${named.version}`,
-              ),
-        revision: state.decider.revision + 1,
-      };
-    }
-    return route.fulfill({ json: state.decider });
-  });
+  await page.route(
+    (url) => url.pathname === "/api/tenants/acme/approval-preferences/mine",
+    (route) => {
+      const request = route.request();
+      const node =
+        new URL(request.url()).searchParams.get("node") ?? defaultNode.name;
+      if (request.method() === "PUT") {
+        const body = request.postDataJSON();
+        calls.preferences.push(body);
+        if (body.default_mode === options.refuseMode)
+          return route.fulfill({
+            status: 400,
+            json: { error: "Auto needs the Tenant's approval Decider" },
+          });
+        state.default_mode = body.default_mode;
+        state.answer_deadline_seconds = body.answer_deadline_seconds ?? null;
+        if (body.accept_bypass && body.default_mode === "bypass")
+          state.bypass_accepted_at ??= "2026-10-20T00:00:00Z";
+        state.revision += 1;
+      }
+      return route.fulfill({ json: preferences(node) });
+    },
+  );
+  await page.route(
+    (url) => url.pathname === "/api/tenants/acme/approval-decider",
+    (route) => {
+      const request = route.request();
+      const node =
+        new URL(request.url()).searchParams.get("node") ?? defaultNode.name;
+      if (request.method() === "PUT") {
+        const body = request.postDataJSON();
+        calls.deciders.push(body);
+        if (body.expected_revision !== state.decider.revision)
+          return route.fulfill({ status: 409, json: { error: "stale" } });
+        const named = body.decider as { id: string; version: string } | null;
+        state.decider = {
+          decider: named ?? { id: BUILT_IN.id, version: BUILT_IN.version },
+          built_in: named === null,
+          registered: true,
+          approved:
+            named === null
+              ? true
+              : (options.approvedDeciders ?? []).includes(
+                  `${named.id}@${named.version}`,
+                ),
+          revision: state.decider.revision + 1,
+        };
+      }
+      return route.fulfill({
+        json: {
+          ...state.decider,
+          approved:
+            state.decider.approved &&
+            (options.approvedNodes?.includes(node) ?? true),
+        },
+      });
+    },
+  );
   await page.route("**/api/tenants/acme/approval-rules/mine", (route) => {
     const request = route.request();
     if (request.method() === "POST") {
@@ -986,12 +1015,11 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -1002,11 +1030,14 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/nodes")
+      return route.fulfill({
+        json: [
+          { ...defaultNode, address: `aidash://test/${defaultNode.name}` },
+        ],
+      });
     if (path === "/api/tenants/alpha/approval-decider")
       return route.fulfill({ json: builtInApprovalDecider });
     if (path === "/api/tenants/alpha/administration")
@@ -1350,4 +1381,151 @@ test("the Approval Decider panel reads in Japanese", async ({ page }) => {
   await expect(
     panel.getByRole("combobox", { name: "Auto の承認 Decider" }),
   ).toBeVisible();
+});
+
+test("Approval Mode and Decider availability follow the selected Node", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, {
+    subject: true,
+    tenantActions: ["tenant.update"],
+  });
+  const sibling = "sibling-node";
+  await page.route("**/api/tenants/acme/nodes", (route) =>
+    route.fulfill({
+      json: [
+        { ...defaultNode, address: `aidash://home/${defaultNode.name}` },
+        {
+          ...defaultNode,
+          name: sibling,
+          label: "Lab",
+          default: false,
+          address: `aidash://home/${sibling}`,
+        },
+      ],
+    }),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/registry/versions",
+    (route) => {
+      const approved =
+        new URL(route.request().url()).searchParams.get("node") ===
+        defaultNode.name;
+      return route.fulfill({
+        json: {
+          versions: [BUILT_IN.id, "tenant.judge"].map((id) =>
+            registryVersion(
+              decider(id),
+              approved ? {} : { approval: null, history: [] },
+            ),
+          ),
+          next_offset: null,
+        },
+      });
+    },
+  );
+  const { calls } = await approvals(page, {
+    allowed: everyMode,
+    approvedNodes: [defaultNode.name],
+    approvedDeciders: ["tenant.judge@1.0.0"],
+  });
+  const requests: string[] = [];
+  let release!: () => void;
+  const siblingRead = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    (url) =>
+      url.pathname === "/api/tenants/acme/approval-preferences/mine" ||
+      url.pathname === "/api/tenants/acme/approval-decider",
+    async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const node = url.searchParams.get("node");
+      const kind = url.pathname.endsWith("/approval-decider")
+        ? "decider"
+        : "preferences";
+      requests.push(`${request.method()}:${kind}:${node}`);
+      if (
+        request.method() === "GET" &&
+        kind === "preferences" &&
+        node === sibling
+      )
+        await siblingRead;
+      await route.fallback();
+    },
+  );
+  const selectNode = async (
+    name: string,
+    view: "approvals" | "trust" = "approvals",
+  ) => {
+    await page
+      .getByRole("button", { name: "Account settings", exact: true })
+      .click();
+    await page.getByTestId("node-selector").selectOption(name);
+    await page.keyboard.press("Escape");
+    // Leaving a Workspace returns to Request. Reopen the view within the SPA
+    // so its previous Node's query cache remains part of this regression.
+    if (view === "approvals") {
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Approvals", exact: true })
+        .click();
+    } else {
+      await page.getByRole("button", { name: "Trust", exact: true }).click();
+      const access = page.getByRole("button", {
+        name: "Access and accounts",
+        exact: true,
+      });
+      if ((await access.getAttribute("aria-expanded")) === "false")
+        await access.click();
+    }
+  };
+
+  await page.goto("/settings?view=approvals");
+  await expect(radio(page, "Auto")).toBeEnabled();
+  await selectNode(sibling);
+  try {
+    await expect.poll(() => requests).toContain(`GET:preferences:${sibling}`);
+    // Until this Node answers, another Node's cached approval must not enable Auto.
+    await expect(radio(page, "Auto")).toHaveCount(0);
+  } finally {
+    release();
+  }
+  await expect(radio(page, "Auto")).toBeDisabled();
+  await expect(radio(page, "Auto")).toHaveAccessibleDescription(
+    /has no Catalog Approval/,
+  );
+  await radio(page, "Don't ask").click();
+  await expect(radio(page, "Don't ask")).toBeChecked();
+  expect(requests).toContain(`PUT:preferences:${sibling}`);
+  expect(requests).toContain(`GET:decider:${sibling}`);
+  expect(calls.preferences).toHaveLength(1);
+  const deadline = deadlinePanel(page);
+  await deadline.getByRole("spinbutton", { name: "Duration" }).fill("10");
+  await deadline.getByRole("button", { name: "Save Answer Deadline" }).click();
+  await expect(deadline.getByRole("status")).toHaveText("Saved");
+  await expect(radio(page, "Auto")).toBeDisabled();
+  expect(
+    requests.filter((value) => value === `PUT:preferences:${sibling}`),
+  ).toHaveLength(2);
+
+  await page.goto("/trust?view=authorization");
+  const panel = panelOf(page, "Approval Decider");
+  await expect(panel).toContainText("Not approved, so Auto is unavailable");
+  await panel
+    .getByRole("combobox", { name: "Approval Decider for Auto" })
+    .selectOption("tenant.judge@1.0.0");
+  await expect(panel).toContainText("Chosen by this Tenant");
+  await expect(panel).toContainText("Not approved, so Auto is unavailable");
+  expect(requests).toContain(`PUT:decider:${sibling}`);
+  await selectNode(defaultNode.name, "trust");
+  await expect(panel).not.toContainText("Not approved, so Auto is unavailable");
+  await expect(panel).toContainText("Chosen by this Tenant");
+  await expect
+    .poll(() => requests)
+    .toContain(`GET:decider:${defaultNode.name}`);
+  await selectNode(sibling, "trust");
+  await expect(panel).toContainText("Not approved, so Auto is unavailable");
+  expect(errors).toEqual([]);
 });

@@ -15,6 +15,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"
 secrecy = "0.10"
 aidash-application.workspace = true
+aidash-capability.workspace = true
 aidash-domain.workspace = true
 async-trait.workspace = true
 metrics = "0.24"
@@ -59,6 +60,16 @@ base64 = "0.22"
 
 sha2 = "0.10"
 hmac = "0.12"
+
+# The Deployment Key file: PKCS#8 PEM, Ed25519 (ADR 0064).
+ed25519-dalek = { version = "2.2", features = [
+  "pkcs8",
+  "pem",
+  "zeroize",
+  "rand_core",
+] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",

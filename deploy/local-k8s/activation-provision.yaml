@@ -22,7 +22,7 @@ spec:
           envFrom:
             - secretRef: { name: aidash-local-app }
           env:
-            - { name: AIDASH_NODE_ID, value: "aidash://node-a" }
+            - { name: AIDASH_DEPLOYMENT_ID, value: "aidash://node-a" }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

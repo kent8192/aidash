@@ -1,5 +1,5 @@
 use super::*;
-use aidash_application::ports::Credentials;
+use crate::federation::tests::{Server, TestKey, route, serve, transport, verified};
 use axum::{
 	Router,
 	body::{Body, Bytes},
@@ -11,28 +11,11 @@ use axum::{
 use rstest::rstest;
 use serde_json::{Value, json};
 use std::sync::{
-	Arc, Mutex, RwLock,
+	Arc, Mutex,
 	atomic::{AtomicBool, Ordering},
 };
 
-struct Keys(RwLock<Option<String>>);
-impl Credentials for Keys {
-	fn resolve(&self, reference: &str) -> Result<String> {
-		assert_eq!(reference, "TRANSACTION_FIXTURE_KEY");
-		self.0
-			.read()
-			.unwrap()
-			.clone()
-			.ok_or_else(|| Error::Invalid("fixture key unavailable".into()))
-	}
-}
-struct Server(tokio::task::JoinHandle<()>);
-impl Drop for Server {
-	fn drop(&mut self) {
-		self.0.abort();
-	}
-}
-type Calls = Arc<Mutex<Vec<(String, String, String, String, Value)>>>;
+type Calls = Arc<Mutex<Vec<(String, HeaderMap, Value)>>>;
 
 async fn receive(
 	Path(mode): Path<String>,
@@ -46,13 +29,10 @@ async fn receive(
 	} else {
 		serde_json::from_slice(&body).unwrap()
 	};
-	calls.lock().unwrap().push((
-		method.to_string(),
-		headers["authorization"].to_str().unwrap().into(),
-		headers["x-aidash-node"].to_str().unwrap().into(),
-		headers["x-aidash-protocol"].to_str().unwrap().into(),
-		input,
-	));
+	calls
+		.lock()
+		.unwrap()
+		.push((method.to_string(), headers, input));
 	if let Some(status) = mode.strip_prefix("status-") {
 		let (status, pending) = status.split_once('_').unwrap();
 		// Error bodies are intentionally not protocol JSON and are not decoded.
@@ -94,39 +74,22 @@ async fn receive(
 	}
 }
 
-async fn fixture(mode: &str) -> (Server, PeerHttp, Peer, Arc<Keys>, Calls) {
+async fn fixture(mode: &str) -> (Server, HttpTransport, Route, Arc<TestKey>, Calls) {
 	let calls = Arc::new(Mutex::new(vec![]));
 	let app = Router::new()
 		.route("/scenario/{mode}/federation/v0.1/rpc", any(receive))
 		.with_state(calls.clone());
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/scenario/{mode}/", listener.local_addr().unwrap());
-	let server = Server(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	}));
-	let keys = Arc::new(Keys(RwLock::new(Some("before-rotation".into()))));
-	let transport = PeerHttp {
-		client: reqwest::Client::builder()
-			.redirect(reqwest::redirect::Policy::none())
-			.build()
-			.unwrap(),
-		node_id: "aidash://local".into(),
-		credentials: keys.clone(),
-	};
-	let peer = Peer {
-		node_id: "aidash://remote".into(),
-		endpoint,
-		credential_env: "TRANSACTION_FIXTURE_KEY".into(),
-		protocol_version: "0.1".into(),
-		enabled: true,
-	};
-	(server, transport, peer, keys, calls)
+	let (server, origin) = serve(app).await;
+	let key = TestKey::new();
+	let transport = transport(&key, &origin);
+	let peer = route(&format!("{origin}/scenario/{mode}/"), None);
+	(server, transport, peer, key, calls)
 }
 
 #[rstest]
 #[tokio::test]
-async fn transaction_rpc_preserves_headers_json_and_rotating_credentials() {
-	let (_server, transport, peer, keys, calls) = fixture("ok").await;
+async fn transaction_rpc_signs_each_call_for_its_method_and_body() {
+	let (_server, transport, peer, key, calls) = fixture("ok").await;
 	let first: Value = transport
 		.transaction(
 			async { Ok(peer.clone()) },
@@ -136,32 +99,28 @@ async fn transaction_rpc_preserves_headers_json_and_rotating_credentials() {
 		)
 		.await
 		.unwrap();
-	*keys.0.write().unwrap() = Some("after-rotation".into());
 	let second: Value = transport
 		.transaction(async { Ok(peer) }, "GET", "/rpc", None::<&()>)
 		.await
 		.unwrap();
 	assert_eq!(first, json!({"revision":42}));
 	assert_eq!(second, first);
-	assert_eq!(
-		*calls.lock().unwrap(),
-		[
-			(
-				"POST".into(),
-				"Bearer before-rotation".into(),
-				"aidash://local".into(),
-				"0.1".into(),
-				json!({"manifest":"first"})
-			),
-			(
-				"GET".into(),
-				"Bearer after-rotation".into(),
-				"aidash://local".into(),
-				"0.1".into(),
-				Value::Null
-			),
-		]
-	);
+	let calls = calls.lock().unwrap();
+	assert_eq!(calls.len(), 2);
+	assert_eq!(calls[0].0, "POST");
+	assert_eq!(calls[0].2, json!({"manifest":"first"}));
+	assert_eq!(calls[1].0, "GET");
+	assert_eq!(calls[1].2, Value::Null);
+	for (method, headers, body) in calls.iter() {
+		assert_eq!(headers["x-aidash-protocol"], "0.4");
+		let bytes = if body.is_null() {
+			vec![]
+		} else {
+			serde_json::to_vec(body).unwrap()
+		};
+		let claims = verified(&key, headers, method, "/rpc", &bytes);
+		assert_eq!(claims.subject, "");
+	}
 }
 
 #[rstest]
@@ -183,7 +142,7 @@ async fn participant_status_keeps_its_error_identity_without_reading_the_error_b
 	#[case] pending: &str,
 	#[case] category: &str,
 ) {
-	let (_server, transport, peer, _keys, calls) =
+	let (_server, transport, peer, _key, calls) =
 		fixture(&format!("status-{status}_{pending}")).await;
 	let error = transport
 		.transaction::<Value>(async { Ok(peer) }, "POST", "/rpc", Some(&json!({})))
@@ -221,7 +180,7 @@ async fn complete_body_enforces_the_existing_four_mib_json_bound(
 	#[case] mode: &str,
 	#[case] message: Option<&str>,
 ) {
-	let (_server, transport, peer, _keys, calls) = fixture(mode).await;
+	let (_server, transport, peer, _key, calls) = fixture(mode).await;
 	let result = transport
 		.transaction::<Value>(async { Ok(peer) }, "GET", "/rpc", None::<&()>)
 		.await;
@@ -243,7 +202,7 @@ async fn lookup_headers_and_body_share_one_ten_second_deadline(
 	#[case] mode: &str,
 	#[case] lookup_seconds: u64,
 ) {
-	let (_server, transport, peer, _keys, calls) = fixture(mode).await;
+	let (_server, transport, peer, _key, calls) = fixture(mode).await;
 	let started = std::time::Instant::now();
 	let result = transport
 		.transaction::<Value>(
@@ -272,7 +231,7 @@ async fn lookup_headers_and_body_share_one_ten_second_deadline(
 #[rstest]
 #[tokio::test(start_paused = true)]
 async fn slow_peer_lookup_expires_before_sending() {
-	let (_server, transport, peer, _keys, calls) = fixture("ok").await;
+	let (_server, transport, peer, _key, calls) = fixture("ok").await;
 	let started = tokio::time::Instant::now();
 	let result = transport
 		.transaction::<Value>(
@@ -294,8 +253,8 @@ async fn slow_peer_lookup_expires_before_sending() {
 
 #[rstest]
 #[tokio::test]
-async fn peer_lookup_and_missing_keys_fail_without_contacting_the_peer() {
-	let (_server, transport, peer, keys, calls) = fixture("ok").await;
+async fn route_lookup_and_a_disabled_deployment_fail_without_contacting_the_peer() {
+	let (_server, mut transport, peer, _key, calls) = fixture("ok").await;
 	let result = transport
 		.transaction::<Value>(
 			async { Err(Error::NotFound("peer disabled".into())) },
@@ -305,11 +264,11 @@ async fn peer_lookup_and_missing_keys_fail_without_contacting_the_peer() {
 		)
 		.await;
 	assert!(matches!(result, Err(Error::NotFound(message)) if message == "peer disabled"));
-	*keys.0.write().unwrap() = None;
+	transport.egress.enabled = false;
 	let result = transport
 		.transaction::<Value>(async { Ok(peer) }, "GET", "/rpc", None::<&()>)
 		.await;
-	assert!(matches!(result, Err(Error::Invalid(message)) if message == "fixture key unavailable"));
+	assert!(matches!(result, Err(Error::FederationDisabled)));
 	assert!(calls.lock().unwrap().is_empty());
 }
 
@@ -325,7 +284,7 @@ async fn serialization_still_precedes_lookup_and_the_response_deadline() {
 			Err(serde::ser::Error::custom("fixture serialization failure"))
 		}
 	}
-	let (_server, transport, peer, _keys, calls) = fixture("ok").await;
+	let (_server, transport, peer, _key, calls) = fixture("ok").await;
 	let looked_up = AtomicBool::new(false);
 	let result = transport
 		.transaction::<Value>(

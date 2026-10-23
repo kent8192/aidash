@@ -1,8 +1,6 @@
 use super::*;
 use crate::ports::authorization::commands::RemoteCommandScope;
-use aidash_domain::{
-	Message, Task, identity::commands::Binding, policy::Resource, qualified_agent,
-};
+use aidash_domain::{Message, Task, identity::commands::Binding, policy::Resource};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::collections::HashMap;
@@ -30,7 +28,7 @@ fn scope() -> Scope {
 			description: String::new(),
 			status: TaskStatus::Claimed,
 			requirements: json!({}),
-			owner: Some(qualified_agent("aidash://peer", "agent", "1")),
+			owner: Some(aidash_domain::agent_subject("aidash://peer", "agent", "1")),
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
@@ -287,7 +285,7 @@ async fn message_effect_output_journal_and_final_lease_check_keep_their_order(mu
 	);
 	assert_eq!(
 		scope.applied[0],
-		json!({"effect":{"kind":"message","content":"saved","through":null},"task":Uuid::from_u128(2),"owner":qualified_agent("aidash://peer","agent","1"),"key":format!("scoped:{}:message:id",Uuid::from_u128(4)),"admission":Uuid::from_u128(1)})
+		json!({"effect":{"kind":"message","content":"saved","through":null},"task":Uuid::from_u128(2),"owner":aidash_domain::agent_subject("aidash://peer","agent","1"),"key":format!("scoped:{}:message:id",Uuid::from_u128(4)),"admission":Uuid::from_u128(1)})
 	);
 	assert_eq!(scope.journal[0]["result"], json!({"sent":true}));
 	assert_eq!(scope.journal[0]["key"], json!("message:id"));

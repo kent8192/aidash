@@ -284,6 +284,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 		authorization
 			.set_catalog(
 				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
 				&reference(entry),
 				0,
 				true,
@@ -467,6 +468,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 		authorization
 			.set_catalog(
 				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
 				&reference(entry),
 				0,
 				true,

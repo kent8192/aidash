@@ -42,6 +42,12 @@ pub trait SubmissionScope: Send {
 #[async_trait]
 pub trait AuthorityRepository: Send + Sync {
 	fn node_id(&self) -> &str;
+	/// The Node an inbound request is for, once the transport admitted it.
+	fn receiver(&self) -> Option<&str> {
+		None
+	}
+	/// The Tenant that holds `node`, when `node` is a Node of this Deployment.
+	async fn node_tenant(&self, node: &str) -> Result<Option<String>>;
 	fn validate(&self, manifest: &Manifest) -> Result<()>;
 	async fn origin(&self, id: Uuid) -> Result<Option<Origin>>;
 	async fn binding(&self, id: Uuid) -> Result<Option<Binding>>;

@@ -9,7 +9,9 @@ impl From<EventRecord> for Event {
 		Self {
 			sequence: record.sequence,
 			id: record.id,
-			node_id: record.node_id,
+			node: record.node.map(|node| {
+				aidash_domain::nodes::NodeName::parse(&node).expect("stored Node name")
+			}),
 			workspace_id: record.workspace_id,
 			kind: record.kind,
 			data: record.data.0,

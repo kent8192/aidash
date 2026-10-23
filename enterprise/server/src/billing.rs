@@ -53,7 +53,7 @@ pub fn billing(f: &Federation) -> Result<service::Billing> {
 		payments: Arc::new(payments::Mirror {
 			pool: f.store.control_pool.clone(),
 		}),
-		nodes: Arc::new(nodes::DefaultNode),
+		nodes: Arc::new(nodes::StoredNodes(f.store.control_pool.clone())),
 	})
 }
 
@@ -62,6 +62,20 @@ pub fn billing(f: &Federation) -> Result<service::Billing> {
 pub fn install(store: &mut Store, offering: Offering) -> Result<()> {
 	install_with(store, shared_settings()?, offering);
 	Ok(())
+}
+
+/// Node creation reads the same current Subscription and settings as Run admission.
+pub fn tier_limits(
+	store: &Store,
+	offering: Offering,
+) -> Result<Arc<dyn aidash_application::ports::nodes::TierLimits>> {
+	let pool = store.control_pool.clone();
+	Ok(Arc::new(gate::Gate {
+		pool: pool.clone(),
+		settings: shared_settings()?,
+		payments: Arc::new(payments::Mirror { pool }),
+		offering,
+	}))
 }
 
 /// Like [`install`], with settings the caller chose, which this process then

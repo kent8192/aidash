@@ -16,6 +16,7 @@ fn inspection(
 	RunInspection {
 		state_version: Default::default(),
 		metadata: RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::now_v7(),
 			task_id: Uuid::now_v7(),
 			workspace_id: Uuid::now_v7(),

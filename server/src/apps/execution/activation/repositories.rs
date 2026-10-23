@@ -37,7 +37,7 @@ pub(super) fn error(error: Error) -> aidash_application::Error {
 #[async_trait]
 impl ActivationRepository for Repository {
 	fn node_id(&self) -> &str {
-		&self.harness.federation.store.node_id
+		self.harness.federation.store.deployment.as_str()
 	}
 	fn lease_seconds(&self) -> i32 {
 		self.harness.federation.config.lease_seconds

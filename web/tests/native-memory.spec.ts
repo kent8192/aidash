@@ -60,12 +60,11 @@ async function fixture(
   };
   const state = {
     access,
-    node: {
+    deployment: {
       id: bank.home,
       endpoint: "http://localhost",
       protocol_version: "0.1",
-      capabilities: [],
-      clusters: [],
+      key: null,
     },
     workspaces: [
       {
@@ -99,7 +98,7 @@ async function fixture(
         bindings: [
           {
             kind: "memory",
-            target: { registry_node: "aidash://test", ...ref("memory") },
+            target: { registry_deployment: "aidash://test", ...ref("memory") },
             narrow: {},
           },
         ],
@@ -120,7 +119,6 @@ async function fixture(
     conversations: [],
     human_requests: [],
     installations: [],
-    peers: [],
   };
   const writes: { url: string; body: FixtureBody }[] = [];
   const inspections: { after?: string | null }[] = [];
@@ -134,8 +132,6 @@ async function fixture(
         : null;
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/state") return route.fulfill({ json: state });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/discover")
       return route.fulfill({ json: { agents: [], errors: [] } });
     if (path === "/api/session")

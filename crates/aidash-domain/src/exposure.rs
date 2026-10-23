@@ -244,7 +244,7 @@ impl std::fmt::Display for CapabilityIdentity {
 			Self::Registry(reference) => write!(
 				f,
 				"{}/{}@{}",
-				reference.registry_node, reference.id, reference.version
+				reference.registry_deployment, reference.id, reference.version
 			),
 			Self::DirectSkill { skill_id, origin } => write!(f, "{origin}#{skill_id}"),
 			Self::AgentPluginTool {

@@ -20,6 +20,9 @@ pub struct GenerationRequest {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
+	/// The Node of the requesting Workspace.
+	#[field(field_type = "text")]
+	pub node: String,
 	#[field(field_type = "text")]
 	pub home_node: String,
 	#[field]
@@ -74,16 +77,10 @@ pub struct GenerationRequest {
 	#[field]
 	pub retired_catalog_revision: Option<i64>,
 
-	#[field(
-		generated_sql = "\nCASE\n    WHEN (home_node = ''::text) THEN task_id\n    ELSE NULL::uuid\nEND",
-		generated_stored = true
-	)]
+	#[field]
 	pub local_task_id: Option<uuid::Uuid>,
 
-	#[field(
-		generated_sql = "\nCASE\n    WHEN (home_node = ''::text) THEN workspace_id\n    ELSE NULL::uuid\nEND",
-		generated_stored = true
-	)]
+	#[field]
 	pub local_workspace_id: Option<uuid::Uuid>,
 }
 
@@ -106,6 +103,7 @@ impl GenerationRequest {
 	pub(crate) fn contract(self) -> Result<Request> {
 		Ok(Request {
 			id: self.id,
+			node: aidash_domain::nodes::NodeName::parse(&self.node)?,
 			home_node: self.home_node,
 			foreign_intent: self.foreign_intent.map(|value| value.0),
 			grant_id: self.grant_id,

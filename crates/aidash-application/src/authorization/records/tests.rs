@@ -28,6 +28,7 @@ fn scope() -> Scope {
 	let workspace = Uuid::from_u128(1);
 	Scope {
 		workspace: Workspace {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: workspace,
 			title: "workspace".into(),
 			goal: "goal".into(),
@@ -73,7 +74,7 @@ fn scope() -> Scope {
 		event: Event {
 			sequence: 15,
 			id: Uuid::from_u128(14),
-			node_id: "aidash://local".into(),
+			node: None,
 			workspace_id: Some(workspace),
 			kind: "message.created".into(),
 			data: json!({"id":Uuid::from_u128(13)}),

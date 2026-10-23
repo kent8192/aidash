@@ -196,9 +196,9 @@ pub(super) fn migration() -> Migration {
 			name: "events".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true),
-				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(false),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
-				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid),
 				ColumnDefinition::new("kind", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("data", FieldType::Jsonb).with_not_null(true),
@@ -563,32 +563,22 @@ pub(super) fn migration() -> Migration {
 				                ColumnDefinition::new("created_at", FieldType::TimestampTz)
 				                .with_not_null(true).with_default(Some(r#"now()"#.to_owned())),
 				                ColumnDefinition::new("retired_catalog_revision", FieldType::BigInteger),
-				                ColumnDefinition::new("home_node", FieldType::Text).with_not_null(true)
-				                .with_default(Some(r#"''::text"#.to_owned())),
+				                ColumnDefinition::new("home_node", FieldType::Text).with_not_null(true),
+				                ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("foreign_intent", FieldType::Jsonb),
 				                ColumnDefinition::new("prepared", FieldType::Boolean).with_not_null(true)
 				                .with_default(Some("false".to_owned())),
 				                ColumnDefinition::new("grant_id", FieldType::Uuid),
 				                ColumnDefinition::new("admission_id", FieldType::Uuid),
-				                ColumnDefinition::new("local_task_id", FieldType::Uuid)
-				                .with_generated(Some(GeneratedColumnDefinition::raw_sql(r#"
-						CASE
-						WHEN (home_node = ''::text) THEN task_id
-						ELSE NULL::uuid
-						END"#,
-				                GeneratedStorage::Stored))), ColumnDefinition::new("local_workspace_id",
-				                FieldType::Uuid)
-				                .with_generated(Some(GeneratedColumnDefinition::raw_sql(r#"
-						CASE
-						WHEN (home_node = ''::text) THEN workspace_id
-						ELSE NULL::uuid
-						END"#,
-				                GeneratedStorage::Stored)))
+				                ColumnDefinition::new("local_task_id", FieldType::Uuid),
+				                ColumnDefinition::new("local_workspace_id", FieldType::Uuid)
 				            ],
 				            constraints: vec![
 				                Constraint::Check { name : "generation_foreign_binding".to_owned(),
 				                expression :
-				                r#"(((home_node = ''::text) AND (foreign_intent IS NULL) AND (grant_id IS NULL) AND (admission_id IS NULL)) OR ((home_node <> ''::text) AND (foreign_intent IS NOT NULL)))"#
+				                r#"(((local_task_id IS NOT NULL) AND (foreign_intent IS NULL) AND (grant_id IS NULL) AND (admission_id IS NULL)) OR ((local_task_id IS NULL) AND (foreign_intent IS NOT NULL)))"#
+				                .to_owned() }, Constraint::Check { name : "generation_local_pair".to_owned(),
+				                expression : r#"((local_task_id IS NULL) = (local_workspace_id IS NULL))"#
 				                .to_owned() }, Constraint::Check { name :
 				                "generation_requests_depth_check".to_owned(), expression :
 				                r#"((depth >= 1) AND (depth <= 31))"#.to_owned() }, Constraint::Check {
@@ -768,6 +758,7 @@ pub(super) fn migration() -> Migration {
 				                ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
 				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
 				                .with_not_null(true), ColumnDefinition::new("home_node", FieldType::Text)
+				                .with_not_null(true), ColumnDefinition::new("node", FieldType::Text)
 				                .with_not_null(true), ColumnDefinition::new("agent_id", FieldType::Text)
 				                .with_not_null(true), ColumnDefinition::new("agent_version",
 				                FieldType::Text).with_not_null(true), ColumnDefinition::new("phase",

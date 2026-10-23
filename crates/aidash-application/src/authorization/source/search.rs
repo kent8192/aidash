@@ -7,7 +7,6 @@ use crate::{
 };
 use aidash_domain::{
 	generation::{dispatch::Input, remote},
-	qualified_agent,
 	registry::{AgentConfig, rules::digest},
 	semantic::{
 		Failure,
@@ -33,7 +32,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 	operation: Operation,
 ) -> Result<Receipt> {
 	operation.validate()?;
-	if operation.home_node != repository.home_node_id() {
+	if operation.home_node != repository.home_address() {
 		return Err(Error::Forbidden);
 	}
 	let (mut access, description) = repository.description(node, operation.grant_id).await?;
@@ -86,7 +85,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);
 		let input = Search {
 			query,
-			agent: Some(qualified_agent(
+			agent: Some(aidash_domain::agent_subject(
 				node,
 				&description.inspection.agent.id,
 				&description.inspection.agent.version,
@@ -181,7 +180,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				memory: None,
 				operation_id: operation.id,
 				operation_digest: operation.digest()?,
-				home_node: repository.home_node_id().to_owned(),
+				home_node: repository.home_address().to_owned(),
 				tenant: description.source_tenant.clone(),
 				workspace_id: task.workspace_id,
 				grant_id: operation.grant_id,

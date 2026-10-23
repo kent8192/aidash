@@ -10,13 +10,13 @@ import {
   meshPositions,
   nodeEvents,
 } from "../src/collaboration/mesh-model.ts";
+import { nodeView } from "../src/node-selection.ts";
 import { meshScene } from "../tests/mesh-scene.mjs";
 const now = Date.parse("2026-09-24T09:00:00Z");
 const scene = () => meshScene(now);
 const project = (s) =>
-  buildMeshGraph(s.data, {
+  buildMeshGraph(nodeView(s.data, undefined), {
     channel: "product-lab",
-    discovery: s.discovery,
     now,
   });
 const node = (g, id) =>
@@ -199,7 +199,7 @@ test("edge budget retains a connection for every displayed connected node", () =
   );
   assert.equal(filtered.omittedEdges, 4);
 });
-test("uses exact versions, preserves remote identities, and does not invent health", () => {
+test("uses exact versions and does not invent health", () => {
   const s = scene();
   s.data.registry[0].config.tools.push({ id: "not-found", version: "1.0.0" });
   s.data.registry.push({
@@ -207,57 +207,15 @@ test("uses exact versions, preserves remote identities, and does not invent heal
     id: "not-found",
     version: "2.0.0",
   });
-  s.discovery.agents.push({
-    node_id: s.data.peers[0].node_id,
-    entity: { ...s.data.registry[0] },
-  });
   const g = project(s);
   const missing = g.nodes.find(
     (n) => n.entity?.id === "not-found" && n.entity.version === "1.0.0",
   );
   assert.equal(missing.available, false);
   assert.deepEqual(missing.name, {});
-  const planners = g.nodes.filter((n) => n.entity?.id === "planner");
-  assert.equal(new Set(planners.map((n) => n.id)).size, 2);
-  assert.equal(planners.find((n) => n.remote).status, "DISCOVERED");
   assert.ok(
     g.nodes.every((n) => n.status !== "HEALTHY" && n.status !== "ONLINE"),
   );
-});
-test("observed remote runs keep their exact agent identity without discovery", () => {
-  const s = scene();
-  const peer = s.data.peers[0].node_id;
-  const run = {
-    ...s.data.runs[0],
-    id: "remote-run",
-    agent_id: "unlisted",
-    agent_version: "2.0.0",
-  };
-  const graph = buildMeshGraph(s.data, {
-    channel: "product-lab",
-    discovery: { agents: [], errors: [] },
-    runs: [{ node: peer, run }],
-    now,
-  });
-  const agent = graph.nodes.find(
-    (n) => n.nodeId === peer && n.entity?.id === "unlisted",
-  );
-  assert.ok(agent);
-  assert.equal(agent.available, false);
-  assert.equal(agent.status, "THINKING");
-  assert.ok(
-    graph.edges.some((e) => e.source === agent.id && e.relation === "executes"),
-  );
-  assert.ok(
-    graph.edges.some((e) => e.target === agent.id && e.relation === "hosts"),
-  );
-  s.data.peers[0].enabled = false;
-  const disabled = buildMeshGraph(s.data, {
-    channel: "product-lab",
-    runs: [{ node: peer, run }],
-    now,
-  });
-  assert.ok(!disabled.nodes.some((n) => n.nodeId === peer));
 });
 test("subject views cannot join discovery or remote runs, and renderers receive no private payload", () => {
   const s = scene();
@@ -271,9 +229,8 @@ test("subject views cannot join discovery or remote runs, and renderers receive 
 });
 test("an unavailable workspace never falls back to another workspace's activity", () => {
   const s = scene();
-  const g = buildMeshGraph(s.data, {
+  const g = buildMeshGraph(nodeView(s.data, undefined), {
     channel: "revoked",
-    discovery: s.discovery,
     now,
   });
   assert.ok(
@@ -354,7 +311,7 @@ test("time windows filter completed activity, retain active execution and match 
   const s = scene();
   s.data.runs[1].updated_at = "2020-01-01T00:00:00Z";
   s.data.runs[0].updated_at = "2020-01-01T00:00:00Z";
-  const g = buildMeshGraph(s.data, { hours: 24, now });
+  const g = buildMeshGraph(nodeView(s.data, undefined), { hours: 24, now });
   assert.equal(node(g, "researcher").status, undefined);
   assert.equal(node(g, "planner").status, "THINKING");
   s.data.events.push({
@@ -363,7 +320,7 @@ test("time windows filter completed activity, retain active execution and match 
     data: { task_id: "t-1010" },
   });
   assert.ok(
-    !nodeEvents(node(g, "t-101"), g, s.data, 1, now).some(
+    !nodeEvents(node(g, "t-101"), g, nodeView(s.data, undefined), 1, now).some(
       (e) => e.id === "wrong-task",
     ),
   );
@@ -392,40 +349,20 @@ test("inspector events stay within the selected workspace for agents and the loc
   ]) {
     assert.ok(selected);
     assert.ok(
-      !nodeEvents(selected, graph, s.data, 24, now, "product-lab").some(
-        (e) => e.id === "other-event",
-      ),
+      !nodeEvents(
+        selected,
+        graph,
+        nodeView(s.data, undefined),
+        24,
+        now,
+        "product-lab",
+      ).some((e) => e.id === "other-event"),
     );
   }
 });
-test("remote executing agents show exact home task events", () => {
-  const s = scene();
-  const peer = s.data.peers[0].node_id;
-  const run = {
-    ...s.data.runs[0],
-    id: "remote-run",
-    agent_id: "remote-worker",
-  };
-  const graph = buildMeshGraph(s.data, {
-    channel: "product-lab",
-    runs: [{ node: peer, run }],
-    now,
-  });
-  const agent = node(graph, "remote-worker");
-  assert.ok(agent);
-  s.data.events.push({
-    ...s.data.events[0],
-    id: "unrelated-home-task",
-    data: { task_id: "other-task" },
-  });
-  const events = nodeEvents(agent, graph, s.data, 24, now, "product-lab");
-  assert.ok(events.some((event) => event.id === "event-0"));
-  assert.ok(!events.some((event) => event.id === "unrelated-home-task"));
-});
-test("revoked entities and disabled peers remove cached names and remote status", () => {
+test("revoked entities remove cached names and remote status", () => {
   const s = scene();
   s.data.registry = s.data.registry.filter((e) => e.id !== "builder");
-  s.data.peers[0].enabled = false;
   const g = project(s);
   assert.equal(node(g, "builder"), undefined);
   assert.ok(!g.nodes.some((n) => n.remote));
@@ -475,7 +412,13 @@ test("matches server event envelopes for task creation, completion, publication 
     { ...event, id: "dependency", kind: "task.created", data: s.data.tasks[1] },
   ];
   assert.deepEqual(
-    nodeEvents(node(graph, task.id), graph, s.data, 24, now).map((e) => e.id),
+    nodeEvents(
+      node(graph, task.id),
+      graph,
+      nodeView(s.data, undefined),
+      24,
+      now,
+    ).map((e) => e.id),
     ["created"],
   );
 });
@@ -500,9 +443,13 @@ test("conversation creation events appear only in the matching conversation insp
     conversation.id,
   );
   assert.deepEqual(
-    nodeEvents(node(graph, conversation.id), graph, s.data, 24, now).map(
-      (e) => e.id,
-    ),
+    nodeEvents(
+      node(graph, conversation.id),
+      graph,
+      nodeView(s.data, undefined),
+      24,
+      now,
+    ).map((e) => e.id),
     ["created"],
   );
 });
@@ -540,7 +487,7 @@ test("Run inspector excludes sibling executions and task-only events", () => {
     nodeEvents(
       node(graph, selected.id),
       graph,
-      s.data,
+      nodeView(s.data, undefined),
       24,
       now,
       "product-lab",

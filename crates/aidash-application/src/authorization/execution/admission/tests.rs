@@ -30,7 +30,7 @@ struct Scope {
 }
 impl Scope {
 	fn new() -> Self {
-		let subject = qualified_agent("aidash://node", "agent", "1.0.0");
+		let subject = qualified_agent(&node(), "agent", "1.0.0");
 		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
@@ -114,6 +114,9 @@ impl ExecutionAdmissionSession for Scope {
 	}
 	fn node_id(&self) -> &str {
 		"aidash://node"
+	}
+	async fn workspace_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
+		Ok(node())
 	}
 	fn bundle(&self) -> &PolicyBundle {
 		&self.bundle
@@ -217,7 +220,7 @@ impl ExecutionAdmissionSession for Scope {
 		self.call("delegation")?;
 		Ok(Delegation {
 			task_id: task,
-			node_id: self.node_id().into(),
+			node_id: node().to_string(),
 			agent_id: agent.id.clone(),
 			agent_version: agent.version.clone(),
 			delivered: true,
@@ -252,7 +255,7 @@ async fn admitted_task_retains_credential_chain_revision_and_browser_origin(
 	let task = admit(&mut s, Uuid::from_u128(1), revision, &agent(), false)
 		.await
 		.unwrap();
-	let qualified = qualified_agent(s.node_id(), "agent", "1.0.0");
+	let qualified = qualified_agent(&node(), "agent", "1.0.0");
 	assert_eq!(task.status, TaskStatus::Claimed);
 	assert_eq!(
 		s.claim_args,
@@ -448,4 +451,8 @@ async fn local_descendants_of_remote_origins_stay_federated() {
 		.await
 		.unwrap();
 	assert_eq!(s.plan_admissions, [true]);
+}
+
+fn node() -> aidash_domain::nodes::NodeAddress {
+	"aidash://node/brave-otter-k3m9q2xa".parse().unwrap()
 }

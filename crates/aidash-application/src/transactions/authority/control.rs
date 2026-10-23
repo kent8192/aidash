@@ -44,18 +44,35 @@ async fn finish_submission<T>(scope: Box<dyn SubmissionScope>, result: Result<T>
 	}
 }
 
+/// Whether `node` needs the remote preflight: every Node but the
+/// coordinator's own and those of the submitting Tenant, whatever
+/// Deployment they run on. Another Tenant's Node on this Deployment is as
+/// remote as one on another Deployment.
+async fn remote_node(
+	repository: &dyn AuthorityRepository,
+	tenant: &str,
+	coordinator: &str,
+	node: &str,
+) -> Result<bool> {
+	if node == coordinator {
+		return Ok(false);
+	}
+	Ok(repository.node_tenant(node).await?.as_deref() != Some(tenant))
+}
+
 pub async fn preflight(
 	repository: &dyn AuthorityRepository,
 	caller: &str,
 	input: &Preflight,
 ) -> Result<()> {
-	if !input.permits(caller, repository.node_id()) {
+	let receiver = repository.receiver().ok_or(Error::Forbidden)?;
+	if !input.permits(caller, receiver) {
 		return Err(Error::Forbidden);
 	}
 	let mut scope = repository.mapped(input).await?;
 	scope.gate().await?;
 	let result = async {
-		checks(scope.authority(), input, "transaction.submit").await?;
+		checks(scope.authority(), input, receiver, "transaction.submit").await?;
 		let authority = scope.authority();
 		let binding = Binding {
 			request: input.clone(),
@@ -74,8 +91,18 @@ pub async fn submit(
 	manifest: &Manifest,
 ) -> Result<Status> {
 	repository.validate(manifest)?;
-	if manifest.coordinator != repository.node_id() {
+	if aidash_domain::nodes::deployment_of(&manifest.coordinator)
+		!= aidash_domain::nodes::deployment_of(repository.node_id())
+	{
 		return Err(Error::Invalid("submit to the named coordinator".into()));
+	}
+	if repository
+		.node_tenant(&manifest.coordinator)
+		.await?
+		.as_deref()
+		!= Some(&identity.tenant)
+	{
+		return Err(Error::Forbidden);
 	}
 	let origin = Origin::from(identity);
 	for node in &manifest.participants {
@@ -110,26 +137,33 @@ pub async fn submit(
 		// every remote preflight succeeds, including its current policy decision.
 		let stored = scope.submit(manifest, &origin).await?;
 		let binding = Binding {
-			request: request(manifest, &origin, repository.node_id())?,
+			request: request(manifest, &origin, &manifest.coordinator)?,
 			local: origin.clone(),
 			subjects,
 		};
 		scope.bind(manifest.id, &binding).await?;
-		stream::iter(
-			manifest
-				.participants
-				.iter()
-				.filter(|node| node.node_id != repository.node_id())
-				.map(Ok::<_, Error>),
-		)
-		.try_for_each_concurrent(8, |node| {
-			let origin = &origin;
-			async move {
-				let input = request(manifest, origin, &node.node_id)?;
-				repository.remote_preflight(&node.node_id, &input).await
+		let mut remote = vec![];
+		for node in &manifest.participants {
+			if remote_node(
+				repository,
+				&origin.tenant,
+				&manifest.coordinator,
+				&node.node_id,
+			)
+			.await?
+			{
+				remote.push(node);
 			}
-		})
-		.await?;
+		}
+		stream::iter(remote.into_iter().map(Ok::<_, Error>))
+			.try_for_each_concurrent(8, |node| {
+				let origin = &origin;
+				async move {
+					let input = request(manifest, origin, &node.node_id)?;
+					repository.remote_preflight(&node.node_id, &input).await
+				}
+			})
+			.await?;
 		repository
 			.fault(manifest.id, "coordinator.submit.before")
 			.await?;
@@ -156,7 +190,7 @@ pub async fn issue(
 	let mut scope = repository.source(&origin).await?;
 	let result = async {
 		source_checks(scope.authority(), manifest, &origin, "transaction.submit").await?;
-		if node != repository.node_id() {
+		if node != manifest.coordinator {
 			scope.trusted(node).await?;
 		}
 		scope.insert_attempt(manifest.id, node).await
@@ -204,7 +238,10 @@ pub async fn prepare_admission(
 		}
 		return Ok(None);
 	};
-	if bound.request != request(manifest, &bound.request.origin, repository.node_id())?
+	// The binding is for the Node this repository serves: the one a request was
+	// admitted for, or the coordinator itself for its own work.
+	let node = repository.receiver().unwrap_or(&manifest.coordinator);
+	if bound.request != request(manifest, &bound.request.origin, node)?
 		|| caller != bound.request.coordinator
 	{
 		return Err(Error::Forbidden);
@@ -218,11 +255,17 @@ pub async fn check_admission(
 	bound: &Binding,
 	caller: &str,
 ) -> Result<()> {
-	checks(scope, &bound.request, "transaction.submit").await?;
+	checks(
+		scope,
+		&bound.request,
+		repository.receiver().unwrap_or(&bound.request.coordinator),
+		"transaction.submit",
+	)
+	.await?;
 	if Origin::from(&scope.identity()) != bound.local || scope.subjects() != bound.subjects {
 		return Err(Error::Forbidden);
 	}
-	if caller != repository.node_id()
+	if !aidash_domain::nodes::same_deployment(caller, repository.node_id())
 		&& repository.remote_ticket(caller, bound.request.id).await? != bound.request
 	{
 		return Err(Error::Forbidden);
@@ -268,7 +311,14 @@ pub async fn manage(
 			authority.require(&resource, action).await?;
 		}
 		for node in &manifest.participants {
-			if node.node_id != repository.node_id() {
+			if remote_node(
+				repository,
+				&origin.tenant,
+				&manifest.coordinator,
+				&node.node_id,
+			)
+			.await?
+			{
 				let input = request(&manifest, &origin, &node.node_id)?;
 				repository.remote_access(&node.node_id, &input).await?;
 			}
@@ -329,7 +379,13 @@ pub async fn read_access(
 	if Origin::from(&scope.authority().identity()) != bound.local {
 		return Err(Error::Forbidden);
 	}
-	let result = checks(scope.authority(), input, "transaction.read").await;
+	let result = checks(
+		scope.authority(),
+		input,
+		repository.receiver().ok_or(Error::Forbidden)?,
+		"transaction.read",
+	)
+	.await;
 	finish(scope, result).await
 }
 

@@ -132,7 +132,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 			.find(|d| d.kind == "decider" && &d.entry == reference)
 			.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
 		Some(Provider {
-			node_id: node.to_owned(),
+			node_id: aidash_domain::nodes::deployment_of(node).to_owned(),
 			entry: reference.clone(),
 			digest: definition.digest.clone(),
 			configuration_digest: digest(&definition.metadata.config),
@@ -204,7 +204,7 @@ fn summarizer_pin(
 		.find(|d| d.kind == "model" && &d.entry == reference)
 		.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
 	Ok(Provider {
-		node_id: node.to_owned(),
+		node_id: aidash_domain::nodes::deployment_of(node).to_owned(),
 		entry: reference.clone(),
 		digest: definition.digest.clone(),
 		configuration_digest: digest(&definition.metadata.config),

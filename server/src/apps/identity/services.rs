@@ -22,6 +22,8 @@ pub mod approval_preferences;
 
 pub mod demo_data;
 pub mod invitations;
+pub mod node_registrations;
+pub mod nodes;
 pub mod plan_connections;
 pub mod provider_authorizations;
 pub mod provider_credentials;

@@ -1,3 +1,4 @@
+import { useNodes } from "../nodes";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Kbd } from "../components/ui/kbd";
@@ -130,6 +131,8 @@ export function Graph({
   const [list, setList] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // The Node the person works in asks for everything the graph expands.
+  const sendingNode = useNodes().selected?.name;
   const [peerIds, setPeerIds] = useState<string[]>([]);
   const [expansions, setExpansions] = useState<Record<string, RemoteExpansion>>(
     {},
@@ -151,7 +154,12 @@ export function Graph({
   }, []);
   const graphMode = mode === "neighborhood" ? "mesh" : mode;
   const expandedKey = Object.keys(expansions).sort().join("\u0000");
-  const scope = JSON.stringify([graphWorkspace, hours, targetTenant]);
+  const scope = JSON.stringify([
+    graphWorkspace,
+    hours,
+    targetTenant,
+    sendingNode,
+  ]);
   useEffect(() => {
     setExpansions((previous) => {
       if (Object.values(previous).every((value) => value.scope === scope))
@@ -191,7 +199,7 @@ export function Graph({
     let live = true;
     const refresh = async () => {
       try {
-        const peers = await graphPeers();
+        const peers = await graphPeers(sendingNode);
         if (!live) return;
         const ids = [...new Set(peers.map((peer) => peer.node_id))].sort();
         setPeerIds((previous) =>
@@ -217,7 +225,7 @@ export function Graph({
       live = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [sendingNode]);
   const requestPeer = useCallback(
     async (peer: string, cursor: string | null, requestScope: string) => {
       if (document.hidden) return;
@@ -244,6 +252,7 @@ export function Graph({
         let windowCursor = cursor;
         const options = {
           node_id: peer,
+          sending_node: sendingNode ?? null,
           scope_workspace: graphWorkspace || null,
           depth: 1 as const,
           // Workspace relevance must not disappear when a perspective hides
@@ -302,7 +311,7 @@ export function Graph({
         );
       }
     },
-    [graphWorkspace, hours, targetTenant, data.access.kind],
+    [graphWorkspace, hours, targetTenant, sendingNode, data.access.kind],
   );
   useEffect(() => {
     if (mode === "neighborhood" || document.hidden) return;

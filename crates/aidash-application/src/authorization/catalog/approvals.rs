@@ -81,7 +81,7 @@ pub async fn approve(
 		.collect();
 	for approval in approvals.iter().filter(|approval| approval.enabled) {
 		let entry = &definitions[&(approval.entry.id.clone(), approval.entry.version.clone())];
-		for dependency in dependencies(entry, scope.node())? {
+		for dependency in dependencies(entry, scope.node().deployment.as_str())? {
 			let satisfied = crate::registry::system::builtin_reference(&dependency)
 				|| match requested.get(&(dependency.id.clone(), dependency.version.clone())) {
 					Some(enabled) => *enabled,
@@ -96,6 +96,7 @@ pub async fn approve(
 		}
 	}
 	let tenant = scope.tenant().to_owned();
+	let scope_node = scope.node().node.clone();
 	let actor = scope.actor().to_owned();
 	let mut bindings = Vec::with_capacity(approvals.len());
 	for approval in approvals {
@@ -103,6 +104,7 @@ pub async fn approve(
 			super::set_in(
 				scope,
 				&tenant,
+				&scope_node,
 				&approval.entry,
 				approval.expected_revision,
 				approval.enabled,

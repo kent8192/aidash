@@ -160,12 +160,18 @@ impl Billing {
 		if self.payments.subscription(account).await?.is_none() {
 			return Err(refused(rules::LimitRefusal::NoActiveSubscription));
 		}
-		let tenants = self
-			.pool
-			.atomic(&TenancyScope::NoTenant, async |tx| {
-				store::covered_tenants(tx, account).await
-			})
-			.await?;
+		let mut tx = self.pool.begin(&TenancyScope::NoTenant).await?;
+		let row = store::lock_account(&mut *tx, account)
+			.await?
+			.ok_or_else(|| Error::NotFound("billing account".into()))?;
+		if row.owner_identity != owner {
+			return Err(Error::NotFound("billing account".into()));
+		}
+		let mut tenants = store::covered_tenants(&mut *tx, account).await?;
+		tenants.sort();
+		for tenant in &tenants {
+			aidash_server::authorization::services::nodes::lock_capacity(&mut *tx, tenant).await?;
+		}
 		let mut most_nodes = 0;
 		for tenant in &tenants {
 			most_nodes = most_nodes.max(self.nodes.nodes(tenant).await?);
@@ -174,7 +180,9 @@ impl Billing {
 		{
 			return Err(refused(refusal));
 		}
-		self.payments.change_tier(account, tier).await
+		self.payments.change_tier(account, tier).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 
 	/// Records `party`'s consent, by `identity`, to attaching `tenant` to
@@ -189,8 +197,6 @@ impl Billing {
 		account: Uuid,
 	) -> Result<Consented> {
 		let now = Utc::now();
-		let subscription = self.payments.subscription(account).await?;
-		let nodes = self.nodes.nodes(tenant).await?;
 		self.pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				let row = store::lock_account(tx, account)
@@ -220,6 +226,9 @@ impl Billing {
 					Party::TenantAdministrator => (identity, other.identity_id),
 					Party::AccountOwner => (other.identity_id, identity),
 				};
+				aidash_server::authorization::services::nodes::lock_capacity(tx, tenant).await?;
+				let subscription = self.payments.subscription(account).await?;
+				let nodes = self.nodes.nodes(tenant).await?;
 				let covered = store::covered_tenants(tx, account).await?;
 				let others = covered.iter().filter(|covered| *covered != tenant).count();
 				if let Some(refusal) = rules::attach_refusal(

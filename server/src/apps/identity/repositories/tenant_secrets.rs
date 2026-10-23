@@ -20,12 +20,10 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct NativeRepository {
 	pub pool: crate::database::native::Pool,
-	pub node: String,
 }
 struct NativeScope {
 	tx: Box<dyn TransactionExecutor>,
 	tenant: String,
-	node: String,
 }
 fn contract(row: Record) -> Result<TenantSecret> {
 	Ok(serde_json::from_value(serde_json::to_value(row)?)?)
@@ -53,7 +51,6 @@ impl Repository for NativeRepository {
 		Ok(Box::new(NativeScope {
 			tx,
 			tenant: tenant.into(),
-			node: self.node.clone(),
 		}))
 	}
 	async fn reconciliation_candidates(
@@ -157,7 +154,6 @@ impl Scope for NativeScope {
 		// Metadata only: never the value, its Fingerprint or its last characters.
 		crate::apps::execution::models::event_records::append(
 			self.tx.as_mut(),
-			&self.node,
 			None,
 			event,
 			json!({

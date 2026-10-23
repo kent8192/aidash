@@ -200,6 +200,7 @@ pub async fn run_research(
 pub async fn research_providers(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
+	Query(input): Query<crate::apps::execution::serializers::runs::ResearchProvidersQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.research_providers(actor).await)
+	crate::http::json(service.research_providers(actor, input).await)
 }

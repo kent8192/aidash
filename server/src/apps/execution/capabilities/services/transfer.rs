@@ -8,7 +8,7 @@ pub use crate::apps::execution::capabilities::serializers::transfer::{
 use crate::{
 	Result, authorization::access::Access, domain::Run, federation::Federation, store::Store,
 };
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 pub(crate) use receiver::recipient_list;
 use serde_json::Value;
 use uuid::Uuid;
@@ -40,10 +40,10 @@ pub(crate) async fn prepare(
 }
 pub(crate) async fn describe(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Identity,
 ) -> Result<Description> {
-	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let node = &admitted.sender.to_string();
 	aidash_application::capabilities::transfer::describe(
 		&crate::bootstrap::transfer_repository(&f),
 		node,

@@ -34,7 +34,7 @@ pub(crate) async fn response(
 	let result = aidash_application::marketplace::events::poll_events(
 		&mut crate::bootstrap::marketplace_distribution_scope(&mut access),
 		events,
-		&store.node_id,
+		store.deployment.as_str(),
 	)
 	.await
 	.map_err(Into::into);
@@ -51,7 +51,7 @@ pub(crate) async fn frame(
 		let Some(payload) = aidash_application::marketplace::events::frame(
 			&mut crate::bootstrap::marketplace_distribution_scope(&mut access),
 			event,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?
 		else {

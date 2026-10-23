@@ -152,7 +152,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 		format!("{endpoint}{}", mcp::PATH)
 	};
 
-	let mut policy = policy(&f.config.node_id);
+	let mut policy = policy(f.config.deployment.as_str());
 	require_tool_call_approval(&mut policy);
 	tenant_root(&f, "acme").await;
 	let deployment_administrator = &f.config.api_token;
@@ -218,6 +218,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 		authorization
 			.set_catalog(
 				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
 				&EntityRef {
 					id: id.into(),
 					version: "1.0.0".into(),

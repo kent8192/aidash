@@ -348,6 +348,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 		}
 		.set_catalog(
 			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
 			&aidash_server::registry::EntityRef {
 				id: "embedding".into(),
 				version: "1.0.0".into(),
@@ -769,7 +770,10 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 	let chain = vec![
 		"alice".to_owned(),
 		aidash_server::domain::qualified_agent(
-			&fixture.f.config.node_id,
+			&aidash_domain::nodes::NodeAddress::derived(
+				fixture.f.config.deployment.as_str(),
+				"acme",
+			),
 			&parent_run.agent_id,
 			&parent_run.agent_version,
 		),
@@ -1173,7 +1177,10 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	let chain = [
 		"alice".to_owned(),
 		aidash_server::domain::qualified_agent(
-			&fixture.f.store.node_id,
+			&aidash_domain::nodes::NodeAddress::derived(
+				fixture.f.store.deployment.as_str(),
+				"acme",
+			),
 			&parent.agent_id,
 			&parent.agent_version,
 		),
@@ -1252,7 +1259,11 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 		version: "1.0.0".into(),
 	};
 	let shared = Bank {
-		home: fixture.f.store.node_id.clone(),
+		home: aidash_domain::nodes::NodeAddress::derived(
+			fixture.f.store.deployment.as_str(),
+			"acme",
+		)
+		.to_string(),
 		tenant: "acme".into(),
 		workspace: fixture.workspace,
 		participant: None,
@@ -2109,7 +2120,7 @@ mod semantic_fixture_composition {
 					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
-					json!({"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":0,"enabled":true})
+					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":0,"enabled":true})
 				)
 				.await
 				.0,
@@ -2148,16 +2159,16 @@ mod semantic_fixture_composition {
 					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
-					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
+					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
 				)
 				.await
 				.0,
 				200
 			);
 		}
-		template["config"]["bindings"] = json!([{"kind":"memory","target":{"registry_node":f.config.node_id,"id":"memory","version":"1.0.0"},"narrow":{}}]);
+		template["config"]["bindings"] = json!([{"kind":"memory","target":{"registry_deployment":f.config.deployment,"id":"memory","version":"1.0.0"},"narrow":{}}]);
 		if !maintenance {
-			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.node_id,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
+			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
 		}
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
 		let (status, response) = request(
@@ -2175,7 +2186,7 @@ mod semantic_fixture_composition {
 		if maintenance {
 			assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
 		} else {
-			let bank = json!({"home":f.store.node_id,"tenant":"acme","workspace":workspace,"participant":null});
+			let bank = json!({"home":aidash_domain::nodes::NodeAddress::derived(f.store.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":workspace,"participant":null});
 			let (status,response)=request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
 			assert_eq!(status, 200, "{response}");
 			let (status,response)=request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;

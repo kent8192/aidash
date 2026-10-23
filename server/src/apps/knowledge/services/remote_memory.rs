@@ -31,7 +31,7 @@ pub(crate) fn descriptor(home: &str, entry: &Entry) -> Result<Provider> {
 }
 
 pub(crate) async fn bind(
-	home: &str,
+	deployment: &str,
 	lease: &mut Lease<'_>,
 	workspace: Uuid,
 	selection: &NativeRequest,
@@ -52,6 +52,18 @@ pub(crate) async fn bind(
 	)
 	.scalar_one(&mut **lease.tx())
 	.await?;
+	// The Workspace's memory lives at the Node the Workspace belongs to.
+	let node: String = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("node"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **lease.tx())
+	.await?;
+	let home = format!("{deployment}/{node}");
+	let home = home.as_str();
 	let mut bank = Bank {
 		home: home.into(),
 		tenant,
@@ -82,9 +94,13 @@ pub(crate) async fn bind(
 		version: row.try_get("agent_version")?,
 	};
 	let agent = memory::definition(lease, &bank.tenant, &reference, "agent").await?;
-	let config =
-		super::super::repositories::bindings::configuration(lease, &bank.tenant, &agent, home)
-			.await?;
+	let config = super::super::repositories::bindings::configuration(
+		lease,
+		&bank.tenant,
+		&agent,
+		deployment,
+	)
+	.await?;
 	if config.memory.as_ref() != Some(&selection.provider)
 		|| config.allow_cross_conversation_memory == Some(false)
 	{
@@ -93,7 +109,7 @@ pub(crate) async fn bind(
 		));
 	}
 	if let Some(origin) = generation {
-		aidash_domain::configuration::validate_node_id(&origin.node_id)?;
+		aidash_domain::nodes::NodeAddress::parse(&origin.node_id)?;
 		if origin.node_id == home || origin.intent_id.is_nil() {
 			return Err(Error::Forbidden);
 		}
@@ -152,18 +168,18 @@ pub(crate) async fn bind(
 					serde_json::from_value(entry.config.clone())?
 			{
 				roles.push(descriptor(
-					home,
+					deployment,
 					&memory::definition(lease, &bank.tenant, &model, "model").await?,
 				)?);
 			}
-			let descriptor = descriptor(home, &entry)?;
+			let descriptor = descriptor(deployment, &entry)?;
 			if !roles.contains(&descriptor) {
 				roles.push(descriptor);
 			}
 		}
 		banks.push(NativeBank {
 			bank,
-			provider: descriptor(home, &definition)?,
+			provider: descriptor(deployment, &definition)?,
 			roles,
 			max_model_tokens: policy.bounds.max_model_tokens,
 			max_context_tokens: tokens.min(policy.bounds.max_context_tokens),
@@ -190,7 +206,7 @@ pub(crate) async fn bind(
 			agent: reference,
 			provider: selection.provider.clone(),
 		},
-		agent: descriptor(home, &agent)?,
+		agent: descriptor(deployment, &agent)?,
 		banks,
 	})
 }
@@ -201,7 +217,7 @@ pub(crate) async fn stamp(
 	binding: &NativeBinding,
 ) -> Result<String> {
 	let current = bind(
-		&store.node_id,
+		store.deployment.as_str(),
 		lease,
 		binding.participant.bank.workspace,
 		&binding.selection,

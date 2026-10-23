@@ -244,7 +244,8 @@ impl Operation {
 		{
 			return Err(crate::Error::Invalid("invalid remote semantic operation".into()).into());
 		}
-		crate::configuration::validate_node_id(&self.home_node).map_err(Into::into)
+		crate::nodes::validate_node_ref(&self.home_node)?;
+		Ok(())
 	}
 	pub fn digest(&self) -> Result<String> {
 		Ok(crate::registry::rules::digest(&serde_json::to_value(self)?))

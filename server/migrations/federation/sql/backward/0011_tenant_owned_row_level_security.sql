@@ -1,3 +1,9 @@
+DROP POLICY tenant_isolation ON public.node_registrations;
+ALTER TABLE public.node_registrations NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.node_registrations DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.node_registration_history;
+ALTER TABLE public.node_registration_history NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.node_registration_history DISABLE ROW LEVEL SECURITY;
 DROP POLICY tenant_isolation ON public.remote_run_message_fences;
 ALTER TABLE public.remote_run_message_fences NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.remote_run_message_fences DISABLE ROW LEVEL SECURITY;

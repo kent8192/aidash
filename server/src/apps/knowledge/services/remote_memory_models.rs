@@ -61,7 +61,7 @@ pub(crate) async fn reserve(
 		usage: Usage {
 			operation_id: origin.operation.id,
 			attempt_id: attempt,
-			dispatcher_node: origin.runtime.config.node_id.clone(),
+			dispatcher_node: origin.runtime.config.deployment.to_string(),
 			grant_id: origin.operation.grant_id,
 			admission_id: origin.operation.admission_id,
 			purpose: Purpose::Memory,
@@ -76,12 +76,19 @@ pub(crate) async fn reserve(
 		.store
 		.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
 		.await?;
+	let sender = crate::authorization::peer::usage_sender(
+		&origin.runtime,
+		input.usage.admission_id,
+		input.usage.grant_id,
+	)
+	.await?;
 	let dispatch = crate::bootstrap::generation_dispatch_repository(&origin.runtime.store, scope);
 	let settlement = crate::bootstrap::generation_dispatch_settlement(&origin.runtime);
 	aidash_application::generation::dispatch::prepare(&dispatch, &input, &origin.receiver).await?;
 	let result: Result<()> = async {
 		let mut receipts: Vec<Reserved> = crate::authorization::peer::authority_request(
 			&origin.runtime,
+			&sender,
 			&origin.receiver,
 			"/scoped/usage/reserve",
 			&serde_json::to_value(&input)?,

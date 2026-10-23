@@ -454,6 +454,7 @@ async fn source_read_errors_stop_following_provenance_checks(
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
 		workspace_id: Uuid::from_u128(3),
@@ -476,6 +477,7 @@ fn run() -> RunMetadata {
 fn generation(id: u128) -> Request {
 	let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(1000, 0).unwrap();
 	aidash_domain::generation::requests::Request {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(id),
 		tenant: "tenant".into(),
 		policy_id: "policy".into(),

@@ -13,3 +13,10 @@ CREATE SEQUENCE public.authorization_peer_mapping_history_sequence_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
+
+CREATE SEQUENCE public.node_registration_history_sequence_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;

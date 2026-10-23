@@ -2,97 +2,83 @@
 use super::super::{access::Access, catalog, identity::SubjectIdentity};
 use crate::{
 	Result,
-	apps::federation::peer::serializers::mesh::PeerError,
-	domain::qualified_agent,
-	federation::{DiscoveredAgent, Discovery, Federation, Peer},
+	apps::federation::remote::repositories::routes,
+	federation::{DiscoveredAgent, Discovery, Federation},
 	registry::{Entry, Search},
 };
+use aidash_domain::federation::{PeerError, route::Sender};
+use aidash_domain::nodes::NodeName;
 use futures_util::{StreamExt, stream};
-use reinhardt::query::Alias;
-use reinhardt::query::ColumnRef;
-use reinhardt::query::Expr;
-use reinhardt::query::LockType;
-use reinhardt::query::PostgresQueryBuilder;
-use reinhardt::query::Query;
-use reinhardt::query::QueryStatementBuilder as _;
-use reinhardt::query::SimpleExpr;
 use serde_json::json;
 use std::collections::BTreeSet;
 
 pub(crate) async fn discover(
 	f: &Federation,
 	identity: &SubjectIdentity,
+	node: Option<NodeName>,
 	search: &Search,
 ) -> Result<Discovery> {
 	let mut access = Access::begin(&f.store, identity).await?;
-	let result = discover_in(f, &mut access, search).await;
+	let result = discover_in(f, &mut access, node, search).await;
 	access.finish(result).await
 }
 
+/// Discovery from `node` of the caller's Tenant, its default Node when none is
+/// named: the Nodes it addresses are asked, each as the caller's subject.
 pub(crate) async fn discover_in(
 	f: &Federation,
 	access: &mut Access,
+	node: Option<NodeName>,
 	search: &Search,
 ) -> Result<Discovery> {
 	let mut query = search.clone();
 	query.kind = Some("agent".into());
+	let sender = Sender {
+		tenant: aidash_domain::tenancy::TenantName::new(access.identity.tenant.clone())?,
+		node,
+		subject: Some(access.identity.subject.clone()),
+	};
+	// The agents found here are the sending Node's, and carry its address.
+	let sending = routes::sending_node(&mut *access.tx, &sender).await?;
+	access.use_node(sending.clone()).await?;
+	let own = f.config.deployment.node(sending).to_string();
 	let local = catalog::list_in(access, &query).await?;
 	let mut result = Discovery {
 		agents: local
 			.into_iter()
 			.map(|entity| DiscoveredAgent {
-				node_id: f.config.node_id.clone(),
+				node_id: own.clone(),
 				entity,
 			})
 			.collect(),
 		errors: vec![],
 	};
-	let mut peers = vec![];
-	for peer in f.peers().await?.into_iter().filter(|peer| peer.enabled) {
-		let resource = access.resource("node", &peer.node_id, json!({"remote_node":peer.node_id}));
-		if !access.decide(&resource, "federation.discover").await? {
-			continue;
-		}
-		// Configuration changes and disablement wait for this admitted read.
-		// Compare the complete record to reject endpoint changes during admission.
-		let current: Option<Peer> = {
-			let query_bind_1 = &peer.node_id;
-			crate::database::query_as(
-				&Query::select()
-					.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-					.from(Alias::new("peers"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(node_id = ? AND enabled)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(LockType::Share)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **access.tx)
-			.await?
-		};
-		if current.is_some_and(|current| {
-			current.endpoint == peer.endpoint
-				&& current.credential_env == peer.credential_env
-				&& current.protocol_version == peer.protocol_version
-		}) {
-			peers.push(peer);
+	// Configuration changes wait for this admitted read: the routes are held
+	// with a shared lock until the authority transaction ends.
+	let routes = routes::all(&mut *access.tx, &f.config.deployment, &sender, true).await?;
+	let mut targets = vec![];
+	for route in routes {
+		let target = route.target.to_string();
+		let resource = access.resource("node", &target, json!({"remote_node":target}));
+		if access.decide(&resource, "federation.discover").await? {
+			targets.push(target);
 		}
 	}
-	let body =
-		json!({"tenant":access.identity.tenant,"subject":access.identity.subject,"search":query});
-	let mut responses = stream::iter(peers.into_iter().map(|peer| {
+	let body = json!({"search":query});
+	let mut responses = stream::iter(targets.into_iter().map(|target| {
 		let body = &body;
+		let sender = &sender;
 		async move {
 			let response = f
 				.request::<Vec<Entry>>(
-					&peer.node_id,
+					sender,
+					&target,
 					reqwest::Method::POST,
 					"/scoped/discover",
 					Some(body),
 				)
 				.await;
-			(peer.node_id, response)
+			(target, response)
 		}
 	}))
 	.buffer_unordered(8);
@@ -124,7 +110,7 @@ pub(crate) async fn discover_in(
 		}
 		for entity in entries.into_iter().filter(|entry| query.matches(entry)) {
 			let mut resource = catalog::resource(access, &entity);
-			resource.id = qualified_agent(&node, &entity.id, &entity.version);
+			resource.id = crate::domain::agent_subject(&node, &entity.id, &entity.version);
 			resource.attributes["remote_node"] = json!(node);
 			if access.decide(&resource, "registry.read").await?
 				&& access.decide(&resource, "agent.execute").await?

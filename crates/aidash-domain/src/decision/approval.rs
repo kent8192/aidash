@@ -193,7 +193,7 @@ impl ApprovalEvidence {
 		}
 		self.boundary.validate()?;
 		self.decider.validate()?;
-		if self.decider.identity.registry_node != self.boundary.node {
+		if self.decider.identity.registry_deployment != self.boundary.node {
 			return Err(Error::Invalid(
 				"approval Decider differs from the execution Node".into(),
 			));

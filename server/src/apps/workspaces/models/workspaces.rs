@@ -13,6 +13,9 @@ pub struct Workspace {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
+	/// The Node of the Tenant that the Workspace belongs to.
+	#[field(field_type = "text")]
+	pub node: String,
 	#[field(field_type = "text")]
 	pub title: String,
 	#[field(field_type = "text")]

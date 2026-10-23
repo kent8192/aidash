@@ -58,6 +58,7 @@ import {
   targetExamples,
 } from "./approval-settings-model";
 import { Field, Modal, Panel, useI18n, type StatusTone } from "./ui";
+import { useNodes } from "./nodes";
 
 const effectTones: Record<RuleEffect, StatusTone> = {
   allow: "success",
@@ -168,6 +169,7 @@ function DefaultMode({ tenant }: { tenant: string }) {
   const { locale } = useI18n();
   const copy = approvalCopy[locale];
   const client = useQueryClient();
+  const node = useNodes().selected?.name;
   const preferences = useApprovalPreferences(tenant);
   // Only a mode held back by the Decider needs to name it.
   const decider = useApprovalDecider(
@@ -193,12 +195,16 @@ function DefaultMode({ tenant }: { tenant: string }) {
     setError("");
     try {
       client.setQueryData(
-        approvalPreferencesKey(tenant),
+        approvalPreferencesKey(tenant, node),
         await approvalPreferencesUpdate(
           encodeURIComponent(tenant),
           preferencesUpdate(current, mode, confirmedBypass),
+          { node },
         ),
       );
+      await client.invalidateQueries({
+        queryKey: approvalPreferencesKey(tenant),
+      });
       setSaved(true);
     } catch (reason) {
       setError(message(reason));
@@ -261,6 +267,7 @@ function AnswerDeadlineForm({
   const copy = approvalCopy[locale];
   const words = copy.deadline;
   const client = useQueryClient();
+  const node = useNodes().selected?.name;
   const id = useId();
   const [draft, setDraft] = useState<DeadlineDraft>(() =>
     deadlineDraft(current.answer_deadline_seconds),
@@ -299,9 +306,13 @@ function AnswerDeadlineForm({
       const updated = await approvalPreferencesUpdate(
         encodeURIComponent(tenant),
         deadlineUpdate(current, result.seconds),
+        { node },
       );
       savedValue.current = updated.answer_deadline_seconds;
-      client.setQueryData(approvalPreferencesKey(tenant), updated);
+      client.setQueryData(approvalPreferencesKey(tenant, node), updated);
+      await client.invalidateQueries({
+        queryKey: approvalPreferencesKey(tenant),
+      });
       setSaved(true);
     } catch (reason) {
       setError(message(reason));

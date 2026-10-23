@@ -29,7 +29,11 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let deployment_administrator = &f.config.api_token;
-	let agent_subject = qualified_agent(&f.config.node_id, "skilled", "1.0.0");
+	let agent_subject = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"skilled",
+		"1.0.0",
+	);
 	policy["subjects"][&agent_subject] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
@@ -52,7 +56,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		(
 			"agent",
 			"skilled",
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","schema_version":1,"bindings":[{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"guide","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","schema_version":1,"bindings":[{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"guide","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
@@ -63,7 +67,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "catalog: {body}");
@@ -172,7 +176,11 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
-	let agent = qualified_agent(&f.config.node_id, "research", "1.0.0");
+	let agent = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.0",
+	);
 	policy["subjects"][&agent]["enabled"] = json!(false);
 	assert_eq!(
 		request(
@@ -409,8 +417,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.0,
 		403
 	);
-	let catalog =
-		json!({"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1});
+	let catalog = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1});
 	assert_eq!(
 		request(
 			&app,
@@ -464,7 +471,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":2})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":2})
 		)
 		.await
 		.0,
@@ -528,7 +535,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				other_token,
 				"POST",
 				&path,
-				json!({"revision":0,"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}})
+				json!({"revision":0,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}})
 			)
 			.await
 			.0,
@@ -556,7 +563,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	.await
 	.unwrap();
 	{
-		let query_bind_1 = &f.config.node_id;
+		let query_bind_1 = aidash_domain::nodes::NodeName::derived("acme").to_string();
 		let query_bind_2 = run.workspace_id;
 		let query_bind_3 = json!({"run_id":run.id,"private":"unreadable-run-journal"});
 		sqlx::query(
@@ -564,7 +571,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				.into_table(reinhardt::query::Alias::new("events"))
 				.columns([
 					reinhardt::query::Alias::new("id"),
-					reinhardt::query::Alias::new("node_id"),
+					reinhardt::query::Alias::new("node"),
 					reinhardt::query::Alias::new("workspace_id"),
 					reinhardt::query::Alias::new("kind"),
 					reinhardt::query::Alias::new("data"),
@@ -792,10 +799,18 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let child = qualified_agent(&f.config.node_id, "child", "1.0.0");
+	let child = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"child",
+		"1.0.0",
+	);
 	policy["subjects"][&child] = json!({"kind":"agent"});
-	let parent = qualified_agent(&f.config.node_id, "research", "1.0.0");
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/child-http@1.0.0",f.config.node_id)]}}));
+	let parent = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.0",
+	);
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/child-http@1.0.0",f.config.deployment)]}}));
 	assert_eq!(
 		request(
 			&app,
@@ -847,7 +862,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"child-http","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"child-http","version":"1.0.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -865,7 +880,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"child","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"child","version":"1.0.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -908,7 +923,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	)
 	.await;
 	let child_task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
-	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":f.config.node_id,"agent":{"id":"child","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
+	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme").to_string(),"agent":{"id":"child","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
 	{
 		let query_bind_1 = parent_run.id;
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
@@ -1391,8 +1406,11 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		"/api/authorization/acme/credentials/{}/revoke",
 		credentials[0]["id"].as_str().unwrap()
 	);
-	policy["subjects"][qualified_agent(&f.config.node_id, "research", "1.0.0")]["enabled"] =
-		json!(false);
+	policy["subjects"][qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.0",
+	)]["enabled"] = json!(false);
 	let mut replacements = tokio::task::JoinSet::new();
 	// Native ORM mutations acquire SELECT FOR UPDATE locks before writing.
 	// Fill every API connection with a waiting revocation. The worker must
@@ -1520,7 +1538,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 			&token,
 			"POST",
 			&format!("/api/tasks/{task}/delegate"),
-			json!({"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}})
+			json!({"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}})
 		)
 		.await
 		.0,
@@ -1595,6 +1613,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 				"task_id",
 				"workspace_id",
 				"home_node",
+				"node",
 				"agent_id",
 				"agent_version",
 				"updated_at",
@@ -1609,7 +1628,18 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 					IntoValue::into_value(*id).into(),
 					IntoValue::into_value(Uuid::new_v4()).into(),
 					IntoValue::into_value(visible.workspace_id).into(),
-					IntoValue::into_value(f.config.node_id.as_str()).into(),
+					IntoValue::into_value(
+						aidash_domain::nodes::NodeAddress::derived(
+							f.config.deployment.as_str(),
+							"acme",
+						)
+						.to_string(),
+					)
+					.into(),
+					IntoValue::into_value(
+						aidash_domain::nodes::NodeName::derived("acme").to_string(),
+					)
+					.into(),
 					IntoValue::into_value("research").into(),
 					IntoValue::into_value("1.0.0").into(),
 					IntoValue::into_value(newer).into(),
@@ -1711,7 +1741,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "bad-id".into(),
 			name: "task_delegate".into(),
-			arguments: json!({"task_id":"not-a-uuid","node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}}),
+			arguments: json!({"task_id":"not-a-uuid","node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
 		}],
 		..Default::default()
 	};
@@ -1847,6 +1877,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		.columns(
 			[
 				"tenant",
+				"node",
 				"entry_id",
 				"entry_version",
 				"revision",
@@ -1857,6 +1888,9 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		)
 		.values(vec![
 			"acme".into(),
+			aidash_domain::nodes::NodeName::derived("acme")
+				.to_string()
+				.into(),
 			"model".into(),
 			"1.0.0".into(),
 			2_i64.into(),
@@ -1871,7 +1905,14 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		.unwrap();
 	// Act
 	let error = authorization
-		.set_catalog("acme", &reference, 1, false, "deployment_administrator")
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&reference,
+			1,
+			false,
+			"deployment_administrator",
+		)
 		.await
 		.unwrap_err();
 	// Assert: the original database constraint, not a synthetic application
@@ -1926,6 +1967,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	let binding = authorization
 		.set_catalog(
 			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
 			&reference,
 			1,
 			false,
@@ -3732,6 +3774,7 @@ mod approval_modes {
 		}
 		.set_catalog(
 			"acme",
+			&common::default_node(&f.store, "acme").await.node,
 			&aidash_domain::registry::EntityRef {
 				id: id.into(),
 				version: "1.0.0".into(),
@@ -4047,13 +4090,31 @@ mod approval_modes {
 	async fn a_decider_without_the_tenants_catalog_approval_leaves_auto_to_a_person(
 		#[future(awt)] tool_call_approvals: ToolCallApprovals,
 	) {
-		// Arrange: Auto is allowed and Jev is reachable, but nobody approved the Decider.
+		// Auto is allowed and Jev is reachable. Only a sibling Node approved
+		// the Decider, so this Run still needs a person.
 		let t = tool_call_approvals;
 		let (mut f, url, schema) = t.application.runtime.parts();
 		let openrouter = tenant_openrouter::install(&mut f);
 		t.application.application.context.set_singleton(f.clone());
 		let (_, run) = claimed_run(&t, &f, |_| {}).await;
 		auto_ready(&t, &f, &openrouter).await;
+		let sibling = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.set_catalog(
+			"acme",
+			&sibling,
+			&aidash_domain::registry::EntityRef {
+				id: BUILT_IN.into(),
+				version: "1.0.0".into(),
+			},
+			0,
+			true,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
 		let harness = Harness {
 			federation: f.clone(),
 		};

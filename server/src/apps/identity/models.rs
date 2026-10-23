@@ -64,6 +64,8 @@ mod tenant_deletions;
 pub use tenant_deletions::TenantDeletion;
 mod tenants;
 pub use tenants::Tenant;
+mod nodes;
+pub use nodes::{Node, NodeNameRoot};
 
 mod dashboard_administration;
 mod tenant_administration;
@@ -85,8 +87,6 @@ pub use authorization_remote_outputs::AuthorizationRemoteOutputs;
 
 mod authorization_peer_graph_grants;
 pub use authorization_peer_graph_grants::AuthorizationPeerGraphGrants;
-
-pub(crate) use authority::authority_control;
 
 pub mod byte_key;
 

@@ -9,6 +9,7 @@ use crate::apps::identity::models::{AdministrationActor, AdministrationEvent};
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::approval_decider::{self as decider, Availability};
 use crate::apps::identity::repositories::approval_preferences as repository;
+use crate::apps::identity::repositories::nodes;
 use crate::apps::identity::serializers::approval_preferences::{
 	ApprovalDecider, ApprovalDeciderUpdate, DeciderReference, ModeChoice, ModeReason, Preferences,
 	PreferencesUpdate, Rule, RuleInput, Rules, Settings, ThreadMode, ThreadModeUpdate,
@@ -27,6 +28,8 @@ use aidash_domain::approval_rules::{
 use aidash_domain::capabilities::approvals::approver_eligible;
 use aidash_domain::identity::tenancy::TENANT_UPDATE;
 use aidash_domain::identity::tenant_administration::APPROVAL_READ;
+use aidash_domain::identity::tenant_administration::NODE_USE;
+use aidash_domain::nodes::NodeName;
 use aidash_domain::policy::{Evaluation, PolicyBundle, Resource, identifier};
 use aidash_domain::registry::EntityRef;
 use reinhardt::db::backends::TransactionExecutor;
@@ -133,9 +136,34 @@ fn modes(
 async fn auto_availability(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
+	node: &NodeName,
 ) -> Result<Availability> {
 	let chosen = decider::chosen(tx, tenant).await?;
-	decider::availability(tx, tenant, &chosen).await
+	decider::availability(tx, tenant, node, &chosen).await
+}
+
+async fn selected_node(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	requested: Option<&NodeName>,
+) -> Result<aidash_domain::nodes::Node> {
+	match requested {
+		Some(node) => nodes::get(tx, tenant, node.as_str()).await,
+		None => nodes::default_of(tx, tenant).await,
+	}
+}
+
+async fn access_node(access: &mut Access, requested: Option<&NodeName>) -> Result<NodeName> {
+	let tenant = access.identity.tenant.clone();
+	let node = selected_node(&mut *access.tx, &tenant, requested).await?;
+	let resource = access.resource(
+		"node",
+		node.name.as_str(),
+		json!({"label": &node.label, "default": node.default}),
+	);
+	access.require(&resource, NODE_USE).await?;
+	access.set_node(node.name.clone());
+	Ok(node.name)
 }
 
 /// The id of the representative resource a rule that names no one target is
@@ -417,11 +445,12 @@ fn view_preferences(
 async fn view_decider(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
+	node: &NodeName,
 ) -> Result<ApprovalDecider> {
 	let chosen = decider::chosen(tx, tenant).await?;
 	Ok(ApprovalDecider {
 		registered: decider::registered(tx, &chosen.reference).await?.is_some(),
-		approved: decider::approved(tx, tenant, &chosen.reference).await?,
+		approved: decider::approved(tx, tenant, node, &chosen.reference).await?,
 		built_in: chosen.built_in,
 		revision: chosen.revision,
 		decider: DeciderReference {
@@ -443,6 +472,7 @@ impl ApprovalPreferences {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		node: Option<NodeName>,
 	) -> Result<Preferences> {
 		let administrations = self.administrations();
 		let administrator = administrations
@@ -454,9 +484,19 @@ impl ApprovalPreferences {
 			.pool
 			.atomic(&administrator.scope()?, async |tx| {
 				let snapshot = &administrator.lock(tx, false).await?;
+				let node = selected_node(tx, &tenant, node.as_ref()).await?;
+				administrator
+					.require(
+						tx,
+						snapshot,
+						NODE_USE,
+						node.name.as_str(),
+						json!({"label": &node.label, "default": node.default}),
+					)
+					.await?;
 				let subject = &administrator.identity.subject;
 				let row = repository::preference(tx, &tenant, subject).await?;
-				let auto = auto_availability(tx, &tenant).await?;
+				let auto = auto_availability(tx, &tenant, &node.name).await?;
 				view_preferences(&snapshot.bundle, subject, row.as_ref(), auto)
 			})
 			.await;
@@ -468,6 +508,7 @@ impl ApprovalPreferences {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		node: Option<NodeName>,
 		input: PreferencesUpdate,
 	) -> Result<Preferences> {
 		input.validate()?;
@@ -481,6 +522,16 @@ impl ApprovalPreferences {
 			.pool
 			.atomic(&administrator.scope()?, async |tx| {
 				let snapshot = &administrator.lock(tx, false).await?;
+				let node = selected_node(tx, &tenant, node.as_ref()).await?;
+				administrator
+					.require(
+						tx,
+						snapshot,
+						NODE_USE,
+						node.name.as_str(),
+						json!({"label": &node.label, "default": node.default}),
+					)
+					.await?;
 				let subject = &administrator.identity.subject;
 				repository::lock_owner(tx, &tenant, subject).await?;
 				// A mode the policy does not name is refused, and the refusal recorded.
@@ -501,7 +552,7 @@ impl ApprovalPreferences {
 					},
 				)
 				.await?;
-				let auto = auto_availability(tx, &tenant).await?;
+				let auto = auto_availability(tx, &tenant, &node.name).await?;
 				view_preferences(&snapshot.bundle, subject, Some(&row), auto)
 			})
 			.await;
@@ -635,8 +686,13 @@ impl ApprovalPreferences {
 				}
 				let row = repository::preference(tx, &tenant, &subject).await?;
 				let rules = repository::rules(tx, &tenant, &subject).await?;
-				let auto = auto_availability(tx, &tenant).await?;
-				let preferences = view_preferences(&snapshot.bundle, &subject, row.as_ref(), auto)?;
+				// This response contains stored settings, with no Node availability.
+				let preferences = view_preferences(
+					&snapshot.bundle,
+					&subject,
+					row.as_ref(),
+					Availability::Missing,
+				)?;
 				Ok(Settings {
 					default_mode: preferences.default_mode,
 					answer_deadline_seconds: preferences.answer_deadline_seconds,
@@ -656,6 +712,7 @@ impl ApprovalPreferences {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		node: Option<NodeName>,
 	) -> Result<ApprovalDecider> {
 		identifier(&tenant)?;
 		let mut access = self.session(actor, origin).await?;
@@ -663,7 +720,8 @@ impl ApprovalPreferences {
 			if access.identity.tenant != tenant {
 				return Err(Error::Forbidden);
 			}
-			view_decider(&mut *access.tx, &tenant).await
+			let node = access_node(&mut access, node.as_ref()).await?;
+			view_decider(&mut *access.tx, &tenant, &node).await
 		}
 		.await;
 		access.finish(result).await
@@ -677,6 +735,7 @@ impl ApprovalPreferences {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		node: Option<NodeName>,
 		input: ApprovalDeciderUpdate,
 	) -> Result<ApprovalDecider> {
 		input.validate()?;
@@ -700,6 +759,17 @@ impl ApprovalPreferences {
 			return access.finish(Err(error)).await;
 		}
 		let result = async {
+			let node = {
+				let (tx, _) = access.tenant_transaction();
+				selected_node(tx, &tenant, node.as_ref()).await?
+			};
+			let resource = Resource {
+				tenant: tenant.clone(),
+				kind: "node".into(),
+				id: node.name.to_string(),
+				attributes: json!({"label": &node.label, "default": node.default}),
+			};
+			access.require(&resource, NODE_USE).await?;
 			let (tx, _) = access.tenant_transaction();
 			decider::lock(tx, &tenant).await?;
 			let target = input.decider.map(|decider| EntityRef {
@@ -731,7 +801,7 @@ impl ApprovalPreferences {
 				},
 			)
 			.await?;
-			view_decider(tx, &tenant).await
+			view_decider(tx, &tenant, &node.name).await
 		}
 		.await;
 		access.finish(result).await
@@ -768,7 +838,8 @@ impl ApprovalPreferences {
 				access.identity.subject.clone(),
 			);
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
-			let auto = auto_availability(&mut *access.tx, &tenant).await?;
+			let node = access.workspace_node(workspace).await?;
+			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
 				default_mode: repository::default_mode(row.as_ref())?,
@@ -826,7 +897,8 @@ impl ApprovalPreferences {
 			}
 			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, thread, input.mode)
 				.await?;
-			let auto = auto_availability(&mut *access.tx, &tenant).await?;
+			let node = access.workspace_node(workspace).await?;
+			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: input.mode,
 				default_mode: repository::default_mode(row.as_ref())?,

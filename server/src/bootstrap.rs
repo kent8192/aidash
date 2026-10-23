@@ -34,6 +34,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		registry.register_capability(command);
 	}
 	registry.register_capability(Box::new(
+		crate::apps::federation::peer::services::key_commands::Command,
+	));
+	registry.register_capability(Box::new(
 		crate::apps::operations::services::diagnostics::Diagnostics,
 	));
 	registry.register_capability(Box::new(
@@ -67,7 +70,10 @@ pub async fn initialize(
 		.with_writer(std::io::stderr)
 		.with_ansi(false)
 		.try_init();
-	let config = Config::from_settings(settings)?;
+	let mut config = Config::from_settings(settings)?;
+	// A Deployment Key that cannot be loaded refuses to start (ADR 0064).
+	config.deployment_key =
+		configure_deployment_key(settings.deployment.key.as_ref(), &settings.core.base_dir).await?;
 	// A malformed Research provider declaration refuses to start (ADR 0055),
 	// before registry validation reads which providers are available.
 	crate::apps::execution::services::research::configure(
@@ -89,11 +95,15 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
-	let mut store = Store::from_pool(pool, config.node_id.clone())
+	let mut store = Store::from_pool(pool, config.deployment.clone())
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		.with_egress(aidash_integrations::federation::Egress {
+			enabled: config.federation,
+			key: config.deployment_key.clone(),
+		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
@@ -104,8 +114,9 @@ pub async fn initialize(
 		&settings.plan_connections,
 	)?;
 	build::current().extension.install(&mut store)?;
+	config.tier_limits = build::current().extension.tier_limits(&store)?;
 	configure_tenant_secrets(&mut store);
-	let registry = Registry::new(store.pool.clone(), &store.node_id)?
+	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
@@ -190,7 +201,7 @@ impl RuntimeTasks {
 		));
 		if let Some(service) = event_streams.clone() {
 			let url = federation.config.nats_url.clone();
-			let node = federation.config.node_id.clone();
+			let node = federation.config.deployment.to_string();
 			let stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
 				service.run(&url, &node, stopping).await
@@ -584,29 +595,24 @@ pub(crate) fn tool_transport(store: &Store) -> aidash_integrations::tools::HttpT
 	aidash_integrations::tools::HttpTools::new(store.keyless.clone(), store.tool_clients.clone())
 }
 
-/// Discovery and worker retries share the native repository and rotating keys.
-pub(crate) fn federation(f: &Federation) -> aidash_application::federation::Federation {
+/// Discovery and worker retries share the native repository and the Deployment Key.
+pub(crate) fn federation(
+	f: &Federation,
+	sender: &aidash_domain::federation::route::Sender,
+) -> aidash_application::federation::Federation {
 	aidash_application::federation::Federation::new(
 		Arc::new(crate::apps::federation::remote::repositories::Repository {
 			federation: f.clone(),
+			sender: sender.clone(),
 		}),
 		Arc::new(peer_transport(f)),
 	)
 }
 
-pub(crate) fn peer_transport(f: &Federation) -> aidash_integrations::federation::PeerHttp {
-	aidash_integrations::federation::PeerHttp {
-		client: f.client.clone(),
-		node_id: f.config.node_id.clone(),
-		credentials: Arc::new(PeerCredentials),
-	}
-}
-
-struct PeerCredentials;
-impl aidash_application::ports::Credentials for PeerCredentials {
-	fn resolve(&self, reference: &str) -> aidash_application::Result<String> {
-		crate::config::peer_secret(reference).map_err(Into::into)
-	}
+pub(crate) fn peer_transport(
+	f: &Federation,
+) -> crate::apps::federation::remote::services::wire::Wire {
+	crate::apps::federation::remote::services::wire::Wire::of(f)
 }
 
 /// Assemble definition admission for both management and worker paths.
@@ -829,12 +835,8 @@ pub(crate) fn dependency_scope(
 
 pub(crate) fn dependency_transport(
 	access: &crate::authorization::access::Access,
-) -> aidash_integrations::federation::PeerHttp {
-	aidash_integrations::federation::PeerHttp {
-		client: access.peer_client.clone(),
-		node_id: access.node_id.clone(),
-		credentials: Arc::new(PeerCredentials),
-	}
+) -> crate::apps::federation::remote::services::wire::Reach {
+	crate::apps::federation::remote::services::wire::Reach(access.wire.clone())
 }
 
 pub(crate) fn foreign_run_read_scope(
@@ -1020,7 +1022,7 @@ pub(crate) fn generation_inference_repository(
 	crate::apps::execution::generation::repositories::inference::NativeInferenceRepository {
 		pool: store.pool.clone(),
 		scope,
-		node_id: store.node_id.clone(),
+		node_id: store.deployment.to_string(),
 	}
 }
 
@@ -1039,7 +1041,7 @@ pub(crate) fn generation_embedding_repository(
 	crate::apps::execution::generation::repositories::embedding::NativeEmbeddingRepository {
 		pool: store.pool.clone(),
 		scope,
-		node_id: store.node_id.clone(),
+		node_id: store.deployment.to_string(),
 	}
 }
 
@@ -1073,6 +1075,17 @@ pub(crate) fn generation_protocol_authority(
 ) -> crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
 	crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
 		federation: federation.clone(),
+		receiver: None,
+	}
+}
+/// The authority of an inbound request that arrived at the Node `receiver`.
+pub(crate) fn generation_protocol_receiver(
+	federation: &crate::federation::Federation,
+	receiver: aidash_domain::nodes::NodeName,
+) -> crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
+	crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
+		federation: federation.clone(),
+		receiver: Some(receiver),
 	}
 }
 pub(crate) fn generation_protocol_repository(
@@ -1126,24 +1139,30 @@ pub(crate) fn generation_home_repository(
 		federation: f.clone(),
 		actor: Some(actor),
 		principal: Some(principal),
+		receiver: None,
 	}
 }
 /// A peer-authenticated request has no local actor; its authority is the intent it names.
 pub(crate) fn peer_generation_home_repository(
 	f: &Federation,
+	receiver: &aidash_domain::nodes::NodeAddress,
 ) -> crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 	crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 		federation: f.clone(),
 		actor: None,
 		principal: None,
+		receiver: Some(receiver.to_string()),
 	}
 }
 
 pub(crate) fn generation_receiver_repository(
 	f: &Federation,
+	receiver: aidash_domain::nodes::NodeName,
 ) -> crate::apps::execution::generation::repositories::foreign::receiver::NativeReceiver {
 	crate::apps::execution::generation::repositories::foreign::receiver::NativeReceiver {
+		address: f.config.deployment.node(receiver.clone()).to_string(),
 		federation: f.clone(),
+		receiver,
 	}
 }
 
@@ -1229,12 +1248,14 @@ pub(crate) fn graph_projection_scope<'a, 'scope>(
 	f: &'a Federation,
 	authority: &'a mut crate::apps::identity::services::peer::graph::GraphAuthority<'scope>,
 	source_node: &'a str,
+	node: &'a str,
 	revision: &'a str,
 ) -> crate::apps::identity::repositories::graph::Projection<'a, 'scope> {
 	crate::apps::identity::repositories::graph::Projection {
 		f,
 		authority,
 		source_node,
+		node,
 		revision,
 	}
 }
@@ -1272,17 +1293,12 @@ pub(crate) fn semantic_disclosure_scope<'a, 'scope>(
 
 pub(crate) fn native_registry_transport(
 	access: &crate::authorization::access::NativeAccess,
-) -> aidash_integrations::federation::PeerHttp {
-	let (client, node) = access.remote_transport_parts();
-	aidash_integrations::federation::PeerHttp {
-		client: client.clone(),
-		node_id: node.into(),
-		credentials: Arc::new(PeerCredentials),
-	}
+) -> crate::apps::federation::remote::services::wire::Reach {
+	crate::apps::federation::remote::services::wire::Reach(access.remote_transport())
 }
 pub(crate) fn registry_verification_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
-	node: &'a str,
+	node: &'a aidash_domain::nodes::NodeName,
 ) -> crate::apps::identity::repositories::visibility::registry_reads::VerificationScope<'a> {
 	crate::apps::identity::repositories::visibility::registry_reads::VerificationScope {
 		access,
@@ -1503,6 +1519,20 @@ pub(crate) fn transaction_authority_repository(
 ) -> crate::apps::federation::transactions::repositories::authority::control::Repository {
 	crate::apps::federation::transactions::repositories::authority::control::Repository {
 		runtime: runtime.clone(),
+		admitted: None,
+		receiver: None,
+	}
+}
+
+/// The participant's side of a request an inbound Node made.
+pub(crate) fn transaction_authority_repository_as(
+	runtime: &Federation,
+	admitted: &aidash_application::federation::inbound::Admitted,
+) -> crate::apps::federation::transactions::repositories::authority::control::Repository {
+	crate::apps::federation::transactions::repositories::authority::control::Repository {
+		runtime: runtime.clone(),
+		admitted: Some(admitted.clone()),
+		receiver: Some(admitted.receiver.to_string()),
 	}
 }
 
@@ -1549,10 +1579,15 @@ pub(crate) fn transaction_management_repository(
 }
 
 /// Mutation ports borrow the same serializable transaction and visibility gate.
-pub(crate) fn transaction_mutation_scope(
-	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-) -> crate::apps::federation::transactions::repositories::mutation::Scope<'_> {
-	crate::apps::federation::transactions::repositories::mutation::Scope(tx, Vec::new())
+pub(crate) fn transaction_mutation_scope<'a>(
+	tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
+	node: &str,
+) -> crate::apps::federation::transactions::repositories::mutation::Scope<'a> {
+	crate::apps::federation::transactions::repositories::mutation::Scope(
+		tx,
+		Vec::new(),
+		node.to_owned(),
+	)
 }
 
 pub(crate) fn transaction_participant(
@@ -1562,6 +1597,25 @@ pub(crate) fn transaction_participant(
 		Arc::new(
 			crate::apps::federation::transactions::repositories::participation::Repository {
 				runtime: runtime.clone(),
+				admitted: None,
+				receiver: None,
+			},
+		),
+		transaction_coordinator(runtime),
+	)
+}
+
+/// The participant's side of a request an inbound Node made.
+pub(crate) fn transaction_participant_as(
+	runtime: &Federation,
+	admitted: &aidash_application::federation::inbound::Admitted,
+) -> aidash_application::transactions::participation::Participant {
+	aidash_application::transactions::participation::Participant::new(
+		Arc::new(
+			crate::apps::federation::transactions::repositories::participation::Repository {
+				runtime: runtime.clone(),
+				admitted: Some(admitted.clone()),
+				receiver: Some(admitted.receiver.to_string()),
 			},
 		),
 		transaction_coordinator(runtime),
@@ -1816,7 +1870,27 @@ pub(crate) fn skill_headroom(
 pub(crate) fn transfer_repository(
 	federation: &crate::federation::Federation,
 ) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	crate::apps::execution::repositories::transfer::Repository { federation }
+	crate::apps::execution::repositories::transfer::Repository {
+		federation,
+		receiver: None,
+	}
+}
+/// A transfer arriving at the Node `receiver`.
+pub(crate) fn transfer_receiver_repository(
+	federation: &crate::federation::Federation,
+	receiver: aidash_domain::nodes::NodeName,
+) -> crate::apps::execution::repositories::transfer::Repository<'_> {
+	crate::apps::execution::repositories::transfer::Repository {
+		federation,
+		receiver: Some(crate::apps::execution::repositories::transfer::Receiver {
+			address: federation
+				.config
+				.deployment
+				.node(receiver.clone())
+				.to_string(),
+			node: receiver,
+		}),
+	}
 }
 pub(crate) fn transfer_scope<'a>(
 	store: Option<&'a Store>,
@@ -1825,6 +1899,7 @@ pub(crate) fn transfer_scope<'a>(
 	crate::apps::execution::repositories::transfer::Scope {
 		store,
 		authority: crate::apps::execution::repositories::transfer::Authority::Borrowed(access),
+		receiving: None,
 		pending: None,
 	}
 }
@@ -1861,8 +1936,13 @@ pub(crate) fn peer_admission_records(
 pub(crate) fn peer_inspection_scope<'a>(
 	f: &'a crate::federation::Federation,
 	access: &'a mut crate::authorization::access::Access,
+	receiver: aidash_domain::nodes::NodeName,
 ) -> crate::apps::identity::repositories::peer_admission::Borrowed<'a> {
-	crate::apps::identity::repositories::peer_admission::Scope { runtime: f, access }
+	crate::apps::identity::repositories::peer_admission::Scope {
+		runtime: f,
+		access,
+		receiver,
+	}
 }
 
 pub(crate) fn semantic_status_scope<'a>(
@@ -1914,10 +1994,12 @@ pub(crate) fn draft_repository(
 /// Source and receiver authority RPCs share fresh peer trust and bounded integration transport.
 pub(crate) fn authority_peer_client(
 	runtime: &crate::federation::Federation,
+	sender: &aidash_domain::federation::route::Sender,
 ) -> aidash_application::federation::authority::Client {
 	aidash_application::federation::authority::Client::new(
 		Arc::new(crate::apps::federation::remote::repositories::Repository {
 			federation: runtime.clone(),
+			sender: sender.clone(),
 		}),
 		Arc::new(peer_transport(runtime)),
 	)
@@ -1976,12 +2058,14 @@ pub(crate) fn source_semantic_provenance_scope(
 }
 
 /// Home semantic disclosure shares the production journal, dispatch, settlement and provider ports.
-pub(crate) fn source_semantic_search_repository(
-	runtime: &Federation,
+pub(crate) fn source_semantic_search_repository<'a>(
+	runtime: &'a Federation,
+	home: &aidash_domain::nodes::NodeAddress,
 	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::identity::repositories::remote_grants::search::Repository<'_> {
+) -> crate::apps::identity::repositories::remote_grants::search::Repository<'a> {
 	crate::apps::identity::repositories::remote_grants::search::Repository {
 		runtime,
+		home: home.to_string(),
 		journal: semantic_journal_repository(&runtime.store, scope.clone()),
 		dispatch: crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 			store: runtime.store.clone(),
@@ -2070,11 +2154,11 @@ pub(crate) fn workbench_sandbox_repository(
 ) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
-		node_id: runtime.config.node_id.clone(),
+		node_id: runtime.config.deployment.to_string(),
 		tenant_actions:
 			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
 				actor.clone(),
-				runtime.config.node_id.clone(),
+				runtime.config.deployment.to_string(),
 			),
 		actor,
 	}
@@ -2182,7 +2266,7 @@ pub(crate) fn activation_driver(
 	}
 	let connector = aidash_integrations::activation::Connector::new(
 		federation.config.nats_url.clone(),
-		federation.config.node_id.clone(),
+		federation.config.deployment.to_string(),
 		activation_broker_configuration(&settings),
 		worker,
 	);
@@ -2235,6 +2319,7 @@ pub(crate) fn run_message_scope<'a>(
 ) -> crate::apps::federation::remote::repositories::run_messages::Messages<'a> {
 	crate::apps::federation::remote::repositories::run_messages::Messages {
 		federation,
+		node: format!("{}/{}", federation.config.deployment, run.node),
 		run: run.clone(),
 		execution: None,
 	}
@@ -2301,29 +2386,36 @@ pub(crate) fn graph_visibility<'a, 'scope>(
 	crate::apps::identity::repositories::graph::Visibility(authority)
 }
 
-pub(crate) fn peer_authority(
-	federation: &Federation,
-) -> aidash_application::federation::peers::PeerAuthority {
-	aidash_application::federation::peers::PeerAuthority {
-		node: federation.config.node_id.clone(),
-		protocol: crate::config::PROTOCOL_VERSION.into(),
-		configuration: Arc::new(crate::apps::federation::peer::repositories::Configuration(
-			federation.clone(),
-		)),
-		credentials: Arc::new(PeerCredentials),
-		identity: Arc::new(peer_transport(federation)),
-	}
-}
-
-pub(crate) fn peer_credentials() -> impl aidash_application::ports::Credentials {
-	PeerCredentials
-}
-
 /// Assemble the desktop broker's native persistence behind its application port.
 pub(crate) fn desktop_protocol(
 	runtime: &Federation,
 ) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}
+
+/// The Deployment Key `[deployment.key]` names, or none when it is omitted. A
+/// file is read here, and a Cloud KMS key version is read through the build's
+/// extension, which only the Enterprise build implements. The error names the
+/// reason and never the key.
+pub async fn configure_deployment_key(
+	settings: Option<&crate::apps::operations::serializers::deployment::DeploymentKeySettings>,
+	base_dir: &std::path::Path,
+) -> Result<Option<Arc<dyn aidash_application::federation::key::DeploymentKey>>> {
+	use crate::apps::operations::serializers::deployment::DeploymentKeySource;
+	let Some(settings) = settings else {
+		return Ok(None);
+	};
+	let key: Arc<dyn aidash_application::federation::key::DeploymentKey> =
+		match settings.source().map_err(Error::Invalid)? {
+			DeploymentKeySource::File(file) => Arc::new(
+				aidash_integrations::federation::key::FileDeploymentKey::load(
+					&base_dir.join(file),
+				)?,
+			),
+			DeploymentKeySource::Kms(kms) => build::current().extension.deployment_key(kms).await?,
+		};
+	tracing::info!(key_id = %key.key_id(), "Deployment Key available");
+	Ok(Some(key))
 }
 
 /// Load privately supplied keys only at shared server/worker bootstrap.
@@ -2369,7 +2461,7 @@ pub async fn configure_provider_credentials(
 			repository: Arc::new(
 				crate::apps::identity::repositories::provider_credentials::NativeRepository {
 					pool: store.control_pool.clone(),
-					node: store.node_id.clone(),
+					node: store.deployment.to_string(),
 				},
 			),
 			store: adapter,
@@ -2421,7 +2513,7 @@ pub fn configure_plan_connections(
 		repository: Arc::new(
 			crate::apps::identity::repositories::plan_connections::NativeRepository {
 				pool: store.control_pool.clone(),
-				node: store.node_id.clone(),
+				node: store.deployment.to_string(),
 			},
 		),
 		store: credentials.store.clone(),
@@ -2455,7 +2547,6 @@ pub fn configure_tenant_secrets(store: &mut Store) {
 		repository: Arc::new(
 			crate::apps::identity::repositories::tenant_secrets::NativeRepository {
 				pool: store.control_pool.clone(),
-				node: store.node_id.clone(),
 			},
 		),
 		store: credentials.store.clone(),

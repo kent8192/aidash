@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 hmac = "0.12"
 secrecy = { version = "0.10", features = ["serde"] }
+aidash-capability.workspace = true
 aidash-domain.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

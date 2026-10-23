@@ -42,6 +42,7 @@ pub(crate) struct RunTarget {
 	pub id: Uuid,
 	pub task_id: Uuid,
 	pub workspace_id: Uuid,
+	pub node: String,
 	pub home_node: String,
 	pub control: String,
 }
@@ -49,11 +50,17 @@ crate::native_record!(RunTarget {
 	id,
 	task_id,
 	workspace_id,
+	node,
 	home_node,
 	control
 });
 
 impl RunTarget {
+	/// Whether the Run's Home is its own executing Node in `deployment`.
+	pub fn is_local(&self, deployment: &str) -> bool {
+		aidash_domain::nodes::is_home(&self.home_node, deployment, &self.node)
+	}
+
 	/// Interrupted reason for an attempt whose worker no longer owns the Run.
 	fn orphan_outcome(&self) -> ProgressOutcome {
 		ProgressOutcome::Interrupted(if self.control == "CANCELLED" {
@@ -134,7 +141,17 @@ pub(crate) async fn target(executor: impl Executor, run: Uuid) -> Result<RunTarg
 	rows::<RunTarget>(
 		executor,
 		Query::select()
-			.columns(["id", "task_id", "workspace_id", "home_node", "control"].map(Alias::new))
+			.columns(
+				[
+					"id",
+					"task_id",
+					"workspace_id",
+					"node",
+					"home_node",
+					"control",
+				]
+				.map(Alias::new),
+			)
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("id").eq(Expr::value(run))),
 	)
@@ -220,10 +237,10 @@ async fn marker(
 		data["reason"] = json!(reason);
 	}
 	// The same workspace rule as the Run's own events keeps run-scoped visibility.
-	event_records::append(
+	event_records::append_run(
 		tx,
-		node,
-		(run.home_node == node).then_some(run.workspace_id),
+		run.id,
+		run.is_local(node).then_some(run.workspace_id),
 		kind,
 		data,
 	)
@@ -659,7 +676,7 @@ impl crate::store::Store {
 	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
-		let orphans = start(tx.as_mut(), &self.node_id, run, token, attempt).await?;
+		let orphans = start(tx.as_mut(), self.deployment.as_str(), run, token, attempt).await?;
 		tx.commit().await?;
 		record_interruptions(&orphans);
 		Ok(())
@@ -689,7 +706,7 @@ impl crate::store::Store {
 	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
-		finish(tx.as_mut(), &self.node_id, run, attempt, outcome).await?;
+		finish(tx.as_mut(), self.deployment.as_str(), run, attempt, outcome).await?;
 		tx.commit().await
 	}
 
@@ -706,7 +723,7 @@ impl crate::store::Store {
 			fence(tx.as_mut(), run, token).await?;
 			let closed = close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				run,
 				Some(ProgressOutcome::Discarded),
 			)
@@ -726,7 +743,7 @@ impl crate::store::Store {
 	pub async fn close_orphaned_inference(&self) -> Result<usize> {
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::Retention);
 		let mut tx = self.pool.begin(scope).await?;
-		let closed = close_orphans(tx.as_mut(), &self.node_id).await?;
+		let closed = close_orphans(tx.as_mut(), self.deployment.as_str()).await?;
 		tx.commit().await?;
 		record_interruptions(&closed);
 		Ok(closed.len())

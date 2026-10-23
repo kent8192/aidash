@@ -27,6 +27,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 pub(crate) struct NativeReceiver {
 	pub federation: Federation,
+	/// The Node the request arrived at.
+	pub receiver: aidash_domain::nodes::NodeName,
+	/// The receiver as a Node address.
+	pub address: String,
 }
 struct Scope {
 	federation: Federation,
@@ -35,14 +39,20 @@ struct Scope {
 #[async_trait]
 impl ForeignGenerationReceiver for NativeReceiver {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		&self.address
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
 	async fn describe(&self, source: &str, id: Uuid) -> Result<Intent> {
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: self.federation.node_tenant_of(&self.receiver).await?,
+			node: Some(self.receiver.clone()),
+			subject: None,
+		};
 		peer::authority_request(
 			&self.federation,
+			&sender,
 			source,
 			"/scoped/generation/describe",
 			&json!({"intent_id":id}),
@@ -53,10 +63,11 @@ impl ForeignGenerationReceiver for NativeReceiver {
 	async fn begin(
 		&self,
 		source: &str,
-		tenant: &str,
 		subject: &str,
 	) -> Result<Box<dyn ForeignGenerationReceiverScope>> {
-		let access = peer::access_mode(&self.federation, source, tenant, subject, true).await?;
+		let access =
+			peer::mapped_access_mode(&self.federation, &self.receiver, source, subject, true)
+				.await?;
 		Ok(Box::new(Scope {
 			federation: self.federation.clone(),
 			access,
@@ -65,6 +76,10 @@ impl ForeignGenerationReceiver for NativeReceiver {
 }
 #[async_trait]
 impl ForeignGenerationReceiverScope for Scope {
+	async fn node_resource(&mut self) -> Result<Resource> {
+		let node = self.access.catalog_node().await?;
+		self.access.node_resource(&node).await.map_err(Into::into)
+	}
 	fn authority(&self) -> Authority {
 		Authority {
 			tenant: self.access.identity.tenant.clone(),

@@ -2,7 +2,7 @@
 //! ASCII, at most nine letters, and neutral: names reveal nothing about a Tenant
 //! or its people, so nothing here may read as a judgement of either.
 
-pub(super) const ADJECTIVES: [&str; 128] = [
+pub(crate) const ADJECTIVES: [&str; 128] = [
 	"able", "agile", "airy", "amber", "ample", "azure", "balmy", "bold", "brave", "breezy",
 	"bright", "brisk", "calm", "candid", "cheery", "civic", "clear", "clever", "cobalt", "coral",
 	"cosmic", "crisp", "curious", "dapper", "daring", "deft", "dewy", "eager", "early", "earnest",
@@ -18,7 +18,7 @@ pub(super) const ADJECTIVES: [&str; 128] = [
 	"woven", "young", "zesty", "zippy", "cozy", "lofty", "polar", "teal", "tawny",
 ];
 
-pub(super) const NOUNS: [&str; 128] = [
+pub(crate) const NOUNS: [&str; 128] = [
 	"acorn", "alpaca", "anchor", "aspen", "badger", "bamboo", "beacon", "beaver", "birch", "bison",
 	"brook", "canyon", "cedar", "cheetah", "cliff", "cloud", "comet", "condor", "coral", "cosmos",
 	"coyote", "crane", "creek", "cypress", "delta", "dolphin", "dove", "dune", "eagle", "egret",
@@ -33,3 +33,17 @@ pub(super) const NOUNS: [&str; 128] = [
 	"yak", "zebra", "aurora", "bay", "breeze", "cove", "dawn", "ember", "galaxy", "harvest",
 	"horizon", "lantern", "mesa", "orchid", "planet", "rain", "glade", "tide",
 ];
+
+const fn longest(words: &[&str]) -> usize {
+	let mut longest = 0;
+	let mut i = 0;
+	while i < words.len() {
+		if words[i].len() > longest {
+			longest = words[i].len();
+		}
+		i += 1;
+	}
+	longest
+}
+pub(crate) const LONGEST_ADJECTIVE: usize = longest(&ADJECTIVES);
+pub(crate) const LONGEST_NOUN: usize = longest(&NOUNS);

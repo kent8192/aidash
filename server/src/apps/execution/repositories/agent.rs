@@ -450,7 +450,7 @@ impl ExecutionCatalog for Registry {
 			.find(|d| {
 				d.identity.id == id
 					&& d.identity.version == version
-					&& d.identity.registry_node == snapshot.agent.registry_node
+					&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 			})
 			.map(|d| d.definition.clone())
 			.ok_or_else(|| {
@@ -1018,7 +1018,7 @@ impl<'a> Environment<'a> {
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn store(&self) -> &dyn ExecutionStore {
 		&self.run_store
@@ -1129,7 +1129,7 @@ impl ExecutionEnvironment for Environment<'_> {
 				let decider = aidash_domain::decision::BoundDecider {
 					pin: aidash_domain::decision::DeciderPin {
 						identity: aidash_domain::registry::bindings::QualifiedRef {
-							registry_node: self.node_id().to_owned(),
+							registry_deployment: self.node_id().to_owned(),
 							id: definition.id.clone(),
 							version: definition.version.clone(),
 						},
@@ -1213,7 +1213,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			return Ok(None);
 		}
 		let identity = aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: self.node_id().to_owned(),
+			registry_deployment: self.node_id().to_owned(),
 			id: definition.id.clone(),
 			version: definition.version.clone(),
 		};

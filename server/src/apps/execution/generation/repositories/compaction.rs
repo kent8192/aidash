@@ -53,7 +53,7 @@ impl GenerationCompactionAuthority for NativeCompactionAuthority<'_> {
 				).join(reinhardt::query::JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("generation_policy_history"), reinhardt::query::Alias::new("h")), reinhardt::query::Expr::cust(
 						"h.tenant = r.tenant AND h.policy_id = r.policy_id AND h.revision = r.policy_revision",
 					))
-				.and_where(SimpleExpr::CustomWithExpr("(r.tenant = ? AND (? || '/agents/' || r.agent_id || '@' || r.agent_version) = ANY(?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned())]))
+				.and_where(SimpleExpr::CustomWithExpr("(r.tenant = ? AND (? || '/' || r.node || '/agents/' || r.agent_id || '@' || r.agent_version) = ANY(?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned())]))
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((
 						reinhardt::query::Alias::new("r"),
@@ -109,7 +109,7 @@ struct Session {
 #[async_trait]
 impl GenerationCompactionRepository for NativeCompactionRepository {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationCompactionSession>> {
 		Ok(Box::new(Session {

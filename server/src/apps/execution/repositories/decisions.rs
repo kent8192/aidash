@@ -382,7 +382,7 @@ impl<'a> RunDecisionJournal<'a> {
 
 	/// The receipt owner for this Run's own call limit.
 	fn owner(&self) -> String {
-		format!("{}/runs/{}", self.store.node_id, self.run.id)
+		format!("{}/runs/{}", self.store.deployment, self.run.id)
 	}
 
 	/// A transaction in the Run's Tenant (#263).
@@ -393,7 +393,7 @@ impl<'a> RunDecisionJournal<'a> {
 
 	fn check_boundary(&self, boundary: &Boundary) -> Result<()> {
 		boundary.validate()?;
-		if boundary.run != self.run.id || boundary.node != self.store.node_id {
+		if boundary.run != self.run.id || boundary.node != self.store.deployment {
 			return Err(Error::Invalid(
 				"decision boundary belongs to another Run or Node".into(),
 			));

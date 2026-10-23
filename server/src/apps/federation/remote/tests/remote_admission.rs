@@ -2,37 +2,22 @@
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_application::tenancy::TEST_FIXTURE;
-use aidash_server::{domain::qualified_agent, store::Store};
+use aidash_server::{federation::Federation, store::Store};
 use common::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-async fn peer(app: &common::TestApplication, node: &str, path: &str, input: Value) -> (u16, Value) {
-	let authorization = format!(
-		"Bearer {}",
-		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
-	);
-	let response = async {
-		let client = &(app.client());
-		let mut request = client
-			.request(http::Method::POST, path)
-			.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &[
-			("authorization", authorization.as_str()),
-			("x-aidash-node", node),
-			("x-aidash-protocol", "0.2"),
-		] {
-			request = request.header(*name, *value);
-		}
-		request.send().await
-	}
-	.await
-	.unwrap();
-	(
-		response.status_code(),
-		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
-	)
+/// A request from `a`'s default Node to `b`'s, as `a`'s subject `alice`,
+/// signed with `a`'s Deployment Key.
+async fn peer(
+	app: &common::TestApplication,
+	nodes: (&Federation, &Federation),
+	path: &str,
+	input: Value,
+) -> (u16, Value) {
+	let (from, to) = nodes;
+	let receiver = default_node(&to.store, "acme").await;
+	common::peer_request(app, (from, "acme"), &receiver, "alice", path, input).await
 }
 #[rstest::rstest]
 #[tokio::test]
@@ -51,8 +36,11 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let ba = second.application;
 	let (mut ap, at, task) = bootstrap(&a, &aa, "http://localhost:1").await;
 	let (bp, bt, _) = bootstrap(&b, &ba, "http://localhost:1").await;
-	ap["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
-		json!({"kind":"agent"});
+	ap["subjects"][aidash_domain::agent_subject(
+		&default_node(&b.store, "acme").await.to_string(),
+		"research",
+		"1.0.0",
+	)] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
 			&aa,
@@ -65,42 +53,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.0,
 		200
 	);
-	for (local, other) in [(&a, &b), (&b, &a)] {
-		{
-			let query_bind_1 = &other.config.node_id;
-			let query_bind_2 = &other.config.endpoint;
-			sqlx::query(
-				&reinhardt::query::Query::insert()
-					.into_table(reinhardt::query::Alias::new("peers"))
-					.columns([
-						reinhardt::query::Alias::new("node_id"),
-						reinhardt::query::Alias::new("endpoint"),
-						reinhardt::query::Alias::new("credential_env"),
-						reinhardt::query::Alias::new("protocol_version"),
-						reinhardt::query::Alias::new("enabled"),
-					])
-					.from_subquery(
-						reinhardt::query::Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-							.expr(reinhardt::query::Expr::cust("'0.2'"))
-							.expr(reinhardt::query::Expr::cust("TRUE"))
-							.to_owned(),
-					)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.execute(local.store.pool.fixture_driver())
-			.await
-		}
-		.unwrap();
-	}
+	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
 	let (_, credential) = request(
 		&ba,
 		&b.config.api_token,
@@ -109,7 +62,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		json!({"subject":"alice"}),
 	)
 	.await;
-	let mapping = json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});
+	let mapping = json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});
 	assert_eq!(
 		request(
 			&ba,
@@ -123,14 +76,14 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	let grant = Uuid::new_v4();
-	let input = json!({"id":grant,"node_id":b.config.node_id,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
+	let input = json!({"id":grant,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
 	let path = format!("/api/tasks/{task}/remote-grants");
 	let (status, prepared) = request(&aa, &at, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
 	let admit = "/federation/v0.1/scoped/execution/admissions";
 	let (first, second) = tokio::join!(
-		peer(&ba, &a.config.node_id, admit, json!({"grant_id":grant})),
-		peer(&ba, &a.config.node_id, admit, json!({"grant_id":grant}))
+		peer(&ba, (&a, &b), admit, json!({"grant_id":grant})),
+		peer(&ba, (&a, &b), admit, json!({"grant_id":grant}))
 	);
 	assert_eq!(first.0, 200, "{}", first.1);
 	assert_eq!(
@@ -142,7 +95,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	assert_eq!(receipt["task_id"], task.to_string());
 	let verification = format!("{admit}/{}/verify", receipt["id"].as_str().unwrap());
 	assert_eq!(
-		peer(&ba, &a.config.node_id, &verification, json!({})).await,
+		peer(&ba, (&a, &b), &verification, json!({})).await,
 		(200, json!(true))
 	);
 	let mut fresh = b.clone();
@@ -154,20 +107,15 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 			.connect_with(b.store.pool.connect_options().as_ref().clone())
 			.await
 			.unwrap(),
-		b.config.node_id.clone(),
+		b.config.deployment.clone(),
 	)
 	.await
 	.unwrap();
+	common::peering::carry_over(&mut fresh, &b);
 	// Act: rebuild the application after replacing the durable store connection.
 	let fresh_app = common::application(fresh.clone()).await;
 	assert_eq!(
-		peer(
-			&fresh_app,
-			&a.config.node_id,
-			admit,
-			json!({"grant_id":grant})
-		)
-		.await,
+		peer(&fresh_app, (&a, &b), admit, json!({"grant_id":grant})).await,
 		(200, receipt.clone())
 	);
 	let replacement = Uuid::new_v4();
@@ -175,20 +123,15 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	another["id"] = json!(replacement);
 	assert_eq!(request(&aa, &at, "POST", &path, another).await.0, 200);
 	assert_eq!(
-		peer(
-			&fresh_app,
-			&a.config.node_id,
-			admit,
-			json!({"grant_id":replacement})
-		)
-		.await
-		.0,
+		peer(&fresh_app, (&a, &b), admit, json!({"grant_id":replacement}))
+			.await
+			.0,
 		409,
 		"another grant cannot replace the task's existing admission"
 	);
 	// Receiver policy scopes a foreign workspace by its qualified source ID.
 	let mut denied = bp.clone();
-	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-foreign-workspace","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_node"},"right":{"source":"literal","value":a.config.node_id}}}));
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-foreign-workspace","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_node"},"right":{"source":"literal","value":default_node(&a.store,"acme").await}}}));
 	assert_eq!(
 		request(
 			&ba,
@@ -202,9 +145,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_eq!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		403
 	);
 	assert_eq!(
@@ -220,9 +161,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_eq!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	let mut denied_model = bp.clone();
@@ -240,9 +179,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_eq!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		403,
 		"executor metadata checks must include the admitted workspace context"
 	);
@@ -272,7 +209,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.0,
 		200
 	);
-	let denied = peer(&fresh_app, &a.config.node_id, &verification, json!({})).await;
+	let denied = peer(&fresh_app, (&a, &b), &verification, json!({})).await;
 	assert_ne!(denied.0, 200);
 	assert!(!denied.1.to_string().contains("Research"));
 	assert_eq!(
@@ -288,64 +225,24 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_eq!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	// Source outage cannot be replaced with the previously accepted grant.
-	{
-		let query_bind_1 = &a.config.node_id;
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("peers"))
-				.value_expr(
-					reinhardt::query::Alias::new("endpoint"),
-					reinhardt::query::Expr::cust("'http://127.0.0.1:1'"),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	// A stand-in that publishes `a`'s key but answers no federation route.
+	let outage = common::peering::Remote::standing_in(
+		a.config.deployment.as_str(),
+		common::peering::key_of(&a),
+	)
+	.await;
+	common::repoint_node((&b, &ba, "acme"), (&a, "acme"), &outage.endpoint, 1).await;
 	assert_ne!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
-	{
-		let query_bind_1 = &a.config.node_id;
-		let query_bind_2 = &a.config.endpoint;
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("peers"))
-				.value_expr(
-					reinhardt::query::Alias::new("endpoint"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	common::repoint_node((&b, &ba, "acme"), (&a, "acme"), &a.config.endpoint, 2).await;
 	assert_eq!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	let (_, new_credential) = request(
@@ -372,9 +269,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_ne!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	let mut restored = mapping;
@@ -392,9 +287,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_eq!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	let (status, state) = request(&ba, &bt, "GET", "/api/state", json!({})).await;
@@ -416,20 +309,13 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	assert_ne!(
-		peer(&fresh_app, &a.config.node_id, &verification, json!({}))
-			.await
-			.0,
+		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	assert_ne!(
-		peer(
-			&fresh_app,
-			&a.config.node_id,
-			admit,
-			json!({"grant_id":grant})
-		)
-		.await
-		.0,
+		peer(&fresh_app, (&a, &b), admit, json!({"grant_id":grant}))
+			.await
+			.0,
 		200
 	);
 	let count: i64 = sqlx::query_scalar(
@@ -469,16 +355,10 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.0,
 		200
 	);
-	let scoped = peer(
-		&fresh_app,
-		&a.config.node_id,
-		admit,
-		json!({"grant_id":race_grant}),
-	)
-	.await;
+	let scoped = peer(&fresh_app, (&a, &b), admit, json!({"grant_id":race_grant})).await;
 	assert_eq!(scoped.0, 200, "{scoped:?}");
 	let runs: i64 = {
-		let query_bind_1 = &a.config.node_id;
+		let query_bind_1 = default_node(&a.store, "acme").await.to_string();
 		let query_bind_2 = candidate.id;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
@@ -498,7 +378,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	}
 	.unwrap();
 	let admissions: i64 = {
-		let query_bind_1 = &a.config.node_id;
+		let query_bind_1 = default_node(&a.store, "acme").await.to_string();
 		let query_bind_2 = candidate.id;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()

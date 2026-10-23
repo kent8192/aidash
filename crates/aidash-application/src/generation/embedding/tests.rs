@@ -505,7 +505,10 @@ async fn rejected_authority_or_provider_pins_never_charge_ancestors(
 			"first_expired" => {
 				state.jobs[0].expires_at = DateTime::from_timestamp(1500, 0).unwrap()
 			}
-			"first_remote" => state.jobs[0].home_node = "aidash://home".into(),
+			"first_remote" => {
+				state.jobs[0].home_node = "aidash://home".into();
+				state.jobs[0].foreign_intent = Some(serde_json::json!({}));
+			}
 			"missing_embedding_parent" => {
 				state
 					.policies

@@ -244,8 +244,7 @@ workspaces:
   `aidash.scope` and `aidash.tenant`; a test rejects any other writer, in Rust
   or in migration SQL.
 - Every table is classified in `server/src/database/classification.rs` as
-  Tenant-owned (enforced, or pending the Issue that enforces it) or
-  Deployment-wide. The `startup` test target compares the list with the
+  Tenant-owned (enforced) or Deployment-wide. The `startup` test target compares the list with the
   migrated database, so a migration that adds a table classifies it in the same
   change.
 - The Enterprise workspace classifies its own tables in
@@ -334,9 +333,8 @@ login and the activity observer all need a scope.
 
 Every Tenant-owned table carries `tenant text NOT NULL` (#265), except
 `research_revocations` and `dashboard_administration_history`, whose rows may
-address no Tenant, and `events`, whose Deployment-level rows (a peer
-registration) concern none until #241 gives peers a Tenant. A row without a
-Tenant is visible only in a Deployment Scope. The definitions are edited in the
+address no Tenant. A row without a Tenant is visible only in a Deployment
+Scope. The definitions are edited in the
 migration that creates each table, because Aidash is undeployed:
 
 - `tenant` references the Tenant root record, `tenants(name)`, through
@@ -361,10 +359,57 @@ migration that creates each table, because Aidash is undeployed:
   stays Deployment-wide: a source's owner writes a consent for the redistributor
   that reads it, so it belongs to neither Tenant's scope, as
   `marketplace_audiences` and `marketplace_versions` do not.
+- A Node is a Tenant-owned row in `nodes`, keyed by `(tenant, name)`, and the
+  Node-owned tables reference `nodes(tenant, name)` with `(tenant, node)`
+  (#241). `node_names` is Deployment-wide and its rows are never deleted: it
+  keeps a Node name taken after a purge, and it names the Tenant of a receiving
+  Node before any Tenant scope opens. `nodes` references it with
+  `(name, tenant)`. Both are created in `identity/0002_tables` after `tenants`.
+- Node-owned data carries `node` (#241), edited into the migration that creates
+  each table: `workspaces.node`, `runs.node`, `generation_requests.node` and
+  `authorization_catalog` plus its history, each with `(tenant, node)`
+  referencing `nodes(tenant, name)`. `events.node` is the Workspace's Node and
+  stays NULL for an event that concerns no Workspace. `authorization_catalog`
+  and its history key on `(tenant, node, entry_id, entry_version[, revision])`,
+  so one Node's approval never stands for another's. `runs.home_node` and
+  `generation_requests.home_node` hold the address of the Home Node; a local
+  Run's is its own Node's. `generation_requests.local_task_id` and
+  `local_workspace_id` are ordinary columns the application writes for a
+  local request and leaves NULL for a foreign one; the `''` sentinel and the
+  generated columns are gone. `memory_learning_discovery` is keyed by
+  `deployment`, because the learning pass runs once per Deployment.
+- A Node Registration is a Tenant-owned row in `federation/node_registrations`,
+  keyed by `(tenant, node, source_node)`, with `(tenant, node)` referencing
+  `nodes` (#241). The registered Node is an address, and a Node of another
+  Deployment pins that Deployment's endpoint, public key and key ID in three
+  columns that are all set or all null. `node_registration_history` keeps every
+  revision under a sequence, like `authorization_peer_mapping_history`. Both
+  tables are purged with the Tenant. They are created in
+  `federation/0002_tables` and enforced by `federation/0011`.
 - Inserts name `tenant`. Statements built for a Tenant scope write the scope's
   Tenant with `crate::database::scope::tenant()`, a child of a row reads its
   parent's with `tenant_of`, and a writer in a Deployment Scope names the Tenant
   itself.
+
+## Nodes and Federation migrations
+
+Aidash is undeployed, so #241 edits each migration below in place and adds no migration file. Each paragraph names what the edited migration now creates, drops or renames. The bullets above describe the same tables by policy and key.
+
+`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`. `authorization_peer_graph_grants` keys on `(tenant, source_deployment, source_identity)` and stores the viewer Deployment's `source_key_id` and `source_public_key_pem`.
+
+`workspaces/0002_tables`, `workspaces/0004_references` and `workspaces/0007_model_state` add `workspaces.node`, which references `nodes(tenant, name)`.
+
+`execution/0002_tables`, `execution/0003_keys_indexes`, `execution/0004_references` and `execution/0007_model_state` add `runs.node`, `generation_requests.node` and `events.node`. `events.node` stays NULL for an event that concerns no Workspace. `events.tenant` becomes NOT NULL, because the `peer.registered` event, the only event without a Tenant, goes with `peers`. The `''` sentinel in `generation_requests.home_node` and its two generated columns are gone. `local_task_id` and `local_workspace_id` are ordinary nullable columns that the application writes. `generation_requests_home_task` is unique on `(home_node, task_id)` for an active foreign request, and `generation_requests_local_task` is unique on `local_task_id`.
+
+`federation/0002_tables`, `federation/0003_keys_indexes`, `federation/0004_references` and `federation/0007_model_state` remove `peers`, `peer_events` and `atomic_peer_trust`, with their foreign keys. They create `node_registrations` and `node_registration_history`, whose sequence is `node_registration_history_sequence_seq`. `authorization_peer_mappings` and its history lose `source_tenant`, gain `node`, and key on `(tenant, node, source_node, source_subject)`. `authorization_remote_admissions` and `authorization_remote_grants` gain `node`.
+
+`federation/sql/forward/0001_functions.sql`, `0002_configuration.sql`, `0002_sequences.sql`, `0006_triggers.sql`, `0011_tenant_owned_row_level_security.sql` and their backward assets replace `peers` with `node_registrations` and `node_registration_history` in the Tenant-owned table list. The `atomic_write_guard` statement trigger moves from `peers` and `peer_events` to the two new tables. The sequence for `node_registration_history` is created, and `0011` enables and forces row-level security on both new tables with the `tenant_isolation` policy.
+
+`identity/sql/forward/0032_tenant_owned_row_level_security.sql` and its backward asset enable and force row-level security on `nodes`. `node_names` has no policy, because it is Deployment-wide.
+
+`knowledge/0018_memory_control_receipts` keys `memory_learning_discovery` on `deployment` in place of `home`, because the learning pass runs once per Deployment.
+
+The forward and backward SQL assets from `registry/0008_provider_descriptors` to `registry/0042_external_services` rename the JSON key `registry_node` to `registry_deployment`. The `aidash://` checks keep their pattern.
 
 ## Maintenance cutover
 
@@ -380,10 +425,10 @@ migration that creates each table, because Aidash is undeployed:
    `aidash_server` login and the same pinned image; servers and workers refuse
    to start as a superuser, a `BYPASSRLS` role or an owner of database objects.
 3. Run the native migration command once as `aidash_owner`. Inspect `showmigrations` and verify
-   replay, schema constraints, and configured peer/identity settings before
+   replay, schema constraints, and configured Federation and identity settings before
    accepting writes.
 4. Start the new server and worker roles. Verify health, authentication, a scoped
-   workflow, SSE reconnection, and the configured Federation peers.
+   workflow, SSE reconnection, and the configured Node Registrations.
 
 This cutover starts a new database; it does not transfer existing workspaces,
 identities, credentials, or active Runs. Keep the old deployment/database intact

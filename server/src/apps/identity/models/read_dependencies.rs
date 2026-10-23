@@ -63,6 +63,7 @@ impl AuthorizationCatalog {
 	pub(crate) async fn enabled_in(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
+		node: &str,
 		entry: &EntityRef,
 		lock: bool,
 	) -> Result<Option<bool>> {
@@ -71,6 +72,7 @@ impl AuthorizationCatalog {
 			.column(Alias::new("enabled"))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("node").eq(Expr::value(node)))
 			.and_where(Expr::col("entry_id").eq(Expr::value(&entry.id)))
 			.and_where(Expr::col("entry_version").eq(Expr::value(&entry.version)));
 		if lock {

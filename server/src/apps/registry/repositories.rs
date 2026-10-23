@@ -30,7 +30,7 @@ fn scope(tenant: &TenantName) -> TenancyScope {
 #[derive(Clone)]
 pub struct Registry {
 	pool: Pool,
-	node_id: String,
+	deployment: aidash_domain::nodes::DeploymentId,
 	provider_credentials: bool,
 	plan_connections: bool,
 	/// The Deployment's permitted private origins; absent means the settings'.
@@ -75,7 +75,7 @@ impl Registry {
 	pub async fn seed(&self, tenant: &TenantName) -> Result<()> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				seed_tenant(tx, &self.node_id, tenant).await
+				seed_tenant(tx, self.deployment.as_str(), tenant).await
 			})
 			.await
 	}
@@ -104,16 +104,19 @@ impl Registry {
 		for tenant in tenants {
 			self.pool
 				.atomic(&scope(&tenant), async |tx| {
-					seed_tenant(tx, &self.node_id, &tenant).await
+					seed_tenant(tx, self.deployment.as_str(), &tenant).await
 				})
 				.await?;
 		}
 		Ok(())
 	}
-	pub fn new(pool: impl Into<Pool>, node_id: &str) -> Result<Self> {
+	pub fn new(
+		pool: impl Into<Pool>,
+		deployment: &aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
 		Ok(Self {
 			pool: pool.into(),
-			node_id: node_id.into(),
+			deployment: deployment.clone(),
 			provider_credentials: false,
 			plan_connections: false,
 			keyless: None,
@@ -123,9 +126,7 @@ impl Registry {
 	pub async fn get(&self, tenant: &TenantName, id: &str, version: &str) -> Result<Entry> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				Ok(OrmScope::new(tx, &self.node_id, tenant)
-					.definition(id, version)
-					.await?)
+				Ok(OrmScope::new(tx, tenant).definition(id, version).await?)
 			})
 			.await
 	}
@@ -140,7 +141,7 @@ impl Registry {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
 				Ok(aidash_application::registry::get_for_run(
-					&mut OrmScope::new(tx, &self.node_id, tenant),
+					&mut OrmScope::new(tx, tenant),
 					run,
 					id,
 					version,
@@ -152,11 +153,10 @@ impl Registry {
 	pub async fn list(&self, tenant: &TenantName, search: &Search) -> Result<Vec<Entry>> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				Ok(aidash_application::registry::list(
-					&mut OrmScope::new(tx, &self.node_id, tenant),
-					search,
+				Ok(
+					aidash_application::registry::list(&mut OrmScope::new(tx, tenant), search)
+						.await?,
 				)
-				.await?)
 			})
 			.await
 	}
@@ -164,12 +164,12 @@ impl Registry {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
 				Ok(aidash_application::registry::register(
-					&mut OrmScope::new(tx, &self.node_id, tenant),
+					&mut OrmScope::new(tx, tenant),
 					&self.validation(),
 					entry,
 					None,
 					false,
-					&self.node_id,
+					self.deployment.as_str(),
 				)
 				.await?)
 			})
@@ -178,7 +178,14 @@ impl Registry {
 	pub async fn validate_references(&self, tenant: &TenantName, entry: &Entry) -> Result<()> {
 		self.pool
 			.atomic(&scope(tenant), async |tx| {
-				validate_references_with(tx, tenant, entry, &self.node_id, &self.validation()).await
+				validate_references_with(
+					tx,
+					tenant,
+					entry,
+					self.deployment.as_str(),
+					&self.validation(),
+				)
+				.await
 			})
 			.await
 	}
@@ -198,12 +205,11 @@ impl Registry {
 
 pub(crate) struct OrmScope<'a, E: OrmExecutor> {
 	db: &'a mut E,
-	node: &'a str,
 	tenant: &'a TenantName,
 }
 impl<'a, E: OrmExecutor> OrmScope<'a, E> {
-	pub(crate) fn new(db: &'a mut E, node: &'a str, tenant: &'a TenantName) -> Self {
-		Self { db, node, tenant }
+	pub(crate) fn new(db: &'a mut E, tenant: &'a TenantName) -> Self {
+		Self { db, tenant }
 	}
 }
 #[async_trait]
@@ -271,7 +277,7 @@ impl<E: OrmExecutor + TransactionExecutor> RegistrationScope for OrmScope<'_, E>
 		Err(aidash_application::Error::Forbidden)
 	}
 	async fn append_event(&mut self, kind: &str, payload: Value) -> aidash_application::Result<()> {
-		event_records::append(self.db, self.node, None, kind, payload)
+		event_records::append(self.db, None, kind, payload)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -361,7 +367,7 @@ pub(crate) async fn seed_tenant<E: OrmExecutor>(
 	tenant: &TenantName,
 ) -> Result<()> {
 	Ok(aidash_application::registry::system::seed(
-		&mut OrmScope::new(db, node, tenant),
+		&mut OrmScope::new(db, tenant),
 		&crate::bootstrap::registry_validation(),
 		node,
 	)
@@ -376,7 +382,7 @@ pub(crate) async fn validate_references_with<E: OrmExecutor>(
 	validation: &aidash_application::registry::DefinitionValidation,
 ) -> Result<()> {
 	Ok(aidash_application::registry::validate_references(
-		&mut OrmScope::new(db, node, tenant),
+		&mut OrmScope::new(db, tenant),
 		validation,
 		entry,
 		node,
@@ -421,7 +427,7 @@ async fn private_documents<E: OrmExecutor>(
 			.ok_or_else(|| {
 				crate::Error::Invalid("Agent lacks registered Binding provenance".into())
 			})?
-			.registry_node
+			.registry_deployment
 			.as_str();
 		let mut documents = vec![];
 		for binding in input
@@ -429,7 +435,7 @@ async fn private_documents<E: OrmExecutor>(
 			.iter()
 			.filter(|b| b.kind == aidash_domain::registry::bindings::BindingKind::Source)
 		{
-			if binding.target.registry_node != node {
+			if binding.target.registry_deployment != node {
 				return Err(crate::Error::Forbidden);
 			}
 			let source = records::definition(
@@ -452,7 +458,7 @@ async fn private_documents<E: OrmExecutor>(
 				continue;
 			}
 			let value = aidash_application::registry::personal::load(
-				&mut OrmScope::new(&mut *connection, node, tenant),
+				&mut OrmScope::new(&mut *connection, tenant),
 				&source,
 			)
 			.await?;
@@ -469,7 +475,7 @@ async fn private_documents<E: OrmExecutor>(
 		return Ok(serde_json::json!(documents));
 	}
 	Ok(aidash_application::registry::personal::load(
-		&mut OrmScope::new(&mut *connection, "", tenant),
+		&mut OrmScope::new(&mut *connection, tenant),
 		entry,
 	)
 	.await?)

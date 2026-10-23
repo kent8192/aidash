@@ -1,6 +1,6 @@
 //! Workspace mutations borrow the caller's original transaction, authority and audit scope.
 use crate::Result;
-use aidash_domain::{NewTask, Task, Workspace, policy::Resource};
+use aidash_domain::{NewTask, Task, Workspace, nodes::NodeName, policy::Resource};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -10,7 +10,16 @@ pub trait WorkspaceMutations: Send {
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn require_workspace(&mut self, id: Uuid, action: &str) -> Result<()>;
-	async fn insert_workspace(&mut self, id: Uuid, title: &str, goal: &str) -> Result<Workspace>;
+	/// The Node a new Workspace goes to: `requested`, or the Tenant's default Node.
+	/// The subject needs `node.use` on it.
+	async fn use_node(&mut self, requested: Option<&NodeName>) -> Result<NodeName>;
+	async fn insert_workspace(
+		&mut self,
+		id: Uuid,
+		node: &NodeName,
+		title: &str,
+		goal: &str,
+	) -> Result<Workspace>;
 	async fn record_owner(&mut self, id: Uuid) -> Result<()>;
 	async fn update_state(&mut self, id: Uuid, revision: i64, state: Value) -> Result<Workspace>;
 	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()>;

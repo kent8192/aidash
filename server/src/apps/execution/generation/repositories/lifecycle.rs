@@ -20,7 +20,7 @@ pub(crate) struct NativeLifecycle<'a> {
 #[async_trait]
 impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -163,19 +163,16 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 
 	async fn cancel_runs(&mut self, job: &Request) -> aidash_application::Result<()> {
 		let tx = &mut *self.transaction;
-		let f = self.runtime;
 
 		// Local generations bind their run by task and generated agent revision (the same
 		// binding local expiration uses); foreign generations additionally pin the
 		// admitted remote run.
 		let mut condition = String::from(
-			"task_id = ? AND (home_node = ? OR (?='' AND home_node=?)) AND agent_id = ? AND agent_version = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED')",
+			"task_id = ? AND home_node = ? AND agent_id = ? AND agent_version = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED')",
 		);
 		let mut values: Vec<SimpleExpr> = vec![
 			Expr::value(job.task_id).into(),
 			Expr::value(job.home_node.clone()).into(),
-			Expr::value(job.home_node.clone()).into(),
-			Expr::value(f.config.node_id.clone()).into(),
 			Expr::value(job.agent_id.clone()).into(),
 			Expr::value(job.agent_version.clone()).into(),
 		];
@@ -305,10 +302,11 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 						reinhardt::query::Expr::cust("revision + 1"),
 					)
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(tenant = ? AND entry_id = ? AND entry_version = ? AND enabled)"
+						"(tenant = ? AND node = ? AND entry_id = ? AND entry_version = ? AND enabled)"
 							.to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
+							Expr::value(job.node.as_str().to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),
 							Expr::value(query_bind_3.to_owned()).into(),
 						],
@@ -364,6 +362,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 				))
 				.columns([
 					reinhardt::query::Alias::new("tenant"),
+					reinhardt::query::Alias::new("node"),
 					reinhardt::query::Alias::new("entry_id"),
 					reinhardt::query::Alias::new("entry_version"),
 					reinhardt::query::Alias::new("revision"),
@@ -376,6 +375,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
+						.expr(Expr::value(job.node.as_str().to_owned()))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],

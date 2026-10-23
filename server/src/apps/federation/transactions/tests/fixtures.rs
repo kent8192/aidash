@@ -1,12 +1,14 @@
 //! Two native HTTP nodes with disposable databases and controllable network links.
 use crate::native_database::{DatabaseFixture, DatabaseFuture, database};
+#[path = "../../../execution/tests/support/federation.rs"]
+pub(crate) mod peering;
 #[path = "../../../execution/tests/support/tenant_roots.rs"]
 pub(crate) mod tenant_roots;
 use crate::settings::{process_settings, settings_for};
 use aidash_server::{
 	bootstrap,
 	config::settings::ProjectSettings,
-	federation::{Federation, Peer},
+	federation::Federation,
 	transactions::{Manifest, Status},
 };
 use chrono::{Duration, Utc};
@@ -21,70 +23,20 @@ use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
 use reinhardt::test::fixtures::{api_client_from_url, injection_context, singleton_scope};
 use rstest::fixture;
 use serde_json::{Value, json};
-use std::{
-	fs::File,
-	future::Future,
-	net::SocketAddr,
-	process::Stdio,
-	sync::{Arc, LazyLock},
-	time::Duration as Wait,
-};
+use std::{fs::File, future::Future, net::SocketAddr, process::Stdio, sync::Arc};
 use tempfile::TempDir;
 use tokio::{
 	net::{TcpListener, TcpStream},
 	process::{Child, Command},
-	sync::{Semaphore, watch},
+	sync::watch,
 	task::{JoinHandle, JoinSet},
 };
 use uuid::Uuid;
 
-pub const PEER_SECRET: &str = "atomic-protocol-fixture-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const PEER_ENV: &str = "AIDASH_SECRET_ATOMIC_PROTOCOL_FIXTURE";
-
 pub type Pair = (Node, Node, Manifest, Uuid, Uuid);
-
-/// Scope environment-backed peer credentials to a fresh test process. No test
-/// changes its parent process environment while HTTP/runtime threads are alive.
-#[fixture]
-async fn isolated_process() -> bool {
-	let name = std::thread::current()
-		.name()
-		.expect("named libtest thread")
-		.to_owned();
-	if std::env::var("AIDASH_PROTOCOL_TEST_CHILD").as_deref() == Ok(name.as_str()) {
-		assert_eq!(std::env::var(PEER_ENV).unwrap(), PEER_SECRET);
-		return true;
-	}
-	static CAPACITY: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(2));
-	let _capacity = CAPACITY.acquire().await.unwrap();
-	let child = Command::new(std::env::current_exe().unwrap())
-		.args(["--exact", &name, "--nocapture"])
-		.env("AIDASH_PROTOCOL_TEST_CHILD", &name)
-		.env(PEER_ENV, PEER_SECRET)
-		.env("RUST_BACKTRACE", "0")
-		.kill_on_drop(true)
-		.output();
-	let output = tokio::time::timeout(Wait::from_secs(180), child)
-		.await
-		.expect("isolated protocol test deadline")
-		.unwrap();
-	assert!(
-		output.status.success(),
-		"{name}: {}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
-	);
-	assert!(
-		String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed; 0 ignored"),
-		"isolated process must execute exactly the selected test: {}",
-		String::from_utf8_lossy(&output.stdout)
-	);
-	false
-}
 
 #[fixture]
 pub fn pair(
-	#[future] isolated_process: bool,
 	#[from(node)]
 	#[with("a")]
 	first: BoxFuture<'static, Node>,
@@ -92,38 +44,17 @@ pub fn pair(
 	#[with("b")]
 	second: BoxFuture<'static, Node>,
 ) -> impl Future<Output = Option<Pair>> {
-	let isolated_process = Box::pin(isolated_process);
 	Box::pin(async move {
-		if !isolated_process.await {
-			return None;
-		}
-		let a = first.await;
-		let b = second.await;
-		for (local, remote) in [(&a, &b), (&b, &a)] {
-			local
-				.f
-				.register_peer(Peer {
-					node_id: remote.f.config.node_id.clone(),
-					endpoint: remote.f.config.endpoint.clone(),
-					credential_env: PEER_ENV.into(),
-					protocol_version: "0.2".into(),
-					enabled: true,
-				})
+		let mut a = first.await;
+		let mut b = second.await;
+		for node in [&mut a, &mut b] {
+			// Each Deployment has one Tenant, with its default Node.
+			tenant_roots::tenant_scope(&node.f.store, "acme").await;
+			node.address = tenant_roots::default_node(&node.f.store, "acme")
 				.await
-				.unwrap();
-			assert_eq!(
-				local
-					.post(
-						"/api/transactions/trust",
-						&json!({
-							"node_id": remote.f.config.node_id, "enabled": true
-						})
-					)
-					.await
-					.0,
-				200
-			);
+				.to_string();
 		}
+		connect(&mut a, &mut b).await;
 		let mut workspaces = vec![];
 		for (node, title) in [(&a, "A"), (&b, "B")] {
 			let scope = tenant_roots::tenant_scope(&node.f.store, "acme").await;
@@ -138,18 +69,65 @@ pub fn pair(
 		}
 		let (wa, wb) = (workspaces[0], workspaces[1]);
 		let manifest = serde_json::from_value(json!({
-			"id":Uuid::new_v4(), "coordinator":a.f.config.node_id,
+			"id":Uuid::new_v4(), "coordinator":a.address,
 			"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
 			"participants":[
-				{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state",
+				{"node_id":a.address,"mutations":[{"kind":"workspace_state",
 					"workspace_id":wa,"expected_revision":0,"state":{"value":"new-a"}}]},
-				{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state",
+				{"node_id":b.address,"mutations":[{"kind":"workspace_state",
 					"workspace_id":wb,"expected_revision":0,"state":{"value":"new-b"}}]}
 			]
 		}))
 		.unwrap();
 		Some((a, b, manifest, wa, wb))
 	})
+}
+
+/// Each Deployment accepts and addresses the other's default Node, with
+/// atomic transactions allowed. The Deployments reach each other on loopback.
+pub async fn connect(a: &mut Node, b: &mut Node) {
+	let (a_endpoint, b_endpoint) = (a.f.config.endpoint.clone(), b.f.config.endpoint.clone());
+	a.f.store.keyless.permit_origin_of(&b_endpoint).unwrap();
+	b.f.store.keyless.permit_origin_of(&a_endpoint).unwrap();
+	a.settings
+		.keyless_endpoints
+		.permitted_private_origins
+		.push(b_endpoint);
+	b.settings
+		.keyless_endpoints
+		.permitted_private_origins
+		.push(a_endpoint);
+	for (local, remote) in [(&*a, &*b), (&*b, &*a)] {
+		let owner = local.address.rsplit('/').next().unwrap();
+		let (status, body) = local
+			.post(
+				&peering::registration_path("acme", owner),
+				&peering::registration(
+					&remote.address,
+					Some((&remote.f.config.endpoint, &peering::key_id(&remote.f))),
+				),
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+		// The Tenant's subject `alice` on the other side maps to a local one.
+		let (status, issued) = local
+			.post(
+				"/api/authorization/acme/credentials",
+				&json!({"subject":"alice"}),
+			)
+			.await;
+		assert_eq!(status, 200, "{issued}");
+		let (status, mapping) = local
+			.post(
+				"/api/authorization/acme/peer-mappings",
+				&json!({
+					"node":owner,"source_node":remote.address,"source_subject":"alice",
+					"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
+				}),
+			)
+			.await;
+		assert_eq!(status, 200, "{mapping}");
+	}
 }
 
 pub struct Node {
@@ -161,6 +139,9 @@ pub struct Node {
 	pub f: Federation,
 	settings: ProjectSettings,
 	pub database: DatabaseFixture,
+	/// The Tenant's default Node, once `pair` has written it.
+	pub address: String,
+	_key: Arc<peering::KeyFile>,
 }
 
 impl Node {
@@ -219,6 +200,30 @@ impl Node {
 			response.status_code(),
 			response.json_value().unwrap_or(Value::Null),
 		)
+	}
+
+	/// The Sender for work the Tenant's default Node does as its subject.
+	pub fn sender(&self) -> aidash_domain::federation::route::Sender {
+		aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			node: None,
+			subject: Some("alice".into()),
+		}
+	}
+
+	/// Allows or refuses atomic transactions with `remote`'s Node, replacing the
+	/// registration that holds `revision`. Returns the route's status.
+	pub async fn set_trust(&self, remote: &Node, enabled: bool, revision: i64) -> u16 {
+		let owner = self.address.rsplit('/').next().unwrap();
+		let mut body = peering::registration(
+			&remote.address,
+			Some((&remote.f.config.endpoint, &peering::key_id(&remote.f))),
+		);
+		body["atomic_transactions"] = json!(enabled);
+		body["expected_revision"] = json!(revision);
+		self.post(&peering::registration_path("acme", owner), &body)
+			.await
+			.0
 	}
 
 	pub async fn submit(&self, manifest: &Manifest) {
@@ -316,7 +321,6 @@ impl WorkerProcess {
 			.env("PATH", std::env::var_os("PATH").unwrap_or_default())
 			.env("REINHARDT_SETTINGS_DIR", directory.path())
 			.env("REINHARDT_ENV", "test")
-			.env(PEER_ENV, PEER_SECRET)
 			.env("RUST_BACKTRACE", "0")
 			.current_dir(env!("CARGO_MANIFEST_DIR"))
 			.stdin(Stdio::null())
@@ -364,6 +368,7 @@ struct ProtocolRuntime {
 	settings: ProjectSettings,
 	database: DatabaseFixture,
 	context: Arc<reinhardt::InjectionContext>,
+	key: Arc<peering::KeyFile>,
 }
 type ProtocolRuntimeFuture = Shared<BoxFuture<'static, ProtocolRuntime>>;
 #[fixture]
@@ -379,10 +384,13 @@ fn protocol_runtime(
 		let link = link.await;
 		let guard = link.lock().await;
 		let mut settings = settings_for(&database.url);
-		settings.node.node_id = format!("aidash://atomic-{suffix}");
-		settings.node.endpoint = guard.as_ref().unwrap().url.clone();
-		settings.node.api_token = "atomic-deployment-administrator-fixture-token".into();
-		settings.node.nats_url = "nats://127.0.0.1:0".into();
+		settings.deployment.id = format!("aidash://atomic-{suffix}");
+		settings.deployment.endpoint = guard.as_ref().unwrap().url.clone();
+		settings.deployment.api_token = "atomic-deployment-administrator-fixture-token".into();
+		settings.deployment.nats_url = "nats://127.0.0.1:0".into();
+		// The Deployment signs with a key file, as `[deployment.key] file` names it.
+		let key = peering::KeyFile::generate();
+		peering::configure_key(&mut settings, &key);
 		let f = bootstrap::initialize(&injection_context, &settings, database.connection.clone())
 			.await
 			.unwrap();
@@ -391,6 +399,7 @@ fn protocol_runtime(
 			settings,
 			database,
 			context: Arc::new(injection_context),
+			key,
 		}
 	}
 	.boxed()
@@ -421,7 +430,7 @@ fn protocol_client(
 ) -> ProtocolClientFuture {
 	async move {
 		let runtime = protocol_runtime.await;
-		let client = api_client_from_url(&runtime.settings.node.endpoint);
+		let client = api_client_from_url(&runtime.settings.deployment.endpoint);
 		if deployment_administrator {
 			client
 				.set_header(
@@ -470,6 +479,8 @@ fn node(
 			f: runtime.f,
 			settings: runtime.settings,
 			database: runtime.database,
+			address: String::new(),
+			_key: runtime.key,
 		}
 	}
 	.boxed()

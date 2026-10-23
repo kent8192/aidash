@@ -1,7 +1,7 @@
 //! Recheck current execution and every pinned dependency before accepting worker output.
 use crate::{Error, Result, ports::authorization::guard::RunGuardScope};
 use aidash_domain::{
-	RunMetadata, qualified_agent,
+	RunMetadata,
 	registry::{AgentConfig, EntityRef},
 };
 
@@ -35,10 +35,7 @@ pub async fn authorize(
 	};
 	scope.require_live(run.task_id, &reference).await?;
 	let entry = scope.catalog(&reference, "agent.execute").await?;
-	super::require_agent(
-		scope.bundle(),
-		&qualified_agent(scope.node_id(), &run.agent_id, &run.agent_version),
-	)?;
+	super::require_agent(scope.bundle(), &run.executor_subject(scope.node_id()))?;
 	scope.check_pinned(&entry).await?;
 	if !read_context {
 		// Failure delivery only closes the Task under current Task, Agent and
@@ -57,7 +54,7 @@ pub async fn authorize(
 	// Foreign Agent closures are refreshed at their owning Node by the Binding
 	// authority; never resolve their unqualified IDs through this local catalog.
 	for saved in &snapshot.definitions {
-		if saved.identity.registry_node != scope.node_id() {
+		if saved.identity.registry_deployment != scope.node_id() {
 			continue;
 		}
 		let current = scope

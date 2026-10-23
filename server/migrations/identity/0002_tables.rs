@@ -33,6 +33,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_catalog".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
@@ -50,6 +51,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_catalog_history".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
@@ -141,8 +143,10 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "authorization_peer_graph_grants".to_owned(),
 			columns: vec![
-				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_deployment", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_identity", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("source_key_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
@@ -537,6 +541,45 @@ pub(super) fn migration() -> Migration {
 				Constraint::Check {
 					name: "tenants_root".into(),
 					expression: "length(name) BETWEEN 1 AND 256 AND created_by_kind IN ('identity','deployment_administrator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND (label IS NULL OR length(label) BETWEEN 1 AND 256)".into(),
+				},
+			],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		// Node names are Deployment-wide and never reused, so an inbound request
+		// finds the Tenant of its receiving Node without a Deployment Scope and
+		// a purged Tenant's names stay taken (#241).
+		.add_operation(Operation::CreateTable {
+			name: "node_names".into(),
+			columns: vec![
+				ColumnDefinition::new("name", FieldType::Text).with_not_null(true).with_primary_key(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![Constraint::Unique {
+				name: "node_names_name_tenant_key".into(),
+				columns: vec!["name".into(), "tenant".into()],
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "nodes".into(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("name", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("label", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("is_default", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("created_by_kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_by_identity", FieldType::Uuid).with_not_null(false),
+			],
+			constraints: vec![
+				Constraint::Check {
+					name: "nodes_creator".into(),
+					expression: "created_by_kind IN ('identity','deployment_administrator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND length(label) BETWEEN 1 AND 64".into(),
 				},
 			],
 			without_rowid: None,

@@ -17,6 +17,9 @@ pub struct NatsBus {
 	pub context: jetstream::Context,
 	pub stream_name: String,
 	pub subject: String,
+	/// The Deployment whose events this bus carries; the CloudEvent source names
+	/// the Node an event belongs to under it.
+	pub deployment: String,
 }
 impl NatsBus {
 	pub async fn connect(url: &str, node_id: &str) -> Result<Self> {
@@ -45,6 +48,7 @@ impl NatsBus {
 			context,
 			stream_name,
 			subject,
+			deployment: node_id.to_owned(),
 		})
 	}
 	pub async fn subscribe(&self) -> Result<NatsSubscription> {
@@ -79,7 +83,7 @@ impl EventPublisher for NatsBus {
 		let message_id = event.id.to_string();
 		let header_len = b"NATS/1.0\r\nNats-Msg-Id: \r\n\r\n".len() + message_id.len();
 		headers.insert("Nats-Msg-Id", message_id);
-		let mut envelope = event.cloud_event();
+		let mut envelope = event.cloud_event(&self.deployment);
 		let mut payload = envelope.to_string();
 		let limit = self.context.client().server_info().max_payload;
 		// Keep the durable payload in PostgreSQL and publish a reference

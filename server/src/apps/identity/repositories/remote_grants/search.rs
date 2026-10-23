@@ -36,6 +36,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
+	/// The address of the Home Node the search arrived at.
+	pub(crate) home: String,
 	pub(crate) journal: Journal<'a>,
 	pub(crate) dispatch: NativeDispatch,
 	pub(crate) settlement: NativeSettlement,
@@ -54,7 +56,10 @@ impl Scope {
 impl SemanticSearchRepository for Repository<'_> {
 	type Scope = Scope;
 	fn home_node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
+	}
+	fn home_address(&self) -> &str {
+		&self.home
 	}
 	fn journal(&self) -> &dyn JournalRepository {
 		&self.journal
@@ -91,8 +96,15 @@ impl SemanticSearchRepository for Repository<'_> {
 		))
 	}
 	async fn verify_operation(&self, node: &str, operation: &Operation) -> Result<bool> {
+		let sender = crate::authorization::peer::usage_sender(
+			self.runtime,
+			operation.admission_id,
+			operation.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			self.runtime,
+			&sender,
 			node,
 			"/scoped/semantic/verify-operation",
 			&serde_json::to_value(operation)?,
@@ -101,8 +113,15 @@ impl SemanticSearchRepository for Repository<'_> {
 		.map_err(Into::into)
 	}
 	async fn receiver_reservations(&self, node: &str, input: &Input) -> Result<Vec<Reserved>> {
+		let sender = crate::authorization::peer::usage_sender(
+			self.runtime,
+			input.usage.admission_id,
+			input.usage.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			self.runtime,
+			&sender,
 			node,
 			"/scoped/usage/reserve",
 			&serde_json::to_value(input)?,

@@ -44,7 +44,7 @@ pub(crate) async fn reserve_many(
 		access.resume_inherited().await?;
 		let current = aidash_application::generation::embedding::authorize(
 			&mut crate::bootstrap::generation_embedding_authority_scope(access),
-			&store.node_id,
+			store.deployment.as_str(),
 			config,
 		)
 		.await;
