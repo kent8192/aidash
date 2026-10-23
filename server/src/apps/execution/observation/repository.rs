@@ -172,7 +172,10 @@ pub(super) fn initial_settlement(state: &str, data: &Value) -> SettlementClass {
 		SettlementClass::Auto
 	} else if by["mode"] == "bypass" {
 		SettlementClass::Bypass
-	} else if matches!(state, "approved" | "consumed" | "denied") {
+	} else if matches!(
+		state,
+		"approved" | "consumed" | "denied" | "blocked" | "attempted"
+	) {
 		SettlementClass::Auto
 	} else {
 		SettlementClass::Pending
@@ -186,6 +189,7 @@ pub(crate) async fn enqueue_capability(
 	if !aidash_application::capabilities::approvals::KINDS.contains(&record.kind.as_str()) {
 		return Ok(());
 	}
+	let created_at = Utc::now();
 	let original_run: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	population(
 		&mut *access.tx,
@@ -194,7 +198,7 @@ pub(crate) async fn enqueue_capability(
 		"capability",
 		Some(original_run),
 		initial_settlement(&record.state, &record.data),
-		Utc::now(),
+		created_at,
 	)
 	.await?;
 	let mut selected = settings(&mut *access.tx, &record.tenant).await?;
@@ -311,7 +315,7 @@ pub(crate) async fn enqueue_capability(
 			.identity
 			.registry_deployment
 			.clone(),
-		created_at: Utc::now(),
+		created_at,
 		kind,
 		origin: ObservationOrigin::Run {
 			run: run.id,

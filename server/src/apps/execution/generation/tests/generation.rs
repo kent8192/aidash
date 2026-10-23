@@ -198,6 +198,53 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	)
 	.await;
 	let job = &assignment["generation"];
+	let observation = format!(
+		"/api/tenants/acme/approval-observations/generation/{}",
+		job["id"].as_str().unwrap()
+	);
+	assert_eq!(
+		request(&app, &token, "GET", &observation, Value::Null).await,
+		(200, Value::Null),
+		"an existing authorized viewer sees an explicit missing observation"
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"GET",
+			&observation.replace("/acme/", "/other/"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let report = "/api/tenants/acme/approval-observations/report?start=2026-10-01T00:00:00Z&end=2026-10-02T00:00:00Z";
+	assert_eq!(
+		request(&app, &token, "GET", report, Value::Null).await.0,
+		403,
+		"a Subject Credential is not Tenant administrative report authority"
+	);
+	assert_eq!(
+		request(&app, &f.config.api_token, "GET", report, Value::Null)
+			.await
+			.0,
+		403,
+		"Deployment authority never gains a private Tenant aggregate"
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"PUT",
+			"/api/tenants/acme/approval-observer",
+			json!({"expected_revision":0,"decider":null})
+		)
+		.await
+		.0,
+		403
+	);
+
 	let path = format!(
 		"/api/generation/acme/requests/{}/control",
 		job["id"].as_str().unwrap()
