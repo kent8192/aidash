@@ -12,10 +12,12 @@ pub mod evidence;
 pub mod observation;
 pub mod policy;
 pub mod probability;
+pub mod provider_report;
 pub mod pruning;
 pub use approval::*;
 pub use evidence::*;
 pub use probability::Probability;
+pub use provider_report::{AttemptProviderReport, ProviderCost};
 
 /// Jev through OpenRouter's System One API.
 pub const PROVIDER: &str = "typesafe.jev/1";

@@ -303,7 +303,7 @@ impl DecisionGate<'_> {
 		)?;
 		let mut attempts: Vec<AttemptEvidence> = recovered
 			.iter()
-			.map(|prior| dispatch::attempt_evidence(&prior.permit, prior.status))
+			.map(dispatch::recovered_attempt_evidence)
 			.collect();
 		let mut answers: BTreeMap<String, Probability> = recovered
 			.iter()

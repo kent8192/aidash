@@ -135,11 +135,13 @@ fn frame(kind: ApprovalKind) -> (ObservationFrame, ObservationInput) {
 }
 #[derive(Default)]
 struct Saved {
+	provider_reports: BTreeMap<Uuid, AttemptProviderReport>,
 	permits: Vec<DispatchPermit>,
 	finished: BTreeMap<Uuid, (AttemptStatus, Option<BTreeMap<String, Probability>>)>,
 	evidence: Option<ObservationEvidence>,
 }
 struct Rig {
+	provider_report: AttemptProviderReport,
 	saved: Mutex<Saved>,
 	calls: AtomicUsize,
 	fail_commit: AtomicBool,
@@ -149,6 +151,7 @@ struct Rig {
 impl Rig {
 	fn new() -> Self {
 		Self {
+			provider_report: AttemptProviderReport::Unknown,
 			saved: Mutex::new(Saved::default()),
 			calls: AtomicUsize::new(0),
 			fail_commit: AtomicBool::new(false),
@@ -214,6 +217,11 @@ impl DecisionJournal for Rig {
 					.cloned()
 					.unwrap_or((AttemptStatus::Uncertain, None));
 				RecoveredAttempt {
+					provider_report: saved
+						.provider_reports
+						.get(&permit.record.attempt)
+						.cloned()
+						.unwrap_or_default(),
 					permit: permit.clone(),
 					status,
 					answers,
@@ -246,6 +254,22 @@ impl DecisionJournal for Rig {
 			.unwrap()
 			.finished
 			.insert(permit.record.attempt, (status, answers.cloned()));
+		Ok(())
+	}
+	async fn finish_reported_attempt(
+		&self,
+		permit: &DispatchPermit,
+		answers: Option<&BTreeMap<String, Probability>>,
+		status: AttemptStatus,
+		report: &AttemptProviderReport,
+	) -> Result<()> {
+		let mut saved = self.saved.lock().unwrap();
+		saved
+			.finished
+			.insert(permit.record.attempt, (status, answers.cloned()));
+		saved
+			.provider_reports
+			.insert(permit.record.attempt, report.clone());
 		Ok(())
 	}
 	async fn commit(
@@ -298,6 +322,13 @@ struct Transport<'a> {
 }
 #[async_trait]
 impl PreparedDispatch for Transport<'_> {
+	async fn dispatch_reported(self: Box<Self>) -> ReportedDispatch {
+		let provider_report = self.rig.provider_report.clone();
+		ReportedDispatch {
+			result: self.dispatch().await,
+			provider_report,
+		}
+	}
 	async fn dispatch(
 		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
@@ -375,7 +406,17 @@ async fn all_five_typed_actions_are_judged_without_approval_settlement_or_live_r
 }
 #[tokio::test]
 async fn answered_attempt_survives_lost_observer_lease_without_second_charge_or_provider_call() {
-	let rig = Rig::new();
+	let provider_report = AttemptProviderReport::Reported {
+		served_model: Some("typesafe/jev-1.14-20260917".into()),
+		served_host: Some("typesafe".into()),
+		input_tokens: Some(45),
+		output_tokens: Some(5),
+		cost_usd: Some(ProviderCost::new(0.000002).unwrap()),
+	};
+	let rig = Rig {
+		provider_report: provider_report.clone(),
+		..Rig::new()
+	};
 	let (frame, input) = frame(ApprovalKind::ToolCall);
 	let mut lease = ObservationLease {
 		worker: Uuid::new_v4(),
@@ -411,6 +452,10 @@ async fn answered_attempt_survives_lost_observer_lease_without_second_charge_or_
 	);
 	assert_eq!(rig.calls.load(Ordering::SeqCst), 1);
 	assert_eq!(rig.saved.lock().unwrap().permits.len(), 1);
+	assert_eq!(
+		evidence.routes[0].attempts[0].provider_report,
+		provider_report
+	);
 	assert_eq!(
 		rig.gate().observe_approval(&request, &rig).await.unwrap(),
 		evidence

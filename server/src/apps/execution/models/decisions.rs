@@ -71,6 +71,9 @@ pub struct DecisionAttempt {
 	pub status: String,
 	#[field(null = true)]
 	pub answers: Option<Json<Value>>,
+	/// Allowlisted actual provider facts; NULL means unknown, never zero billing.
+	#[field(null = true)]
+	pub provider_report: Option<Json<Value>>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 	#[field(null = true)]
