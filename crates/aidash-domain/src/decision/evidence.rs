@@ -74,6 +74,8 @@ pub enum AttemptStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttemptEvidence {
+	#[serde(default)]
+	pub provider_report: AttemptProviderReport,
 	pub id: Uuid,
 	pub request_digest: String,
 	pub questions: Vec<String>,
@@ -425,6 +427,9 @@ impl Evidence {
 			_ => validate_decision_model(&self.model)?,
 		}
 		validate_digest(&self.configuration_parameters_digest)?;
+		for attempt in &self.attempts {
+			attempt.provider_report.validate_model(&self.model)?;
+		}
 		let route = usize::try_from(self.route).unwrap_or(usize::MAX);
 		if self.route_models.get(route) != Some(&self.model)
 			|| self.route_models.len() > MAX_ROUTES
@@ -539,6 +544,14 @@ pub(super) fn validate_attempt_set(
 	let mut attempted_questions = std::collections::BTreeSet::new();
 	let mut ids = std::collections::BTreeSet::new();
 	for attempt in attempts {
+		attempt.provider_report.validate()?;
+		if attempt.status == AttemptStatus::NotDispatched
+			&& attempt.provider_report != AttemptProviderReport::Unknown
+		{
+			return Err(Error::Invalid(
+				"undispatched attempt cannot report provider facts".into(),
+			));
+		}
 		validate_digest(&attempt.request_digest)?;
 		validate_digest(&attempt.question_digest)?;
 		if attempt.id.is_nil()

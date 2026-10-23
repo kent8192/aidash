@@ -154,6 +154,7 @@ impl DecisionJournal for Fixture {
 					.cloned()
 					.unwrap_or((AttemptStatus::Uncertain, None));
 				RecoveredAttempt {
+					provider_report: Default::default(),
 					permit: permit.clone(),
 					status,
 					answers,

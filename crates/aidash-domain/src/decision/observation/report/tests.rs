@@ -185,6 +185,10 @@ fn reports_separate_effective_threshold_and_settings_revision_without_exposing_a
 		provider_contract: Some(DECISIONS.into()),
 		model: Some("cloudflare/clef".into()),
 		hosts: vec!["cloudflare".into()],
+		served_models: vec!["cloudflare/clef".into()],
+		served_hosts: vec!["cloudflare".into()],
+		includes_unknown_model: false,
+		includes_unknown_host: false,
 		effective_threshold: Probability::new(0.3).unwrap(),
 	};
 	let mut rows = Vec::new();

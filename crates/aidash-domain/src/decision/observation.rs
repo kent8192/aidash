@@ -11,6 +11,7 @@ pub const RULE: &str = "approval.observe/1";
 	Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(rename = "ObservedApprovalKind")]
 pub enum ApprovalKind {
 	ToolCall,
 	Outbound,
@@ -344,6 +345,9 @@ impl ObservationEvidence {
 				.get(route.route as usize)
 				.ok_or_else(|| Error::Invalid("unknown observation Route".into()))?;
 			validate_digest(&route.state_digest)?;
+			for attempt in &route.attempts {
+				attempt.provider_report.validate_route(configured)?;
+			}
 			if route.route as usize != position
 				|| route.provider_contract != configured.provider_contract
 				|| route.model != configured.model

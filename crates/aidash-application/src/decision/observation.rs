@@ -332,7 +332,7 @@ impl DecisionGate<'_> {
 		for prior in &recovered {
 			record
 				.attempts
-				.push(dispatch::attempt_evidence(&prior.permit, prior.status));
+				.push(dispatch::recovered_attempt_evidence(prior));
 			if let Some(answers) = &prior.answers {
 				record.answers.extend(answers.clone());
 			}
