@@ -22,6 +22,8 @@ pub struct Creation<'a> {
 	pub policy: &'a Policy,
 	pub definition: &'a Entry,
 	pub status: &'a str,
+	/// Typed provenance of an approval given in advance; never a human label.
+	pub given_by: Option<aidash_domain::approval_rules::GivenBy>,
 	pub reason: &'a str,
 	pub depth: i32,
 	pub lifetime_seconds: f64,

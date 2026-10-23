@@ -70,6 +70,9 @@ pub struct ObservationAttempt {
 	pub status: String,
 	#[field(null = true)]
 	pub answers: Option<Json<Value>>,
+	#[field(null = true)]
+	pub provider_report: Option<Json<Value>>,
+
 	#[field]
 	pub created_at: DateTime<Utc>,
 }
@@ -87,6 +90,11 @@ pub struct ApprovalPopulation {
 	pub tenant: String,
 	#[field(field_type = "text")]
 	pub approval_type: String,
+	#[field(field_type = "text")]
+	pub kind: String,
+	#[field(null = true)]
+	pub observer_unavailable: Option<Json<Value>>,
+
 	#[field(null = true)]
 	pub run_id: Option<Uuid>,
 	#[field(field_type = "text")]

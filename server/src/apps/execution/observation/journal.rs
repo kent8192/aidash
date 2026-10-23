@@ -29,6 +29,19 @@ pub(super) struct Journal {
 	pub lease: ObservationLease,
 }
 impl Journal {
+	fn receipts(&self, record: &DispatchRecord) -> BTreeMap<String, Uuid> {
+		let origin = match self.frame.origin {
+			ObservationOrigin::Run { run, .. } => format!("runs/{run}"),
+			ObservationOrigin::Generation { request, .. } => format!("generation/{request}"),
+		};
+		BTreeMap::from([(
+			format!(
+				"{}/tenants/{}/approval-observer/{origin}/{}",
+				self.frame.node, self.frame.tenant, record.decider.configuration_digest
+			),
+			record.attempt,
+		)])
+	}
 	async fn begin(&self) -> Result<native::Transaction> {
 		let mut tx = self
 			.store
@@ -77,7 +90,7 @@ impl Journal {
 	) -> Result<Vec<RecoveredAttempt>> {
 		let rows = native::query(
 			&Query::select()
-				.columns(["record", "status", "answers"].map(Alias::new))
+				.columns(["record", "status", "answers", "provider_report"].map(Alias::new))
 				.from(Alias::new("approval_observation_attempts"))
 				.and_where(Expr::col("observation").eq(Expr::value(self.frame.id)))
 				.and_where(Expr::col("decision").eq(Expr::value(decision)))
@@ -92,10 +105,11 @@ impl Journal {
 				let record = decode(&value)?;
 				let status: String = row.try_get("status")?;
 				let answers: Option<Value> = row.try_get("answers")?;
+				let report: Option<Value> = row.try_get("provider_report")?;
 				Ok(RecoveredAttempt {
 					permit: DispatchPermit {
+						owner_receipts: self.receipts(&record),
 						record,
-						owner_receipts: Default::default(),
 					},
 					status: if status == "pending" {
 						AttemptStatus::Uncertain
@@ -103,6 +117,10 @@ impl Journal {
 						serde_json::from_value(json!(status))?
 					},
 					answers: answers.map(serde_json::from_value).transpose()?,
+					provider_report: report
+						.map(serde_json::from_value)
+						.transpose()?
+						.unwrap_or_default(),
 				})
 			})
 			.collect()
@@ -181,7 +199,7 @@ impl ObservationJournal for Journal {
 			for attempt in &route.attempts {
 				let row = native::query(
 					&Query::select()
-						.columns(["record", "status", "answers"].map(Alias::new))
+						.columns(["record", "status", "answers", "provider_report"].map(Alias::new))
 						.from(Alias::new("approval_observation_attempts"))
 						.and_where(Expr::col("observation").eq(Expr::value(frame.id)))
 						.and_where(Expr::col("id").eq(Expr::value(attempt.id)))
@@ -194,6 +212,11 @@ impl ObservationJournal for Journal {
 				let record = decode(&stored)?;
 				let status: String = row.try_get("status")?;
 				let durable: Option<Value> = row.try_get("answers")?;
+				let provider_report: Option<Value> = row.try_get("provider_report")?;
+				let provider_report: AttemptProviderReport = provider_report
+					.map(serde_json::from_value)
+					.transpose()?
+					.unwrap_or_default();
 				let saved_status = if status == "pending" {
 					AttemptStatus::Uncertain
 				} else {
@@ -204,6 +227,8 @@ impl ObservationJournal for Journal {
 					|| record.request_digest != attempt.request_digest
 					|| record.questions != attempt.questions
 					|| saved_status != attempt.status
+					|| attempt.owner_receipts != self.receipts(&record)
+					|| attempt.provider_report != provider_report
 				{
 					return Err(aidash_application::Error::Forbidden);
 				}
@@ -245,6 +270,32 @@ impl DecisionJournal for Journal {
 	}
 	async fn reserve(&self, record: &DispatchRecord) -> aidash_application::Result<Reservation> {
 		self.boundary(&record.boundary)?;
+		let questions = observation_questions();
+		if record.questions.is_empty()
+			|| record
+				.questions
+				.iter()
+				.any(|id| !questions.contains_key(id))
+			|| aidash_domain::decision::question_digest(&questions, &record.questions)?
+				!= record.question_digest
+			|| aidash_application::decision::attempt_identity(
+				record.decision,
+				&record.request_digest,
+				&record.questions,
+			) != record.attempt
+			|| aidash_application::decision::decision_identity(
+				&record.boundary,
+				&record.decider,
+				&record.binding_restrictions,
+				&record.state_digest,
+				&[],
+				0,
+				record.route,
+			) != record.decision
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+
 		if Some(&record.decider) != self.frame.settings.decider.as_ref()
 			|| record.mode != Mode::Shadow
 			|| record.binding_restrictions != self.frame.settings.restrictions
@@ -366,14 +417,25 @@ impl DecisionJournal for Journal {
 		tx.commit().await?;
 		Ok(Reservation::Fresh(DispatchPermit {
 			record: record.clone(),
-			owner_receipts: Default::default(),
+			owner_receipts: self.receipts(record),
 		}))
 	}
+
 	async fn finish_attempt(
 		&self,
 		permit: &DispatchPermit,
 		answers: Option<&BTreeMap<String, Probability>>,
 		status: AttemptStatus,
+	) -> aidash_application::Result<()> {
+		self.finish_reported_attempt(permit, answers, status, &AttemptProviderReport::Unknown)
+			.await
+	}
+	async fn finish_reported_attempt(
+		&self,
+		permit: &DispatchPermit,
+		answers: Option<&BTreeMap<String, Probability>>,
+		status: AttemptStatus,
+		report: &AttemptProviderReport,
 	) -> aidash_application::Result<()> {
 		let mut tx = self.begin().await?;
 		let prior = self
@@ -382,19 +444,61 @@ impl DecisionJournal for Journal {
 			.into_iter()
 			.find(|a| a.permit.record.attempt == permit.record.attempt)
 			.ok_or(aidash_application::Error::Forbidden)?;
-		if prior.permit.record != permit.record {
+		if prior.permit != *permit {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		if status == AttemptStatus::Answered {
+		let config = self
+			.frame
+			.settings
+			.config
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		report.validate_route(
+			config
+				.routes
+				.get(permit.record.route as usize)
+				.ok_or(aidash_application::Error::Forbidden)?,
+		)?;
+		if (status == AttemptStatus::Answered) != answers.is_some() {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		if let Some(answers) = answers {
 			validate_answers(
 				&permit
 					.record
 					.questions
 					.iter()
-					.map(|id| (id.clone(), observation_questions()[id].clone()))
-					.collect(),
-				answers.ok_or(aidash_application::Error::Forbidden)?,
+					.map(|id| {
+						observation_questions()
+							.get(id)
+							.cloned()
+							.map(|q| (id.clone(), q))
+							.ok_or(aidash_application::Error::Forbidden)
+					})
+					.collect::<aidash_application::Result<_>>()?,
+				answers,
 			)?;
+		}
+		let raw_status: String = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("status"))
+				.from(Alias::new("approval_observation_attempts"))
+				.and_where(Expr::col("id").eq(Expr::value(permit.record.attempt)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut *tx)
+		.await?;
+		if raw_status != "pending" {
+			if prior.status != status
+				|| prior.answers.as_ref() != answers
+				|| prior.provider_report != *report
+			{
+				return Err(aidash_application::Error::Conflict(
+					"immutable observation attempt result changed".into(),
+				));
+			}
+			tx.commit().await?;
+			return Ok(());
 		}
 		native::query(
 			&Query::update()
@@ -407,6 +511,7 @@ impl DecisionJournal for Journal {
 					Alias::new("answers"),
 					answers.map_or(Expr::cust("NULL"), |a| Expr::value(json!(a)).into()),
 				)
+				.value(Alias::new("provider_report"), json!(report))
 				.and_where(Expr::col("id").eq(Expr::value(permit.record.attempt)))
 				.and_where(Expr::col("status").eq("pending"))
 				.to_string(PostgresQueryBuilder),
@@ -416,6 +521,7 @@ impl DecisionJournal for Journal {
 		tx.commit().await?;
 		Ok(())
 	}
+
 	async fn commit(
 		&self,
 		_: &Evidence,

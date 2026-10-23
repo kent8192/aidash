@@ -218,7 +218,8 @@ impl GenerationLifecycleScope for Scope {
 		self.lifecycle().history(job, status, actor, reason).await?;
 		// This adapter is exclusively the explicit Approve/Deny/Stop/Delete control.
 		// Generic lifecycle transitions never emit human calibration labels.
-		if job.status == "PENDING_APPROVAL" {
+		let person = matches!(&self.mode,Mode::Subject(access) if access.snapshot.bundle.subjects.get(&access.identity.subject).is_some_and(|subject|subject.enabled&&subject.kind==aidash_domain::policy::SubjectKind::User));
+		if person && job.status == "PENDING_APPROVAL" {
 			let human = match status {
 				"QUEUED" => Some(aidash_domain::decision::observation::HumanLabel::Allow),
 				"DENIED" => Some(aidash_domain::decision::observation::HumanLabel::Deny),
