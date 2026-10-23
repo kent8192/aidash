@@ -206,6 +206,8 @@ def _metadata(row, allowed, tenant, table):
         if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 0:
             raise EvidenceError("cost_amount must be a nonnegative finite number or unknown")
         _text(row.get("cost_unit"), "cost_unit")
+    if "cost_unit" in row:
+        _text(row["cost_unit"], "cost_unit", nullable=True)
     identity = row.get("provider_identity")
     if identity is not None:
         if not isinstance(identity, dict) or set(identity) - IDENTITY_FIELDS:
@@ -256,6 +258,8 @@ def _metadata(row, allowed, tenant, table):
             raise EvidenceError("memory provider_usage has unexpected fields")
         _metadata(usage, USAGE_FIELDS, tenant, "memory.provider_usage")
     if table == "inference_usage":
+        if "projection_version" in row:
+            _count(row["projection_version"], "projection_version")
         if row.get("purpose", "main") not in ("main", "summary"):
             raise EvidenceError("inference purpose must be main or summary")
         if row.get("estimated_tokens") is not None and row.get("output_reservation") is not None and row["estimated_tokens"] < row["output_reservation"]:
@@ -325,11 +329,12 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
         raise EvidenceError("invalid operator export: " + "; ".join(errors[:8]))
     if export["experiment_id"] != experiment["experiment_id"]:
         raise EvidenceError("operator export experiment_id differs from the manifest")
-    if export["source"] != experiment["aidash"]:
+    if not evaluation.json_equal(export["source"], experiment["aidash"]):
         raise EvidenceError("operator export source identity differs from the manifest")
     if export["manifest_sha256"] != normalized["manifest_sha256"]:
         raise EvidenceError("operator export manifest digest differs from the fixed result")
     tenant = export["tenant_id"]
+    _text(tenant, "tenant_id")
     planned = {evaluation.run_key(v["task"], v["comparison"], v["arm"], repeat)
                for v in experiment["variants"] for repeat in range(1, experiment["repeat_count"] + 1)}
     _exact_set(export["planned_run_keys"], planned, "planned_run_keys")
@@ -379,6 +384,8 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
     _exact_set([r.get("run_id", r.get("id")) for r in recoveries], by_id, "run_recovery")
     for row in recoveries:
         _metadata(row, RECOVERY_FIELDS, tenant, "run_recovery")
+        if "run_id" in row and "id" in row and row["run_id"] != row["id"]:
+            raise EvidenceError("run_recovery id and run_id disagree")
         by_id[row.get("run_id", row.get("id"))]["recovery"] = row
     # A Summary Usage Record is the cost owner of the corresponding compaction
     # attempt. Require both sides of that durable association.
@@ -439,8 +446,8 @@ def _charge(row):
         if row.get("cost_amount") is not None and (row.get("cost_unit") != "nanocredits" or row["cost_amount"] != billed):
             raise EvidenceError("conflicting amounts or units for one provider charge")
         return "nanocredits", billed
-    if "cost_amount" in row:
-        return row.get("cost_unit") or "unknown", row["cost_amount"]
+    if "cost_amount" in row or "cost_unit" in row:
+        return row.get("cost_unit") or "unknown", row.get("cost_amount")
     return "nanocredits", None
 
 
@@ -726,12 +733,19 @@ def analyze_campaign(experiments, config):
     if len(durable_runs) != len(set(durable_runs)):
         raise EvidenceError("a durable Run was reused across campaign experiments or phases")
     candidate = config.get("candidate")
+    if candidate is not None and candidate not in ("ordered", "native"):
+        raise EvidenceError("candidate must be ordered, native or null")
     routes_config = config.get("routes", {})
     required = config.get("required_routes", ["automatic", "explicit"])
-    if not isinstance(required, list) or len(required) != len(set(required)) or set(required) != {"automatic", "explicit"}:
+    if not isinstance(required, list) or any(not isinstance(r, str) for r in required) or len(required) != len(set(required)) or set(required) != {"automatic", "explicit"}:
         raise EvidenceError("required_routes must preserve automatic and explicit routes")
     all_runs, audits, limitations = [], [], []
     registry = config.get("experiments", {})
+    if not isinstance(routes_config, dict) or not isinstance(registry, dict):
+        raise EvidenceError("routes and experiments must be configuration mappings")
+    policies = config.get("prompt_cache_policies", {})
+    if not isinstance(policies, dict) or any(p not in ("off", "explicit") for p in policies.values()) or policies.get("automatic", "off") != "off":
+        raise EvidenceError("prompt-cache policies must preserve the automatic route's off condition")
     for evidence in experiments:
         exp = evidence["experiment"]
         registration = registry.get(exp["experiment_id"], {})
