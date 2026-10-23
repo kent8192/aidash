@@ -62,7 +62,7 @@ async fn interrupt_refresh(fixture: &Fixture, after_commit: bool) -> PlanConnect
 }
 
 /// Deleting encrypted evidence and rolling back the metadata deletion must
-/// not make a retried disconnect claim the unknown upstream grant was revoked.
+/// not let a reconnect erase uncertainty about the unknown upstream grant.
 #[rstest::rstest]
 #[case::with_pin(false)]
 #[case::without_pin(true)]
@@ -121,6 +121,9 @@ async fn uncertainty_survives_interrupted_terminal_cleanup(
 	task.abort();
 	assert!(task.await.unwrap_err().is_cancelled());
 	let (service, store) = service_with_key(&fixture, &"41".repeat(32), vec![]).await;
+	// With no pin, the interrupted destroy removed the last encrypted
+	// intent. A new grant must retain uncertainty about that lost evidence.
+	connect_durable(&fixture, &service).await;
 	let status = service.status(&owner()).await.unwrap().unwrap();
 	assert!(
 		!service

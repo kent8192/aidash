@@ -1296,13 +1296,16 @@ async fn a_refresh_requires_durable_intent_before_dispatch() {
 }
 
 #[rstest::rstest]
-#[case::disconnect(false, false)]
-#[case::reconnect(true, false)]
-#[case::reconnect_then_expire(true, true)]
+#[case::disconnect(false, false, false)]
+#[case::reconnect(true, false, false)]
+#[case::reconnect_then_expire(true, true, false)]
+#[case::interrupted_cleanup_then_reconnect(true, false, true)]
+#[case::interrupted_expired_cleanup_then_reconnect(true, true, true)]
 #[tokio::test]
 async fn an_unknown_refresh_result_is_never_replayed_or_reported_revoked(
 	#[case] reconnect: bool,
 	#[case] expire: bool,
+	#[case] interrupt_cleanup: bool,
 ) {
 	let fixture = fixture(
 		1,
@@ -1338,6 +1341,23 @@ async fn an_unknown_refresh_result_is_never_replayed_or_reported_revoked(
 			fixture.service.bearer(pin).await,
 			Err(Error::Plan(Failure::NeedsReconnection))
 		));
+	}
+	if interrupt_cleanup {
+		// Every version was durably destroyed, but resource deletion fails
+		// and the independent metadata transaction rolls back. Reconnecting
+		// must not overwrite the remaining evidence: its missing old pin.
+		fixture.store.1.lock().unwrap().delete = true;
+		let row = only_row(&fixture).await;
+		assert!(
+			fixture
+				.service
+				.disconnect(&owner(), row.revision, "alice")
+				.await
+				.is_err()
+		);
+		assert!(fixture.store.plaintexts().is_empty());
+		fixture.store.1.lock().unwrap().delete = false;
+		connect(&fixture, Some("oaiapp_1"), None).await.unwrap();
 	}
 	let row = only_row(&fixture).await;
 	assert!(

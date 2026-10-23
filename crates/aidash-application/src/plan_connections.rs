@@ -617,6 +617,23 @@ impl Service {
 					.into(),
 			));
 		}
+		// Terminal cleanup removes the old pin before any uncertainty
+		// evidence. If it was interrupted, a reconnect must durably retain
+		// that missing-pin evidence before replacing it with a new grant.
+		// Only this call's unchanged initial registration has no prior grant.
+		if !first || row.revision != 1 {
+			let versions = self
+				.store
+				.versions(&row.tenant, &row.secret_resource)
+				.await?;
+			if !row
+				.pinned_version
+				.as_ref()
+				.is_some_and(|pin| versions.contains(pin))
+			{
+				self.retain_uncertainty(&row, &versions).await?;
+			}
+		}
 		let now = Utc::now();
 		let stale = self.stale_versions(&row, None).await;
 		let version = self
@@ -843,38 +860,41 @@ impl Service {
 		else {
 			return scope.commit().await;
 		};
-		let mut recorded = false;
-		for version in self
+		let versions = self
 			.store
 			.versions(&row.tenant, &row.secret_resource)
-			.await?
-		{
-			if let Ok(value) = self
-				.reader
-				.read(&row.tenant, &row.secret_resource, &version)
-				.await && matches!(StoredVersion::open(&value), Ok(StoredVersion::Unconfirmed { revocation_unconfirmed }) if revocation_unconfirmed == id)
-			{
-				recorded = true;
-				break;
-			}
-		}
-		if !recorded {
-			self.store
-				.add_version(
-					&row.tenant,
-					&row.secret_resource,
-					&StoredVersion::Unconfirmed {
-						revocation_unconfirmed: id,
-					}
-					.seal(),
-				)
-				.await?;
-		}
+			.await?;
+		self.retain_uncertainty(&row, &versions).await?;
 		if pinned_lost && row.state != State::NeedsReconnection {
 			Self::strand(scope, row, actor).await
 		} else {
 			scope.commit().await
 		}
+	}
+
+	/// Preserve evidence before unavailable versions or a missing old pin
+	/// can be replaced. This Store commit survives metadata rollback.
+	async fn retain_uncertainty(&self, row: &PlanConnection, versions: &[String]) -> Result<()> {
+		for version in versions {
+			if let Ok(value) = self
+				.reader
+				.read(&row.tenant, &row.secret_resource, version)
+				.await && matches!(StoredVersion::open(&value), Ok(StoredVersion::Unconfirmed { revocation_unconfirmed }) if revocation_unconfirmed == row.id)
+			{
+				return Ok(());
+			}
+		}
+		self.store
+			.add_version(
+				&row.tenant,
+				&row.secret_resource,
+				&StoredVersion::Unconfirmed {
+					revocation_unconfirmed: row.id,
+				}
+				.seal(),
+			)
+			.await?;
+		Ok(())
 	}
 
 	/// Asks for reconnection while keeping a pin nothing can read, as
@@ -1354,6 +1374,8 @@ impl Service {
 		// Once any uncertainty evidence is deleted, a failed metadata deletion
 		// must still be unconfirmed on retry. Remove the committed pin first;
 		// a row without a pin is never proof of upstream revocation either.
+		// Reconnect preserves a missing pin as a durable uncertainty marker
+		// before writing a new grant, so it cannot erase this evidence.
 		versions.sort_by_key(|version| Some(version) != row.pinned_version.as_ref());
 		for version in versions {
 			gone(self.store.destroy(&row.tenant, &version).await)?;
