@@ -7,6 +7,8 @@ use crate::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+mod query;
+pub use query::semantic_query_policy;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -249,9 +251,14 @@ pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<Nati
 		return Ok(Some(descriptor));
 	}
 	match entry.kind.as_str() {
-		"memory" => serde_json::from_value::<crate::memory::ProviderConfig>(entry.config.clone())?
-			.policy
-			.validate()?,
+		"memory" => {
+			let provider: crate::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			provider.policy.validate()?;
+			if let Some(declaration) = provider.context_source {
+				declaration.validate()?;
+			}
+		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
 			if let Some(declaration) = &source.context_source {
@@ -377,6 +384,19 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 			}
 			.declaration(&source.identity);
 			(declaration, baseline)
+		} else if source.definition.kind == "memory" {
+			let provider: crate::memory::ProviderConfig =
+				serde_json::from_value(source.definition.config.clone())?;
+			let Some(declaration) = provider.context_source else {
+				continue;
+			};
+			let baseline = NativeContext {
+				schema_version: 1,
+				source: NativeSource::SemanticMemory {},
+				context_source: None,
+			}
+			.declaration(&source.identity);
+			(declaration, baseline)
 		} else {
 			continue;
 		};
@@ -385,15 +405,10 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 			&& matches!(
 				baseline.operation.as_str(),
 				"semantic_memory" | "workspace_retrieval" | "conversation_memory"
-			) && matches!(
-			declaration.pin,
-			PinPolicy::Scored {
-				mode: crate::decision::Mode::Enforce,
-				..
-			}
-		) {
+			) && !declaration.pin.preserves_mandatory()
+		{
 			return Err(Error::Invalid(
-				"required-Home semantic contribution cannot enforce Scored selection".into(),
+				"required-Home semantic contribution must remain Always or Scored Shadow".into(),
 			));
 		}
 		if declaration.provider != baseline.provider || declaration.operation != baseline.operation
@@ -445,4 +460,12 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 		}
 	}
 	Ok(())
+}
+
+/// Selection approval is checked at the hook boundary, so unavailability is a
+/// typed source pause (or an observational Shadow outcome), not Tool admission.
+pub fn is_selection_decider(entry: &crate::registry::Entry) -> bool {
+	entry.kind == "decider"
+		&& serde_json::from_value::<crate::decision::DeciderConfig>(entry.config.clone())
+			.is_ok_and(|config| config.hook == crate::decision::Hook::ContextSelection)
 }

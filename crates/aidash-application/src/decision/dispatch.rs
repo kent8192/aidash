@@ -44,20 +44,21 @@ pub fn decision_identity(
 	window: usize,
 	route: u32,
 ) -> Uuid {
-	stable_id(&json!({
-		"contract":"aidash.decision/2", "node":boundary.node, "run":boundary.run,
-		"step":boundary.step, "cycle":boundary.cycle, "retry":boundary.retry,
-		"input_revision":boundary.input_revision, "input_digest":boundary.input_digest,
-		"decider":decider, "route":route,
-		"binding_restrictions":binding_restrictions, "state":state,
-		"sources":sources, "window":window,
-	}))
+	aidash_domain::decision::charged_decision_identity(
+		boundary,
+		decider,
+		binding_restrictions,
+		state,
+		sources,
+		window,
+		route,
+	)
 }
 
 /// The stable identity of one Decision Attempt of a decision. A journal
 /// recomputes it before charging, so an attempt is never charged under another key.
 pub fn attempt_identity(decision: Uuid, request_digest: &str, questions: &[String]) -> Uuid {
-	stable_id(&json!({"decision":decision,"request":request_digest,"questions":questions}))
+	aidash_domain::decision::charged_attempt_identity(decision, request_digest, questions)
 }
 
 pub(super) fn record(
@@ -182,6 +183,7 @@ pub(super) fn validate_recovered_plan(
 }
 
 fn validate_recovered_answers(prior: &RecoveredAttempt, request: &PreparedRequest) -> Result<()> {
+	prior.provider_report.validate()?;
 	match (&prior.answers, prior.status) {
 		(Some(answers), AttemptStatus::Answered) => {
 			Ok(validate_answers(&request.questions, answers)?)
@@ -241,7 +243,7 @@ impl BatchResult {
 	}
 	fn recover(&mut self, prior: RecoveredAttempt, request: &PreparedRequest) -> Result<()> {
 		validate_recovered_answers(&prior, request)?;
-		self.evidence = Some(attempt_evidence(&prior.permit, prior.status));
+		self.evidence = Some(recovered_attempt_evidence(&prior));
 		match prior.status {
 			AttemptStatus::Answered => {
 				self.answers = prior.answers.expect("validated answered attempt");
@@ -262,6 +264,7 @@ impl BatchResult {
 
 pub(super) fn attempt_evidence(permit: &DispatchPermit, status: AttemptStatus) -> AttemptEvidence {
 	AttemptEvidence {
+		provider_report: AttemptProviderReport::Unknown,
 		id: permit.record.attempt,
 		request_digest: permit.record.request_digest.clone(),
 		questions: permit.record.questions.clone(),
@@ -269,6 +272,13 @@ pub(super) fn attempt_evidence(permit: &DispatchPermit, status: AttemptStatus) -
 		status,
 		owner_receipts: permit.owner_receipts.clone(),
 	}
+}
+
+/// Recovered facts must come from the durable attempt, never from a new provider request.
+pub(super) fn recovered_attempt_evidence(prior: &RecoveredAttempt) -> AttemptEvidence {
+	let mut evidence = attempt_evidence(&prior.permit, prior.status);
+	evidence.provider_report = prior.provider_report.clone();
+	evidence
 }
 
 impl DecisionGate<'_> {
@@ -367,7 +377,12 @@ impl DecisionGate<'_> {
 				}
 				return Err(error);
 			}
-			let (status, answers, failure) = match transport.dispatch().await {
+			origin = Reason::InvalidAnswers;
+			let reported = transport.dispatch_reported().await;
+			reported
+				.provider_report
+				.validate_route(&config.routes[record.route as usize])?;
+			let (status, answers, failure) = match reported.result {
 				Ok(answers) if validate_answers(&request.questions, &answers).is_ok() => {
 					(AttemptStatus::Answered, Some(answers), None)
 				}
@@ -405,12 +420,18 @@ impl DecisionGate<'_> {
 			origin = Reason::JournalFailure;
 			if let Err(error) = self
 				.journal
-				.finish_attempt(&permit, answers.as_ref(), status)
+				.finish_reported_attempt(
+					&permit,
+					answers.as_ref(),
+					status,
+					&reported.provider_report,
+				)
 				.await
 			{
 				batch.evidence.as_mut().unwrap().status = AttemptStatus::Uncertain;
 				return Err(error);
 			}
+			batch.evidence.as_mut().unwrap().provider_report = reported.provider_report;
 			batch.answers = answers.unwrap_or_default();
 			if let Some((reason, error, next_route)) = failure {
 				origin = reason;

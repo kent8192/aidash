@@ -70,6 +70,7 @@ mod controlled_context_composition {
 		#[default(true)] workspace_retrieval: bool,
 		#[default(false)] ordered: bool,
 		#[default(false)] degrade: bool,
+		#[default(false)] on_demand_memory: bool,
 		#[from(context_runtime)]
 		#[with(ordered)]
 		_runtime: common::RuntimeFuture,
@@ -157,7 +158,10 @@ mod controlled_context_composition {
 			if degrade && adapter == "workspace_retrieval" {
 				source["on_unavailable"] = json!("degrade");
 			}
-			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
+			let mut entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
+			if on_demand_memory && adapter == "semantic_memory" {
+				entry["config"]["context_source"] = json!({"provider":"aidash.native-context/1","operation":"semantic_memory","tools":{"read":[aidash_domain::registry::bindings::QualifiedRef::builtin(f.config.deployment.as_str(),"memory_recall")],"write":[],"detail":null},"pin":{"policy":"on_demand"},"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1","disclosure":{"previews":false,"query":false},"required_home":false});
+			}
 			f.registry
 				.register(&acme, serde_json::from_value(entry).unwrap())
 				.await
@@ -350,6 +354,33 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		expected.sort();
 		assert_eq!(kinds, expected, "semantic: {semantic}");
 	}
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn on_demand_memory_does_not_leak_through_an_always_workspace_source(
+	#[future(awt)]
+	#[with(true, true, false, false, true)]
+	controlled_context: ControlledContext,
+) {
+	let fixture = controlled_context;
+	fixture.worker.worker_once().await.unwrap();
+	let contexts = fixture.captured.lock().unwrap().clone();
+	assert_eq!(contexts.len(), 1);
+	let matches = contexts[0]["current"]["semantic_memory"]["workspace"]["matches"]
+		.as_array()
+		.expect("workspace result remains available");
+	let mut kinds = matches
+		.iter()
+		.map(|item| item["source"]["kind"].as_str().unwrap())
+		.collect::<Vec<_>>();
+	kinds.sort();
+	assert_eq!(kinds, ["artifact", "message"]);
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
 	drop(fixture.model_server);

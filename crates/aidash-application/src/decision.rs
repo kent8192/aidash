@@ -13,6 +13,7 @@ use uuid::Uuid;
 mod approval_state;
 mod dispatch;
 mod judge;
+pub mod observation;
 mod source_selection;
 mod state;
 pub use approval_state::{ApprovalState, ApprovalTool, build_approval_state};
@@ -240,7 +241,7 @@ impl DecisionGate<'_> {
 		for prior in &recovered {
 			evidence
 				.attempts
-				.push(dispatch::attempt_evidence(&prior.permit, prior.status));
+				.push(dispatch::recovered_attempt_evidence(prior));
 			if let Some(answers) = &prior.answers {
 				evidence.answers.extend(answers.clone());
 			}

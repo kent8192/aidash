@@ -73,6 +73,11 @@ fn identity(id: &str, version: &str) -> String {
 	format!("{id}@{version}")
 }
 impl Scope {
+	fn put_builtins(&mut self, node: &str) {
+		for declaration in crate::test_support::builtin_entries(node) {
+			self.put(declaration);
+		}
+	}
 	fn put(&mut self, entry: Entry) {
 		self.entries
 			.insert(identity(&entry.id, &entry.version), entry);
@@ -380,9 +385,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		fail_documents,
 		..Default::default()
 	};
-	for builtin in crate::test_support::builtin_entries("aidash://home") {
-		scope.put(builtin);
-	}
+	scope.put_builtins("aidash://home");
 	scope.put(definition("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	let entry = definition(
 		"",
@@ -433,7 +436,9 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 			scope
 				.entries
 				.values()
-				.find(|e| e.kind == "source")
+				.find(
+					|e| e.kind == "source" && e.config["source"]["adapter"] == "private_references"
+				)
 				.unwrap()
 				.config["source"]["digest"],
 			aidash_domain::registry::knowledge::digest(scope.documents.as_ref().unwrap())

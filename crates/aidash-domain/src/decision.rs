@@ -9,12 +9,15 @@ use std::collections::BTreeMap;
 
 pub mod approval;
 pub mod evidence;
+pub mod observation;
 pub mod policy;
 pub mod probability;
+pub mod provider_report;
 pub mod pruning;
 pub use approval::*;
 pub use evidence::*;
 pub use probability::Probability;
+pub use provider_report::{AttemptProviderReport, ProviderCost};
 
 /// Jev through OpenRouter's System One API.
 pub const PROVIDER: &str = "typesafe.jev/1";
@@ -51,6 +54,8 @@ pub enum Hook {
 	/// Whether a pending Tool call may run without a person approving it
 	/// (the Auto Approval Mode, ADR 0077).
 	Approval,
+	/// Independent typed human-approval observer (ADR 0085).
+	ApprovalObservation,
 }
 impl Hook {
 	/// The builder, option source and rule a Decider of this hook must name,
@@ -66,6 +71,11 @@ impl Hook {
 				builder: BUILDER,
 				option_source: OPTION_SOURCE,
 				rule: RULE,
+			},
+			Self::ApprovalObservation => HookContract {
+				builder: observation::BUILDER,
+				option_source: observation::OPTION_SOURCE,
+				rule: observation::RULE,
 			},
 			Self::Approval => HookContract {
 				builder: APPROVAL_BUILDER,
@@ -305,7 +315,9 @@ impl DeciderConfig {
 		}
 		// Its state holds what people wrote to the Run, so an approval Decider
 		// retains none of it.
-		if self.hook == Hook::Approval && self.state_retention.enabled {
+		if matches!(self.hook, Hook::Approval | Hook::ApprovalObservation)
+			&& self.state_retention.enabled
+		{
 			return Err(Error::Invalid(
 				"an approval Decider does not retain its state".into(),
 			));

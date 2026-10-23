@@ -116,6 +116,9 @@ impl ReadProvenanceScope for Reads<'_> {
 						.into_iter()
 						.filter(|definition| {
 							definition.identity.registry_deployment == this.node_id
+								&& !aidash_domain::registry::bindings::sources::is_selection_decider(
+									&definition.definition,
+								)
 						})
 						.map(|definition| (definition.identity.id, definition.identity.version)),
 				);
