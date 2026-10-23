@@ -182,6 +182,7 @@ pub(super) fn validate_recovered_plan(
 }
 
 fn validate_recovered_answers(prior: &RecoveredAttempt, request: &PreparedRequest) -> Result<()> {
+	prior.provider_report.validate()?;
 	match (&prior.answers, prior.status) {
 		(Some(answers), AttemptStatus::Answered) => {
 			Ok(validate_answers(&request.questions, answers)?)
@@ -241,7 +242,7 @@ impl BatchResult {
 	}
 	fn recover(&mut self, prior: RecoveredAttempt, request: &PreparedRequest) -> Result<()> {
 		validate_recovered_answers(&prior, request)?;
-		self.evidence = Some(attempt_evidence(&prior.permit, prior.status));
+		self.evidence = Some(recovered_attempt_evidence(&prior));
 		match prior.status {
 			AttemptStatus::Answered => {
 				self.answers = prior.answers.expect("validated answered attempt");
@@ -262,6 +263,7 @@ impl BatchResult {
 
 pub(super) fn attempt_evidence(permit: &DispatchPermit, status: AttemptStatus) -> AttemptEvidence {
 	AttemptEvidence {
+		provider_report: AttemptProviderReport::Unknown,
 		id: permit.record.attempt,
 		request_digest: permit.record.request_digest.clone(),
 		questions: permit.record.questions.clone(),
@@ -269,6 +271,13 @@ pub(super) fn attempt_evidence(permit: &DispatchPermit, status: AttemptStatus) -
 		status,
 		owner_receipts: permit.owner_receipts.clone(),
 	}
+}
+
+/// Recovered facts must come from the durable attempt, never from a new provider request.
+pub(super) fn recovered_attempt_evidence(prior: &RecoveredAttempt) -> AttemptEvidence {
+	let mut evidence = attempt_evidence(&prior.permit, prior.status);
+	evidence.provider_report = prior.provider_report.clone();
+	evidence
 }
 
 impl DecisionGate<'_> {
@@ -367,7 +376,12 @@ impl DecisionGate<'_> {
 				}
 				return Err(error);
 			}
-			let (status, answers, failure) = match transport.dispatch().await {
+			origin = Reason::InvalidAnswers;
+			let reported = transport.dispatch_reported().await;
+			reported
+				.provider_report
+				.validate_route(&config.routes[record.route as usize])?;
+			let (status, answers, failure) = match reported.result {
 				Ok(answers) if validate_answers(&request.questions, &answers).is_ok() => {
 					(AttemptStatus::Answered, Some(answers), None)
 				}
@@ -405,12 +419,18 @@ impl DecisionGate<'_> {
 			origin = Reason::JournalFailure;
 			if let Err(error) = self
 				.journal
-				.finish_attempt(&permit, answers.as_ref(), status)
+				.finish_reported_attempt(
+					&permit,
+					answers.as_ref(),
+					status,
+					&reported.provider_report,
+				)
 				.await
 			{
 				batch.evidence.as_mut().unwrap().status = AttemptStatus::Uncertain;
 				return Err(error);
 			}
+			batch.evidence.as_mut().unwrap().provider_report = reported.provider_report;
 			batch.answers = answers.unwrap_or_default();
 			if let Some((reason, error, next_route)) = failure {
 				origin = reason;

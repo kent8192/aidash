@@ -53,6 +53,11 @@ pub struct ReportGroup {
 	pub provider_contract: Option<String>,
 	pub model: Option<String>,
 	pub hosts: Vec<String>,
+	/// Actual verified provider identities, which may differ across batches.
+	pub served_models: Vec<String>,
+	pub served_hosts: Vec<String>,
+	pub includes_unknown_model: bool,
+	pub includes_unknown_host: bool,
 	pub effective_threshold: Probability,
 }
 impl ReportGroup {
@@ -70,6 +75,35 @@ impl ReportGroup {
 			.as_ref()
 			.ok_or_else(|| Error::Invalid("observer is disabled".into()))?;
 		let route = evidence.and_then(|e| e.routes.last());
+		let mut served_models = std::collections::BTreeSet::new();
+		let mut served_hosts = std::collections::BTreeSet::new();
+		let mut includes_unknown_model = route.is_none_or(|r| r.attempts.is_empty());
+		let mut includes_unknown_host = includes_unknown_model;
+		for attempt in route.into_iter().flat_map(|r| r.attempts.iter()) {
+			match &attempt.provider_report {
+				AttemptProviderReport::Unknown => {
+					includes_unknown_model = true;
+					includes_unknown_host = true;
+				}
+				AttemptProviderReport::Reported {
+					served_model,
+					served_host,
+					..
+				} => {
+					if let Some(model) = served_model {
+						served_models.insert(model.clone());
+					} else {
+						includes_unknown_model = true;
+					}
+					if let Some(host) = served_host {
+						served_hosts.insert(host.clone());
+					} else {
+						includes_unknown_host = true;
+					}
+				}
+			}
+		}
+
 		Ok(Self {
 			decider: pin.identity.clone(),
 			configuration_digest: pin.configuration_digest.clone(),
@@ -82,6 +116,10 @@ impl ReportGroup {
 			provider_contract: route.map(|r| r.provider_contract.clone()),
 			model: route.map(|r| r.model.clone()),
 			hosts: route.map_or_else(Vec::new, |r| r.hosts.clone()),
+			served_models: served_models.into_iter().collect(),
+			served_hosts: served_hosts.into_iter().collect(),
+			includes_unknown_model,
+			includes_unknown_host,
 			effective_threshold: route.map_or(frame.settings.restrictions.threshold, |r| {
 				r.effective_threshold
 			}),
