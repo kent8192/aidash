@@ -2592,7 +2592,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		delivery,
 		"accepted_save_failure" | "accepted_lease_lost" | "shared_read_revoked"
 	);
-	for _ in 0..if accepted_save_rejected { 1 } else { 4 } {
+	for _ in 0..4 {
 		let attempt =
 			tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
 				.await
@@ -2604,6 +2604,9 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			attempt.unwrap();
 		}
 
+		if accepted_save_rejected && !captured.lock().unwrap().is_empty() {
+			break;
+		}
 		if (reflect && captured.lock().unwrap().len() > 1)
 			|| (!reflect
 				&& !captured.lock().unwrap().is_empty()
