@@ -51,6 +51,11 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 		return true;
 	}
 	let segments: Vec<&str> = path.split('/').collect();
+	// The Workspace handler reports Tenant Deletion before its ordinary refusal
+	// of administrator writes. It still grants no mutation authority.
+	if *method == Method::PATCH && matches!(segments.as_slice(), ["", "workspaces", _]) {
+		return true;
+	}
 	if matches!(
 		segments.as_slice(),
 		[

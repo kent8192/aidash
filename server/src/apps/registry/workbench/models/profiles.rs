@@ -38,26 +38,28 @@ impl AgentTestProfile {
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 	) -> Result<Vec<TestProfile>> {
-		Self::list(tx, tenant, Some(100)).await
+		Self::list(tx, tenant, None).await
 	}
 
 	pub(crate) async fn administered(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
+		after: Option<&str>,
 	) -> Result<Vec<TestProfile>> {
-		Self::list(tx, tenant, None).await
+		Self::list(tx, tenant, after).await
 	}
 
 	async fn list(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
-		limit: Option<usize>,
+		after: Option<&str>,
 	) -> Result<Vec<TestProfile>> {
 		let mut query = Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
-			.order_by(&["id"]);
-		if let Some(limit) = limit {
-			query = query.limit(limit);
+			.order_by(&["id"])
+			.limit(100);
+		if let Some(after) = after {
+			query = query.filter(Self::field_id().gt(after.to_owned()));
 		}
 		Ok(query
 			.all_with_executor(tx)

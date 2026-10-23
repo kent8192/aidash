@@ -1479,3 +1479,68 @@ test("Tenant test settings enforce field minima and require a rules array before
     .poll(() => writes)
     .toEqual([{ expected_revision: 0, enabled: true, rules: [] }]);
 });
+
+test("Tenant profile writers page to later profiles and keep the current revision on save", async ({
+  page,
+}) => {
+  await setup(page, {
+    locale: "en-US",
+    subject: true,
+    tenantActions: ["workbench.test_profile.update"],
+  });
+  const profile = (n: number) => ({
+    tenant: "acme",
+    id: `profile-${String(n).padStart(3, "0")}`,
+    revision: 17,
+    enabled: n !== 100,
+    rules: [],
+    updated_at: "2026-10-23T00:00:00Z",
+  });
+  const cursors: (string | null)[] = [];
+  const writes: unknown[] = [];
+  await page.route(
+    /\/api\/workbench\/test-profiles\/acme(?:\?.*)?$/,
+    (route) => {
+      const after = new URL(route.request().url()).searchParams.get("after");
+      cursors.push(after);
+      return route.fulfill({
+        json:
+          after === "profile-099"
+            ? [profile(100)]
+            : Array.from({ length: 100 }, (_, n) => profile(n)),
+      });
+    },
+  );
+  await page.route(
+    "**/api/workbench/test-profiles/acme/profile-100",
+    (route) => {
+      writes.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ...profile(100), revision: 18 } });
+    },
+  );
+  await page.goto("/settings?view=registry");
+  await page
+    .getByRole("button", { name: "Workbench tests", exact: true })
+    .click();
+  const select = page.getByLabel("Profile", { exact: true }).first();
+  await expect(select.locator("option")).toHaveCount(101);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(select.locator("option")).toHaveCount(2);
+  await select.selectOption("profile-100");
+  await expect(page.getByLabel("Rules (JSON)", { exact: true })).toHaveValue(
+    "[]",
+  );
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({
+    expected_revision: 17,
+    enabled: false,
+    rules: [],
+  });
+  await expect(
+    page.getByRole("button", { name: "Next", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Previous", exact: true }).click();
+  await expect(select.locator("option")).toHaveCount(101);
+  expect(cursors).toContain("profile-099");
+});

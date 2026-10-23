@@ -143,6 +143,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn resolve_research(&self, _run: &mut Run) -> Result<()> {
 		Ok(())
 	}
+	/// Persist a workspace's recovery before a later memory failure reloads the
+	/// Run. Keep the current lease and adopt the saved Run revision.
+	async fn recover_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.semantic_recovered").await
+	}
 	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
 	/// without research evidence has nothing to revoke.
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
@@ -518,6 +523,14 @@ pub trait ExecutionVisibility: Send {
 	async fn suspend(&mut self) -> Result<()>;
 	async fn resume(&mut self) -> Result<()>;
 }
+/// Workspace retrieval progress survives a later native-memory failure. The
+/// executor persists recovery of an earlier outage before propagating `result`.
+#[derive(Debug)]
+pub struct SemanticContextRead {
+	pub workspace_retrieved: bool,
+	pub result: Result<Option<Value>>,
+}
+
 /// Composition supplies concrete adapters without exposing their framework types.
 /// A native authority owns its policy scope for the complete step, suspends only
 /// around inference, and rechecks before provider output is accepted.
@@ -607,7 +620,7 @@ pub trait ExecutionEnvironment: Send + Sync {
 		entry: &Entry,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 		degrade_on_outage: bool,
-	) -> Result<Option<Value>>;
+	) -> SemanticContextRead;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	/// The pages people asked this Run to read, recorded beside the inputs
 	/// that carried them (ADR 0052). Empty when the Run has none.

@@ -142,7 +142,7 @@ impl ProfileRepository for Repository {
 			profile("partial", true, json!([rule(), foreign])),
 		])
 	}
-	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+	async fn administered(&self, tenant: &str, _after: Option<&str>) -> Result<Vec<TestProfile>> {
 		assert_eq!(tenant, "tenant");
 		self.state.lock().unwrap().calls.push("administered");
 		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
@@ -460,7 +460,7 @@ async fn profile_writers_read_their_tenants_profiles_with_rules(
 ) {
 	let mut r = Repository::new(principal);
 	r.authorized = authorized;
-	let result = administered(&r, "tenant".into()).await;
+	let result = administered(&r, "tenant".into(), None).await;
 	assert_eq!(result.is_ok(), reads);
 	if reads {
 		assert_eq!(result.unwrap()[0].rules, json!([rule()]));

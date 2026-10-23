@@ -257,7 +257,16 @@ async fn administration_lists_profiles_beyond_the_first_hundred(
 			.unwrap(),
 		200,
 	);
-	assert_eq!(rows.as_array().unwrap().len(), 101);
-	assert_eq!(rows[100]["id"], "profile-100");
-	assert_eq!(rows[100]["enabled"], false);
+	assert_eq!(rows.as_array().unwrap().len(), 100);
+	assert_eq!(rows[99]["id"], "profile-099");
+	let next = assert_json(
+		alice
+			.get("/api/workbench/test-profiles/endpoint?after=profile-099")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(next.as_array().unwrap().len(), 1);
+	assert_eq!(next[0]["id"], "profile-100");
+	assert_eq!(next[0]["enabled"], false);
 }

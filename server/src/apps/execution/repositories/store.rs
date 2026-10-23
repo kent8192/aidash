@@ -62,6 +62,9 @@ pub struct Store {
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
+	/// Restoration claims survive external retirement without consuming the
+	/// control connections retirement itself needs. Shared across Store clones.
+	pub restoration_pool: Pool,
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
 	/// Model and embedding clients: `semantic_client` for Provider Catalog
@@ -392,6 +395,13 @@ impl Store {
 			.max_connections(16)
 			.connect_with(pool.connect_options().as_ref().clone())
 			.await?;
+		let restoration_pool = pool
+			.options()
+			.clone()
+			.max_connections(4)
+			.min_connections(0)
+			.idle_timeout(std::time::Duration::from_secs(10))
+			.connect_lazy_with(pool.connect_options().as_ref().clone());
 		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::new(
@@ -408,6 +418,7 @@ impl Store {
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
+			restoration_pool: restoration_pool.into(),
 			node_id,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
@@ -514,6 +525,7 @@ impl Store {
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
+			restoration_pool: self.restoration_pool.clone(),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
@@ -561,6 +573,7 @@ impl Store {
 			pool: Pool::from(pool)
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
+			restoration_pool: self.restoration_pool.clone(),
 			control_pool: control_pool
 				.with_memory_recovery(self.control_pool.memory_recovery())
 				.with_dashboard_policy(self.control_pool.dashboard_policy()),
@@ -2058,6 +2071,13 @@ impl Store {
 	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<WorkspaceSnapshot> {
 		self.pool
 			.atomic(scope, async |db| {
+				if let Some(tenant) = scope.tenant_name() {
+					crate::authorization::remote::deployment_administrator::tenant(
+						db,
+						tenant.as_str(),
+					)
+					.await?;
+				}
 				Ok(WorkspaceSnapshot {
 					workspace: WorkspaceRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
@@ -2984,6 +3004,7 @@ impl Store {
 			kind,
 			"run.sources_observed"
 				| "run.semantic_degraded"
+				| "run.semantic_recovered"
 				| "run.estimate_pinned"
 				| "context.summary_revoked"
 		);
@@ -3923,6 +3944,13 @@ impl Store {
 	) -> Result<RunDetails> {
 		self.pool
 			.atomic(scope, async |tx| {
+				if let Some(tenant) = scope.tenant_name() {
+					crate::authorization::remote::deployment_administrator::tenant(
+						tx,
+						tenant.as_str(),
+					)
+					.await?;
+				}
 				let run = RunRecord::objects()
 					.filter(RunRecord::field_id().eq(id))
 					.all_with_executor(tx)

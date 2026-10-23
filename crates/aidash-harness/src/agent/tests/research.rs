@@ -705,3 +705,48 @@ async fn an_elided_research_result_loses_the_arguments_its_original_named(fixtur
 	);
 	assert!(request.contains("a kept note"), "{request}");
 }
+
+#[rstest]
+#[case::fresh(false)]
+#[case::completed_replay(true)]
+#[tokio::test]
+async fn expired_view_results_are_revalidated_before_selecting_model_media(
+	mut fixture: Fixture,
+	#[case] replay: bool,
+) {
+	let view = Scripted::research(Operation::View);
+	let output = json!({"contract":"aidash.research/1", "version":1, "operation":"view", "status":"ok", "data":{"evidence_ref":KNOWN.to_string(), "image":{"digest":"sha256:fixture"}}});
+	*view.outputs.lock().unwrap() = [output.clone()].into();
+	bind(&mut fixture, "page_image", view.clone());
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.local_authority = true;
+	state.scoped = true;
+	state.permit_tools = true;
+	*state.tool_call_approvals.lock().unwrap() =
+		[ToolCallApproval::Approved { approval_id: None }].into();
+	state.settled_research = Some(aidash_domain::research::expiry::tombstone(Operation::View));
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"image-0",
+			"page_image",
+			json!({"document_id":EXPIRED_DOCUMENT, "page":1}),
+		)],
+	);
+	if replay {
+		let key = format!("{}:0:0", fixture.run.id);
+		fixture
+			.backend
+			.0
+			.invocations
+			.lock()
+			.unwrap()
+			.insert(key, ("COMPLETED".into(), Some(output)));
+	}
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.state.tool().unwrap().selected_media.is_empty());
+	assert!(
+		matches!(fixture.run.context.events().last(), Some(ContextEvent::Tool{result,..}) if result["error"]["code"] == "result_expired")
+	);
+	assert_eq!(view.invocations(), usize::from(!replay));
+}

@@ -72,7 +72,7 @@ impl ProfileRepository for Repository<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+	async fn administered(&self, tenant: &str, after: Option<&str>) -> Result<Vec<TestProfile>> {
 		let pool = &self.runtime.store.pool;
 		let actions = self.tenant_actions();
 		actions.check_binding(pool).await?;
@@ -87,7 +87,7 @@ impl ProfileRepository for Repository<'_> {
 						aidash_domain::identity::tenant_administration::COLLECTION,
 					)
 					.await?;
-				AgentTestProfile::administered(tx, tenant).await
+				AgentTestProfile::administered(tx, tenant, after).await
 			})
 			.await;
 		actions.record_denial(pool).await?;

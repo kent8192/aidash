@@ -496,6 +496,7 @@ impl ResearchAttempt {
 			lock(tx, &format!("research-account:{}", terms.account_id)).await?;
 			if !ResearchAccountTermination::objects()
 				.filter(ResearchAccountTermination::field_account_id().eq(&terms.account_id))
+				.filter(ResearchAccountTermination::field_terminated_at().lte(Utc::now()))
 				.all_with_executor(tx)
 				.await
 				.map_err(FrameworkError::from)?

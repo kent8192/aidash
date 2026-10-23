@@ -49,7 +49,9 @@ export function WorkbenchTestSettings({
   return (
     <>
       {can("workbench.test_limits.update") && <TestLimits tenant={tenant} />}
-      {can("workbench.test_profile.update") && <TestProfiles tenant={tenant} />}
+      {can("workbench.test_profile.update") && (
+        <TestProfiles key={tenant} tenant={tenant} />
+      )}
     </>
   );
 }
@@ -152,14 +154,33 @@ function TestProfiles({ tenant }: { tenant: string }) {
   const { t } = useI18n();
   const client = useQueryClient();
   const [selected, setSelected] = useState(NEW_PROFILE);
+  const [cursors, setCursors] = useState<(string | undefined)[]>([undefined]);
+  const [savedProfile, setSavedProfile] = useState<TestProfile>();
+  const after = cursors[cursors.length - 1];
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const profiles = useQuery({
-    queryKey: ["workbench-test-profiles", tenant],
-    queryFn: () => workbenchTenantTestProfiles(encodeURIComponent(tenant)),
+    queryKey: ["workbench-test-profiles", tenant, after],
+    queryFn: () =>
+      workbenchTenantTestProfiles(
+        encodeURIComponent(tenant),
+        after ? { after } : undefined,
+      ),
   });
   const rows: TestProfile[] = !profiles.isError ? (profiles.data ?? []) : [];
-  const profile = rows.find((row) => row.id === selected);
+  const listed = rows.find((row) => row.id === selected);
+  const profile = profiles.isError
+    ? undefined
+    : savedProfile?.id === selected &&
+        (!listed || savedProfile.revision > listed.revision)
+      ? savedProfile
+      : listed;
+  const changePage = (next: (string | undefined)[]) => {
+    setCursors(next);
+    setSelected(NEW_PROFILE);
+    setSavedProfile(undefined);
+    setError("");
+  };
   return (
     <Panel title={t("testProfiles")}>
       <Hint>{t("testProfilesHelp")}</Hint>
@@ -173,6 +194,7 @@ function TestProfiles({ tenant }: { tenant: string }) {
       <Field label={t("testProfileId")}>
         <NativeSelect
           value={selected}
+          disabled={busy || profiles.isPending}
           onChange={(event) => {
             setSelected(event.target.value);
             setError("");
@@ -180,6 +202,9 @@ function TestProfiles({ tenant }: { tenant: string }) {
           className="font-mono"
         >
           <option value={NEW_PROFILE}>{t("testProfileNew")}</option>
+          {profile && !listed && (
+            <option value={profile.id}>{profile.id}</option>
+          )}
           {rows.map((row) => (
             <option key={row.id} value={row.id}>
               {row.id}
@@ -187,6 +212,24 @@ function TestProfiles({ tenant }: { tenant: string }) {
           ))}
         </NativeSelect>
       </Field>
+      <div className="flex justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy || profiles.isPending || cursors.length === 1}
+          onClick={() => changePage(cursors.slice(0, -1))}
+        >
+          {t("previous")}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy || profiles.isPending || rows.length < 100}
+          onClick={() => changePage([...cursors, rows[rows.length - 1].id])}
+        >
+          {t("next")}
+        </Button>
+      </div>
       <form
         key={`${selected}:${profile?.revision ?? 0}`}
         className="grid min-w-0 gap-3"
@@ -215,7 +258,10 @@ function TestProfiles({ tenant }: { tenant: string }) {
               rules,
             },
           )
-            .then(() => setSelected(id))
+            .then((saved) => {
+              setSavedProfile(saved);
+              setSelected(id);
+            })
             .catch((reason) =>
               setError(
                 reason instanceof ApiError && reason.status === 409
@@ -233,7 +279,10 @@ function TestProfiles({ tenant }: { tenant: string }) {
             });
         }}
       >
-        <fieldset disabled={busy} className="grid min-w-0 gap-3">
+        <fieldset
+          disabled={busy || profiles.isPending || profiles.isError}
+          className="grid min-w-0 gap-3"
+        >
           {!profile && (
             <Field label={t("testProfileId")}>
               <Input

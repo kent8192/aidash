@@ -225,13 +225,27 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	age(&store, run.id, 29).await;
 	assert_eq!(swept().await.unwrap(), 0);
 	if retention_first {
-		sqlx::query("UPDATE research_snapshots SET purged_at=now(), purge_reason='retention', lines='[]'::jsonb, text_bytes=0 WHERE id=$1")
-			.bind(document).execute(store.pool.fixture_driver()).await.unwrap();
+		let sql = Query::update()
+			.table(Alias::new("research_snapshots"))
+			.value_expr(Alias::new("purged_at"), Expr::current_timestamp())
+			.value(Alias::new("purge_reason"), "retention")
+			.value(Alias::new("lines"), json!([]))
+			.value(Alias::new("text_bytes"), 0_i64)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(document)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
+			.execute(store.pool.fixture_driver())
+			.await
+			.unwrap();
 	}
 	age(&store, run.id, 31).await;
 	if late_settlement {
-		sqlx::query("UPDATE research_attempts SET completed_at=now() WHERE run_id=$1")
-			.bind(run.id)
+		let sql = Query::update()
+			.table(Alias::new("research_attempts"))
+			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
 			.execute(store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -385,7 +399,36 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 	assert_eq!(found["status"], "ok", "{found}");
 	age(&store, run.id, 2).await;
 	let mut ended = termed.terms.clone();
+	// A recorded future end is still usable until its effective date.
+	ended.terminated_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+	assert_eq!(
+		aidash_server::research::sweep_account_terms(&store, &[ended.clone()])
+			.await
+			.unwrap(),
+		0
+	);
+	let future = research
+		.search(
+			&Call {
+				run: run.id,
+				context_revision: 0,
+				key: "future-end",
+				provider: "research.fixture@1",
+				disclosure_approval: true,
+			},
+			&Termed {
+				fixture: FixtureResearch::default(),
+				terms: ended.clone(),
+			},
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(future["status"], "ok", "{future}");
 
+	// Simulate the recorded effective date passing. A later declaration cannot
+	// replace the immutable termination row, so advance the fixture's stored clock.
+	ended_ago(&store, "ending", 1).await;
 	// Act: the agreement ended yesterday; its deletion period has not passed.
 	ended.terminated_at = Some(chrono::Utc::now() - chrono::Duration::days(1));
 	let within = aidash_server::research::sweep_account_terms(&store, &[ended.clone()])
@@ -426,7 +469,7 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 		.unwrap();
 
 	// Assert
-	assert_eq!((within, undeclared, again), (0, 1, 0));
+	assert_eq!((within, undeclared, again), (0, 2, 0));
 	assert_eq!(
 		attempt(&store, run.id, "s1").await,
 		(Some("account_terms".into()), json!("result_expired"))

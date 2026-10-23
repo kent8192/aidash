@@ -1,6 +1,8 @@
 //! Native HTTP endpoints.
 use crate::apps::registry::workbench::profile::TestProfiles;
-use crate::apps::registry::workbench::serializers::profile::{ProfileInput, ProfileQuery};
+use crate::apps::registry::workbench::serializers::profile::{
+	ProfileInput, ProfilePageQuery, ProfileQuery,
+};
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
 use reinhardt::Depends;
@@ -32,8 +34,9 @@ pub async fn administered(
 	#[inject] service: Depends<TestProfiles>,
 	#[inject] actor: Actor,
 	Path(tenant): Path<String>,
+	Query(query): Query<ProfilePageQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.administered(actor, tenant).await)
+	crate::http::json(service.administered(actor, tenant, query.after).await)
 }
 
 #[put(

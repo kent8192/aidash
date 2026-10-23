@@ -397,6 +397,13 @@ this guarantee. Unattested external calls require fixtures. Binding digests,
 the admitted draft, test profile and current permissions are rechecked at
 every test step.
 
+Profile writers read the same Tenant's profiles and rules through
+`GET /api/workbench/test-profiles/{tenant}` under the same update action.
+Each request returns at most 100 profiles ordered by ID. Pass the last returned
+ID as the exclusive `after` cursor to read the next page; the dashboard provides
+Previous and Next controls without loading the entire collection. Ordinary
+draft profile discovery retains its bounded, authority-filtered summary list.
+
 A profile rule may name a [Tenant Secret](../tenant-secrets.md) with
 `secret: "<name>"`. Its writer needs `secret.use`, and the test endpoint must
 be among that Secret's recorded hosts. Rules never accept `credential_env`,

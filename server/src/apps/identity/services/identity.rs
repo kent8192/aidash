@@ -104,6 +104,7 @@ impl Authorization {
 	) -> Result<Vec<Credential>> {
 		self.pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				crate::authorization::remote::deployment_administrator::tenant(tx, tenant).await?;
 				AuthorizationCredential::visible_page(tx, tenant, None, offset, active).await
 			})
 			.await

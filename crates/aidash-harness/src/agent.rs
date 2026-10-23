@@ -856,7 +856,9 @@ impl<'a> Executor<'a> {
 	#[allow(clippy::too_many_arguments)]
 	async fn ordered_semantic_context(
 		&self,
-		run: &Run,
+		store: &dyn ExecutionStore,
+		run: &mut Run,
+		token: Uuid,
 		task: &Task,
 		inputs: &[(InputRead, String)],
 		budget: usize,
@@ -910,7 +912,8 @@ impl<'a> Executor<'a> {
 		}
 		let value = match &key {
 			Some(key) => {
-				self.environment
+				let read = self
+					.environment
 					.semantic_context(
 						run,
 						task,
@@ -920,7 +923,8 @@ impl<'a> Executor<'a> {
 						Some(key),
 						degrade_on_outage,
 					)
-					.await?
+					.await;
+				finish_semantic_read(store, run, token, read).await?
 			}
 			None => None,
 		};
@@ -1603,7 +1607,9 @@ impl<'a> Executor<'a> {
 					let retrieves = guard.is_some() || home.local();
 					let semantic = self
 						.ordered_semantic_context(
+							store,
 							run,
+							token,
 							&task,
 							&semantic_inputs,
 							semantic_budget,
@@ -1622,9 +1628,6 @@ impl<'a> Executor<'a> {
 						run.context = context.clone();
 						degrade_context(store, run, token, cause).await?;
 					} else {
-						if semantic.retrieved {
-							run.recovery.degraded.recovered();
-						}
 						if let Some(observation) = semantic.observation(
 							&pinned,
 							&binding_digest,
@@ -1643,7 +1646,7 @@ impl<'a> Executor<'a> {
 							.filter(|v| !v.is_null())
 							.cloned()
 					} else if guard.is_some() || home.local() {
-						self.environment
+						let read = self.environment
 							.semantic_context(
 								run,
 								&task,
@@ -1653,7 +1656,8 @@ impl<'a> Executor<'a> {
 								None,
 								degrade_on_outage,
 							)
-							.await?
+							.await;
+						finish_semantic_read(store, run, token, read).await?
 					} else {
 						None
 					};
@@ -1667,7 +1671,6 @@ impl<'a> Executor<'a> {
 						run.context = context.clone();
 						degrade_context(store, run, token, cause).await?;
 					} else if cached_sources.is_none() {
-						run.recovery.degraded.recovered();
 						context.source_observation =
 							Some(aidash_domain::context::sources::SourceObservation::new(
 								source_boundary,
@@ -2750,6 +2753,12 @@ impl<'a> Executor<'a> {
 						Err(e) => return Err(e),
 					}
 				};
+                // Revalidate Research before deriving any media selection. A completed
+                // replay may now be a tombstone under expired account terms.
+                let research_result = aidash_domain::research::revocation::result_operation(&output).is_some();
+                let (output, unfinished_key) = if research_result {
+                    (store.invocation_finish(run, token, &key, &output).await?, None)
+                } else { (output, unfinished_key) };
 				if let Some(selection) =
 					contract.behavior.model_media_selection(&call.arguments, &output)
 				{
@@ -2823,12 +2832,9 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-				// The stored result replaces a research result whose account
-				// terms ended meanwhile (ADR 0058).
-				let output = if invocation.status != "COMPLETED"
-					|| aidash_domain::research::revocation::result_operation(&output).is_some() {
-					store.invocation_finish(run, token, &key, &output).await?
-				} else { output };
+                let output = if invocation.status != "COMPLETED" && !research_result {
+                    store.invocation_finish(run, token, &key, &output).await?
+                } else { output };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() {
@@ -3449,6 +3455,23 @@ impl OrderedSemantic {
 /// degradation is saved, with `run.semantic_degraded`. A re-entry of the same
 /// step saves nothing here: the degradation is already durable, and the
 /// refreshed cause rides on the step's next save.
+/// Recovery reloads the durable Run. Save an independently recovered
+/// workspace before a later memory failure leaves this step.
+async fn finish_semantic_read(
+	store: &dyn ExecutionStore,
+	run: &mut Run,
+	token: Uuid,
+	read: SemanticContextRead,
+) -> Result<Option<Value>> {
+	if read.workspace_retrieved && run.recovery.degraded.outage {
+		run.recovery.degraded.recovered();
+		run.recovery.semantic_reason = None;
+		run.recovery.retry = None;
+		store.recover_sources(run, token).await?;
+	}
+	read.result
+}
+
 async fn degrade_context(
 	store: &dyn ExecutionStore,
 	run: &mut Run,

@@ -49,6 +49,7 @@ struct State {
 	conversation_memory: bool,
 	deny_source: bool,
 	memory_value: Mutex<Value>,
+	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
 	token: Uuid,
 	task: Mutex<Task>,
@@ -140,6 +141,8 @@ struct State {
 	/// Provider results the Research account terms no longer keep.
 	expired_research: aidash_domain::research::expiry::ExpiredResults,
 	expired_research_after: Option<usize>,
+	/// A result the persistence boundary replaces when its account expires.
+	settled_research: Option<Value>,
 	expiry_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
@@ -505,6 +508,7 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
+		let output = self.0.settled_research.as_ref().unwrap_or(output);
 		self.0
 			.invocations
 			.lock()
@@ -1123,7 +1127,7 @@ impl ExecutionEnvironment for Backend {
 		entry: &Entry,
 		key: Option<&RetrievalKey>,
 		degrade_on_outage: bool,
-	) -> Result<Option<Value>> {
+	) -> SemanticContextRead {
 		let _ = (run, task, inputs, budget, entry);
 		self.0
 			.semantic_keys
@@ -1135,14 +1139,33 @@ impl ExecutionEnvironment for Backend {
 			.lock()
 			.unwrap()
 			.push(degrade_on_outage);
-		if self.0.conversation_memory {
-			self.record("source.memory");
-			if self.0.fill_semantic_budget {
-				return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
-			}
-			return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
+		{
+			return SemanticContextRead {
+				workspace_retrieved,
+				result: Err(Error::RemoteSemantic(reason)),
+			};
 		}
-		Ok(None)
+		let result: Result<Option<Value>> = async {
+			if self.0.conversation_memory {
+				self.record("source.memory");
+				if self.0.fill_semantic_budget {
+					return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
+				}
+				return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+			}
+			Ok(None)
+		}
+		.await;
+		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
+			value
+				.as_ref()
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
+		});
+		SemanticContextRead {
+			workspace_retrieved,
+			result,
+		}
 	}
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let _ = run;
@@ -1426,6 +1449,7 @@ fn fixture() -> Fixture {
 		conversation_memory: false,
 		deny_source: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
+		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
 		token,
 		task: Mutex::new(Task {
@@ -1512,6 +1536,7 @@ fn fixture() -> Fixture {
 		research_checks: Default::default(),
 		expired_research: Default::default(),
 		expired_research_after: None,
+		settled_research: None,
 		expiry_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,

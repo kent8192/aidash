@@ -91,6 +91,10 @@ worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
 
+Before starting the application, a one-shot Job provisions the Node's JetStream
+activation stream and durable worker consumer. Re-running `k8s-up` safely
+reuses them; a failed provisioning Job stops startup.
+
 The built-in loopback endpoint is plain HTTP, so it does not support browser sign-in; the dashboard shows setup guidance, while `AIDASH_API_TOKEN` remains available for the API and initial Deployment Administrator grant. Browser sessions require a trusted HTTPS dashboard origin. To enable OIDC, publish the frontend Service and its API/auth proxy through HTTPS, add `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and that HTTPS `AIDASH_OIDC_PUBLIC_ORIGIN` to the `aidash-local-app` Secret, then re-run `cargo make k8s-up` to restart the Pods. Register the matching `https://<dashboard-origin>/auth/callback` URI in Google Auth Platform. Google endpoints must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
 ```sh
@@ -131,6 +135,11 @@ host ports. Run `docker compose --profile dev logs -f` to follow logs and
 Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
 and an HTTPS endpoint for a deployed node.
+
+Compose waits for JetStream readiness and provisions the activation stream and
+durable consumer before starting the backend. The stream is recreated after
+`docker compose --profile dev down -v`, so a fresh stack exercises broker
+activation instead of relying on database recovery alone.
 
 The backend starts with a PostgreSQL [Secret Store](docs/provider-credentials.md),
 so a Tenant can connect OpenRouter under **Provider connections**. Compose
