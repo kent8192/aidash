@@ -167,6 +167,53 @@ mod engine_tests {
 		);
 	}
 
+	#[rstest]
+	fn responses_count_decoded_items_and_each_namespaced_tool() {
+		let encoding = TokenEncoding::O200kBase;
+		let instructions = "Follow \"quoted\" instructions.";
+		let arguments = r#"{"path":"東京"}"#;
+		let output = r#"{"content":"read"}"#;
+		let tools = json!({"type":"namespace","name":"aidash","tools":[
+			{"type":"function","name":"read","parameters":{"type":"object"}},
+			{"type":"function","name":"write","parameters":{"type":"object"}},
+		]});
+		let body = json!({
+			"instructions":instructions,
+			"input":[
+				{"role":"user","content":[{"type":"input_text","text":"東京"}]},
+				{"type":"function_call","namespace":"aidash","call_id":"read-1","name":"read","arguments":arguments},
+				{"type":"function_call_output","call_id":"read-1","output":output},
+			],
+			"tools":[tools],
+		});
+		let text_tokens: usize = [
+			instructions,
+			"user",
+			"input_text",
+			"東京",
+			"function_call",
+			"aidash",
+			"read-1",
+			"read",
+			arguments,
+			"function_call_output",
+			"read-1",
+			output,
+		]
+		.into_iter()
+		.map(|text| encoding.count(text).unwrap())
+		.sum();
+		assert_eq!(
+			encoding.count_body(&body),
+			Some(
+				text_tokens
+					+ 4 * MESSAGE_TOKENS
+					+ 3 * TOOL_TOKENS
+					+ encoding.count(&tools.to_string()).unwrap()
+			)
+		);
+	}
+
 	/// Counting time for adversarial text, which sets `CHUNK_BYTES`. Run with
 	/// `cargo test -p aidash-domain --features token-encodings --release --
 	/// --ignored --nocapture counting_time`.

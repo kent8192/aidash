@@ -26,7 +26,10 @@ not been established.
   Inference Progress, events, logs, traces or API responses. Provider reasoning
   token counts may still contribute to usage accounting.
 - Stable Prefix and Request Estimates describe the actual serialized request;
-  there is no hidden reasoning payload to retain or estimate.
+  there is no hidden reasoning payload to retain or estimate. Native plan
+  requests count Responses instructions, input items and namespaced tools.
+  Legacy and Ordered requests keep their existing accounting, and Chat request
+  identities stay unchanged.
 - Reasoning continuity and cache benefits from encrypted reasoning replay are
   not promised. Adding replay later requires revisiting this decision and the
   journal's retention and recovery contract.

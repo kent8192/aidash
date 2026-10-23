@@ -444,6 +444,7 @@ impl DefinitionValidation {
 			&specifications,
 			private_context,
 			&registration_projection(version),
+			aidash_domain::provider::InputFormat::for_model(&model, version),
 			// Registration measures the conservative byte estimate (ADR 0017).
 			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)
@@ -534,6 +535,7 @@ impl DefinitionValidation {
 			&exposed,
 			private_context,
 			&registration_projection(version),
+			aidash_domain::provider::InputFormat::for_model(model, version),
 			// Registration measures the conservative byte estimate (ADR 0017).
 			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)?

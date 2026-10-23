@@ -120,10 +120,18 @@ async fn native_request_bytes_match_the_multi_round_golden_fixture(mut canonical
 }
 
 #[rstest]
+#[case::chat(false)]
+#[case::responses(true)]
 #[tokio::test]
-async fn native_steps_extend_the_stable_prefix_message_by_message(mut canonical: Fixture) {
+async fn native_steps_extend_the_stable_prefix_message_by_message(
+	mut canonical: Fixture,
+	#[case] plan: bool,
+) {
 	// Arrange
 	native(&mut canonical);
+	Arc::get_mut(&mut canonical.backend.0)
+		.unwrap()
+		.plan_connection = plan;
 	canonical.run.context = multi_round_journal();
 	assert!(advance_sources(&mut canonical).await.is_err());
 	canonical.run.step += 1;
@@ -138,17 +146,47 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(mut canonical:
 	assert!(advance_sources(&mut canonical).await.is_err());
 	// Assert: every message before the volatile one is unchanged.
 	let requests = canonical.backend.0.requests.lock().unwrap();
-	let first = requests[0].input_body()["messages"]
-		.as_array()
-		.unwrap()
-		.clone();
-	let second = requests[1].input_body()["messages"]
-		.as_array()
-		.unwrap()
-		.clone();
+	let bodies = requests
+		.iter()
+		.map(|request| {
+			if plan {
+				assert_eq!(
+					request.input_format,
+					aidash_domain::provider::InputFormat::Responses
+				);
+				let body = aidash_domain::provider::responses::encoded_input_body(request).unwrap();
+				let required = body.to_string().len()
+					+ aidash_domain::projection::CACHE_SALT_LINE_RESERVE
+					+ request.max_output_tokens as usize
+					+ aidash_domain::provider::estimate::FRAMING_RESERVE;
+				assert_eq!(request.estimated_total_tokens(), required);
+				// Preliminary quotas never authorize an oversized final request.
+				assert!(request.ensure_fits(required - 1).is_err());
+				assert!(request.ensure_fits(required).is_ok());
+				body
+			} else {
+				assert_eq!(
+					request.input_format,
+					aidash_domain::provider::InputFormat::Chat
+				);
+				request.input_body()
+			}
+		})
+		.collect::<Vec<_>>();
+	let key = if plan { "input" } else { "messages" };
+	let first = bodies[0][key].as_array().unwrap();
+	let second = bodies[1][key].as_array().unwrap();
 	assert_eq!(first[..first.len() - 1], second[..first.len() - 1]);
 	assert_eq!(second.len(), first.len() + 2);
-	assert_eq!(second[second.len() - 2]["tool_call_id"], "call-4");
+	assert_eq!(
+		second[second.len() - 2][if plan { "call_id" } else { "tool_call_id" }],
+		"call-4"
+	);
+	let usage = canonical.backend.0.usage.lock().unwrap();
+	assert_eq!(
+		usage[1].0.estimate.tokens as usize,
+		requests[1].estimated_total_tokens()
+	);
 }
 
 #[rstest]
@@ -390,6 +428,7 @@ fn native_estimate_counts_the_complete_request_near_the_window(#[case] turns: u3
 	});
 	let context = recorded_turns(turns);
 	let budget = |window| context::RequestBudget {
+		input_format: Default::default(),
 		window,
 		instructions: "Do the task",
 		tools: &tools,

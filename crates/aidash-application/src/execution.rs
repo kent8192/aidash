@@ -800,6 +800,7 @@ pub fn media_request_headroom(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	};
 	request
@@ -828,6 +829,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			input_format: Default::default(),
 			estimate: Default::default(),
 		}
 		.estimated_total_tokens()
@@ -859,6 +861,7 @@ pub fn check_model_media_headroom(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	};
 	request.validate()?;

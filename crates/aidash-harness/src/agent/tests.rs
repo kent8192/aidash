@@ -131,6 +131,7 @@ struct State {
 	prompt_cache: aidash_domain::projection::PromptCache,
 	/// Serve an `anthropic/` model that declares explicit prompt caching.
 	explicit_cache_model: bool,
+	plan_connection: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
 	/// The Run's Research evidence was revoked.
@@ -252,6 +253,9 @@ impl Backend {
 		let mut config = json!({
 			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
+		if self.0.plan_connection && id != "summarizer" {
+			config["plan_connection"] = json!("chatgpt");
+		}
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
@@ -1518,6 +1522,7 @@ fn fixture() -> Fixture {
 		human_media_pending: false,
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
+		plan_connection: false,
 		known_evidence: vec![],
 		research_revoked: false,
 		research_revoked_after: None,
@@ -4691,6 +4696,7 @@ async fn compaction_leaves_the_exposure_set_intact(mut fixture: Fixture) {
 	let pinned = json!({});
 	let tools = [];
 	let mut budget = context::RequestBudget {
+		input_format: Default::default(),
 		window: usize::MAX,
 		instructions: "Do the task",
 		tools: &tools,
@@ -5061,6 +5067,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	}
 	let request = |projection| {
 		context::RequestBudget {
+			input_format: Default::default(),
 			window: 128_000,
 			instructions: "Do the task",
 			tools: &[],
@@ -5093,6 +5100,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	grown.push(history_event(events + 1));
 	let growth = |projection| {
 		let budget = context::RequestBudget {
+			input_format: Default::default(),
 			window: 128_000,
 			instructions: "Do the task",
 			tools: &[],

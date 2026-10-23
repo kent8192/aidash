@@ -205,6 +205,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				input_format: Default::default(),
 				estimate: Default::default(),
 			},
 			&aidash_application::ports::NoProgress,

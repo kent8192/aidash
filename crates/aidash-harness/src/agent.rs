@@ -1124,6 +1124,7 @@ impl<'a> Executor<'a> {
 				// silently or send breakpoints to another route (ADR 0019).
 				model_cfg.require_prompt_cache(agent.prompt_cache, agent.projection_version)?;
 				let explicit_cache = agent.prompt_cache == PromptCache::Explicit;
+				let input_format = aidash_domain::provider::InputFormat::for_model(&model_cfg, agent.projection_version);
 				// A proven provider overflow shrinks the effective window for the Run.
 				let window = run.context.recovery.effective_window(model_cfg.context_window);
 				let policy = context::policy::Effective::of(agent.context_policy.as_ref());
@@ -1438,7 +1439,8 @@ impl<'a> Executor<'a> {
 					aidash_domain::provider::ModelRequest::content_parts_reservation(
 						&media.parts,
 						agent.projection_version,
-					),
+						input_format,
+					)?,
 				);
 				let private_context = if agent.knowledge_digest.is_some() {
 					json!({"reference_documents":documents.clone()})
@@ -1459,10 +1461,12 @@ impl<'a> Executor<'a> {
 					&specifications,
 					&fixed_context,
 					&projection,
+					input_format,
 					estimate,
 				)
 				.map_err(|_| unreducible(guard))?;
 				let mut budget = context::RequestBudget {
+					input_format,
 					window: context_window,
 					instructions: &instructions,
 					tools: &specifications,

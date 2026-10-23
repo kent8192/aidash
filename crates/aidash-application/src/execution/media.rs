@@ -46,6 +46,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	};
 	for (seq, id, headroom) in messages {

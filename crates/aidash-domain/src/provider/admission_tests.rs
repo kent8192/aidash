@@ -22,6 +22,7 @@ fn request() -> ModelRequest {
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	}
 }
@@ -51,12 +52,20 @@ fn admission_fingerprint_retains_the_existing_metadata_and_exact_ordered_media_h
 #[case::media_order("order")]
 #[case::media_duplicate("duplicate")]
 #[case::media_type("type")]
+#[case::input_format("input_format")]
 fn every_admitted_request_or_media_change_has_a_distinct_identity(
 	mut request: ModelRequest,
 	#[case] change: &str,
 ) {
 	let before = request.inference_digest();
 	match change {
+		"input_format" => {
+			let mut metadata = serde_json::to_value(&request).unwrap();
+			metadata["input_format"] = json!("responses");
+			let parts = std::mem::take(&mut request.content_parts);
+			request = serde_json::from_value(metadata).unwrap();
+			request.content_parts = parts;
+		}
 		"instructions" => request.instructions.push('!'),
 		"context" => {
 			request
@@ -102,4 +111,102 @@ fn media_only_estimate_keeps_transmitted_array_framing_without_encoded_payload(
 		+ request.max_output_tokens as usize
 		+ 1024;
 	assert_eq!(request.estimated_total_tokens(), expected);
+}
+
+#[rstest]
+fn responses_fitting_counts_the_sent_input_shape() {
+	let request: ModelRequest = serde_json::from_value(json!({
+		"instructions":"Follow the task.",
+		"context":{"task":"東京 \"quoted\""},
+		"tools":[],
+		"max_output_tokens":12,
+		"input_format":"responses",
+	}))
+	.unwrap();
+	// The independently specified Responses payload, before transport flags.
+	let sent = json!({
+		"instructions":"Follow the task.",
+		"input":[{"role":"user","content":[{
+			"type":"input_text","text":"{\"task\":\"東京 \\\"quoted\\\"\"}"
+		}]}],
+	});
+	let required = sent.to_string().len() + 12 + estimate::FRAMING_RESERVE;
+	assert_eq!(request.estimated_total_tokens(), required);
+	assert!(request.ensure_fits(required).is_ok());
+	assert!(request.ensure_fits(required - 1).is_err());
+}
+
+#[rstest]
+#[case::audio(true, "unsupported Responses input")]
+#[case::format(false, "unsupported response format")]
+fn unsupported_responses_input_never_passes_admission(#[case] audio: bool, #[case] reason: &str) {
+	let mut request = ModelRequest {
+		input_format: InputFormat::Responses,
+		..Default::default()
+	};
+	if audio {
+		request.content_parts.push(ContentPart::Audio {
+			format: "wav".into(),
+			bytes: b"RIFF0000WAVE".to_vec(),
+		});
+	} else {
+		request.response_format = Some(json!({"type":"unsupported"}));
+	}
+	if audio {
+		assert!(
+			ModelRequest::content_parts_reservation(
+				&request.content_parts,
+				crate::projection::ProjectionVersion::Native,
+				InputFormat::Responses
+			)
+			.unwrap_err()
+			.to_string()
+			.contains(reason)
+		);
+	}
+	assert_eq!(request.estimated_total_tokens(), usize::MAX);
+	assert!(
+		request
+			.ensure_fits(usize::MAX)
+			.unwrap_err()
+			.to_string()
+			.contains(reason)
+	);
+	assert!(request.validate().unwrap_err().to_string().contains(reason));
+}
+
+#[rstest]
+fn native_responses_media_reserves_escaped_frames_but_not_base64_payloads() {
+	let mut request = ModelRequest {
+		input_format: InputFormat::Responses,
+		context: ModelContext::Native(crate::projection::native::native_context(
+			&crate::context::Context::default(),
+			&json!({"run_messages":["東京"]}),
+		)),
+		..Default::default()
+	};
+	let before = request.estimated_total_tokens();
+	let bytes = b"\x89PNG\r\n\x1a\nimage".to_vec();
+	let encoded = base64::engine::general_purpose::STANDARD
+		.encode(&bytes)
+		.len();
+	request.content_parts = vec![
+		ContentPart::Text("image \"東京\"".into()),
+		ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes,
+		},
+	];
+	let sent = responses::encoded_input_body(&request).unwrap();
+	let required = sent.to_string().len() - encoded + 4097 + estimate::FRAMING_RESERVE;
+	assert_eq!(request.estimated_total_tokens(), required);
+	assert_eq!(
+		ModelRequest::content_parts_reservation(
+			&request.content_parts,
+			crate::projection::ProjectionVersion::Native,
+			InputFormat::Responses
+		)
+		.unwrap(),
+		required - before
+	);
 }

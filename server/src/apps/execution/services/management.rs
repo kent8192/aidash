@@ -814,6 +814,7 @@ impl HarnessManagement {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				input_format: Default::default(),
 				estimate: Default::default(),
 			};
 			request.validate()?;
