@@ -72,7 +72,11 @@ pub async fn prepare(
 	)
 	.await?;
 	validation.bound_prompt_headroom(&snapshot, &context)?;
-	entry.normalize_agent(node)?;
+	entry.binding_normalization = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.and_then(|definition| definition.definition.binding_normalization.clone());
 	Ok(PersonalRegistration {
 		entry,
 		documents,

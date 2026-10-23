@@ -47,6 +47,12 @@ pub struct JournalCursor {
 pub struct Context {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub source_observation: Option<sources::SourceObservation>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_contributions: Vec<source::SourceContribution>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_deliveries: Vec<source::SourceDelivery>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_selections: Vec<source::SelectionEvidence>,
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
@@ -122,6 +128,12 @@ pub struct Context {
 struct StoredContext {
 	#[serde(default)]
 	source_observation: Option<sources::SourceObservation>,
+	#[serde(default)]
+	source_contributions: Vec<source::SourceContribution>,
+	#[serde(default)]
+	source_deliveries: Vec<source::SourceDelivery>,
+	#[serde(default)]
+	source_selections: Vec<source::SelectionEvidence>,
 	#[serde(default)]
 	binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
 	#[serde(default)]
@@ -226,6 +238,9 @@ impl<'de> Deserialize<'de> for Context {
 		};
 		Ok(Self {
 			source_observation: stored.source_observation,
+			source_contributions: stored.source_contributions,
+			source_deliveries: stored.source_deliveries,
+			source_selections: stored.source_selections,
 			binding_snapshot: stored.binding_snapshot,
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
@@ -342,7 +357,8 @@ impl Context {
 	}
 }
 
-/// Public inspection omits the durable, authority-bound Source cache.
+/// Public inspection omits source content, detail routes, selection manifests
+/// and delivery receipts; these execution records require source authority.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct InspectionContext<'a> {
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -950,3 +966,5 @@ pub mod summary;
 mod journal_tests;
 #[cfg(test)]
 mod plugin_tools_tests;
+
+pub mod source;

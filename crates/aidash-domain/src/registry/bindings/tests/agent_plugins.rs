@@ -59,7 +59,9 @@ fn pinned_for(plugins: &[(&str, &[&str])]) -> Vec<PinnedAgentPlugin> {
 /// A closure that is valid by construction: the Agent, its model and exactly the builtin Tools its
 /// normalization asks for.
 fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> BindingSnapshot {
-	let mut root = entry("agent", "agent", serde_json::to_value(agent).unwrap());
+	let mut config = agent.clone();
+	config.remove_default.push(COMPACTION_DEFAULT.into());
+	let mut root = entry("agent", "agent", serde_json::to_value(config).unwrap());
 	root.normalize_agent(NODE).unwrap();
 	let mut definitions = vec![
 		ResolvedDefinition::new(qualified("model"), entry("model", "model", json!({}))).unwrap(),
@@ -68,6 +70,23 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 	let mut bindings = vec![];
 	for normalized in root.normalized_bindings(NODE).unwrap() {
 		let target = normalized.binding.target;
+		if normalized.binding.kind == BindingKind::Source {
+			let source = source_defaults::workspace_observation().unwrap();
+			bindings.push(ResolvedBinding {
+				identity: target.clone(),
+				digest: crate::registry::rules::digest(&serde_json::to_value(&source).unwrap()),
+				installation: None,
+				definition: source.clone(),
+				origin: normalized.origin,
+				alias: None,
+				narrow: Narrowing::default(),
+				provider_contract_digest: None,
+				provider_implementation: None,
+				excluded_reason: None,
+			});
+			definitions.push(ResolvedDefinition::new(target, source).unwrap());
+			continue;
+		}
 		let operation = target.id.strip_prefix("aidash.").unwrap();
 		let descriptor = core_descriptor(NODE, operation).unwrap();
 		let tool = entry(

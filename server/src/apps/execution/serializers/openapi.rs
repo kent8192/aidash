@@ -23,6 +23,7 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	super::super::observation::register(contracts, document)?;
 	contracts.response::<_, StateResponse>(
 		document,
 		views::management::state,

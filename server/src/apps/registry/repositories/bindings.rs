@@ -188,8 +188,21 @@ pub(crate) async fn authorized(
 	let node = access.node_id.clone();
 	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
 	for definition in &snapshot.definitions {
+		if aidash_domain::registry::bindings::sources::is_selection_decider(&definition.definition)
+		{
+			continue;
+		}
 		if definition.identity.registry_deployment != node {
 			return Err(Error::Forbidden);
+		}
+		if aidash_domain::registry::bindings::defaults::is_compaction_decider(
+			&definition.definition,
+		) {
+			// Metadata disclosure remains policy-controlled. Catalog Approval
+			// for sending classification state is checked only when needed.
+			let resource = crate::authorization::catalog::resource(access, &definition.definition);
+			access.require(&resource, "registry.read").await?;
+			continue;
 		}
 		let current = crate::authorization::catalog::entry(
 			access,

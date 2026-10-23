@@ -250,6 +250,7 @@ fn evidence() -> ApprovalEvidence {
 		mode: Mode::Enforce,
 		verdict: Verdict::Blocked(BlockReason::Injected),
 		attempts: vec![AttemptEvidence {
+			provider_report: Default::default(),
 			id: Uuid::from_u128(8),
 			request_digest: digest_of('d'),
 			question_digest: question_digest(&questions, &asked).unwrap(),

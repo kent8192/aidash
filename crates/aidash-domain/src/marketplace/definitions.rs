@@ -128,6 +128,9 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 		}
 		_ => {}
 	}
+	// Receiving registration resolves local Decider hooks afresh; a source
+	// Node's trusted normalization never travels as authority.
+	entry.binding_normalization = None;
 	entry.normalize_agent(node)?;
 	Ok(())
 }

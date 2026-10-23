@@ -225,7 +225,13 @@ async fn write_in(
 		for (reference, kind) in snapshot
 			.definitions
 			.iter()
-			.filter(|d| d.identity != snapshot.agent)
+			.filter(|d| {
+				d.identity != snapshot.agent
+					&& !aidash_domain::registry::bindings::defaults::is_implicit_compaction(
+						&snapshot,
+						&d.identity,
+					)
+			})
 			.map(|d| (d.identity.local(), d.definition.kind.as_str()))
 			.chain(
 				spec.compaction

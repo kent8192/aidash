@@ -14,6 +14,8 @@ use aidash_domain::{
 use serde_json::json;
 
 /// The Decider that judges pending Tool calls in the Auto Approval Mode (ADR 0077).
+pub use aidash_domain::registry::bindings::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION};
+
 pub const APPROVAL_DECIDER_ID: &str = "aidash.approval-decider";
 pub const APPROVAL_DECIDER_VERSION: &str = "1.0.0";
 
@@ -63,11 +65,13 @@ pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entr
 }
 
 /// Every definition the Node declares to every Tenant's Registry: the built-in
-/// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
+/// tools and the approval and compaction Deciders. Unlike a tool, the Decider needs a Tenant's
 /// Catalog Approval before anything may use it.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut declared = entries(validation, node)?;
 	declared.push(approval_decider()?);
+	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
+	declared.push(compaction_decider()?);
 	Ok(declared)
 }
 
@@ -136,8 +140,58 @@ pub fn approval_decider() -> Result<Entry> {
 	})
 }
 
+/// ADR 0042/0066's default pruning definition. Thresholds were measured on
+/// compaction fixtures in `docs/decisions/decider-route-thresholds.md`.
+/// Seeding this document grants neither Catalog Approval nor a credential.
+pub fn compaction_decider() -> Result<Entry> {
+	let config = DeciderConfig {
+        hook: Hook::Compaction,
+        answer_type: AnswerType::Noul,
+        description: "Keep history needed to answer the current request while pruning unnecessary tool calls and results.".into(),
+        provider_credential: "openrouter".into(),
+        routes: vec![
+            DeciderRoute::jev("typesafe/jev-1.14"),
+            DeciderRoute {
+                provider_contract: DECISIONS.into(),
+                model: "cloudflare/clef".into(),
+                hosts: vec!["cloudflare".into(), "deepinfra".into(), "primeintellect".into()],
+                threshold: Probability::new(0.15)?,
+                state_budget: StateBudget {
+                    default_request_bytes: 16_000,
+                    default_state_bytes: 12_000,
+                    long_context_request_bytes: None,
+                    long_context_state_bytes: None,
+                    ..StateBudget::default()
+                },
+            },
+        ],
+        builder: Hook::Compaction.contract().builder.into(),
+        option_source: Hook::Compaction.contract().option_source.into(),
+        rule: Hook::Compaction.contract().rule.into(),
+        mode: Mode::Enforce,
+        max_calls_per_run: 100,
+        state_retention: StateRetention::default(),
+    };
+	config.validate()?;
+	Ok(Entry {
+		binding_normalization: None,
+		installation: None,
+		id: COMPACTION_DECIDER_ID.into(),
+		version: COMPACTION_DECIDER_VERSION.into(),
+		kind: "decider".into(),
+		name: std::collections::BTreeMap::from([("en".into(), "Compaction Decider".into())]),
+		description: std::collections::BTreeMap::from([("en".into(), config.description.clone())]),
+		capabilities: vec![],
+		tags: vec!["system".into()],
+		languages: vec![],
+		skills: vec![],
+		schema: json!({}),
+		config: serde_json::to_value(config)?,
+	})
+}
+
 /// Writes every built-in definition into the scope's Tenant: the ordinary
-/// built-ins, the approval Decider, and the Sandboxed and research groups the
+/// built-ins, the approval and compaction Deciders, and the Sandboxed and research groups the
 /// Deployment offers, which the Tenant approves before use. The caller owns one
 /// transaction. Conflicting bytes fail.
 pub async fn seed(
@@ -148,11 +202,12 @@ pub async fn seed(
 	let offered = packages::offered(validation, validation, node)?
 		.into_iter()
 		.flat_map(|group| group.operations.into_iter().chain([group.bundle]));
-	let deciders = [approval_decider()?];
+	let deciders = [approval_decider()?, compaction_decider()?];
 	for entry in entries(validation, node)?
 		.into_iter()
 		.chain(offered)
 		.chain(deciders)
+		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.chain(external_services())
 	{
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;

@@ -324,6 +324,7 @@ impl DecisionJournal for Fixture {
 					.cloned()
 					.unwrap_or((AttemptStatus::Uncertain, None));
 				RecoveredAttempt {
+					provider_report: Default::default(),
 					permit: permit.clone(),
 					status,
 					answers,
@@ -353,6 +354,7 @@ impl DecisionJournal for Fixture {
 				.cloned()
 				.unwrap_or((AttemptStatus::Uncertain, None));
 			return Ok(Reservation::Recovered(RecoveredAttempt {
+				provider_report: Default::default(),
 				permit: permit.clone(),
 				status,
 				answers,
@@ -1530,6 +1532,7 @@ async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_statu
 		] {
 			let mut corrupt = evidence.clone();
 			corrupt.attempts.push(AttemptEvidence {
+				provider_report: Default::default(),
 				id: Uuid::new_v4(),
 				request_digest: format!("sha256:{}", "c".repeat(64)),
 				question_digest: format!("sha256:{}", "d".repeat(64)),
@@ -2163,3 +2166,5 @@ fn a_question_budget_matches_the_largest_encoded_request_with_escaped_text() {
 		largest + framing_reserve
 	);
 }
+
+mod source_selection_tests;
