@@ -2004,6 +2004,15 @@ impl<'a> Executor<'a> {
 						.await;
 					return Err(error);
 				}
+				// Automatic recall is fetched evidence until this response is adopted.
+				// Refresh every staged bank under the resumed subject authority while
+				// its lease remains held through the fenced Run save below. Use this
+				// request's data even when degraded retrieval deliberately bypasses caching.
+				if let Err(error) = self.environment.recheck_source_observation(run, &pinned).await
+				{
+					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked).await;
+					return Err(error);
+				}
 				// Authority was released during inference, and a local Run's
 				// sources may change meanwhile too: a summary source revoked
 				// meanwhile discards the response before any of it is accepted,

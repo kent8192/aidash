@@ -1337,6 +1337,15 @@ fn fragment_batches(fragments: &[Fragment], max_bytes: usize) -> Result<Vec<Vec<
 	let mut batches = vec![];
 	let mut current = vec![];
 	for fragment in fragments {
+		let singleton = SourceBatch {
+			candidates: vec![fragment.candidate.clone()],
+			outcome: SourceOutcome::Fetched,
+		};
+		if serde_json::to_vec(&singleton)?.len() > max_bytes {
+			return Err(aidash_application::Error::Context(
+				aidash_domain::context::recovery::Failure::ContextUnreducible,
+			));
+		}
 		let mut proposed = current.clone();
 		proposed.push(fragment.clone());
 		let batch = SourceBatch {
@@ -1362,4 +1371,80 @@ fn fragment_batches(fragments: &[Fragment], max_bytes: usize) -> Result<Vec<Vec<
 		batches.push(current);
 	}
 	Ok(batches)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	fn fragment(item: usize, bytes: usize) -> Fragment {
+		Fragment {
+			pointer: format!("/@text/{item}/{}", item + bytes),
+			candidate: SourceCandidate {
+				identity: CandidateIdentity {
+					source: QualifiedRef {
+						registry_deployment: "aidash://fixture".into(),
+						id: "skills".into(),
+						version: "1.0.0".into(),
+					},
+					item: item.to_string(),
+					revision: "1".into(),
+					range: None,
+				},
+				content: json!("x".repeat(bytes)),
+				preview: "Skill preview".into(),
+				provenance: vec![],
+				dependencies: vec![],
+				completeness: Completeness::Complete,
+				detail: None,
+				mandatory: false,
+			},
+		}
+	}
+	#[test]
+	fn loaded_skills_larger_than_one_batch_retain_every_exact_item() {
+		let fragments = (0..17)
+			.map(|item| fragment(item, 65_536))
+			.collect::<Vec<_>>();
+		let batches = fragment_batches(&fragments, MAX_SOURCE_BYTES).unwrap();
+		assert!(batches.len() > 1);
+		let retained = batches
+			.iter()
+			.flatten()
+			.map(|fragment| fragment.candidate.identity.item.clone())
+			.collect::<Vec<_>>();
+		assert_eq!(
+			retained,
+			fragments
+				.iter()
+				.map(|fragment| fragment.candidate.identity.item.clone())
+				.collect::<Vec<_>>()
+		);
+		for batch in batches {
+			assert!(
+				serde_json::to_vec(&SourceBatch {
+					candidates: batch
+						.into_iter()
+						.map(|fragment| fragment.candidate)
+						.collect(),
+					outcome: SourceOutcome::Fetched
+				})
+				.unwrap()
+				.len() <= MAX_SOURCE_BYTES
+			);
+		}
+	}
+	#[test]
+	fn one_oversized_item_never_silently_disappears_after_a_small_item() {
+		for fragments in [
+			vec![fragment(0, 8), fragment(1, 2048)],
+			vec![fragment(1, 2048), fragment(0, 8)],
+		] {
+			assert!(matches!(
+				fragment_batches(&fragments, 1024),
+				Err(aidash_application::Error::Context(
+					aidash_domain::context::recovery::Failure::ContextUnreducible
+				))
+			));
+		}
+	}
 }
