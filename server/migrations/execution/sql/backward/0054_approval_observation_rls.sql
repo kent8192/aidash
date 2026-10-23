@@ -1,0 +1,12 @@
+DROP POLICY tenant_isolation ON public.approval_observation_population;
+ALTER TABLE public.approval_observation_population NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.approval_observation_population DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.approval_observation_attempts;
+ALTER TABLE public.approval_observation_attempts NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.approval_observation_attempts DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.approval_observations;
+ALTER TABLE public.approval_observations NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.approval_observations DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.approval_observer_settings;
+ALTER TABLE public.approval_observer_settings NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.approval_observer_settings DISABLE ROW LEVEL SECURITY;

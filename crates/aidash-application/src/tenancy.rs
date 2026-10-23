@@ -62,6 +62,8 @@ pub enum DeploymentScopeReason {
 	/// Claiming, publishing, reconciling and recovering Run activations, and
 	/// the worker's lease bookkeeping for the Runs it claimed.
 	ActivationClaim,
+	/// Claiming independent Shadow approval observation jobs.
+	ApprovalObservation,
 	/// Claiming and publishing the event outbox.
 	OutboxDispatch,
 	/// Claiming and delivering delegations that are due for a retry.
@@ -148,6 +150,7 @@ impl DeploymentScopeReason {
 	pub fn label(self) -> &'static str {
 		match self {
 			Self::ActivationClaim => "activation-claim",
+			Self::ApprovalObservation => "approval-observation",
 			Self::OutboxDispatch => "outbox-dispatch",
 			Self::DelegationRetry => "delegation-retry",
 			Self::GenerationReconcile => "generation-reconcile",
@@ -185,6 +188,7 @@ impl DeploymentScopeReason {
 	pub fn writes(self) -> bool {
 		match self {
 			Self::ActivationClaim
+			| Self::ApprovalObservation
 			| Self::OutboxDispatch
 			| Self::DelegationRetry
 			| Self::SemanticMaintenance

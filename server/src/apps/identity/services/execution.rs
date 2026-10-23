@@ -295,6 +295,7 @@ impl WorkerAuthority {
 					};
 					let mut scope =
 						crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					scope.run = Some(Box::new(run.clone()));
 					aidash_application::capabilities::approvals::disclose(
 						&mut scope,
 						&run.metadata(),
@@ -332,6 +333,7 @@ impl WorkerAuthority {
 			let request =
 				aidash_application::capabilities::approvals::ToolCallRequest { area, ..request };
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			scope.run = Some(Box::new(run.clone()));
 			aidash_application::capabilities::approvals::tool_call(
 				&mut scope,
 				&run.metadata(),
