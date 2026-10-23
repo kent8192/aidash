@@ -806,7 +806,7 @@ are local preparation; `create`, `probe` and `cleanup` are separate operator
 phases. The existing gcloud default project is never used.
 
 Local runner tests are `python3 -m unittest discover -s infra/gcp/tests -p
-'test_sandbox_runner.py' -v`. They are not live IAM, ingress, WIF or alert
+'test_sandbox*.py' -v`. They are not live IAM, ingress, WIF or alert
 acceptance. Protected-ref-only evidence follows ADR 0081 and is collected after
 the reviewed implementation reaches the protected ref. Hosted Plan-secret
 refresh remains deferred to #248; real OpenRouter/ChatGPT acceptance requires

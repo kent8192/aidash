@@ -6,8 +6,8 @@ change production files, select a gcloud default, or perform provider OAuth.
 All live acceptance is pending until real observations are attached to #135/#152.
 Local tests only exercise lifecycle and response handling.
 
-Use Python 3.12+, Terraform 1.14.8 and gcloud. The operator needs a concrete
-folder/organization, billing account, project-creation quota, project shutdown
+Use Python 3.12+, Terraform 1.14.8, OpenSSL 3, kubectl and gcloud. The operator needs a concrete
+explicit parent (`none`, folder or organization), billing account, project-creation quota, project shutdown
 and billing permissions, plus the bootstrap roles described in the parent
 README. The broker image must come from a reviewed source SHA; record the build
 provenance and reviewed digest together before preparing. No approved digest is
@@ -26,7 +26,7 @@ BROKER_DIGEST='sha256:<reviewed 64-character digest>'
 APP_PROJECT='aidash-sbx-<unique-app-id>'
 BYOK_PROJECT='aidash-sbx-<unique-byok-id>'
 BILLING_ACCOUNT='<six>-<six>-<six>'
-PARENT='folders/<sandbox-folder-number>'
+PARENT='none' # Explicit personal/no-organization project; or folders/<number>
 python3 infra/gcp/sandbox/runner.py prepare --directory "$RUN" \
   --source-sha "$SOURCE_SHA" --broker-digest "$BROKER_DIGEST" \
   --app-project "$APP_PROJECT" --byok-project "$BYOK_PROJECT" \
@@ -71,175 +71,279 @@ Inspect the command array and inputs before executing each command directly:
    state bucket and sandbox run prefix, then review its saved plan. An authorized
    operator applies `environments/sandbox.tfplan` separately. Preserve the local
    bootstrap state until project shutdown is verified.
-4. Read generated Terraform outputs privately. Install the reviewed app/Runner
-   workload and NetworkPolicies in this sandbox only before Pod probes. Terraform
-   creates infrastructure, not the Helm release, GCIP tenant IAM reconciliation,
-   dummy users, dummy secrets, or operator impersonation grants.
-5. As sandbox administrator, create exactly `aidash-test-cred-dummy` and
-   `aidash-other-cred-dummy` in BYOK, each version 1 containing the literal
-   `aidash-sandbox-dummy` (no newline). Use stdin/file input for values. Create
-   the unprivileged `runtime` and `control` fixture service accounts in app;
-   `server`/`worker` come from `environments` outputs. Grant the operator
-   permission to impersonate these test principals; **do not grant deploy broker
-   impersonation**. Reconcile the own-tenant viewer policy for the server only,
-   then create a dummy user in each tenant as administrator.
+4. Install the reviewed app/Runner workload and NetworkPolicies in this sandbox
+   before Pod/session probes. The environment must remain unpublished. These
+   probes use existing actual workloads and fail if any required workload is
+   absent; no look-alike pod is substituted for the application.
 
-No live provisioning was performed in this implementation. Project/billing
-scope, permissions, reviewed image build, fixture provisioning, app/Helm install,
-GCIP tenant grants and alert sink delivery remain execution prerequisites.
+## Executable controls and evidence
 
-## Independent probes and evidence
-
-Create a private `resources.json` with `server`, `worker`, `runtime`, `control`
-(service-account emails from these projects), `own_tenant`, `other_tenant` and
-`dummy_user`. To prepare assumption 1, also include a **fresh** BYOK IAM policy
-with `etag` under `byok_policy`, fetched as the sandbox administrator with
-`gcloud projects get-iam-policy "$BYOK_PROJECT" --project="$BYOK_PROJECT" --format=json`.
-Keep IAM policy files private and do not print them in agent logs.
+`controls.py` runs named phases only when invoked. All phases require both
+manifest-owned projects to be active. **Every phase below except `alert-plan`
+may read cloud metadata; fixtures, manage, tags, lifecycle, alert and gcip also
+write sandbox resources.** Review these commands with the selected manifest
+before the separate cloud execution authorization. None was run during this
+implementation. All stdout/stderr from child processes is captured, never
+forwarded. Private credentials stay in memory or mode-0600 files under `RUN`.
 
 ```sh
+python3 infra/gcp/sandbox/controls.py discover --manifest "$RUN/manifest.json"
+python3 infra/gcp/sandbox/controls.py fixtures --manifest "$RUN/manifest.json" \
+  --operator-member 'user:YOUR_OPERATOR_EMAIL'
+python3 infra/gcp/sandbox/controls.py identities --manifest "$RUN/manifest.json"
 python3 infra/gcp/sandbox/recipes.py --manifest "$RUN/manifest.json" \
   --resources "$RUN/resources.json" --output "$RUN/requests"
+```
+
+`discover` reads the isolated roots' applied `configuration` and `environments`
+outputs, the actual `test` GKE node-pool `config.serviceAccount`, and Cloud Run
+`aidash-test-credential-broker` status. It writes concrete server, worker, node,
+broker, deploy and tenant IDs. The node payload probe therefore exercises the
+configured GKE node identity, **not an invented runtime account**. `fixtures`
+creates only the unprivileged `aidash-sandbox-control` and
+`aidash-sandbox-target` accounts, dummy secrets, two tenant dummy users and the
+own-tenant server viewer grant. The exact dummy password is in
+`$RUN/dummy-login.json`; never paste it into agent logs. It also grants only the
+specified operator TokenCreator on the test identities so they can be exercised.
+`identities` checks each impersonated access token's Google tokeninfo email and
+expiry privately before that identity's results can count as evidence.
+
+Fixture setup is intentionally create-only. A partially completed invocation
+must be inspected from private state before retry; do not adopt pre-existing
+fixtures. Entire-project shutdown remains the final cleanup boundary.
+
+Run each reviewed request independently, positive before negative:
+
+```sh
 python3 infra/gcp/sandbox/runner.py probe --manifest "$RUN/manifest.json" \
   --requests "$RUN/requests/prefix-server-own.json"
 ```
 
-Review and execute **one request file at a time**, positive control before its
-negative counterpart. Refresh policies and regenerate requests between IAM
-mutations: stale etags are conflicts, never IAM-denial evidence. Restore the
-baseline after every policy-changing control, especially audit configuration.
-Run destructive broker lifecycle probes last. If a deny probe succeeds, stop
-acceptance, repair the sandbox boundary, restore the affected identity/policy,
-and re-probe. Do not continue as if that assumption passed.
+Requests use resource-project billing, matching resource APIs without an
+`x-goog-user-project` override. No extra Service Usage Consumer grant is added
+to make a quota-project denial resemble an IAM decision. Every CLI command
+still names its target project explicitly. Google `ErrorInfo` must match the
+intended IAM domain, permission, resource and reason; arbitrary 403s, missing
+APIs, transport failures and missing impersonation grants stay inconclusive.
+Every 2xx forbidden response fails and stops the batch, including empty 204,
+non-JSON and list/scalar bodies. Nonpassing results return a nonzero exit status
+**after** writing evidence. A call without a semantic assertion stays
+`observation_only`; it is not an accepted assumption.
 
-The runner obtains impersonation tokens internally, sends them only to fixed
-Google API hosts without redirects, checks all project paths before obtaining a
-token and stores no response body. `PERMISSION_DENIED` qualifies only with exact
-Google `ErrorInfo` domain, reason, permission and resource. A missing structured
-resource, denied impersonation, API-disabled response, wrong principal boundary,
-404, timeout or HTML ingress rejection is **inconclusive**. Correlate the request
-with audit evidence if Google omits details; do not weaken the classifier to
-accept arbitrary 403s. `observation_only` means the API call succeeded but its
-semantic contract still needs the independent check below. A failed operation
-stops the batch; any failed, inconclusive or observation-only result returns a
-nonzero exit status after saving its evidence.
+`probe-results.json` records method, normalized target, permission, denial reason,
+SHA-256 of the canonical request spec, identity, project, expected/observed status,
+source SHA and timestamps. Thus regenerated same-ID policy/tenant requests remain
+distinguishable. It stores no payload, token, cookie or response body. Controls
+record bounded metadata in `controls-evidence.json`, including the executable
+and discovered-resource digests. These are real observations only after operator
+execution; unit-test mock outcomes must never be copied into this journal.
 
-`probe-results.json` contains only probe ID, assumption, expected outcome,
-identity, project, HTTP status, classification, SHA and timestamps. It does not
-contain request/response payloads, tokens, cookies, URLs or exception text. The journal retains up to 1,000 attempts across invocations; archive it privately
-before starting another run. Do not infer coverage from the count. Keep a sanitized matrix with a row for
-**every** control and negative case, its timestamp and audit/run evidence ID.
-No assumption is completed merely because one request reports `passed`.
+### Assumptions 1–3: policy, prefixes and payloads
 
-| Assumption | Prepared requests                                                       | Additional independent live acceptance                                                                                                                                                                                                                        |
-| ---------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1          | `grant-create`, `grant-manage`, `grant-payload`, `audit-config-removal` | Fresh etag each time; reread resulting policy as admin. Fixed grants succeed; payload/other-role grants and audit-only change fail at `projects.setIamPolicy`. Restore policy/audit baseline between calls.                                                   |
-| 2          | `prefix-server-own`, `prefix-server-other`                              | Confirm project-number resource names, own metadata success, foreign prefix denial. Exercise add/disable/destroy management using disposable versions and verify state transitions; retain a control secret until all read probes finish.                     |
-| 3          | `payload-{broker,server,worker,runtime,deploy}-{own,other}`             | Own broker gets the exact dummy bytes; every other identity and cross-prefix broker fails. One configured broker Environment is tested; no multi-environment result is inferred.                                                                              |
-| 4          | Pod and internet procedures below                                       | Same broker URL/request from current server/worker Pod succeeds, internet ingress fails; an allowed metadata client works and each unprivileged app/Runner/execution/installer Pod fails metadata access. Authentication denial alone does not prove ingress. |
-| 5          | `kms-sign-worker`, `kms-sign-server`                                    | Export the public key as admin, sign the fixed dummy bytes as worker, verify Ed25519 signature locally, and record only verification boolean/key version. The generic signing request remains observation-only; it intentionally discards the signature.      |
-| 6          | `gcip-lookup-own`, `gcip-lookup-other`, `gcip-lookup-project`           | Own lookup returns exactly the seeded user; other tenant and project-root lookups fail at `firebaseauth.users.get`. Verify own and foreign users exist first using admin. Generic own lookup remains observation-only.                                        |
-| 7          | Interactive fixture/session procedure below                             | Record `validSince` before/after each account operation and verify old session behavior independently. No canned fixture result counts.                                                                                                                       |
-| 8          | `deploy-deny-*` for all ten permissions                                 | Tag binding exists; untagged control operations succeed, tagged broker operations fail; deploy cannot detach tag; authorized broker deploy works; deletion/restore cannot remove protection. WIF and alert acceptance below remain independent.               |
-| 9          | None                                                                    | Hosted Plan-secret refresh remains deferred to #248.                                                                                                                                                                                                          |
-
-### Pod ingress and metadata
-
-Use an isolated kubeconfig under `$RUN` obtained with explicit project:
+For assumption 1, fetch a fresh policy as administrator **before each grant**:
 
 ```sh
-gcloud container clusters get-credentials aidash --zone=us-central1-a \
-  --project="$APP_PROJECT" --dns-endpoint
+gcloud projects get-iam-policy "$BYOK_PROJECT" --project="$BYOK_PROJECT" \
+  --format=json > "$RUN/byok-policy-fresh.json"
+python3 - "$RUN" <<'PY_POLICY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+r = json.loads((p / 'resources.json').read_text())
+r['byok_policy'] = json.loads((p / 'byok-policy-fresh.json').read_text())
+(p / 'resources.json').write_text(json.dumps(r))
+PY_POLICY
+python3 infra/gcp/sandbox/recipes.py --manifest "$RUN/manifest.json" \
+  --resources "$RUN/resources.json" --output "$RUN/requests-policy-1"
 ```
 
-Set `KUBECONFIG="$RUN/kubeconfig"` **before** that command. Confirm its cluster
-resource is in `APP_PROJECT` before any `kubectl --context=<sandbox-context>`
-operation. In `aidash-test`, run the same non-secret broker health/request path
-from the reviewed server and worker Pods; use `curl --silent --output /dev/null
---write-out '%{http_code}' --max-time 15 <broker-url>/<reviewed-health-path>`.
-Repeat from an internet machine. Record Pod UID, image digest, network-policy
-revision, origin and HTTP status only. A healthy Pod positive control must
-succeed before external failure counts. For a signed broker request keep the
-capability in a private file and do not print it or put it in process arguments.
+Execute `grant-create.json`, `grant-manage.json`, `grant-payload.json`, and
+`audit-config-removal.json` individually from freshly generated directories.
+The first two must succeed and a fresh administrator `get-iam-policy` must show
+only the intended role/member change. The latter two must fail at
+`resourcemanager.projects.setIamPolicy`; etag conflicts do not qualify. Restore
+with `gcloud projects set-iam-policy "$BYOK_PROJECT" <baseline-file>
+--project="$BYOK_PROJECT"` after replacing the baseline's etag with the fresh
+policy's etag. If audit removal unexpectedly succeeds, restore immediately and
+stop acceptance. Do not reuse stale etags or call a 200 observation accepted
+without comparing the policy.
 
-From each real workload Pod run a bounded request to
-`http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email`
-with `Metadata-Flavor: Google`; discard the response body, record exit/status.
-The allowed server/worker control establishes metadata availability. The Runner,
-unprivileged app workloads, execution sandbox, guard and installer must match
-the deployed metadata-policy contract. Do not assert that a token endpoint's
-HTTP 200 grants useful cloud permission; test principal authorization separately.
+Assumption 2 uses `prefix-server-{own,other}.json` and
+`foreign-manage-{addversion,delete}.json`, then actual own-prefix lifecycle:
 
-### KMS signing verification
+```sh
+python3 infra/gcp/sandbox/controls.py manage --manifest "$RUN/manifest.json"
+```
 
-Run as the authorized sandbox worker, with explicit app project, using
-`gcloud kms asymmetric-sign --location=us-central1 --keyring=aidash-test-capability
---key=capability --version=1 --input-file=<dummy-bytes> --signature-file=<private-signature>
---project="$APP_PROJECT" --impersonate-service-account=<worker-email>`.
-This omits `--digest-algorithm` to sign raw Ed25519 input, as documented in
-[Cloud KMS signing](https://docs.cloud.google.com/kms/docs/create-validate-signatures).
-Export the public key with `gcloud kms keys versions get-public-key 1` and the
-same location/keyring/key/project flags, then run
-`openssl pkeyutl -verify -pubin -inkey <public.pem> -rawin -in <dummy-bytes>
--sigfile <private-signature>`. Record the exit code, public key version and source
-SHA; retain neither signing tokens nor raw API responses. The unauthorized
-server request must fail at `cloudkms.cryptoKeyVersions.useToSign`.
+This adds dummy bytes to `aidash-test-cred-management` as the actual server,
+observes `DISABLED` and `DESTROYED` after the corresponding calls, and deletes
+the management secret. It never destroys the read controls. Assumption 3 uses
+all `payload-{broker,server,worker,node,deploy}-{own,other}.json`: only own broker
+must return the exact dummy bytes. Cross-prefix metadata/payload denials need
+the project-number resource name, independently of the project-ID URL.
 
-### GCIP validSince and application sessions
+### Assumption 4: actual Pod ingress and metadata
 
-Use only dummy sandbox accounts and private interactive application sessions.
-For each of password change, password reset completion, admin refresh-token
-revocation, disabling and deleting the account: establish a fresh session,
-privately read `validSince`, perform the one operation, reread it when the user
-still exists, and use the old session against an authenticated Aidash endpoint.
-Record operation name, timestamp-change boolean, session allowed/denied boolean,
-HTTP status and bounded propagation interval. Deleted/disabled users must be
-denied regardless of timestamp behavior. Do not assume every password action
-advances the timestamp; any contrary observation blocks the corresponding
-security assumption and must be repaired or explicitly deferred. Redact user
-identifiers, callback URLs, cookies and token bodies from artifacts.
+```sh
+python3 infra/gcp/sandbox/controls.py kubeconfig --manifest "$RUN/manifest.json"
+python3 infra/gcp/sandbox/controls.py pods --manifest "$RUN/manifest.json" \
+  --probe-image 'YOUR_REVIEWED_CURL_IMAGE@sha256:YOUR_REVIEWED_DIGEST'
+```
 
-### Deploy tag, WIF and alerts
+The image is an execution prerequisite: a reviewed digest containing `curl`,
+runnable as a restricted ephemeral container. `pods` inventories current Running
+Pods in `aidash-test`, `aidash-test-sandbox`, `aidash-test-trusted` and
+`aidash-test-installer`. Actual server and worker labels, Runner label and all
+execution/guard/installer namespaces are required. It attaches ephemeral probe
+containers to those **existing Pods**, preserving their network namespaces and
+NetworkPolicy selectors; missing image/attach support is not a network denial.
+The namespaces, Pod UID and observations are recorded. Keep the real execution
+Pod running for this phase (start a bounded sleep task using the normal Runner).
 
-For the ten generated deny requests, audit the **denied permission itself**;
-`undelete` on a live account may return a lifecycle error and therefore cannot
-prove deny. Run delete/undelete/tag-lifecycle controls with a disposable fixture
-account under administrator supervision after the primary broker probes. Use
-an untagged control account with an explicit allow grant to prove that the
-operation is otherwise reachable; remove that temporary grant afterwards.
-Capture the broker tag-binding resource and policy version privately. The deploy
-identity's attempt to delete that exact tag binding must fail. Administrator
-remove/rebind controls require their own review because they temporarily remove
-the sandbox broker deny target. Verify deny and `actAs` after restoration.
+The metadata test requests only
+`/computeMetadata/v1/instance/service-accounts/default/email` with the required
+header. Allowed server/worker responses must equal their discovered SA emails;
+every unlabeled workload must time out at the network boundary. A different
+HTTP rejection is inconclusive. No metadata token is requested or logged.
 
-Preserve ADR 0081: `gcp-environments.yml` on protected `develop/0.1.0` with
-Environment `nonproduction`, and `gcp-production.yml` on `main` with Environment
-`production`. Never expand WIF workflow/ref claims to a sandbox feature branch.
-The production identity is not provisioned or exercised by this two-project
-nonproduction envelope. Reuse an existing protected successful auth run only as
-positive authentication evidence for its exact SHA/identity/claims; it does not
-prove any negative case or sandbox IAM outcome.
+There is **no broker health endpoint**. The server/worker Pod probes send an
+unsigned GET to the real `/api/v1/chat/completions` path with a random non-secret
+correlation marker. Expected app response is HTTP 401 with
+`error.code=capability_invalid_signature`. Capability verification precedes route
+processing and Secret Store/provider access, so these calls cannot invoke a
+provider. The corresponding Cloud Run request log must name the exact ready
+revision, marker and 401. Log propagation is not a failure of ingress; collect
+again using the marker stored in the private journal:
 
-Protected-ref-only negative probe jobs must be reviewed in this same
-implementation PR and run **after its normal merge**. Their integration into
-the shared workflow requires the coordinating agent; this directory does not
-silently modify a shared workflow. Required cases are feature ref, missing
-Environment, wrong Environment/workflow, and cross-tier identity. The positive
-control uses the exact protected workflow plus Environment and must obtain a
-short-lived identity; each negative must fail at WIF/STS, not at workflow syntax,
-missing variables, action startup or an unrelated API. Record only `environment`,
-`ref`, `workflow_ref`, source/merge SHA, identity, run URL and error class. Never
-log a JWT or access token. A production reviewer wait is observed through GitHub
-run state, without dispatching an actual production deployment for this sandbox.
+```sh
+python3 infra/gcp/sandbox/controls.py request-log --manifest "$RUN/manifest.json" \
+  --marker 'THE_24_HEX_MARKER_FROM_CONTROLS_EVIDENCE'
+```
 
-Trigger each alert separately in the sandbox: broker revision change; broker
-service/account IAM change; non-broker `AccessSecretVersion`; BYOK audit-config
-change; and broker-account use by Cloud Run service/job, Compute instance and
-GKE node pool. Check the audit method/resource/request shape matches the real
-policy and the test sink receives the corresponding event. A broker's authorized
-read is the negative alert control. Record event timestamp/insert ID, alert
-policy ID and sink receipt timestamp only. Restore audit configuration promptly.
-No delivery receipt means pending, even if Cloud Logging contains the event.
+Run this phase on the operator workstation **outside the sandbox VPC** for its
+internet control. That request must return an ingress 403/404 and must not return
+the broker's distinctive capability rejection. No arbitrary HTTP failure counts.
+Run Pod controls before revision-alert probes, or rediscover the new ready
+revision first. Ephemeral probe containers terminate after at most 15 seconds;
+Pod deletion/normal rollout removes their records, and project shutdown removes
+them with the cluster.
+
+### Assumptions 5–7: signing, tenant lookup and session invalidation
+
+```sh
+python3 infra/gcp/sandbox/controls.py kms --manifest "$RUN/manifest.json"
+python3 infra/gcp/sandbox/runner.py probe --manifest "$RUN/manifest.json" \
+  --requests "$RUN/requests/kms-sign-server.json"
+python3 infra/gcp/sandbox/runner.py probe --manifest "$RUN/manifest.json" \
+  --requests "$RUN/requests/gcip-lookup-own.json"
+```
+
+`kms` signs fixed dummy bytes as the actual worker using the real
+`aidash-test-capability/capability/1` Ed25519 key, exports the public key and runs
+`openssl pkeyutl -verify -rawin`; it records only verification success and removes
+the temporary signature. Raw-data signing follows
+[Cloud KMS's signing contract](https://docs.cloud.google.com/kms/docs/create-validate-signatures).
+The server negative must fail at `cloudkms.cryptoKeyVersions.useToSign`.
+`gcip-lookup-own` asserts the exact seeded local ID; execute the other-tenant and
+project-root lookup negatives independently. Administrator fixture setup proves
+that both tenants/users exist, so 404 is not accepted as isolation evidence.
+
+For assumption 7 the owner signs in **as the seeded own-tenant dummy user** through
+the sandbox app and saves the session cookie privately, after verifying the
+sandbox project and user. Use the actual backend service with a local forward:
+
+```sh
+kubectl --kubeconfig="$RUN/kubeconfig" \
+  --context="gke_${APP_PROJECT}_us-central1-a_aidash" -n aidash-test \
+  port-forward service/app-aidash-server 18080:8080
+```
+
+The owner creates `$RUN/session.json` (mode 0600) with
+`{"origin":"http://127.0.0.1:18080","cookie":"<private Cookie header>"}`.
+Do not put that value in commands, screenshots or agent logs. Then run exactly
+one operation with that fresh session:
+
+```sh
+python3 infra/gcp/sandbox/controls.py gcip --manifest "$RUN/manifest.json" \
+  --change password --session-file "$RUN/session.json"
+```
+
+Repeat separately with `--change reset`, `revoke`, `disable`, and `delete`, obtaining
+a fresh owner session first. The executable uses real tenant account APIs,
+reads `validSince` before/after, verifies `/auth/session` was authenticated before
+mutation, then checks denial with the **old cookie**. Reset obtains and consumes
+an OOB code internally without email delivery/logging. Password changes update
+`dummy-login.json`; no returned token or callback is printed. Run disable/delete
+last. Between disable and delete, run `controls.py gcip-reenable --manifest
+"$RUN/manifest.json"` and obtain a fresh owner session. To restore the dummy user after delete, use tenant `accounts:batchCreate`
+and `accounts:update` via the fixture setup in a new run; do not recreate a
+production user. A still-valid session is a failure to investigate (including
+propagation/cache interval), not accepted by waiting indefinitely or assuming
+all operations advance `validSince`.
+
+### Assumption 8: deny/tag/lifecycle and alerts
+
+Deny-policy tests must distinguish an explicit deny from simply missing an allow.
+The following **optional, separately reviewed sandbox-only fixture phase** saves
+exact broker/control policies, temporarily grants deploy TokenCreator/KeyAdmin
+on the tagged broker and untagged control, and grants broker/control delegation
+to the separate target account. It never changes production or removes the
+broker's tag. If the deny is broken this substrate could expose dummy credentials;
+therefore run one case at a time, stop on unexpected allow, and restore promptly.
+
+```sh
+python3 infra/gcp/sandbox/controls.py deny-fixtures --manifest "$RUN/manifest.json"
+# Execute untagged-* positive files, then deploy-deny-* negatives individually.
+python3 infra/gcp/sandbox/controls.py tags --manifest "$RUN/manifest.json"
+python3 infra/gcp/sandbox/controls.py lifecycle --manifest "$RUN/manifest.json"
+python3 infra/gcp/sandbox/controls.py restore-deny --manifest "$RUN/manifest.json"
+```
+
+The generated requests cover all ten denied permissions. `tags` verifies the
+same control-account policy write before tagging, while tagged, and after
+restoration, and tests deploy detachment of the real broker tag binding. A
+`finally` block restores the fixture tag. `lifecycle` observes control disable,
+restore, delete and same-numeric-ID undelete, then verifies real broker deletion
+is denied and `actAs` remains. It persists the control UID for recovery using
+`gcloud iam service-accounts undelete <recorded-unique-id> --project="$APP_PROJECT"`.
+A direct undelete on a live broker can fail before IAM evaluation; classify that
+probe inconclusive and use the observed deletion-denied branch, not invented
+undelete proof. `restore-deny` restores baseline IAM with fresh etags and deletes
+newly generated control keys; project shutdown remains the interruption fallback.
+
+Prepare exact alert trigger/cleanup commands before executing them:
+
+```sh
+python3 infra/gcp/sandbox/controls.py alert-plan --manifest "$RUN/manifest.json"
+python3 infra/gcp/sandbox/controls.py alert --manifest "$RUN/manifest.json" --case revision
+python3 infra/gcp/sandbox/controls.py alert-collect --manifest "$RUN/manifest.json"
+```
+
+Review `$RUN/alert-commands.json`. Execute separate `--case` invocations for
+`run-service`, `run-job`, `compute`, `node-pool`, `service-iam`, `account-iam`,
+`audit-config`, `nonbroker-read` and `broker-read`. The first four create bounded
+sandbox-only resource names from the run ID; cleanup runs only after successful
+creation. The node-pool has zero nodes. Audit configuration is restored in a
+`finally` block using a fresh etag. Revision uses the reviewed broker digest and
+the actual deploy identity, providing the authorized-deploy positive control.
+No job execution or provider request occurs. Compute creates one private
+`e2-micro` VM only for the audited service-account attachment, then deletes it.
+
+`alert-collect` reads the actual managed policies and uses each exact log filter,
+recording only policy/condition names and matched insert IDs. The owner must
+independently confirm each expected test-sink notification with timestamp and
+policy/event identifier; a log match is **not** a delivered notification.
+`broker-read` is the negative alert control. Collect a bounded observation
+window separately for that case and confirm no matching non-broker-read alert.
+Missing receipts remain pending. Incomplete create/delete operations are recorded
+as incomplete; use the generated cleanup argv after inspecting the named
+resource, or shut down the two owned projects.
+
+Protected WIF cases and jobs are owned by the coordinating implementation task.
+Preserve ADR 0081's exact workflow, protected ref and Environment anchors. The
+same-PR protected-ref-only jobs run after normal merge; existing protected
+successful authentication proves only its own SHA/identity/claims. Neither
+feature-branch success nor source-grep tests substitute for those results.
+Assumption 9 remains deferred to #248.
 
 ## Cleanup
 

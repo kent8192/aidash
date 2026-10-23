@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate reviewable dummy-resource requests; never executes cloud operations.
 
-Resources JSON: server, worker, runtime, control service-account emails; own_tenant,
+Resources JSON: server, worker, node, control service-account emails; own_tenant,
 other_tenant, dummy_user; optional fresh byok_policy (with etag). All are sandbox
 outputs/fixtures. Generated files are independent probes, not a batch transaction.
 """
@@ -32,8 +32,10 @@ def build(m, r):
             case['assert'] = assertions
         cases.append(case)
 
-    for identity_name in ('server', 'worker', 'runtime', 'control'):
+    for identity_name in ('server', 'worker', 'node', 'control'):
         require(r[identity_name].endswith('@' + app + '.iam.gserviceaccount.com'), 'fixture identity outside app project')
+    require(r.get('broker') == broker and r.get('deploy') == deploy, 'bootstrap principal mapping mismatch')
+    require(r.get('node') == r.get('node_pool_service_account'), 'node identity must come from actual node pool')
     own = f'projects/{number}/secrets/aidash-test-cred-dummy'
     other = f'projects/{number}/secrets/aidash-other-cred-dummy'
     for suffix, resource in [('own', own), ('other', other)]:
@@ -42,12 +44,17 @@ def build(m, r):
             'allow' if suffix == 'own' else 'deny', permission='secretmanager.secrets.get', resource=resource,
             assertions={'name': resource} if suffix == 'own' else None)
         version = resource + '/versions/1'
-        for name, identity in [('broker', broker), ('server', r['server']), ('worker', r['worker']), ('runtime', r['runtime']), ('deploy', deploy)]:
+        for name, identity in [('broker', broker), ('server', r['server']), ('worker', r['worker']), ('node', r['node']), ('deploy', deploy)]:
             allowed = name == 'broker' and suffix == 'own'
             add('payload-' + name + '-' + suffix, 3, 'byok', identity, 'GET',
                 'https://secretmanager.googleapis.com/v1/' + version + ':access',
                 'allow' if allowed else 'deny', permission='secretmanager.versions.access', resource=version,
                 assertions={'name': version, 'payload.data': 'YWlkYXNoLXNhbmRib3gtZHVtbXk='} if allowed else None)
+    for operation, permission in [('addVersion', 'secretmanager.versions.add'), ('delete', 'secretmanager.secrets.delete')]:
+        add('foreign-manage-' + operation.lower(), 2, 'byok', r['server'], 'POST' if operation == 'addVersion' else 'DELETE',
+            'https://secretmanager.googleapis.com/v1/' + other + (':addVersion' if operation == 'addVersion' else ''), 'deny',
+            body={'payload': {'data': 'YWlkYXNoLXNhbmRib3gtZHVtbXk='}} if operation == 'addVersion' else None,
+            permission=permission, resource=other)
     key = f'projects/{app}/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability/cryptoKeyVersions/1'
     for name, identity in [('worker', r['worker']), ('server', r['server'])]:
         add('kms-sign-' + name, 5, 'app', identity, 'POST', 'https://cloudkms.googleapis.com/v1/' + key + ':asymmetricSign',
@@ -58,7 +65,8 @@ def build(m, r):
         add('gcip-lookup-' + name, 6, 'app', r['server'], 'POST',
             'https://identitytoolkit.googleapis.com/v1/' + resource + '/accounts:lookup',
             'allow' if name == 'own' else 'deny', body={'localId': [r['dummy_user']]},
-            permission='firebaseauth.users.get', resource=resource)
+            permission='firebaseauth.users.get', resource=resource,
+            assertions={'users.0.localId': r['dummy_user']} if name == 'own' else None)
     account = f'projects/-/serviceAccounts/{broker}'
     iam = 'https://iam.googleapis.com/v1/' + account
     credentials = 'https://iamcredentials.googleapis.com/v1/' + account
@@ -72,10 +80,20 @@ def build(m, r):
         ('undelete', 'iam.serviceAccounts.undelete', 'POST', iam + ':undelete', {}),
         ('disable', 'iam.serviceAccounts.disable', 'POST', iam + ':disable', {}),
         ('id-token', 'iam.serviceAccounts.getOpenIdToken', 'POST', credentials + ':generateIdToken', {'audience': 'https://sandbox.invalid'}),
-        ('delegation', 'iam.serviceAccounts.implicitDelegation', 'POST', 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + r['control'] + ':generateAccessToken', {'delegates': [account], 'scope': ['https://www.googleapis.com/auth/cloud-platform'], 'lifetime': '600s'}),
+        ('delegation', 'iam.serviceAccounts.implicitDelegation', 'POST', 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + r['delegate_target'] + ':generateAccessToken', {'delegates': [account], 'scope': ['https://www.googleapis.com/auth/cloud-platform'], 'lifetime': '600s'}),
     ]
     for name, permission, method, url, body in operations:
         add('deploy-deny-' + name, 8, 'app', deploy, method, url, 'deny', body=body, permission=permission, resource=account)
+    # Reachability controls use the separate untagged fixture and are run
+    # only during the reviewed temporary allow-substrate phase.
+    for name, permission, method, url, body in operations:
+        if name in ('delete', 'undelete', 'disable'):
+            continue  # controls.py lifecycle owns stateful restoration.
+        control_url = url.replace(broker, r['control'])
+        control_body = json.loads(json.dumps(body).replace(broker, r['control'])) if body is not None else None
+        if name == 'set-policy':
+            continue  # controls.py tags uses the fresh etag/policy.
+        add('untagged-' + name, 8, 'app', deploy, method, control_url, 'allow', body=control_body)
     if 'byok_policy' in r:
         baseline = r['byok_policy']
         require(baseline.get('etag'), 'fresh IAM policy etag required')

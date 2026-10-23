@@ -40,7 +40,7 @@ if a[:2] == ['projects', 'create']:
     if p in db['projects']:
         sys.exit(1)
     label = next(x.split('=', 2)[2] for x in a if x.startswith('--labels='))
-    db['projects'][p] = {'projectId': p, 'projectNumber': str(1000 + len(db['projects'])), 'labels': {'aidash-sandbox-run': label}, 'parent': {'type': 'folder', 'id': '123'}, 'lifecycleState': 'ACTIVE'}
+    db['projects'][p] = {'projectId': p, 'projectNumber': str(1000 + len(db['projects'])), 'labels': {'aidash-sandbox-run': label}, 'parent': ({'type': 'folder', 'id': '123'} if '--folder=123' in a else None), 'lifecycleState': 'ACTIVE'}
     result = {}
 elif a[:2] == ['projects', 'describe']:
     result = db['projects'].get(p)
@@ -102,6 +102,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(any('link' in call or 'delete' in call for call in calls))
         self.assertEqual(json.loads(self.manifest.read_text())['status'], 'creating')
 
+    def test_explicit_no_organization_project_lifecycle(self):
+        m = json.loads(self.manifest.read_text())
+        m['parent'] = 'none'
+        self.manifest.write_text(json.dumps(m))
+        self.call('create')
+        self.call('cleanup')
+        self.assertEqual(json.loads(self.manifest.read_text())['status'], 'shutdown_verified')
+        self.assertFalse(any(any(arg.startswith(('--folder=', '--organization=')) for arg in call) for call in json.loads(self.db.read_text())['calls']))
+
     def test_explicit_routing_and_verified_shutdown(self):
         self.call('create')
         result = self.call('cleanup')
@@ -155,7 +164,10 @@ class LifecycleTests(unittest.TestCase):
     def test_generated_requests_are_executable_with_owned_resource_contract(self):
         self.call('create')
         resources = self.root / 'resources.json'
-        resources.write_text(json.dumps({**{key: 'dummy-' + key + '@aidash-sbx-app-one.iam.gserviceaccount.com' for key in ('server', 'worker', 'runtime', 'control')},
+        resources.write_text(json.dumps({**{key: 'dummy-' + key + '@aidash-sbx-app-one.iam.gserviceaccount.com' for key in ('server', 'worker', 'node', 'control')},
+            'node_pool_service_account': 'dummy-node@aidash-sbx-app-one.iam.gserviceaccount.com',
+            'delegate_target': 'aidash-sandbox-target@aidash-sbx-app-one.iam.gserviceaccount.com',
+            'broker': 'aidash-test-broker@aidash-sbx-app-one.iam.gserviceaccount.com', 'deploy': 'aidash-deploy@aidash-sbx-app-one.iam.gserviceaccount.com',
             'own_tenant': 'own-tenant', 'other_tenant': 'other-tenant', 'dummy_user': 'fixture-user',
             'byok_policy': {'etag': 'fresh-policy', 'version': 3, 'bindings': []}}))
         output = self.root / 'requests'
@@ -174,6 +186,30 @@ class LifecycleTests(unittest.TestCase):
             observed = runner.probe(json.loads(self.manifest.read_text()), self.manifest, args)
         self.assertFalse(observed['all_passed'])
         self.assertEqual(observed['passed'], 0)
+
+    def test_every_successful_denial_stops_batch_and_preserves_target(self):
+        self.call('create')
+        batch = self.root / 'requests.json'
+        base = dict(id='same-id', assumption=3, project='byok',
+            identity='aidash-test-broker@aidash-sbx-app-one.iam.gserviceaccount.com', method='GET',
+            expected='deny', permission='secretmanager.versions.access', denial_reason='IAM_PERMISSION_DENIED')
+        args = type('Args', (), {'requests': str(batch)})()
+        class Response(io.BytesIO):
+            def __init__(self, status, body):
+                super().__init__(body)
+                self.status = status
+        for number, (status, body) in enumerate([(204, b''), (200, b'[]'), (200, b'"scalar"'), (200, b'not-json')]):
+            resource = f'projects/1001/secrets/aidash-test-cred-dummy-{number}/versions/1'
+            first = dict(base, url='https://secretmanager.googleapis.com/v1/' + resource + ':access', resource=resource)
+            batch.write_text(json.dumps([first, dict(first, id='must-not-run')]))
+            with mock.patch.dict(os.environ, self.env), mock.patch('urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: Response(status, body)) as transport:
+                result = runner.probe(json.loads(self.manifest.read_text()), self.manifest, args)
+                self.assertEqual(transport.call_count, 1)
+                self.assertFalse(result['all_passed'])
+        rows = json.loads((self.directory / 'probe-results.json').read_text())
+        self.assertTrue(all(row['result'] == 'failed' for row in rows))
+        self.assertEqual(len({row['target'] for row in rows}), 4)
+        self.assertEqual(len({row['request_sha256'] for row in rows}), 4)
 
     def test_plan_isolated_real_roots_single_unpublished_environment(self):
         m = json.loads(self.manifest.read_text())
@@ -245,6 +281,14 @@ class ResponseTests(unittest.TestCase):
         self.assertEqual(runner.classify(200, {'name': 'projects/1001/secrets/other'}, spec), 'failed')
         self.assertEqual(runner.classify(200, {'name': 'projects/1001/secrets/dummy'}, spec), 'passed')
         self.assertEqual(runner.classify(200, {}, {'expected': 'allow'}), 'observation_only')
+
+    def test_resource_requests_do_not_add_quota_project_permission(self):
+        class Response(io.BytesIO):
+            status = 204
+        with mock.patch('urllib.request.OpenerDirector.open', return_value=Response(b'')) as transport:
+            status, _ = runner.request({'url': 'https://secretmanager.googleapis.com/v1/projects/1001/secrets/dummy', 'method': 'DELETE'}, 'private-token', 'aidash-sbx-app-one')
+        self.assertEqual(status, 204)
+        self.assertFalse(transport.call_args.args[0].has_header('X-goog-user-project'))
 
     def test_transport_error_and_redirect_never_become_denial(self):
         with mock.patch('urllib.request.OpenerDirector.open', side_effect=OSError('SECRET_TOKEN_REFLECTED')):

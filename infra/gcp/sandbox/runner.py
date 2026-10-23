@@ -8,6 +8,7 @@ import argparse
 import datetime
 import fcntl
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -70,7 +71,7 @@ def validate(m):
     require(set(m.get('projects', {})) == {'app', 'byok'}, 'exactly two projects required')
     ids = [p.get('id', '') for p in m['projects'].values()]
     require(len(set(ids)) == 2 and all(re.fullmatch('aidash-sbx-[a-z0-9-]{1,18}[a-z0-9]', p) for p in ids), 'distinct sandbox project IDs required')
-    require(m.get('parent', '').startswith(('folders/', 'organizations/')) and m['parent'].split('/')[1].isdigit(), 'explicit project parent required')
+    require(m.get('parent') == 'none' or re.fullmatch(r'(folders|organizations)/[0-9]+', m.get('parent', '')), 'explicit parent or none required')
 
 
 def owned(m, project):
@@ -79,7 +80,8 @@ def owned(m, project):
     require(observed.get('labels', {}).get('aidash-sandbox-run') == m['run_id'], 'project is not owned by this run')
     number = str(observed.get('projectNumber', ''))
     require(number.isdigit() and (project.get('number') in (None, number)), 'project number mismatch')
-    require(observed.get('parent') == {'type': m['parent'].split('/')[0][:-1], 'id': m['parent'].split('/')[1]}, 'project parent mismatch')
+    expected_parent = None if m['parent'] == 'none' else {'type': m['parent'].split('/')[0][:-1], 'id': m['parent'].split('/')[1]}
+    require((observed.get('parent') or None) == expected_parent, 'project parent mismatch')
     require(observed.get('lifecycleState') in ('ACTIVE', 'DELETE_REQUESTED'), 'unexpected project lifecycle')
     return observed
 
@@ -107,8 +109,8 @@ def create(m, path):
             # atomic non-adoption boundary, even when an existing ID is hidden.
             p['status'] = 'creating'
             save(path, m)
-            parent_type, parent_id = m['parent'].split('/')
-            cloud(p['id'], 'projects', 'create', p['id'], '--' + parent_type[:-1] + '=' + parent_id,
+            parent_flags = [] if m['parent'] == 'none' else ['--' + m['parent'].split('/')[0][:-1] + '=' + m['parent'].split('/')[1]]
+            cloud(p['id'], 'projects', 'create', p['id'], *parent_flags,
                   '--labels=aidash-sandbox-run=' + m['run_id'])
         observed = owned(m, p)
         require(observed['lifecycleState'] == 'ACTIVE', 'cannot activate shutdown project')
@@ -205,10 +207,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def request(spec, token, project):
     req = urllib.request.Request(spec['url'], method=spec['method'],
         data=json.dumps(spec['body']).encode() if 'body' in spec else None,
-        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'x-goog-user-project': project})
+        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
-            return response.status, json.loads(response.read(1048576))
+            status = response.status
+            try:
+                return status, json.loads(response.read(1048576))
+            except (ValueError, UnicodeError):
+                return status, {}
     except urllib.error.HTTPError as error:
         try:
             return error.code, json.loads(error.read(1048576))
@@ -219,6 +225,8 @@ def request(spec, token, project):
 
 
 def classify(status, body, spec):
+    if spec['expected'] == 'deny' and 200 <= status < 300:
+        return 'failed'
     if not isinstance(body, dict):
         return 'inconclusive'
     if spec['expected'] == 'allow':
@@ -229,7 +237,12 @@ def classify(status, body, spec):
         for key, expected in spec.get('assert', {}).items():
             value = body
             for part in key.split('.'):
-                value = value.get(part) if isinstance(value, dict) else None
+                if isinstance(value, dict):
+                    value = value.get(part)
+                elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                    value = value[int(part)]
+                else:
+                    value = None
             if value != expected:
                 return 'failed'
         return 'passed' if spec.get('assert') else 'observation_only'
@@ -291,6 +304,12 @@ def probe(m, path, args):
         require((wildcard_iam and '-' in allowed and '/projects/-/serviceAccounts/' in parsed.path) or '/projects/' + p['id'] + '/' in parsed.path or '/projects/' + p['number'] + '/' in parsed.path or parsed.path.endswith('/projects/' + p['id'] + ':setIamPolicy') or parsed.path.endswith('/projects/' + p['id'] + ':getIamPolicy'), 'URL does not target selected project')
         if spec['expected'] == 'deny':
             require(all(spec.get(key) for key in ('permission', 'resource', 'denial_reason')), 'exact denial boundary required')
+        if 'resource' in spec:
+            require(len(spec['resource']) <= 512 and re.fullmatch(r'(//[a-z.]+/)?projects/[a-z0-9-]+(?:/[A-Za-z0-9@._:/-]+)?', spec['resource']), 'invalid evidence resource')
+        if 'permission' in spec:
+            require(re.fullmatch(r'[a-z][A-Za-z0-9.]+', spec['permission']), 'invalid evidence permission')
+        if 'denial_reason' in spec:
+            require(spec['denial_reason'] == 'IAM_PERMISSION_DENIED', 'unsupported denial boundary')
     current_results = []
     for spec in specs:
         project = m['projects'][spec['project']]['id']
@@ -300,6 +319,9 @@ def probe(m, path, args):
         status, body = request(spec, token, project)
         results.append(dict(id=spec['id'], assumption=spec['assumption'], identity=spec['identity'],
             run_id=m['run_id'], project=project, expected=spec['expected'], http_status=status,
+            target=spec.get('resource', urlsplit(spec['url']).netloc + urlsplit(spec['url']).path),
+            method=spec['method'], permission=spec.get('permission'), denial_reason=spec.get('denial_reason'),
+            request_sha256=hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
             result=classify(status, body, spec), started_at=started, finished_at=stamp(), source_sha=m['source_sha']))
         save(path.parent / 'probe-results.json', results)
         current_results.append(results[-1])
