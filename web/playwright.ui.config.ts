@@ -38,6 +38,7 @@ export default defineConfig({
     "community-sign-in.spec.ts",
     "nodes.spec.ts",
     "approval-modes.spec.ts",
+    "approval-observation.spec.ts",
   ],
   workers: 1,
   retries: 0,
