@@ -1591,6 +1591,32 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 }
 
 #[tokio::test]
+async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_identity() {
+	use aidash_domain::{
+		context::source::QueryPolicy,
+		registry::bindings::{source_defaults, sources},
+	};
+	let mut catalog = Catalog::new();
+	let identity = source_defaults::workspace_observation_reference(NODE);
+	let source = catalog.entries.get_mut(&identity).unwrap();
+	let mut native: sources::NativeContext = serde_json::from_value(source.config.clone()).unwrap();
+	let mut custom = native.declaration(&identity);
+	custom.query = QueryPolicy::AcceptedInputsFirstV1;
+	native.context_source = Some(custom);
+	source.config = serde_json::to_value(native).unwrap();
+	// This is a valid, freshly admitted graph with correct digests, so rejection
+	// comes from the receiver export boundary rather than corrupt snapshot bytes.
+	let saved = snapshot(&mut catalog, &agent_config(), true).await.unwrap();
+	saved.validate().unwrap();
+	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("unsupported private or cross-Node dependency")
+	);
+}
+
+#[tokio::test]
 async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child_tools() {
 	let child = public_foreign_snapshot().await;
 	let mut catalog = Catalog::new();

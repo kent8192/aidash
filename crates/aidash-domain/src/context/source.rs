@@ -251,7 +251,10 @@ impl SourceBatch {
 		max_bytes: usize,
 	) -> Result<()> {
 		declaration.validate()?;
-		if self.candidates.len() > MAX_CANDIDATES
+		if matches!(
+			self.outcome,
+			SourceOutcome::Selected | SourceOutcome::Fitted | SourceOutcome::Delivered
+		) || self.candidates.len() > MAX_CANDIDATES
 			|| serde_json::to_vec(self)?.len() > max_bytes.min(MAX_SOURCE_BYTES)
 			|| (self.candidates.is_empty() && self.outcome == SourceOutcome::Fetched)
 			|| (!self.candidates.is_empty()

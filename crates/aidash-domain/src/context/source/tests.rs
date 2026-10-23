@@ -75,6 +75,18 @@ fn explicit_policy_rejects_duplicate_tools_and_required_home_enforcement() {
 		decider: QualifiedRef::builtin("aidash://node", "selection"),
 	};
 	declaration.validate().unwrap();
+	assert!(
+		SourceBatch {
+			candidates: vec![],
+			outcome: SourceOutcome::Delivered
+		}
+		.validate(
+			&QualifiedRef::builtin("aidash://node", "source"),
+			&declaration,
+			MAX_SOURCE_BYTES
+		)
+		.is_err()
+	);
 }
 #[test]
 fn altered_or_partial_fitted_bytes_cannot_claim_full_delivery() {
