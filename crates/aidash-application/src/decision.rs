@@ -13,6 +13,7 @@ use uuid::Uuid;
 mod approval_state;
 mod dispatch;
 mod judge;
+pub mod observation;
 mod state;
 pub use approval_state::{ApprovalState, ApprovalTool, build_approval_state};
 pub use dispatch::{attempt_identity, decision_identity};
