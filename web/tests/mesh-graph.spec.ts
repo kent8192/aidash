@@ -238,7 +238,7 @@ test("connected local node opens topology and relationship controls only show ac
       exact: true,
     })
     .click();
-  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(1);
+  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
   await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
   expect(errors).toEqual([]);
 });
@@ -350,18 +350,15 @@ test("zoom and node positions survive snapshot refresh and revoked details disap
   page,
 }) => {
   const { errors, revoke } = await setup(page);
-  const before = await page.locator(".mesh-label-layer").getAttribute("style");
+  const canvas = page.locator(".mesh-canvas");
+  const before = await cytoscapeCamera(canvas);
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-  await expect(page.locator(".mesh-label-layer")).not.toHaveAttribute(
-    "style",
-    before!,
-  );
-  const camera = await page.locator(".mesh-label-layer").getAttribute("style");
+  await expect
+    .poll(async () => (await cytoscapeCamera(canvas)).zoom)
+    .toBeGreaterThan(before.zoom);
+  const camera = await cytoscapeCamera(canvas);
   await page.waitForResponse((r) => r.url().includes("/api/state"));
-  await expect(page.locator(".mesh-label-layer")).toHaveAttribute(
-    "style",
-    camera!,
-  );
+  await expect.poll(() => cytoscapeCamera(canvas)).toEqual(camera);
   revoke();
   await expect(page.locator(".mesh-inspector")).toHaveCount(0, {
     timeout: 8000,

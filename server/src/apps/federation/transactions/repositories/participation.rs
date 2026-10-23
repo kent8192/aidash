@@ -131,7 +131,24 @@ impl ParticipantScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn insert(&mut self, manifest: &Manifest, next: ParticipantPhase) -> Result<LocalStatus> {
-		AtomicParticipant::insert(self.transaction.executor(), manifest, phase(next))
+		let node = local_node(&self.runtime, manifest);
+		let participant = manifest
+			.local(&node)
+			.map_err(|_| aidash_application::Error::Forbidden)?;
+		let tx = self.transaction.executor();
+		for mutation in &participant.mutations {
+			let (kind, id) = match mutation {
+				aidash_domain::transactions::Mutation::WorkspaceState { workspace_id, .. } => {
+					("workspace", *workspace_id)
+				}
+				aidash_domain::transactions::Mutation::CompleteTask { task_id, .. } => {
+					("task", *task_id)
+				}
+				aidash_domain::transactions::Mutation::FinishRun { run_id, .. } => ("run", *run_id),
+			};
+			super::mutation::require_target_node(tx, &node, kind, id).await?;
+		}
+		AtomicParticipant::insert(tx, manifest, phase(next))
 			.await
 			.map(status)
 			.map_err(Into::into)
@@ -154,14 +171,15 @@ impl ParticipantScope for Scope {
 		.map_err(Into::into)
 	}
 	async fn validate_mutations(&mut self, manifest: &Manifest) -> Result<()> {
+		let node = local_node(&self.runtime, manifest);
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
 		tx.savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
-			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			&local_node(&self.runtime, manifest),
+			&mut crate::bootstrap::transaction_mutation_scope(tx, &node),
+			&node,
 			manifest,
 		)
 		.await?;
@@ -177,15 +195,12 @@ impl ParticipantScope for Scope {
 		Ok(())
 	}
 	async fn apply_mutations(&mut self, manifest: &Manifest) -> Result<()> {
+		let node = local_node(&self.runtime, manifest);
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
-		let mut scope = crate::bootstrap::transaction_mutation_scope(tx);
-		let applied = aidash_application::transactions::mutation::apply(
-			&mut scope,
-			&local_node(&self.runtime, manifest),
-			manifest,
-		)
-		.await;
+		let mut scope = crate::bootstrap::transaction_mutation_scope(tx, &node);
+		let applied =
+			aidash_application::transactions::mutation::apply(&mut scope, &node, manifest).await;
 		self.interruptions.extend(scope.1);
 		applied
 	}

@@ -191,6 +191,14 @@ impl Drop for Submission {
 
 #[async_trait]
 impl TransactionAuthorityScope for Control {
+	async fn require_target_node(
+		&mut self,
+		_: &str,
+		_: &aidash_domain::transactions::authority::Target,
+	) -> Result<()> {
+		Ok(())
+	}
+
 	fn identity(&self) -> ExecutionPrincipal {
 		self.identity.clone()
 	}

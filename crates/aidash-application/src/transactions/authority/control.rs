@@ -72,7 +72,7 @@ pub async fn preflight(
 	let mut scope = repository.mapped(input).await?;
 	scope.gate().await?;
 	let result = async {
-		checks(scope.authority(), input, "transaction.submit").await?;
+		checks(scope.authority(), input, receiver, "transaction.submit").await?;
 		let authority = scope.authority();
 		let binding = Binding {
 			request: input.clone(),
@@ -255,7 +255,13 @@ pub async fn check_admission(
 	bound: &Binding,
 	caller: &str,
 ) -> Result<()> {
-	checks(scope, &bound.request, "transaction.submit").await?;
+	checks(
+		scope,
+		&bound.request,
+		repository.receiver().unwrap_or(&bound.request.coordinator),
+		"transaction.submit",
+	)
+	.await?;
 	if Origin::from(&scope.identity()) != bound.local || scope.subjects() != bound.subjects {
 		return Err(Error::Forbidden);
 	}
@@ -373,7 +379,13 @@ pub async fn read_access(
 	if Origin::from(&scope.authority().identity()) != bound.local {
 		return Err(Error::Forbidden);
 	}
-	let result = checks(scope.authority(), input, "transaction.read").await;
+	let result = checks(
+		scope.authority(),
+		input,
+		repository.receiver().ok_or(Error::Forbidden)?,
+		"transaction.read",
+	)
+	.await;
 	finish(scope, result).await
 }
 

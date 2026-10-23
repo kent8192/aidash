@@ -245,8 +245,8 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 				.id;
 			let artifact = Artifact::build()
 				.tenant("acme")
-				.workspace_id(workspace.id)
-				.task_id(task.id)
+				.workspace(workspace.id)
+				.task(task.id)
 				.kind(ArtifactKind::Text)
 				.name("review artifact")
 				.content(json!("record query regression").into())

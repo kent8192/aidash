@@ -876,10 +876,12 @@ impl HarnessManagement {
 	pub(crate) async fn research_providers(
 		&self,
 		actor: Actor,
+		input: crate::apps::execution::serializers::runs::ResearchProvidersQuery,
 	) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
 		crate::apps::execution::capabilities::services::endpoints::research_providers(
 			self.runtime.clone(),
 			actor,
+			input,
 		)
 		.await
 	}

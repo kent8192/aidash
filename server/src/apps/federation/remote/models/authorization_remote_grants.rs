@@ -1,6 +1,7 @@
 //! Persistent authorization_remote_grants records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,14 @@ use serde_json::Value;
 pub struct AuthorizationRemoteGrant {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
-	#[field]
-	pub task_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "authorization_remote_grants_task_id_fkey",
+		db_index = false,
+		on_delete = Cascade
+	)]
+	pub task: ForeignKeyField<crate::apps::workspaces::models::Task>,
 	#[field]
 	pub task_revision: i64,
 	#[field]

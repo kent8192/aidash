@@ -105,7 +105,7 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 			let record = RunInput::build()
 				.tenant("acme")
 				.seq(index as i64 + 1)
-				.run_id(run.id)
+				.run(run.id)
 				.sender("human")
 				.content("retain this input after terminal completion")
 				.message_id(delivered.then(Uuid::new_v4))

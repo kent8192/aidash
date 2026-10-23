@@ -271,10 +271,10 @@ async fn map_owner(tx: &mut AtomicTransaction, tenant: &str, identity: Uuid) -> 
 	.await?;
 	let mapping = DashboardMapping::build()
 		.id(Uuid::new_v4())
-		.identity_id(identity)
+		.identity(identity)
 		.tenant(tenant.to_owned())
 		.subject(OWNER.to_owned())
-		.credential_id(credential.id)
+		.credential(credential.id)
 		.enabled(true)
 		.revision(1)
 		.finish();

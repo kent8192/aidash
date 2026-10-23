@@ -142,3 +142,10 @@ pub struct ResearchProviders {
 	pub providers: Vec<ResearchProvider>,
 	pub limits: ResearchLimits,
 }
+
+/// The owned Node whose Research Catalog approvals are requested.
+#[derive(Default, serde::Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResearchProvidersQuery {
+	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
+}

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { setup } from "./collaboration-fixture";
+import { setup, fixture } from "./collaboration-fixture";
 import { defaultNode } from "./registry-fixture";
 import type { ChannelMessagePage } from "../src/generated/models";
 
@@ -2401,3 +2401,44 @@ for (const collision of [false, true]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("topology renders each discovered Node once with its agents and cross-Node communication", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  const data = fixture();
+  const local = data.deployment.id;
+  const remote = "aidash://remote/remote-node";
+  const entity = data.registry.find((entry) => entry.kind === "agent")!;
+  data.tasks[0].created_by = `${local}/agents/${entity.id}@${entity.version}`;
+  data.tasks[0].owner = `${remote}/agents/${entity.id}@${entity.version}`;
+  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/discover**", (route) =>
+    route.fulfill({
+      json: {
+        agents: [
+          { node_id: local, entity },
+          { node_id: remote, entity },
+        ],
+        failures: [],
+      },
+    }),
+  );
+  await page.goto("/graph?channel=workspace-one");
+  await page.getByLabel("Graph perspective").selectOption("neighborhood");
+  await page
+    .getByRole("button", {
+      name: "Node topology and communication",
+      exact: true,
+    })
+    .click();
+  const topology = page.getByRole("img", {
+    name: "Mesh topology",
+  });
+  await expect(topology).toBeVisible();
+  await expect(
+    topology.locator("text").filter({ hasText: "1 Agents" }),
+  ).toHaveCount(2);
+  await expect(topology.locator("path[marker-end]")).toHaveCount(1);
+  expect(errors).toEqual([]);
+});

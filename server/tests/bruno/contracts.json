@@ -9969,7 +9969,7 @@
     "source": "server/src/apps/execution/capabilities/views/management.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["cursor", "node_id"],
+    "query_parameters": ["cursor", "node_id", "run_id"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/RecipientPage"
@@ -37737,7 +37737,7 @@
     "source": "server/src/apps/execution/views/management.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": [],
+    "query_parameters": ["node"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/ResearchProviders"

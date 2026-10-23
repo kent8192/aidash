@@ -1568,10 +1568,15 @@ pub(crate) fn transaction_management_repository(
 }
 
 /// Mutation ports borrow the same serializable transaction and visibility gate.
-pub(crate) fn transaction_mutation_scope(
-	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-) -> crate::apps::federation::transactions::repositories::mutation::Scope<'_> {
-	crate::apps::federation::transactions::repositories::mutation::Scope(tx, Vec::new())
+pub(crate) fn transaction_mutation_scope<'a>(
+	tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
+	node: &str,
+) -> crate::apps::federation::transactions::repositories::mutation::Scope<'a> {
+	crate::apps::federation::transactions::repositories::mutation::Scope(
+		tx,
+		Vec::new(),
+		node.to_owned(),
+	)
 }
 
 pub(crate) fn transaction_participant(

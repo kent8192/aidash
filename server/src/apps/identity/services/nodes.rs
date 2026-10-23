@@ -158,7 +158,14 @@ impl Nodes {
 				f.store
 					.pool
 					.atomic(&scope, async |tx| {
-						nodes::relabel(tx, &tenant, name.as_str(), &label).await
+						relabel_in(
+							tx,
+							&tenant,
+							name.as_str(),
+							&label,
+							&AdministrationActor::DeploymentAdministratorBearer,
+						)
+						.await
 					})
 					.await?
 			}
@@ -179,7 +186,16 @@ impl Nodes {
 										json!({"label": current.label, "default": current.default}),
 									)
 									.await?;
-								nodes::relabel(tx, &tenant, name.as_str(), &label).await
+								relabel_in(
+									tx,
+									&tenant,
+									name.as_str(),
+									&label,
+									&AdministrationActor::TenantAdministrator(
+										administrator.clone(),
+									),
+								)
+								.await
 							})
 							.await
 					})
@@ -215,6 +231,40 @@ async fn create_in(
 			tx,
 			AdministrationEvent {
 				action: rules::NODE_CREATE,
+				identity: None,
+				registration: None,
+				mapping: None,
+				tenant: Some(tenant),
+				subject: None,
+				invitation: None,
+			},
+		)
+		.await?;
+	Ok(node)
+}
+
+/// Hold the same capacity lock for Node creation and changes to its Tier limit.
+/// The caller retains the transaction until the new admission state is visible.
+pub async fn lock_capacity(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+) -> Result<()> {
+	nodes::lock_tenant(tx, tenant).await
+}
+
+async fn relabel_in(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	name: &str,
+	label: &str,
+	actor: &AdministrationActor,
+) -> Result<Node> {
+	let node = nodes::relabel(tx, tenant, name, label).await?;
+	actor
+		.record(
+			tx,
+			AdministrationEvent {
+				action: rules::NODE_UPDATE,
 				identity: None,
 				registration: None,
 				mapping: None,

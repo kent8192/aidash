@@ -1,5 +1,6 @@
 //! Persistent messages records.
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 
 use crate::apps::execution::models::event_records;
 use crate::apps::workspaces::serializers::entities::Message as MessageContract;
@@ -23,8 +24,13 @@ pub struct Message {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "messages_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 	#[field(field_type = "text")]
 	pub sender: String,
 	#[field(field_type = "text")]
@@ -112,6 +118,7 @@ impl crate::database::Record for Message {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
+			workspace: ForeignKeyField::new(),
 			sender: row.try_get("sender")?,
 			content: row.try_get("content")?,
 			idempotency_key: row.try_get("idempotency_key")?,

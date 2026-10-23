@@ -28,7 +28,7 @@ export type Readiness = "ready" | "not_set_up" | "not_approved" | "unknown";
 /**
  * The research operations an Agent binds and whether each can run here: its
  * Research provider must be set up in this Deployment, and this Tenant must
- * have a Catalog Approval for its definition. Only then is a URL intent
+ * have a Catalog Approval for its definition on this Node. Only then is a URL intent
  * offered for Page reading.
  */
 export function useResearch(agent: Agent | undefined, data: State) {
@@ -38,9 +38,16 @@ export function useResearch(agent: Agent | undefined, data: State) {
     registryDeployment(data),
   );
   const providers = useQuery({
-    queryKey: ["research-providers"],
+    queryKey: [
+      "research-providers",
+      data.access.kind === "subject" ? data.access.tenant : null,
+      data.node.id,
+    ],
     queryFn: ({ signal }) =>
-      apiFetch<ResearchProviders>("/api/research/providers", { signal }),
+      apiFetch<ResearchProviders>(
+        `/api/research/providers?node=${encodeURIComponent(data.node.id.split("/").at(-1)!)}`,
+        { signal },
+      ),
     enabled: bound.length > 0,
     // Another administrator may approve or revoke a definition at any time,
     // and no event announces it here, so readiness is read again.

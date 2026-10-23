@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { defaultNode, registryVersion } from "./registry-fixture";
 
-function fixture(reference = false) {
+export function fixture(reference = false) {
   const deployment = {
     id: "aidash://home",
     endpoint: "http://localhost",

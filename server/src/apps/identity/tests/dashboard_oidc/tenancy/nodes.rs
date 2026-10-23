@@ -216,6 +216,17 @@ async fn members_list_nodes_and_administrators_create_and_relabel_them(
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["label"], "CI");
 	assert_eq!(body["name"], node);
+	// A relabel changes policy attributes, so each accepted actor is recorded.
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND action = 'node.update' AND actor_kind = 'tenant_administrator'")).await, 1);
+	let (status, body) = d
+		.as_deployment_administrator(
+			"PATCH",
+			&format!("/api/tenants/{tenant}/nodes/{node}"),
+			json!({"label":"Deployment CI"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND action = 'node.update' AND actor_kind = 'deployment_administrator'")).await, 1);
 	for label in ["", "   ", "line\nbreak"] {
 		let (status, _) = d.create_node(&alice, &context, &tenant, label).await;
 		assert_eq!(status, 400, "{label:?}");

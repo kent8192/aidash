@@ -206,7 +206,7 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 			.tenant("acme")
 			.id(request_id)
 			.workspace_id(saved.workspace_id)
-			.run_id(saved.id)
+			.run(saved.id)
 			.kind(HumanRequestKind::Question)
 			.prompt("Continue?")
 			.response(answered.then(|| json!({"answer":"yes"}).into()))

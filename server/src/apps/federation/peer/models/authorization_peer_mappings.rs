@@ -2,6 +2,7 @@
 
 use crate::Result;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,13 @@ pub struct AuthorizationPeerMapping {
 	pub source_node: String,
 	#[field(primary_key = true, field_type = "text")]
 	pub source_subject: String,
-	#[field]
-	pub credential_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "authorization_peer_mappings_credential_id_fkey",
+		db_index = false
+	)]
+	pub credential: ForeignKeyField<crate::apps::identity::models::AuthorizationCredential>,
 	#[field]
 	pub enabled: bool,
 	#[field]

@@ -1290,3 +1290,118 @@ async fn a_deployment_administrator_reads_usage_as_json_and_csv(
 	assert_eq!(status, 400);
 	d.finish().await;
 }
+
+/// Pauses the processor before publishing the new locally readable Tier.
+struct DelayedTier {
+	pool: aidash_server::database::native::Pool,
+	entered: tokio::sync::Notify,
+	release: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl PaymentState for DelayedTier {
+	async fn subscription(&self, account: Uuid) -> aidash_server::Result<Option<Subscription>> {
+		store::subscription(&self.pool, account).await
+	}
+	async fn change_tier(&self, account: Uuid, tier: &str) -> aidash_server::Result<()> {
+		self.entered.notify_one();
+		self.release.notified().await;
+		store::record_subscription(
+			&self.pool,
+			account,
+			&Subscription {
+				tier: tier.into(),
+				status: Status::Active,
+				grace_ends_at: None,
+			},
+		)
+		.await
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_tier_downgrade_and_node_creation_share_the_capacity_lock(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let mut d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let account = d.account(&alice, Some("team")).await;
+	let (_, (status, body)) = d.attach(&alice, &context, &alice, &tenant, account).await;
+	assert_eq!(status, 200, "{body}");
+	let mut tiers = sandbox_defaults();
+	tiers["tiers"]["small"] =
+		json!({"tenants":5,"nodes":1,"pod_seconds":3600,"storage_bytes":1073741824});
+	let tiers = Arc::new(Settings::from_value(tiers).unwrap());
+	let payments = Arc::new(DelayedTier {
+		pool: d.control().clone(),
+		entered: Default::default(),
+		release: Default::default(),
+	});
+	d.federation.config.tier_limits = Arc::new(Gate {
+		pool: d.control().clone(),
+		settings: tiers.clone(),
+		payments: payments.clone(),
+		offering: Offering::Cloud,
+	});
+	d.app.context.set_singleton(d.federation.clone());
+	let billing = Billing {
+		pool: d.control().clone(),
+		settings: tiers,
+		payments: payments.clone(),
+		nodes: Arc::new(aidash_enterprise_server::billing::nodes::StoredNodes(
+			d.federation.store.pool.clone(),
+		)),
+	};
+	{
+		let change = billing.change_tier(alice.identity, account, "small");
+		tokio::pin!(change);
+		tokio::select! {
+			_ = payments.entered.notified() => {},
+			result = &mut change => panic!("processor did not wait: {result:?}"),
+		}
+		let path = format!("/api/tenants/{tenant}/nodes");
+		let create = d.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Concurrent"}),
+		);
+		tokio::pin!(create);
+		// The request must reach the database capacity lock, rather than being
+		// allowed to commit under the old paid Tier while the processor waits.
+		let blocked = async {
+			loop {
+				let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory' AND query LIKE '%pg_advisory_xact_lock%'")
+					.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+				if waiting > 0 {
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		};
+		let attempted = tokio::select! {
+			result = &mut create => Some(result),
+			result = tokio::time::timeout(std::time::Duration::from_secs(5), blocked) => { result.expect("Node creation must wait at the capacity lock"); None },
+		};
+		payments.release.notify_one();
+		change.await.unwrap();
+		let (status, body) = match attempted {
+			Some(result) => result,
+			None => create.await,
+		};
+		assert_eq!(status, 403, "creation must see the downgraded Tier: {body}");
+		assert_eq!(body["error"], "node_limit_reached");
+		assert_eq!(
+			store::subscription(d.control(), account)
+				.await
+				.unwrap()
+				.unwrap()
+				.tier,
+			"small"
+		);
+	}
+
+	d.finish().await;
+}

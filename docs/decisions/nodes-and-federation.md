@@ -412,7 +412,9 @@ The test fixtures that insert root rows without `tenants::create` call `create_d
 
 `POST /api/tenants/{tenant}/nodes` requires `node.create` on the Tenant resource, takes a per-Tenant advisory lock `nodes:<tenant>`, counts the Tenant's `nodes` rows, and refuses when the count is at or above `min(config.tenancy.nodes_per_tenant, tier limit)`. The refusal is `403` with the code `node_limit_reached`, beside `tenant_limit_reached` (`server/src/error.rs:10-11`). The Tier limit comes through a port `TierLimits::nodes(tenant) -> Option<u32>` in `aidash-application`, whose Community implementation returns `None`. #242 supplies the Enterprise implementation and the Free Tier's 1, and refuses a Tier change that would exceed the limit, as its decisions say. The handler then draws a name, inserts both rows and records an `AdministrationEvent` with action `node.create`, like `tenant.create` (`tenants.rs:229-247`).
 
-`PATCH /api/tenants/{tenant}/nodes/{node}` requires `node.update` and changes the label. There is no revision column; the label is a last-write-wins field. #388 covers deletion and decides how a Node stops.
+A Tier change locks the Billing Account and each covered Tenant's `nodes:<tenant>` capacity lock in name order, validates current counts, and retains those locks until the payment adapter publishes the new locally readable Subscription. Attachment reads the current Subscription and Node count under the same locks before it commits.
+
+`PATCH /api/tenants/{tenant}/nodes/{node}` requires `node.update`, changes the label and records the actor's `node.update` administration event in the same transaction. There is no revision column; the label is a last-write-wins field. #388 covers deletion and decides how a Node stops.
 
 ### 5.3 Built-in seeding stays per Tenant
 
@@ -423,6 +425,12 @@ The test fixtures that insert root rows without `tenants::create` call `create_d
 `authorization_catalog` gains `node text NOT NULL`. Primary key `(tenant, node, entry_id, entry_version)` replacing `(tenant, entry_id, entry_version)` (`identity/0003_keys_indexes.rs:34`), foreign key `(tenant, node)` to `nodes`. The history table gains the same column. `TenantCatalog { node }` (`server/src/apps/identity/services/policies.rs:124`) becomes `{ deployment, node }`. `POST /api/authorization/{tenant}/catalog/approvals` takes `node` in the body, `POST /api/authorization/{tenant}/catalog` replaces one Node's catalog and names it in the body, and `GET` takes `node` as a required query parameter.
 
 `approve` (`crates/aidash-application/src/authorization/catalog/approvals.rs:52-137`) builds the subject with `qualified_agent(&NodeAddress { deployment, node }, id, version)` (`:120`), so an approved agent's subject is keyed by the Node it was approved on, as ADR 0062 requires per version and this design requires per Node. Generation, which registers, approves and adds the subject together, approves on the requesting Workspace's Node (`generation_requests.node`). Built-in definitions that need approval (Sandboxed ones, Research providers and Deciders) are approved per Node. A new Node starts with no approvals. Section 10 notes the usability consequence.
+
+`GET /api/research/providers?node=<name>` requires `node.use` on the owned Node and reports that Node's approved Research definitions. Omitting `node` selects the Tenant's default Node. The dashboard includes the selected Node in the request and its query cache.
+
+The file-share selector combines the Tenant's Nodes with the distinct Node addresses returned by discovery for the sending Run's Node. `GET /api/file-recipients?node_id=<address>&run_id=<run>` authorizes the sending Run and its executing Node, then uses that Node's registrations and Federation identity for the remote lookup. Omitting `run_id` keeps the default-Node lookup for clients with no sending Run.
+
+Transaction preflight validates each Workspace's Node, each Task's Workspace Node and each Run's executing Node against the exact participant address. Reservation validation and mutation application repeat that stored-ownership check in their original transaction.
 
 ### 5.5 Workspace creation picks a Node
 

@@ -80,6 +80,14 @@ impl Scope {
 }
 #[async_trait]
 impl TransactionAuthorityScope for Scope {
+	async fn require_target_node(
+		&mut self,
+		_: &str,
+		_: &aidash_domain::transactions::authority::Target,
+	) -> Result<()> {
+		Ok(())
+	}
+
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
 			tenant: "executor".into(),
@@ -202,9 +210,14 @@ async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_orde
 	mut scope: Scope,
 	input: Preflight,
 ) {
-	checks(&mut scope, &input, "transaction.prepare")
-		.await
-		.unwrap();
+	checks(
+		&mut scope,
+		&input,
+		&input.coordinator,
+		"transaction.prepare",
+	)
+	.await
+	.unwrap();
 	assert_eq!(
 		scope.calls,
 		vec![
@@ -240,7 +253,7 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 	mut scope: Scope,
 	input: Preflight,
 ) {
-	checks(&mut scope, &input, "transaction.read")
+	checks(&mut scope, &input, &input.coordinator, "transaction.read")
 		.await
 		.unwrap();
 	assert_eq!(
@@ -275,7 +288,13 @@ async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_id
 	#[case] failure: &str,
 ) {
 	scope.failure = Some(failure.into());
-	let result = checks(&mut scope, &input, "transaction.prepare").await;
+	let result = checks(
+		&mut scope,
+		&input,
+		&input.coordinator,
+		"transaction.prepare",
+	)
+	.await;
 	assert!(matches!(result,Err(Error::External(message)) if message==format!("fault:{failure}")));
 	assert_eq!(scope.calls.last().unwrap(), failure);
 }
@@ -288,7 +307,13 @@ async fn a_run_cannot_inherit_authority_for_a_different_task(
 	input.targets = vec![input.targets[2].clone()];
 	input.targets[0].task_id = Some(Uuid::nil());
 	assert!(matches!(
-		checks(&mut scope, &input, "transaction.prepare").await,
+		checks(
+			&mut scope,
+			&input,
+			&input.coordinator,
+			"transaction.prepare"
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls, vec!["transaction.prepare", "run"]);
@@ -343,7 +368,7 @@ async fn unknown_targets_fail_before_resource_reads(mut scope: Scope, mut input:
 		task_id: None,
 	}];
 	assert!(
-		matches!(checks(&mut scope,&input,"transaction.prepare").await,Err(Error::Invalid(message)) if message=="unsupported transaction target")
+		matches!(checks(&mut scope,&input,&input.coordinator,"transaction.prepare").await,Err(Error::Invalid(message)) if message=="unsupported transaction target")
 	);
 	assert_eq!(scope.calls, vec!["transaction.prepare"]);
 }

@@ -5,6 +5,7 @@ use crate::apps::execution::generation::services::states::GenerationRequestStatu
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{DatabaseField, Json, Model, OrmExecutor};
 use reinhardt::model;
@@ -41,8 +42,13 @@ pub struct GenerationRequest {
 	pub task_id: uuid::Uuid,
 	#[field]
 	pub workspace_id: uuid::Uuid,
-	#[field]
-	pub credential_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_requests_credential_id_fkey",
+		db_index = false
+	)]
+	pub credential: ForeignKeyField<crate::apps::identity::models::AuthorizationCredential>,
 	#[field(field_type = "text")]
 	pub root_subject: String,
 	#[field]

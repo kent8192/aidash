@@ -1,13 +1,14 @@
 //! Persistent events records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
-use reinhardt::macros::Model;
+use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[model_config(app_label = "execution", table_name = "events")]
+#[model(app_label = "execution", table_name = "events")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
 	#[field(primary_key = true)]
 	pub sequence: i64,
@@ -20,8 +21,14 @@ pub struct Event {
 	#[field(field_type = "text", null = true)]
 	pub node: Option<String>,
 
-	#[field(db_column = "workspace_id", null = true)]
-	pub workspace_id: Option<uuid::Uuid>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "events_workspace_id_fkey",
+		db_index = false,
+		null = true
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 	#[field(field_type = "text")]
 	pub kind: String,
 	#[field]

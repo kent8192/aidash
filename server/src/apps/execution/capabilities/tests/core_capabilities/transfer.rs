@@ -1167,3 +1167,144 @@ async fn inbound_file_transfers_use_the_receiving_nodes_policy_resource(
 	}
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
+	#[future] two_nodes: TransferFixture,
+) {
+	let c = Box::pin(two_nodes).await;
+	let home = common::default_node(&c.a.f.store, "acme").await;
+	let target = common::default_node(&c.b.f.store, "acme").await;
+	let (status, sibling) = request(
+		&c.a.app,
+		&c.a.f.config.api_token,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sending Node"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling_name = sibling["name"].as_str().unwrap();
+	let sibling_address = sibling["address"].as_str().unwrap();
+	let (status, catalog) = request(
+		&c.a.app,
+		&c.a.token,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={}", home.node),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{catalog}");
+	let approvals:Vec<_> = catalog.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding|json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"enabled":true,"expected_revision":0})).collect();
+	let (status, body) = request(
+		&c.a.app,
+		&c.a.token,
+		"POST",
+		"/api/authorization/acme/catalog/approvals",
+		json!({"node":sibling_name,"approvals":approvals}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut policy = c.a.policy.clone();
+	policy["subjects"][aidash_domain::agent_subject(sibling_address, "research", "1.1.0")] =
+		json!({"kind":"agent"});
+	common::replace_policy(&c.a.f.store, "acme", policy.clone()).await;
+	let (status, workspace) = request(
+		&c.a.app,
+		&c.a.token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Source","goal":"Share from sibling","node":sibling_name}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&c.a.app,
+		&c.a.token,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Share","description":"Find recipients"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, admitted) = request(
+		&c.a.app,
+		&c.a.token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":sibling_address,"agent":{"id":"research","version":"1.1.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{admitted}");
+	let run =
+		c.a.f
+			.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.task_id.to_string() == task["id"].as_str().unwrap())
+			.unwrap();
+	let path = format!("/api/file-recipients?node_id={target}&run_id={}", run.id);
+	// Only the default Node initially has a registration; it must not stand in
+	// for the sending Node or advertise recipients that this Run cannot reach.
+	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
+	assert_ne!(status, 200, "the sibling has no route yet: {body}");
+	use common::peering;
+	let registration = peering::registration(
+		&target.to_string(),
+		Some((&c.b.f.config.endpoint, &peering::key_id(&c.b.f))),
+	);
+	let (status, body) = request(
+		&c.a.app,
+		&c.a.f.config.api_token,
+		"POST",
+		&peering::registration_path("acme", sibling_name),
+		registration,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let registration = peering::registration(
+		sibling_address,
+		Some((&c.a.f.config.endpoint, &peering::key_id(&c.a.f))),
+	);
+	let (status, body) = request(
+		&c.b.app,
+		&c.b.f.config.api_token,
+		"POST",
+		&peering::registration_path("acme", target.node.as_str()),
+		registration,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let credential = aidash_server::authorization::Authorization {
+		pool: c.b.f.store.control_pool.clone(),
+	}
+	.credentials("acme")
+	.await
+	.unwrap()
+	.into_iter()
+	.find(|credential| credential.subject == "alice")
+	.unwrap();
+	let (status, body) = request(&c.b.app, &c.b.f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"node":target.node,"source_node":sibling_address,"source_subject":"alice","credential_id":credential.id,"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{body}");
+	assert!(
+		body["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["thread_id"] == c.receiver.task_id.to_string()),
+		"{body}"
+	);
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-source-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[sibling_name]}}));
+	common::replace_policy(&c.a.f.store, "acme", policy).await;
+	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	c.close().await;
+}

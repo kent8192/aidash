@@ -1135,6 +1135,71 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 		deployment_administrator_status, 403,
 		"Deployment Administrators read no Tenant's research setup"
 	);
+	// A second Node starts without approvals, regardless of the default Catalog.
+	let (status, second) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Research Node"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{second}");
+	let name = second["name"].as_str().unwrap();
+	let path = format!("/api/research/providers?node={name}");
+	let (status, empty) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{empty}");
+	assert!(
+		empty["providers"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|provider| provider["operations"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.all(|operation| operation["approved_definitions"] == json!([]))),
+		"another Node's approvals must not appear: {empty}"
+	);
+	let (status, approved) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		"/api/authorization/acme/catalog/approvals",
+		json!({"node":name,"approvals":[{"entry":r.search_tool,"enabled":true,"expected_revision":0}]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approved}");
+	let (status, selected) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{selected}");
+	let selected = selected["providers"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|provider| provider["provider"] == "research.fixture@1")
+		.unwrap();
+	let selected = selected["operations"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|operation| operation["operation"] == "search")
+		.unwrap();
+	assert_eq!(selected["approved_definitions"], json!([r.search_tool]));
+	let mut denied = r.c.policy.clone();
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-research-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[name]}}));
+	common::replace_policy(&r.c.f.store, "acme", denied).await;
+	let (status, body) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/research/providers?node=able-oak-00000000",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 404, "{body}");
+
 	r.close().await;
 }
 
