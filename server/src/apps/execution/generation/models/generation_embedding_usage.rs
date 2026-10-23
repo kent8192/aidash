@@ -2,11 +2,12 @@
 
 use crate::apps::execution::generation::services::states::GenerationEmbeddingUsagePurpose;
 use chrono::{DateTime, Utc};
-use reinhardt::macros::Model;
+use reinhardt::db::associations::ForeignKeyField;
+use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
-#[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[model_config(app_label = "execution", table_name = "generation_embedding_usage")]
+#[model(app_label = "execution", table_name = "generation_embedding_usage")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationEmbeddingUsage {
 	#[field(primary_key = true, db_column = "request_id", field_type = "uuid")]
 	pub request_id: uuid::Uuid,
@@ -15,11 +16,22 @@ pub struct GenerationEmbeddingUsage {
 	#[field(primary_key = true, field_type = "uuid")]
 	pub attempt_id: uuid::Uuid,
 
-	#[field(db_column = "workspace_id")]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_embedding_usage_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 
-	#[field(db_column = "run_id", null = true)]
-	pub run_id: Option<uuid::Uuid>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_embedding_usage_run_id_fkey",
+		db_index = false,
+		null = true
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(null = true)]
 	pub entry_id: Option<uuid::Uuid>,
 	#[field(field_type = "text", max_length = 64)]

@@ -1,6 +1,7 @@
 //! Persistent generation_usage records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -13,8 +14,13 @@ pub struct GenerationUsage {
 	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
 	pub attempt_id: uuid::Uuid,
-	#[field]
-	pub run_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_usage_run_id_fkey",
+		db_index = false
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field]
 	pub reserved_tokens: i64,
 	#[field(null = true)]

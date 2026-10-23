@@ -496,15 +496,22 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 /// pauses with the typed `retries_exhausted`, keeps its Task, and continues to
 /// inference once the provider recovers and the Run is manually resumed.
 #[rstest::rstest]
+#[case::provider_outage(false)]
+#[case::pending_index(true)]
 #[tokio::test]
 async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_provider_recovers(
+	#[case] pending_entry: bool,
 	#[future(awt)]
 	#[with(false, true)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::{RunControlAction, TaskStatus};
 	let fixture = controlled_context;
-	fixture.fault.set(Fault::Unavailable);
+	if pending_entry {
+		add_pending_workspace_entry(&fixture).await;
+	} else {
+		fixture.fault.set(Fault::Unavailable);
+	}
 	let mut run_id = None;
 	for failure in 1..=6 {
 		assert!(
@@ -544,6 +551,11 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 	}
 
 	fixture.fault.clear();
+	if pending_entry {
+		aidash_server::semantic::worker::sweep(&fixture.f.store)
+			.await
+			.unwrap();
+	}
 	let resumed = fixture
 		.f
 		.store
@@ -567,6 +579,30 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 	drop(fixture.model_server);
 	drop(fixture.embedding_server);
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+/// Add a visible Workspace source without running the indexer. A healthy
+/// provider alone cannot make this entry READY; indexing must finish first.
+async fn add_pending_workspace_entry(fixture: &ControlledContext) {
+	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let message = fixture
+		.f
+		.store
+		.message_record(
+			&TEST_FIXTURE,
+			run.workspace_id,
+			"alice",
+			"Newly written vehicle maintenance knowledge.",
+			Some("pending-semantic-entry"),
+		)
+		.await
+		.unwrap();
+	let (status, entry) = request(&fixture._fixture.application, &fixture.token, "POST",
+		&format!("/api/workspaces/{}/semantic/entries", run.workspace_id),
+		json!({"key":"pending-entry","expected_revision":0,"source":{"kind":"message","id":message.id},"metadata":{}}),
+	).await;
+	assert_eq!(status, 200, "{entry}");
+	assert_eq!(entry["state"], "PENDING", "{entry}");
 }
 
 /// Make a scheduled retry due now, leaving its counter and reason as the
@@ -622,8 +658,11 @@ fn ordered_semantic_memory(fixture: &ControlledContext, request: usize) -> Value
 /// new retrieval follows the outage policy (#233). Once the provider recovers,
 /// the retry retrieves under the new key and the next step reuses it.
 #[rstest::rstest]
+#[case::run_message(false)]
+#[case::pending_entry(true)]
 #[tokio::test]
 async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
+	#[case] pending_entry: bool,
 	#[future(awt)]
 	#[with(false, true, true)]
 	controlled_context: ControlledContext,
@@ -678,16 +717,20 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 	}
 	assert_eq!(fixture.fault.requests(), outage, "a reuse embeds nothing");
 
-	// Act: a Run message changes the query inputs of the Retrieval Key.
-	let (status, body) = request(
-		&fixture._fixture.application,
-		&fixture.token,
-		"POST",
-		&format!("/api/runs/{}/message", run().await.id),
-		json!({"content":"Also cover vehicle maintenance."}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
+	// A pending entry changes the corpus, just as a Run message changes the query.
+	if pending_entry {
+		add_pending_workspace_entry(&fixture).await;
+	} else {
+		let (status, body) = request(
+			&fixture._fixture.application,
+			&fixture.token,
+			"POST",
+			&format!("/api/runs/{}/message", run().await.id),
+			json!({"content":"Also cover vehicle maintenance."}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
 	for _ in 0..40 {
 		if run().await.recovery.retry.is_some() {
 			break;
@@ -711,7 +754,11 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 	);
 	assert_eq!(paused.control.as_str(), "ACTIVE");
 	assert_eq!(fixture.captured.lock().unwrap().len(), 3, "no inference");
-	assert_eq!(fixture.fault.requests() - outage, 1, "one query attempt");
+	assert_eq!(
+		fixture.fault.requests() - outage,
+		usize::from(!pending_entry),
+		"incomplete indexing makes no provider call"
+	);
 	assert_ne!(
 		fixture
 			.f
@@ -725,6 +772,11 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 
 	// Act: the provider recovers and the retry is due.
 	fixture.fault.clear();
+	if pending_entry {
+		aidash_server::semantic::worker::sweep(&fixture.f.store)
+			.await
+			.unwrap();
+	}
 	advance_retry(&fixture, paused.id).await;
 	let recovered = fixture.fault.requests();
 	run_to_inference(&fixture, 4).await;

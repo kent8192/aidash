@@ -128,6 +128,10 @@ run "identities_are_separated" {
     error_message = "Nonproduction stays in one zone: no standby pools and no Stateful HA (ADR 0067)."
   }
   assert {
+    condition     = !contains(google_container_cluster.aidash.node_locations, google_container_cluster.aidash.location)
+    error_message = "Zonal clusters must omit their primary zone from node_locations; the Google provider adds it implicitly."
+  }
+  assert {
     condition = (
       output.environments["test"].server_service_account == "server@aidash-fixture.iam.gserviceaccount.com" &&
       output.environments["test"].worker_service_account == "worker@aidash-fixture.iam.gserviceaccount.com" &&

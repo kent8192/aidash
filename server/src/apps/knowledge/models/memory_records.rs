@@ -1,5 +1,6 @@
 //! Persistence inventory for native memory provenance, receipts and bounded maintenance.
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -56,8 +57,13 @@ pub struct MemoryHistory {
 	pub unit_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_history_bank",
+		db_index = false
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field(primary_key = true)]
 	pub revision: i64,
 	#[field]
@@ -101,8 +107,13 @@ pub struct MemoryReceipt {
 	pub operation_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_receipt_bank",
+		db_index = false
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field(field_type = "text")]
 	pub digest: String,
 	#[field]
@@ -118,8 +129,13 @@ pub struct MemoryDependency {
 	pub unit_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_dependency_bank",
+		db_index = false
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field(primary_key = true, field_type = "text")]
 	pub source_kind: String,
 	#[field(primary_key = true)]
@@ -135,8 +151,13 @@ pub struct MemoryCandidate {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_candidate_bank",
+		db_index = false
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field]
 	pub revision: i64,
 	#[field]
@@ -176,8 +197,15 @@ pub struct MemoryModelOperation {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_operation_bank",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field(field_type = "text")]
 	pub provider_id: String,
 	#[field(field_type = "text")]
@@ -201,8 +229,16 @@ pub struct MemoryModelAttempt {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub operation_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_attempt_operation",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub operation:
+		ForeignKeyField<crate::apps::knowledge::models::memory_records::MemoryModelOperation>,
 	#[field]
 	pub ordinal: i32,
 	/// The Retry Cycle the attempt was charged in (ADR 0057).
@@ -229,10 +265,24 @@ pub struct MemoryPublication {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
-	#[field]
-	pub source_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_publication_bank",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_publication_source",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub source: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryUnit>,
 	#[field]
 	pub source_revision: i64,
 	#[field]
@@ -252,8 +302,16 @@ pub struct MemoryTaskParticipant {
 	pub task_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub participant_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_assignment_participant",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub participant:
+		ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryParticipant>,
 	#[field]
 	pub participant_revision: i64,
 }
@@ -289,8 +347,15 @@ pub struct MemoryCandidateReview {
 	pub tenant: String,
 	#[field]
 	pub candidate_id: Uuid,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_review_bank",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field]
 	pub observed_revision: i64,
 	#[field(field_type = "text")]
@@ -310,8 +375,15 @@ pub struct MemoryPurgeJob {
 	pub unit_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_purge_bank",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field]
 	pub revision: i64,
 	#[field]
@@ -354,8 +426,15 @@ pub struct MemoryEngineJob {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_job_bank",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field(field_type = "text")]
 	pub provider_id: String,
 	#[field(field_type = "text")]
@@ -402,8 +481,15 @@ pub struct MemoryBankPolicyChange {
 	pub operation_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_policy_change_bank",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field(field_type = "text")]
 	pub digest: String,
 	#[field]

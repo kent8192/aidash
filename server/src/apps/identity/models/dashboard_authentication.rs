@@ -390,7 +390,7 @@ impl DashboardSession {
 			}
 			let session = Self::build()
 				.id(Uuid::new_v4())
-				.identity_id(identity)
+				.identity(identity)
 				.token_hash(hashes.0)
 				.csrf_hash(hashes.1)
 				.provider_sid(provider_sid)
