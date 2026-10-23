@@ -1594,7 +1594,8 @@ class LiveGuardTest(unittest.TestCase):
                 args = self.args(**{"--server-revision": source["commit"], "--max-spend-nanocredits": "1000000"})
                 args.source_attestation = Path("source.json")
                 args.output = Path(directory) / "result.json"
-                read = lambda path: attested if path == args.source_attestation else approval
+                def read(path, source_value=attested, source_path=args.source_attestation):
+                    return source_value if path == source_path else approval
                 if changed:
                     with self.assertRaisesRegex(evaluation.GuardRefusal, "source_attestation_sha256"):
                         cli.live(args, read_json=read, transport=call, clock=clock, sleep=clock.sleep,

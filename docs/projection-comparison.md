@@ -297,10 +297,10 @@ python3 scripts/evaluate-projections.py report \
 `--candidate` selects the candidate being explored in a pilot. A confirmation
 report uses its frozen candidate. `--explicit-cache explicit` names the combined
 projection-and-explicit-cache treatment on the explicit route. The analysis
-configuration must bind `plan_sha256`. Post hoc `--analysis-config` cannot
-set statistical cost bounds, their enforcement, independent-block readiness,
-confirmation/deployment readiness, or replace the frozen routes, population,
-phase, candidate or cache-arm selection.
+configuration must bind `plan_sha256`. Post hoc `--analysis-config` accepts
+`notes` only; freeze every decision-relevant setting before dispatch. It cannot
+replace statistical bounds, independence, deployment readiness, routes,
+population, phase, candidate or cache-arm selection.
 
 For statistical bounds, `report --execution-manifest PATH` imports the actual
 predispatch-approved execution document. The report derives each per-Run bound
@@ -310,6 +310,13 @@ Run reservations and phase ceiling. It does not accept an independently typed
 post hoc bound. Omit this evidence and `cost_bounds_enforced` remains false;
 the economic gate is inconclusive. A Boolean assertion cannot substitute for
 actual route, deployment, guard or provider measurements.
+
+Independent repetition blocks are a separate predeclared assumption. The
+default configuration sets `independent_blocks = false` and leaves
+`independence_evidence` empty. Record the evidence and assessment in the
+configuration before freezing a plan; absent that assessment, the statistical
+decision remains inconclusive. Seeded ordering and monetary reservations do
+not establish independence of provider or cache state.
 
 The JSON artifact retains configuration and digest, every experiment identity,
 all Run metrics, separate route decisions, denominators and unknown counts.

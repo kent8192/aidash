@@ -841,9 +841,10 @@ def _phase_matrix(rows, phase, arms, repeats, required_tasks):
 
 def _deployment_estimator(settings, config):
     expected = settings.get("deployment_estimator", config.get("deployment_estimator"))
-    if not isinstance(expected, dict) or expected.get("id") not in ("bytes", "calibrated", "tokenized") or type(expected.get("version")) is not int or expected["version"] < 1 or expected.get("confidence") not in ("conservative", "calibrated", "tokenized"):
-        return None
-    if expected["id"] == "tokenized" and (not expected.get("encoding") or type(expected.get("encoding_version")) is not int or expected["encoding_version"] < 1):
+    # Selected-attempt records do not yet persist a Token Encoding version.
+    # Keep that deployment mode unsupported rather than implying it can be
+    # verified from a shadow snapshot or the requested model configuration.
+    if not isinstance(expected, dict) or expected.get("id") not in ("bytes", "calibrated") or type(expected.get("version")) is not int or expected["version"] < 1 or expected.get("confidence") not in ("conservative", "calibrated"):
         return None
     return expected
 
