@@ -26,6 +26,17 @@ const LIMITS = [
   "incident_evidence_days",
 ] as const satisfies readonly (keyof TestLimitCeilings)[];
 
+const MINIMUMS: TestLimitCeilings = {
+  max_input_bytes: 1024,
+  max_output_tokens: 64,
+  max_total_tokens: 256,
+  max_steps: 1,
+  max_duration_secs: 5,
+  max_concurrent: 1,
+  payload_days: 1,
+  incident_evidence_days: 1,
+};
+
 /** The Tenant's own Workbench Test Limits and Test Profiles (#361), for
  *  subjects whose Tenant's policy grants the matching actions. */
 export function WorkbenchTestSettings({
@@ -111,7 +122,7 @@ function TestLimits({ tenant }: { tenant: string }) {
                     name={field}
                     type="number"
                     required
-                    min={1}
+                    min={MINIMUMS[field]}
                     max={current.ceilings[field]}
                     defaultValue={current.limits[field]}
                     className="font-mono tabular"
@@ -187,8 +198,10 @@ function TestProfiles({ tenant }: { tenant: string }) {
           let rules;
           try {
             rules = JSON.parse(String(data.get("rules")));
+            if (!Array.isArray(rules))
+              throw new Error("rules must be an array");
           } catch {
-            setError(t("authJsonObject"));
+            setError(t("testProfileRulesArray"));
             return;
           }
           setBusy(true);

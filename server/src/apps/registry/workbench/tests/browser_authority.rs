@@ -207,3 +207,105 @@ async fn native_draft_mutations_recheck_browser_authority(
 	);
 	wb.cleanup().await;
 }
+
+struct RemovedBinding;
+impl aidash_application::ports::authorization::dashboard::Issuers for RemovedBinding {
+	fn admitted(&self) -> Vec<String> {
+		vec![]
+	}
+	fn restriction(&self, _: &str) -> Option<String> {
+		None
+	}
+	fn restricted_issuer(&self, _: &str) -> Option<String> {
+		None
+	}
+	fn retires_refused(&self) -> bool {
+		true
+	}
+}
+
+#[rstest::rstest]
+#[case::limits("/api/workbench/test-limits/acme", "GET")]
+#[case::profiles("/api/workbench/test-profiles/acme", "GET")]
+#[case::profile_write("/api/workbench/test-profiles/acme/new", "PUT")]
+#[tokio::test]
+async fn a_removed_binding_disables_the_identity_before_workbench_authority_locks(
+	#[case] path: &str,
+	#[case] method: &str,
+	#[future(awt)] browser_workbench: (Workbench, HeaderMap, DashboardSession),
+) {
+	use aidash_application::ports::authorization::dashboard::AccountPolicy;
+	use aidash_server::apps::registry::workbench::views::{profile, test};
+	let (mut wb, _, session) = browser_workbench;
+	// A fresh self-issued bearer acts through the existing browser Mapping.
+	let authorization = Authorization {
+		pool: wb.f.store.pool.clone(),
+	};
+	let issued = authorization
+		.issue_credential("acme", "alice", 3600, "fixture")
+		.await
+		.unwrap();
+	wb.f.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			let mapping = DashboardMapping::objects()
+				.filter(DashboardMapping::field_identity_id().eq(session.identity_id()))
+				.get_with_db(tx)
+				.await?;
+			let mut credential =
+				aidash_server::apps::identity::models::AuthorizationCredential::objects()
+					.get(issued.credential.id)
+					.get_with_db(tx)
+					.await?;
+			credential.mapping_id = Some(mapping.id);
+			aidash_server::apps::identity::models::AuthorizationCredential::objects()
+				.update_with_conn(tx, &credential)
+				.await?;
+			Ok(())
+		})
+		.await
+		.unwrap();
+	let actor = authorization.authenticate(&issued.token).await.unwrap();
+	wb.f.store =
+		wb.f.store
+			.clone()
+			.with_dashboard_policy(Some(AccountPolicy {
+				issuers: std::sync::Arc::new(RemovedBinding),
+				personal_tenants: false,
+				demo_data: false,
+			}));
+	let app = common::application_with(wb.f.clone(), |_| {
+		reinhardt::ServerRouter::new()
+			.endpoint(test::tenant_limits)
+			.endpoint(profile::administered)
+			.endpoint(profile::put)
+			.with_middleware(super::CapturedActor(actor.clone()))
+	})
+	.await;
+	let (status, response) = request(
+		&app,
+		&wb.token,
+		method,
+		path,
+		json!({"expected_revision":0,"enabled":true,"rules":[]}),
+	)
+	.await;
+	assert_eq!(status, 403, "{response}");
+	let disabled =
+		wb.f.store
+			.pool
+			.atomic(&TEST_FIXTURE, async |tx| {
+				Ok(DashboardIdentity::objects()
+					.get(session.identity_id())
+					.get_with_db(tx)
+					.await?
+					.disabled_at)
+			})
+			.await
+			.unwrap();
+	assert!(
+		disabled.is_some(),
+		"refusal must durably disable the removed identity"
+	);
+	wb.cleanup().await;
+}

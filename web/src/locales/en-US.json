@@ -509,6 +509,7 @@
   "testProfilesHelp": "A profile lets agent tests call a Tool's read-only test endpoint instead of its production one. Set read_only_verified only after checking the endpoint yourself. A test endpoint reaches public addresses only, unless the Deployment permits its origin.",
   "testProfileId": "Profile",
   "testProfileNew": "New profile",
+  "testProfileRulesArray": "Enter a valid JSON array of rules.",
   "testProfileRules": "Rules (JSON)",
   "testProfileSave": "Save profile",
   "workbenchTests": "Workbench tests",

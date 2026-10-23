@@ -41,7 +41,6 @@ impl AgentTestProfile {
 		Ok(Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
 			.order_by(&["id"])
-			.limit(100)
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?
