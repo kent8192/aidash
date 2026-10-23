@@ -61,5 +61,5 @@ PR #478 makes recorded Research account IDs nonrenewable: a new agreement uses a
 | #475 | Overlapping HTTP restore regression failed on baseline, then waited in PostgreSQL before returning Conflict; all 14 deletion/restore/purge tests; strict Server Clippy. |
 | #476 | All 10 Tenant administration browser tests; all eight native Tenant authority tests; TypeScript/build and strict Server Clippy.                                         |
 | #477 | Domain 52, Application 100 and Integrations 15 decision tests; full Harness 322; strict all-target Clippy for changed crates.                                           |
-| #478 | Domain Research 129, Application Research 77, full Harness 322, native account terms four; strict all-target Clippy.                                                    |
+| #478 | Domain Research 129, Application Research 77, full Harness 323 (including ordinary completed replay cases), native account terms four; strict all-target Clippy.        |
 | #479 | Full Application 3,748; native Web Research 13 with capability admission enabled; strict all-target Server/Application Clippy.                                          |
