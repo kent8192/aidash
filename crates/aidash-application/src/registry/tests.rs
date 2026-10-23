@@ -92,6 +92,9 @@ impl DefinitionLookup for Scope {
 	}
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		self.trace.push(format!("read:{id}@{version}"));
+		if id == system::COMPACTION_DECIDER_ID && version == system::COMPACTION_DECIDER_VERSION {
+			return system::compaction_decider();
+		}
 		self.entries
 			.get(&identity(id, version))
 			.cloned()

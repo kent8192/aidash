@@ -223,7 +223,11 @@ pub async fn validate_content(
 			}
 		}
 	}
-	entry.normalize_agent(node)?;
+	entry.binding_normalization = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.and_then(|definition| definition.definition.binding_normalization.clone());
 	Ok(entry)
 }
 #[cfg(test)]

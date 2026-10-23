@@ -15,6 +15,9 @@ use aidash_server::{federation::Federation, harness::Harness};
 
 use common::*;
 
+#[path = "generation_compaction/defaults.rs"]
+mod defaults;
+
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,

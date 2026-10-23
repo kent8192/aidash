@@ -49,7 +49,8 @@ impl BindingResolver for PinnedResolver {
 			if binding.excluded_reason.is_some()
 				|| aidash_domain::registry::bindings::sources::is_selection_decider(
 					&binding.definition,
-				) {
+				) || defaults::is_compaction_decider(&binding.definition)
+			{
 				continue;
 			}
 			self.authority.check(run, binding).await?;

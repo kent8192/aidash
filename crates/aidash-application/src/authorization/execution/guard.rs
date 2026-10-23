@@ -56,6 +56,7 @@ pub async fn authorize(
 	for saved in &snapshot.definitions {
 		if saved.identity.registry_deployment != scope.node_id()
 			|| aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
+			|| aidash_domain::registry::bindings::defaults::is_compaction_decider(&saved.definition)
 		{
 			continue;
 		}

@@ -195,6 +195,15 @@ pub(crate) async fn authorized(
 		if definition.identity.registry_deployment != node {
 			return Err(Error::Forbidden);
 		}
+		if aidash_domain::registry::bindings::defaults::is_compaction_decider(
+			&definition.definition,
+		) {
+			// Metadata disclosure remains policy-controlled. Catalog Approval
+			// for sending classification state is checked only when needed.
+			let resource = crate::authorization::catalog::resource(access, &definition.definition);
+			access.require(&resource, "registry.read").await?;
+			continue;
+		}
 		let current = crate::authorization::catalog::entry(
 			access,
 			&definition.identity.local(),
