@@ -579,3 +579,7 @@ fn validate_response(route: &DeciderRoute, questions: &Questions, body: &[u8]) -
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "decision/observation_scope_tests.rs"]
+mod observation_scope_tests;

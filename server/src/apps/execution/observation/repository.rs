@@ -172,7 +172,10 @@ pub(super) fn initial_settlement(state: &str, data: &Value) -> SettlementClass {
 		SettlementClass::Auto
 	} else if by["mode"] == "bypass" {
 		SettlementClass::Bypass
-	} else if matches!(state, "approved" | "consumed" | "denied") {
+	} else if matches!(
+		state,
+		"approved" | "consumed" | "denied" | "blocked" | "attempted"
+	) {
 		SettlementClass::Auto
 	} else {
 		SettlementClass::Pending
@@ -186,21 +189,68 @@ pub(crate) async fn enqueue_capability(
 	if !aidash_application::capabilities::approvals::KINDS.contains(&record.kind.as_str()) {
 		return Ok(());
 	}
+	let created_at = Utc::now();
 	let original_run: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	population(
 		&mut *access.tx,
 		&record.tenant,
 		record.id,
 		"capability",
+		capability_kind(record),
 		Some(original_run),
 		initial_settlement(&record.state, &record.data),
-		Utc::now(),
+		created_at,
 	)
 	.await?;
-	let mut selected = settings(&mut *access.tx, &record.tenant).await?;
+	let selected = settings(&mut *access.tx, &record.tenant).await?;
 	if selected.decider.is_none() {
 		return Ok(());
 	}
+
+	access.tx.savepoint("approval_observer_capture").await?;
+	match capture_capability(access, record, original, selected.clone(), created_at).await {
+		Ok(()) => access
+			.tx
+			.release_savepoint("approval_observer_capture")
+			.await
+			.map_err(Into::into),
+		Err(_) => {
+			access
+				.tx
+				.rollback_to_savepoint("approval_observer_capture")
+				.await?;
+			access
+				.tx
+				.release_savepoint("approval_observer_capture")
+				.await?;
+			unavailable(
+				&mut *access.tx,
+				&record.tenant,
+				record.id,
+				capability_kind(record),
+				&selected,
+			)
+			.await
+		}
+	}
+}
+fn capability_kind(
+	record: &crate::apps::execution::capabilities::serializers::records::Record,
+) -> ApprovalKind {
+	match record.kind.as_str() {
+		"tool_call" => ApprovalKind::ToolCall,
+		"outbound" => ApprovalKind::Outbound,
+		_ if record.data["operation"] == "search" => ApprovalKind::WebSearch,
+		_ => ApprovalKind::PageReading,
+	}
+}
+async fn capture_capability(
+	access: &mut Access,
+	record: &crate::apps::execution::capabilities::serializers::records::Record,
+	original: Option<&aidash_domain::Run>,
+	mut selected: ObserverSettings,
+	created_at: chrono::DateTime<Utc>,
+) -> Result<()> {
 	let run_id: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	let run: aidash_domain::Run = crate::database::query_as(
 		&Query::select()
@@ -311,7 +361,7 @@ pub(crate) async fn enqueue_capability(
 			.identity
 			.registry_deployment
 			.clone(),
-		created_at: Utc::now(),
+		created_at,
 		kind,
 		origin: ObservationOrigin::Run {
 			run: run.id,
@@ -370,18 +420,22 @@ pub(super) fn generation_action(
 pub(crate) async fn enqueue_generation(
 	access: &mut Access,
 	job: &aidash_domain::generation::requests::Request,
+	given_by: Option<aidash_domain::approval_rules::GivenBy>,
 ) -> Result<()> {
+	let class = match given_by {
+		Some(aidash_domain::approval_rules::GivenBy::Rule(_)) => SettlementClass::Rule,
+		Some(aidash_domain::approval_rules::GivenBy::Bypass) => SettlementClass::Bypass,
+		_ if job.status == "PENDING_APPROVAL" => SettlementClass::Pending,
+		_ => SettlementClass::Auto,
+	};
 	population(
 		&mut *access.tx,
 		&job.tenant,
 		job.id,
 		"generation",
+		ApprovalKind::Generation,
 		None,
-		if job.status == "PENDING_APPROVAL" {
-			SettlementClass::Pending
-		} else {
-			SettlementClass::Auto
-		},
+		class,
 		job.created_at,
 	)
 	.await?;
@@ -389,6 +443,40 @@ pub(crate) async fn enqueue_generation(
 	if selected.decider.is_none() {
 		return Ok(());
 	}
+
+	access.tx.savepoint("approval_observer_capture").await?;
+	match capture_generation(access, job, selected.clone(), class).await {
+		Ok(()) => access
+			.tx
+			.release_savepoint("approval_observer_capture")
+			.await
+			.map_err(Into::into),
+		Err(_) => {
+			access
+				.tx
+				.rollback_to_savepoint("approval_observer_capture")
+				.await?;
+			access
+				.tx
+				.release_savepoint("approval_observer_capture")
+				.await?;
+			unavailable(
+				&mut *access.tx,
+				&job.tenant,
+				job.id,
+				ApprovalKind::Generation,
+				&selected,
+			)
+			.await
+		}
+	}
+}
+async fn capture_generation(
+	access: &mut Access,
+	job: &aidash_domain::generation::requests::Request,
+	selected: ObserverSettings,
+	class: SettlementClass,
+) -> Result<()> {
 	let task = access.task_read(job.task_id).await?;
 	let seed = json!({"title":task.title,"description":task.description});
 	let action = generation_action(job);
@@ -441,19 +529,7 @@ pub(crate) async fn enqueue_generation(
 		effect_class: Some("generation".into()),
 	};
 	frame.id = frame.identity();
-	insert(
-		access,
-		frame,
-		"generation",
-		None,
-		job.workspace_id,
-		if job.status == "PENDING_APPROVAL" {
-			SettlementClass::Pending
-		} else {
-			SettlementClass::Auto
-		},
-	)
-	.await
+	insert(access, frame, "generation", None, job.workspace_id, class).await
 }
 async fn insert(
 	access: &mut Access,
@@ -572,6 +648,7 @@ async fn population(
 	tenant: &str,
 	approval: Uuid,
 	approval_type: &str,
+	kind: ApprovalKind,
 	run: Option<Uuid>,
 	settled: SettlementClass,
 	created: chrono::DateTime<Utc>,
@@ -583,6 +660,7 @@ async fn population(
 				"tenant",
 				"approval",
 				"approval_type",
+				"kind",
 				"run_id",
 				"settlement",
 				"created_at",
@@ -593,6 +671,7 @@ async fn population(
 			tenant.into(),
 			approval.into(),
 			approval_type.into(),
+			serde_json::to_value(kind)?.as_str().unwrap().into(),
 			reinhardt::query::IntoValue::into_value(run),
 			serde_json::to_value(settled)?.as_str().unwrap().into(),
 			created.into(),
@@ -602,6 +681,25 @@ async fn population(
 				.do_nothing()
 				.to_owned(),
 		)
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
+
+async fn unavailable(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	approval: Uuid,
+	kind: ApprovalKind,
+	selected: &ObserverSettings,
+) -> Result<()> {
+	let pin = selected.decider.as_ref().ok_or(Error::Forbidden)?;
+	let view = json!({"kind":kind,"settings_revision":selected.revision,"decider":pin.identity,"configuration_digest":pin.configuration_digest,"definition_digest":pin.definition_digest,"outcome":{"status":"unavailable","reason":"missing_state"},"routes":[],"human_label":null});
+	let (sql, values) = Query::update()
+		.table(Alias::new("approval_observation_population"))
+		.value(Alias::new("observer_unavailable"), view)
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("approval").eq(Expr::value(approval)))
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())

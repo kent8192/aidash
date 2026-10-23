@@ -54,7 +54,7 @@ pub struct RangeQuery {
 	pub start: DateTime<Utc>,
 	pub end: DateTime<Utc>,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(rename = "ApprovalObservationRoute")]
 pub struct RouteView {
 	pub route: u32,
@@ -63,8 +63,12 @@ pub struct RouteView {
 	pub hosts: Vec<String>,
 	pub effective_threshold: Probability,
 	pub answers: std::collections::BTreeMap<String, Probability>,
+	pub served_models: Vec<String>,
+	pub served_hosts: Vec<String>,
+	pub includes_unknown_model: bool,
+	pub includes_unknown_host: bool,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(rename = "ApprovalObservation")]
 pub struct ObservationView {
 	pub kind: ApprovalKind,
@@ -288,6 +292,25 @@ async fn individual_read(
 			_ => return Err(Error::NotFound("approval kind".into())),
 		}
 		let Some(row) = repository::observation(&mut *access.tx, tenant, id).await? else {
+			let population = crate::database::native::query(
+				&SqlQuery::select()
+					.columns(["observer_unavailable", "settlement"].map(Alias::new))
+					.from(Alias::new("approval_observation_population"))
+					.and_where(Expr::col("approval").eq(Expr::value(id)))
+					.and_where(Expr::col("tenant").eq(tenant))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut *access.tx)
+			.await?;
+			if let Some(population) = population {
+				let view: Option<Value> = population.try_get("observer_unavailable")?;
+				if let Some(mut view) = view {
+					let settlement: String = population.try_get("settlement")?;
+					let settlement: SettlementClass = serde_json::from_value(json!(settlement))?;
+					view["human_label"] = json!(settlement.label());
+					return Ok(Some(serde_json::from_value(view)?));
+				}
+			}
 			return Ok(None);
 		};
 		if row.approval_type != kind {
@@ -312,19 +335,8 @@ async fn individual_read(
 			outcome: evidence
 				.as_ref()
 				.map_or(ObservationOutcome::Pending, |e| e.outcome.clone()),
-			routes: evidence.map_or_else(Vec::new, |e| {
-				e.routes
-					.into_iter()
-					.map(|r| RouteView {
-						route: r.route,
-						provider_contract: r.provider_contract,
-						model: r.model,
-						hosts: r.hosts,
-						effective_threshold: r.effective_threshold,
-						answers: r.answers,
-					})
-					.collect()
-			}),
+			routes: evidence
+				.map_or_else(Vec::new, |e| e.routes.into_iter().map(route_view).collect()),
 			human_label: settlement.label(),
 		}))
 	}
@@ -373,7 +385,17 @@ pub(super) async fn report_read(
 	range.validate()?;
 	let rows = crate::database::native::query(
 		&SqlQuery::select()
-			.columns(["approval", "approval_type", "settlement", "created_at"].map(Alias::new))
+			.columns(
+				[
+					"approval",
+					"approval_type",
+					"kind",
+					"observer_unavailable",
+					"settlement",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
 			.from(Alias::new("approval_observation_population"))
 			.and_where(Expr::col("tenant").eq(tenant))
 			.and_where(Expr::col("created_at").gte(Expr::value(range.start)))
@@ -395,6 +417,9 @@ pub(super) async fn report_read(
 		let stored: String = row.try_get("settlement")?;
 		let mut settlement: SettlementClass = serde_json::from_value(json!(stored))?;
 		let kind: String = row.try_get("approval_type")?;
+		let approval_kind: ApprovalKind =
+			serde_json::from_value(json!(row.try_get::<String>("kind")?))?;
+		let unavailable: Option<Value> = row.try_get("observer_unavailable")?;
 		if settlement.label().is_none() {
 			let current = if kind == "capability" {
 				crate::database::native::query(
@@ -436,7 +461,8 @@ pub(super) async fn report_read(
 					Some("EXPIRED") => SettlementClass::Expired,
 					Some("STOPPED" | "DELETED") | None => SettlementClass::Cancelled,
 					Some("PENDING_APPROVAL") => SettlementClass::Pending,
-					_ => SettlementClass::Auto,
+					_ if settlement == SettlementClass::Pending => SettlementClass::Auto,
+					_ => settlement,
 				};
 			}
 		}
@@ -456,7 +482,10 @@ pub(super) async fn report_read(
 				approval,
 				created_at,
 				group: None,
-				outcome: None,
+				kind: approval_kind,
+				outcome: unavailable.map(|_| ObservationOutcome::Unavailable {
+					reason: UnavailableReason::MissingState,
+				}),
 				settlement,
 				maximum_category_probability: None,
 			});
@@ -501,4 +530,47 @@ pub(crate) fn register(
 	contracts.query::<_, RangeQuery>(document, aggregate)?;
 	contracts.path(document, aggregate, &["String"])?;
 	Ok(())
+}
+
+fn route_view(route: RouteEvidence) -> RouteView {
+	let mut models = std::collections::BTreeSet::new();
+	let mut hosts = std::collections::BTreeSet::new();
+	let mut unknown_model = route.attempts.is_empty();
+	let mut unknown_host = route.attempts.is_empty();
+	for attempt in &route.attempts {
+		match &attempt.provider_report {
+			AttemptProviderReport::Unknown => {
+				unknown_model = true;
+				unknown_host = true;
+			}
+			AttemptProviderReport::Reported {
+				served_model,
+				served_host,
+				..
+			} => {
+				if let Some(model) = served_model {
+					models.insert(model.clone());
+				} else {
+					unknown_model = true;
+				}
+				if let Some(host) = served_host {
+					hosts.insert(host.clone());
+				} else {
+					unknown_host = true;
+				}
+			}
+		}
+	}
+	RouteView {
+		route: route.route,
+		provider_contract: route.provider_contract,
+		model: route.model,
+		hosts: route.hosts,
+		effective_threshold: route.effective_threshold,
+		answers: route.answers,
+		served_models: models.into_iter().collect(),
+		served_hosts: hosts.into_iter().collect(),
+		includes_unknown_model: unknown_model,
+		includes_unknown_host: unknown_host,
+	}
 }

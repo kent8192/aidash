@@ -128,6 +128,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("answers", FieldType::Jsonb)
 					.with_not_null(false)
 					.with_primary_key(false),
+				ColumnDefinition::new("provider_report", FieldType::Jsonb),
 				ColumnDefinition::new("created_at", FieldType::TimestampTz)
 					.with_not_null(true)
 					.with_primary_key(false),
@@ -153,6 +154,8 @@ pub(super) fn migration() -> Migration {
 					.with_primary_key(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("approval_type", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("observer_unavailable", FieldType::Jsonb),
 				ColumnDefinition::new("run_id", FieldType::Uuid),
 				ColumnDefinition::new("settlement", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
