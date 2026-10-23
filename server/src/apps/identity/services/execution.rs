@@ -1063,6 +1063,25 @@ impl Guard {
 			result: result.map_err(Into::into),
 		}
 	}
+	/// Reading a source for the main model does not permit disclosing it to a
+	/// separate selector. Policy sees the exact selector and destination set.
+	pub(crate) async fn context_source_disclosure(
+		&self,
+		decider: &aidash_domain::decision::DeciderPin,
+		config: &aidash_domain::decision::DeciderConfig,
+		pins: &[aidash_domain::decision::SourcePin],
+	) -> Result<()> {
+		let mut access = self.access.write().await;
+		let mut workspace = access.workspace(self.run.workspace_id).await?;
+		workspace.attributes["context_selection"] = json!(decider);
+		workspace.attributes["inference_model"] = json!(self.agent.model);
+		workspace.attributes["decider"] = json!(decider.identity);
+		workspace.attributes["selector_routes"] = json!(config.routes);
+		workspace.attributes["source_pins"] = json!(pins);
+		workspace.attributes["preview_disclosure"] = json!(true);
+		workspace.attributes["query_disclosure"] = json!(true);
+		access.require(&workspace, "semantic.disclose").await
+	}
 	pub(crate) async fn recheck_source_observation(
 		&self,
 		store: &Store,

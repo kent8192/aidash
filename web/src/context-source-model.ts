@@ -55,11 +55,14 @@ export function contextSourceConfiguration(
   if (!["always", "on_demand", "scored"].includes(policy))
     throw new Error("Choose a source pin policy");
   if (
-    policy === "scored" &&
-    (!["shadow", "enforce"].includes(mode) ||
-      (required_home && mode === "enforce"))
+    required_home &&
+    (policy === "on_demand" || (policy === "scored" && mode === "enforce"))
   )
-    throw new Error("Required-Home sources cannot enforce Scored selection");
+    throw new Error(
+      "Required-Home sources cannot use OnDemand or Scored Enforce selection",
+    );
+  if (policy === "scored" && !["shadow", "enforce"].includes(mode))
+    throw new Error("Choose a Scored selection mode");
   if (
     policy === "scored" &&
     (!form.has("source_disclose_previews") ||

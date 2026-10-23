@@ -71,6 +71,11 @@ export function ContextSourceFields({
           ? "未設定なら現在の取得と表示を維持します。宣言だけでは権限は付与されず、実行時に必須となる Home の制約も解除できません。"
           : "Leaving this unset preserves current retrieval and rendering. A declaration grants no authority and cannot relax runtime-required Home obligations."}
       </Hint>
+      <Hint>
+        {ja
+          ? "Agent の共有 native クエリーでは、プライマリーメモリー・各 bank Source・workspace の取得のクエリーポリシーを揃えてください。省略した定義も task-inputs@1 として扱われます。accepted-inputs-first@1 を使う場合は、すべての有効な構成要素で明示的に選択してください。"
+          : "The Agent's shared native query requires matching query policies across primary memory, every bank Source and workspace retrieval. An omitted policy means task-inputs@1. To use accepted-inputs-first@1, explicitly select it on every effective contributor."}
+      </Hint>
       {enabled && (
         <>
           <div className={pairClass}>

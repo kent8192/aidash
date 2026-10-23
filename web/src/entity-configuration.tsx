@@ -522,9 +522,9 @@ export function EntityConfiguration({
       <input type="hidden" name="config" value={JSON.stringify(config)} />
       {(kind === "memory" || kind === "source") && (
         <>
-          {kind === "source" && (
+          {(kind === "source" || sourceAdapter === "native_memory") && (
             <ContextSourceFields
-              key={sourceAdapter}
+              key={`${kind}:${sourceAdapter}`}
               adapter={sourceAdapter}
               entries={data.registry}
               node={deployment}

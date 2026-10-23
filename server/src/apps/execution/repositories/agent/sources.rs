@@ -18,11 +18,15 @@ struct Fragment {
 	candidate: SourceCandidate,
 	pointer: String,
 }
-struct NativeContribution {
+struct NativeContribution<'a> {
+	environment: &'a Environment<'a>,
+	run: &'a Run,
+	authorized_content: Value,
+	slot: Slot,
 	fragments: Vec<Fragment>,
 }
 #[async_trait]
-impl ContextSourceProvider for NativeContribution {
+impl ContextSourceProvider for NativeContribution<'_> {
 	async fn fetch(&self, request: &SourceRequest) -> Result<SourceBatch> {
 		let candidates = self
 			.fragments
@@ -64,19 +68,93 @@ impl ContextSourceProvider for NativeContribution {
 		if candidate.detail.as_ref() != Some(&request.route) {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		// This provider owns the exact authorized revision in the current read
-		// frame. Detail replays that revision, bounded by the caller's envelope cap.
-		let batch = SourceBatch {
-			candidates: vec![candidate.clone()],
-			outcome: SourceOutcome::Fetched,
-		};
-		if serde_json::to_vec(&batch)?.len() > request.request.max_bytes {
-			return Ok(SourceBatch {
-				candidates: vec![],
-				outcome: SourceOutcome::Deferred,
-			});
+		let snapshot = self.run.context.binding_snapshot.as_ref().ok_or_else(|| {
+			aidash_application::Error::Invalid("source detail lacks snapshot".into())
+		})?;
+		let binding = snapshot
+			.bindings
+			.iter()
+			.find(|binding| {
+				binding.excluded_reason.is_none() && binding.identity == request.route.tool
+			})
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let alias = binding
+			.alias
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let tools = self.environment.binding_resolver().tools(self.run).await?;
+		let tool = tools
+			.get(alias)
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let contract = tool.contract();
+		if contract.behavior.effect != aidash_domain::tool::ToolEffect::ReadOnly {
+			return Err(aidash_application::Error::Forbidden);
 		}
-		Ok(batch)
+		self.environment.recheck_source_observation(self.run,&json!({"semantic_memory":if matches!(self.slot,Slot::Semantic){self.authorized_content.clone()}else{Value::Null}})).await?;
+		let mut arguments = request.route.arguments.clone();
+		if let Some(max_chars) = arguments.get("max_chars").and_then(Value::as_u64) {
+			arguments["max_chars"] = json!(max_chars.min(request.request.max_bytes as u64));
+		}
+		let call = ToolCall {
+			id: format!("source-detail-{}", request.identity.key()),
+			name: alias.clone(),
+			arguments: arguments.clone(),
+		};
+		if let Some(authority) = self.environment.authority() {
+			authority.tool(&call, &contract).await?;
+		}
+		let mut output = tool
+			.invoke(self.run, arguments, &request.identity.key())
+			.await?;
+		let original = output["content"]
+			.as_str()
+			.or_else(|| output["text"].as_str())
+			.unwrap_or_default()
+			.to_owned();
+		let field = if output.get("content").is_some() {
+			"content"
+		} else {
+			"text"
+		};
+		let mut size = original.len();
+		loop {
+			let text = utf8_prefix(&original, size);
+			if !original.is_empty() {
+				output[field] = json!(text);
+			}
+			let offset = output["offset"].as_u64().unwrap_or(0) as usize;
+			let partial =
+				text.len() < original.len() || !output["next_offset"].is_null() || offset > 0;
+			let mut detailed = candidate.clone();
+			detailed.content = output.clone();
+			detailed.preview = utf8_prefix(text, MAX_PREVIEW_BYTES).into();
+			if !text.is_empty() {
+				detailed.identity.range = Some([offset, offset + text.len()]);
+			}
+			detailed.completeness = if partial {
+				Completeness::Partial
+			} else {
+				Completeness::Complete
+			};
+			let batch = SourceBatch {
+				candidates: vec![detailed],
+				outcome: if partial {
+					SourceOutcome::Truncated
+				} else {
+					SourceOutcome::Fetched
+				},
+			};
+			if serde_json::to_vec(&batch)?.len() <= request.request.max_bytes {
+				return Ok(batch);
+			}
+			if size == 0 {
+				return Ok(SourceBatch {
+					candidates: vec![],
+					outcome: SourceOutcome::Deferred,
+				});
+			}
+			size /= 2;
+		}
 	}
 }
 
@@ -401,6 +479,10 @@ impl Environment<'_> {
 					.collect::<Vec<_>>();
 				for fragments in source_fragments.chunks(MAX_CANDIDATES) {
 					let batch_provider = NativeContribution {
+						environment: self,
+						run,
+						authorized_content: content.clone(),
+						slot,
 						fragments: fragments.to_vec(),
 					};
 					let mut batch = fetch(&batch_provider, &request).await?;
@@ -455,6 +537,18 @@ impl Environment<'_> {
 				.collect::<Vec<_>>();
 			removals.sort_by(|left, right| pointer_order(right).cmp(&pointer_order(left)));
 			removals.dedup();
+			for contribution in &mut result.contributions {
+				if let Some(fragment) = provider
+					.fragments
+					.iter()
+					.find(|fragment| fragment.candidate.identity == contribution.identity)
+				{
+					contribution.placement = Some(SourcePlacement {
+						slot: slot.name().into(),
+						pointer: remap_pointer(&fragment.pointer, &removals),
+					});
+				}
+			}
 			for pointer in removals {
 				remove_pointer(&mut filtered, &pointer)?;
 			}
@@ -522,6 +616,12 @@ impl aidash_application::ports::decision::DecisionAuthority for SourceAuthority<
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		super::super::decisions::require_approved(authority.guard, decider).await?;
+		authority
+			.guard
+			.local_authority()
+			.ok_or(aidash_application::Error::Forbidden)?
+			.context_source_disclosure(decider, &self.config, sources)
+			.await?;
 		self.environment
 			.recheck_source_observation(self.run, &self.content)
 			.await?;
@@ -588,6 +688,12 @@ impl Environment<'_> {
 				vec![]
 			},
 			evidence: SelectionEvidence {
+				configuration: bound.config.clone(),
+				binding_restrictions: bound.restrictions.clone(),
+				restrictions: bound.restrictions.clone(),
+				attempt_routes: Default::default(),
+				source_pins: source_selection_pins(candidates, &request.query),
+				window: budget,
 				candidates: candidates
 					.iter()
 					.map(|candidate| SelectionCandidate {
@@ -742,14 +848,14 @@ fn remove_pointer(value: &mut Value, pointer: &str) -> Result<()> {
 	Ok(())
 }
 impl Environment<'_> {
-	async fn partition_context_sources(
-		&self,
-		run: &Run,
+	async fn partition_context_sources<'a>(
+		&'a self,
+		run: &'a Run,
 		slot: Slot,
 		content: &Value,
 		declarations: &[(QualifiedRef, SourceDeclaration, SourcePin)],
 		resident_blocks: Option<&[PreparedSkillSource]>,
-	) -> Result<NativeContribution> {
+	) -> Result<NativeContribution<'a>> {
 		use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource};
 		let snapshot = run.context.binding_snapshot.as_ref().ok_or_else(|| {
 			aidash_application::Error::Invalid("source partition lacks snapshot".into())
@@ -1121,6 +1227,51 @@ impl Environment<'_> {
 				});
 			}
 		}
-		Ok(NativeContribution { fragments })
+		Ok(NativeContribution {
+			environment: self,
+			run,
+			authorized_content: content.clone(),
+			slot,
+			fragments,
+		})
 	}
+}
+
+fn remap_pointer(pointer: &str, removed: &[String]) -> String {
+	if let Some(range) = pointer.strip_prefix("/@text/") {
+		let Some((start, end)) = range.split_once('/') else {
+			return pointer.into();
+		};
+		let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) else {
+			return pointer.into();
+		};
+		let prior = removed
+			.iter()
+			.filter_map(|range| {
+				range
+					.strip_prefix("/@text/")
+					.and_then(|range| range.split_once('/'))
+					.and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+			})
+			.filter(|(a, _)| *a < start)
+			.map(|(a, b)| b - a)
+			.sum::<usize>();
+		return format!(
+			"/@text/{}/{}",
+			start.saturating_sub(prior),
+			end.saturating_sub(prior)
+		);
+	}
+	let Some((parent, last)) = pointer.rsplit_once('/') else {
+		return pointer.into();
+	};
+	let Ok(index) = last.parse::<usize>() else {
+		return pointer.into();
+	};
+	let prior = removed
+		.iter()
+		.filter_map(|removed| removed.rsplit_once('/'))
+		.filter(|(other, at)| *other == parent && at.parse::<usize>().is_ok_and(|at| at < index))
+		.count();
+	format!("{parent}/{}", index.saturating_sub(prior))
 }

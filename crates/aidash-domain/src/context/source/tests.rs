@@ -98,6 +98,7 @@ fn altered_or_partial_fitted_bytes_cannot_claim_full_delivery() {
 	let source = QualifiedRef::builtin("aidash://node", "source");
 	let content = json!("original full source");
 	let mut contribution = SourceContribution {
+		placement: None,
 		identity: CandidateIdentity {
 			source,
 			item: "item".into(),

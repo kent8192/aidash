@@ -512,7 +512,10 @@ export function EntityForm({
                       }
                     : (memoryConfiguration(kind, d) ?? JSON.parse(s("config")));
           const declaration =
-            kind === "source" ? contextSourceConfiguration(d) : undefined;
+            kind === "source" ||
+            (kind === "memory" && s("context_adapter") === "native_memory")
+              ? contextSourceConfiguration(d)
+              : undefined;
           if (declaration) config.context_source = declaration;
           const entry = {
             id: "",

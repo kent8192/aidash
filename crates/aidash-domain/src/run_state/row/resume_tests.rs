@@ -136,6 +136,7 @@ fn inspection_omits_source_text_while_storage_preserves_the_retry_cache(mut raw:
 	);
 
 	let contribution = crate::context::source::SourceContribution {
+		placement: None,
 		identity: crate::context::source::CandidateIdentity {
 			source: crate::registry::bindings::QualifiedRef::builtin(
 				"aidash://node",
