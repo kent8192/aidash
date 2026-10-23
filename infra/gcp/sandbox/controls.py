@@ -427,16 +427,24 @@ class Controls:
     def alert_collect(self, args):
         # Read the actual Terraform-managed policy filters, not an approximate
         # grep. Every query is bounded; no raw audit request/body is persisted.
-        for project in (self.app, self.byok):
+        journal = json.loads((self.directory / 'controls-evidence.json').read_text())
+        triggers = [row for row in journal if row['case'].startswith('alert-trigger-')]
+        require(triggers, 'recorded alert trigger required')
+        trigger = triggers[-1]
+        started, finished = trigger['started_at'], stamp()
+        require(trigger['target'] in (self.app, self.byok), 'foreign alert target')
+        for project in (trigger['target'],):
             policies = cloud(project, 'alpha', 'monitoring', 'policies', 'list', '--filter=displayName:Credential')
             for policy in policies:
                 for condition in policy.get('conditions', []):
                     log_filter = condition.get('conditionMatchedLog', {}).get('filter')
                     if not log_filter:
                         continue
-                    rows = cloud(project, 'logging', 'read', log_filter, '--freshness=1h', '--limit=50')
+                    query = '(' + log_filter + ') AND timestamp>=' + json.dumps(started) + ' AND timestamp<=' + json.dumps(finished)
+                    rows = cloud(project, 'logging', 'read', query, '--limit=50')
                     self.record('alert-log', policy['name'], 'observed' if rows else 'pending', condition=condition['name'],
-                                insert_ids=[row.get('insertId') for row in rows], receipt='pending_owner_sink_check')
+                                insert_ids=[row.get('insertId') for row in rows], receipt='pending_owner_sink_check',
+                                trigger=trigger['case'], window_start=started, window_end=finished)
 
     def gcip_reenable(self, args):
         resource = f'v1/projects/{self.app}/tenants/{self.r["own_tenant"]}/accounts:update'

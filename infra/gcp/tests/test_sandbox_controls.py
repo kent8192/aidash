@@ -127,6 +127,24 @@ class ControlContracts(unittest.TestCase):
                 control.restore_deny(None)
         self.assertTrue(file.exists())
 
+    def test_alert_collection_is_bounded_to_recorded_trigger(self):
+        control = self.instance()
+        start = '2026-10-23T12:00:00+00:00'
+        control.record('alert-trigger-revision', self.app, 'triggered_receipt_pending', started_at=start)
+        def cloud(project, *words):
+            self.assertEqual(project, self.app)
+            if 'policies' in words:
+                return [{'name': 'projects/' + self.app + '/alertPolicies/123', 'conditions': [{'name': 'revision', 'conditionMatchedLog': {'filter': 'resource.type="cloud_run_revision"'}}]}]
+            self.assertIn('timestamp>=', words[2])
+            self.assertIn(start, words[2])
+            return []
+        with mock.patch.object(controls, 'cloud', side_effect=cloud):
+            control.alert_collect(None)
+        row = json.loads((self.directory / 'controls-evidence.json').read_text())[-1]
+        self.assertEqual(row['trigger'], 'alert-trigger-revision')
+        self.assertEqual(row['window_start'], start)
+        self.assertEqual(row['observed'], 'pending')
+
     def test_kms_failure_cleans_private_signature_without_emitting_contents(self):
         control = self.instance()
         signature = self.directory / 'kms-signature.bin'
