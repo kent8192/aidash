@@ -2547,7 +2547,7 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 		.unwrap();
 	assert_eq!(
 		overview,
-		json!({"tenant":"acme","label":"acme","actions":[],"assignable_groups":[],"policy_revision":null})
+		json!({"tenant":"acme","label":"acme","actions":[],"assignable_groups":[],"issuable_subjects":[],"policy_revision":null})
 	);
 	assert_eq!(
 		carol
