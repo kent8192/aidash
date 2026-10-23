@@ -248,7 +248,7 @@ async fn capture_capability(
 	access: &mut Access,
 	record: &crate::apps::execution::capabilities::serializers::records::Record,
 	original: Option<&aidash_domain::Run>,
-	mut selected: ObserverSettings,
+	selected: ObserverSettings,
 	created_at: chrono::DateTime<Utc>,
 ) -> Result<()> {
 	let run_id: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
@@ -264,21 +264,6 @@ async fn capture_capability(
 	let boundary = original
 		.filter(|original| original.id == run.id)
 		.unwrap_or(&run);
-	if let Some(snapshot) = run.context.binding_snapshot.as_ref()
-		&& let Some((bound, _)) = snapshot.bound_decider(Hook::Approval)?
-	{
-		let config = selected.config.as_ref().ok_or(Error::Forbidden)?;
-		selected.restrictions.threshold =
-			if bound.restrictions.threshold.value() < selected.restrictions.threshold.value() {
-				bound.restrictions.threshold
-			} else {
-				selected.restrictions.threshold
-			};
-		selected.restrictions.max_calls_per_run = bound
-			.restrictions
-			.max_calls_per_run
-			.map(|limit| limit.min(config.max_calls_per_run));
-	}
 	let inputs = crate::apps::execution::models::RunInput::for_run(&mut *access.tx, run_id).await?;
 	let input_refs = inputs
 		.iter()

@@ -459,7 +459,7 @@ pub(super) async fn report_read(
 				.await?;
 				settlement = match state.as_deref() {
 					Some("EXPIRED") => SettlementClass::Expired,
-					Some("STOPPED" | "DELETED") | None => SettlementClass::Cancelled,
+					Some("STOPPED" | "DELETED" | "DENIED") | None => SettlementClass::Cancelled,
 					Some("PENDING_APPROVAL") => SettlementClass::Pending,
 					_ if settlement == SettlementClass::Pending => SettlementClass::Auto,
 					_ => settlement,
