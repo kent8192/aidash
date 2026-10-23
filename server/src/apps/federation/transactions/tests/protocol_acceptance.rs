@@ -50,7 +50,9 @@ fn atomic_runtime(
 		f.config.node_id = format!("aidash://atomic-{suffix}");
 		f.store.node_id = f.config.node_id.clone();
 		f.config.api_token = "atomic-deployment-administrator-fixture-token".into();
-		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id)
+			.unwrap()
+			.with_keyless_origins(f.store.keyless.clone());
 		runtime
 	}
 	.boxed()
@@ -249,7 +251,9 @@ impl Node {
 			)
 			.await;
 		self.f = Federation {
-			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
+			registry: Registry::new(store.pool.clone(), &store.node_id)
+				.unwrap()
+				.with_keyless_origins(store.keyless.clone()),
 			store,
 			notify: Arc::new(tokio::sync::Notify::new()),
 			..self.f.clone()
