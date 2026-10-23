@@ -763,7 +763,6 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		]
 	});
 	common::tenant_root(&f, "sparse").await;
-	let source = common::register_source(&f, &app, SOURCE, "sparse").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,
@@ -773,6 +772,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
+	let source = common::register_source(&f, &app, SOURCE, "sparse").await;
 	let (status, issued) = request(
 		&app,
 		&f.config.api_token,
