@@ -15,7 +15,7 @@ use aidash_domain::{
 	decision::{observation::*, *},
 	registry::Entry,
 };
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use reinhardt::{
 	db::orm::Model,
 	query::{
@@ -79,9 +79,9 @@ pub(super) async fn process_one(runtime: &Federation) -> Result<bool> {
 			.table(Alias::new("approval_observations"))
 			.value(Alias::new("worker"), lease.worker)
 			.value(Alias::new("lease_revision"), lease.revision)
-			.value(
+			.value_expr(
 				Alias::new("leased_until"),
-				Utc::now() + Duration::minutes(10),
+				Expr::cust("CLOCK_TIMESTAMP() + INTERVAL '10 minutes'"),
 			)
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
@@ -107,7 +107,7 @@ pub(super) async fn process_one(runtime: &Federation) -> Result<bool> {
 
 	let (input, definition) = match material {
 		Ok(pair) => (Some(pair.0), Some(pair.1)),
-		Err(_) => {
+		Err(error) => {
 			let mut original = runtime
 				.store
 				.pool
@@ -121,8 +121,55 @@ pub(super) async fn process_one(runtime: &Federation) -> Result<bool> {
 			)
 			.await
 			.ok();
+			let node: Option<String> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("node"))
+					.from(Alias::new(if row.run_id.is_some() {
+						"runs"
+					} else {
+						"generation_requests"
+					}))
+					.and_where(
+						Expr::col("id").eq(Expr::value(row.run_id.unwrap_or(frame.approval))),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *original)
+			.await?;
+			let approved = match node {
+				Some(node) => {
+					crate::apps::identity::repositories::approval_decider::approved(
+						&mut *original,
+						&frame.tenant,
+						&aidash_domain::nodes::NodeName::parse(&node)?,
+						&pin.identity.local(),
+					)
+					.await?
+				}
+				None => false,
+			};
+			let exact = definition
+				.as_ref()
+				.is_some_and(|entry| pin.check(entry).is_ok());
 			original.commit().await?;
-			(None, definition)
+			let reason = if !exact || !approved {
+				UnavailableReason::DefinitionUnapproved
+			} else if matches!(error, Error::Forbidden) {
+				UnavailableReason::AuthorityRevoked
+			} else {
+				UnavailableReason::MissingState
+			};
+			let evidence = ObservationEvidence {
+				observation: frame.id,
+				frame_digest: aidash_domain::registry::rules::digest(&json!(frame)),
+				outcome: ObservationOutcome::Unavailable { reason },
+				routes: vec![],
+				completed_at: Utc::now(),
+			};
+			journal
+				.commit_observation(&frame, &lease, &evidence)
+				.await?;
+			return Ok(true);
 		}
 	};
 	let config = frame.settings.config.clone().ok_or(Error::Forbidden)?;
