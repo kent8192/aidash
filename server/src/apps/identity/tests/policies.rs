@@ -1054,10 +1054,12 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	assert_eq!(decisions.as_array().unwrap().len(), 1);
 	assert_eq!(decisions[0]["decision"]["allowed"], true);
 	assert!(decisions[0].get("attributes").is_none());
-	assert_eq!(
-		get(&app, "/api/authorization/unknown/decisions").await.1,
-		json!([])
-	);
+	for page in ["revisions", "decisions"] {
+		assert_eq!(
+			get(&app, &format!("/api/authorization/unknown/{page}")).await,
+			(404, json!({"error":"authorization policy"}))
+		);
+	}
 }
 
 #[rstest::rstest]
@@ -1130,7 +1132,15 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 			.await
 			.is_err()
 	);
-	assert!(service.revisions("other", 0, 100).await.unwrap().is_empty());
+	assert!(matches!(
+		service.revisions("other", 0, 100).await,
+		Err(aidash_server::Error::NotFound(_))
+	));
+	let history = app
+		.database
+		.fixture(async |tx| Ok(AuthorizationRevision::objects().count_with_conn(tx).await?))
+		.await;
+	assert_eq!(history, 2, "a rejected replacement must not add history");
 }
 
 fn lock_timeout_sql() -> String {
