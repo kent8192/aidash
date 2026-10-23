@@ -912,6 +912,78 @@ async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
+/// A budget skip is not evidence that a previously unavailable index recovered.
+#[rstest::rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn a_skipped_workspace_read_keeps_the_durable_outage(
+	#[case] _ordered: bool,
+	#[future(awt)]
+	#[with(false, true, _ordered, true)]
+	controlled_context: ControlledContext,
+) {
+	let fixture = controlled_context;
+	let worker = Uuid::new_v4();
+	let mut run = fixture
+		.f
+		.store
+		.lease_run(worker, 30)
+		.await
+		.unwrap()
+		.unwrap();
+	run.recovery.degraded.record(
+		run.step,
+		aidash_domain::semantic::degraded::OutageCause::EmbeddingProvider,
+	);
+	fixture
+		.f
+		.store
+		.save_run(&TEST_FIXTURE, &run, worker, "run.semantic_degraded")
+		.await
+		.unwrap();
+	fixture
+		.f
+		.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	let mut limited = spec(&fixture.embedding_server.url);
+	limited.max_result_tokens = 128;
+	limited.embedding.model = "m".repeat(256);
+	limited.embedding.model_version = "v".repeat(128);
+	configure(
+		&fixture._fixture.application,
+		&fixture.f.config.api_token,
+		run.workspace_id,
+		&limited,
+		1,
+	)
+	.await;
+	let calls = fixture.fault.requests();
+	assert!(fixture.worker.worker_once().await.unwrap());
+	let saved = fixture.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(
+		fixture.fault.requests(),
+		calls,
+		"the budget skip must not query the provider"
+	);
+	assert!(
+		saved.recovery.degraded.outage,
+		"a skipped retrieval cannot recover the outage"
+	);
+	assert_eq!(
+		fixture.captured.lock().unwrap().len(),
+		1,
+		"the optional workspace slot still allows inference"
+	);
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
 /// Issue #233: a rejected key (HTTP 401–403) or a response that breaks the
 /// approved contract is not an outage. The local Run pauses at once with its
 /// own typed reason and schedules no retry.

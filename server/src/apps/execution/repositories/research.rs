@@ -74,10 +74,9 @@ impl RunReader for Readers<'_> {
 			.map(|_| ()),
 			Actor::DeploymentAdministrator => native(
 				async {
-					// A Deployment Administrator reads a Run by id, in any Tenant.
-					let scope = aidash_application::tenancy::TenancyScope::Deployment(
-						aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-					);
+					// Resolve the Run's Tenant before taking a policy lease. The
+					// cross-Tenant listing scope is read-only and cannot hold it.
+					let scope = self.federation.store.run_tenancy(run).await?;
 					let inspected = self.federation.store.inspect_run(&scope, run).await?;
 					crate::authorization::remote::deployment_administrator::require(
 						&mut self.federation.store.pool.begin(&scope).await?,

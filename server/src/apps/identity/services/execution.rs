@@ -958,56 +958,66 @@ impl Guard {
 		budget: usize,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 		degrade_on_outage: bool,
-	) -> Result<Option<Value>> {
-		let workspace_budget = if self.remote.is_some() {
-			budget
-		} else {
-			crate::semantic::services::memory_context::workspace_budget(budget)?
-		};
-		let semantic = aidash_application::execution::semantic_context::retrieve(
-			&crate::bootstrap::run_semantic_repository(
+	) -> aidash_application::ports::execution::SemanticContextRead {
+		let mut workspace_retrieved = false;
+		let result: Result<Option<Value>> = async {
+			let workspace_budget = if self.remote.is_some() {
+				budget
+			} else {
+				crate::semantic::services::memory_context::workspace_budget(budget)?
+			};
+			let semantic = aidash_application::execution::semantic_context::retrieve(
+				&crate::bootstrap::run_semantic_repository(
+					store,
+					self.remote.as_ref(),
+					&self.access,
+					&self.run,
+					&self.agent,
+				),
+				task,
+				inputs,
+				workspace_budget,
+				// Required-Home semantic context never degrades (ADR 0059).
+				degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
+			)
+			.await
+			.map_err(Error::from)?;
+			workspace_retrieved = semantic
+				.as_ref()
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none());
+			if self.remote.is_some() {
+				return Ok(semantic);
+			}
+			let reserved =
+				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
+			let available = budget.saturating_sub(reserved);
+			let mut access = self.access.write().await;
+			let memory = crate::semantic::services::memory_context::retrieve(
 				store,
-				self.remote.as_ref(),
-				&self.access,
+				&mut crate::semantic::service::Lease::Inherited(&mut access),
 				&self.run,
+				task,
+				inputs,
+				available,
 				&self.agent,
-			),
-			task,
-			inputs,
-			workspace_budget,
-			// Required-Home semantic context never degrades (ADR 0059).
-			degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
-		)
-		.await
-		.map_err(Error::from)?;
-		if self.remote.is_some() {
-			return Ok(semantic);
+				key,
+			)
+			.await?;
+			crate::semantic::services::memory_context::complete(
+				&mut crate::semantic::service::Lease::Inherited(&mut access),
+				&self.run,
+				semantic,
+				memory,
+				budget,
+			)
+			.await
 		}
-		let reserved =
-			serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
-		let available = budget.saturating_sub(reserved);
-		let mut access = self.access.write().await;
-		let memory = crate::semantic::services::memory_context::retrieve(
-			store,
-			&mut crate::semantic::service::Lease::Inherited(&mut access),
-			&self.run,
-			task,
-			inputs,
-			available,
-			&self.agent,
-			key,
-		)
-		.await?;
-		crate::semantic::services::memory_context::complete(
-			&mut crate::semantic::service::Lease::Inherited(&mut access),
-			&self.run,
-			semantic,
-			memory,
-			budget,
-		)
-		.await
+		.await;
+		aidash_application::ports::execution::SemanticContextRead {
+			workspace_retrieved,
+			result: result.map_err(Into::into),
+		}
 	}
-
 	pub(crate) async fn recheck_source_observation(
 		&self,
 		store: &Store,

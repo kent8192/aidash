@@ -30,7 +30,16 @@ impl Lease<'_> {
 	pub(crate) async fn begin(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Self> {
 		match actor {
 			Actor::DeploymentAdministrator => {
-				Self::within(store, &store.workspace_tenancy(workspace).await?).await
+				let scope = store.workspace_tenancy(workspace).await?;
+				let tenant = scope.tenant_name().ok_or(Error::Forbidden)?;
+				let mut tx = store.pool.begin(&scope).await?;
+				// Match deletion's lock order before an index mutation locks its Workspace.
+				crate::authorization::remote::deployment_administrator::tenant(
+					&mut *tx,
+					tenant.as_str(),
+				)
+				.await?;
+				Ok(Self::WithoutSubject(tx))
 			}
 			Actor::Subject(identity) => Ok(Self::Scoped(Box::new(
 				Access::begin(store, identity).await?,
@@ -131,9 +140,20 @@ impl Lease<'_> {
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		if self.access().is_none() && action != super::mutations::SEMANTIC_INDEX_MANAGE {
-			crate::authorization::remote::deployment_administrator::require(self.tx(), workspace)
+		if self.access().is_none() {
+			if action == super::mutations::SEMANTIC_INDEX_MANAGE {
+				crate::authorization::remote::deployment_administrator::workspace_tenant(
+					self.tx(),
+					workspace,
+				)
 				.await?;
+			} else {
+				crate::authorization::remote::deployment_administrator::require(
+					self.tx(),
+					workspace,
+				)
+				.await?;
+			}
 		}
 		if let Some(a) = self.access() {
 			let resource = a.workspace(workspace).await?;

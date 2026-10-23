@@ -99,6 +99,54 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 		f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty(),
 		"approval must precede activation"
 	);
+	// Concurrent administrators serialize before reading the expected revision;
+	// neither may deadlock while upgrading a shared policy lease.
+	{
+		let mut policy_lock = f
+			.store
+			.pool
+			.begin(&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap())
+			.await
+			.unwrap();
+		let pid: i32 = aidash_server::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("pg_backend_pid()"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut *policy_lock)
+		.await
+		.unwrap();
+		let query = Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("authorization_bundles"))
+			.and_where(Expr::col("tenant").eq(Expr::value("acme")))
+			.lock(reinhardt::query::LockType::Share)
+			.to_string(PostgresQueryBuilder);
+		let _: String = aidash_server::database::native::query_scalar(&query)
+			.scalar_one(&mut *policy_lock)
+			.await
+			.unwrap();
+		let update = || {
+			request(
+				&app,
+				&f.config.api_token,
+				"POST",
+				"/api/generation/acme/policies/research",
+				json!({"expected_revision":1,"spec":spec}),
+			)
+		};
+		let updates = futures_util::future::join(update(), update());
+		tokio::pin!(updates);
+		tokio::select! {
+			result = &mut updates => panic!("policy writers did not wait for the held lease: {result:?}"),
+			() = common::wait_for_blocked(&f.store.pool, pid, 2) => {},
+		}
+		policy_lock.rollback().await.unwrap();
+		let (first, second) = updates.await;
+		let mut statuses = [first.0, second.0];
+		statuses.sort();
+		assert_eq!(statuses, [200, 409], "{first:?} {second:?}");
+	}
 	cleanup(f, &url, &schema).await;
 }
 
