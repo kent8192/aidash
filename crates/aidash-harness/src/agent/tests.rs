@@ -49,6 +49,7 @@ struct State {
 	conversation_memory: bool,
 	source_receipts: bool,
 	deny_source: bool,
+	deny_source_after_dispatch: bool,
 	memory_value: Mutex<Value>,
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
@@ -1118,7 +1119,13 @@ impl ExecutionEnvironment for Backend {
 		self.0.closed_sessions.lock().unwrap().push(run);
 	}
 
-	async fn recheck_source_observation(&self, _: &Run, _: &Value) -> Result<()> {
+	async fn recheck_source_observation(&self, _: &Run, content: &Value) -> Result<()> {
+		if self.0.deny_source_after_dispatch
+			&& !self.0.requests.lock().unwrap().is_empty()
+			&& content.get("semantic_memory") == Some(&*self.0.memory_value.lock().unwrap())
+		{
+			return Err(Error::Forbidden);
+		}
 		if self.0.conversation_memory {
 			self.record("source.recheck");
 		}
@@ -1452,6 +1459,7 @@ fn fixture() -> Fixture {
 		conversation_memory: false,
 		source_receipts: false,
 		deny_source: false,
+		deny_source_after_dispatch: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
 		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
@@ -5576,4 +5584,46 @@ async fn dropped_skill_bytes_repeated_in_unrelated_history_cannot_gain_delivery(
 	);
 	assert!(!requests[0].instructions.contains(text));
 	assert!(canonical.run.context.source_deliveries.is_empty());
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn current_degraded_source_frame_is_rechecked_before_response_adoption(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	let envelope = json!({"workspace":aidash_domain::semantic::degraded::marker(aidash_domain::semantic::degraded::OutageCause::EmbeddingProvider),"memory":{"banks":[{"recall":{"units":[{"text":"Current shared bank source"}]}}]}});
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	state.projection = projection;
+	state.provider_status = None;
+	state.source_receipts = true;
+	state.deny_source_after_dispatch = true;
+	*state.memory_value.lock().unwrap() = envelope.clone();
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(canonical.backend.0.requests.lock().unwrap().len(), 1);
+	assert_eq!(
+		semantic_memory(&canonical.backend.0.requests.lock().unwrap()[0]),
+		envelope
+	);
+	assert!(
+		canonical.run.context.source_observation.is_none(),
+		"degraded reads deliberately bypass observation caching"
+	);
+	assert!(canonical.run.context.source_deliveries.is_empty());
+	assert!(
+		!canonical
+			.backend
+			.0
+			.writes
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|(kind, _)| kind == "model.completed")
+	);
 }
