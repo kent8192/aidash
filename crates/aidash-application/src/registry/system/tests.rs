@@ -327,6 +327,12 @@ fn required_workspace_source_is_builtin_only_at_its_exact_canonical_definition()
 		id: source.id.clone(),
 		version: source.version.clone()
 	}));
+	let mut custom_policy = source.clone();
+	custom_policy.config["context_source"] = json!({"pin":"on_demand"});
+	assert!(
+		!is_builtin(&custom_policy),
+		"the reserved identifier cannot make a custom source policy builtin"
+	);
 	source.config["source"]["adapter"] = json!("workspace_retrieval");
 	assert!(
 		!is_builtin(&source),
