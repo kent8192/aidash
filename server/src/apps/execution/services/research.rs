@@ -378,9 +378,6 @@ impl Tool for ResearchTool {
 				}
 				let pending = run.state.tool()?;
 				let selections = aidash_application::execution::pending_selected_media(pending);
-				if selections.len() >= 8 {
-					return Ok(failure(Operation::View, Failure::ResponseTooLarge));
-				}
 				let selected_parts = if selections.is_empty() {
 					Vec::new()
 				} else {

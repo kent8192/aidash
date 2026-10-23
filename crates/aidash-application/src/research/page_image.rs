@@ -17,6 +17,14 @@ pub struct FittingRenderer<'a> {
 #[async_trait]
 impl PageRenderer for FittingRenderer<'_> {
 	async fn render(&self, pdf: Vec<u8>, page: u32) -> std::result::Result<RenderedPage, Failure> {
+		if self
+			.selected_parts
+			.iter()
+			.filter(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Audio { .. }))
+			.count() >= 8
+		{
+			return Err(Failure::ResponseTooLarge);
+		}
 		let image = self.renderer.render(pdf, page).await?;
 		image.validate().map_err(|_| Failure::RenderFailed)?;
 		let held: usize = self

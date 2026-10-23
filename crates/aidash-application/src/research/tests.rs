@@ -2906,10 +2906,48 @@ async fn a_page_that_exceeds_model_headroom_takes_no_view_or_fragment() {
 	assert_eq!(store.fragments.lock().unwrap().len(), fragments_before);
 	assert!(store.page_images.lock().unwrap().is_empty());
 	fitting.headroom = 128000;
+	fitting.selected_parts =
+		vec![
+			aidash_domain::provider::ContentPart::from_media("image/png", PIXEL.to_vec()).unwrap();
+			8
+		];
+	let refused = research
+		.view(
+			&call(run, "full-selection", "research.page@1"),
+			&fitting,
+			&input,
+		)
+		.await
+		.unwrap();
+	assert_eq!(refused["error"]["code"], "response_too_large", "{refused}");
+	assert_eq!(store.usage(run).await.unwrap().page_views, 0);
+	assert_eq!(store.fragments.lock().unwrap().len(), fragments_before);
+	fitting.selected_parts.clear();
 	let delivered = research
 		.view(&call(run, "view", "research.page@1"), &fitting, &input)
 		.await
 		.unwrap();
 	assert_eq!(delivered["status"], "ok", "{delivered}");
+	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
+	// Reusing an already-rendered page adds no fragment, view or selection.
+	// The fresh-render admission bound must not reject this replay.
+	fitting.selected_parts =
+		vec![
+			aidash_domain::provider::ContentPart::from_media("image/png", PIXEL.to_vec()).unwrap();
+			8
+		];
+	let replay = research
+		.view(
+			&call(run, "cached-view", "research.page@1"),
+			&fitting,
+			&input,
+		)
+		.await
+		.unwrap();
+	assert_eq!(replay["status"], "ok", "{replay}");
+	assert_eq!(
+		replay["data"]["evidence_ref"],
+		delivered["data"]["evidence_ref"]
+	);
 	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
 }
