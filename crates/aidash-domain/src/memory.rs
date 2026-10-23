@@ -18,6 +18,8 @@ pub mod recovery;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_source: Option<crate::context::source::SourceDeclaration>,
 	pub engine: EngineKind,
 	pub policy: Policy,
 }

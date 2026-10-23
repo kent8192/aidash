@@ -7,6 +7,8 @@ use crate::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+mod query;
+pub use query::semantic_query_policy;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -249,9 +251,14 @@ pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<Nati
 		return Ok(Some(descriptor));
 	}
 	match entry.kind.as_str() {
-		"memory" => serde_json::from_value::<crate::memory::ProviderConfig>(entry.config.clone())?
-			.policy
-			.validate()?,
+		"memory" => {
+			let provider: crate::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			provider.policy.validate()?;
+			if let Some(declaration) = provider.context_source {
+				declaration.validate()?;
+			}
+		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
 			if let Some(declaration) = &source.context_source {
@@ -368,6 +375,19 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 			let config: crate::memory::SourceConfig =
 				serde_json::from_value(source.definition.config.clone())?;
 			let Some(declaration) = config.context_source else {
+				continue;
+			};
+			let baseline = NativeContext {
+				schema_version: 1,
+				source: NativeSource::SemanticMemory {},
+				context_source: None,
+			}
+			.declaration(&source.identity);
+			(declaration, baseline)
+		} else if source.definition.kind == "memory" {
+			let provider: crate::memory::ProviderConfig =
+				serde_json::from_value(source.definition.config.clone())?;
+			let Some(declaration) = provider.context_source else {
 				continue;
 			};
 			let baseline = NativeContext {
