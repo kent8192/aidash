@@ -81,7 +81,14 @@ impl HttpTools {
 	fn client(&self, endpoint: &str) -> Result<&reqwest::Client> {
 		match self.origins.destination(endpoint)? {
 			Destination::Permitted => Ok(&self.clients.permitted),
-			Destination::PublicOnly => Ok(&self.clients.public),
+			Destination::PublicOnly => {
+				let url = reqwest::Url::parse(endpoint)
+					.map_err(|_| Error::Invalid("invalid tool endpoint URL".into()))?;
+				if url.scheme() != "https" {
+					return Err(Error::Forbidden);
+				}
+				Ok(&self.clients.public)
+			}
 			Destination::Forbidden => {
 				tracing::warn!("tool endpoint refused: its host is a non-public address");
 				Err(Error::Forbidden)

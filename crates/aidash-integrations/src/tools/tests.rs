@@ -165,6 +165,37 @@ mod destinations {
 	}
 
 	#[tokio::test]
+	async fn legacy_public_http_endpoints_are_refused_for_http_and_mcp() {
+		let (listener, port) = serve().await;
+		let address = listener.local_addr().unwrap();
+		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
+		// Reach a local fixture if an old immutable snapshot bypasses admission.
+		let tools = HttpTools::new(
+			KeylessAccess::default(),
+			ToolClients {
+				permitted: reqwest::Client::new(),
+				public: reqwest::Client::builder()
+					.no_proxy()
+					.resolve("public.example", address)
+					.build()
+					.unwrap(),
+			},
+		);
+		let mut refused = Vec::new();
+		for config in [
+			http(format!("http://public.example:{port}/echo")),
+			mcp(format!("http://public.example:{port}/mcp")),
+		] {
+			refused.push(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::Forbidden)
+			));
+		}
+		server.abort();
+		assert_eq!(refused, [true, true]);
+	}
+
+	#[tokio::test]
 	async fn an_address_literal_that_is_not_permitted_is_refused_before_connecting() {
 		let (listener, port) = serve().await;
 		let tools = tools(&[]);
@@ -203,8 +234,8 @@ mod destinations {
 		let (listener, port) = serve().await;
 		let tools = tools(&[]);
 		for config in [
-			http(format!("http://localhost:{port}/echo")),
-			mcp(format!("http://localhost:{port}/mcp")),
+			http(format!("https://localhost:{port}/echo")),
+			mcp(format!("https://localhost:{port}/mcp")),
 		] {
 			assert!(matches!(
 				tools.invoke(&config, json!({}), "key", None).await,
