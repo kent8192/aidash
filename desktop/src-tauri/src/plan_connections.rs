@@ -48,6 +48,7 @@ impl Relay {
 			.port();
 		let id = uuid::Uuid::new_v4().to_string();
 		let deadline = Instant::now() + LIFETIME;
+		let (cancel, mut expiration_cancel) = watch::channel(false);
 		{
 			let mut entries = self.entries.lock().unwrap();
 			if entries.len() >= 4 {
@@ -59,7 +60,7 @@ impl Relay {
 					listener: Some(listener),
 					port,
 					deadline,
-					cancel: watch::channel(false).0,
+					cancel,
 				},
 			);
 		}
@@ -67,11 +68,15 @@ impl Relay {
 		let entries = Arc::downgrade(&self.entries);
 		let expired_id = id.clone();
 		tokio::spawn(async move {
-			tokio::time::sleep_until(deadline).await;
-			if let Some(entries) = entries.upgrade()
-				&& let Some(entry) = entries.lock().unwrap().remove(&expired_id)
-			{
-				entry.cancel.send_replace(true);
+			tokio::select! {
+				_ = expiration_cancel.changed() => {},
+				_ = tokio::time::sleep_until(deadline) => {
+					if let Some(entries) = entries.upgrade()
+						&& let Some(entry) = entries.lock().unwrap().remove(&expired_id)
+					{
+						entry.cancel.send_replace(true);
+					}
+				},
 			}
 		});
 		Ok(Listening { id, port })
@@ -540,6 +545,21 @@ mod tests {
 				.is_err()
 		);
 		relay.cancel(&active.id);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn cancelled_flows_do_not_accumulate_expiration_tasks() {
+		let relay = Relay::default();
+		let runtime = tokio::runtime::Handle::current();
+		let before = runtime.metrics().num_alive_tasks();
+		for _ in 0..32 {
+			let allocated = relay.listen().await.unwrap();
+			relay.cancel(&allocated.id);
+		}
+		for _ in 0..4 {
+			tokio::task::yield_now().await;
+		}
+		assert_eq!(runtime.metrics().num_alive_tasks(), before);
 	}
 
 	#[tokio::test(start_paused = true)]
