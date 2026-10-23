@@ -96,6 +96,17 @@ impl ExecutionStore for RunStore {
 		.await?;
 		Ok(())
 	}
+	async fn recover_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"run.semantic_recovered",
+		)
+		.await?;
+		Ok(())
+	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run = Store::save_run(&self.store, &self.scope, run, token, "run.estimate_pinned").await?;
 		Ok(())
@@ -587,6 +598,68 @@ impl ExecutionAuthority for Authority<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn approval_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.approval_mode(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn auto_judging(&self, run: &Run) -> Result<bool> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(false);
+		};
+		authority
+			.auto_judging(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn answer_deadline(&self, run: &Run) -> Result<Option<i64>> {
+		// A Run executing for another Node is covered by nobody's settings here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.answer_deadline(&self.federation.store, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn approval_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<Option<aidash_application::capabilities::approvals::JudgeRequest>> {
+		// A Run executing for another Node is covered by nobody's mode here.
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.approval_judgement(&self.federation.store, run, approval)
+			.await
+			.map_err(Into::into)
+	}
+	async fn settle_judgement(
+		&self,
+		run: &Run,
+		approval: Uuid,
+		settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<bool> {
+		let authority = self
+			.guard
+			.local_authority()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.settle_judgement(&self.federation.store, run, approval, settlement)
+			.await
+			.map_err(Into::into)
+	}
 	async fn model_media(&self, selections: &[ModelMedia]) -> Result<Vec<ContentPart>> {
 		self.guard
 			.model_media(&self.federation.store, selections)
@@ -1046,6 +1119,81 @@ impl ExecutionEnvironment for Environment<'_> {
 			}
 		}
 	}
+	async fn approval_decider(
+		&self,
+		run: &Run,
+		_token: Uuid,
+	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
+		use crate::apps::execution::repositories::decisions::{ChainAllowance, RunDecisionJournal};
+		use aidash_domain::decision::{BoundDecider, DeciderConfig, DeciderPin, Hook};
+		// Only a worker holding the Run's authority on its home Node may call a
+		// Decider for it. A Run executing for another Node asks that Node.
+		let Some(authority) = &self.authority else {
+			return Ok(None);
+		};
+		if authority.guard.local_authority().is_none() {
+			return Ok(None);
+		}
+		let reference = authority.guard.approval_decider_reference().await?;
+		// The Decider runs only under its Catalog Approval for this exact version.
+		let definition = match authority.guard.decider_entry(&reference).await {
+			Ok(entry) => entry,
+			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
+			Err(error) => return Err(error.into()),
+		};
+		let Ok(config) = serde_json::from_value::<DeciderConfig>(definition.config.clone()) else {
+			return Ok(None);
+		};
+		if definition.kind != "decider" || config.hook != Hook::Approval {
+			return Ok(None);
+		}
+		let identity = aidash_domain::registry::bindings::QualifiedRef {
+			registry_node: self.node_id().to_owned(),
+			id: definition.id.clone(),
+			version: definition.version.clone(),
+		};
+		// An Agent's Binding can only make the chosen Decider's thresholds
+		// stricter: its narrowing applies whichever Decider the Tenant chose,
+		// and the Decider it names is never the judge.
+		let restrictions = match &self.step_run.context.binding_snapshot {
+			Some(snapshot) => snapshot
+				.bound_decider(Hook::Approval)?
+				.map(|(bound, _)| bound.restrictions)
+				.unwrap_or_default(),
+			None => Default::default(),
+		};
+		if restrictions.validate(&config).is_err() {
+			tracing::warn!(
+				decider = %identity.id,
+				"the Agent's Binding narrows the approval Decider beyond its version; a person is asked"
+			);
+			return Ok(None);
+		}
+		let decider = BoundDecider {
+			pin: DeciderPin {
+				definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
+					&definition,
+				)?),
+				configuration_digest: config.digest()?,
+				provider_implementation:
+					aidash_application::registry::validation::decision_implementation_id(),
+				identity,
+			},
+			config,
+			restrictions,
+		};
+		// The pin is constant for the step: a withdrawn Catalog Approval is
+		// caught by the Decision Authority before every dispatch.
+		let journal = RunDecisionJournal::new(
+			&self.federation.store,
+			run.clone(),
+			decider.allowance(),
+			ChainAllowance(decider.allowance()),
+		)?;
+		self.decision_ports(authority, run, decider, definition, Box::new(journal))
+			.await
+			.map(Some)
+	}
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
 		self.worker()
 			.is_some()
@@ -1227,53 +1375,58 @@ impl ExecutionEnvironment for Environment<'_> {
 		entry: &Entry,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 		degrade_on_outage: bool,
-	) -> Result<Option<Value>> {
-		let settings =
-			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
-				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
-			)?)?;
-		if !settings.semantic_memory && !settings.workspace_context {
-			return Ok(None);
-		}
-		if let Some(authority) = &self.authority {
-			return authority
-				.guard
-				.semantic_context(
-					&self.federation.store,
-					task,
-					inputs,
-					budget,
-					key,
-					degrade_on_outage,
-				)
-				.await
-				.map_err(Into::into);
-		}
-		let _ = entry;
-		let agent = AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
-			|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
-		)?)?;
-		let mut lease =
-			crate::semantic::service::Lease::within(&self.federation.store, &self.run_store.scope)
-				.await?;
-		let mut query = format!("{}\n{}", task.title, task.description);
-		for (_, text) in inputs {
-			query.push('\n');
-			query.push_str(text);
-		}
-		let semantic = crate::semantic::service::context_in(
-			&self.federation.store,
-			&mut lease,
-			run,
-			&query,
-			crate::semantic::services::memory_context::workspace_budget(budget)?,
-			&agent,
-		)
-		.await;
-		let degrade = degrade_on_outage && agent.workspace_degrades;
-		let result = async {
-			let semantic =
-				match semantic? {
+	) -> SemanticContextRead {
+		let mut workspace_retrieved = false;
+		let result: Result<Option<Value>> = async {
+			let settings =
+				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+				)?)?;
+			if !settings.semantic_memory && !settings.workspace_context {
+				return Ok(None);
+			}
+			if let Some(authority) = &self.authority {
+				let read = authority
+					.guard
+					.semantic_context(
+						&self.federation.store,
+						task,
+						inputs,
+						budget,
+						key,
+						degrade_on_outage,
+					)
+					.await;
+				workspace_retrieved = read.workspace_retrieved;
+				return read.result;
+			}
+			let _ = entry;
+			let agent =
+				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+				)?)?;
+			let mut lease = crate::semantic::service::Lease::within(
+				&self.federation.store,
+				&self.run_store.scope,
+			)
+			.await?;
+			let mut query = format!("{}\n{}", task.title, task.description);
+			for (_, text) in inputs {
+				query.push('\n');
+				query.push_str(text);
+			}
+			let semantic = crate::semantic::service::context_in(
+				&self.federation.store,
+				&mut lease,
+				run,
+				&query,
+				crate::semantic::services::memory_context::workspace_budget(budget)?,
+				&agent,
+			)
+			.await;
+			let degrade = degrade_on_outage && agent.workspace_degrades;
+			let result = async {
+				let semantic = match semantic? {
 					// Optional workspace context may degrade; memory still follows
 					// and still fails closed (ADR 0059).
 					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
@@ -1284,26 +1437,36 @@ impl ExecutionEnvironment for Environment<'_> {
 						.map(serde_json::to_value)
 						.transpose()?,
 				};
-			let reserved =
-				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
-			let memory = crate::semantic::services::memory_context::retrieve(
-				&self.federation.store,
-				&mut lease,
-				run,
-				task,
-				inputs,
-				budget.saturating_sub(reserved),
-				&agent,
-				key,
-			)
-			.await?;
-			crate::semantic::services::memory_context::complete(
-				&mut lease, run, semantic, memory, budget,
-			)
-			.await
+				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
+					aidash_domain::semantic::degraded::degraded(value).is_none()
+				});
+				let reserved =
+					serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?
+						.len();
+				let memory = crate::semantic::services::memory_context::retrieve(
+					&self.federation.store,
+					&mut lease,
+					run,
+					task,
+					inputs,
+					budget.saturating_sub(reserved),
+					&agent,
+					key,
+				)
+				.await?;
+				crate::semantic::services::memory_context::complete(
+					&mut lease, run, semantic, memory, budget,
+				)
+				.await
+			}
+			.await;
+			lease.finish(result).await.map_err(Into::into)
 		}
 		.await;
-		lease.finish(result).await.map_err(Into::into)
+		SemanticContextRead {
+			workspace_retrieved,
+			result,
+		}
 	}
 
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {

@@ -264,6 +264,40 @@ run "controlled_activation_uses_only_explicit_flags" {
   }
 }
 
+run "activated_nonproduction_defaults_notifications_on" {
+  command = plan
+  variables {
+    bootstrap_code_installed = true
+    activation_validated     = true
+    enablement               = { nonproduction = true }
+  }
+  assert {
+    condition = (
+      github_actions_variable.delivery["GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED"].value == "true" &&
+      github_actions_variable.delivery["GCP_ENVIRONMENTS_ENABLED"].value == "true" &&
+      github_actions_variable.delivery["GCP_PRODUCTION_ENABLED"].value == "false" &&
+      github_actions_variable.delivery["GCP_CERTIFICATE_RENEWAL_ENABLED"].value == "false"
+    )
+    error_message = "Validated nonproduction activation must enable deployment mail by default without enabling production or certificates."
+  }
+}
+
+run "activated_nonproduction_can_disable_notifications" {
+  command = plan
+  variables {
+    bootstrap_code_installed = true
+    activation_validated     = true
+    enablement               = { nonproduction = true, notifications = false }
+  }
+  assert {
+    condition = (
+      github_actions_variable.delivery["GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED"].value == "false" &&
+      github_actions_variable.delivery["GCP_ENVIRONMENTS_ENABLED"].value == "true"
+    )
+    error_message = "An explicit notification opt-out must remain effective without disabling nonproduction."
+  }
+}
+
 run "production_needs_numeric_human_reviewer" {
   command = plan
   variables {
@@ -372,6 +406,37 @@ run "cross_tier_broker_is_rejected" {
         broker_service_account_email = "aidash-production-broker@aidash-nonproduction.iam.gserviceaccount.com"
         signing_key_id               = "projects/aidash-nonproduction/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
       } }
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}
+run "production_pre_update_backup_plan_reaches_controller_config" {
+  command = plan
+  variables {
+    production_config_json = jsonencode(merge(jsondecode(var.production_config_json), {
+      gke_backup_enabled     = true
+      pre_update_backup_plan = "projects/aidash-production/locations/us-central1/backupPlans/aidash-production-pre-update"
+    }))
+  }
+  assert {
+    condition     = jsondecode(github_actions_variable.delivery["AIDASH_GCP_PRODUCTION_CONFIG"].value).pre_update_backup_plan == "projects/aidash-production/locations/us-central1/backupPlans/aidash-production-pre-update"
+    error_message = "Without the plan name the production controller refuses every update."
+  }
+}
+run "pre_update_backup_plan_must_belong_to_its_project" {
+  command = plan
+  variables {
+    production_config_json = jsonencode(merge(jsondecode(var.production_config_json), {
+      pre_update_backup_plan = "projects/another-project/locations/us-central1/backupPlans/aidash-production-pre-update"
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}
+run "nonproduction_cannot_name_a_pre_update_backup_plan" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      pre_update_backup_plan = "projects/aidash-nonproduction/locations/us-central1/backupPlans/aidash-production-pre-update"
     }))
   }
   expect_failures = [terraform_data.contract]

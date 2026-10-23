@@ -78,7 +78,18 @@ async fn prepare(
 		.map_err(|e| Error::Invalid(e.to_string()))?
 		.validate(&call.arguments)
 		.map_err(|e| Error::Invalid(e.to_string()))?;
-	let request = dispatch.transport.prepare(session_id, rule, &call)?;
+	// Resolved with the same authority and checks as the dispatch it serves.
+	let secret = match &rule.secret {
+		Some(name) => Some(
+			scope
+				.tenant_secret(&pin.tenant, name, &rule.endpoint)
+				.await?,
+		),
+		None => None,
+	};
+	let request = dispatch
+		.transport
+		.prepare(session_id, rule, &call, secret.as_ref())?;
 	Ok((session, request, call))
 }
 async fn record_pre_dispatch_denial(

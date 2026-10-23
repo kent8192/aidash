@@ -50,7 +50,10 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0039_agent_plugin_copies_state"),
 	("registry", "0040_agent_plugin_copies_row_level_security"),
 	("registry", "0041_agent_plugins_definition"),
-	("registry", "0042_agent_plugin_settings"),
+	("registry", "0042_external_services"),
+	("registry", "0043_external_services_state"),
+	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_agent_plugin_settings"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -91,7 +94,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0034_tenant_owned_row_level_security");
+	assert_eq!(knowledge[0].name, "0035_foreign_key_relations_state");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -103,7 +106,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		40
+		50
 	);
 	let tables = migrations
 		.iter()
@@ -341,14 +344,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0046_policy_probe")
+		.get_migration("execution", "0050_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0045_decision_routes_state".to_owned()
+			"0049_foreign_key_relations_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -443,14 +446,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0010_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0011_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0009_tenant_owned_row_level_security".to_owned()
+			"0010_foreign_key_relations_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -643,7 +646,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		40
+		50
 	);
 }
 
@@ -2261,7 +2264,7 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0042_agent_plugin_settings")
+			.find(|m| m.app_label == "registry" && m.name == "0045_agent_plugin_settings")
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -2339,7 +2342,7 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 		.unwrap_err();
 	assert!(
 		error.to_string().contains(
-			"registry 0042_agent_plugin_settings cannot be reversed: Agent definitions declare agent_plugin_settings"
+			"registry 0045_agent_plugin_settings cannot be reversed: Agent definitions declare agent_plugin_settings"
 		),
 		"{error}"
 	);

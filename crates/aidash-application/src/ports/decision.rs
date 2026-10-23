@@ -204,12 +204,22 @@ pub trait DecisionJournal: Send + Sync {
 		context: Option<&Context>,
 		state: Option<&RetainedState>,
 	) -> Result<()>;
+	/// Records one approval decision (ADR 0077) after it replays: the evidence is
+	/// valid, its Boundary names the current lease and the verdict follows from
+	/// its answers. An approval decision changes no context and retains no state.
+	/// Its identity commits to the approval, the Decider, the Route and the state,
+	/// not to the worker, so judging again after a crash reproduces it: a
+	/// decision whose identity is already recorded keeps the earlier record and
+	/// succeeds. Revocation of the Decider must still allow recording a decision
+	/// without a verdict. Recovery of a committed approval decision must keep
+	/// returning its charged attempts, so judging again reuses their answers.
+	async fn commit_approval(&self, evidence: &ApprovalEvidence) -> Result<()>;
 	/// Retention cleanup deletes state bytes and atomically leaves an expired marker.
 	async fn expire_states(&self, now: DateTime<Utc>) -> Result<usize>;
 	async fn append_outcome(&self, outcome: &OutcomeLink) -> Result<()>;
 }
 
-/// The compaction Decider bound to one Run and the Node adapters that serve its
+/// The Decider of one hook bound to one Run and the Node adapters that serve its
 /// decisions during one step.
 pub struct DecisionPorts<'a> {
 	pub decider: BoundDecider,

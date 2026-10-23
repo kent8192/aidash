@@ -135,7 +135,7 @@ fn configure(f: &mut Federation, endpoint: &str) {
 	let config: GcipConfig = serde_json::from_value(json!({
 		"project_id": "fixture-project",
 		"web_api_key": "public-key",
-		"public_origin": "http://127.0.0.1:8080",
+		"public_origin": "https://127.0.0.1:8080",
 		"tenant_bindings": {"pool-a": "acme", "pool-b": "other"},
 		"mfa_mandatory": ["pool-b"],
 		"sign_in_domains": {"acme.example": "pool-a", "xn--bcher-kva.example": "pool-b"},
@@ -209,7 +209,7 @@ async fn transaction(app: &common::TestApplication, pool: &str) -> (String, Stri
 	let response = discover(
 		app,
 		&format!("email=person%40{domain}&return_to=%2Fsettings"),
-		Some("http://127.0.0.1:8080"),
+		Some("https://127.0.0.1:8080"),
 	)
 	.await;
 	assert_eq!(response.status(), 303);
@@ -268,7 +268,7 @@ async fn sign_in_as(
 		&state,
 		&cookie,
 		&signed_token(pool, uid, name, Utc::now().timestamp(), "password"),
-		"http://127.0.0.1:8080",
+		"https://127.0.0.1:8080",
 	)
 	.await;
 	let status = response.status();
@@ -338,7 +338,7 @@ async fn sign_in_domain_routes_to_its_pool_and_unknown_inputs_are_indistinguisha
 		},
 	)
 	.await;
-	const ORIGIN: &str = "http://127.0.0.1:8080";
+	const ORIGIN: &str = "https://127.0.0.1:8080";
 	for (body, pool) in [
 		("email=Alice%40ACME.example&return_to=%2Fsettings", "pool-a"),
 		(
@@ -443,7 +443,7 @@ async fn discovery_has_its_own_rate_budget(
 		},
 	)
 	.await;
-	let origin = Some("http://127.0.0.1:8080");
+	let origin = Some("https://127.0.0.1:8080");
 	assert_eq!(
 		discover(&app, "email=a%40unmapped.example", origin)
 			.await
@@ -519,7 +519,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 				&state,
 				&cookie,
 				&token_with_provider("pool-a", "Person", Utc::now().timestamp(), provider),
-				"http://127.0.0.1:8080"
+				"https://127.0.0.1:8080"
 			)
 			.await
 			.status(),
@@ -536,7 +536,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 				&state,
 				&cookie,
 				&token_with_provider("pool-a", "Person", Utc::now().timestamp(), provider),
-				"http://127.0.0.1:8080"
+				"https://127.0.0.1:8080"
 			)
 			.await
 			.status(),
@@ -556,7 +556,7 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 			&state,
 			&cookie,
 			&token_with_provider("pool-a", "Person", Utc::now().timestamp(), "saml.company"),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -603,15 +603,15 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 			403,
 		),
 		(
-			"aidash-login=wrong",
+			"__Host-aidash-login=wrong",
 			valid.as_str(),
-			"http://127.0.0.1:8080",
+			"https://127.0.0.1:8080",
 			401,
 		),
 		(
 			cookie.as_str(),
 			"invalid-token",
-			"http://127.0.0.1:8080",
+			"https://127.0.0.1:8080",
 			401,
 		),
 	] {
@@ -624,7 +624,7 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 		token("pool-a", "Person", 1),
 	] {
 		assert_eq!(
-			exchange(&app, &state, &cookie, &invalid, "http://127.0.0.1:8080")
+			exchange(&app, &state, &cookie, &invalid, "https://127.0.0.1:8080")
 				.await
 				.status(),
 			401
@@ -644,20 +644,20 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 			"missing-transaction",
 			&cookie,
 			&valid,
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
 		401
 	);
 	assert_eq!(
-		exchange(&app, &state, &cookie, &valid, "http://127.0.0.1:8080")
+		exchange(&app, &state, &cookie, &valid, "https://127.0.0.1:8080")
 			.await
 			.status(),
 		200
 	);
 	assert_eq!(
-		exchange(&app, &state, &cookie, &valid, "http://127.0.0.1:8080")
+		exchange(&app, &state, &cookie, &valid, "https://127.0.0.1:8080")
 			.await
 			.status(),
 		401
@@ -675,7 +675,7 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 		.await
 		.unwrap();
 	assert_eq!(
-		exchange(&app, &state, &cookie, &valid, "http://127.0.0.1:8080")
+		exchange(&app, &state, &cookie, &valid, "https://127.0.0.1:8080")
 			.await
 			.status(),
 		401
@@ -701,7 +701,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 	let registrations = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", &csrf)
 		.send()
 		.await
@@ -846,7 +846,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 			&state,
 			&bound,
 			&token("pool-a", "Denied", Utc::now().timestamp()),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -885,7 +885,7 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 	let authorization = start["authorization_url"]
 		.as_str()
 		.unwrap()
-		.strip_prefix("http://127.0.0.1:8080")
+		.strip_prefix("https://127.0.0.1:8080")
 		.unwrap();
 	let consent = browser()
 		.get(app.url(authorization))
@@ -898,7 +898,7 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 	let approve = browser()
 		.post(app.url("/auth/desktop/authorize"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.form(&[("request", request), ("csrf", csrf.as_str())])
 		.send()
 		.await
@@ -982,7 +982,7 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 		let response = browser()
 			.post(app.url("/auth/registration"))
 			.header("cookie", cookie)
-			.header("origin", "http://127.0.0.1:8080")
+			.header("origin", "https://127.0.0.1:8080")
 			.header("x-aidash-csrf", csrf)
 			.send()
 			.await
@@ -1014,7 +1014,7 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 				Utc::now().timestamp(),
 				"password"
 			),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -1184,7 +1184,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -1246,7 +1246,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 			&state,
 			&cookie,
 			"invalid-token",
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -1268,7 +1268,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 				&state,
 				&cookie,
 				&token("pool-a", "Person", Utc::now().timestamp()),
-				"http://127.0.0.1:8080"
+				"https://127.0.0.1:8080"
 			)
 			.await
 			.status(),
@@ -1361,7 +1361,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 			&state,
 			&cookie,
 			&token("pool-a", "Person", Utc::now().timestamp()),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -1399,7 +1399,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -1529,7 +1529,7 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 	let previous: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -1564,7 +1564,7 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 	let replacement = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -1633,7 +1633,7 @@ async fn expired_registration_clears_unmapped_display_attributes(
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -1787,7 +1787,7 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 	let submitted = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -1902,7 +1902,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -2028,7 +2028,7 @@ async fn rejected_sign_in_of_a_disabled_identity_records_no_display_attributes(
 		&state,
 		&cookie,
 		&token("pool-a", "Again", Utc::now().timestamp()),
-		"http://127.0.0.1:8080",
+		"https://127.0.0.1:8080",
 	)
 	.await;
 	assert_eq!(rejected.status(), 403);
@@ -2086,7 +2086,7 @@ async fn bearer_deployment_administrator_rejects_a_request_after_dashboard_sign_
 	let registration: Value = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -2150,7 +2150,7 @@ async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retenti
 		&state,
 		&cookie,
 		&token("pool-a", "Again", Utc::now().timestamp()),
-		"http://127.0.0.1:8080",
+		"https://127.0.0.1:8080",
 	)
 	.await;
 	assert_eq!(rejected.status(), 403);
@@ -2194,7 +2194,7 @@ impl Browser {
 		browser()
 			.request(method, app.url(path))
 			.header("cookie", &self.cookie)
-			.header("origin", "http://127.0.0.1:8080")
+			.header("origin", "https://127.0.0.1:8080")
 			.header("x-aidash-csrf", &self.csrf)
 			.header("x-aidash-context", &self.context)
 	}
@@ -2204,7 +2204,7 @@ async fn register(app: &common::TestApplication, cookie: &str, csrf: &str) -> Va
 	let response = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", csrf)
 		.send()
 		.await
@@ -2275,7 +2275,7 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
 			"resources": {"kinds": [
 				"registration", "mapping", "subject", "invitation", "policy", "decision",
-				"credential", "peer_mapping", "test_limits", "test_profile"
+				"credential", "peer_mapping", "test_limits", "test_profile", "secret"
 			]},
 			"condition": null
 		}, {
@@ -2981,7 +2981,7 @@ async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are
 		second_factor_token("pool-a", "person", "Person", now),
 	] {
 		let (state, cookie) = transaction(&app, "pool-a").await;
-		let response = exchange(&app, &state, &cookie, &token, "http://127.0.0.1:8080").await;
+		let response = exchange(&app, &state, &cookie, &token, "https://127.0.0.1:8080").await;
 		assert_eq!(response.status(), 200);
 		let session = response
 			.headers()
@@ -3062,14 +3062,14 @@ async fn signing_in_again_from_a_session_reenters_through_its_own_gcip_tenant(
 	let now = Utc::now().timestamp();
 	let other = token("pool-a", "Person", now);
 	assert_eq!(
-		exchange(&app, &state, &cookie, &other, "http://127.0.0.1:8080")
+		exchange(&app, &state, &cookie, &other, "https://127.0.0.1:8080")
 			.await
 			.status(),
 		401
 	);
 	let same = token("pool-b", "Person", now);
 	assert_eq!(
-		exchange(&app, &state, &cookie, &same, "http://127.0.0.1:8080")
+		exchange(&app, &state, &cookie, &same, "https://127.0.0.1:8080")
 			.await
 			.status(),
 		200
@@ -3119,7 +3119,7 @@ async fn removing_the_gcip_sign_in_refuses_its_identities_durable_credentials(
 	let issued = browser()
 		.post(app.url("/api/authorization/acme/credentials"))
 		.header("cookie", &member.cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", &member.csrf)
 		.header("x-aidash-context", &member.context)
 		.json(&json!({"subject": "alice", "expires_in_seconds": 3600}))
@@ -3191,7 +3191,7 @@ async fn the_shared_pool_signs_in_every_unrouted_address_under_the_tenancy_rules
 		"email=alice%40unmapped.example&return_to=%2Fsettings",
 		"email=not-an-email&return_to=%2Fsettings",
 	] {
-		let response = discover(&app, body, Some("http://127.0.0.1:8080")).await;
+		let response = discover(&app, body, Some("https://127.0.0.1:8080")).await;
 		assert_eq!(response.status(), 303, "{body}");
 		let state = response.headers()["location"]
 			.to_str()
@@ -3293,7 +3293,7 @@ async fn an_identity_whose_pool_changes_between_shared_and_bound_waits_for_a_res
 			&state,
 			&cookie,
 			&signed_token("pool-s", "moving", "Moving", now, "password"),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -3307,7 +3307,7 @@ async fn an_identity_whose_pool_changes_between_shared_and_bound_waits_for_a_res
 			&state,
 			&cookie,
 			&signed_token("pool-s", "moving", "Moving", now, "password"),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -3360,7 +3360,7 @@ async fn a_gcip_tenant_neither_shared_nor_bound_admits_nobody(
 		discover(
 			&unshared,
 			"email=alice%40unmapped.example",
-			Some("http://127.0.0.1:8080")
+			Some("https://127.0.0.1:8080")
 		)
 		.await
 		.headers()["location"],
@@ -3378,7 +3378,7 @@ async fn a_gcip_tenant_neither_shared_nor_bound_admits_nobody(
 				Utc::now().timestamp(),
 				"password"
 			),
-			"http://127.0.0.1:8080"
+			"https://127.0.0.1:8080"
 		)
 		.await
 		.status(),
@@ -3464,7 +3464,7 @@ async fn startup_refuses_a_binding_to_a_missing_or_personal_tenant_and_keeps_a_d
 		&state,
 		&cookie,
 		&token("pool-b", "Person", Utc::now().timestamp()),
-		"http://127.0.0.1:8080",
+		"https://127.0.0.1:8080",
 	)
 	.await;
 	assert_eq!(refused.status(), 410);
@@ -3499,7 +3499,7 @@ async fn a_bound_tenants_administrators_decide_a_shared_pool_identitys_invitatio
 	let redeemed = browser()
 		.post(app.url("/auth/invitations/redeem"))
 		.header("cookie", &cookie)
-		.header("origin", "http://127.0.0.1:8080")
+		.header("origin", "https://127.0.0.1:8080")
 		.header("x-aidash-csrf", &csrf)
 		.json(&json!({"tenant": "acme", "secret": invitation["secret"]}))
 		.send()

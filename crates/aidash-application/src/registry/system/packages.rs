@@ -13,12 +13,7 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	("shell", &["shell", "shell_poll", "shell_cancel"]),
 	(
 		"python",
-		&[
-			"code_interpreter",
-			"python_install",
-			"python_poll",
-			"python_cancel",
-		],
+		&["code_interpreter", "python_poll", "python_cancel"],
 	),
 	("outbound_get", &["outbound_get"]),
 	("apply_patch", &["apply_patch"]),
@@ -154,7 +149,12 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 		binding_normalization: None,
 		installation: None,
 		id: format!("aidash.bundle.{name}"),
-		version: "1.0.0".into(),
+		version: if matches!(name, "research_page" | "research_fixture") {
+			"1.1.0"
+		} else {
+			"1.0.0"
+		}
+		.into(),
 		kind: "bundle".into(),
 		name: BTreeMap::from([("en".into(), format!("Aidash {name}"))]),
 		description: BTreeMap::from([("en".into(), format!("Node-provided {name} operations"))]),

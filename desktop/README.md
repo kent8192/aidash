@@ -28,13 +28,16 @@ build is not a signed production release. Automatic updates are not installed.
 Add a named connection using the server's configured dashboard `public_origin`, including
 its port. Only origin URLs are accepted: no path, credentials, query or fragment.
 Remote servers require HTTPS; HTTP is permitted for `localhost` and `127.0.0.1`.
+Loopback HTTP connections are interactive-only: they keep the short-lived access
+token in memory but never load, store or send a refresh credential. They therefore
+require another browser sign-in after a connection change, token expiry or restart.
 HTTP IPv6 literals such as `http://[::1]:8080` are rejected because WebView CSP
 host-sources cannot allow them. For an IPv6-only local server, use
 `http://localhost:<port>` or an HTTPS origin with a valid certificate; alternatively
 configure the server to listen on `127.0.0.1`. The client validates TLS
 certificates and rejects redirects on API/auth requests. Reverse proxies must
 serve the API and `/auth` at that same origin.
-Multiple profiles retain separate logins; only one profile is active.
+Multiple HTTPS profiles retain separate logins; only one profile is active.
 
 ## Authentication and persistence
 
@@ -67,9 +70,12 @@ The code is bound to the initiating browser session, server origin, callback and
 PKCE verifier. The desktop receives only Aidash credentials. The Google client secret remains on the server.
 There is no embedded WebView login and no custom-protocol callback registration.
 
-The native process stores the Aidash refresh credential in macOS Keychain,
-Windows Credential Manager or Linux persistent Secret Service. Namespaces include
-the application, development/production build, profile UUID and normalized origin.
+For HTTPS profiles, the native process stores the Aidash refresh credential in
+macOS Keychain, Windows Credential Manager or Linux persistent Secret Service.
+Namespaces include the application, development/production build, profile UUID
+and normalized origin. Loopback HTTP profiles discard the refresh credential
+returned by interactive sign-in and purge any entry retained by an older client
+without reading it.
 Linux needs an unlocked persistent Secret Service, such as GNOME Keyring; a
 session-only kernel keyring and plaintext fallback are deliberately unsupported.
 A locked/unavailable store reports an unlock/retry error and preserves its data.
@@ -78,7 +84,7 @@ Connection metadata alone is saved in the application configuration directory.
 Short-lived access tokens cross the narrow native authentication interface and
 exist only in memory. They are sent as explicit Bearer headers by `transport.ts`;
 Web cookies are omitted. Refresh credentials never enter renderer storage, IPC
-responses, logs or URLs. Each refresh records a proposed successor in the OS
+responses, logs, URLs or plaintext requests. Each HTTPS refresh records a proposed successor in the OS
 store **before** sending it. Retrying the identical old/new pair recovers a lost
 response. A used credential with a different successor, or reuse after its
 successor has rotated, revokes the entire desktop session family. Requests are
@@ -101,6 +107,9 @@ first. Logout/removal requires the server and OS store to be available; failure
 preserves the profile for retry. Google's account-level revocation limitations
 are unchanged from the Web edition. Local identity, mapping, grant, policy and
 session revocations remain authoritative at protected HTTP/SSE boundaries.
+For a loopback HTTP profile, logout and removal clear local access without sending
+a refresh credential; the client-discarded server-side refresh family expires under
+the same idle and absolute limits.
 
 ## Boundaries
 
@@ -150,8 +159,8 @@ The form policy permits only the current handoff's validated callback origin,
 including its exact port, alongside `'self'`. Both browser regressions run in
 the Desktop workflow. The consent document uses a `same-origin` referrer policy
 so the form POST retains its Origin for CSRF validation; no referrer is sent to
-the callback. The Linux native smoke uses actual IPC, HTTP, WebKitGTK, OS secret
-storage and process restarts. It exercises browser handoff against a deterministic
+the callback. The Linux native smoke uses actual IPC, HTTP, WebKitGTK, OS
+secret-store cleanup and process restarts. It exercises browser handoff against a deterministic
 broker fixture, not Google's live service. `desktop/artifacts/` contains its JSON
 report and a Graph screenshot. The fixture reuses the Web Graph test scene.
 The container disables WebKit's sandbox only for the root/Xvfb test environment;
@@ -168,8 +177,8 @@ The Desktop workflow runs the same WebdriverIO + `@wdio/tauri-service` acceptanc
 suite on standard `ubuntu-24.04`, `windows-2022` and `macos-15` runners. Linux and
 macOS use the [embedded WebDriver provider](https://v2.tauri.app/develop/tests/webdriver/);
 Windows uses the service's external `tauri-driver` provider with a matching Edge
-WebDriver. All exercise real WebKitGTK, WebView2 or WKWebView, IPC, HTTP/SSE and OS
-credential storage. No paid driver subscription is needed. The service can install
+WebDriver. All exercise real WebKitGTK, WebView2 or WKWebView, IPC, HTTP/SSE and the
+interactive-only credential policy for loopback HTTP. No paid driver subscription is needed. The service can install
 the Windows drivers automatically; CI installs a pinned `tauri-driver` first.
 
 The Windows provider is a compatibility workaround: `tauri-plugin-wdio-webdriver`
@@ -199,10 +208,13 @@ credential namespace and random profile IDs, then remove their test credentials.
 
 The tests cover startup, unsafe-origin rejection, fixture broker handoff, Graph
 canvas/labels/fit, connection changes, SSE resume/reset, cookie omission, denied
-navigation/opener IPC, persistent login and logout. Three sequential WDIO
-launchers start distinct native processes, verified by PID, while retaining the
-same profiles and OS store. Each phase has a four-minute process timeout and no
-automatic test retries. Failure cleanup stops the app and removes test credentials.
+navigation/opener IPC, and the absence of refresh/revoke requests across profile
+changes and restarts. Three sequential WDIO launchers start distinct native
+processes, verified by a fresh UUID for each launch, while retaining the same
+profile metadata. PIDs are retained for cleanup and diagnostics because an OS
+may reuse a PID after a process exits. Each phase
+has a four-minute process timeout and no automatic test retries. Failure cleanup
+stops the app and removes any legacy test credentials.
 Screenshots and a JSON result are written to `desktop/artifacts/wdio/<platform>`.
 
 Google and the OS default-browser launcher are outside this deterministic suite:

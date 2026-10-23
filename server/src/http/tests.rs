@@ -186,6 +186,28 @@ fn every_response_cookie_is_redacted_without_changing_its_wire_value(#[case] pri
 	assert!(!response.headers[header::LOCATION].is_sensitive());
 }
 
+#[test]
+fn every_response_rejects_framing_without_replacing_its_content_policy() {
+	// Arrange: endpoint-specific CSP directives must remain enforced alongside
+	// the application-wide anti-framing policy.
+	let response = Response::ok().with_header("Content-Security-Policy", "default-src 'none'");
+
+	// Act
+	let response = private_response(response, "00000000-0000-0000-0000-000000000000", false);
+
+	// Assert
+	assert_eq!(
+		response
+			.headers
+			.get_all("content-security-policy")
+			.iter()
+			.map(|value| value.to_str().unwrap())
+			.collect::<Vec<_>>(),
+		["default-src 'none'", "frame-ancestors 'none'"]
+	);
+	assert_eq!(response.headers["x-frame-options"], "DENY");
+}
+
 #[rstest]
 fn every_request_credential_field_is_redacted() {
 	let names = ["authorization", "cookie", "x-aidash-csrf"];

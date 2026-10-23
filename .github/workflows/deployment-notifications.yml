@@ -28,18 +28,46 @@ jobs:
       contents: read
       actions: read
     outputs:
-      trusted: ${{ steps.trusted.outputs.sha }}
+      # One protected-branch commit per tier, pinned for the whole run. Receipts
+      # of staging come from the automation branch; production stays on main.
+      trusted: ${{ steps.trusted.outputs.nonproduction }}
+      production: ${{ steps.trusted.outputs.production }}
     steps:
+      - id: trusted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATION_BRANCH: ${{ github.event.repository.default_branch }}
+          PRODUCTION_ENABLED: ${{ vars.GCP_PRODUCTION_ENABLED }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from urllib.parse import quote
+
+          def pin(branch):
+              reply = subprocess.run(
+                  ['gh', 'api', 'repos/' + os.environ['GITHUB_REPOSITORY'] + '/branches/' + quote(branch, safe='')],
+                  check=True, capture_output=True, text=True,
+              ).stdout
+              value = json.loads(reply)
+              sha = value['commit']['sha']
+              if not value.get('protected') or not re.fullmatch('[a-f0-9]{40}', sha):
+                  raise SystemExit('Notification code anchors must be protected branches')
+              return sha
+
+          lines = ['nonproduction=' + pin(os.environ['AUTOMATION_BRANCH'])]
+          if os.environ['PRODUCTION_ENABLED'] == 'true':
+              lines.append('production=' + pin('main'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('\n'.join(lines) + '\n')
+          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/heads/main
+          ref: ${{ steps.trusted.outputs.nonproduction }}
           persist-credentials: false
       - name: Verify the trusted deployment trigger
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 infra/gcp/control/notifications.py preflight
-      - id: trusted
-        run: printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   nonproduction:
     needs: intake
@@ -86,7 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.intake.outputs.trusted }}
+          ref: ${{ needs.intake.outputs.production }}
           persist-credentials: false
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:

@@ -168,7 +168,7 @@ impl DashboardRegistrationRequest {
 		}
 		let registration = Self::build()
 			.id(Uuid::new_v4())
-			.identity_id(identity)
+			.identity(identity)
 			.status("pending".to_owned())
 			.created_at(now)
 			.expires_at(now + Duration::days(7))
@@ -252,7 +252,7 @@ impl DashboardRegistrationRequest {
 			}
 			let registration = Self::build()
 				.id(Uuid::new_v4())
-				.identity_id(identity)
+				.identity(identity)
 				.status("pending".to_owned())
 				.created_at(now)
 				.expires_at(now + Duration::days(7))
@@ -367,40 +367,15 @@ impl DashboardRegistrationRequest {
 			)?;
 			let mut snapshot = match snapshot.take() {
 				Some(snapshot) => snapshot,
+				// An invited person who was mapped before may rejoin, which rewrites
+				// the policy too.
 				None => {
-					// QuerySet currently exposes FOR UPDATE only. This shared policy lock
-					// allows other admissions while excluding policy replacement.
-					let (sql, values) = Query::select()
-						.column(Alias::new("revision"))
-						.expr_as(
-							Expr::col(Alias::new("document")).cast_as("text"),
-							Alias::new("document"),
-						)
-						.from(Alias::new(AuthorizationBundle::table_name()))
-						.and_where(
-							Expr::col(Alias::new("tenant"))
-								.eq(reinhardt::query::Expr::value(input.tenant.clone())),
-						)
-						// An invited person who was mapped before may rejoin,
-						// which rewrites the policy too.
-						.lock(
-							if input.groups.is_some() || preliminary.invitation_id.is_some() {
-								LockType::Update
-							} else {
-								LockType::Share
-							},
-						)
-						.build(PostgresQueryBuilder);
-					let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
-						.await?
-						.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
-					Snapshot {
-						revision: row.get("revision").map_err(FrameworkError::from)?,
-						bundle: serde_json::from_str(
-							&row.get::<String>("document")
-								.map_err(FrameworkError::from)?,
-						)?,
-					}
+					let lock = if input.groups.is_some() || preliminary.invitation_id.is_some() {
+						LockType::Update
+					} else {
+						LockType::Share
+					};
+					lock_policy(tx, &input.tenant, lock).await?
 				}
 			};
 			// Nobody joins a deleted Tenant, a Deployment Administrator included.
@@ -550,85 +525,17 @@ impl DashboardRegistrationRequest {
 				)
 				.await?;
 			}
-			dashboard_rules::require_user_mapping(&snapshot, &input.subject)?;
-			crate::apps::identity::repositories::plan_connections::refuse_shared_holder(
+			let identity_id = registration.identity_id();
+			let mapping_id = issue_mapping(
 				tx,
+				&snapshot,
 				&input.tenant,
 				&input.subject,
+				identity_id,
+				token_hash,
+				now,
 			)
 			.await?;
-			// The secret never leaves the service; this record anchors a policy
-			// lease and cannot be used as a bearer credential.
-			let credential = AuthorizationCredential::build()
-				.id(Uuid::new_v4())
-				.tenant(input.tenant.clone())
-				.subject(input.subject.clone())
-				.token_hash(token_hash)
-				.created_at(now)
-				.expires_at(now + Duration::days(3650))
-				.revoked_at(None)
-				.issued_by("dashboard-oidc".to_owned())
-				.mapping_id(None)
-				.finish();
-			AuthorizationCredential::objects()
-				.create_with_conn(tx, &credential)
-				.await?;
-			let identity_id = registration.identity_id();
-			let existing = DashboardMapping::objects()
-				.filter(DashboardMapping::field_identity_id().eq(identity_id))
-				.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
-				.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
-				.all_with_db(tx)
-				.await?
-				.pop();
-			let mapping_id = if let Some(mapping) = existing {
-				if mapping.enabled {
-					return Err(Error::Conflict("identity already has this mapping".into()));
-				}
-				let assignments: Vec<FieldAssignment> = vec![
-					(DashboardMapping::field_credential_id(), credential.id).into(),
-					(DashboardMapping::field_enabled(), true).into(),
-					(
-						DashboardMapping::field_revision(),
-						dashboard_rules::next_revision(mapping.revision)?,
-					)
-						.into(),
-				];
-				DashboardMapping::objects()
-					.filter(DashboardMapping::field_id().eq(mapping.id))
-					.update_fields_with_conn(tx, assignments)
-					.await?;
-				mapping.id
-			} else {
-				// Preserve a conflict result for concurrent approvals for the same
-				// identity, including approvals of different registration records.
-				let id = Uuid::new_v4();
-				let (sql, values) = Query::insert()
-					.into_table(Alias::new(DashboardMapping::table_name()))
-					.columns(
-						["id", "identity_id", "tenant", "subject", "credential_id"].map(Alias::new),
-					)
-					.values_panic([
-						IntoValue::into_value(id),
-						IntoValue::into_value(identity_id),
-						IntoValue::into_value(input.tenant.clone()),
-						IntoValue::into_value(input.subject.clone()),
-						IntoValue::into_value(credential.id),
-					])
-					.on_conflict(
-						OnConflict::columns(["identity_id", "tenant", "subject"])
-							.do_nothing()
-							.to_owned(),
-					)
-					.build(PostgresQueryBuilder);
-				if TransactionExecutor::execute(tx, &sql, convert_values(values))
-					.await?
-					.rows_affected != 1
-				{
-					return Err(Error::Conflict("identity already has this mapping".into()));
-				}
-				id
-			};
 			registration.status = "approved".into();
 			registration.decided_at = Some(now);
 			registration.decision_actor = Some(actor.decision_actor());
@@ -743,6 +650,130 @@ impl DashboardRegistrationRequest {
 		DashboardIdentity::enforce_identity_retention(db, identity, idle_seconds).await?;
 		Ok(registration)
 	}
+}
+
+/// Locks `tenant`'s policy and reads it. A shared lock admits other Mappings
+/// while excluding a policy replacement. (QuerySet currently exposes FOR UPDATE
+/// only.)
+pub(super) async fn lock_policy(
+	tx: &mut AtomicTransaction,
+	tenant: &str,
+	lock: LockType,
+) -> Result<Snapshot> {
+	let (sql, values) = Query::select()
+		.column(Alias::new("revision"))
+		.expr_as(
+			Expr::col(Alias::new("document")).cast_as("text"),
+			Alias::new("document"),
+		)
+		.from(Alias::new(AuthorizationBundle::table_name()))
+		.and_where(
+			Expr::col(Alias::new("tenant")).eq(reinhardt::query::Expr::value(tenant.to_owned())),
+		)
+		.lock(lock)
+		.build(PostgresQueryBuilder);
+	let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
+		.await?
+		.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
+	Ok(Snapshot {
+		revision: row.get("revision").map_err(FrameworkError::from)?,
+		bundle: serde_json::from_str(
+			&row.get::<String>("document")
+				.map_err(FrameworkError::from)?,
+		)?,
+	})
+}
+
+/// Maps `identity_id` to the user `subject` of `tenant`: it issues the
+/// credential that anchors a policy lease and inserts the Mapping, or
+/// re-enables the identity's disabled one. Approval and Demo Reservations
+/// share it, each after its own authority checks, in the Tenant's scope and
+/// under the policy and identity locks.
+pub(super) async fn issue_mapping(
+	tx: &mut AtomicTransaction,
+	snapshot: &Snapshot,
+	tenant: &str,
+	subject: &str,
+	identity_id: Uuid,
+	token_hash: Vec<u8>,
+	now: DateTime<Utc>,
+) -> Result<Uuid> {
+	dashboard_rules::require_user_mapping(snapshot, subject)?;
+	crate::apps::identity::repositories::plan_connections::refuse_shared_holder(
+		tx, tenant, subject,
+	)
+	.await?;
+	// The secret never leaves the service; this record anchors a policy
+	// lease and cannot be used as a bearer credential.
+	let credential = AuthorizationCredential::build()
+		.id(Uuid::new_v4())
+		.tenant(tenant.to_owned())
+		.subject(subject.to_owned())
+		.token_hash(token_hash)
+		.created_at(now)
+		.expires_at(now + Duration::days(3650))
+		.revoked_at(None)
+		.issued_by("dashboard-oidc".to_owned())
+		.mapping_id(None)
+		.finish();
+	AuthorizationCredential::objects()
+		.create_with_conn(tx, &credential)
+		.await?;
+	let existing = DashboardMapping::objects()
+		.filter(DashboardMapping::field_identity_id().eq(identity_id))
+		.filter(DashboardMapping::field_tenant().eq(tenant.to_owned()))
+		.filter(DashboardMapping::field_subject().eq(subject.to_owned()))
+		.all_with_db(tx)
+		.await?
+		.pop();
+	let mapping_id = if let Some(mapping) = existing {
+		if mapping.enabled {
+			return Err(Error::Conflict("identity already has this mapping".into()));
+		}
+		let assignments: Vec<FieldAssignment> = vec![
+			(DashboardMapping::field_credential_id(), credential.id).into(),
+			(DashboardMapping::field_enabled(), true).into(),
+			(
+				DashboardMapping::field_revision(),
+				dashboard_rules::next_revision(mapping.revision)?,
+			)
+				.into(),
+		];
+		DashboardMapping::objects()
+			.filter(DashboardMapping::field_id().eq(mapping.id))
+			.update_fields_with_conn(tx, assignments)
+			.await?;
+		mapping.id
+	} else {
+		// Preserve a conflict result for concurrent approvals for the same
+		// identity, including approvals of different registration records.
+		let id = Uuid::new_v4();
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new(DashboardMapping::table_name()))
+			.columns(["id", "identity_id", "tenant", "subject", "credential_id"].map(Alias::new))
+			.values_panic([
+				IntoValue::into_value(id),
+				IntoValue::into_value(identity_id),
+				IntoValue::into_value(tenant.to_owned()),
+				IntoValue::into_value(subject.to_owned()),
+				IntoValue::into_value(credential.id),
+			])
+			.on_conflict(
+				OnConflict::columns(["identity_id", "tenant", "subject"])
+					.do_nothing()
+					.to_owned(),
+			)
+			.build(PostgresQueryBuilder);
+		if TransactionExecutor::execute(tx, &sql, convert_values(values))
+			.await?
+			.rows_affected
+			!= 1
+		{
+			return Err(Error::Conflict("identity already has this mapping".into()));
+		}
+		id
+	};
+	Ok(mapping_id)
 }
 
 /// A Tenant Administrator sees only Registration Requests addressed to its

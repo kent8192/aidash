@@ -20,6 +20,7 @@ impl RealDispatchRepository for Repository {
 			tenant_actions: self.tenant_actions.clone(),
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
+			tenant_secrets: self.store.tenant_secrets.clone(),
 		}))
 	}
 }
@@ -52,6 +53,20 @@ impl RealDispatchScope for Scope {
 		AgentTestSession::calls(&mut self.tx, id, calls, running)
 			.await
 			.map_err(Into::into)
+	}
+	async fn tenant_secret(
+		&mut self,
+		tenant: &str,
+		name: &str,
+		endpoint: &str,
+	) -> Result<secrecy::SecretString> {
+		// A node without a Secret Store holds no Tenant Secret.
+		let Some(service) = &self.tenant_secrets else {
+			return Err(aidash_application::Error::Invalid(
+				aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+			));
+		};
+		service.resolve(tenant, name, endpoint).await
 	}
 	async fn rollback(self: Box<Self>) -> Result<()> {
 		Box::new(self.tx)

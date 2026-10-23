@@ -352,7 +352,11 @@ impl Row {
 			.get(name)
 			.ok_or_else(|| Error::Invalid(format!("missing projected column {name}")))?;
 		let sql_null = matches!(native, QueryValue::Null | QueryValue::Json(None));
-		let json = QueryRow::from_backend_row(self.0.clone()).data;
+		// Adapting the whole row here copies a Run's growing Context for every
+		// metadata field, even when no Context was requested.
+		let mut projected = reinhardt::db::backends::Row::new();
+		projected.insert(name.to_owned(), native.clone());
+		let json = QueryRow::from_backend_row(projected).data;
 		let mut json = json;
 		if let QueryValue::Bytes(bytes) = native {
 			json[name] = serde_json::to_value(bytes)?;
@@ -660,10 +664,13 @@ impl<T: DeserializeOwned> Query<'_, Scalar<T>> {
 
 #[macro_export]
 macro_rules! native_record {
-	($name:ident { $($field:ident),* $(,)? }) => {
+	($name:ident { $($field:ident),* $(,)? } $(relations { $($relation:ident),* $(,)? })?) => {
 		impl $crate::database::native::Decode for $name {
 			fn decode(row: &$crate::database::native::Row, _: &[&str]) -> $crate::Result<Self> {
-				Ok(Self { $($field: row.try_get(stringify!($field))?,)* })
+				Ok(Self {
+					$($field: row.try_get(stringify!($field))?,)*
+					$($($relation: ::reinhardt::db::associations::ForeignKeyField::new(),)*)?
+				})
 			}
 		}
 	};

@@ -4,10 +4,13 @@ export type LocatedRun = { run: Run; node: string };
 export const terminalRun = (run: Run) =>
   ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
 export const resumableRun = (run: Run) =>
-  !run.state_error ||
-  (run.phase === "WAITING" &&
-    run.state?.phase === "WAITING" &&
-    run.state.data.reason === "failure_delivery");
+  !["invalidated", "context_budget", "durable_memory_budget"].includes(
+    run.recovery?.semantic_reason ?? "",
+  ) &&
+  (!run.state_error ||
+    (run.phase === "WAITING" &&
+      run.state?.phase === "WAITING" &&
+      run.state.data.reason === "failure_delivery"));
 export function channelAgents(runs: LocatedRun[]) {
   const agents = new Map<string, LocatedRun>();
   for (const item of [...runs].sort((a, b) =>

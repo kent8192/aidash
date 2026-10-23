@@ -35,6 +35,7 @@ const fixtures = [];
 let env;
 let failed = false;
 const pids = [];
+const launchIds = [];
 function run(command, args, environment) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(command, args, {
@@ -97,7 +98,7 @@ try {
     TAURI_WEBDRIVER_PORT: String(port),
   };
   // Each launcher exits and terminates the native app before the next phase.
-  // Reloading a WebDriver session alone would not prove credential persistence.
+  // Reloading a WebDriver session alone would not prove that HTTP login is ephemeral.
   for (const phase of ["login", "restore", "logged-out"]) {
     try {
       await run(
@@ -113,11 +114,19 @@ try {
       await stopNative();
     }
     pids.push(Number(await readFile(resolve(state, "pid"), "utf8")));
+    const launchId = (
+      await readFile(resolve(state, "launch-id"), "utf8")
+    ).trim();
+    assert.match(
+      launchId,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    launchIds.push(launchId);
   }
   assert.equal(
-    new Set(pids).size,
+    new Set(launchIds).size,
     3,
-    "Persistence must cross distinct native processes",
+    "Restart policy must be checked across distinct native processes",
   );
 } catch (error) {
   failed = true;
@@ -140,6 +149,7 @@ try {
         platform: process.platform,
         arch: process.arch,
         nativePids: pids,
+        nativeLaunchIds: launchIds,
         liveGoogle: false,
         browserLauncher: "external fixture process",
         fixtures: fixtures.map((fixture) => fixture.stats),

@@ -1,11 +1,11 @@
 meta {
-  name: 1040 memory-participants - Paging rejects nonnumeric or malformed cursors
+  name: 1040 memory-participants - Typed resource IDs reject invalid UUIDs
   type: http
   seq: 1040
 }
 
 get {
-  url: {{base_url}}/api/workspaces/{{workspace_id}}/memory/participants?after=invalid
+  url: {{base_url}}/api/workspaces/not-a-uuid/memory/participants
   body: none
   auth: none
 }

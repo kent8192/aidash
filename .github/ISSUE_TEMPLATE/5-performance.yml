@@ -1,7 +1,7 @@
 name: Performance Issue
 description: Report a performance-related issue
 title: "[Performance]: <brief description>"
-labels: ["performance"]
+labels: ["bug"]
 body:
   - type: markdown
     attributes:

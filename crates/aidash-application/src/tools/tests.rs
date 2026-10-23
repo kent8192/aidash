@@ -112,11 +112,36 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		panic!("unexpected tool effect: skill_read_bytes")
 	}
+	async fn tenant_secret(&self, name: &str, endpoint: &str) -> Result<secrecy::SecretString> {
+		self.record("secret.resolve");
+		self.inputs
+			.lock()
+			.unwrap()
+			.push((format!("{name}@{endpoint}"), Value::Null));
+		if name == "missing" {
+			return Err(Error::Invalid(
+				aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+			));
+		}
+		Ok(secrecy::SecretString::from(
+			"tenant-secret-value".to_owned(),
+		))
+	}
 }
 #[async_trait]
 impl ToolTransport for Operations {
-	async fn invoke(&self, _config: &ToolConfig, input: Value, key: &str) -> Result<Value> {
-		self.record("transport.invoke");
+	async fn invoke(
+		&self,
+		_config: &ToolConfig,
+		input: Value,
+		key: &str,
+		secret: Option<&secrecy::SecretString>,
+	) -> Result<Value> {
+		self.record(if secret.is_some() {
+			"transport.invoke.with_secret"
+		} else {
+			"transport.invoke"
+		});
 		self.inputs
 			.lock()
 			.unwrap()
@@ -239,6 +264,7 @@ async fn schema_rejection_precedes_every_tool_effect(fixture: Fixture) {
 		ToolConfig::Http {
 			endpoint: "http://fixture.invalid".into(),
 			replay: "idempotent".into(),
+			secret: None,
 		},
 		json!({"type":"object","required":["name"]}),
 	);
@@ -454,5 +480,87 @@ async fn native_memory_model_tool_cannot_attest_claim_verification(
 	assert!(
 		fixture.operations.calls.lock().unwrap().is_empty(),
 		"reject before canonical mutation or admission"
+	);
+}
+
+fn secret_tool(secret: Option<&str>) -> Plugin {
+	plugin(
+		ToolConfig::Http {
+			endpoint: "https://api.example.com/run".into(),
+			replay: "idempotent".into(),
+			secret: secret.map(str::to_owned),
+		},
+		json!({"type":"object"}),
+	)
+}
+#[rstest]
+#[tokio::test]
+async fn a_tool_that_names_a_tenant_secret_sends_its_value_to_its_own_endpoint(fixture: Fixture) {
+	// Arrange
+	let tool = secret_tool(Some("search"));
+	// Act
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"key",
+		)
+		.await;
+	// Assert: the value is resolved for exactly that endpoint, then handed to the transport.
+	assert!(result.is_ok());
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["secret.resolve", "transport.invoke.with_secret"]
+	);
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].0,
+		"search@https://api.example.com/run"
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_tool_without_a_tenant_secret_resolves_none(fixture: Fixture) {
+	let result = secret_tool(None)
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"key",
+		)
+		.await;
+	assert!(result.is_ok());
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["transport.invoke"]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn an_unavailable_tenant_secret_fails_the_call_before_any_request(fixture: Fixture) {
+	let result = secret_tool(Some("missing"))
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"key",
+		)
+		.await;
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == "secret_unavailable"),
+		"{result:?}"
+	);
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["secret.resolve"]
 	);
 }

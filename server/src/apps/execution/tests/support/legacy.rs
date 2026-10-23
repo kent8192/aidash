@@ -14,6 +14,52 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
+/// Wait until database work is blocked by this fixture's lock, including a
+/// waiter queued behind another blocked transaction.
+#[allow(dead_code)] // Only concurrency regressions need a database lock barrier.
+pub async fn wait_for_blocked(pool: &aidash_server::database::native::Pool, pid: i32, count: i64) {
+	use aidash_application::tenancy::TEST_FIXTURE;
+	use reinhardt::query::{
+		Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	};
+	let query = Query::select()
+		.expr(Expr::cust("COUNT(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(SimpleExpr::CustomWithExpr(
+			"? = ANY(pg_blocking_pids(pid)) OR EXISTS (SELECT 1 FROM unnest(pg_blocking_pids(pid)) AS blocker WHERE ? = ANY(pg_blocking_pids(blocker)))".into(),
+			vec![Expr::value(pid).into(), Expr::value(pid).into()],
+		))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let blocked: i64 = pool
+				.atomic(&TEST_FIXTURE, async |tx| {
+					aidash_server::database::native::query_scalar(&query)
+						.scalar_one(tx)
+						.await
+				})
+				.await
+				.unwrap();
+			if blocked >= count {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the HTTP operation reached the fixture's database lock");
+}
+
+#[allow(dead_code)] // Browser-authentication suites seed current-format sessions directly.
+pub fn browser_session_digest(value: impl AsRef<[u8]>) -> Vec<u8> {
+	use sha2::Digest as _;
+
+	let mut digest = sha2::Sha256::new();
+	digest.update(b"aidash-browser-session-v2\0");
+	digest.update(value.as_ref());
+	digest.finalize().to_vec()
+}
+
 #[path = "environment.rs"]
 mod environment;
 #[allow(unused_imports)] // Only suites whose tests have hung use the whole-test backstop.
@@ -161,7 +207,16 @@ async fn bootstrap_with_resources(
 	semantic: bool,
 	files: bool,
 ) -> (Value, String, Uuid) {
-	bootstrap_with_policy(f, app, endpoint, semantic, files, policy(&f.config.node_id)).await
+	bootstrap_with_policy(
+		f,
+		app,
+		endpoint,
+		semantic,
+		files,
+		false,
+		policy(&f.config.node_id),
+	)
+	.await
 }
 /// Like [`bootstrap`], under a policy that grants no direct permission to call a
 /// Tenant's tool, so every such call waits for a Tool call approval.
@@ -173,7 +228,20 @@ pub async fn bootstrap_requiring_tool_call_approval(
 ) -> (Value, String, Uuid) {
 	let mut policy = policy(&f.config.node_id);
 	require_tool_call_approval(&mut policy);
-	bootstrap_with_policy(f, app, endpoint, false, false, policy).await
+	bootstrap_with_policy(f, app, endpoint, false, false, false, policy).await
+}
+/// Like [`bootstrap_requiring_tool_call_approval`], and the Agent also binds
+/// `http-read` as `plugin_1`: its version declares the one operation read-only,
+/// and the endpoint's `/read` route serves it. `plugin_0` still asks.
+#[allow(dead_code)]
+pub async fn bootstrap_with_read_only_tool(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	let mut policy = policy(&f.config.node_id);
+	require_tool_call_approval(&mut policy);
+	bootstrap_with_policy(f, app, endpoint, false, false, true, policy).await
 }
 /// Narrow `approved-work` so that no subject may call a Tenant's tool without a
 /// Tool call approval: agents keep every action, and users keep what members
@@ -254,6 +322,7 @@ async fn bootstrap_with_policy(
 	endpoint: &str,
 	semantic: bool,
 	files: bool,
+	read_only_tool: bool,
 	policy: Value,
 ) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
@@ -270,6 +339,9 @@ async fn bootstrap_with_policy(
 	let mut agent_bindings = vec![
 		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
+	if read_only_tool {
+		agent_bindings.push(json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
+	}
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
@@ -301,7 +373,7 @@ async fn bootstrap_with_policy(
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
 	f.store.keyless.permit_origin_of(endpoint).unwrap();
-	for (kind, id, config) in [
+	let mut definitions = vec![
 		(
 			"model",
 			"model",
@@ -317,7 +389,18 @@ async fn bootstrap_with_policy(
 			"research",
 			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
-	] {
+	];
+	if read_only_tool {
+		definitions.insert(
+			2,
+			(
+				"tool",
+				"http-read",
+				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
+			),
+		);
+	}
+	for (kind, id, config) in definitions {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		f.registry
 			.register(&tenant, serde_json::from_value(entry).unwrap())
@@ -480,6 +563,8 @@ pub struct RuntimeFixture {
 	pub federation: Federation,
 	pub url: String,
 	pub schema: String,
+	/// A native child process's port, retained through asynchronous fixture setup.
+	pub process_listener: Option<Arc<std::sync::Mutex<Option<std::net::TcpListener>>>>,
 	_database: Arc<ExecutionDatabase>,
 }
 
@@ -607,6 +692,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 					aidash_domain::offering::Offering::SelfHosted,
 				),
+				demo_data: false,
 				oidc: None,
 				sign_in: None,
 			},
@@ -617,6 +703,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			federation,
 			url: database.url.clone(),
 			schema: database.schema.clone(),
+			process_listener: None,
 			_database: database,
 		}
 	}

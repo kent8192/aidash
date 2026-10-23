@@ -508,6 +508,7 @@ async fn github_cli_receives_only_allowlisted_environment() {
 			"https://api.github.com/repos/fixture/project",
 			4096,
 			"application/json",
+			super::Refusal::Unauthorized,
 		)
 		.await
 		.unwrap()
@@ -541,4 +542,56 @@ printf '{"sentinel":"%s","master":"%s","fingerprint":"%s","host":"%s","token":"%
 		.status()
 		.unwrap();
 	assert!(status.success());
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[case::primary_limit(403, &[("x-ratelimit-remaining", "0")], "", Some(Refusal::RateLimited))]
+#[case::secondary_limit(403, &[("retry-after", "60")], "", Some(Refusal::RateLimited))]
+#[case::too_many(429, &[], "", Some(Refusal::RateLimited))]
+#[case::secondary_limit_without_headers(
+	403,
+	&[("x-ratelimit-remaining", "41")],
+	r#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#,
+	Some(Refusal::RateLimited)
+)]
+#[case::primary_limit_without_headers(
+	403,
+	&[],
+	r#"{"message":"API rate limit exceeded for 192.0.2.1."}"#,
+	Some(Refusal::RateLimited)
+)]
+#[case::forbidden(
+	403,
+	&[("x-ratelimit-remaining", "41")],
+	r#"{"message":"Resource not accessible by integration"}"#,
+	Some(Refusal::Unauthorized)
+)]
+#[case::unauthorized(401, &[], "", Some(Refusal::Unauthorized))]
+#[case::server_error(500, &[], "", None)]
+async fn github_refusals_name_their_cause(
+	#[case] status: u16,
+	#[case] headers: &[(&str, &str)],
+	#[case] body: &str,
+	#[case] expected: Option<Refusal>,
+) {
+	let mut response = axum::http::Response::builder().status(status);
+	for (name, value) in headers {
+		response = response.header(*name, *value);
+	}
+	let mut response = reqwest::Response::from(response.body(body.as_bytes().to_vec()).unwrap());
+	assert_eq!(Refusal::of(&mut response).await, expected);
+}
+
+#[rstest::rstest]
+fn missing_cli_reports_the_refusal_not_a_rate_limit() {
+	let message = Refusal::Unauthorized.without_cli().to_string();
+	assert!(message.contains("GitHub refused the request"), "{message}");
+	assert!(!message.contains("rate limit"), "{message}");
+	assert!(
+		Refusal::RateLimited
+			.without_cli()
+			.to_string()
+			.contains("GITHUB_TOKEN")
+	);
 }

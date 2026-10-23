@@ -29,6 +29,7 @@ import type {
 } from "../types";
 import { Badge, JsonView, useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
+import { answeredAtDeadline } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { threadCopy } from "./thread-copy";
@@ -147,6 +148,16 @@ function useDesktop() {
     },
     () => window.matchMedia(desktopQuery).matches,
   );
+}
+
+/** The system line for a question closed at its person's Answer Deadline. A
+ *  person's own answer gets no line of its own. */
+function deadlineLabel(event: MeshEvent, label: string) {
+  if (!answeredAtDeadline(event.data)) return undefined;
+  const { prompt } = event.data as { prompt?: unknown };
+  return typeof prompt === "string"
+    ? `${label}: ${prompt.slice(0, 120)}`
+    : label;
 }
 
 /** Task referenced by a workspace event payload (`Task`, `{ task }` or `Run`). */
@@ -300,7 +311,10 @@ export function Channel({
   // The workspace snapshot refreshes every 2 s; its fetch time is the render's "now".
   const now = query.dataUpdatedAt;
   const system: SystemLine[] = events.flatMap((event) => {
-    const label = view.events[event.kind];
+    const label =
+      event.kind === "human.answered"
+        ? deadlineLabel(event, copy.noAnswerBeforeDeadline)
+        : view.events[event.kind];
     const task = label && eventTask(event, tasks);
     const skipped =
       event.kind === "run.plugin_tools_pinned"

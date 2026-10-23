@@ -57,7 +57,7 @@ async fn policy(
 	let (_, token, _) = bootstrap(f, app, endpoint).await;
 	openrouter.connect("acme").await;
 	*openrouter.endpoint.lock().unwrap() = endpoint.into();
-	let decider = json!({"id":"jev","version":"1.0.0","kind":"decider","name":{"en":"Approved Jev"},"description":{"en":"Local fixture"},"capabilities":[],"languages":[],"tags":[],"skills":[],"schema":{},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","keep_threshold":"3fe0000000000000"}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
+	let decider = json!({"id":"jev","version":"1.0.0","kind":"decider","name":{"en":"Approved Jev"},"description":{"en":"Local fixture"},"capabilities":[],"languages":[],"tags":[],"skills":[],"schema":{},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
 	let (status, body) = request(app, &token, "POST", "/api/registry", decider).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
@@ -529,7 +529,7 @@ fn compaction_worker_configuration(
 ) -> worker_process::ConfigurationFuture {
 	async move {
 		// The worker provisions definitions that use the Tenant's credential, so it
-		// starts from the runtime that has a Provider Credential Store.
+		// starts from the runtime that has a Secret Store.
 		let (fixture, _, _, credentialed) = queued_compaction.await;
 		let (_, url, schema) = fixture.application.runtime.parts();
 		(credentialed, url, schema, None)

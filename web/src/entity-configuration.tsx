@@ -4,13 +4,15 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Alert, Check, Group, Hint, pairClass } from "./components/patterns";
 import { useQuery } from "@tanstack/react-query";
-import { discover } from "./generated/aidash";
+import { discover, registryMcpToolHint } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MemoryRegistryFields } from "./memory-registry";
+import { replayAfterHint, replayAfterQueryChange, sameQuery } from "./mcp-hint";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
+import { ExternalServiceFields } from "./external-service-fields";
 
 type Argument = {
   key: string;
@@ -265,6 +267,12 @@ function Arguments({
   );
 }
 
+/** What an MCP server said about one tool, or why it could not be asked. */
+type ServerHint = { transport: string; endpoint: string; toolName: string } & (
+  | { readOnly: boolean | null }
+  | { error: string }
+);
+
 export function EntityConfiguration({
   kind,
   data,
@@ -280,9 +288,21 @@ export function EntityConfiguration({
   const [alias, setAlias] = useState("integration_invoke");
   const [members, setMembers] = useState<string[]>([]);
   const [endpoint, setEndpoint] = useState("");
+  const [secret, setSecret] = useState("");
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
+  const [hint, setHint] = useState<ServerHint | null>(null);
+  const [checkingHint, setCheckingHint] = useState(false);
+  const hintRequest = useRef(0);
+  // The response arrives after more edits can happen, so the answer and the
+  // automatic prefill it may cause are compared with these, not with the
+  // values captured when the request started.
+  const transportRef = useRef(transport);
+  const endpointRef = useRef(endpoint);
+  const toolNameRef = useRef(toolName);
+  const replayRef = useRef(replay);
+  const replayPrefilled = useRef(false);
   const [instructions, setInstructions] = useState("");
   const [skillFiles, setSkillFiles] = useState<SkillPayload["files"]>([]);
   const [skillSource, setSkillSource] = useState<string>();
@@ -315,6 +335,80 @@ export function EntityConfiguration({
     ? discovery.error.message
     : peerError?.error;
   const remoteLabel = useEntityLabel(remoteAgents.map((agent) => agent.entity));
+
+  // The server's word only prefills the choice; it applies to the endpoint and
+  // tool it was read for, and to nothing the person edits afterwards.
+  const shownHint =
+    hint && sameQuery(hint, transport, endpoint, toolName) ? hint : null;
+  // A queried field changed: the pending answer is for another tool, and an
+  // automatic read-only prefill no longer describes this one.
+  const queryChanged = () => {
+    hintRequest.current += 1;
+    setCheckingHint(false);
+    const next = replayAfterQueryChange(
+      replayRef.current,
+      replayPrefilled.current,
+    );
+    replayPrefilled.current = false;
+    if (next !== replayRef.current) {
+      replayRef.current = next;
+      setReplay(next);
+    }
+  };
+  const checkHint = async () => {
+    const current = ++hintRequest.current;
+    const asked = {
+      transport: transportRef.current,
+      endpoint: endpointRef.current,
+      toolName: toolNameRef.current,
+    };
+    setCheckingHint(true);
+    setHint(null);
+    try {
+      const { read_only_hint } = await registryMcpToolHint({
+        endpoint: asked.endpoint,
+        tool_name: asked.toolName,
+      });
+      if (current !== hintRequest.current) return;
+      if (
+        !sameQuery(
+          asked,
+          transportRef.current,
+          endpointRef.current,
+          toolNameRef.current,
+        )
+      )
+        return;
+      setHint({ ...asked, readOnly: read_only_hint ?? null });
+      const next = replayAfterHint(
+        replayRef.current,
+        read_only_hint,
+        replayPrefilled.current,
+      );
+      replayPrefilled.current = next.prefilled;
+      if (next.replay !== replayRef.current) {
+        replayRef.current = next.replay;
+        setReplay(next.replay);
+      }
+    } catch (cause) {
+      if (current !== hintRequest.current) return;
+      if (
+        !sameQuery(
+          asked,
+          transportRef.current,
+          endpointRef.current,
+          toolNameRef.current,
+        )
+      )
+        return;
+      setHint({
+        ...asked,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    } finally {
+      if (current === hintRequest.current) setCheckingHint(false);
+    }
+  };
 
   let settings: Record<string, unknown> = {};
   try {
@@ -352,6 +446,7 @@ export function EntityConfiguration({
       : {
           transport,
           endpoint,
+          ...(secret ? { secret } : {}),
           replay,
           ...(transport === "mcp"
             ? {
@@ -396,6 +491,7 @@ export function EntityConfiguration({
                   transport: transportConfig,
                 }
               : {};
+  if (kind === "external_service") return <ExternalServiceFields />;
   const agentSelect = (
     <Field label={t(kind === "cluster" ? "clusterCoordinator" : "toolAgent")}>
       <NativeSelect
@@ -558,7 +654,11 @@ export function EntityConfiguration({
           <Field label={t("toolTransport")}>
             <NativeSelect
               value={transport}
-              onChange={(event) => setTransport(event.target.value)}
+              onChange={(event) => {
+                transportRef.current = event.target.value;
+                queryChanged();
+                setTransport(event.target.value);
+              }}
             >
               {["http", "mcp", "agent"].map((value) => (
                 <option key={value} value={value}>
@@ -583,7 +683,19 @@ export function EntityConfiguration({
                   type="url"
                   required
                   value={endpoint}
-                  onChange={(event) => setEndpoint(event.target.value)}
+                  onChange={(event) => {
+                    endpointRef.current = event.target.value;
+                    queryChanged();
+                    setEndpoint(event.target.value);
+                  }}
+                />
+              </Field>
+              <Field label="Tenant Secret">
+                <Input
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  placeholder="api-key"
+                  pattern="[a-z0-9][a-z0-9_-]{0,63}"
                 />
               </Field>
               {transport === "mcp" && (
@@ -591,22 +703,62 @@ export function EntityConfiguration({
                   <Input
                     required
                     value={toolName}
-                    onChange={(event) => setToolName(event.target.value)}
+                    onChange={(event) => {
+                      toolNameRef.current = event.target.value;
+                      queryChanged();
+                      setToolName(event.target.value);
+                    }}
                   />
                 </Field>
               )}
               <Field label={t("toolReplay")}>
                 <NativeSelect
                   value={replay}
-                  onChange={(event) => setReplay(event.target.value)}
+                  onChange={(event) => {
+                    // A choice made now outranks a hint still in flight.
+                    hintRequest.current += 1;
+                    setCheckingHint(false);
+                    replayPrefilled.current = false;
+                    replayRef.current = event.target.value;
+                    setReplay(event.target.value);
+                  }}
                 >
-                  {["unsafe"].map((value) => (
+                  {["read_only", "unsafe"].map((value) => (
                     <option key={value} value={value}>
                       {t(`toolReplay_${value}`)}
                     </option>
                   ))}
                 </NativeSelect>
               </Field>
+              <Hint>{t("toolReplayHelp")}</Hint>
+              {transport === "mcp" && (
+                <div className="grid min-w-0 gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="justify-self-start"
+                    disabled={!endpoint || !toolName || checkingHint}
+                    onClick={() => void checkHint()}
+                  >
+                    {t("toolHintCheck")}
+                  </Button>
+                  {shownHint &&
+                    ("error" in shownHint ? (
+                      <Alert>{shownHint.error}</Alert>
+                    ) : (
+                      <Hint>
+                        {t(
+                          shownHint.readOnly === true
+                            ? "toolHintReadOnly"
+                            : shownHint.readOnly === false
+                              ? "toolHintWrites"
+                              : "toolHintNone",
+                        )}
+                      </Hint>
+                    ))}
+                </div>
+              )}
               {transport === "mcp" && replay === "idempotent" && (
                 <Field label={t("toolIdempotency")}>
                   <Input

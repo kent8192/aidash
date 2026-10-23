@@ -524,7 +524,7 @@ fn clef() -> DeciderRoute {
 		provider_contract: DECISIONS.into(),
 		model: "cloudflare/clef".into(),
 		hosts: vec!["cloudflare".into(), "deepinfra".into()],
-		keep_threshold: Probability::half(),
+		threshold: Probability::half(),
 		state_budget: StateBudget {
 			long_context_request_bytes: None,
 			long_context_state_bytes: None,
@@ -660,4 +660,133 @@ fn the_decisions_api_is_the_alpha_endpoint_beside_the_v1_base() {
 	assert!(named_host(&["primeintellect".into()], "PrimeIntellect"));
 	assert!(!named_host(&["deepinfra".into()], ""));
 	assert!(!named_host(&["deepinfra".into()], "Cloudflare"));
+}
+
+/// The built-in approval Decider's requests, from the state a pending call
+/// builds to the verdict its Route's answers give.
+#[tokio::test]
+async fn an_approval_request_asks_the_block_questions_of_the_pending_call_on_each_route() {
+	use aidash_application::{
+		decision::{ApprovalTool, build_approval_state},
+		registry::system::approval_decider,
+	};
+	use aidash_domain::{provider::ToolCall, run_input::RunInput};
+
+	let decider: DeciderConfig =
+		serde_json::from_value(approval_decider().unwrap().config).unwrap();
+	let questions = approval_questions();
+	let state = build_approval_state(
+		&aidash_domain::context::Context::default(),
+		&[RunInput {
+			seq: 1,
+			sender: "person".into(),
+			content: "Post the Q3 summary to the shared endpoint".into(),
+			idempotency_key: "key".into(),
+			message_id: None,
+			reference_only: false,
+		}],
+		"You are the reporting agent.",
+		&ToolCall {
+			id: "pending".into(),
+			name: "http_post".into(),
+			arguments: json!({"body":"Q3 summary"}),
+		},
+		&ApprovalTool {
+			id: "acme.http_post".into(),
+			version: "1.0.0".into(),
+			description: "Post a document".into(),
+			input_schema: json!({"type":"object"}),
+			target: Some("https://api.example.com".into()),
+		},
+		&decider.routes[0].state_budget,
+	)
+	.unwrap();
+	assert!(state.fits);
+
+	let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+	let answering = |model: &'static str, host: Option<&'static str>| {
+		let bodies = bodies.clone();
+		post(move |bytes: axum::body::Bytes| {
+			let bodies = bodies.clone();
+			async move {
+				bodies
+					.lock()
+					.unwrap()
+					.push(serde_json::from_slice(&bytes).unwrap());
+				let answers: BTreeMap<_, _> = BlockReason::CATEGORIES
+					.into_iter()
+					.map(|reason| {
+						let noul = if reason == BlockReason::Injected {
+							0.9
+						} else {
+							0.01
+						};
+						(reason.id(), json!({"type":"noul","noul":noul}))
+					})
+					.collect();
+				Json(json!({"model":model,"provider":host,"answers":answers}))
+			}
+		})
+	};
+	let router = Router::new()
+		.route("/api/v1/systemone", answering("typesafe/jev-1.14", None))
+		.route(
+			"/api/alpha/decisions",
+			answering("cloudflare/clef", Some("Cloudflare")),
+		);
+	let (endpoint, _server) = server(router).await;
+	let client = RouteDecisionProvider::new(
+		decider.clone(),
+		"node-decision-adapter:23".into(),
+		AccessFixture::new(&format!("{endpoint}/api/v1")),
+		run_context(),
+		Arc::new(ByteBudget),
+		Duration::from_secs(5),
+	)
+	.unwrap();
+
+	for (index, route) in decider.routes.iter().enumerate() {
+		let requests = client.plan(index, &state.state, &questions).unwrap();
+		assert_eq!(requests.len(), 1, "{}", route.model);
+		let request = &requests[0];
+		assert_eq!(request.questions, questions);
+		let body: Value = serde_json::from_slice(&request.body).unwrap();
+		assert_eq!(body["model"], route.model.as_str());
+		assert_eq!(body["state"], state.state);
+		let asked: BTreeMap<_, _> = body["questions"]
+			.as_object()
+			.unwrap()
+			.iter()
+			.map(|(id, question)| (id.clone(), question.clone()))
+			.collect();
+		assert_eq!(
+			asked.keys().map(String::as_str).collect::<Vec<_>>(),
+			[
+				"beyond_request",
+				"boundary",
+				"data_exfiltration",
+				"destructive",
+				"injected"
+			]
+		);
+		for (id, question) in &questions {
+			assert_eq!(
+				asked[id],
+				json!({"type":"noul","instructions":question.description})
+			);
+		}
+		let answers = client
+			.prepare(index, request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await
+			.unwrap();
+		assert_eq!(
+			verdict(&answers, route.threshold).unwrap(),
+			Verdict::Blocked(BlockReason::Injected)
+		);
+	}
+	// Each Route's endpoint received exactly one request.
+	assert_eq!(bodies.lock().unwrap().len(), 2);
 }

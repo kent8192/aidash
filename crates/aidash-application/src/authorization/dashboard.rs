@@ -82,6 +82,14 @@ impl DashboardAuthority {
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
 		}
+		// A Demo Reservation never reaches an issuer with a Tenant Binding, and
+		// only a Deployment that loads Demo data holds one.
+		if policy.demo_data
+			&& policy.unrestricted(&sign_in.issuer)
+			&& let Some(email) = &sign_in.verified_email
+		{
+			scope.fulfil_demo_reservations(account.id, email).await?;
+		}
 		if policy.provisions_personal(&sign_in.issuer) {
 			scope.provision_personal(account.id).await?;
 		}

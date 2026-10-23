@@ -55,6 +55,10 @@ pub struct Store {
 	/// `[plan_connections] enabled`: new authorizations, model lists and
 	/// admission of `chatgpt` models.
 	pub plan_connections_enabled: bool,
+	/// Present only where the Secret Store can hold Tenant Secret values and
+	/// the server may read them: a self-hosted node with a PostgreSQL Store
+	/// (ADR 0051). Cloud and Dedicated offer none until #310.
+	pub tenant_secrets: Option<std::sync::Arc<aidash_application::tenant_secrets::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
@@ -443,6 +447,7 @@ impl Store {
 			provider_credentials: None,
 			plan_connections: None,
 			plan_connections_enabled: false,
+			tenant_secrets: None,
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
@@ -551,6 +556,7 @@ impl Store {
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
+			tenant_secrets: self.tenant_secrets.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -602,6 +608,7 @@ impl Store {
 			provider_credentials: self.provider_credentials.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
+			tenant_secrets: self.tenant_secrets.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -2080,6 +2087,13 @@ impl Store {
 	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<WorkspaceSnapshot> {
 		self.pool
 			.atomic(scope, async |db| {
+				if let Some(tenant) = scope.tenant_name() {
+					crate::authorization::remote::deployment_administrator::tenant(
+						db,
+						tenant.as_str(),
+					)
+					.await?;
+				}
 				Ok(WorkspaceSnapshot {
 					workspace: WorkspaceRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
@@ -3001,6 +3015,7 @@ impl Store {
 			kind,
 			"run.sources_observed"
 				| "run.semantic_degraded"
+				| "run.semantic_recovered"
 				| "run.estimate_pinned"
 				| "run.plugin_tools_pinned"
 				| "context.summary_revoked"
@@ -3924,7 +3939,24 @@ impl Store {
 	) -> Result<RunDetails> {
 		let invocations = InvocationRecord::page(tx, run.id, offset).await?;
 		let memory = crate::semantic::repositories::bindings::load(tx, &run.metadata()).await?;
+		let egress_requests =
+			crate::apps::execution::capabilities::models::EgressRequest::objects()
+				.filter(
+					crate::apps::execution::capabilities::models::EgressRequest::field_run_id()
+						.eq(run.id),
+				)
+				.order_by(&["id"])
+				.offset(offset as usize)
+				.limit(100)
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?;
+		let egress_requests = egress_requests
+			.into_iter()
+			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
+			.collect::<std::result::Result<Vec<aidash_domain::egress::RequestRecord>, _>>()?;
 		Ok(RunDetails {
+			egress_requests,
 			media_input_routes: Vec::new(),
 			run: run.into(),
 			invocations,
@@ -3939,6 +3971,13 @@ impl Store {
 	) -> Result<RunDetails> {
 		self.pool
 			.atomic(scope, async |tx| {
+				if let Some(tenant) = scope.tenant_name() {
+					crate::authorization::remote::deployment_administrator::tenant(
+						tx,
+						tenant.as_str(),
+					)
+					.await?;
+				}
 				let run = RunRecord::objects()
 					.filter(RunRecord::field_id().eq(id))
 					.all_with_executor(tx)

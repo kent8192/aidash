@@ -968,3 +968,5 @@ pub mod revocation;
 
 #[cfg(test)]
 mod tests;
+
+pub mod page_image;

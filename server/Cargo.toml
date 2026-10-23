@@ -171,12 +171,20 @@ name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
 [[test]]
+name = "demo_data"
+path = "src/apps/identity/tests/demo_data.rs"
+
+[[test]]
 name = "provider_authorizations"
 path = "src/apps/identity/tests/provider_authorizations.rs"
 
 [[test]]
 name = "plan_connections"
 path = "src/apps/identity/tests/plan_connections.rs"
+
+[[test]]
+name = "approval_preferences"
+path = "src/apps/identity/tests/approval_preferences.rs"
 
 [[test]]
 name = "endpoints"

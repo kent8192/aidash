@@ -4,8 +4,27 @@ pub use crate::apps::execution::capabilities::serializers::approvals::{
 	ApprovalDecision, Outbound, Revoke,
 };
 use crate::{Error, Result, authorization::access::Access, domain::Run, store::Store};
+use aidash_application::ports::capabilities::approvals::ApprovalScope as _;
 use serde_json::Value;
 use uuid::Uuid;
+pub(crate) async fn can_allow_always(
+	store: &Store,
+	access: &mut Access,
+	record: &Record,
+) -> Result<bool> {
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
+	let run = scope
+		.run_context(serde_json::from_value(record.data["run_id"].clone())?)
+		.await?;
+	aidash_application::capabilities::approvals::can_allow_always(
+		&mut scope,
+		&run,
+		&crate::apps::execution::repositories::capability_records::domain(record.clone()),
+	)
+	.await
+	.map_err(Into::into)
+}
+
 pub(crate) async fn visible(access: &mut Access, record: &Record) -> Result<bool> {
 	let mut scope = crate::bootstrap::approval_scope(None, access, None);
 	aidash_application::capabilities::approvals::visible(

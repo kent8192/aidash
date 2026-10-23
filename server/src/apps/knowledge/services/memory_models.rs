@@ -509,8 +509,8 @@ impl Models {
 			|| total_tokens > bounds.max_model_tokens as i64
 			|| total_cost > bounds.max_cost_micros as i64
 		{
-			return Err(Error::Invalid(
-				"durable memory model budget exhausted".into(),
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::DurableMemoryBudget,
 			));
 		}
 		native::query(

@@ -86,6 +86,13 @@ deletion_grace_days = 30
 # Retention Rule history) is kept before it is deleted (1 to 3650).
 audit_retention_days = 365
 
+# Demo data (ADR 0079, ADR 0080): `aidash demo-data` loads fictional Tenants and
+# reserves them for people by verified email. The command refuses to run, and
+# a sign-in fulfils no Demo Reservation, unless this is on. Only the migration
+# Job of a non-production Environment turns it on, with AIDASH_DEMO_DATA_ENABLED.
+[demo_data]
+enabled = false
+
 # Omit this table to disable dashboard OIDC.
 # [dashboard.oidc]
 # issuer = "https://identity.example"
@@ -111,7 +118,7 @@ enabled = false
 # ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
-# Optional Provider Credential Store. Keys are loaded only by server/worker bootstrap.
+# Optional Secret Store. Keys are loaded only by server/worker bootstrap.
 # [provider_credentials]
 # max_per_tenant = 20
 # fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
@@ -136,8 +143,8 @@ enabled = false
 
 # Sign in with ChatGPT Plan Connections (#159): subjects run agents on their
 # own ChatGPT plan allowance. Off by default. Turning it on means this host
-# stores Plan Tokens it can read, so it needs the PostgreSQL Provider
-# Credential Store above; a server with a Secret Manager Store, or none,
+# stores Plan Tokens it can read, so it needs the PostgreSQL Secret Store
+# above; a server with a Secret Manager Store, or none,
 # refuses to start with it on. Turning it off later keeps each owner's status
 # and disconnect, and stops new connections, model lists and plan Runs.
 # [plan_connections]

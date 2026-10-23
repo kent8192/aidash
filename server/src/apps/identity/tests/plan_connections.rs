@@ -39,7 +39,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const ORIGIN: &str = "http://127.0.0.1:8080";
+const ORIGIN: &str = "https://127.0.0.1:8080";
 const PLAN: &str = "/api/tenants/alpha/plan-connections/chatgpt";
 
 /// One consent: the challenge and nonce its code is bound to.
@@ -341,7 +341,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 				Query::select()
 					.expr(Expr::val(Uuid::new_v4()))
 					.expr(Expr::val(identity))
-					.expr(Expr::val(Sha256::digest(token.as_bytes()).to_vec()))
+					.expr(Expr::val(common::browser_session_digest(token.as_bytes())))
 					.expr(Expr::val(Sha256::digest(csrf.as_bytes()).to_vec()))
 					.expr(Expr::cust("clock_timestamp()"))
 					.expr(Expr::cust("clock_timestamp()"))
@@ -354,7 +354,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 }
 
 /// Alice's identity with two dashboard sessions, Bob's with one, and a
-/// Provider Credential Store whose Sign in with ChatGPT is the fake OpenAI.
+/// Secret Store whose Sign in with ChatGPT is the fake OpenAI.
 #[rstest::fixture]
 fn plan_runtime(
 	#[default(Parts::default())] parts: Parts,
@@ -457,7 +457,7 @@ async fn send(
 	path: &str,
 	body: Value,
 ) -> TestResponse {
-	let cookie = format!("aidash-session={session}");
+	let cookie = format!("__Host-aidash-session={session}");
 	let body = if body.is_null() {
 		Vec::new()
 	} else {
@@ -489,7 +489,7 @@ async fn map(fixture: &Fixture, session: &str, subject: &str) -> (u16, String) {
 		"POST",
 		"/auth/registration",
 		&[
-			("cookie", &format!("aidash-session={session}")),
+			("cookie", &format!("__Host-aidash-session={session}")),
 			("origin", ORIGIN),
 			("x-aidash-csrf", csrf(session)),
 		],
@@ -1472,11 +1472,7 @@ async fn servers_without_a_postgres_store_refuse_to_enable_plan_connections(
 		let error =
 			aidash_server::bootstrap::configure_plan_connections(&mut f.store, settings, &enabled)
 				.unwrap_err();
-		assert!(
-			error
-				.to_string()
-				.contains("PostgreSQL Provider Credential Store")
-		);
+		assert!(error.to_string().contains("PostgreSQL Secret Store"));
 		aidash_server::bootstrap::configure_plan_connections(&mut f.store, settings, &disabled)
 			.unwrap();
 		assert!(f.store.plan_connections.is_none());

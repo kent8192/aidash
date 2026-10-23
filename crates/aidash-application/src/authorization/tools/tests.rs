@@ -422,6 +422,15 @@ impl AgentToolScope for Scope<'_> {
 			None => self.0.check("require"),
 		}
 	}
+	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		self.0.record(format!("denied:{}:{action}", resource.id));
+		match self.0.outcomes.get(&(resource.id.clone(), action.into())) {
+			Some(Outcome::Forbidden) => Ok(true),
+			Some(Outcome::Missing) => Err(Error::NotFound("saved tool".into())),
+			Some(Outcome::Fault) => Err(Error::Port(Box::new(std::io::Error::other("deny fault")))),
+			None => Ok(false),
+		}
+	}
 	async fn task_read(&mut self, key: Uuid) -> Result<Task> {
 		self.0.record(format!("task_read:{key}"));
 		self.0.check("task_read")?;
@@ -480,6 +489,7 @@ impl AgentToolScope for Scope<'_> {
 			prompt: "saved question".into(),
 			response: None,
 			answered_by: None,
+			answer_by: None,
 			created_at: Utc::now(),
 		}))
 	}
@@ -708,6 +718,36 @@ async fn agent_plugins_check_delegation_flag_and_home_before_target_catalog(
 }
 #[rstest]
 #[tokio::test]
+async fn a_read_only_registry_tool_refuses_an_explicit_policy_deny(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// A Read-only operation needs no approval, but an explicit
+	// `tool.call_unapproved` deny still refuses it, also away from home.
+	let config: ToolConfig = serde_json::from_value(json!({
+		"transport": "http",
+		"endpoint": "https://api.example.com",
+		"replay": "read_only"
+	}))
+	.unwrap();
+	repository.catalog.config = serde_json::to_value(&config).unwrap();
+	let contract = ToolContract::registry(reference(), &config);
+	let input = call("configured", json!({}));
+	super::authorize(&repository, &run, &agent, &input, &contract)
+		.await
+		.unwrap();
+	repository
+		.outcomes
+		.insert((reference().id, CALL_UNAPPROVED.into()), Outcome::Forbidden);
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &input, &contract).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[rstest]
+#[tokio::test]
 async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
 	mut repository: Repository,
 	run: RunMetadata,
@@ -752,7 +792,7 @@ async fn malformed_plugin_configuration_keeps_the_json_error(
 #[rstest]
 #[case::files("file_read")]
 #[case::shell("shell_poll")]
-#[case::python("python_install")]
+#[case::python("python_poll")]
 #[case::patch("apply_patch")]
 #[case::sharing("file_share")]
 #[case::outbound("outbound_get")]
@@ -1359,13 +1399,13 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 		("apply_patch".into(), 1),
 		("file_read".into(), 2),
 		("file_search".into(), 3),
-		("python_install".into(), 4),
+		("python_cancel".into(), 4),
 		("python_poll".into(), 5),
 	]);
 	for (name, outcome) in [
 		("file_read", Outcome::Forbidden),
 		("file_search", Outcome::Missing),
-		("python_install", Outcome::Fault),
+		("python_cancel", Outcome::Fault),
 	] {
 		repository
 			.outcomes
@@ -1381,7 +1421,7 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 		tools,
 		BTreeMap::from([
 			("apply_patch".into(), 1),
-			("python_install".into(), 4),
+			("python_cancel".into(), 4),
 			("python_poll".into(), 5)
 		])
 	);
@@ -1391,7 +1431,7 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 			"lease",
 			"require:builtin:file_read:tool.invoke",
 			"require:builtin:file_search:tool.invoke",
-			"require:builtin:python_install:tool.invoke",
+			"require:builtin:python_cancel:tool.invoke",
 			"release"
 		]
 	);
@@ -1768,7 +1808,17 @@ mod agent_plugin_tools {
 			.await
 			.unwrap();
 
-		assert_eq!(repository.calls(), ["lease", "release"]);
+		let mut expected = vec!["lease".to_owned()];
+		if read_only {
+			expected.push(format!(
+				"denied:agent-plugin:{}/{}/{}:{CALL_UNAPPROVED}",
+				reference.name,
+				server(),
+				"search",
+			));
+		}
+		expected.push("release".to_owned());
+		assert_eq!(repository.calls(), expected);
 	}
 
 	#[rstest]

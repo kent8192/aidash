@@ -124,7 +124,7 @@ impl TokenIssuer for CapabilityIssuer {
 			})?;
 		if credential.secret_resource != resource {
 			return Err(Error::Invalid(
-				"Provider Credential Store resource does not match the environment".into(),
+				"Secret Store resource does not match the environment".into(),
 			));
 		}
 		let sub = match (context.run, context.maintenance) {

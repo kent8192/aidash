@@ -1,4 +1,5 @@
 """Chart contract tests for scheduling, privileges and retained single writers."""
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -136,6 +137,35 @@ class ChartsTest(unittest.TestCase):
             with self.subTest(values=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(self.base, **invalid))
 
+    def test_browser_frontends_reject_framing_at_each_public_serving_layer(self):
+        objects = render(self.aidash, dict(self.base, frontend={'enabled': True}), 'app')
+        nginx = select(objects, 'ConfigMap', '-frontend-conf')['data']['default.conf']
+        self.assertIn('add_header Content-Security-Policy "frame-ancestors \'none\'" always;', nginx)
+        self.assertIn('add_header X-Frame-Options "DENY" always;', nginx)
+
+        values = {'postgres': POSTGRES,
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        rendered_edge = render(self.environment, values)
+        caddy = select(rendered_edge, 'ConfigMap', '-edge')['data']['Caddyfile']
+        self.assertEqual(caddy.count('header +Content-Security-Policy "frame-ancestors \'none\'"'), 1)
+        self.assertEqual(caddy.count('header >X-Frame-Options DENY'), 1)
+        edge = select(rendered_edge, 'Deployment', '-edge')
+        annotations = edge['spec']['template']['metadata']['annotations']
+        self.assertEqual(
+            annotations['checksum/caddy-security-policy'],
+            hashlib.sha256(b"frame-ancestors 'none'|DENY").hexdigest(),
+        )
+
+        proxied_values = dict(values, edge=dict(values['edge'], firebaseProject='aidash-fixture'))
+        proxied = select(render(self.environment, proxied_values), 'ConfigMap', '-edge')['data']['Caddyfile']
+        helper, application = proxied.split('  handle {\n', 1)
+        self.assertNotIn('Content-Security-Policy', helper)
+        self.assertNotIn('X-Frame-Options', helper)
+        self.assertIn('header +Content-Security-Policy "frame-ancestors \'none\'"', application)
+        self.assertIn('header >X-Frame-Options DENY', application)
+
     def test_trusted_proxies_are_rendered_only_when_the_server_accepts_them(self):
         # As server/src/http.rs ProxyNetwork parses AIDASH_AUTH_TRUSTED_PROXY_IPS at startup.
         accepted = ['10.4.0.0/14', '127.0.0.1', '0.0.0.0/0', '::1', '::/0', 'fe80::/10', '2001:DB8::/32',
@@ -195,7 +225,7 @@ class ChartsTest(unittest.TestCase):
         for key in set(profile) & set(runner_profile) - {'runner'}:
             self.assertEqual(profile[key], runner_profile[key], key)
         self.assertEqual(profile['runner'], {
-            'endpoint': 'http://%s:%d' % (service['metadata']['name'], service['spec']['ports'][0]['port']),
+            'endpoint': 'http://%s.aidash-pr-1.svc.cluster.local:%d' % (service['metadata']['name'], service['spec']['ports'][0]['port']),
             'token_env': 'AIDASH_CORE_RUNNER_TOKEN', 'image': runner_profile['runner']['image'],
             'runtime_class': select(objects, 'RuntimeClass', '')['metadata']['name'],
             'namespace': select(objects, 'Namespace', '-sandbox')['metadata']['name']})
@@ -219,6 +249,45 @@ class ChartsTest(unittest.TestCase):
         # Two ClusterRoles, two bindings, the RuntimeClass and three Namespaces.
         self.assertEqual(len(names[0]), 8)
         self.assertEqual(names[0] & names[1], set())
+
+    def test_egress_is_an_internal_service_shared_by_the_application_and_runner(self):
+        execution = {'sandboxImage': 'sandbox' + DIGEST,
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST},
+                     'egress': {'enabled': True, 'clusterIP': '10.96.0.90', 'port': 8950}}
+        values = dict(self.base, execution=execution)
+        objects = render(self.aidash, values, 'app', namespace='tenant-app')
+        service = select(objects, 'Service', '-egress')['spec']
+        self.assertEqual((service['type'], service['clusterIP']), ('ClusterIP', '10.96.0.90'))
+        self.assertEqual(service['ports'], [{'name': 'egress', 'port': 8950, 'targetPort': 8950}])
+        profiles = [json.loads(self.mounted(objects, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
+                    for role in ('server', 'worker')]
+        runner = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])['egress']
+        self.assertEqual(profiles, [runner, runner])
+        self.assertEqual(runner['endpoint'], 'http://10.96.0.90:8950')
+        self.assertEqual(runner['pod_selector'], service['selector'])
+        self.assertEqual(runner['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
+        policy = select(objects, 'NetworkPolicy', '-egress-internal')['spec']
+        self.assertEqual(policy['podSelector']['matchLabels'], service['selector'])
+        ingress = policy['ingress'][-1]
+        self.assertEqual(ingress['ports'], [{'protocol': 'TCP', 'port': 8950}])
+        self.assertEqual(ingress['from'][0], {
+            'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'app-sandbox'}},
+            'podSelector': {'matchLabels': {'aidash-sandbox': 'true'}},
+        })
+
+    def test_egress_refuses_an_unconfigured_address_runner_or_managed_store(self):
+        execution = {'sandboxImage': 'sandbox' + DIGEST,
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST},
+                     'egress': {'enabled': True, 'clusterIP': '10.96.0.90'}}
+        invalid = [dict(self.base, execution=dict(execution, egress={'enabled': True, 'clusterIP': ''})),
+                   dict(self.base, execution=dict(execution, runner={'enabled': False})),
+                   dict(self.base, execution=execution, providerCredentials={'settings': {
+                       'store': {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}}})]
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, values)
 
     def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
         store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
@@ -671,7 +740,15 @@ class ChartsTest(unittest.TestCase):
             return select(objects, 'ConfigMap', '-edge')['data']['Caddyfile'], annotations['checksum/config']
 
         plain, plain_checksum = edge()
-        self.assertIn('fixture.example {\n  header >Referrer-Policy no-referrer\n  reverse_proxy 127.0.0.1:8088\n}', plain)
+        self.assertIn(
+            'fixture.example {\n'
+            '  header >Referrer-Policy no-referrer\n'
+            '  header +Content-Security-Policy "frame-ancestors \'none\'"\n'
+            '  header >X-Frame-Options DENY\n'
+            '  reverse_proxy 127.0.0.1:8088\n'
+            '}',
+            plain,
+        )
         self.assertIn('@origin host fixture.example', plain)
         self.assertIn('respond 404', plain)
         self.assertEqual(edge(firebaseProject=''), (plain, plain_checksum))

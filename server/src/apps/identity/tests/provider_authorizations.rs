@@ -36,7 +36,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const ORIGIN: &str = "http://127.0.0.1:8080";
+const ORIGIN: &str = "https://127.0.0.1:8080";
 const CALLBACK: &str = "/auth/provider-authorizations/openrouter/callback";
 
 /// Issued codes by value: the S256 challenge they are bound to, whether they
@@ -179,7 +179,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 			Query::select()
 				.expr(Expr::val(Uuid::new_v4()))
 				.expr(Expr::val(identity))
-				.expr(Expr::val(Sha256::digest(token.as_bytes()).to_vec()))
+				.expr(Expr::val(common::browser_session_digest(token.as_bytes())))
 				.expr(Expr::val(Sha256::digest(csrf.as_bytes()).to_vec()))
 				.expr(Expr::cust("clock_timestamp()"))
 				.expr(Expr::cust("clock_timestamp()"))
@@ -194,7 +194,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 }
 
 /// A browser identity with a Deployment Administrator grant and two dashboard sessions, and
-/// a Provider Credential Store whose exchange is the fake OpenRouter.
+/// a Secret Store whose exchange is the fake OpenRouter.
 #[rstest::fixture]
 fn authorization_runtime(
 	#[default(Parts::default())] parts: Parts,
@@ -353,9 +353,11 @@ async fn start_request(
 	};
 	let cookies = match browser {
 		Some(browser) => {
-			format!("aidash-session={session}; aidash-provider-authorization={browser}")
+			format!(
+				"__Host-aidash-session={session}; __Host-aidash-provider-authorization={browser}"
+			)
 		}
-		None => format!("aidash-session={session}"),
+		None => format!("__Host-aidash-session={session}"),
 	};
 	send(
 		&fixture.app,
@@ -384,7 +386,7 @@ async fn start_as(
 	assert_eq!(response.status(), 200, "{}", String::from_utf8_lossy(bytes));
 	assert_eq!(response.headers()["cache-control"], "no-store");
 	let browser =
-		cookie(&response, "aidash-provider-authorization").expect("start binds the browser");
+		cookie(&response, "__Host-aidash-provider-authorization").expect("start binds the browser");
 	let started: Value = serde_json::from_slice(bytes).unwrap();
 	let url = reqwest::Url::parse(started["authorization_url"].as_str().unwrap()).unwrap();
 	assert_eq!(url.origin().ascii_serialization(), "https://openrouter.ai");
@@ -405,7 +407,9 @@ async fn callback(fixture: &Fixture, session: &str, browser: &str, query: &str) 
 		&format!("{CALLBACK}?{query}"),
 		&[(
 			"cookie",
-			&format!("aidash-session={session}; aidash-provider-authorization={browser}"),
+			&format!(
+				"__Host-aidash-session={session}; __Host-aidash-provider-authorization={browser}"
+			),
 		)],
 		Value::Null,
 	)
@@ -827,7 +831,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 		"/api/tenants/alpha/provider-authorizations/openrouter",
 		&[
 			("content-type", "application/json"),
-			("cookie", "aidash-session=browser-a"),
+			("cookie", "__Host-aidash-session=browser-a"),
 			("origin", ORIGIN),
 			("x-aidash-csrf", "csrf-a"),
 			("x-aidash-context", "deployment_administrator"),
@@ -843,7 +847,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 			"/api/tenants/alpha/provider-authorizations/openrouter",
 			&[
 				("content-type", "application/json"),
-				("cookie", "aidash-session=browser-a"),
+				("cookie", "__Host-aidash-session=browser-a"),
 				("origin", ORIGIN),
 				("x-aidash-csrf", "csrf-a"),
 				("x-aidash-context", "deployment_administrator"),
@@ -885,7 +889,7 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 		"POST",
 		"/auth/registration",
 		&[
-			("cookie", "aidash-session=browser-a"),
+			("cookie", "__Host-aidash-session=browser-a"),
 			("origin", ORIGIN),
 			("x-aidash-csrf", "csrf-a"),
 		],

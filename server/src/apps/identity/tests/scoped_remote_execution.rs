@@ -140,6 +140,7 @@ struct SemanticFixture {
 	response: Arc<Mutex<Option<Value>>>,
 	entry: Uuid,
 	failing: Arc<AtomicBool>,
+	failure_at: Arc<AtomicUsize>,
 	reservations: Arc<Mutex<Option<ReservationCheck>>>,
 }
 impl Pair {
@@ -377,7 +378,7 @@ mod scoped_pair_composition {
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
-		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","keep_threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
+		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
 		let (status, body) = request(
 			&ba,
 			&receiver_token,
@@ -544,10 +545,22 @@ mod scoped_pair_composition {
 			None
 		};
 		if ordered {
-			ordered_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
+			ordered_receiver_agent(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&mut source_policy,
+				if native.is_some() {
+					"research-native"
+				} else {
+					"research"
+				},
+			)
+			.await;
 		}
 		let agent = generation.as_ref().map_or_else(
-			|| json!({"id":if native.is_some() { "research-native" } else if ordered { "research-ordered" } else { "research" },"version":"1.0.0"}),
+			|| json!({"id":if ordered { "research-ordered" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
 			|(_, prepared)| prepared["agent"].clone(),
 		);
 		let grant = Uuid::new_v4();
@@ -620,7 +633,7 @@ mod scoped_pair_composition {
 use scoped_pair_composition::scoped_pair;
 
 /// A receiver Agent on the Ordered Projection Version, approved on both nodes.
-/// It copies the receiver's `research` Agent, so it keeps the Home semantic
+/// It copies the receiver's base Agent, so it keeps the Home semantic
 /// memory binding when the fixture has one.
 async fn ordered_receiver_agent(
 	a: &Federation,
@@ -628,6 +641,7 @@ async fn ordered_receiver_agent(
 	aa: &common::TestApplication,
 	ba: &common::TestApplication,
 	source_policy: &mut Value,
+	base_agent: &'static str,
 ) {
 	let receiver_token = common::tenant_token(&b.store, "acme").await;
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
@@ -651,7 +665,7 @@ async fn ordered_receiver_agent(
 	let mut model = fetch("model").await;
 	model["id"] = json!("ordered-model");
 	model["config"]["projection_versions"] = json!(["legacy", "ordered"]);
-	let mut agent = fetch("research").await;
+	let mut agent = fetch(base_agent).await;
 	agent["id"] = json!("research-ordered");
 	agent["config"]["model"] = reference("ordered-model");
 	agent["config"]["projection_version"] = json!("ordered");
@@ -999,6 +1013,7 @@ async fn configure_semantic(
 	let EmbeddingProvider {
 		requests,
 		failing,
+		failure_at,
 		reservations,
 		response,
 		server,
@@ -1070,6 +1085,7 @@ async fn configure_semantic(
 			requests,
 			entry: first,
 			failing,
+			failure_at,
 		},
 		server,
 	)
@@ -1414,6 +1430,7 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 	let describe = |protocol: &'static str| {
 		let p = &p;
 		async move {
+			let started = std::time::Instant::now();
 			let response = reqwest::Client::new()
 				.post(format!(
 					"{}/federation/v0.1/scoped/execution/grants/describe",
@@ -1427,7 +1444,9 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 				.await
 				.unwrap();
 			assert_eq!(response.status(), 200);
-			response.json::<Value>().await.unwrap()
+			let body = response.json::<Value>().await.unwrap();
+			eprintln!("scoped describe ({protocol}): {:?}", started.elapsed());
+			body
 		}
 	};
 	let expected = || async {
@@ -1582,8 +1601,11 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 /// step that then needs a new retrieval follows the outage policy. Once the
 /// provider recovers, the retry retrieves again and the next step reuses it.
 #[rstest::rstest]
+#[case::run_message(false)]
+#[case::pending_index(true)]
 #[tokio::test]
 async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+	#[case] pending_entry: bool,
 	#[with(true, false, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -1622,21 +1644,52 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 	assert_eq!(remote_retrievals(&p).await, 1, "an unchanged key is reused");
 	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
 
-	// Act: a Run message changes the query inputs of the Retrieval Key.
-	let (status, body) = request(
-		&p.aa,
-		&p.token,
-		"POST",
-		&format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
-		json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
-	)
-	.await;
+	let (path, body) = if pending_entry {
+		let workspace =
+			p.a.store
+				.task(&TEST_FIXTURE, p.task)
+				.await
+				.unwrap()
+				.workspace_id;
+		(
+			format!("/api/workspaces/{workspace}/semantic/entries"),
+			json!({"key":"pending-during-outage","expected_revision":0,"source":{"kind":"memory","text":"New Home knowledge: ochre falcon."},"metadata":{}}),
+		)
+	} else {
+		(
+			format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+			json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
+		)
+	};
+	let (status, body) = request(&p.aa, &p.token, "POST", &path, body).await;
 	assert_eq!(status, 200, "{body}");
+	if pending_entry {
+		assert_eq!(body["state"], "PENDING", "{body}");
+	}
 	for _ in 0..10 {
 		if p.run().await.recovery.retry.is_some() {
 			break;
 		}
 		p.step().await;
+	}
+
+	if pending_entry {
+		// Home first invalidates the old cached observation. Recovery must
+		// discard it, then the fresh read waits for the incomplete index.
+		let stale = p.run().await;
+		assert_eq!(
+			serde_json::to_value(stale.recovery.semantic_reason).unwrap(),
+			"stale"
+		);
+		advance_semantic_retry(&p).await;
+		for _ in 0..10 {
+			p.step().await;
+			if p.run().await.recovery.semantic_reason
+				== Some(aidash_domain::semantic::Failure::Unavailable)
+			{
+				break;
+			}
+		}
 	}
 
 	// Assert: the step that needs a new retrieval follows the outage policy.
@@ -1646,20 +1699,33 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 		.retry
 		.as_ref()
 		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
-	assert_eq!(retry.count, 1, "{run:?}");
+	assert_eq!(retry.count, if pending_entry { 2 } else { 1 }, "{run:?}");
 	assert_eq!(
 		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
 		"unavailable"
 	);
 	assert_eq!(run.control.as_str(), "ACTIVE");
 	assert_eq!(p.requests.lock().await.len(), 3, "no inference");
-	assert!(
-		home_embeddings(&p).await > outage,
-		"the Home tried to embed"
-	);
+	if pending_entry {
+		assert_eq!(
+			home_embeddings(&p).await,
+			outage,
+			"indexing must finish before embedding"
+		);
+	} else {
+		assert!(
+			home_embeddings(&p).await > outage,
+			"the Home tried to embed"
+		);
+	}
 
 	// Act: the provider recovers and the retry is due.
 	failing.store(false, Ordering::Release);
+	if pending_entry {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+	}
 	advance_semantic_retry(&p).await;
 	step_to_model_request(&p, 4).await;
 	// Assert: the retry retrieves again, and the next step reuses it.
@@ -4314,6 +4380,20 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
+	// Required-Home content stays protected, while installation administration
+	// may still configure the live Tenant's index without reading its contents.
+	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
+	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
+	assert_eq!(status, 200, "{index}");
+	let (status, configured) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{configured}");
 	p.close().await;
 }
 
@@ -6324,6 +6404,7 @@ fn scoped_runtime(
 struct EmbeddingProvider {
 	requests: Arc<Mutex<Vec<Value>>>,
 	failing: Arc<AtomicBool>,
+	failure_at: Arc<AtomicUsize>,
 	reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	response: Arc<Mutex<Option<Value>>>,
 	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
@@ -6332,16 +6413,17 @@ struct EmbeddingProvider {
 fn embedding_router(
 	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
 	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(count_state)] failure_at: Arc<AtomicUsize>,
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
 ) -> Arc<Router> {
 	let embedding_app = reinhardt::test::stub::StubRouter::new()
-.route("/v1/embeddings", http::Method::POST, reply(move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
+.route("/v1/embeddings", http::Method::POST, reply(move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let failure_at=failure_at.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
 		assert!(!headers.contains_key(http::header::AUTHORIZATION), "an unsigned provider must not receive the subject or peer bearer");
         let check=reservations.lock().await.clone();
         if let Some(check)=check {check.before_http().await;}
-		requests.lock().await.push(body.clone());
-        if failing.load(Ordering::Acquire) {
+		let call = { let mut calls = requests.lock().await; calls.push(body.clone()); calls.len() };
+        if failing.load(Ordering::Acquire) || failure_at.load(Ordering::Acquire) == call {
             return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap();
         }
 		if let Some(value) = response.lock().await.clone() { return reinhardt::Response::ok().with_json(&value).unwrap(); }
@@ -6353,22 +6435,21 @@ fn embedding_router(
 fn embedding_provider(
 	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
 	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(count_state)] failure_at: Arc<AtomicUsize>,
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
 	#[from(embedding_router)]
-	#[with(requests.clone(),failing.clone(),reservations.clone(),response.clone())]
+	#[with(requests.clone(),failing.clone(),failure_at.clone(),reservations.clone(),response.clone())]
 	_router: Arc<Router>,
-	#[from(upstream_fixtures::ready_router)]
-	#[with(_router.clone())]
-	_ready: upstream_fixtures::RouterFuture,
 	#[from(upstream_fixtures::async_upstream)]
-	#[with(_ready.clone())]
+	#[with(futures_util::future::ready(_router.clone()).boxed().shared())]
 	server: upstream_fixtures::UpstreamFuture,
 ) -> BoxFuture<'static, EmbeddingProvider> {
 	async move {
 		EmbeddingProvider {
 			requests,
 			failing,
+			failure_at,
 			reservations,
 			response,
 			server: server.await,

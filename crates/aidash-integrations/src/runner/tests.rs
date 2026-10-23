@@ -181,6 +181,17 @@ async fn non_tls_non_loopback_endpoints_are_rejected_before_any_request(#[case] 
 		credentials: Arc::new(Keys(RwLock::new(None))),
 	};
 	assert!(
-		matches!(client.request("GET","/v1/health",None).await,Err(Error::Invalid(message)) if message=="runner transport requires TLS or loopback")
+		matches!(client.request("GET","/v1/health",None).await,Err(Error::Invalid(message)) if message=="runner transport requires TLS, loopback or a cluster Service")
 	);
+}
+
+#[tokio::test]
+async fn the_configured_cluster_runner_requires_a_credential_before_connecting() {
+	let client = RunnerHttp {
+		endpoint: "http://app-execution-runner.application.svc.cluster.local:8949".into(),
+		credential_env: "RUNNER_KEY".into(),
+		credentials: Arc::new(Keys(RwLock::new(None))),
+	};
+	assert!(matches!(client.request("GET", "/v1/health", None).await,
+		Err(Error::Conflict(message)) if message.starts_with("RUNTIME_UNAVAILABLE:")));
 }

@@ -1,33 +1,35 @@
 //! Page reading parses a PDF only in a bounded child of the `aidash` binary
 //! (#312). These tests start the real binary as that child.
-use aidash_domain::research::{Failure, document::Line};
+use aidash_domain::research::Failure;
 use aidash_integrations::research::pdf::{ChildEngine, PdfEngine};
 use rstest::rstest;
 use std::{io::Write, path::PathBuf, time::Duration};
+#[cfg(target_os = "linux")]
 use tokio::sync::OnceCell;
 
-/// The child engine, after one unbounded warm-up start. macOS assesses an
-/// unsigned binary the first time a process starts it, which can outlast the
-/// child's deadline; Linux has no such delay.
+/// The child engine, after one long-deadline warm-up start on Linux.
 async fn engine() -> ChildEngine {
-	static WARMED: OnceCell<()> = OnceCell::const_new();
 	let program = PathBuf::from(env!("CARGO_BIN_EXE_aidash"));
-	WARMED
-		.get_or_init(|| async {
-			let _ = aidash_runtime::child::run(
-				&program,
-				&["__research-pdf", "extract"],
-				b"",
-				aidash_runtime::child::Limits {
-					cpu_seconds: 120,
-					memory_bytes: 1 << 30,
-					deadline: Duration::from_secs(120),
-					max_output: 1 << 20,
-				},
-			)
+	#[cfg(target_os = "linux")]
+	{
+		static WARMED: OnceCell<()> = OnceCell::const_new();
+		WARMED
+			.get_or_init(|| async {
+				let _ = aidash_runtime::child::run(
+					&program,
+					&["__research-pdf", "extract"],
+					b"",
+					aidash_runtime::child::Limits {
+						cpu_seconds: 120,
+						memory_bytes: Some(1 << 30),
+						deadline: Duration::from_secs(120),
+						max_output: 1 << 20,
+					},
+				)
+				.await;
+			})
 			.await;
-		})
-		.await;
+	}
 	ChildEngine::new(program)
 }
 
@@ -39,11 +41,12 @@ const PERMITTED: &[u8] = include_bytes!(
 
 #[rstest]
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn the_child_extracts_lines_with_their_pages() {
 	let text = engine().await.extract(PERMITTED.to_vec()).await.unwrap();
 	assert_eq!(
 		text.lines,
-		vec![Line {
+		vec![aidash_domain::research::document::Line {
 			text: "Protected evidence on page one.".into(),
 			page: Some(1),
 		}]
@@ -52,6 +55,7 @@ async fn the_child_extracts_lines_with_their_pages() {
 
 #[rstest]
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn the_child_renders_a_page_without_text_within_the_image_bounds() {
 	let report = aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec();
 	let image = PdfEngine::render(&engine().await, report.clone(), 2)
@@ -67,6 +71,7 @@ async fn the_child_renders_a_page_without_text_within_the_image_bounds() {
 
 #[rstest]
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn an_unreadable_document_fails_without_harming_the_parent() {
 	let outcome = engine()
 		.await
@@ -119,17 +124,34 @@ fn decompression_bomb(inflated: usize) -> Vec<u8> {
 
 #[rstest]
 #[tokio::test]
-#[cfg_attr(
-	not(target_os = "linux"),
-	ignore = "the child's memory limit is enforced only on Linux"
-)]
 async fn a_decompression_bomb_is_stopped_by_the_child_limits() {
-	// 1.5 GiB inflated from a few MiB: the child's address space limit stops
-	// it, and the read fails cleanly while the parent stays unharmed.
+	// 1.5 GiB inflated from a few MiB: Linux's address-space limit stops it;
+	// other platforms refuse the job before parsing. Either way, the read fails
+	// cleanly while the parent stays unharmed.
 	let bomb = decompression_bomb(1536 * 1024 * 1024);
 	assert!(bomb.len() < aidash_integrations::research::pdf::MAX_PDF_BYTES);
 	let started = std::time::Instant::now();
 	let outcome = engine().await.extract(bomb).await;
 	assert_eq!(outcome, Err(Failure::ExtractionFailed));
 	assert!(started.elapsed() < Duration::from_secs(40));
+}
+
+#[cfg(not(target_os = "linux"))]
+#[rstest]
+#[tokio::test]
+async fn ordinary_pdf_jobs_fail_closed_without_memory_containment() {
+	let engine = engine().await;
+	assert_eq!(
+		engine.extract(PERMITTED.to_vec()).await,
+		Err(Failure::ExtractionFailed)
+	);
+	assert_eq!(
+		PdfEngine::render(
+			&engine,
+			aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec(),
+			2,
+		)
+		.await,
+		Err(Failure::RenderFailed)
+	);
 }

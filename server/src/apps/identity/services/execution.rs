@@ -146,6 +146,22 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	/// Resolve existing page and file selections before admitting another
+	/// Research page image, under the same worker authority lease.
+	pub(crate) async fn model_media(
+		&self,
+		store: &Store,
+		run: &Run,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<crate::provider::ContentPart>> {
+		aidash_application::execution::media::selected(
+			&mut crate::bootstrap::selected_media(store, run, self.access.clone()),
+			selections,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	/// The scope of every transaction this authority's Run opens.
 	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
 		self.access.read().await.tenancy()
@@ -300,6 +316,120 @@ impl WorkerAuthority {
 				&mut scope,
 				&run.metadata(),
 				request,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// The Approval Mode that covers `run` now, under the worker's current
+	/// authority lease: the one of the person its delegation chain starts at,
+	/// for the Run's Thread. `None` when no person's mode covers the Run
+	/// (ADR 0076).
+	pub async fn approval_mode(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let access = &mut access;
+			crate::apps::identity::repositories::approval_preferences::covering(
+				&mut *access.tx,
+				&access.snapshot.bundle,
+				&store.node_id,
+				access.subjects.first().map(String::as_str),
+				&run.metadata(),
+			)
+			.await
+			.map(|covering| covering.map(|covering| covering.mode))
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// Whether Auto is this Run's effective Approval Mode now, under the
+	/// worker's current authority lease.
+	pub async fn auto_judging(&self, store: &Store, run: &Run) -> Result<bool> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::auto_judging(&mut scope, &run.metadata())
+				.await
+				.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// The Answer Deadline, in seconds, of the person whose delegation chain
+	/// `run` starts at, under the worker's current authority lease. `None` when
+	/// they set none or no person's settings cover the Run (ADR 0076).
+	pub async fn answer_deadline(&self, store: &Store, run: &Run) -> Result<Option<i64>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let access = &mut access;
+			crate::apps::identity::repositories::approval_preferences::covering(
+				&mut *access.tx,
+				&access.snapshot.bundle,
+				&store.node_id,
+				access.subjects.first().map(String::as_str),
+				&run.metadata(),
+			)
+			.await
+			.map(|covering| covering.and_then(|covering| covering.answer_deadline_seconds))
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// The pending approval of `run` that the approval Decider is to judge, read
+	/// under the worker's current authority lease (ADR 0077).
+	pub async fn approval_judgement(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<Option<aidash_application::capabilities::approvals::JudgeRequest>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::judgement(
+				&mut scope,
+				&run.metadata(),
+				approval,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// Record how the approval Decider settled `approval`, in the name of the
+	/// person the Run's chain starts at.
+	pub async fn settle_judgement(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+		settlement: aidash_application::capabilities::approvals::Settlement,
+	) -> Result<bool> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::settle(
+				&mut scope,
+				&run.metadata(),
+				approval,
+				settlement,
 			)
 			.await
 			.map_err(Error::from)
@@ -540,7 +670,22 @@ impl WorkerAuthority {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
-		let lease = self.access.write().await;
+		let mut lease = self.access.write().await;
+		if node != f.config.node_id {
+			return Err(Error::Forbidden);
+		}
+		// Prepare the child's closure on the outer transaction: an inner shared
+		// lock could queue behind a writer waiting for this same parent lease.
+		// Admission below still checks the complete subject chain including the child.
+		let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
+		crate::marketplace::check_pinned(&mut lease, &entry).await?;
+		crate::apps::registry::repositories::bindings::authorized(
+			&mut lease,
+			&entry,
+			false,
+			f.store.provider_credentials.is_some(),
+		)
+		.await?;
 		let mut access = Access::under_lease(&lease).await?;
 		let result = aidash_application::authorization::worker_tasks::delegate(
 			&mut crate::bootstrap::worker_task_scope(f, &mut access),
@@ -696,6 +841,17 @@ impl Guard {
 		let mut access = self.access.write().await;
 		catalog::entry(&mut access, reference, aidash_domain::decision::INVOKE).await
 	}
+	/// The approval Decider the Run's Tenant chose for Auto, or the built-in one
+	/// (ADR 0077).
+	pub(crate) async fn approval_decider_reference(&self) -> Result<EntityRef> {
+		let mut access = self.access.write().await;
+		let tenant = access.identity.tenant.clone();
+		Ok(
+			crate::apps::identity::repositories::approval_decider::chosen(&mut *access.tx, &tenant)
+				.await?
+				.reference,
+		)
+	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.
 	pub(crate) async fn tenant(&self) -> String {
@@ -779,56 +935,66 @@ impl Guard {
 		budget: usize,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 		degrade_on_outage: bool,
-	) -> Result<Option<Value>> {
-		let workspace_budget = if self.remote.is_some() {
-			budget
-		} else {
-			crate::semantic::services::memory_context::workspace_budget(budget)?
-		};
-		let semantic = aidash_application::execution::semantic_context::retrieve(
-			&crate::bootstrap::run_semantic_repository(
+	) -> aidash_application::ports::execution::SemanticContextRead {
+		let mut workspace_retrieved = false;
+		let result: Result<Option<Value>> = async {
+			let workspace_budget = if self.remote.is_some() {
+				budget
+			} else {
+				crate::semantic::services::memory_context::workspace_budget(budget)?
+			};
+			let semantic = aidash_application::execution::semantic_context::retrieve(
+				&crate::bootstrap::run_semantic_repository(
+					store,
+					self.remote.as_ref(),
+					&self.access,
+					&self.run,
+					&self.agent,
+				),
+				task,
+				inputs,
+				workspace_budget,
+				// Required-Home semantic context never degrades (ADR 0059).
+				degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
+			)
+			.await
+			.map_err(Error::from)?;
+			workspace_retrieved = semantic
+				.as_ref()
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none());
+			if self.remote.is_some() {
+				return Ok(semantic);
+			}
+			let reserved =
+				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
+			let available = budget.saturating_sub(reserved);
+			let mut access = self.access.write().await;
+			let memory = crate::semantic::services::memory_context::retrieve(
 				store,
-				self.remote.as_ref(),
-				&self.access,
+				&mut crate::semantic::service::Lease::Inherited(&mut access),
 				&self.run,
+				task,
+				inputs,
+				available,
 				&self.agent,
-			),
-			task,
-			inputs,
-			workspace_budget,
-			// Required-Home semantic context never degrades (ADR 0059).
-			degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
-		)
-		.await
-		.map_err(Error::from)?;
-		if self.remote.is_some() {
-			return Ok(semantic);
+				key,
+			)
+			.await?;
+			crate::semantic::services::memory_context::complete(
+				&mut crate::semantic::service::Lease::Inherited(&mut access),
+				&self.run,
+				semantic,
+				memory,
+				budget,
+			)
+			.await
 		}
-		let reserved =
-			serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
-		let available = budget.saturating_sub(reserved);
-		let mut access = self.access.write().await;
-		let memory = crate::semantic::services::memory_context::retrieve(
-			store,
-			&mut crate::semantic::service::Lease::Inherited(&mut access),
-			&self.run,
-			task,
-			inputs,
-			available,
-			&self.agent,
-			key,
-		)
-		.await?;
-		crate::semantic::services::memory_context::complete(
-			&mut crate::semantic::service::Lease::Inherited(&mut access),
-			&self.run,
-			semantic,
-			memory,
-			budget,
-		)
-		.await
+		.await;
+		aidash_application::ports::execution::SemanticContextRead {
+			workspace_retrieved,
+			result: result.map_err(Into::into),
+		}
 	}
-
 	pub(crate) async fn recheck_source_observation(
 		&self,
 		store: &Store,
@@ -1326,6 +1492,7 @@ pub async fn details_page(
 	)
 	.await?;
 	Ok(RunDetails {
+		egress_requests: details.egress_requests,
 		run: details.run,
 		invocations: details.invocations.into_iter().map(Into::into).collect(),
 		memory: details.memory,

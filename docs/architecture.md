@@ -200,7 +200,7 @@ Bindings are separate Registry and admission controls (see
 [Native Memory providers](operations/registry-capabilities.md#native-memory-providers)).
 Private memory bodies and credentials are not part of a descriptor. Memory bodies
 stay in the authorized provider storage of the Home, and credentials stay in the
-Provider Credential Store. Catalog metadata never exposes either.
+Secret Store. Catalog metadata never exposes either.
 
 ## Baseline implementation and verification sequence
 

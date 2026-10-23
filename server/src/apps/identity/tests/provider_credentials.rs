@@ -61,7 +61,7 @@ impl Store for FakeStore {
 	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
 		if self.fail_create {
 			return Err(aidash_application::Error::External(
-				"Provider Credential Store unavailable".into(),
+				"Secret Store unavailable".into(),
 			));
 		}
 		self.secrets
@@ -1495,10 +1495,10 @@ async fn postgres_store(
 	f: &EndpointFixture,
 	current: &str,
 	retired: Vec<SecretString>,
-) -> Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore> {
+) -> Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore> {
 	roots(f).await;
 	Arc::new(
-		aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
+		aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
 			f.runtime.store.control_pool.clone(),
 			current.into(),
 			retired,
@@ -1616,7 +1616,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	store.destroy("alpha", &old).await.unwrap();
 	store.delete("alpha", &resource).await.unwrap();
 	assert!(store.versions("alpha", &resource).await.unwrap().is_empty());
-	use aidash_server::apps::identity::models::credential_store::{Resource, Version};
+	use aidash_server::apps::identity::models::secret_store::{Resource, Version};
 	use reinhardt::db::orm::Model;
 	let mut tx = f.database.begin_fixture().await;
 	assert!(
@@ -1695,7 +1695,7 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 	#[case] same_resource: bool,
 ) {
 	use aidash_application::provider_access::KeyMaterialReader;
-	use aidash_server::apps::identity::models::credential_store::Version;
+	use aidash_server::apps::identity::models::secret_store::Version;
 	use reinhardt::db::orm::Model;
 	let f = endpoint.await;
 	let store = postgres_store(&f, &"22".repeat(32), vec![]).await;
@@ -1766,7 +1766,7 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 			.await
 			.unwrap_err()
 			.to_string(),
-		"Provider Credential Store cannot read the pinned version"
+		"Secret Store cannot read the pinned version"
 	);
 	if destination_tenant == "alpha" {
 		assert_eq!(
@@ -1787,7 +1787,7 @@ async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_
 ) {
 	use aidash_application::provider_access::KeyMaterialReader;
 	use aidash_server::apps::identity::{
-		models::credential_store::RegisteredKey, repositories::credential_store::PostgresStore,
+		models::secret_store::RegisteredKey, repositories::secret_store::PostgresStore,
 	};
 	use reinhardt::db::orm::Model;
 	let f = endpoint.await;
@@ -1988,7 +1988,7 @@ fn store_settings_validate_shape_without_loading_keys() {
 			.validate(&Profile::parse("local"))
 			.unwrap_err()
 			.to_string()
-			.contains("a Credential Broker serves only an Enterprise Provider Credential Store")
+			.contains("a Credential Broker serves only an Enterprise Secret Store")
 	);
 }
 
@@ -2067,7 +2067,7 @@ async fn bootstrap_loads_trimmed_keys_and_fails_closed_without_valid_key_sources
 			.await
 			.unwrap_err()
 			.to_string(),
-		"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+		"the Community build has no secret_manager Secret Store; it needs the Enterprise build"
 	);
 }
 
@@ -2210,7 +2210,7 @@ async fn recovery_command(
 	execute: bool,
 ) -> std::process::Output {
 	let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"));
-	command.arg("provider-credential-store-recovery");
+	command.arg("secret-store-recovery");
 	if execute {
 		command.arg("--execute");
 	}
@@ -2263,7 +2263,7 @@ async fn recovery_snapshot(f: &EndpointFixture) -> Value {
 
 fn real_service(
 	f: &EndpointFixture,
-	store: Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore>,
+	store: Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore>,
 ) -> Service {
 	Service {
 		repository: Arc::new(NativeRepository {
@@ -2301,7 +2301,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 
 async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool) {
 	use aidash_domain::provider_credentials::State;
-	use aidash_server::apps::identity::models::credential_store::{RegisteredKey, Version};
+	use aidash_server::apps::identity::models::secret_store::{RegisteredKey, Version};
 	use reinhardt::db::orm::Model;
 	let lost = "91".repeat(32);
 	let current = "92".repeat(32);
@@ -2419,20 +2419,15 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 			.unwrap();
 		tx.commit().await.unwrap();
 	} else {
-		let error =
-			aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
-				f.runtime.store.control_pool.clone(),
-				current.clone().into(),
-				vec![],
-			)
-			.await
-			.err()
-			.unwrap();
-		assert!(
-			error
-				.to_string()
-				.contains("manage provider-credential-store-recovery")
-		);
+		let error = aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+			f.runtime.store.control_pool.clone(),
+			current.clone().into(),
+			vec![],
+		)
+		.await
+		.err()
+		.unwrap();
+		assert!(error.to_string().contains("manage secret-store-recovery"));
 	}
 	let dir = tempfile::tempdir().unwrap();
 	recovery_settings(&f, dir.path(), &current);
@@ -2564,7 +2559,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	let mut tenants = std::collections::BTreeSet::new();
 	for event in events {
 		let data: Value = serde_json::from_str(&event.get::<String>("data").unwrap()).unwrap();
-		assert_eq!(data["actor"], "provider-credential-store-recovery");
+		assert_eq!(data["actor"], "secret-store-recovery");
 		assert_eq!(data["state"], "revoked");
 		tenants.insert(data["tenant"].as_str().unwrap().to_owned());
 	}
@@ -2645,7 +2640,7 @@ async fn recovery_refuses_tampered_configured_key_checks_without_mutation(
 }
 
 async fn recovery_tampered_case(case: &ManageCase, f: EndpointFixture, retired: bool) {
-	use aidash_server::apps::identity::models::credential_store::RegisteredKey;
+	use aidash_server::apps::identity::models::secret_store::RegisteredKey;
 	use reinhardt::db::orm::Model;
 	let lost = "93".repeat(32);
 	let current = "94".repeat(32);
@@ -3166,7 +3161,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		let error = failure.error;
 		if fail_store {
 			assert!(
-				matches!(error, aidash_server::Error::External(ref message) if message == "Provider Credential Store unavailable")
+				matches!(error, aidash_server::Error::External(ref message) if message == "Secret Store unavailable")
 			);
 		} else {
 			assert!(
@@ -3205,4 +3200,243 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		assert_eq!(decision.decision.0["allowed"], true);
 		assert!(!all_database_text(&f).await.contains(canary));
 	}
+}
+
+/// The real PostgreSQL namespace, lifecycle and metadata projection share no
+/// plaintext with API responses, another Tenant or the database's JSON views.
+#[rstest]
+#[tokio::test]
+async fn tenant_secrets_are_host_bound_write_only_and_purged_with_their_tenant(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_application::tenant_secrets::{Put, Service as SecretService};
+	let f = endpoint.await;
+	let encrypted = postgres_store(&f, &"11".repeat(32), vec![]).await;
+	let service = SecretService {
+		repository: Arc::new(
+			aidash_server::apps::identity::repositories::tenant_secrets::NativeRepository {
+				pool: f.runtime.store.control_pool.clone(),
+				node: f.runtime.store.node_id.clone(),
+			},
+		),
+		store: encrypted.clone(),
+		reader: encrypted.clone(),
+		fingerprint_key: "tenant-secret-fingerprint-at-least-32-bytes".into(),
+		max_per_tenant: 64,
+	};
+	let canary = "tenant-secret-canary-never-in-storage-or-output-296";
+	let created = service
+		.put(
+			"alpha",
+			"image-key",
+			Put {
+				expected_revision: 0,
+				value: Some(canary.into()),
+				hosts: Some(vec!["api.example.test".into()]),
+			},
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		service
+			.resolve("alpha", "image-key", "https://api.example.test/upload")
+			.await
+			.unwrap()
+			.expose_secret(),
+		canary
+	);
+	for (tenant, endpoint) in [
+		("beta", "https://api.example.test/upload"),
+		("alpha", "https://another.example.test/upload"),
+	] {
+		let error = service
+			.resolve(tenant, "image-key", endpoint)
+			.await
+			.unwrap_err();
+		assert!(error.to_string().contains("secret_unavailable"));
+	}
+	let metadata = serde_json::to_string(&created).unwrap();
+	assert!(!metadata.contains(canary));
+	assert!(!metadata.contains("secret_resource"));
+	assert!(!all_database_text(&f).await.contains(canary));
+	let changed = service
+		.put(
+			"alpha",
+			"image-key",
+			Put {
+				expected_revision: created.revision,
+				value: Some("replacement-tenant-secret-296".into()),
+				hosts: None,
+			},
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_ne!(created.fingerprint, changed.fingerprint);
+	assert_eq!(
+		service
+			.resolve("alpha", "image-key", "https://api.example.test/")
+			.await
+			.unwrap()
+			.expose_secret(),
+		"replacement-tenant-secret-296"
+	);
+	service
+		.delete("alpha", "image-key", changed.revision, "actor")
+		.await
+		.unwrap();
+	assert!(
+		service
+			.resolve("alpha", "image-key", "https://api.example.test/")
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("secret_unavailable")
+	);
+	assert!(service.list("alpha").await.unwrap().is_empty());
+	service
+		.put(
+			"alpha",
+			"image-key",
+			Put {
+				expected_revision: 0,
+				value: Some("second-secret-296".into()),
+				hosts: Some(vec!["api.example.test".into()]),
+			},
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(service.purge_tenant("alpha").await.unwrap(), 2);
+	assert!(service.list("alpha").await.unwrap().is_empty());
+	assert!(!all_database_text(&f).await.contains("second-secret-296"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn tenant_secret_http_management_refuses_other_tenants_and_deployment_administrators(
+	#[future] endpoint: EndpointFixture,
+) {
+	let mut f = endpoint.await;
+	for tenant in ["alpha", "beta"] {
+		authorize_tenant(&f, tenant).await;
+	}
+	let encrypted = postgres_store(&f, &"22".repeat(32), vec![]).await;
+	f.runtime.store.tenant_secrets = Some(Arc::new(aidash_application::tenant_secrets::Service {
+		repository: Arc::new(
+			aidash_server::apps::identity::repositories::tenant_secrets::NativeRepository {
+				pool: f.runtime.store.control_pool.clone(),
+				node: f.runtime.store.node_id.clone(),
+			},
+		),
+		store: encrypted.clone(),
+		reader: encrypted,
+		fingerprint_key: "tenant-secret-fingerprint-at-least-32-bytes".into(),
+		max_per_tenant: 64,
+	}));
+	f.context.set_singleton(f.runtime.clone());
+	let auth = aidash_server::authorization::Authorization {
+		pool: f.runtime.store.pool.clone(),
+	};
+	let alpha = auth
+		.issue_credential("alpha", "actor", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
+	let beta = auth
+		.issue_credential("beta", "actor", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
+	let client = reqwest::Client::new();
+	let url = format!("{}/api/tenants/alpha/secrets/image-key", f.server.url);
+	let response=client.put(&url).bearer_auth(&alpha).json(&json!({"expected_revision":0,"value":"http-tenant-secret-canary-296","hosts":["api.example.test"]})).send().await.unwrap();
+	assert_eq!(response.status().as_u16(), 200);
+	assert_eq!(response.headers()["cache-control"], "no-store");
+	let metadata: Value = response.json().await.unwrap();
+	assert_eq!(metadata["name"], "image-key");
+	assert_eq!(metadata["last4"], "-296");
+	assert!(metadata.get("value").is_none());
+	// Both transport contracts reach real Registry persistence with the Secret
+	// name; an endpoint outside its recorded hosts is refused before insertion.
+	let registry = f.runtime.registry.clone().with_tenant_secrets(true);
+	let tenant = aidash_domain::tenancy::TenantName::new("alpha").unwrap();
+	for transport in ["http", "mcp"] {
+		let mut config = json!({"transport":transport,"endpoint":"https://api.example.test/rpc","replay":"unsafe","secret":"image-key"});
+		if transport == "mcp" {
+			config["tool_name"] = json!("lookup");
+		}
+		let mut tool: aidash_domain::registry::Entry = serde_json::from_value(json!({
+			"id":format!("secret-{transport}"),"version":"1.0.0","kind":"tool",
+			"name":{"en":"Secret transport"},"description":{"en":"Native transport fixture"},
+			"config":{"registry_node":f.runtime.store.node_id,"provider":format!("integration.{transport}@1"),"operation":"invoke","default_alias":"lookup","tier":"integration","transport":config}
+		})).unwrap();
+		registry.register(&tenant, tool.clone()).await.unwrap();
+		assert_eq!(
+			registry
+				.get(&tenant, &tool.id, &tool.version)
+				.await
+				.unwrap()
+				.config["transport"]["secret"],
+			"image-key"
+		);
+		tool.id = format!("refused-{transport}");
+		tool.config["transport"]["endpoint"] = json!("https://other.example.test/rpc");
+		assert!(registry.register(&tenant, tool).await.is_err());
+	}
+	for token in [&beta, &f.runtime.config.api_token] {
+		let response = client.get(&url).bearer_auth(token).send().await.unwrap();
+		assert_eq!(response.status().as_u16(), 403);
+		let response = client
+			.put(&url)
+			.bearer_auth(token)
+			.json(&json!({"expected_revision":metadata["revision"],"hosts":["another.test"]}))
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status().as_u16(), 403);
+	}
+	let response = client.get(&url).bearer_auth(&alpha).send().await.unwrap();
+	assert_eq!(response.status().as_u16(), 200);
+	assert_eq!(
+		response.json::<Value>().await.unwrap()["hosts"],
+		json!(["api.example.test"])
+	);
+	let snapshot = auth.snapshot("alpha").await.unwrap();
+	let mut bundle = serde_json::to_value(snapshot.bundle).unwrap();
+	bundle["policies"] = json!([{"id":"use-only","effect":"allow","subjects":{"any":true},"actions":["secret.use"],"resources":{"kinds":["secret"]}}]);
+	auth.replace(
+		"alpha",
+		snapshot.revision,
+		serde_json::from_value(bundle).unwrap(),
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+	let response = client.get(&url).bearer_auth(&alpha).send().await.unwrap();
+	assert_eq!(
+		response.status().as_u16(),
+		200,
+		"secret.use permits metadata reads"
+	);
+	for method in [reqwest::Method::PUT, reqwest::Method::DELETE] {
+		let response = client
+			.request(method, &url)
+			.bearer_auth(&alpha)
+			.json(&json!({"expected_revision":metadata["revision"]}))
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(
+			response.status().as_u16(),
+			403,
+			"secret.use grants no management authority"
+		);
+	}
+	assert!(
+		!all_database_text(&f)
+			.await
+			.contains("http-tenant-secret-canary-296")
+	);
 }

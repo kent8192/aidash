@@ -58,3 +58,13 @@ export async function routeRegistryVersions(
       route.fulfill({ json: { versions: versions(), next_offset: null } }),
   );
 }
+
+/** What `GET /api/tenants/{tenant}/approval-decider` serves a Tenant that has
+ *  named no approval Decider: the built-in one, approved on this Node. */
+export const builtInApprovalDecider = {
+  decider: { id: "aidash.approval-decider", version: "1.0.0" },
+  built_in: true,
+  registered: true,
+  approved: true,
+  revision: 0,
+};

@@ -18,11 +18,15 @@ struct State {
 	sent: usize,
 	calls: Option<Value>,
 	order: Vec<String>,
+	/// What each `prepare` received as the Tenant Secret value.
+	secrets: Vec<Option<String>>,
 }
 struct Repository {
 	state: Arc<Mutex<State>>,
 	failure: Option<(usize, &'static str)>,
 	response: &'static str,
+	/// The profile's rule names the Tenant Secret `key`.
+	secret_rule: bool,
 }
 impl Repository {
 	fn new() -> Self {
@@ -36,9 +40,11 @@ impl Repository {
 				sent: 0,
 				calls: Some(json!([{"id":"previous","outcome":"real","result":{"previous":true}}])),
 				order: vec![],
+				secrets: vec![],
 			})),
 			failure: None,
 			response: "real",
+			secret_rule: false,
 		}
 	}
 	fn failing(&self, name: &str) -> bool {
@@ -85,6 +91,13 @@ fn rule() -> RealToolRule {
 		endpoint: "https://test.example/rpc".into(),
 		allowed_actions: vec!["read".into()],
 		allowed_resources: vec!["fixture".into()],
+		secret: None,
+	}
+}
+fn secret_rule() -> RealToolRule {
+	RealToolRule {
+		secret: Some("key".into()),
+		..rule()
 	}
 }
 fn pin() -> ProfilePin {
@@ -261,6 +274,8 @@ impl RealDispatchScope for Scope<'_> {
 			enabled: !self.repository.failing("disabled"),
 			rules: if self.repository.failing("rules") {
 				json!([])
+			} else if self.repository.secret_rule {
+				json!([secret_rule()])
 			} else {
 				json!([rule()])
 			},
@@ -296,6 +311,26 @@ impl RealDispatchScope for Scope<'_> {
 		self.pending = Some(calls);
 		Ok(())
 	}
+	async fn tenant_secret(
+		&mut self,
+		tenant: &str,
+		name: &str,
+		endpoint: &str,
+	) -> Result<secrecy::SecretString> {
+		assert_eq!(
+			(tenant, name, endpoint),
+			("tenant", "key", "https://test.example/rpc")
+		);
+		self.repository
+			.state
+			.lock()
+			.unwrap()
+			.order
+			.push("tenant_secret".into());
+		Ok(secrecy::SecretString::from(
+			"tenant-secret-value".to_owned(),
+		))
+	}
 	async fn rollback(mut self: Box<Self>) -> Result<()> {
 		self.repository.state.lock().unwrap().rollbacks += 1;
 		self.settled = true;
@@ -322,7 +357,14 @@ impl RealToolTransport for Repository {
 		id: Uuid,
 		selected: &RealToolRule,
 		input: &ToolCall,
+		secret: Option<&secrecy::SecretString>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
+		use secrecy::ExposeSecret;
+		self.state
+			.lock()
+			.unwrap()
+			.secrets
+			.push(secret.map(|s| s.expose_secret().to_owned()));
 		assert_eq!(id, Uuid::from_u128(9));
 		assert_eq!(selected.endpoint, rule().endpoint);
 		assert_eq!(*input, call());
@@ -565,4 +607,50 @@ async fn result_never_overwrites_a_changed_or_lost_marker(#[case] response: &'st
 	} else {
 		assert_eq!(state.calls, None);
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_rule_that_names_a_tenant_secret_resolves_it_for_each_request_it_prepares() {
+	let mut repository = Repository::new();
+	repository.secret_rule = true;
+	let mut pin = pin();
+	pin.rules = vec![secret_rule()];
+	invoke(
+		&repository.dispatch(),
+		session().id,
+		&pin,
+		&secret_rule(),
+		&call(),
+	)
+	.await
+	.unwrap();
+	let state = repository.state.lock().unwrap();
+	// Both preparations (the one before the pending marker and the one that sends) resolve it.
+	assert_eq!(
+		state.order.iter().filter(|o| *o == "tenant_secret").count(),
+		2
+	);
+	assert_eq!(
+		state.secrets,
+		[
+			Some("tenant-secret-value".to_owned()),
+			Some("tenant-secret-value".to_owned())
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_rule_without_a_tenant_secret_sends_none() {
+	let repository = Repository::new();
+	invoke(
+		&repository.dispatch(),
+		session().id,
+		&pin(),
+		&rule(),
+		&call(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(repository.state.lock().unwrap().secrets, [None, None]);
 }

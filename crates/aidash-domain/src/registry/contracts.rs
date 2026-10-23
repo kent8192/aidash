@@ -17,6 +17,10 @@ pub struct Package {
 	pub permissions: Vec<String>,
 	#[serde(default)]
 	pub dependencies: Vec<EntityRef>,
+	/// The Tenant Secrets the package's tool names, which whoever installs it
+	/// fills from their own Tenant (ADR 0051). Empty for most packages.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

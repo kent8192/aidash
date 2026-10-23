@@ -105,6 +105,11 @@ def validate_config(config):
     tier = config.get("deployment_tier", "nonproduction")
     if tier not in {"nonproduction", "production"}:
         raise Refused("Unknown deployment tier")
+    plan = config.get("pre_update_backup_plan")
+    if plan is not None and not (production(config) and re.fullmatch(
+        r"projects/" + re.escape(config["project_id"]) + r"/locations/[a-z0-9-]+/backupPlans/[a-z][a-z0-9-]{0,62}", str(plan)
+    )):
+        raise Refused("Only production names a Pre-update Backup plan, and it belongs to the production project")
     if not production(config):
         return
     for key in ("nonproduction_project_id", "nonproduction_state_bucket", "staging_release_bucket",
@@ -145,16 +150,14 @@ def valid_images(images, project):
         raise Refused("Release evidence contains an unapproved registry or mutable image")
 
 
-def authorize_production(config, main_sha, ci_check, accepted=None):
-    """Bind a human-merged release, main CI and staging artifacts to the same tree."""
-    validate_config(config)
-    if not production(config) or not SHA.fullmatch(main_sha):
-        raise Refused("Production needs an exact main SHA")
+def merged_release(config, main_sha):
+    """Resolve the human-merged release whose tested tree is current protected main."""
+    if not SHA.fullmatch(main_sha):
+        raise Refused("Release verification needs an exact main SHA")
     repo = config["repository"]
     branch = github(f"repos/{repo}/branches/main")
     if not branch.get("protected") or branch["commit"]["sha"] != main_sha:
         raise Refused("Production must deploy the current protected main SHA")
-    ci_check(dict(config, required_ci_branch="main"), main_sha)
     pulls = github(f"repos/{repo}/commits/{main_sha}/pulls?per_page=100")
     candidates = []
     for pr in pulls:
@@ -195,15 +198,25 @@ def authorize_production(config, main_sha, ci_check, accepted=None):
     parents = main_commit.get("parents", [])
     if not parents or github(f"repos/{repo}/compare/{parents[0]['sha']}...{source}").get("status") not in {"ahead", "identical"}:
         raise Refused("The candidate does not include the previous main history")
+    return pr, source
+
+
+def authorize_production(config, main_sha, ci_check, accepted=None):
+    """Bind a human-merged release, main CI and staging artifacts to the same tree."""
+    validate_config(config)
+    if not production(config):
+        raise Refused("Production needs an exact main SHA")
+    pr, source = merged_release(config, main_sha)
+    repo = config["repository"]
+    ci_check(dict(config, required_ci_branch="main"), main_sha)
     ci_check(dict(config, required_ci_branch=config["develop_branch"]), source)
     if accepted is not None:
         # Only the protected lifecycle state supplies an already admitted tuple.
         # Recheck current main/human provenance above, without reading a mutable
         # staging index that cannot revoke or replace this accepted bundle.
         if (not isinstance(accepted, dict) or set(accepted) != {"source_sha", "trusted_sha", "images"}
-                or accepted["source_sha"] != source or not SHA.fullmatch(accepted["trusted_sha"])
-                or github(f"repos/{repo}/compare/{accepted['trusted_sha']}...{main_sha}").get("status") not in {"ahead", "identical"}):
-            raise Refused("The accepted bundle has invalid main provenance")
+                or accepted["source_sha"] != source or accepted["trusted_sha"] != source):
+            raise Refused("The accepted bundle was not built from the release source")
         valid_images(accepted["images"], config["staging_project_id"])
         return {"sha": source, "main_sha": main_sha, "source_ref": "main", "source_repo": repo,
                 "fork": False, "approved_sha": "", "release_pr": pr["number"], "release": deepcopy(accepted)}
@@ -211,8 +224,8 @@ def authorize_production(config, main_sha, ci_check, accepted=None):
     if not receipt or receipt.get("protocol") != "aidash-staging-receipt/1" or receipt.get("status") != "ready" or receipt.get("source_sha") != source:
         raise Refused("No successful staging evidence exists for this exact release")
     trusted = receipt.get("trusted_sha", "")
-    if not SHA.fullmatch(trusted) or github(f"repos/{repo}/compare/{trusted}...{main_sha}").get("status") not in {"ahead", "identical"}:
-        raise Refused("The staged controller is not an approved main ancestor")
+    if trusted != source:
+        raise Refused("The staged controller was not built from the release source")
     workflow = github(f"repos/{repo}/actions/workflows/gcp-environments.yml")
     stage_run = github(f"repos/{repo}/actions/runs/{int(receipt['run_id'])}")
     if (stage_run.get("workflow_id") != workflow["id"] or stage_run.get("conclusion") != "success"
@@ -264,6 +277,9 @@ def publish_result(config, store, identity, generation, output, status):
                "source_sha": entry["sha"], "trusted_sha": outcome_trusted, "status": status,
                "hostname": hostname(config, identity, entry), "run_id": run_id,
                "occurred_at": timestamp}
+    for key in ("pre_update_backup", "writers_started"):
+        if entry.get(key):
+            receipt[key] = entry[key]
     if config.get("notification_bucket"):
         immutable_write(Store(config["notification_bucket"]), f"notifications/{event_id}.json", receipt)
     if identity == "develop" and status == "ready" and config.get("release_flow_enabled"):

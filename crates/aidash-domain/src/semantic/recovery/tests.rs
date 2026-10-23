@@ -15,6 +15,8 @@ use rstest::rstest;
 #[case::allowance(Failure::Allowance, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::provider_contract(Failure::ProviderContract, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::context_budget(Failure::ContextBudget, false, &[Action::CreateFollowUpTask])]
+#[case::durable_memory_budget(Failure::DurableMemoryBudget, false, &[Action::CreateFollowUpTask])]
+#[case::durable_memory_budget_with_stale_retry(Failure::DurableMemoryBudget, true, &[Action::CreateFollowUpTask])]
 #[case::invalidated(Failure::Invalidated, false, &[Action::CreateFollowUpTask])]
 #[case::invalidated_with_a_stale_retry(Failure::Invalidated, true, &[Action::CreateFollowUpTask])]
 fn each_cause_offers_only_its_authorized_actions(

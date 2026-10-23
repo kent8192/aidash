@@ -97,7 +97,7 @@ impl ChildEngine {
 			program,
 			limits: aidash_runtime::child::Limits {
 				cpu_seconds: 20,
-				memory_bytes: 1024 * 1024 * 1024,
+				memory_bytes: Some(1024 * 1024 * 1024),
 				deadline: Duration::from_secs(20),
 				// Room for the text reply or a base64 page image.
 				max_output: MAX_REPLY_BYTES.max(2 * MAX_PAGE_IMAGE_BYTES + 64 * 1024),

@@ -1,6 +1,6 @@
 import { Input } from "../components/ui/input";
 import { panelClass } from "./display";
-import { Alert, Check, Hint, inlineFormClass } from "../components/patterns";
+import { Alert, Hint, inlineFormClass } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,7 +31,6 @@ export function OutboundFiles({
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
   const request = useRef<{ url: string; key: string } | undefined>(undefined);
   const query = useInfiniteQuery({
     queryKey: ["core-outbound", run],
@@ -72,11 +71,7 @@ export function OutboundFiles({
   };
   return (
     <details className={panelClass}>
-      <summary>
-        {ja
-          ? "外部ファイルと Python パッケージ"
-          : "External files and Python packages"}
-      </summary>
+      <summary>{ja ? "外部ファイル" : "External files"}</summary>
       <Field label="HTTPS URL">
         <Input
           type="url"
@@ -150,59 +145,10 @@ export function OutboundFiles({
                   {ja ? "作業ファイルへコピー" : "Copy to working files"}
                 </Button>
               </div>
-              {item.status === "completed" &&
-                item.http_status === 200 &&
-                filename(item).endsWith(".whl") && (
-                  <Check
-                    checked={selected.includes(item.operation_id)}
-                    onChange={(e) =>
-                      setSelected(
-                        e.target.checked
-                          ? [...selected, item.operation_id]
-                          : selected.filter((id) => id !== item.operation_id),
-                      )
-                    }
-                  >
-                    {ja
-                      ? "Python に導入する wheel"
-                      : "Wheel to install in Python"}
-                  </Check>
-                )}
             </>
           )}
         </article>
       ))}
-      {selected.length > 0 && (
-        <>
-          <p>
-            {ja
-              ? "選択した wheel で追加パッケージ一式を置き換えます。必要な依存 wheel も選択してください。Python のメモリはリセットされ、次の実行前に確認が必要です。"
-              : "Replace the package overlay with these wheels. Select required dependency wheels too. Python memory resets and requires acknowledgement before the next execution."}
-          </p>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy || selected.length > 16}
-            onClick={() =>
-              void act(() =>
-                post(`/runs/${run}/python/install`, {
-                  idempotency_key: crypto.randomUUID(),
-                  expected_revision: revision,
-                  wheels: items
-                    .filter((i) => selected.includes(i.operation_id))
-                    .map((i) => ({
-                      outbound_operation_id: i.operation_id,
-                      filename: filename(i),
-                      sha256: i.output_file!.digest,
-                    })),
-                }),
-              )
-            }
-          >
-            {ja ? "選択したパッケージを導入" : "Install selected packages"}
-          </Button>
-        </>
-      )}
       {query.hasNextPage && (
         <Button
           variant="outline"

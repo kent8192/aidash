@@ -7,10 +7,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod approval;
 pub mod evidence;
 pub mod policy;
 pub mod probability;
 pub mod pruning;
+pub use approval::*;
 pub use evidence::*;
 pub use probability::Probability;
 
@@ -22,7 +24,12 @@ pub const DECISIONS: &str = "openrouter.decisions/1";
 pub const BUILDER: &str = "aidash.compaction/2";
 pub const OPTION_SOURCE: &str = "history_event/1";
 pub const RULE: &str = "compaction.keep/1";
+pub const APPROVAL_BUILDER: &str = "aidash.approval/1";
+pub const APPROVAL_OPTION_SOURCE: &str = "approval_call/1";
+pub const APPROVAL_RULE: &str = "approval.block/1";
 pub const EVIDENCE_VERSION: u8 = 4;
+/// Versions `ApprovalEvidence`, which is a record of its own beside `Evidence`.
+pub const APPROVAL_EVIDENCE_VERSION: u8 = 1;
 /// Decider Routes one version may list.
 pub const MAX_ROUTES: usize = 4;
 /// OpenRouter hosts one Decisions Route may name.
@@ -37,6 +44,33 @@ pub const STATE_READ: &str = "decision.state.read";
 #[serde(rename_all = "snake_case")]
 pub enum Hook {
 	Compaction,
+	/// Whether a pending Tool call may run without a person approving it
+	/// (the Auto Approval Mode, ADR 0077).
+	Approval,
+}
+impl Hook {
+	/// The builder, option source and rule a Decider of this hook must name,
+	/// which fix the questions it asks and how its answers are read.
+	pub const fn contract(self) -> HookContract {
+		match self {
+			Self::Compaction => HookContract {
+				builder: BUILDER,
+				option_source: OPTION_SOURCE,
+				rule: RULE,
+			},
+			Self::Approval => HookContract {
+				builder: APPROVAL_BUILDER,
+				option_source: APPROVAL_OPTION_SOURCE,
+				rule: APPROVAL_RULE,
+			},
+		}
+	}
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookContract {
+	pub builder: &'static str,
+	pub option_source: &'static str,
+	pub rule: &'static str,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -90,9 +124,10 @@ pub struct DeciderRoute {
 	/// Empty on the System One Route.
 	#[serde(default)]
 	pub hosts: Vec<String>,
-	/// The probability at which this Route's answers keep content. A Binding's
-	/// stricter threshold still applies.
-	pub keep_threshold: Probability,
+	/// The probability at which this Route's answer takes the conservative
+	/// action: keep content for compaction, block the call for approval. Lower
+	/// is stricter for both. A Binding's stricter threshold still applies.
+	pub threshold: Probability,
 	/// How much state this Route sends and how it abridges it.
 	#[serde(default)]
 	pub state_budget: StateBudget,
@@ -104,16 +139,17 @@ impl DeciderRoute {
 			provider_contract: PROVIDER.into(),
 			model: model.into(),
 			hosts: vec![],
-			keep_threshold: Probability::half(),
+			threshold: Probability::half(),
 			state_budget: StateBudget::default(),
 		}
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.state_budget.validate()?;
-		let threshold = self.keep_threshold.value();
+		let threshold = self.threshold.value();
 		if threshold <= 0.0 || threshold > 0.5 {
 			return Err(Error::Invalid(
-				"a Decider Route keeps content at a threshold above 0 and at most 0.5".into(),
+				"a Decider Route takes its conservative action at a threshold above 0 and at most 0.5"
+					.into(),
 			));
 		}
 		match self.provider_contract.as_str() {
@@ -244,17 +280,25 @@ impl StateBudget {
 impl DeciderConfig {
 	pub fn validate(&self) -> Result<()> {
 		validate_provider_credential(&self.provider_credential)?;
+		let contract = self.hook.contract();
 		if self.description.trim().is_empty()
-			|| self.builder != BUILDER
-			|| self.option_source != OPTION_SOURCE
-			|| self.rule != RULE
+			|| self.builder != contract.builder
+			|| self.option_source != contract.option_source
+			|| self.rule != contract.rule
 			|| !(1..=1_000).contains(&self.max_calls_per_run)
 			|| !(1..=30).contains(&self.state_retention.days)
 			|| self.routes.is_empty()
 			|| self.routes.len() > MAX_ROUTES
 		{
 			return Err(Error::Invalid(
-				"unsupported Decider contract or compaction rule".into(),
+				"unsupported Decider contract or rule for its hook".into(),
+			));
+		}
+		// Its state holds what people wrote to the Run, so an approval Decider
+		// retains none of it.
+		if self.hook == Hook::Approval && self.state_retention.enabled {
+			return Err(Error::Invalid(
+				"an approval Decider does not retain its state".into(),
 			));
 		}
 		for (index, route) in self.routes.iter().enumerate() {
@@ -281,10 +325,7 @@ impl DeciderConfig {
 	/// Every Route's threshold in order, which replay checks a decision's
 	/// restrictions against.
 	pub fn thresholds(&self) -> Vec<Probability> {
-		self.routes
-			.iter()
-			.map(|route| route.keep_threshold)
-			.collect()
+		self.routes.iter().map(|route| route.threshold).collect()
 	}
 	pub fn digest(&self) -> Result<String> {
 		Ok(configuration_digest(
@@ -301,7 +342,7 @@ impl DeciderConfig {
 		let mut parameters = serde_json::to_value(self)?;
 		for route in parameters["routes"].as_array_mut().into_iter().flatten() {
 			route["model"] = serde_json::Value::Null;
-			route["keep_threshold"] = serde_json::Value::Null;
+			route["threshold"] = serde_json::Value::Null;
 		}
 		parameters["mode"] = serde_json::Value::Null;
 		Ok(digest(&parameters))
@@ -404,11 +445,16 @@ pub fn served_by(pinned: &str, served: &str) -> bool {
 			.is_some_and(|date| date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Lower keep thresholds and larger protected suffixes preserve more content.
+/// What a Binding may tighten. A lower threshold takes the conservative action
+/// at a lower probability: it keeps more content for compaction and blocks more
+/// calls for approval. `preserve_recent` and `forbid_apply` apply to compaction
+/// only; an approval Decider reads `threshold` and `max_calls_per_run`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Restrictions {
-	pub keep_threshold: Probability,
+	/// The probability at which an answer takes the conservative action; lower
+	/// is stricter. A Route's own threshold is intersected in when it is asked.
+	pub threshold: Probability,
 	/// Events, or on the Native Projection Version Model Turns, never classified.
 	pub preserve_recent: usize,
 	pub forbid_apply: bool,
@@ -418,7 +464,7 @@ pub struct Restrictions {
 impl Default for Restrictions {
 	fn default() -> Self {
 		Self {
-			keep_threshold: Probability::half(),
+			threshold: Probability::half(),
 			preserve_recent: 6,
 			forbid_apply: false,
 			max_calls_per_run: None,
@@ -429,7 +475,7 @@ impl Restrictions {
 	/// The floor every Decider version shares, checked even where the version
 	/// itself is not at hand.
 	pub fn validate_floor(&self) -> Result<()> {
-		if self.keep_threshold.value() > 0.5
+		if self.threshold.value() > 0.5
 			|| self.preserve_recent < 6
 			|| self.max_calls_per_run == Some(0)
 		{
@@ -454,17 +500,17 @@ impl Restrictions {
 		}
 		Ok(())
 	}
-	/// These restrictions with a Route's own threshold, whichever keeps more.
+	/// These restrictions with a Route's own threshold, whichever is stricter.
 	pub fn with_route(&self, route: &DeciderRoute) -> Self {
 		let mut restrictions = self.clone();
-		if route.keep_threshold.value() < restrictions.keep_threshold.value() {
-			restrictions.keep_threshold = route.keep_threshold;
+		if route.threshold.value() < restrictions.threshold.value() {
+			restrictions.threshold = route.threshold;
 		}
 		restrictions
 	}
-	/// Whether these restrictions keep everything `other` keeps.
+	/// Whether these restrictions are at least as strict as `other` in every respect.
 	pub fn at_least_as_strict(&self, other: &Self) -> bool {
-		self.keep_threshold.value() <= other.keep_threshold.value()
+		self.threshold.value() <= other.threshold.value()
 			&& self.preserve_recent >= other.preserve_recent
 			&& (self.forbid_apply || !other.forbid_apply)
 			&& match (self.max_calls_per_run, other.max_calls_per_run) {
@@ -477,10 +523,10 @@ impl Restrictions {
 		self.validate(config)?;
 		current.validate(config)?;
 		Ok(Self {
-			keep_threshold: if self.keep_threshold.value() <= current.keep_threshold.value() {
-				self.keep_threshold
+			threshold: if self.threshold.value() <= current.threshold.value() {
+				self.threshold
 			} else {
-				current.keep_threshold
+				current.threshold
 			},
 			preserve_recent: self.preserve_recent.max(current.preserve_recent),
 			forbid_apply: self.forbid_apply || current.forbid_apply,

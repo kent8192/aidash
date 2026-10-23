@@ -2,8 +2,9 @@
 
 Provider Credentials are Tenant-owned metadata records obtained only through
 Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
-Key Material passes from the server-side exchange into the Provider Credential
-Store write port. Pinned reads use a separate narrow read port.
+Key Material passes from the server-side exchange into the Secret Store
+write port. Pinned reads use a separate narrow read port. The Store also holds
+[Tenant Secrets](tenant-secrets.md) in their own resource namespace.
 Aidash exposes no HTTP create/rotate endpoint or dashboard
 form accepting typed or pasted provider keys; Provider Authorization (below) is
 the only production write path.
@@ -15,7 +16,7 @@ Provider Credential ID or an environment key reference. `credential_env` was
 removed from model and embedding configurations in #158: `provider_access`
 has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
-Every model-provider key therefore comes from a Provider Credential Store, on
+Every model-provider key therefore comes from a Secret Store, on
 Cloud and self-hosted nodes alike. Peer, sandbox, runner and vector store
 references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
 transports can no longer name one (#296).
@@ -74,7 +75,7 @@ extend to another port or scheme on the same host.
   and semantic retrieval does not treat it as an outage. Neither retries it.
 - Under Federation, the list of the Deployment that makes the call applies.
 
-Choose a Provider Credential Store in server settings. Without
+Choose a Secret Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
 unavailable.
 
@@ -225,8 +226,8 @@ After total or partial key loss, stop server and worker and run the following
 with the same settings and key sources as the node, including any retained keys:
 
 ```sh
-manage provider-credential-store-recovery
-manage provider-credential-store-recovery --execute
+manage secret-store-recovery
+manage secret-store-recovery --execute
 ```
 
 The default is a dry run. Both invocations print only JSON counts:

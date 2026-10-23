@@ -96,7 +96,7 @@ pub enum DeploymentScopeReason {
 	/// The `memory-recovery` command.
 	MemoryRecovery,
 	/// Recovering the credential store across Tenants.
-	CredentialStoreRecovery,
+	SecretStoreRecovery,
 	/// Listing Provider Credentials whose stored Key Material needs reconciling.
 	CredentialReconcile,
 	/// A Deployment Administrator's lists across Tenants.
@@ -135,6 +135,9 @@ pub enum DeploymentScopeReason {
 	/// Purging a deleted Tenant's data after its grace period, and deleting the
 	/// audit history that outlived a purge (ADR 0061).
 	TenantPurge,
+	/// The `demo-data` command and the sign-in step that fulfils Demo
+	/// Reservations. Each Tenant it fills is entered in that Tenant's own scope.
+	DemoData,
 	/// Test fixtures that span Tenants.
 	#[cfg(feature = "test-support")]
 	TestFixture,
@@ -157,7 +160,7 @@ impl DeploymentScopeReason {
 			Self::BuiltInSeeding => "built-in-seeding",
 			Self::SharedRegistry => "shared-registry",
 			Self::MemoryRecovery => "memory-recovery",
-			Self::CredentialStoreRecovery => "credential-store-recovery",
+			Self::SecretStoreRecovery => "secret-store-recovery",
 			Self::CredentialReconcile => "credential-reconcile",
 			Self::DeploymentAdministratorList => "deployment-administrator-list",
 			Self::DeploymentAdministration => "deployment-administration",
@@ -171,6 +174,7 @@ impl DeploymentScopeReason {
 			Self::MarketplaceDistribution => "marketplace-distribution",
 			Self::UsageSampling => "usage-sampling",
 			Self::TenantPurge => "tenant-purge",
+			Self::DemoData => "demo-data",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
 		}
@@ -190,13 +194,14 @@ impl DeploymentScopeReason {
 			| Self::BuiltInSeeding
 			| Self::SharedRegistry
 			| Self::MemoryRecovery
-			| Self::CredentialStoreRecovery
+			| Self::SecretStoreRecovery
 			| Self::DeploymentAdministration
 			| Self::IdentityTenants
 			| Self::TenantCreation
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
 			| Self::TenantPurge
+			| Self::DemoData
 			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -244,7 +249,7 @@ mod tests {
 			DeploymentScopeReason::BuiltInSeeding,
 			DeploymentScopeReason::SharedRegistry,
 			DeploymentScopeReason::MemoryRecovery,
-			DeploymentScopeReason::CredentialStoreRecovery,
+			DeploymentScopeReason::SecretStoreRecovery,
 			DeploymentScopeReason::CredentialReconcile,
 			DeploymentScopeReason::DeploymentAdministratorList,
 			DeploymentScopeReason::DeploymentAdministration,
@@ -258,6 +263,7 @@ mod tests {
 			DeploymentScopeReason::MarketplaceDistribution,
 			DeploymentScopeReason::UsageSampling,
 			DeploymentScopeReason::TenantPurge,
+			DeploymentScopeReason::DemoData,
 		];
 		let labels = reasons
 			.iter()

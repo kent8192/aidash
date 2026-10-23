@@ -16,16 +16,16 @@ Every Tenant's Registry holds the built-in declarations at exact immutable versi
 
 The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and the research providers are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one whose `[research_providers]` settings do not declare a research provider offers no group for it. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
 
-| Group              | Bundle                           | Operations                                                           |
-| ------------------ | -------------------------------- | -------------------------------------------------------------------- |
-| `shell`            | `aidash.bundle.shell`            | `shell`, `shell_poll`, `shell_cancel`                                |
-| `python`           | `aidash.bundle.python`           | `code_interpreter`, `python_install`, `python_poll`, `python_cancel` |
-| `outbound_get`     | `aidash.bundle.outbound_get`     | `outbound_get`                                                       |
-| `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                                        |
-| `file_share`       | `aidash.bundle.file_share`       | `file_share`                                                         |
-| `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                                         |
-| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`                           |
-| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view`              |
+| Group              | Bundle                           | Operations                                              |
+| ------------------ | -------------------------------- | ------------------------------------------------------- |
+| `shell`            | `aidash.bundle.shell`            | `shell`, `shell_poll`, `shell_cancel`                   |
+| `python`           | `aidash.bundle.python`           | `code_interpreter`, `python_poll`, `python_cancel`      |
+| `outbound_get`     | `aidash.bundle.outbound_get`     | `outbound_get`                                          |
+| `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                           |
+| `file_share`       | `aidash.bundle.file_share`       | `file_share`                                            |
+| `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                            |
+| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`              |
+| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view` |
 
 Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
 
@@ -534,9 +534,11 @@ this guarantee. Unattested external calls require fixtures. Binding digests,
 the admitted draft, test profile and current permissions are rechecked at
 every test step.
 
-A profile rule names no credential. Rules no longer accept `credential_env`,
+A profile rule may name a [Tenant Secret](../tenant-secrets.md) with
+`secret: "<name>"`. Its writer needs `secret.use`, and the test endpoint must
+be among that Secret's recorded hosts. Rules never accept `credential_env`,
 because a Deployment secret never reaches an endpoint a Tenant chooses
-(ADR 0051); Tenant Secrets for test endpoints come with #296. A test endpoint
+(ADR 0051). A test endpoint
 is the Tenant's choice, so it reaches public addresses only: an address
 literal outside them is refused when the profile is written, and every
 connection resolves the host and pins public addresses. An origin listed in
@@ -604,3 +606,9 @@ production isolation profile.
 A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native workspace `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.
 
 A `memory` descriptor's configuration is the `ProviderConfig` in `crates/aidash-domain/src/memory.rs`: the engine and its policy only. It rejects unknown fields, so do not add operation, pinning, disclosure or binding controls to it. Those are separate Registry and admission controls: the memory operations are their own builtin Tool descriptors, the admitted Binding snapshot pins exact versions, authorization governs disclosure, and the Agent's Binding list selects the provider. Private memory bodies and credentials are not part of a descriptor: they stay in authorized provider storage, and catalog metadata never exposes them (see [Registry boundary](../architecture.md#registry-boundary)). The memory contracts that these providers serve are described in [architecture](../architecture.md#memory-contracts).
+
+The page and fixture research bundles publish page viewing in version `1.1.0`
+(#391). Existing `1.0.0` bundle declarations remain immutable and are left in
+place during seeding; approve and bind the new bundle version to add `view`.
+A viewed page is admitted against the Run's current model-media headroom before
+its fragment/image is recorded or its page-view quota is consumed.

@@ -34,9 +34,19 @@ pub const PEER_MAPPING_UPDATE: &str = "peer_mapping.update";
 pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
 /// Writing the Tenant's Workbench Test Profiles.
 pub const TEST_PROFILE_UPDATE: &str = "workbench.test_profile.update";
+/// Reading a member's default Approval Mode and Approval Rules (ADR 0076). The
+/// owner alone writes them, so there is no matching update action.
+pub const APPROVAL_READ: &str = "approval.read";
+
+/// Storing, replacing and deleting Tenant Secrets and changing the hosts each
+/// may be sent to (ADR 0051).
+pub const SECRET_MANAGE: &str = "secret.manage";
+/// Naming a Tenant Secret in a definition. Separate from `secret.manage`, so
+/// whoever writes a definition cannot also choose where a secret may go.
+pub const SECRET_USE: &str = "secret.use";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 19] = [
+pub const ACTIONS: [&str; 21] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -56,6 +66,8 @@ pub const ACTIONS: [&str; 19] = [
 	PEER_MAPPING_UPDATE,
 	TEST_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
+	SECRET_MANAGE,
+	APPROVAL_READ,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
@@ -83,8 +95,14 @@ pub const REGISTRY_CREATE: &str = "registry.create";
 pub const CATALOG_APPROVE: &str = "catalog.approve";
 /// Installing a Marketplace package as the Tenant's own copy.
 pub const MARKETPLACE_INSTALL: &str = "marketplace.install";
-/// The Registry actions the dashboard shows controls for (ADR 0029).
-pub const REGISTRY_ACTIONS: [&str; 3] = [REGISTRY_CREATE, CATALOG_APPROVE, MARKETPLACE_INSTALL];
+/// The Registry actions the dashboard shows controls for (ADR 0029), and
+/// `secret.use`, which a definition's author needs to name a Tenant Secret.
+pub const REGISTRY_ACTIONS: [&str; 4] = [
+	REGISTRY_CREATE,
+	CATALOG_APPROVE,
+	MARKETPLACE_INSTALL,
+	SECRET_USE,
+];
 
 /// Resource ID used when a capability or collection, not one item, is checked.
 pub const COLLECTION: &str = "all";
@@ -101,11 +119,16 @@ pub fn resource_kind(action: &str) -> &'static str {
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
 		TEST_LIMITS_UPDATE => "test_limits",
 		TEST_PROFILE_UPDATE => "test_profile",
+		APPROVAL_READ => "subject",
+		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {
+			crate::approval_rules::MODE_RESOURCE
+		}
 		crate::identity::tenancy::TENANT_UPDATE
 		| crate::identity::tenancy::TENANT_DELETE
 		| crate::identity::tenancy::BILLING_ATTACH => "tenant",
 		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
 		MARKETPLACE_INSTALL => "package",
+		SECRET_MANAGE | SECRET_USE => "secret",
 		_ => "subject",
 	}
 }

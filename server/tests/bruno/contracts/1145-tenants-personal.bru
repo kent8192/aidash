@@ -1,5 +1,5 @@
 meta {
-  name: 1145 tenants-personal - Subject Credential bearer cannot recreate a Personal Tenant
+  name: 1145 tenants-personal - Anonymous request is rejected
   type: http
   seq: 1145
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
 }
 
 script:pre-request {

@@ -56,9 +56,10 @@ try {
       await page.locator('meta[name="referrer"]').getAttribute("content"),
       "same-origin",
     );
-    assert.equal(
-      consent.headers()["content-security-policy"],
-      `default-src 'none'; form-action 'self' ${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'`,
+    assert.ok(
+      (await consent.headerValues("content-security-policy")).includes(
+        `default-src 'none'; form-action 'self' ${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'`,
+      ),
     );
     const approval = page.waitForResponse(
       (response) =>

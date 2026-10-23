@@ -2416,6 +2416,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			api_token: "fixture-deployment-administrator".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			demo_data: false,
 			oidc: None,
 			sign_in: None,
 		},
@@ -3315,10 +3316,10 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	tx.commit().await.unwrap();
 	let execution = aidash_server::apps::identity::models::AuthorizationExecution::build()
 		.run_id(id)
-		.task_id(task.id)
-		.workspace_id(workspace)
+		.task(task.id)
+		.workspace(workspace)
 		.tenant("acme")
-		.credential_id(credential.credential.id)
+		.credential(credential.credential.id)
 		.root_subject("alice")
 		.subject_chain(vec![
 			"alice".into(),

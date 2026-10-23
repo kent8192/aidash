@@ -1,4 +1,5 @@
 //! HTTP and MCP transports for validated application tools.
+use crate::keyless::Clients;
 use aidash_application::execution::bounded_utf8_end;
 use aidash_application::{
 	Error, Result, ports::tools::ToolTransport, provider_access::KeylessAccess, tools::required,
@@ -6,12 +7,14 @@ use aidash_application::{
 use aidash_domain::{keyless::Destination, tool::ToolConfig};
 use async_trait::async_trait;
 use rmcp::{
-	ServiceExt,
-	model::CallToolRequestParams,
+	RoleClient, ServiceExt,
+	model::{CallToolRequestParams, PaginatedRequestParams},
+	service::RunningService,
 	transport::{
 		StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
 	},
 };
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 pub(crate) mod mcp;
 
@@ -19,6 +22,10 @@ pub(crate) mod mcp;
 const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub(crate) const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const TOOL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Total budget for reading a server's tool list: handshake and every page.
+const MCP_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Most `tools/list` pages read while looking for one tool.
+const MCP_LIST_PAGES: usize = 20;
 
 async fn resolve_within<I>(
 	deadline: tokio::time::Instant,
@@ -91,7 +98,13 @@ impl HttpTools {
 }
 #[async_trait]
 impl ToolTransport for HttpTools {
-	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value> {
+	async fn invoke(
+		&self,
+		configuration: &ToolConfig,
+		input: Value,
+		key: &str,
+		secret: Option<&SecretString>,
+	) -> Result<Value> {
 		match configuration {
 			ToolConfig::Native {
 				operation,
@@ -128,14 +141,17 @@ impl ToolTransport for HttpTools {
 				web_fetch_response(response, &url).await
 			}
 			ToolConfig::Http { endpoint, .. } => {
-				let response = self
+				let mut request = self
 					.client(endpoint)?
 					.post(endpoint)
 					.header("idempotency-key", key)
-					.json(&input)
-					.send()
-					.await
-					.map_err(crate::keyless::send_error)?;
+					.json(&input);
+				// A Tenant Secret goes as the bearer credential, to the host the
+				// application layer already checked against its recorded hosts.
+				if let Some(secret) = secret {
+					request = request.bearer_auth(secret.expose_secret());
+				}
+				let response = request.send().await.map_err(crate::keyless::send_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -150,13 +166,7 @@ impl ToolTransport for HttpTools {
 				idempotency_argument,
 				..
 			} => {
-				let transport_config =
-					StreamableHttpClientTransportConfig::with_uri(endpoint.clone());
-				let transport = StreamableHttpClientTransport::with_client(
-					mcp::BoundedClient(self.client(endpoint)?.clone()),
-					transport_config,
-				);
-				let service = ().serve(transport).await.map_err(|e| mcp::initialization_error(&e))?;
+				let service = mcp_session(self.client(endpoint)?, endpoint, secret).await?;
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -177,6 +187,80 @@ impl ToolTransport for HttpTools {
 		}
 	}
 }
+/// An initialized session with the MCP server at `endpoint`, over the bounded
+/// transport. Invocation and the registration form's hint share it, so both
+/// share the same bounded transport. Only invocation may attach a Tenant Secret.
+async fn mcp_session(
+	client: &reqwest::Client,
+	endpoint: &str,
+	secret: Option<&SecretString>,
+) -> Result<RunningService<RoleClient, ()>> {
+	let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned());
+	if let Some(secret) = secret {
+		config = config.auth_header(secret.expose_secret());
+	}
+	let transport =
+		StreamableHttpClientTransport::with_client(mcp::BoundedClient(client.clone()), config);
+	().serve(transport)
+		.await
+		.map_err(|e| mcp::initialization_error(&e))
+}
+
+/// What the MCP server at `endpoint` says about `tool_name` in `tools/list`:
+/// its `annotations.readOnlyHint`, or `None` when it gives none. The answer only
+/// prefills the registration form. It never makes an operation read-only
+/// (ADR 0078), so nothing at run time reads it.
+///
+/// The Tenant chooses `endpoint` before any approval, so it is reached like a
+/// Keyless endpoint (ADR 0036): public addresses only, or an origin the
+/// Deployment permits, without redirects. A refused address is `Forbidden`.
+pub async fn mcp_read_only_hint(
+	clients: &Clients,
+	origins: &KeylessAccess,
+	endpoint: &str,
+	tool_name: &str,
+) -> Result<Option<bool>> {
+	crate::validate_endpoint(endpoint)?;
+	let client = clients.keyless(origins.destination(endpoint)?)?;
+	// One budget covers the handshake and every page; dropping the session on
+	// timeout closes it.
+	tokio::time::timeout(MCP_LIST_TIMEOUT, async {
+		let service = mcp_session(client, endpoint, None).await?;
+		let hint = listed_hint(&service, tool_name).await;
+		let _ = service.cancel().await;
+		hint
+	})
+	.await
+	.map_err(|_| Error::External("MCP tool listing timed out".into()))?
+}
+
+/// Page through `tools/list` until `tool_name` appears, reading at most
+/// `MCP_LIST_PAGES` pages so a server cannot keep the request open.
+async fn listed_hint(
+	service: &RunningService<RoleClient, ()>,
+	tool_name: &str,
+) -> Result<Option<bool>> {
+	let mut cursor = None;
+	for _ in 0..MCP_LIST_PAGES {
+		let page = service
+			.list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+			.await
+			.map_err(|e| Error::External(format!("MCP tool listing failed: {e}")))?;
+		if let Some(tool) = page.tools.into_iter().find(|tool| tool.name == tool_name) {
+			return Ok(tool
+				.annotations
+				.and_then(|annotations| annotations.read_only_hint));
+		}
+		cursor = page.next_cursor;
+		if cursor.is_none() {
+			break;
+		}
+	}
+	Err(Error::Invalid(
+		"the MCP server lists no tool with that name".into(),
+	))
+}
+
 async fn web_fetch_response(mut response: reqwest::Response, url: &reqwest::Url) -> Result<Value> {
 	let status = response.status();
 	if matches!(

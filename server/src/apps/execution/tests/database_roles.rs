@@ -24,6 +24,116 @@ async fn server_refuses_a_login_that_bypasses_row_level_security(
 	assert!(error.to_string().contains(reason), "{error}");
 }
 
+/// The migration Job runs maintenance commands such as `demo-data` as the
+/// owner. Row-level security is forced on the owner too, so those commands may
+/// connect as it, but a login that bypasses the policy is refused as before.
+#[rstest]
+#[tokio::test]
+async fn maintenance_accepts_the_owner_but_not_a_login_that_bypasses_row_level_security(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let f = database.await;
+	let owner = with_login(&f.url, OWNER);
+	// Act / Assert: the server's own connection refuses the owner.
+	let refused = runtime::connect(&owner, 2).await;
+	assert!(refused.is_err());
+	// Act / Assert: the maintenance connection accepts it. Row-level security
+	// binding the owner is proved in `row_level_security`.
+	let connection = runtime::connect_maintenance(&owner, 2)
+		.await
+		.expect("the migration owner may run maintenance commands");
+	drop(connection);
+	// Act / Assert: a superuser bypasses the policy and is refused.
+	let refused = runtime::connect_maintenance(&with_login(&f.url, ADMIN), 2).await;
+	let error = refused.err().expect("a superuser is refused");
+	assert!(error.to_string().contains("is a superuser"), "{error}");
+}
+
+/// The migration Job runs `memory-recovery init-if-missing` before its
+/// `demo-data` step under the owner's login. That command must accept the
+/// owner, or the Job's `-e` shell exits before Demo data is loaded.
+#[rstest]
+#[tokio::test]
+async fn memory_recovery_init_if_missing_accepts_the_migration_owner(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange: the fixture is migrated and hands over the owner URL exactly as
+	// the Job's `app-migration` Secret does.
+	let f = database.await;
+	let directory = tempfile::tempdir().unwrap();
+	let home = directory.path().join("home");
+	std::fs::create_dir(&home).unwrap();
+	let mut command = crate::deployment::deployment_command(&f.owner_url, directory.path());
+	command
+		.args(["memory-recovery", "init-if-missing", "--directory"])
+		.arg(&home);
+	// Act
+	let output = command.output().await.expect("run memory-recovery");
+	// Assert: the owner is accepted, so the Job reaches the appended command.
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let epoch = std::fs::read(home.join("epoch.cbor")).unwrap();
+	let ledger = std::fs::read(home.join("ledger.cbor")).unwrap();
+	// Act: a retried deployment runs the same command against the retained volume.
+	let output = command.output().await.expect("repeat memory-recovery");
+	// Assert: the owner can verify the existing ledger without replacing it.
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(std::fs::read(home.join("epoch.cbor")).unwrap(), epoch);
+	assert_eq!(std::fs::read(home.join("ledger.cbor")).unwrap(), ledger);
+}
+
+/// The command must use the guarded maintenance connection even though the
+/// migration owner is accepted. Refusing a privileged login must leave the
+/// external ledger uninitialized.
+#[rstest]
+#[case::superuser(&["ALTER ROLE aidash_owner SUPERUSER"], "is a superuser")]
+#[case::bypassrls(&["ALTER ROLE aidash_owner BYPASSRLS"], "has BYPASSRLS")]
+#[case::replication(&["ALTER ROLE aidash_owner REPLICATION"], "has REPLICATION")]
+#[case::switched_role(
+	&["GRANT aidash_server TO aidash_owner", "ALTER ROLE aidash_owner SET role = 'aidash_server'"],
+	"starts as another role"
+)]
+#[tokio::test]
+async fn memory_recovery_init_if_missing_refuses_a_privileged_migration_login(
+	#[future] database: DatabaseFixture,
+	#[case] grants: &[&str],
+	#[case] reason: &str,
+) {
+	// Arrange: role DDL that Reinhardt Query cannot express. Change the owner's
+	// attributes only after the fixture has migrated, as a misconfigured Job login.
+	let f = database.await;
+	let admin = sqlx::PgPool::connect(&with_login(&f.url, ADMIN))
+		.await
+		.unwrap();
+	for statement in grants {
+		sqlx::query(statement).execute(&admin).await.unwrap();
+	}
+	admin.close().await;
+	let directory = tempfile::tempdir().unwrap();
+	let home = directory.path().join("home");
+	std::fs::create_dir(&home).unwrap();
+	let mut command = crate::deployment::deployment_command(&f.owner_url, directory.path());
+	command
+		.args(["memory-recovery", "init-if-missing", "--directory"])
+		.arg(&home);
+	// Act
+	let output = command.output().await.expect("run memory-recovery");
+	// Assert: the login guard refuses the command before it creates a ledger.
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert!(!output.status.success(), "{stderr}");
+	assert!(stderr.contains(reason), "{stderr}");
+	assert!(!home.join("epoch.cbor").exists());
+	assert!(!home.join("ledger.cbor").exists());
+}
+
 /// A login that owns no table but owns a schema can still create and drop
 /// objects in it, so it is refused as well.
 #[rstest]

@@ -58,7 +58,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 				.expr(Expr::cust("'nonce'"))
 				.expr(Expr::cust("'verifier'"))
 				.expr(Expr::cust("'/'"))
-				.expr(Expr::cust("'http://127.0.0.1:8080/auth/callback'"))
+				.expr(Expr::cust("'https://127.0.0.1:8080/auth/callback'"))
 				.expr(Expr::cust("clock_timestamp()-interval '1 minute'"))
 				.to_owned(),
 		)
@@ -197,11 +197,11 @@ async fn call(
 	if cookie {
 		request = request
 			.header("cookie", "unrelated=first")
-			.append_header("cookie", "aidash-session=fixture-session");
+			.append_header("cookie", "__Host-aidash-session=fixture-session");
 	}
 	if csrf {
 		request = request
-			.header("origin", "http://127.0.0.1:8080")
+			.header("origin", "https://127.0.0.1:8080")
 			.header("x-aidash-csrf", "fixture-csrf");
 	}
 	if let Some(context) = context {
@@ -299,7 +299,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&insert_session)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(b"fixture-session").to_vec())
+		.bind(common::browser_session_digest(b"fixture-session"))
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity_id)
 		.execute(federation.store.pool.fixture_driver())
@@ -441,7 +441,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	let registration_response = app
 		.api_http
 		.request(Method::GET, &app.url("/auth/registration"))
-		.header("cookie", "aidash-session=fixture-session")
+		.header("cookie", "__Host-aidash-session=fixture-session")
 		.send()
 		.await
 		.unwrap();
@@ -999,7 +999,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.streaming_http
 		.clone()
 		.request(Method::GET, app.url("/api/events/stream?after=-1"))
-		.header("cookie", "aidash-session=fixture-session")
+		.header("cookie", "__Host-aidash-session=fixture-session")
 		.header("x-aidash-context", "deployment_administrator")
 		.send()
 		.await
@@ -1305,7 +1305,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	);
 	sqlx::query(&insert_session)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(b"issuer-change-session").to_vec())
+		.bind(common::browser_session_digest(b"issuer-change-session"))
 		.bind(Sha256::digest(b"issuer-change-csrf").to_vec())
 		.bind(identity_id)
 		.execute(federation.store.pool.fixture_driver())
@@ -1366,7 +1366,7 @@ async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture)
 		issuer: "https://accounts.google.com".into(),
 		client_id: "aidash".into(),
 		client_secret: "test-secret".into(),
-		public_origin: "http://127.0.0.1:8080".into(),
+		public_origin: "https://127.0.0.1:8080".into(),
 		session_absolute_seconds: 43_200,
 		session_idle_seconds: 1_800,
 	});
@@ -1418,7 +1418,7 @@ async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&session_query)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(b"fixture-session").to_vec())
+		.bind(common::browser_session_digest(b"fixture-session"))
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity)
 		.execute(federation.store.pool.fixture_driver())
@@ -2011,7 +2011,7 @@ async fn google_identity(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&session_query)
 		.bind(Uuid::new_v4())
-		.bind(Sha256::digest(session.as_bytes()).to_vec())
+		.bind(common::browser_session_digest(session.as_bytes()))
 		.bind(Sha256::digest(format!("{session}-csrf").as_bytes()).to_vec())
 		.bind(identity)
 		.execute(federation.store.pool.fixture_driver())
@@ -2039,8 +2039,8 @@ async fn browser_call(
 		.header("content-type", "application/json");
 	request = match session {
 		Some(session) => request
-			.header("cookie", format!("aidash-session={session}"))
-			.header("origin", "http://127.0.0.1:8080")
+			.header("cookie", format!("__Host-aidash-session={session}"))
+			.header("origin", "https://127.0.0.1:8080")
 			.header("x-aidash-csrf", format!("{session}-csrf")),
 		None => request.header(
 			"authorization",
@@ -2448,7 +2448,7 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 			issuer: issuer.clone(),
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});
@@ -2520,7 +2520,7 @@ fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existi
 			issuer,
 			client_id: "aidash".into(),
 			client_secret: "test-secret".into(),
-			public_origin: "http://127.0.0.1:8080".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
 			session_absolute_seconds: 43_200,
 			session_idle_seconds: 1_800,
 		});

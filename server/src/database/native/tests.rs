@@ -3,6 +3,32 @@ use rstest::rstest;
 use serde_json::{Value, json};
 
 #[rstest]
+fn metadata_projection_cost_does_not_grow_with_unselected_run_context() {
+	let mut row = reinhardt::db::backends::Row::new();
+	row.insert("step".into(), QueryValue::Int32(42));
+	row.insert(
+		"context".into(),
+		QueryValue::Json(Some(Box::new(json!({
+			"history": vec![json!({
+				"role":"assistant", "content":"observed workspace state".repeat(8),
+				"observations":[{"task":"source", "revision":3}]
+			}); 16_384]
+		})))),
+	);
+	let row = Row(row);
+	let started = std::time::Instant::now();
+	for _ in 0..128 {
+		assert_eq!(row.try_get::<i32>("step").unwrap(), 42);
+	}
+	let elapsed = started.elapsed();
+	eprintln!("128 metadata projections with a large unselected Context: {elapsed:?}");
+	assert!(
+		elapsed < std::time::Duration::from_secs(1),
+		"reading a scalar must not repeatedly clone and convert the whole Run: {elapsed:?}"
+	);
+}
+
+#[rstest]
 #[case::sql_null(QueryValue::Null, None)]
 #[case::json_sql_null(QueryValue::Json(None), None)]
 #[case::json_null(QueryValue::Json(Some(Box::new(Value::Null))), Some(Value::Null))]

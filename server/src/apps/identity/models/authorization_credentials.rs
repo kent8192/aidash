@@ -97,6 +97,7 @@ impl AuthorizationCredential {
 
 	pub(crate) async fn revoke(db: &Pool, tenant: &str, id: Uuid) -> Result<Credential> {
 		db.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+			super::AuthorizationBundle::lock_snapshot(tx, tenant, false).await?;
 			Self::revoke_in(tx, tenant, id).await
 		})
 		.await

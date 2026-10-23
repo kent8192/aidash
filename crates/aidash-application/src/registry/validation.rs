@@ -42,6 +42,8 @@ pub struct DefinitionValidation {
 	/// A Tenant chooses its tool endpoints, so they follow the Keyless endpoint
 	/// rule (ADR 0036, #376). Without origins, only public addresses pass.
 	keyless: KeylessAccess,
+	tenant_secrets_enabled: bool,
+	egress_limits: aidash_domain::egress::Limits,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
@@ -50,6 +52,8 @@ impl DefinitionValidation {
 			provider_credentials_enabled: false,
 			plan_connections_enabled: false,
 			keyless: KeylessAccess::default(),
+			tenant_secrets_enabled: false,
+			egress_limits: aidash_domain::egress::Limits::default(),
 			core_tools,
 		}
 	}
@@ -110,6 +114,10 @@ impl DefinitionValidation {
 		}
 		Ok(())
 	}
+	pub fn with_egress_limits(mut self, limits: aidash_domain::egress::Limits) -> Self {
+		self.egress_limits = limits;
+		self
+	}
 	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
 		self.provider_credentials_enabled = configured;
 		self
@@ -118,6 +126,13 @@ impl DefinitionValidation {
 	/// turned them on in their settings (ADR 0007).
 	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
 		self.plan_connections_enabled = enabled;
+		self
+	}
+	/// Tenant Secrets exist only where the Secret Store can hold them: a
+	/// self-hosted node with a PostgreSQL Store. Cloud and Dedicated offer
+	/// none until the Credential Broker carries tool calls (#310).
+	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {
+		self.tenant_secrets_enabled = enabled;
 		self
 	}
 	fn provider_source(&self, endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
@@ -132,9 +147,7 @@ impl DefinitionValidation {
 	) -> Result<()> {
 		aidash_domain::provider_credentials::validate_grants(endpoint, provider, catalog, plan)?;
 		if catalog.is_some() && !self.provider_credentials_enabled {
-			return Err(Error::Invalid(
-				"Provider Credential Store is not configured".into(),
-			));
+			return Err(Error::Invalid("Secret Store is not configured".into()));
 		}
 		if plan.is_some() && !self.plan_connections_enabled {
 			return Err(Error::Invalid(
@@ -166,14 +179,21 @@ impl DefinitionValidation {
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
+			"external_service" => {
+				let service = aidash_domain::egress::definition(e)?;
+				if let Some(limits) = service.limits {
+					limits.lower_than(self.egress_limits)?;
+				}
+				if service.secret.is_some() && !self.tenant_secrets_enabled {
+					return Err(Error::Invalid("Tenant Secrets are unavailable".into()));
+				}
+			}
 			"decider" => {
 				let config: aidash_domain::decision::DeciderConfig =
 					serde_json::from_value(e.config.clone())?;
 				config.validate()?;
 				if local && !self.provider_credentials_enabled {
-					return Err(Error::Invalid(
-						"Provider Credential Store is not configured".into(),
-					));
+					return Err(Error::Invalid("Secret Store is not configured".into()));
 				}
 			}
 			"memory" | "source" if e.config.get("schema_version").is_some() => {
@@ -367,12 +387,29 @@ impl DefinitionValidation {
 					));
 				}
 			}
-			ToolConfig::Http { endpoint, replay }
+			ToolConfig::Http {
+				endpoint,
+				replay,
+				secret,
+			}
 			| ToolConfig::Mcp {
-				endpoint, replay, ..
+				endpoint,
+				replay,
+				secret,
+				..
 			} => {
 				validate_endpoint(endpoint)?;
 				self.validate_tool_endpoint(endpoint)?;
+				if let Some(name) = secret {
+					if !self.tenant_secrets_enabled {
+						return Err(Error::Invalid(
+							"Tenant Secrets are not available on this Deployment".into(),
+						));
+					}
+					aidash_domain::tenant_secrets::validate_name(name)?;
+					// The value never travels in plaintext.
+					aidash_domain::tenant_secrets::endpoint_host(endpoint)?;
+				}
 				if !matches!(replay.as_str(), "read_only" | "idempotent" | "unsafe") {
 					return Err(Error::Invalid(
 						"replay must be read_only, idempotent or unsafe".into(),

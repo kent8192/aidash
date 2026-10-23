@@ -98,7 +98,7 @@ pub trait Extension: Sync + std::fmt::Debug {
 	fn tables(&self) -> &'static [Table] {
 		&[]
 	}
-	/// The Provider Credential Store of an Enterprise `kind`, from its settings
+	/// The Secret Store of an Enterprise `kind`, from its settings
 	/// fields, and the Capability Token issuer of its Credential Broker.
 	fn provider_credential_store(
 		&self,
@@ -129,7 +129,7 @@ impl Extension for Community {
 			.and_then(serde_json::Value::as_str)
 			.unwrap_or_default();
 		Err(crate::Error::Invalid(format!(
-			"the Community build has no {kind} Provider Credential Store; it needs the Enterprise build"
+			"the Community build has no {kind} Secret Store; it needs the Enterprise build"
 		)))
 	}
 }
@@ -224,7 +224,7 @@ mod tests {
 				.err()
 				.unwrap()
 				.to_string(),
-			"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+			"the Community build has no secret_manager Secret Store; it needs the Enterprise build"
 		);
 		assert!(extension.routes(SelfHosted).is_none());
 	}
@@ -283,7 +283,7 @@ mod tests {
 			_: &serde_json::Map<String, serde_json::Value>,
 			_: Option<&serde_json::Value>,
 		) -> crate::Result<ProvidedStore> {
-			unreachable!("no Provider Credential Store in this test")
+			unreachable!("no Secret Store in this test")
 		}
 	}
 

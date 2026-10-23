@@ -1,6 +1,7 @@
 //! Canonical unit bodies are relational text; JSON columns contain typed provenance only.
 use aidash_domain::memory::{Entity, Evidence, Link, MentalModel};
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -14,10 +15,22 @@ pub struct MemoryBank {
 	pub home: String,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: Uuid,
-	#[field(null = true)]
-	pub participant_id: Option<Uuid>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_bank_workspace",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_bank_participant",
+		db_index = false,
+		null = true
+	)]
+	pub participant:
+		ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryParticipant>,
 	#[field]
 	pub revision: i64,
 }
@@ -31,8 +44,13 @@ pub struct MemoryParticipant {
 	pub home: String,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_participant_workspace",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 	#[field(field_type = "text")]
 	pub principal: String,
 	#[field(field_type = "text")]
@@ -52,8 +70,13 @@ pub struct MemoryUnit {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_unit_bank",
+		db_index = false
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field]
 	pub revision: i64,
 	#[field(field_type = "text")]
@@ -93,8 +116,14 @@ pub struct MemoryRunBinding {
 	pub run_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub participant_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "memory_binding_participant",
+		db_index = false
+	)]
+	pub participant:
+		ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryParticipant>,
 	#[field(field_type = "text")]
 	pub provider_id: String,
 	#[field(field_type = "text")]

@@ -147,6 +147,18 @@ class SetupTests(unittest.TestCase):
             setup.private_json(path, output)
         return values
 
+    def test_composition_forwards_the_production_pre_update_backup_plan_only(self):
+        plan = "projects/aidash-production/locations/us-central1/backupPlans/aidash-production-pre-update"
+        def extra(tier, output):
+            output["operations_configuration"]["value"]["pre_update_backup_plan"] = plan if tier == "production" else None
+        with TemporaryDirectory() as directory:
+            result = setup.compose(self.account_inputs(Path(directory), extra))
+            self.assertEqual(json.loads(result["production_config_json"])["pre_update_backup_plan"], plan)
+            self.assertNotIn("pre_update_backup_plan", json.loads(result["nonproduction_config_json"]))
+        with TemporaryDirectory() as directory:
+            result = setup.compose(self.account_inputs(Path(directory)))
+            self.assertNotIn("pre_update_backup_plan", json.loads(result["production_config_json"]))
+
     def test_composition_filters_bootstrap_only_fields_and_keeps_activation_disabled(self):
         with TemporaryDirectory() as directory:
             values = self.account_inputs(Path(directory))

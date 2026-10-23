@@ -1,12 +1,13 @@
 //! Plan Connection metadata, pending Sign in with ChatGPT authorizations, Run
 //! pins and this Deployment's host ID (#159, ADR 0007, ADR 0031). Plan Tokens
-//! are never ORM fields; they stay in the Provider Credential Store.
+//! are never ORM fields; they stay in the Secret Store.
 use super::dashboard_administration::database_time;
 use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
@@ -29,8 +30,12 @@ pub struct PlanConnection {
 	#[field(field_type = "text")]
 	pub subject: String,
 	/// The External Identity that connected it; only it uses the connection.
-	#[field]
-	pub identity_id: Uuid,
+	#[rel(
+		foreign_key,
+		db_constraint = "plan_connections_identity_id_fkey",
+		db_index = false
+	)]
+	pub identity: ForeignKeyField<crate::apps::identity::models::DashboardIdentity>,
 	#[field(field_type = "text")]
 	pub provider: String,
 	/// OpenAI's issued client ID; not secret, reused only for this connection.
@@ -113,8 +118,12 @@ pub struct RunPlanConnection {
 	#[field]
 	pub plan_connection_id: Uuid,
 	/// The External Identity the connection served at admission.
-	#[field]
-	pub identity_id: Uuid,
+	#[rel(
+		foreign_key,
+		db_constraint = "run_plan_connections_identity_id_fkey",
+		db_index = false
+	)]
+	pub identity: ForeignKeyField<crate::apps::identity::models::DashboardIdentity>,
 }
 
 /// The Deployment's `ext_agent_host_id`: one random UUID, created once.

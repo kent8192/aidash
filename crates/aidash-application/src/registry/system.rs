@@ -1,6 +1,10 @@
 //! Node declarations are immutable catalog documents, independent of tenant grants.
 use crate::{Result, ports::registry::DefinitionWriter, registry::DefinitionValidation};
 use aidash_domain::{
+	decision::{
+		AnswerType, DECISIONS, DeciderConfig, DeciderRoute, Hook, Mode, Probability, StateBudget,
+		policy::StateRetention,
+	},
 	registry::{
 		Entry,
 		bindings::{DEFAULT_TOOLS, EXPOSURE_TOOLS, REQUIRED_TOOLS, SKILL_ASSET_READ},
@@ -8,6 +12,10 @@ use aidash_domain::{
 	tool::providers::core_descriptor,
 };
 use serde_json::json;
+
+/// The Decider that judges pending Tool calls in the Auto Approval Mode (ADR 0077).
+pub const APPROVAL_DECIDER_ID: &str = "aidash.approval-decider";
+pub const APPROVAL_DECIDER_VERSION: &str = "1.0.0";
 
 /// Every system builtin operation of either Exposure policy, in seeding order.
 pub fn operations() -> impl Iterator<Item = &'static str> {
@@ -54,10 +62,84 @@ pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entr
 		.collect()
 }
 
+/// Every definition the Node declares to every Tenant's Registry: the built-in
+/// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
+/// Catalog Approval before anything may use it.
+pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let mut declared = entries(validation, node)?;
+	declared.push(approval_decider()?);
+	Ok(declared)
+}
+
+/// The built-in approval Decider. Its Routes follow ADR 0042's addendum: Jev
+/// through System One, then Clef through OpenRouter's Decisions API on the three
+/// hosts the Tenant's Catalog Approval names. Approving the version approves
+/// sending a Run's state to each of them. It enforces, keeps no state and may
+/// send 200 Decision Attempts per Run, about one per judged call.
+///
+/// The thresholds are not calibrated for this hook. `scripts/evaluate-decider-routes.py`
+/// measured compaction only, so both Routes block at 0.3 until an evaluation on
+/// approval fixtures chooses them; a changed threshold is a new version.
+pub fn approval_decider() -> Result<Entry> {
+	let config = DeciderConfig {
+		hook: Hook::Approval,
+		answer_type: AnswerType::Noul,
+		description: "Blocks a pending tool call that sends data beyond the request, destroys or irreversibly changes things, goes beyond the request, follows content the Run read, or contradicts a stated boundary.".into(),
+		provider_credential: "openrouter".into(),
+		routes: vec![
+			DeciderRoute {
+				threshold: Probability::new(0.3)?,
+				..DeciderRoute::jev("typesafe/jev-1.14")
+			},
+			DeciderRoute {
+				provider_contract: DECISIONS.into(),
+				model: "cloudflare/clef".into(),
+				hosts: vec![
+					"cloudflare".into(),
+					"deepinfra".into(),
+					"primeintellect".into(),
+				],
+				threshold: Probability::new(0.3)?,
+				// The smallest of its hosts takes 16k tokens, and a byte is at
+				// least a token, so 16,000 bytes stay inside it.
+				state_budget: StateBudget {
+					default_request_bytes: 16_000,
+					default_state_bytes: 12_000,
+					long_context_request_bytes: None,
+					long_context_state_bytes: None,
+					..StateBudget::default()
+				},
+			},
+		],
+		builder: Hook::Approval.contract().builder.into(),
+		option_source: Hook::Approval.contract().option_source.into(),
+		rule: Hook::Approval.contract().rule.into(),
+		mode: Mode::Enforce,
+		max_calls_per_run: 200,
+		state_retention: StateRetention::default(),
+	};
+	config.validate()?;
+	Ok(Entry {
+		binding_normalization: None,
+		installation: None,
+		id: APPROVAL_DECIDER_ID.into(),
+		version: APPROVAL_DECIDER_VERSION.into(),
+		kind: "decider".into(),
+		name: std::collections::BTreeMap::from([("en".into(), "Approval Decider".into())]),
+		description: std::collections::BTreeMap::from([("en".into(), config.description.clone())]),
+		capabilities: vec![],
+		tags: vec!["system".into()],
+		languages: vec![],
+		skills: vec![],
+		schema: json!({}),
+		config: serde_json::to_value(config)?,
+	})
+}
+
 /// Writes every built-in definition into the scope's Tenant: the ordinary
-/// built-ins, and the Sandboxed and research groups the Deployment offers,
-/// which the Tenant approves before use. The caller owns one transaction.
-/// Conflicting bytes fail.
+/// built-ins, the approval Decider, and the Sandboxed and research groups the
+/// Deployment offers, which the Tenant approves before use. The caller owns one
+/// transaction. Conflicting bytes fail.
 pub async fn seed(
 	scope: &mut dyn DefinitionWriter,
 	validation: &DefinitionValidation,
@@ -66,7 +148,13 @@ pub async fn seed(
 	let offered = packages::offered(validation, validation, node)?
 		.into_iter()
 		.flat_map(|group| group.operations.into_iter().chain([group.bundle]));
-	for entry in entries(validation, node)?.into_iter().chain(offered) {
+	let deciders = [approval_decider()?];
+	for entry in entries(validation, node)?
+		.into_iter()
+		.chain(offered)
+		.chain(deciders)
+		.chain(external_services())
+	{
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;
 		// Restart may precede recovery of a prepared transaction. Even an
 		// INSERT that does nothing takes Registry's statement-level write guard.
@@ -141,3 +229,31 @@ pub fn attributes(entry: &Entry) -> serde_json::Value {
 pub mod packages;
 #[cfg(test)]
 mod tests;
+
+/// Package indexes still require each Tenant's Catalog Approval and explicit Binding.
+fn external_services() -> Vec<Entry> {
+	[
+		("npm", "https://registry.npmjs.org/"),
+		("pypi", "https://pypi.org/"),
+	]
+	.into_iter()
+	.map(|(name, base_url)| Entry {
+		binding_normalization: None,
+		installation: None,
+		id: format!("core.{name}"),
+		version: "1.0.0".into(),
+		kind: "external_service".into(),
+		name: std::collections::BTreeMap::from([("en".into(), name.into())]),
+		description: std::collections::BTreeMap::from([(
+			"en".into(),
+			aidash_domain::egress::DISCLOSURE.into(),
+		)]),
+		capabilities: vec![],
+		tags: vec!["system".into()],
+		languages: vec![],
+		skills: vec![],
+		schema: json!({}),
+		config: json!({"base_url":base_url,"methods":["GET","HEAD"],"authentication":{"type":"bearer"}}),
+	})
+	.collect()
+}

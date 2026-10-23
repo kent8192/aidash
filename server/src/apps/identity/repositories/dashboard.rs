@@ -3,7 +3,9 @@ use crate::database::native::Pool;
 use crate::{
 	apps::{
 		execution::models::Run,
-		identity::models::{DashboardExecutionOrigin, DashboardIdentity},
+		identity::models::{
+			DashboardExecutionOrigin, DashboardIdentity, DemoReservation, Fulfilment,
+		},
 	},
 	authorization::access::Access,
 	federation::Federation,
@@ -25,6 +27,26 @@ pub(crate) struct Repository(pub(crate) Federation);
 pub(crate) struct Login(pub(crate) Pool, pub(crate) String);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
+	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()> {
+		let policy = self.0.dashboard_policy();
+		// Reservations are Tenant-owned: this Deployment-scope read only finds
+		// them, and each is spent in its own Tenant's scope and transaction, so
+		// one that cannot be spent leaves the others to be.
+		for reservation in DemoReservation::unspent(&self.0, &email.to_lowercase()).await? {
+			let outcome = DemoReservation::fulfil(
+				&self.0,
+				policy.as_ref(),
+				&reservation.tenant,
+				reservation.id,
+				identity,
+			)
+			.await?;
+			if let Fulfilment::Skipped(reason) = outcome {
+				tracing::debug!(%identity, tenant = %reservation.tenant, ?reason, "Demo Reservation not spent");
+			}
+		}
+		Ok(())
+	}
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
 		super::personal_tenant::provision(&self.0, &self.1, identity)
 			.await

@@ -73,7 +73,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::python)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(super::views::management::python_install)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::python_poll)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
