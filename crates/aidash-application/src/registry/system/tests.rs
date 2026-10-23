@@ -317,3 +317,23 @@ fn compaction_declaration_pins_the_evaluated_routes_without_granting_authority()
 	assert!(fallback.state_budget.long_context_request_bytes.is_none());
 	assert!(!config.state_retention.enabled);
 }
+
+#[test]
+fn required_workspace_source_is_builtin_only_at_its_exact_canonical_definition() {
+	let mut source =
+		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap();
+	assert!(is_builtin(&source));
+	assert!(builtin_reference(&EntityRef {
+		id: source.id.clone(),
+		version: source.version.clone()
+	}));
+	source.config["source"]["adapter"] = json!("workspace_retrieval");
+	assert!(
+		!is_builtin(&source),
+		"a source may not claim mandatory builtin authority with changed provider bytes"
+	);
+	assert!(!builtin_reference(&EntityRef {
+		id: source.id,
+		version: "2.0.0".into()
+	}));
+}
