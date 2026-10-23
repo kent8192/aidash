@@ -19,3 +19,7 @@ Decided on 2026-10-12 (#154) and refined on 2026-10-17 (#234). When retrieval of
 - Run inspection lists the degraded steps with their cause, and the dashboard marks a local Run that ran with Degraded context. Completion Gate and Completion Review are not affected.
 - A required-Home Run pauses even if its Agent's source opts in. Admission accepts such a Binding without a warning, because the same Agent also runs locally. The Registry form offers `pause | degrade` as an explicit choice for `workspace_retrieval` sources and says that it applies only to local Runs.
 - Degradation applies to local Runs with and without a scoped authority guard, on the Legacy and Ordered Projection Versions alike. A degraded step on the scoped path begins no dependency journal for the workspace slot.
+
+## Incomplete indexing
+
+The #342 decision (2026-10-23, ADR 0020) treats incomplete indexing during a Run as a typed, bounded wait. It is outside the embedding/vector transport outage cases that may degrade: even an opted-in source waits for the complete index and then pauses with `retries_exhausted` if necessary. A healthy embedding provider does not make an entry READY until indexing completes.
