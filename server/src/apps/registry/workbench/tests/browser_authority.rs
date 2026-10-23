@@ -52,7 +52,7 @@ async fn browser_workbench(
 		.id(Uuid::new_v4())
 		.token_hash(common::browser_session_digest(b"browser-authority-session"))
 		.csrf_hash(Sha256::digest(b"browser-authority-csrf").to_vec())
-		.identity_id(identity.id)
+		.identity(identity.id)
 		.provider_sid(None)
 		.created_at(now)
 		.auth_time(None)
@@ -76,10 +76,10 @@ async fn browser_workbench(
 	.remove(0);
 	let mapping = DashboardMapping::build()
 		.id(Uuid::new_v4())
-		.identity_id(identity.id)
+		.identity(identity.id)
 		.tenant("acme")
 		.subject("alice")
-		.credential_id(credential.id)
+		.credential(credential.id)
 		.enabled(true)
 		.revision(1)
 		.finish();

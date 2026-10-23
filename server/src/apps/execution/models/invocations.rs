@@ -4,6 +4,7 @@ use crate::Result;
 use crate::apps::execution::serializers::invocations::Invocation as InvocationSummary;
 use crate::apps::execution::services::states::InvocationStatus;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Json, QueryRow};
@@ -21,8 +22,13 @@ pub struct Invocation {
 	pub idempotency_key: String,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "invocations_run_id_fkey",
+		db_index = false
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub tool: String,
 	#[field]

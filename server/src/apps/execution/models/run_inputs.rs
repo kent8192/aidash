@@ -1,6 +1,7 @@
 //! Persistent run_inputs records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +12,14 @@ pub struct RunInput {
 	pub seq: i64,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "run_inputs_run_id_fkey",
+		db_index = false,
+		on_delete = Cascade
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub sender: String,
 	#[field(field_type = "text")]
