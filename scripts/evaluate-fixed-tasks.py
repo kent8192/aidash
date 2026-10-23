@@ -281,7 +281,7 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
     api_scenarios = [item for item in memory_corpus["scenarios"] if item["evidence"] == "deterministic-api"]
     roles = {"model": {"id": model_refs["standard"]["id"], "version": "1.0.0"}}
     try:
-        embedding_config = {"provider": "openai", "endpoint": fixture_url + "/v1", "credential_env": None,
+        embedding_config = {"provider": "openai", "endpoint": fixture_url + "/v1",
                             "model": f"{experiment.prefix}-embedding", "model_version": "1", "dimensions": 8}
         embedding = experiment.register("embedding", f"{experiment.prefix}-embedding", embedding_config)
         roles["embedding"] = {"id": embedding["id"], "version": "1.0.0"}
@@ -758,7 +758,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     models = {}
     for reference in sorted(set(mapping.values())):
         identifier, _, version = reference.partition("@")
-        models[reference] = api.get(f"/api/registry/{identifier}/{version}")["config"]
+        models[reference] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
     approval = read_json(args.disclosure_approval) if args.disclosure_approval else None
     evaluation.check_model_config_digests(approval, models, required=corpus["version"] != "fixed-task-corpus-v1")
     execution_estimator = getattr(args, "execution_estimator", "bytes")
@@ -790,7 +790,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         allowance = auxiliary[kind]
         if allowance:
             identifier, _, version = allowance["reference"].partition("@")
-            auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}")["config"]
+            auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
     evaluation.verify_auxiliary_configs(auxiliary, auxiliary_entries, credential["provider"])
     evaluation.require_enforceable_auxiliary_bound(auxiliary)
     missing = sorted({p["task"]["id"] for p in planned_runs if p["task"].get("requires_compaction")

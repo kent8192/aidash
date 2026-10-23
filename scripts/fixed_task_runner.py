@@ -155,15 +155,18 @@ class Experiment:
                  "description": {"en": description}, "capabilities": [], "tags": ["evaluation"],
                  "languages": ["en", "ja"], "skills": [], "schema": schema if schema is not None else {},
                  "config": config}
-        self.api.post("/api/registry", entry)
+        # Registry definitions and Catalog approvals belong to this Tenant's subject;
+        # a Deployment Administrator is deliberately not their authority.
+        self.api.post("/api/registry", entry, self.token)
         self.api.post(f"/api/authorization/{self.tenant}/catalog",
-                      {"node": self.default_node(), "entry": {"id": identifier, "version": "1.0.0"}, "expected_revision": 0, "enabled": True})
+                      {"node": self.default_node(), "entry": {"id": identifier, "version": "1.0.0"}, "expected_revision": 0,
+                       "enabled": True}, self.token)
         return {"id": identifier, "version": "1.0.0", "config_sha256": canonical_sha256(config)}
 
 
 def model_config(model, fixture_url, name):
     config = {"provider": "openrouter", "model_id": model["model_id"], "endpoint": fixture_url + "/v1",
-              "credential_env": None, "context_window": model["context_window"],
+              "context_window": model["context_window"],
               "max_output_tokens": model["max_output_tokens"], "modalities": ["text"], "cost": {},
               "projection_versions": ["legacy", "ordered", "native"], "request_estimator": "bytes",
               "reasoning_effort": "medium"}
