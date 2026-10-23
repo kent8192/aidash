@@ -196,9 +196,14 @@ class LifecycleTests(unittest.TestCase):
         args = type('Args', (), {'requests': str(batch)})()
         class Response(io.BytesIO):
             def __init__(self, status, body):
-                super().__init__(body)
+                super().__init__(body if isinstance(body, bytes) else b'')
                 self.status = status
-        for number, (status, body) in enumerate([(204, b''), (200, b'[]'), (200, b'"scalar"'), (200, b'not-json')]):
+                self.failure = body if isinstance(body, Exception) else None
+            def read(self, *args):
+                if self.failure:
+                    raise self.failure
+                return super().read(*args)
+        for number, (status, body) in enumerate([(204, b''), (200, b'[]'), (200, b'"scalar"'), (200, b'not-json'), (200, TimeoutError('PRIVATE_CANARY')), (201, OSError('PRIVATE_CANARY'))]):
             resource = f'projects/1001/secrets/aidash-test-cred-dummy-{number}/versions/1'
             first = dict(base, url='https://secretmanager.googleapis.com/v1/' + resource + ':access', resource=resource)
             batch.write_text(json.dumps([first, dict(first, id='must-not-run')]))
@@ -208,8 +213,8 @@ class LifecycleTests(unittest.TestCase):
                 self.assertFalse(result['all_passed'])
         rows = json.loads((self.directory / 'probe-results.json').read_text())
         self.assertTrue(all(row['result'] == 'failed' for row in rows))
-        self.assertEqual(len({row['target'] for row in rows}), 4)
-        self.assertEqual(len({row['request_sha256'] for row in rows}), 4)
+        self.assertEqual(len({row['target'] for row in rows}), 6)
+        self.assertEqual(len({row['request_sha256'] for row in rows}), 6)
 
     def test_plan_isolated_real_roots_single_unpublished_environment(self):
         m = json.loads(self.manifest.read_text())

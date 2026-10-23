@@ -41,6 +41,11 @@ def save(path, value):
         out.flush()
         os.fsync(out.fileno())
     os.replace(temp, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def command(argv):
@@ -208,20 +213,21 @@ def request(spec, token, project):
     req = urllib.request.Request(spec['url'], method=spec['method'],
         data=json.dumps(spec['body']).encode() if 'body' in spec else None,
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    status = 0
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
             status = response.status
             try:
                 return status, json.loads(response.read(1048576))
-            except (ValueError, UnicodeError):
+            except (OSError, ValueError, UnicodeError):
                 return status, {}
     except urllib.error.HTTPError as error:
         try:
             return error.code, json.loads(error.read(1048576))
-        except (ValueError, UnicodeError):
+        except (OSError, ValueError, UnicodeError):
             return error.code, {}
     except (OSError, ValueError, UnicodeError):
-        return 0, {}
+        return status, {}
 
 
 def classify(status, body, spec):

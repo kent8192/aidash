@@ -257,8 +257,13 @@ class Controls:
         require(not baseline_path.exists(), 'restore previous deny fixtures before setup')
         identities = [self.r['broker'], self.r['control'], self.r['delegate_target']]
         baseline = {identity: cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', identity) for identity in identities}
+        # Complete both inventories before any grant; the policy file is the
+        # durable setup marker. A failed inventory must not leave a partial setup.
+        keys = {identity: [{'name': key['name']} for key in cloud(self.app, 'iam', 'service-accounts',
+                'keys', 'list', '--iam-account=' + identity, '--managed-by=user')]
+                for identity in (self.r['broker'], self.r['control'])}
+        save(self.directory / 'deny-keys-baseline.json', keys)
         save(baseline_path, baseline)
-        save(self.directory / 'deny-keys-baseline.json', cloud(self.app, 'iam', 'service-accounts', 'keys', 'list', '--iam-account=' + self.r['control'], '--managed-by=user'))
         for identity in (self.r['broker'], self.r['control']):
             for role in ('roles/iam.serviceAccountTokenCreator', 'roles/iam.serviceAccountKeyAdmin'):
                 cloud(self.app, 'iam', 'service-accounts', 'add-iam-policy-binding', identity,
@@ -272,6 +277,8 @@ class Controls:
         file = self.directory / 'deny-policies-baseline.json'
         baseline = json.loads(file.read_text())
         require(set(baseline) == {self.r['broker'], self.r['control'], self.r['delegate_target']}, 'unexpected restore targets')
+        key_baseline = json.loads((self.directory / 'deny-keys-baseline.json').read_text())
+        require(isinstance(key_baseline, dict) and set(key_baseline) == {self.r['broker'], self.r['control']}, 'complete broker/control key baselines required')
         for identity, policy in baseline.items():
             latest = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', identity)
             target = self.directory / 'restore-policy.json'
@@ -282,10 +289,14 @@ class Controls:
                 return sorted(json.dumps({**binding, 'members': sorted(binding.get('members', []))}, sort_keys=True) for binding in value.get('bindings', []))
             require(bindings(restored) == bindings(policy), 'temporary grant removal not verified')
             self.record('deny-policy-restored', identity, 'exact_bindings_verified', baseline_sha256=hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest())
-        original_keys = {key['name'] for key in json.loads((self.directory / 'deny-keys-baseline.json').read_text())}
-        for key in cloud(self.app, 'iam', 'service-accounts', 'keys', 'list', '--iam-account=' + self.r['control'], '--managed-by=user'):
-            if key['name'] not in original_keys:
-                cloud(self.app, 'iam', 'service-accounts', 'keys', 'delete', key['name'].rsplit('/', 1)[1], '--iam-account=' + self.r['control'])
+        for identity, original in key_baseline.items():
+            original_keys = {key['name'] for key in original}
+            inventory = lambda: cloud(self.app, 'iam', 'service-accounts', 'keys', 'list', '--iam-account=' + identity, '--managed-by=user')
+            for key in inventory():
+                if key['name'] not in original_keys:
+                    cloud(self.app, 'iam', 'service-accounts', 'keys', 'delete', key['name'].rsplit('/', 1)[1], '--iam-account=' + identity)
+            require({key['name'] for key in inventory()} == original_keys, 'key revocation or baseline preservation not verified')
+            self.record('deny-keys-restored', identity, 'exact_key_inventory_verified')
         file.rename(self.directory / ('deny-policies-restored-' + str(int(time.time())) + '.json'))
         self.record('deny-fixtures-restored', self.app, 'baseline_restored')
 
@@ -295,19 +306,22 @@ class Controls:
         account = cloud(self.app, 'iam', 'service-accounts', 'describe', identity)
         uid = account['uniqueId']
         require(str(uid).isdigit(), 'control unique id required')
+        control_tags = cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=//iam.googleapis.com/projects/' + self.app + '/serviceAccounts/' + str(uid), '--location=global')
+        require(not control_tags, 'undelete positive control must be untagged')
+        save(self.directory / 'control-lifecycle.json', {'project': self.app, 'identity': identity, 'unique_id': uid, 'stage': 'disable_pending'})
         cloud(self.app, 'iam', 'service-accounts', 'disable', identity, '--impersonate-service-account=' + self.r['deploy'])
         try:
             require(cloud(self.app, 'iam', 'service-accounts', 'describe', identity).get('disabled') is True, 'disable control failed')
             self.record('control-disable', identity, 'disabled')
         finally:
             cloud(self.app, 'iam', 'service-accounts', 'enable', identity)
+        # Persist before DELETE: the remote mutation may succeed even if its response is lost.
+        save(self.directory / 'control-deleted.json', {'project': self.app, 'identity': identity, 'unique_id': uid, 'stage': 'delete_pending'})
         cloud(self.app, 'iam', 'service-accounts', 'delete', identity, '--impersonate-service-account=' + self.r['deploy'])
-        # Persist UID before restore, allowing manual recovery after interruption.
-        save(self.directory / 'control-deleted.json', {'project': self.app, 'identity': identity, 'unique_id': uid})
         cloud(self.app, 'iam', 'service-accounts', 'undelete', str(uid), '--impersonate-service-account=' + self.r['deploy'])
         restored = cloud(self.app, 'iam', 'service-accounts', 'describe', identity)
         require(restored['uniqueId'] == uid, 'control restoration changed identity')
-        self.record('control-delete-undelete', identity, 'same_identity_restored')
+        self.record('control-delete-undelete', identity, 'same_identity_restored', tag_count=0)
         broker = cloud(self.app, 'iam', 'service-accounts', 'describe', self.r['broker'])
         parent = f'//iam.googleapis.com/projects/{self.app}/serviceAccounts/{broker["uniqueId"]}'
         tags = cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=' + parent, '--location=global')
@@ -325,6 +339,89 @@ class Controls:
             body={'permissions': ['iam.serviceAccounts.actAs']}, identity=self.r['deploy'])
         require('iam.serviceAccounts.actAs' in permissions.get('permissions', []), 'broker actAs lost')
         self.record('broker-lifecycle', target, 'deletion_denied_and_actas_retained', tag_count=len(tags))
+
+    def broker_undelete_last(self, args):
+        """Explicit final destructive probe; recovery always uses the same UID."""
+        from runner import classify
+        require(not (self.directory / 'deny-policies-baseline.json').exists(), 'restore temporary deny fixtures before final phase')
+        rows = json.loads((self.directory / 'controls-evidence.json').read_text())
+        require(any(row['case'] == 'control-delete-undelete' and row['target'] == self.r['control']
+                    and row['observed'] == 'same_identity_restored' and row.get('tag_count') == 0
+                    and row['run_id'] == self.m['run_id'] for row in rows), 'deleted untagged control must allow undelete first')
+        file = self.directory / 'broker-undelete-recovery.json'
+        require(not file.exists() or json.loads(file.read_text())['stage'] == 'restored', 'recover previous broker mutation first')
+        identity = self.r['broker']
+        account = cloud(self.app, 'iam', 'service-accounts', 'describe', identity)
+        uid = str(account['uniqueId'])
+        require(uid.isdigit() and not account.get('disabled'), 'enabled broker unique id required')
+        resource = f'projects/{self.app}/serviceAccounts/{uid}'
+        parent = '//iam.googleapis.com/' + resource
+        policy = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', identity)
+        tags = cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=' + parent, '--location=global')
+        require(tags and all(tag.get('tagValue') for tag in tags), 'actual broker tag baseline required')
+        recovery = dict(project=self.app, run_id=self.m['run_id'], identity=identity, unique_id=uid,
+                        policy=policy, tags=tags, stage='delete_pending')
+        save(file, recovery)
+        result = 'inconclusive'
+        try:
+            cloud(self.app, 'iam', 'service-accounts', 'delete', identity)
+            spec = {'url': 'https://iam.googleapis.com/v1/' + resource, 'method': 'GET'}
+            status, _ = request(spec, self.token(), self.app)
+            require(status == 404, 'broker soft deletion not observed')
+            try:
+                deleted_tags = cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=' + parent, '--location=global')
+                tags_retained = {tag['tagValue'] for tag in deleted_tags} == {tag['tagValue'] for tag in tags}
+            except Refused:
+                tags_retained = False
+            save(file, {**recovery, 'stage': 'deploy_undelete_pending', 'deleted_tags_observed': tags_retained})
+            spec = {'url': 'https://iam.googleapis.com/v1/' + resource + ':undelete', 'method': 'POST', 'body': {},
+                    'expected': 'deny', 'permission': 'iam.serviceAccounts.undelete', 'resource': resource,
+                    'denial_reason': 'IAM_PERMISSION_DENIED'}
+            status, body = request(spec, self.token(self.r['deploy']), self.app)
+            result = classify(status, body, spec)
+            if result == 'passed' and not tags_retained:
+                result = 'inconclusive_tag_state'
+            self.record('broker-undelete', resource, result, http_status=status, permission=spec['permission'],
+                        deleted_tags_observed=tags_retained,
+                        request_sha256=hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest())
+        finally:
+            self.recover_broker(args)
+        require(result == 'passed', 'broker undelete boundary failed or inconclusive')
+
+    def recover_broker(self, args):
+        """Resume after an unknown DELETE/undelete outcome without recreating a SA."""
+        file = self.directory / 'broker-undelete-recovery.json'
+        recovery = json.loads(file.read_text())
+        require(recovery['project'] == self.app and recovery['run_id'] == self.m['run_id']
+                and recovery['identity'] == self.r['broker'] and str(recovery['unique_id']).isdigit(), 'foreign broker recovery journal')
+        uid, identity = recovery['unique_id'], recovery['identity']
+        resource = f'projects/{self.app}/serviceAccounts/{uid}'
+        parent = '//iam.googleapis.com/' + resource
+        save(file, {**recovery, 'stage': 'restore_pending'})
+        get = {'url': 'https://iam.googleapis.com/v1/' + resource, 'method': 'GET'}
+        status, account = request(get, self.token(), self.app)
+        if status == 404:
+            restore = {'url': get['url'] + ':undelete', 'method': 'POST', 'body': {}}
+            restored, _ = request(restore, self.token(), self.app)
+            require(200 <= restored < 300, 'administrator broker recovery pending')
+            status, account = request(get, self.token(), self.app)
+        require(status == 200 and account.get('uniqueId') == uid and not account.get('disabled'), 'same enabled broker UID restoration unverified')
+        policy = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', identity)
+        file_policy = self.directory / 'broker-restore-policy.json'
+        save(file_policy, {**recovery['policy'], 'etag': policy['etag']})
+        cloud(self.app, 'iam', 'service-accounts', 'set-iam-policy', identity, str(file_policy))
+        actual = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', identity)
+        canonical = lambda value: sorted(json.dumps({**binding, 'members': sorted(binding.get('members', []))}, sort_keys=True) for binding in value.get('bindings', []))
+        require(canonical(actual) == canonical(recovery['policy']), 'broker IAM restoration unverified')
+        list_tags = lambda: cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=' + parent, '--location=global')
+        expected = {tag['tagValue'] for tag in recovery['tags']}
+        current = {tag['tagValue'] for tag in list_tags()}
+        require(current <= expected, 'unexpected broker tags; inspect recovery journal')
+        for tag in expected - current:
+            cloud(self.app, 'resource-manager', 'tags', 'bindings', 'create', '--parent=' + parent, '--tag-value=' + tag, '--location=global')
+        require({tag['tagValue'] for tag in list_tags()} == expected, 'broker tag restoration unverified')
+        save(file, {**recovery, 'stage': 'restored'})
+        self.record('broker-undelete-recovery', resource, 'same_uid_iam_tags_restored')
 
     def tags(self, args):
         from runner import classify
@@ -345,6 +442,7 @@ class Controls:
         status, _ = request(spec, self.token(self.r['deploy']), self.app)
         require(200 <= status < 300, 'untagged control lacks positive authority')
         self.record('tag-untagged-policy', target, 'allowed', http_status=status)
+        save(self.directory / 'control-tag-recovery.json', {'project': self.app, 'parent': control_parent, 'tag_value': tag, 'stage': 'create_pending'})
         created = cloud(self.app, 'resource-manager', 'tags', 'bindings', 'create', '--tag-value=' + tag, '--parent=' + control_parent, '--location=global')
         try:
             spec['body']['policy'] = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', self.r['control'])
@@ -434,8 +532,16 @@ class Controls:
         started, finished = trigger['started_at'], stamp()
         require(trigger['target'] in (self.app, self.byok), 'foreign alert target')
         for project in (trigger['target'],):
-            policies = cloud(project, 'alpha', 'monitoring', 'policies', 'list', '--filter=displayName:Credential')
+            expected = ({'Credential Broker: new Cloud Run revision', 'Credential Broker: IAM policy changed'}
+                        if project == self.app else {'Provider Credential Key Material read by a non-broker principal',
+                                                    'BYOK project: audit configuration or IAM changed'})
+            policies = [policy for policy in cloud(project, 'alpha', 'monitoring', 'policies', 'list')
+                        if policy.get('displayName') in expected]
+            require(len(policies) == len(expected) and {policy['displayName'] for policy in policies} == expected,
+                    'managed alert policy inventory missing or ambiguous')
             for policy in policies:
+                require(policy['name'].startswith('projects/' + project + '/alertPolicies/'), 'foreign alert policy')
+                require(policy.get('conditions') and all(condition.get('conditionMatchedLog', {}).get('filter') for condition in policy['conditions']), 'managed alert conditions missing')
                 for condition in policy.get('conditions', []):
                     log_filter = condition.get('conditionMatchedLog', {}).get('filter')
                     if not log_filter:
@@ -498,7 +604,7 @@ class Controls:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=['discover', 'fixtures', 'identities', 'manage', 'kms', 'pods', 'gcip', 'tags', 'alert-plan', 'alert', 'alert-collect', 'kubeconfig', 'request-log', 'deny-fixtures', 'restore-deny', 'lifecycle', 'gcip-reenable'])
+    parser.add_argument('phase', choices=['discover', 'fixtures', 'identities', 'manage', 'kms', 'pods', 'gcip', 'tags', 'alert-plan', 'alert', 'alert-collect', 'kubeconfig', 'request-log', 'deny-fixtures', 'restore-deny', 'lifecycle', 'gcip-reenable', 'broker-undelete-last', 'recover-broker'])
     parser.add_argument('--manifest', required=True)
     parser.add_argument('--operator-member')
     parser.add_argument('--probe-image')

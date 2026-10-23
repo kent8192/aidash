@@ -118,6 +118,7 @@ class ControlContracts(unittest.TestCase):
         baseline = {identity: policy for identity in (self.r['broker'], self.r['control'], self.r['delegate_target'])}
         file = self.directory / 'deny-policies-baseline.json'
         file.write_text(json.dumps(baseline))
+        (self.directory / 'deny-keys-baseline.json').write_text(json.dumps({self.r['broker']: [], self.r['control']: []}))
         def cloud(project, *words):
             if 'get-iam-policy' in words:
                 return {'etag': 'fresh', 'bindings': policy['bindings'] + [{'role': 'roles/iam.serviceAccountTokenCreator', 'members': ['serviceAccount:' + self.r['deploy']]}]}
@@ -134,7 +135,7 @@ class ControlContracts(unittest.TestCase):
         def cloud(project, *words):
             self.assertEqual(project, self.app)
             if 'policies' in words:
-                return [{'name': 'projects/' + self.app + '/alertPolicies/123', 'conditions': [{'name': 'revision', 'conditionMatchedLog': {'filter': 'resource.type="cloud_run_revision"'}}]}]
+                return [{'name': 'projects/' + self.app + '/alertPolicies/' + str(i), 'displayName': name, 'conditions': [{'name': 'revision', 'conditionMatchedLog': {'filter': 'resource.type="cloud_run_revision"'}}]} for i, name in enumerate(['Credential Broker: new Cloud Run revision', 'Credential Broker: IAM policy changed'])]
             self.assertIn('timestamp>=', words[2])
             self.assertIn(start, words[2])
             return []
@@ -144,6 +145,185 @@ class ControlContracts(unittest.TestCase):
         self.assertEqual(row['trigger'], 'alert-trigger-revision')
         self.assertEqual(row['window_start'], start)
         self.assertEqual(row['observed'], 'pending')
+
+    def test_restore_revokes_new_broker_and_control_keys_and_retries_interruption(self):
+        control = self.instance()
+        identities = (self.r['broker'], self.r['control'], self.r['delegate_target'])
+        baseline = {identity: {'bindings': [], 'etag': 'old'} for identity in identities}
+        file = self.directory / 'deny-policies-baseline.json'
+        file.write_text(json.dumps(baseline))
+        keyname = lambda identity, suffix: 'projects/' + self.app + '/serviceAccounts/' + identity + '/keys/' + suffix
+        original = {identity: [{'name': keyname(identity, 'original')}] for identity in identities[:2]}
+        (self.directory / 'deny-keys-baseline.json').write_text(json.dumps(original))
+        current = {identity: keys + [{'name': keyname(identity, 'unexpected')}] for identity, keys in original.items()}
+        deletes = []
+        interrupted = [True]
+        def cloud(project, *words):
+            self.assertEqual(project, self.app)
+            if 'get-iam-policy' in words:
+                return {'bindings': [], 'etag': 'fresh'}
+            if 'set-iam-policy' in words:
+                self.assertEqual(json.loads(Path(words[-1]).read_text())['etag'], 'fresh')
+                return {}
+            identity = next(word.split('=', 1)[1] for word in words if word.startswith('--iam-account='))
+            if 'list' in words:
+                return list(current[identity])
+            self.assertIn('delete', words)
+            deletes.append((identity, words[4]))
+            if identity == self.r['control'] and interrupted[0]:
+                interrupted[0] = False
+                raise controls.Refused('interrupted')
+            current[identity] = [key for key in current[identity] if key['name'].rsplit('/', 1)[1] != words[4]]
+            return {}
+        with mock.patch.object(controls, 'cloud', side_effect=cloud):
+            with self.assertRaises(controls.Refused):
+                control.restore_deny(None)
+            self.assertTrue(file.exists())
+            control.restore_deny(None)
+        self.assertEqual(current, original)
+        self.assertIn((self.r['broker'], 'unexpected'), deletes)
+        self.assertIn((self.r['control'], 'unexpected'), deletes)
+        self.assertTrue(all(key != 'original' for _, key in deletes))
+        self.assertFalse(file.exists())
+
+    def test_key_snapshot_failure_prevents_all_fixture_grants(self):
+        control = self.instance()
+        commands = []
+        def cloud(project, *words):
+            commands.append(words)
+            if 'get-iam-policy' in words:
+                return {'bindings': [], 'etag': 'old'}
+            if '--iam-account=' + self.r['broker'] in words:
+                raise controls.Refused('key inventory unavailable')
+            return []
+        with mock.patch.object(controls, 'cloud', side_effect=cloud):
+            with self.assertRaises(controls.Refused):
+                control.deny_fixtures(None)
+        self.assertFalse(any('add-iam-policy-binding' in words for words in commands))
+        self.assertFalse((self.directory / 'deny-policies-baseline.json').exists())
+
+    def test_lifecycle_journals_recovery_before_mutation(self):
+        control = self.instance()
+        mutations = []
+        def cloud(project, *words):
+            if 'describe' in words:
+                return {'uniqueId': '12345', 'disabled': 'disable' in mutations}
+            if 'disable' in words:
+                pending = json.loads((self.directory / 'control-lifecycle.json').read_text())
+                self.assertEqual(pending['identity'], self.r['control'])
+                self.assertEqual(pending['stage'], 'disable_pending')
+                mutations.append('disable')
+            if 'delete' in words:
+                pending = json.loads((self.directory / 'control-deleted.json').read_text())
+                self.assertEqual(pending['unique_id'], '12345')
+                raise controls.Refused('delete response lost')
+            return {}
+        with mock.patch.object(controls, 'cloud', side_effect=cloud):
+            with self.assertRaises(controls.Refused):
+                control.lifecycle(None)
+        self.assertEqual(json.loads((self.directory / 'control-deleted.json').read_text())['stage'], 'delete_pending')
+
+    def test_byok_alert_inventory_includes_audit_policy_and_rejects_gaps(self):
+        control = self.instance()
+        control.record('alert-trigger-audit-config', control.byok, 'triggered_receipt_pending', started_at='2026-10-23T12:00:00+00:00')
+        names = ['Provider Credential Key Material read by a non-broker principal', 'BYOK project: audit configuration or IAM changed']
+        queries = []
+        policies = [{'name': 'projects/' + control.byok + '/alertPolicies/' + str(i), 'displayName': name,
+                     'conditions': [{'name': str(i), 'conditionMatchedLog': {'filter': 'exact_filter_' + str(i)}}]} for i, name in enumerate(names)]
+        policies.append({'name': 'unrelated', 'displayName': 'Unrelated', 'conditions': [{'conditionMatchedLog': {'filter': 'wrong_filter'}}]})
+        def cloud(project, *words):
+            self.assertEqual(project, control.byok)
+            if 'policies' in words:
+                return [p for p in policies if 'Credential' in p['displayName']] if '--filter=displayName:Credential' in words else policies
+            queries.append(words[2])
+            return []
+        with mock.patch.object(controls, 'cloud', side_effect=cloud):
+            control.alert_collect(None)
+            self.assertEqual(len(queries), 2)
+            self.assertTrue(any('exact_filter_1' in query for query in queries))
+            self.assertFalse(any('wrong_filter' in query for query in queries))
+            policies.pop(1)
+            with self.assertRaises(controls.Refused):
+                control.alert_collect(None)
+
+    def test_last_broker_undelete_recovers_identity_policy_and_tags_for_each_outcome(self):
+        for outcome in ('deny', 'allow', 'tags_lost', 'interrupted'):
+            with self.subTest(outcome=outcome):
+                control = self.instance()
+                control.record('control-delete-undelete', self.r['control'], 'same_identity_restored', tag_count=0)
+                journal = self.directory / 'broker-undelete-recovery.json'
+                journal.unlink(missing_ok=True)
+                uid = '12345'
+                resource = 'projects/' + self.app + '/serviceAccounts/' + uid
+                parent = '//iam.googleapis.com/' + resource
+                original_policy = {'etag': 'old', 'bindings': [{'role': 'roles/iam.serviceAccountUser', 'members': ['serviceAccount:' + self.r['deploy']]}]}
+                tag = {'name': 'tagBindings/fixture', 'tagValue': 'tagValues/123', 'parent': parent}
+                state = {'deleted': False, 'tags': [tag], 'policy': original_policy, 'restore_fails': outcome == 'interrupted'}
+                events = []
+                def cloud(project, *words):
+                    self.assertEqual(project, self.app)
+                    if 'bindings' in words:
+                        if 'create' in words:
+                            state['tags'] = [tag]
+                            return tag
+                        return state['tags']
+                    if 'get-iam-policy' in words:
+                        return {**state['policy'], 'etag': 'fresh'}
+                    if 'set-iam-policy' in words:
+                        restored = json.loads(Path(words[-1]).read_text())
+                        self.assertEqual(restored['etag'], 'fresh')
+                        state['policy'] = restored
+                        return restored
+                    if 'delete' in words:
+                        durable = json.loads(journal.read_text())
+                        self.assertEqual(durable['stage'], 'delete_pending')
+                        self.assertEqual(durable['unique_id'], uid)
+                        self.assertEqual(durable['policy'], {**original_policy, 'etag': 'fresh'})
+                        self.assertEqual(durable['tags'], [tag])
+                        events.append('admin-delete')
+                        state['deleted'] = True
+                        if outcome == 'tags_lost':
+                            state['tags'] = []
+                        if outcome == 'interrupted':
+                            raise controls.Refused('lost delete response')
+                        return {}
+                    return {'uniqueId': uid, 'disabled': False}
+                def request(spec, token, project):
+                    if spec['method'] == 'GET':
+                        return (404, {}) if state['deleted'] else (200, {'uniqueId': uid, 'disabled': False})
+                    self.assertEqual(spec['url'], 'https://iam.googleapis.com/v1/' + resource + ':undelete')
+                    if token == 'deploy':
+                        events.append('deploy-undelete')
+                        self.assertTrue(state['deleted'])
+                        if outcome == 'allow':
+                            state['deleted'] = False
+                            return 200, {}
+                        return 403, {'error': {'status': 'PERMISSION_DENIED', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'domain': 'iam.googleapis.com', 'reason': 'IAM_PERMISSION_DENIED', 'metadata': {'permission': 'iam.serviceAccounts.undelete', 'resource': resource}}]}}
+                    events.append('admin-undelete')
+                    if state['restore_fails']:
+                        return 503, {}
+                    state['deleted'] = False
+                    state['policy'] = {'etag': 'after', 'bindings': []}
+                    return 200, {'uniqueId': uid}
+                with mock.patch.object(controls, 'cloud', side_effect=cloud), mock.patch.object(controls, 'request', side_effect=request), mock.patch.object(control, 'token', side_effect=lambda identity=None: 'deploy' if identity else 'admin'):
+                    if outcome == 'deny':
+                        control.broker_undelete_last(None)
+                    else:
+                        with self.assertRaises(controls.Refused):
+                            control.broker_undelete_last(None)
+                    if outcome == 'interrupted':
+                        self.assertEqual(json.loads(journal.read_text())['stage'], 'restore_pending')
+                        state['restore_fails'] = False
+                        control.recover_broker(None)
+                self.assertFalse(state['deleted'])
+                self.assertEqual(state['policy']['bindings'], original_policy['bindings'])
+                self.assertEqual(state['tags'], [tag])
+                self.assertEqual(json.loads(journal.read_text())['stage'], 'restored')
+                if outcome != 'interrupted':
+                    rows = json.loads((self.directory / 'controls-evidence.json').read_text())
+                    result = [row for row in rows if row['case'] == 'broker-undelete'][-1]
+                    self.assertEqual(result['observed'], {'deny': 'passed', 'allow': 'failed', 'tags_lost': 'inconclusive_tag_state'}[outcome])
+                    self.assertEqual(events[:2], ['admin-delete', 'deploy-undelete'])
 
     def test_kms_failure_cleans_private_signature_without_emitting_contents(self):
         control = self.instance()

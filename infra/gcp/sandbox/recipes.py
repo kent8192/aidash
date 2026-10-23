@@ -83,6 +83,8 @@ def build(m, r):
         ('delegation', 'iam.serviceAccounts.implicitDelegation', 'POST', 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + r['delegate_target'] + ':generateAccessToken', {'delegates': [account], 'scope': ['https://www.googleapis.com/auth/cloud-platform'], 'lifetime': '600s'}),
     ]
     for name, permission, method, url, body in operations:
+        if name == 'undelete':
+            continue  # controls.py broker-undelete-last owns the deleted UID and recovery.
         add('deploy-deny-' + name, 8, 'app', deploy, method, url, 'deny', body=body, permission=permission, resource=account)
     # Reachability controls use the separate untagged fixture and are run
     # only during the reviewed temporary allow-substrate phase.

@@ -80,8 +80,8 @@ Inspect the command array and inputs before executing each command directly:
 
 `controls.py` runs named phases only when invoked. All phases require both
 manifest-owned projects to be active. **Every phase below except `alert-plan`
-may read cloud metadata; fixtures, manage, tags, lifecycle, alert and gcip also
-write sandbox resources.** Review these commands with the selected manifest
+may read cloud metadata; fixtures, manage, tags, lifecycle, broker-undelete-last,
+recover-broker, alert and gcip also write sandbox resources.** Review these commands with the selected manifest
 before the separate cloud execution authorization. None was run during this
 implementation. All stdout/stderr from child processes is captured, never
 forwarded. Private credentials stay in memory or mode-0600 files under `RUN`.
@@ -298,17 +298,49 @@ python3 infra/gcp/sandbox/controls.py lifecycle --manifest "$RUN/manifest.json"
 python3 infra/gcp/sandbox/controls.py restore-deny --manifest "$RUN/manifest.json"
 ```
 
-The generated requests cover all ten denied permissions. `tags` verifies the
+The generated requests cover nine denied permissions; the tenth, undelete, uses
+the explicit final lifecycle phase below. `tags` verifies the
 same control-account policy write before tagging, while tagged, and after
 restoration, and tests deploy detachment of the real broker tag binding. A
 `finally` block restores the fixture tag. `lifecycle` observes control disable,
 restore, delete and same-numeric-ID undelete, then verifies real broker deletion
-is denied and `actAs` remains. It persists the control UID for recovery using
-`gcloud iam service-accounts undelete <recorded-unique-id> --project="$APP_PROJECT"`.
-A direct undelete on a live broker can fail before IAM evaluation; classify that
-probe inconclusive and use the observed deletion-denied branch, not invented
-undelete proof. `restore-deny` restores baseline IAM with fresh etags and deletes
-newly generated control keys; project shutdown remains the interruption fallback.
+is denied and `actAs` remains. It persists the control UID before deletion for
+recovery with the commands below.
+A direct undelete on a live broker can fail before IAM evaluation and is not
+provided as a generated probe. Deletion denial proves only the delete permission;
+it cannot substitute for undelete evidence. `restore-deny` restores baseline IAM
+with fresh etags, verifies exact original bindings, and revokes newly generated
+**broker and control** user-managed keys. Both key inventories are completed
+before any fixture grant; restore verifies both inventories equal their original
+sets before claiming completion. Existing keys are preserved, and private-key
+payloads are never recorded. An interrupted/failed restore retains its baseline
+journal; rerun `restore-deny` before proceeding.
+
+Control disable, delete and tag creation persist recovery identifiers before
+mutation. If interrupted, inspect the corresponding private journal and observed
+resource state before retrying. These commands use the saved exact identity/UID:
+
+```sh
+CONTROL_SA=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["control"])' "$RUN/resources.json")
+CONTROL_UID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["unique_id"])' "$RUN/control-deleted.json")
+# After observing that the saved control UID is deleted:
+gcloud iam service-accounts undelete "$CONTROL_UID" --project="$APP_PROJECT"
+# After observing that the saved control account is disabled:
+gcloud iam service-accounts enable "$CONTROL_SA" --project="$APP_PROJECT"
+```
+
+For interrupted tag creation/removal, `control-tag-recovery.json` contains the
+exact parent and tag value. After observing that this control binding exists:
+
+```sh
+CONTROL_TAG_PARENT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["parent"])' "$RUN/control-tag-recovery.json")
+CONTROL_TAG_VALUE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_value"])' "$RUN/control-tag-recovery.json")
+gcloud resource-manager tags bindings delete --parent="$CONTROL_TAG_PARENT" \
+  --tag-value="$CONTROL_TAG_VALUE" --project="$APP_PROJECT" --location=global
+```
+
+Never detach the broker binding. Whole-project shutdown is the fallback if
+individual recovery cannot be verified.
 
 Prepare exact alert trigger/cleanup commands before executing them:
 
@@ -328,7 +360,10 @@ the actual deploy identity, providing the authorized-deploy positive control.
 No job execution or provider request occurs. Compute creates one private
 `e2-micro` VM only for the audited service-account attachment, then deletes it.
 
-`alert-collect` reads the actual managed policies and uses each exact log filter,
+`alert-collect` requires both exact managed policy names in the trigger project,
+including `BYOK project: audit configuration or IAM changed` for BYOK triggers.
+Missing or ambiguous inventory fails before querying logs. It uses each actual
+policy ID and exact log filter within the recorded trigger timestamp window,
 recording only policy/condition names and matched insert IDs. The owner must
 independently confirm each expected test-sink notification with timestamp and
 policy/event identifier; a log match is **not** a delivered notification.
@@ -344,6 +379,38 @@ same-PR protected-ref-only jobs run after normal merge; existing protected
 successful authentication proves only its own SHA/identity/claims. Neither
 feature-branch success nor source-grep tests substitute for those results.
 Assumption 9 remains deferred to #248.
+
+### Final destructive undelete phase
+
+Run this **after all other broker, payload, Pod, session and alert probes** and
+after `restore-deny`. It requires the same run's successful deleted, untagged
+control undelete from `lifecycle`. It temporarily soft-deletes the actual sandbox
+broker as administrator; do not run application requests concurrently.
+
+```sh
+python3 infra/gcp/sandbox/controls.py broker-undelete-last --manifest "$RUN/manifest.json"
+# If interrupted or recovery remains pending, run only recovery next:
+python3 infra/gcp/sandbox/controls.py recover-broker --manifest "$RUN/manifest.json"
+```
+
+Before deletion, the phase durably saves the broker numeric UID, IAM policy and
+actual tag bindings in `broker-undelete-recovery.json`. It verifies deletion and
+observes whether the original tag values remain on the deleted identity, then
+attempts deploy's `iam.serviceAccounts.undelete` against that exact UID. A 2xx
+is failure; an exact permission/resource IAM denial passes only if the deleted
+identity's tag state was observed unchanged. Lifecycle errors, unavailable tag
+observations or tag loss remain inconclusive and block acceptance. Capture the
+concrete live result and repair/review the tag/lifecycle design if that occurs;
+nine other successful permission probes do not establish all ten permissions.
+
+The `finally` recovery and the separately resumable `recover-broker` phase use
+administrator credentials to undelete the same UID if needed, restore IAM with a
+fresh etag, recreate only missing original tag bindings, and verify the enabled
+UID, exact bindings and original tag-value set. Unknown additional tags refuse
+completion. A failed recovery keeps `restore_pending`; never recreate an account
+with the same email as a substitute. Read-only observations may be retried after
+propagation; whole-project shutdown remains the final cleanup fallback. The
+phase makes no provider request and changes no Terraform lifecycle guard.
 
 ## Cleanup
 
