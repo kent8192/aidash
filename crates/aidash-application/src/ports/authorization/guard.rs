@@ -14,6 +14,8 @@ pub trait RunGuardScope: Send {
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>>;
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// Read exact metadata under current `registry.read`, independently of invocation approval.
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry>;
 	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

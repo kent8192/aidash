@@ -94,9 +94,10 @@ A coordinator's final response remains gated while a child is unresolved. A Depl
 
 ### Context compaction
 
-The [portable decision gate foundation](decision-gate.md) defines explicit
-Decider pins and historical replay contracts for #108. Native execution still
-uses the compaction path described below until its separate integration lands.
+The [decision gate](decision-gate.md) defines explicit Decider pins and historical
+replay contracts for native compaction. Its pruning stage uses the exact
+compaction Decider in the Run's Binding snapshot and the Node's current
+authority, provider and durable decision-journal adapters.
 
 The compaction trigger, post-compaction fit check and final preflight use the
 same complete-request estimate, the Request Estimate (ADR 0017). Its upper

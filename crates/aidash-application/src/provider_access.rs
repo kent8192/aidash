@@ -10,6 +10,8 @@ use uuid::Uuid;
 pub struct Context {
 	pub tenant: String,
 	pub run: Option<Uuid>,
+	/// Independent approval observation; never an executing Run identity.
+	pub observation: Option<Uuid>,
 	/// Local maintenance authority when no Run exists; used by #137's Token Subject.
 	pub maintenance: Option<MaintenancePurpose>,
 	/// Admission pins an ID, not a Secret Manager version or a mutable binding.
@@ -224,9 +226,12 @@ impl TenantAccess {
 	)> {
 		let provider = aidash_domain::provider_credentials::Provider::credential(provider)?;
 		if context.tenant.is_empty()
-			|| (context.run.is_none() && context.maintenance.is_none())
-			|| (context.run.is_some() && context.maintenance.is_some())
-			|| (context.is_decision() && context.run.is_none())
+			|| (usize::from(context.run.is_some())
+				+ usize::from(context.maintenance.is_some())
+				+ usize::from(context.observation.is_some())
+				!= 1) || context.observation.is_some_and(|id| id.is_nil())
+			|| (context.observation.is_some() && !context.is_decision())
+			|| (context.is_decision() && context.run.is_none() && context.observation.is_none())
 			|| endpoint != provider.base_url()
 		{
 			return Err(Error::Invalid(

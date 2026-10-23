@@ -70,11 +70,15 @@ impl RouteDecisionProvider {
 	) -> Result<Self> {
 		config.validate()?;
 		if context.tenant.is_empty()
-			|| context.run.is_none_or(|run| run.is_nil())
-			|| context.maintenance.is_some()
+			|| match config.hook {
+				Hook::ApprovalObservation => {
+					context.run.is_some() || context.observation.is_none_or(|id| id.is_nil())
+				}
+				_ => context.run.is_none_or(|run| run.is_nil()) || context.observation.is_some(),
+			} || context.maintenance.is_some()
 		{
 			return Err(Error::Invalid(
-				"Decider calls are provider calls of one Run in its Tenant".into(),
+				"Decider calls require one matching Run or approval observation scope in their Tenant".into(),
 			));
 		}
 		if implementation.trim().is_empty() {
@@ -575,3 +579,7 @@ fn validate_response(route: &DeciderRoute, questions: &Questions, body: &[u8]) -
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "decision/observation_scope_tests.rs"]
+mod observation_scope_tests;
