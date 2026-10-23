@@ -1,6 +1,6 @@
 # Complete the Registry-centric Harness in one PR
 
-Status: the owner's first-round decisions are recorded; independent builder review found no important unresolved decisions. The complete written design awaits the owner's final confirmation before implementation. This is not an implementation-completion claim. It lives in `docs/decisions/` because this repository explicitly ignores generated `docs/superpowers/` and `docs/plans/` paths.
+Status: the owner approved this written design and authorized implementation and one PR on 2026-10-23, after independent builder review found no important unresolved decisions. This is not an implementation-completion claim. It lives in `docs/decisions/` because this repository explicitly ignores generated `docs/superpowers/` and `docs/plans/` paths.
 
 ## Intent and scope
 
