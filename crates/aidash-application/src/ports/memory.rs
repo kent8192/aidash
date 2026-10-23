@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod objects;
+
 /// Native adapters retain this ledger outside recoverable database snapshots.
 /// Only memory paths consult its serving gate; primary execution remains usable.
 pub trait MemoryRecovery: Send + Sync {
