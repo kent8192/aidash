@@ -531,6 +531,27 @@ pub struct SemanticContextRead {
 	pub result: Result<Option<Value>>,
 }
 
+/// In-memory execution frame used by native providers; private Task/input data
+/// does not become part of a Registry declaration.
+pub enum ContextSourceRead<'a> {
+	References {
+		run: &'a Run,
+		entry: &'a Entry,
+	},
+	Skills {
+		run: &'a Run,
+	},
+	Semantic {
+		run: &'a Run,
+		task: &'a Task,
+		inputs: &'a [(InputRead, String)],
+		budget: usize,
+		entry: &'a Entry,
+		key: Option<&'a aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
+	},
+}
+
 /// Composition supplies concrete adapters without exposing their framework types.
 /// A native authority owns its policy scope for the complete step, suspends only
 /// around inference, and rechecks before provider output is accepted.
@@ -584,9 +605,9 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
 		None
 	}
-	async fn documents(&self, entry: &Entry) -> Result<Value>;
+	/// Read an admitted context source under the current execution authority.
+	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
-	async fn skill_context(&self, run: &Run) -> Result<String>;
 	/// Direct Skills pinned for this Run, as deferred-exposure catalog input. Empty
 	/// when Skills are off, nothing is pinned, or the Home has no local authority.
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>>;
@@ -606,21 +627,6 @@ pub trait ExecutionEnvironment: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<aidash_domain::context::sources::RetrievalScope>;
-	/// `key` is present for an Ordered Run: equal keys replay the same bytes.
-	/// `degrade_on_outage`: this attempt puts the Degraded context marker in an
-	/// unavailable workspace slot instead of failing, if every source of that
-	/// slot opted in and the Run is local (ADR 0059).
-	#[allow(clippy::too_many_arguments)]
-	async fn semantic_context(
-		&self,
-		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&aidash_domain::context::sources::RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	/// The pages people asked this Run to read, recorded beside the inputs
 	/// that carried them (ADR 0052). Empty when the Run has none.

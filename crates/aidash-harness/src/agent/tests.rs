@@ -1030,6 +1030,35 @@ impl ExecutionAuthority for Backend {
 
 #[async_trait]
 impl ExecutionEnvironment for Backend {
+	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead {
+		let result = match request {
+			ContextSourceRead::References { run: _, entry } => {
+				self.documents(entry).await.map(Some)
+			}
+			ContextSourceRead::Skills { run } => self
+				.skill_context(run)
+				.await
+				.map(|text| Some(serde_json::json!(text))),
+			ContextSourceRead::Semantic {
+				run,
+				task,
+				inputs,
+				budget,
+				entry,
+				key,
+				degrade_on_outage,
+			} => {
+				return self
+					.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
+					.await;
+			}
+		};
+		SemanticContextRead {
+			workspace_retrieved: false,
+			result,
+		}
+	}
+
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
@@ -1054,10 +1083,7 @@ impl ExecutionEnvironment for Backend {
 	async fn close_plugin_sessions(&self, run: Uuid) {
 		self.0.closed_sessions.lock().unwrap().push(run);
 	}
-	async fn documents(&self, entry: &Entry) -> Result<Value> {
-		let _ = entry;
-		Ok(json!([]))
-	}
+
 	async fn recheck_source_observation(&self, _: &Run, _: &Value) -> Result<()> {
 		if self.0.conversation_memory {
 			self.record("source.recheck");
@@ -1070,17 +1096,7 @@ impl ExecutionEnvironment for Backend {
 		}
 		Ok(())
 	}
-	async fn skill_context(&self, run: &Run) -> Result<String> {
-		let _ = run;
-		if let Some(text) = &self.0.skill_context {
-			return Ok(text.clone());
-		}
-		if !self.0.skill_tool {
-			unexpected("ExecutionEnvironment.skill_context")
-		}
-		self.record("source.skill");
-		Ok(self.0.skill_text.lock().unwrap().clone())
-	}
+
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<DirectSkill>> {
 		let _ = run;
 		self.record("skills.direct");
@@ -1118,55 +1134,7 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		Ok(self.0.retrieval.lock().unwrap().clone())
 	}
-	async fn semantic_context(
-		&self,
-		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		let _ = (run, task, inputs, budget, entry);
-		self.0
-			.semantic_keys
-			.lock()
-			.unwrap()
-			.push(key.map(RetrievalKey::digest));
-		self.0
-			.semantic_degrade
-			.lock()
-			.unwrap()
-			.push(degrade_on_outage);
-		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
-		{
-			return SemanticContextRead {
-				workspace_retrieved,
-				result: Err(Error::RemoteSemantic(reason)),
-			};
-		}
-		let result: Result<Option<Value>> = async {
-			if self.0.conversation_memory {
-				self.record("source.memory");
-				if self.0.fill_semantic_budget {
-					return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
-				}
-				return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
-			}
-			Ok(None)
-		}
-		.await;
-		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
-			value
-				.as_ref()
-				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
-		});
-		SemanticContextRead {
-			workspace_retrieved,
-			result,
-		}
-	}
+
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let _ = run;
 		Ok(16000)
@@ -5374,3 +5342,70 @@ async fn catch_up_steps_carry_no_breakpoints() {
 mod research;
 
 mod completion;
+
+impl Backend {
+	async fn documents(&self, entry: &Entry) -> Result<Value> {
+		let _ = entry;
+		Ok(json!([]))
+	}
+	async fn skill_context(&self, run: &Run) -> Result<String> {
+		let _ = run;
+		if let Some(text) = &self.0.skill_context {
+			return Ok(text.clone());
+		}
+		if !self.0.skill_tool {
+			unexpected("ExecutionEnvironment.skill_context")
+		}
+		self.record("source.skill");
+		Ok(self.0.skill_text.lock().unwrap().clone())
+	}
+	async fn semantic_context(
+		&self,
+		run: &Run,
+		task: &Task,
+		inputs: &[(InputRead, String)],
+		budget: usize,
+		entry: &Entry,
+		key: Option<&RetrievalKey>,
+		degrade_on_outage: bool,
+	) -> SemanticContextRead {
+		let _ = (run, task, inputs, budget, entry);
+		self.0
+			.semantic_keys
+			.lock()
+			.unwrap()
+			.push(key.map(RetrievalKey::digest));
+		self.0
+			.semantic_degrade
+			.lock()
+			.unwrap()
+			.push(degrade_on_outage);
+		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
+		{
+			return SemanticContextRead {
+				workspace_retrieved,
+				result: Err(Error::RemoteSemantic(reason)),
+			};
+		}
+		let result: Result<Option<Value>> = async {
+			if self.0.conversation_memory {
+				self.record("source.memory");
+				if self.0.fill_semantic_budget {
+					return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
+				}
+				return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+			}
+			Ok(None)
+		}
+		.await;
+		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
+			value
+				.as_ref()
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
+		});
+		SemanticContextRead {
+			workspace_retrieved,
+			result,
+		}
+	}
+}

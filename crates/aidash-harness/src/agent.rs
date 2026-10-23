@@ -845,7 +845,7 @@ impl<'a> Executor<'a> {
 				Err(error) => return Err(error),
 			}
 		}
-		let text = self.environment.skill_context(run).await?;
+		let text = read_skill_source(self.environment, run).await?;
 		let observation = revision
 			.map(|revision| context::sources::SkillObservation::new(revision, text.clone()))
 			.transpose()?;
@@ -914,15 +914,15 @@ impl<'a> Executor<'a> {
 			Some(key) => {
 				let read = self
 					.environment
-					.semantic_context(
+					.context_source(ContextSourceRead::Semantic {
 						run,
 						task,
 						inputs,
 						budget,
 						entry,
-						Some(key),
+						key: Some(key),
 						degrade_on_outage,
-					)
+					})
 					.await;
 				finish_semantic_read(store, run, token, read).await?
 			}
@@ -1238,14 +1238,14 @@ impl<'a> Executor<'a> {
 							let (text, skill) = self.ordered_skill_context(run, &binding_digest).await?;
 							ordered_skill = skill;
 							text
-						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { read_skill_source(self.environment, run).await? };
 						instructions.push_str(&source_skill_context);
 					}
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
 				let documents =
-					self.environment.documents(&entry).await?;
+					source_documents(self.environment, run, &entry).await?;
 				let mut context = run.context.clone();
 				capture_declared_coverage(&mut context, &tools, false);
 				let observation = home
@@ -1647,15 +1647,7 @@ impl<'a> Executor<'a> {
 							.cloned()
 					} else if guard.is_some() || home.local() {
 						let read = self.environment
-							.semantic_context(
-								run,
-								&task,
-								&semantic_inputs,
-								semantic_budget,
-								&entry,
-								None,
-								degrade_on_outage,
-							)
+							.context_source(ContextSourceRead::Semantic { run, task: &task, inputs: &semantic_inputs, budget: semantic_budget, entry: &entry, key: None, degrade_on_outage })
 							.await;
 						finish_semantic_read(store, run, token, read).await?
 					} else {
@@ -3617,3 +3609,26 @@ mod completion;
 mod progress;
 #[cfg(test)]
 mod tests;
+
+/// The current projection renders a provider contribution with its established
+/// bytes; the declaration never supplies a new system instruction.
+async fn read_skill_source(environment: &dyn ExecutionEnvironment, run: &Run) -> Result<String> {
+	let value = environment
+		.context_source(ContextSourceRead::Skills { run })
+		.await
+		.result?;
+	Ok(value
+		.and_then(|value| value.as_str().map(str::to_owned))
+		.unwrap_or_default())
+}
+async fn source_documents(
+	environment: &dyn ExecutionEnvironment,
+	run: &Run,
+	entry: &aidash_domain::registry::Entry,
+) -> Result<Value> {
+	Ok(environment
+		.context_source(ContextSourceRead::References { run, entry })
+		.await
+		.result?
+		.unwrap_or_else(|| json!([])))
+}

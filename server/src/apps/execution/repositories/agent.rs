@@ -954,6 +954,35 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
+	async fn context_source(&self, request: ContextSourceRead<'_>) -> SemanticContextRead {
+		let result = match request {
+			ContextSourceRead::References { run: _, entry } => {
+				self.documents(entry).await.map(Some)
+			}
+			ContextSourceRead::Skills { run } => self
+				.skill_context(run)
+				.await
+				.map(|text| Some(serde_json::json!(text))),
+			ContextSourceRead::Semantic {
+				run,
+				task,
+				inputs,
+				budget,
+				entry,
+				key,
+				degrade_on_outage,
+			} => {
+				return self
+					.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
+					.await;
+			}
+		};
+		SemanticContextRead {
+			workspace_retrieved: false,
+			result,
+		}
+	}
+
 	fn node_id(&self) -> &str {
 		self.federation.config.deployment.as_str()
 	}
@@ -1176,49 +1205,6 @@ impl ExecutionEnvironment for Environment<'_> {
 			.then_some(self as &dyn completion::CompletionChecks)
 	}
 
-	async fn documents(&self, _entry: &Entry) -> Result<Value> {
-		let snapshot = self
-			.step_run
-			.context
-			.binding_snapshot
-			.as_ref()
-			.ok_or_else(|| {
-				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
-			})?;
-		let mut documents = vec![];
-		for binding in &snapshot.bindings {
-			if binding.excluded_reason.is_some()
-				|| binding.definition.kind != "source"
-				|| binding.definition.config.get("schema_version").is_none()
-			{
-				continue;
-			}
-			let context: aidash_domain::registry::bindings::sources::NativeContext =
-				serde_json::from_value(binding.definition.config.clone())?;
-			if matches!(
-				context.source,
-				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
-			) {
-				let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
-				let value =
-					crate::knowledge::load(&self.federation.registry, &tenant, &binding.definition)
-						.await?;
-				documents.extend(
-					value
-						.as_array()
-						.ok_or_else(|| {
-							aidash_application::Error::Invalid(
-								"private source is not a document list".into(),
-							)
-						})?
-						.iter()
-						.cloned(),
-				);
-			}
-		}
-		Ok(serde_json::json!(documents))
-	}
-
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()> {
 		if let Some(authority) = &self.authority {
 			authority
@@ -1244,28 +1230,6 @@ impl ExecutionEnvironment for Environment<'_> {
 		Ok(())
 	}
 
-	async fn skill_context(&self, run: &Run) -> Result<String> {
-		let settings =
-			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
-				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
-			)?)?;
-		// Support-tool availability does not opt in to mounted Skill Sources.
-		if !settings.core_capabilities.skills {
-			return Ok(String::new());
-		}
-		if let Some(authority) = self
-			.authority
-			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
-		{
-			authority
-				.skill_context(&self.federation.store, run)
-				.await
-				.map_err(Into::into)
-		} else {
-			Ok(String::new())
-		}
-	}
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
 		match self
 			.authority
@@ -1341,108 +1305,6 @@ impl ExecutionEnvironment for Environment<'_> {
 			tenant,
 			key_version: keys.current(),
 		})
-	}
-	async fn semantic_context(
-		&self,
-		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&aidash_domain::context::sources::RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		let mut workspace_retrieved = false;
-		let result: Result<Option<Value>> = async {
-			let settings =
-				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
-					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
-				)?)?;
-			if !settings.semantic_memory && !settings.workspace_context {
-				return Ok(None);
-			}
-			if let Some(authority) = &self.authority {
-				let read = authority
-					.guard
-					.semantic_context(
-						&self.federation.store,
-						task,
-						inputs,
-						budget,
-						key,
-						degrade_on_outage,
-					)
-					.await;
-				workspace_retrieved = read.workspace_retrieved;
-				return read.result;
-			}
-			let _ = entry;
-			let agent =
-				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
-					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
-				)?)?;
-			let mut lease = crate::semantic::service::Lease::within(
-				&self.federation.store,
-				&self.run_store.scope,
-			)
-			.await?;
-			let mut query = format!("{}\n{}", task.title, task.description);
-			for (_, text) in inputs {
-				query.push('\n');
-				query.push_str(text);
-			}
-			let semantic = crate::semantic::service::context_in(
-				&self.federation.store,
-				&mut lease,
-				run,
-				&query,
-				crate::semantic::services::memory_context::workspace_budget(budget)?,
-				&agent,
-			)
-			.await;
-			let degrade = degrade_on_outage && agent.workspace_degrades;
-			let result = async {
-				let semantic = match semantic? {
-					// Optional workspace context may degrade; memory still follows
-					// and still fails closed (ADR 0059).
-					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
-						cause,
-					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
-					workspace => workspace
-						.required()?
-						.map(serde_json::to_value)
-						.transpose()?,
-				};
-				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
-					aidash_domain::semantic::degraded::degraded(value).is_none()
-				});
-				let reserved =
-					serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?
-						.len();
-				let memory = crate::semantic::services::memory_context::retrieve(
-					&self.federation.store,
-					&mut lease,
-					run,
-					task,
-					inputs,
-					budget.saturating_sub(reserved),
-					&agent,
-					key,
-				)
-				.await?;
-				crate::semantic::services::memory_context::complete(
-					&mut lease, run, semantic, memory, budget,
-				)
-				.await
-			}
-			.await;
-			lease.finish(result).await.map_err(Into::into)
-		}
-		.await;
-		SemanticContextRead {
-			workspace_retrieved,
-			result,
-		}
 	}
 
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
@@ -1562,5 +1424,174 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		}
 		.tools(run)
 		.await
+	}
+}
+
+impl Environment<'_> {
+	async fn documents(&self, _entry: &Entry) -> Result<Value> {
+		let snapshot = self
+			.step_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+			})?;
+		let mut documents = vec![];
+		for binding in &snapshot.bindings {
+			if binding.excluded_reason.is_some()
+				|| binding.definition.kind != "source"
+				|| binding.definition.config.get("schema_version").is_none()
+			{
+				continue;
+			}
+			let context: aidash_domain::registry::bindings::sources::NativeContext =
+				serde_json::from_value(binding.definition.config.clone())?;
+			if matches!(
+				context.source,
+				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
+			) {
+				let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
+				let value =
+					crate::knowledge::load(&self.federation.registry, &tenant, &binding.definition)
+						.await?;
+				documents.extend(
+					value
+						.as_array()
+						.ok_or_else(|| {
+							aidash_application::Error::Invalid(
+								"private source is not a document list".into(),
+							)
+						})?
+						.iter()
+						.cloned(),
+				);
+			}
+		}
+		Ok(serde_json::json!(documents))
+	}
+	async fn skill_context(&self, run: &Run) -> Result<String> {
+		let settings =
+			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+			)?)?;
+		// Support-tool availability does not opt in to mounted Skill Sources.
+		if !settings.core_capabilities.skills {
+			return Ok(String::new());
+		}
+		if let Some(authority) = self
+			.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+		{
+			authority
+				.skill_context(&self.federation.store, run)
+				.await
+				.map_err(Into::into)
+		} else {
+			Ok(String::new())
+		}
+	}
+	async fn semantic_context(
+		&self,
+		run: &Run,
+		task: &Task,
+		inputs: &[(InputRead, String)],
+		budget: usize,
+		entry: &Entry,
+		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
+	) -> SemanticContextRead {
+		let mut workspace_retrieved = false;
+		let result: Result<Option<Value>> = async {
+			let settings =
+				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+				)?)?;
+			if !settings.semantic_memory && !settings.workspace_context {
+				return Ok(None);
+			}
+			if let Some(authority) = &self.authority {
+				let read = authority
+					.guard
+					.semantic_context(
+						&self.federation.store,
+						task,
+						inputs,
+						budget,
+						key,
+						degrade_on_outage,
+					)
+					.await;
+				workspace_retrieved = read.workspace_retrieved;
+				return read.result;
+			}
+			let _ = entry;
+			let agent =
+				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+				)?)?;
+			let mut lease = crate::semantic::service::Lease::within(
+				&self.federation.store,
+				&self.run_store.scope,
+			)
+			.await?;
+			let mut query = format!("{}\n{}", task.title, task.description);
+			for (_, text) in inputs {
+				query.push('\n');
+				query.push_str(text);
+			}
+			let semantic = crate::semantic::service::context_in(
+				&self.federation.store,
+				&mut lease,
+				run,
+				&query,
+				crate::semantic::services::memory_context::workspace_budget(budget)?,
+				&agent,
+			)
+			.await;
+			let degrade = degrade_on_outage && agent.workspace_degrades;
+			let result = async {
+				let semantic = match semantic? {
+					// Optional workspace context may degrade; memory still follows
+					// and still fails closed (ADR 0059).
+					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
+						cause,
+					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
+					workspace => workspace
+						.required()?
+						.map(serde_json::to_value)
+						.transpose()?,
+				};
+				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
+					aidash_domain::semantic::degraded::degraded(value).is_none()
+				});
+				let reserved =
+					serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?
+						.len();
+				let memory = crate::semantic::services::memory_context::retrieve(
+					&self.federation.store,
+					&mut lease,
+					run,
+					task,
+					inputs,
+					budget.saturating_sub(reserved),
+					&agent,
+					key,
+				)
+				.await?;
+				crate::semantic::services::memory_context::complete(
+					&mut lease, run, semantic, memory, budget,
+				)
+				.await
+			}
+			.await;
+			lease.finish(result).await.map_err(Into::into)
+		}
+		.await;
+		SemanticContextRead {
+			workspace_retrieved,
+			result,
+		}
 	}
 }
