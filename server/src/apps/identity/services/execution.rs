@@ -812,6 +812,27 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 
 		Ok(())
 	}
+	async fn check_metadata(
+		&self,
+		run: &Run,
+		binding: &aidash_domain::registry::bindings::ResolvedBinding,
+	) -> aidash_application::Result<()> {
+		if run.id != self.run.id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let mut access = self.access.write().await;
+		if binding.identity.registry_deployment != access.node_id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let current = catalog::metadata(&mut access, &binding.identity.local()).await?;
+		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != binding.digest
+		{
+			return Err(aidash_application::Error::Conflict(
+				"admitted Binding definition changed".into(),
+			));
+		}
+		Ok(())
+	}
 }
 
 impl Guard {
