@@ -229,6 +229,10 @@ pub async fn seed(
 }
 
 pub fn is_builtin(entry: &Entry) -> bool {
+	if entry.kind == "source" {
+		return aidash_domain::registry::bindings::source_defaults::workspace_observation()
+			.is_ok_and(|canonical| &canonical == entry);
+	}
 	entry.kind == "tool"
 		&& serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
 			entry.config.clone(),
@@ -240,10 +244,12 @@ pub fn is_builtin(entry: &Entry) -> bool {
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
 	reference.version == "1.0.0"
-		&& reference
-			.id
-			.strip_prefix("aidash.")
-			.is_some_and(|operation| operations().any(|builtin| builtin == operation))
+		&& (reference.id
+			== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
+			|| reference
+				.id
+				.strip_prefix("aidash.")
+				.is_some_and(|operation| operations().any(|builtin| builtin == operation)))
 }
 
 /// A definition the Deployment provides to every Tenant, which no Tenant changes:
