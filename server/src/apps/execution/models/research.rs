@@ -460,6 +460,18 @@ impl ResearchAttempt {
 		if ResearchRevocation::exists(tx, run).await? {
 			return Ok(Reserved::Revoked);
 		}
+		if let Some(terms) = &reservation.retention {
+			lock(tx, &format!("research-account:{}", terms.account_id)).await?;
+			if !ResearchAccountTermination::objects()
+				.filter(ResearchAccountTermination::field_account_id().eq(&terms.account_id))
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.is_empty()
+			{
+				return Ok(Reserved::AccountUnavailable);
+			}
+		}
 		if let Some(attribution) = &reservation.attribution {
 			lock(tx, &format!("research-account:{}", attribution.account_id)).await?;
 		}
@@ -631,6 +643,38 @@ impl ResearchSource {
 }
 
 impl ResearchSnapshot {
+	/// A later account purge is independent of the snapshot's original retention purge.
+	pub(crate) async fn account_expired(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		document: Uuid,
+	) -> Result<bool> {
+		let (sql, values) = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("id").eq(Expr::value(document)))
+			.and_where(
+				Expr::col("attempt_key").in_subquery(
+					Query::select()
+						.column(Alias::new("invocation_key"))
+						.from(Alias::new(ResearchAttempt::table_name()))
+						.and_where(Expr::col("run_id").eq(Expr::value(run)))
+						.and_where(Expr::col("purged_at").is_not_null())
+						.and_where(
+							Expr::col("purge_reason")
+								.eq(Expr::value(PurgeReason::AccountTerms.as_str())),
+						)
+						.to_owned(),
+				),
+			)
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_some())
+	}
+
 	pub(crate) async fn record(
 		tx: &mut dyn TransactionExecutor,
 		key: &str,
@@ -1197,16 +1241,7 @@ impl ResearchAttempt {
 		else {
 			return Ok(None);
 		};
-		let expired = ResearchSnapshot::objects()
-			.filter(ResearchSnapshot::field_run_id().eq(run))
-			.filter(ResearchSnapshot::field_id().eq(document))
-			.all_with_executor(tx)
-			.await
-			.map_err(FrameworkError::from)?
-			.pop()
-			.is_some_and(|snapshot| {
-				snapshot.purge_reason.as_deref() == Some(PurgeReason::AccountTerms.as_str())
-			});
+		let expired = ResearchSnapshot::account_expired(tx, run, document).await?;
 		Ok(expired.then(|| aidash_domain::research::expiry::tombstone(operation)))
 	}
 }

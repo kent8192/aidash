@@ -116,6 +116,21 @@ pub(crate) async fn revoked_under_lock(
 
 #[async_trait]
 impl EvidenceStore for Evidence {
+	async fn expired_results(
+		&self,
+		run: Uuid,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		native(
+			async {
+				let mut tx = self.store.pool.begin(&self.scope).await?.into_executor()?;
+				let expired = account_terms::expired(tx.as_mut(), run).await?;
+				tx.commit().await?;
+				Ok(expired)
+			}
+			.await,
+		)
+	}
+
 	async fn revoked(&self, run: Uuid) -> Result<bool> {
 		native(
 			async {
@@ -267,6 +282,12 @@ impl EvidenceStore for Evidence {
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
 				}
+				if ResearchAttempt::expired_tombstone(tx.as_mut(), run, key)
+					.await?
+					.is_some()
+				{
+					return Ok(Err(Failure::ResultExpired));
+				}
 				let held = ResearchSource::count(tx.as_mut(), run).await?;
 				let room = max_sources.saturating_sub(held) as usize;
 				let mut records = Vec::with_capacity(sources.len().min(room));
@@ -318,6 +339,12 @@ impl EvidenceStore for Evidence {
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
+				}
+				if ResearchAttempt::expired_tombstone(tx.as_mut(), run, key)
+					.await?
+					.is_some()
+				{
+					return Ok(Err(Failure::ResultExpired));
 				}
 				let (snapshots, held) = ResearchSnapshot::usage(tx.as_mut(), run).await?;
 				let bytes = page

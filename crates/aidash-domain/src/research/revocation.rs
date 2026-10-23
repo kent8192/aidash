@@ -81,7 +81,7 @@ pub fn result_operation(result: &Value) -> Option<Operation> {
 /// Whether `event` is a research result a model request would still carry.
 /// A placeholder is not one, so redaction is idempotent.
 pub fn carries_research(event: &ContextEvent) -> bool {
-	matches!(event, ContextEvent::Tool { result, .. } if result_operation(result).is_some())
+	matches!(event, ContextEvent::Tool { result, .. } if result_operation(result).is_some() || ContextEvent::is_expired_result(result))
 }
 
 /// Replace every research result in `history` with the revoked placeholder,

@@ -400,8 +400,13 @@ async fn a_revocation_committed_while_the_request_is_built_never_reaches_the_pro
 const EXPIRED_DOCUMENT: &str = "0190f1d2-0000-7000-8000-0000000000d1";
 
 #[rstest]
+#[case::already_expired(false)]
+#[case::expired_during_context_reads(true)]
 #[tokio::test]
-async fn expired_provider_results_never_reach_a_model_request_again(fixture: Fixture) {
+async fn expired_provider_results_never_reach_a_model_request_again(
+	fixture: Fixture,
+	#[case] late: bool,
+) {
 	// Arrange: a page a provider with account terms read, now expired.
 	let mut fixture = thinking(fixture);
 	let mut page = research_result("an expired passage");
@@ -424,8 +429,23 @@ async fn expired_provider_results_never_reach_a_model_request_again(fixture: Fix
 		through: Some(through),
 	};
 
+	if late {
+		Arc::get_mut(&mut fixture.backend.0)
+			.unwrap()
+			.expired_research_after = Some(1);
+	}
+
 	// Act
 	let _ = advance_sources(&mut fixture).await;
+
+	if late {
+		assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+		assert_eq!(
+			events(&fixture).last().map(String::as_str),
+			Some("run.research_expired")
+		);
+		advance_sources(&mut fixture).await.unwrap();
+	}
 
 	// Assert: only the expired result is replaced; what Aidash sent stays.
 	let request = first_request(&fixture);

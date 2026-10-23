@@ -139,6 +139,8 @@ struct State {
 	research_checks: std::sync::atomic::AtomicUsize,
 	/// Provider results the Research account terms no longer keep.
 	expired_research: aidash_domain::research::expiry::ExpiredResults,
+	expired_research_after: Option<usize>,
+	expiry_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -413,6 +415,14 @@ impl ExecutionStore for Backend {
 		_: &Run,
 	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
 		self.record("store.expired_research");
+		let check = self.0.expiry_checks.fetch_add(1, Ordering::SeqCst);
+		if self
+			.0
+			.expired_research_after
+			.is_some_and(|after| check < after)
+		{
+			return Ok(Default::default());
+		}
 		Ok(self.0.expired_research.clone())
 	}
 	async fn unknown_evidence(
@@ -1501,6 +1511,8 @@ fn fixture() -> Fixture {
 		research_revoked_after: None,
 		research_checks: Default::default(),
 		expired_research: Default::default(),
+		expired_research_after: None,
+		expiry_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,

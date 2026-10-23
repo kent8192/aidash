@@ -122,8 +122,13 @@ async fn attempt(store: &Store, run: Uuid, key: &str) -> (Option<String>, Value)
 }
 
 #[rstest::rstest]
+#[case::normal(false, false)]
+#[case::late_settlement(true, false)]
+#[case::ordinary_retention_first(false, true)]
 #[tokio::test]
 async fn expired_provider_results_become_tombstones_that_still_verify_citations(
+	#[case] late_settlement: bool,
+	#[case] retention_first: bool,
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
@@ -175,6 +180,18 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		.await
 		.unwrap();
 	let document: Uuid = serde_json::from_value(read["data"]["document_id"].clone()).unwrap();
+	store
+		.invocation_start(
+			&ACME,
+			&run,
+			token,
+			"q1",
+			"research_find",
+			&json!({"document_id":document,"query":"STRASSE"}),
+			true,
+		)
+		.await
+		.unwrap();
 	let hit = research
 		.find(
 			&call("q1"),
@@ -207,7 +224,18 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	// Act: within the terms nothing goes; past them the sweep purges.
 	age(&store, run.id, 29).await;
 	assert_eq!(swept().await.unwrap(), 0);
+	if retention_first {
+		sqlx::query("UPDATE research_snapshots SET purged_at=now(), purge_reason='retention', lines='[]'::jsonb, text_bytes=0 WHERE id=$1")
+			.bind(document).execute(store.pool.fixture_driver()).await.unwrap();
+	}
 	age(&store, run.id, 31).await;
+	if late_settlement {
+		sqlx::query("UPDATE research_attempts SET completed_at=now() WHERE run_id=$1")
+			.bind(run.id)
+			.execute(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
 	let purged = swept().await.unwrap();
 
 	// Assert: both Provider results are tombstones, marked by their reason.
@@ -244,7 +272,11 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	assert!(snapshot.lines.is_empty());
 	assert_eq!(
 		snapshot.purged.map(|purge| purge.reason),
-		Some(PurgeReason::AccountTerms)
+		Some(if retention_first {
+			PurgeReason::Retention
+		} else {
+			PurgeReason::AccountTerms
+		})
 	);
 	assert_eq!(snapshot.readable(), Err(Failure::SnapshotPurged));
 	// The page title came from the provider, so it goes too.
@@ -258,6 +290,38 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	assert_eq!(fragment.text, "");
 	assert_eq!(fragment.passage_digest, passage_digest(&delivered.text));
 	assert_eq!(fragment.text_digest, delivered.text_digest);
+	let late_find = store
+		.invocation_finish(&ACME, &run, token, "q1", &hit)
+		.await
+		.unwrap();
+	assert_eq!(late_find["error"]["code"], "result_expired", "{late_find}");
+	let page = PageProvider::fetch(
+		&termed,
+		&reqwest::Url::parse(&evidence.source(run.id, source).await.unwrap().unwrap().url).unwrap(),
+	)
+	.await
+	.unwrap();
+	assert!(matches!(
+		evidence
+			.record_snapshot(
+				run.id,
+				"f1",
+				source,
+				"https://example.com/late",
+				&page,
+				&Limits::default()
+			)
+			.await
+			.unwrap(),
+		Err(Failure::ResultExpired)
+	));
+	assert!(matches!(
+		evidence
+			.record_sources(run.id, "s1", &[], 10)
+			.await
+			.unwrap(),
+		Err(Failure::ResultExpired)
+	));
 	// The Harness learns which results to replace in later requests.
 	let expired = ExecutionStore::expired_research(&store.for_run(ACME.clone()), &run)
 		.await
@@ -327,6 +391,29 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 	let within = aidash_server::research::sweep_account_terms(&store, &[ended.clone()])
 		.await
 		.unwrap();
+	let renewed = Termed {
+		fixture: FixtureResearch::default(),
+		terms: AccountTerms {
+			agreement_reference: "renewed-agreement".into(),
+			..termed.terms.clone()
+		},
+	};
+	let refused = research
+		.search(
+			&Call {
+				run: run.id,
+				context_revision: 0,
+				key: "renewed",
+				provider: "research.fixture@1",
+				disclosure_approval: true,
+			},
+			&renewed,
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(refused["error"]["code"], "account_unavailable", "{refused}");
+	assert!(evidence.attempt(run.id, "renewed").await.unwrap().is_none());
 	// The declaration is removed; the recorded end still applies, and a
 	// later end never replaces it.
 	ended_ago(&store, "ending", 8).await;

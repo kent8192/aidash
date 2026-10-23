@@ -163,6 +163,9 @@ impl<'a> Executor<'a> {
 					let result = outcome.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?;
+					let result = store
+						.invocation_finish(run, token, &keys[offset], &result)
+						.await?;
 					outputs[offset] =
 						Some(denial.map_or(result, |message| json!({"error":message})));
 					continue;
@@ -795,10 +798,10 @@ impl<'a> Executor<'a> {
 	/// Execution Summary that absorbed one is discarded and its range
 	/// restored from the Context Journal, without pausing. A revoked Run's
 	/// results are placeholders already.
-	async fn apply_research_expiry(&self, run: &mut Run) -> Result<()> {
+	async fn apply_research_expiry(&self, run: &mut Run) -> Result<bool> {
 		use aidash_application::research::{account_terms, revocation};
 		if run.context.research_revoked || !revocation::may_carry_research(&run.context) {
-			return Ok(());
+			return Ok(false);
 		}
 		let store = self.environment.store();
 		let expired = store.expired_research(run).await?;
@@ -807,8 +810,7 @@ impl<'a> Executor<'a> {
 			&expired,
 			&revocation::RunJournal { store, run: run.id },
 		)
-		.await?;
-		Ok(())
+		.await
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
@@ -1720,6 +1722,10 @@ impl<'a> Executor<'a> {
 				{
 					self.apply_research_revocation(run).await?;
 					store.save_run(run, token, "run.research_revoked").await?;
+					return Ok(());
+				}
+				if self.apply_research_expiry(run).await? {
+					store.save_run(run, token, "run.research_expired").await?;
 					return Ok(());
 				}
 				if let Some(guard) = guard {
@@ -2810,11 +2816,7 @@ impl<'a> Executor<'a> {
 				}
 				// The stored result replaces a research result whose account
 				// terms ended meanwhile (ADR 0058).
-				let output = if invocation.status != "COMPLETED" {
-					store.invocation_finish(run, token, &key, &output).await?
-				} else {
-					output
-				};
+				let output = store.invocation_finish(run, token, &key, &output).await?;
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() {
