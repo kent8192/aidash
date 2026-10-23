@@ -20,6 +20,16 @@ pub enum ApprovalKind {
 	Generation,
 }
 
+impl ApprovalKind {
+	pub const ALL: [Self; 5] = [
+		Self::ToolCall,
+		Self::Outbound,
+		Self::WebSearch,
+		Self::PageReading,
+		Self::Generation,
+	];
+}
+
 /// A durable reference to one exact source revision. Missing revisions are not replaced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

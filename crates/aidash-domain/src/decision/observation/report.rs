@@ -185,7 +185,15 @@ pub struct GroupReport {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "ApprovalObservationKindReport")]
+pub struct KindReport {
+	pub kind: ApprovalKind,
+	pub metrics: ReportMetrics,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationReport {
+	pub kinds: Vec<KindReport>,
 	pub range: ReportRange,
 	pub metrics: ReportMetrics,
 	pub groups: Vec<GroupReport>,
@@ -193,6 +201,7 @@ pub struct ObservationReport {
 /// Private per-approval identities support deduplication but are never serialized into aggregates.
 #[derive(Debug, Clone)]
 pub struct ReportSample {
+	pub kind: ApprovalKind,
 	pub approval: Uuid,
 	pub created_at: DateTime<Utc>,
 	pub group: Option<ReportGroup>,
@@ -218,6 +227,7 @@ impl ReportSample {
 			});
 		Ok(Self {
 			approval: frame.approval,
+			kind: frame.kind,
 			created_at: frame.created_at,
 			group: Some(group),
 			outcome: Some(evidence.map_or(ObservationOutcome::Pending, |e| e.outcome.clone())),
@@ -253,6 +263,11 @@ pub fn report(range: ReportRange, samples: &[ReportSample]) -> Result<Observatio
 		}
 		all.push(sample);
 		if let Some(group) = &sample.group {
+			if group.kind != sample.kind {
+				return Err(Error::Invalid(
+					"report kind differs from the original approval".into(),
+				));
+			}
 			let key = serde_json::to_string(group)?;
 			grouped
 				.entry(key)
@@ -262,6 +277,18 @@ pub fn report(range: ReportRange, samples: &[ReportSample]) -> Result<Observatio
 		}
 	}
 	Ok(ObservationReport {
+		kinds: ApprovalKind::ALL
+			.into_iter()
+			.map(|kind| KindReport {
+				kind,
+				metrics: metrics(
+					&all.iter()
+						.copied()
+						.filter(|sample| sample.kind == kind)
+						.collect::<Vec<_>>(),
+				),
+			})
+			.collect(),
 		range,
 		metrics: metrics(&all),
 		groups: grouped

@@ -7,6 +7,7 @@ fn sample(
 	probability: Option<f64>,
 ) -> ReportSample {
 	ReportSample {
+		kind: ApprovalKind::ToolCall,
 		approval: Uuid::new_v4(),
 		created_at: at,
 		group: None,
@@ -201,6 +202,7 @@ fn reports_separate_effective_threshold_and_settings_revision_without_exposing_a
 			SettlementClass::HumanAllow,
 			Some(0.1),
 		);
+		row.kind = group.kind;
 		row.group = Some(ReportGroup {
 			settings_revision: revision,
 			effective_threshold: Probability::new(threshold).unwrap(),
@@ -230,5 +232,59 @@ fn reports_separate_effective_threshold_and_settings_revision_without_exposing_a
 	let serialized = serde_json::to_string(&result).unwrap();
 	for row in &rows {
 		assert!(!serialized.contains(&row.approval.to_string()));
+	}
+}
+
+#[test]
+fn missing_and_disabled_observations_keep_the_actual_five_kind_population() {
+	let start = Utc::now();
+	let range = ReportRange {
+		start,
+		end: start + Duration::hours(1),
+	};
+	let mut rows = Vec::new();
+	for kind in ApprovalKind::ALL {
+		let mut row = sample(
+			start,
+			None,
+			if kind == ApprovalKind::Generation {
+				SettlementClass::HumanDeny
+			} else {
+				SettlementClass::Expired
+			},
+			None,
+		);
+		row.kind = kind;
+		rows.push(row);
+	}
+	let mut available = sample(
+		start,
+		Some(ObservationOutcome::Available {
+			verdict: Verdict::Allowed,
+		}),
+		SettlementClass::HumanAllow,
+		Some(0.1),
+	);
+	available.kind = ApprovalKind::Generation;
+	rows.push(available);
+	let result = report(range, &rows).unwrap();
+	assert_eq!(result.metrics.total_approvals, 6);
+	assert_eq!(
+		result.kinds.iter().map(|row| row.kind).collect::<Vec<_>>(),
+		ApprovalKind::ALL
+	);
+	assert!(result.groups.is_empty());
+	for row in &result.kinds {
+		if row.kind == ApprovalKind::Generation {
+			assert_eq!(row.metrics.total_approvals, 2);
+			assert_eq!(row.metrics.label_coverage, Rate::new(2, 2));
+			assert_eq!(row.metrics.availability, Rate::new(1, 2));
+		} else {
+			assert_eq!(row.metrics.total_approvals, 1);
+			assert_eq!(row.metrics.exclusions.expired, 1);
+			assert_eq!(row.metrics.availability, Rate::new(0, 1));
+			assert_eq!(row.metrics.agreement.value, None);
+		}
+		assert_eq!(row.metrics.exclusions.missing_observations, 1);
 	}
 }
