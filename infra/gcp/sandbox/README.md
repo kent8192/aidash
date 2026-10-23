@@ -201,9 +201,15 @@ Pod running for this phase (start a bounded sleep task using the normal Runner).
 
 The metadata test requests only
 `/computeMetadata/v1/instance/service-accounts/default/email` with the required
-header. Allowed server/worker responses must equal their discovered SA emails;
-every unlabeled workload must time out at the network boundary. A different
-HTTP rejection is inconclusive. No metadata token is requested or logged.
+header. Expected allowance comes from the applied root's Kubernetes identities:
+only `app-aidash-server` and `app-aidash-worker` in `aidash-test`, with the matching
+component role and no Runner marker, qualify. Their responses must equal the
+discovered Google SA emails. Runner, execution, guard, installer and other
+workloads must time out regardless of their metadata label. The probe separately
+checks that only server/worker carry `aidash.run/metadata-server: allowed`; any
+such label key on a denied workload is a failure even when the network blocks.
+A different HTTP rejection is inconclusive. No metadata token is requested or
+logged.
 
 There is **no broker health endpoint**. The server/worker Pod probes send an
 unsigned GET to the real `/api/v1/chat/completions` path with a random non-secret

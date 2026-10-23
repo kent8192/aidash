@@ -80,15 +80,17 @@ class ControlContracts(unittest.TestCase):
     def test_pod_probes_use_real_route_and_distinguish_application_rejection(self):
         control = self.instance()
         args = type('Args', (), {'probe_image': 'curlimage@sha256:' + 'd' * 64})()
+        mislabeled_runner = [False]
+        runner_metadata_status = [200]
         def inventory(*words):
             namespace = words[2]
             if namespace == 'aidash-test':
                 definitions = [('server', {'app.kubernetes.io/component': 'server', 'aidash.run/metadata-server': 'allowed'}),
                                ('worker', {'app.kubernetes.io/component': 'worker', 'aidash.run/metadata-server': 'allowed'}),
-                               ('runner', {'aidash.run/runner': 'app'})]
+                               ('runner', {'aidash.run/runner': 'app', **({'aidash.run/metadata-server': 'allowed'} if mislabeled_runner[0] else {})})]
             else:
                 definitions = [('actual-workload', {})]
-            return json.dumps({'items': [{'metadata': {'name': name, 'uid': namespace + name, 'labels': labels}, 'status': {'phase': 'Running'}} for name, labels in definitions]}).encode()
+            return json.dumps({'items': [{'metadata': {'name': name, 'uid': namespace + name, 'labels': labels}, 'spec': {'serviceAccountName': 'app-aidash-' + name}, 'status': {'phase': 'Running'}} for name, labels in definitions]}).encode()
         urls = []
         def pod_command(argv, **kwargs):
             url = argv[-1]
@@ -96,6 +98,8 @@ class ControlContracts(unittest.TestCase):
             if 'computeMetadata' in url:
                 identity = next((self.r[name] for name in ('server', 'worker') if name in argv), None)
                 raw = (identity.encode() + b'\n200') if identity else b'\n000'
+                if 'runner' in argv and mislabeled_runner[0] and runner_metadata_status[0] == 200:
+                    raw = b'unexpected-node@project.iam.gserviceaccount.com\n200'
             else:
                 raw = b'{"error":{"code":"capability_invalid_signature"}}\n401'
             return type('Result', (), {'stdout': raw, 'returncode': 0})()
@@ -111,6 +115,16 @@ class ControlContracts(unittest.TestCase):
         rows = json.loads((self.directory / 'controls-evidence.json').read_text())
         self.assertEqual(sum(row['case'] == 'broker-request-log' and row['observed'] == 'matched' for row in rows), 2)
         self.assertEqual(sum(row['case'] == 'metadata' and row['observed'] == 'blocked' for row in rows), 4)
+        self.assertEqual(sum(row['case'] == 'metadata' and row['expected_allowed'] for row in rows), 2)
+        # The label being tested cannot authorize a Runner. A mistaken label is
+        # itself a failed policy observation, even if metadata happens to block.
+        mislabeled_runner[0] = True
+        for observed_status in (200, 0):
+            runner_metadata_status[0] = observed_status
+            with self.subTest(runner_metadata_status=observed_status):
+                with mock.patch.object(control, 'kube', side_effect=inventory), mock.patch.object(controls.subprocess, 'run', side_effect=pod_command), mock.patch.object(controls, 'cloud', side_effect=logs), mock.patch.object(controls, 'request', return_value=(403, {})):
+                    with self.assertRaises(controls.Refused):
+                        control.pods(args)
 
     def test_restore_requires_observed_removal_of_temporary_grants(self):
         control = self.instance()

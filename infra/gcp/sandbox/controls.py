@@ -198,12 +198,25 @@ class Controls:
             pods += [(namespace, pod) for pod in data['items'] if pod['status'].get('phase') == 'Running']
         require(any(pod['metadata'].get('labels', {}).get('aidash.run/runner') for _, pod in pods), 'current Runner control missing')
         require(pods and len(pods) <= 30, 'bounded running workload inventory required')
-        components = {pod['metadata'].get('labels', {}).get('app.kubernetes.io/component') for _, pod in pods}
-        require({'server', 'worker'} <= components, 'real server and worker positive controls required')
+        # These KSAs are the workload-identity subjects bound by the applied
+        # environment root (app Helm release). The egress label is an observed
+        # policy input, never the source of the expected access decision.
+        workload_accounts = {'app-aidash-server': 'server', 'app-aidash-worker': 'worker'}
+        def expected_role(namespace, pod):
+            labels = pod['metadata'].get('labels', {})
+            if namespace != 'aidash-test' or 'aidash.run/runner' in labels:
+                return None
+            return workload_accounts.get(pod.get('spec', {}).get('serviceAccountName'))
+        require({'server', 'worker'} <= {expected_role(namespace, pod) for namespace, pod in pods},
+                'real server and worker positive controls required')
         require(all(any(ns == expected for ns, _ in pods) for expected in ('aidash-test-sandbox', 'aidash-test-trusted', 'aidash-test-installer')), 'execution/guard/installer workload controls missing')
         for namespace, pod in pods:
             labels = pod['metadata'].get('labels', {})
-            allowed = labels.get('aidash.run/metadata-server') == 'allowed'
+            role = expected_role(namespace, pod)
+            allowed = role is not None
+            require(not allowed or labels.get('app.kubernetes.io/component') == role, 'workload role and service account disagree')
+            label_matches = (labels.get('aidash.run/metadata-server') == 'allowed' if allowed
+                             else 'aidash.run/metadata-server' not in labels)
             uri = 'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email'
             def fetch(url, metadata=False):
                 name = 'iam-probe-' + secrets.token_hex(4)
@@ -222,12 +235,13 @@ class Controls:
                 return int(data[-1]), data[0]
             status, body = fetch(uri, True)
             self.record('metadata', namespace + '/' + pod['metadata']['name'], 'allowed' if status == 200 else 'blocked',
-                pod_uid=pod['metadata']['uid'], expected_allowed=allowed, http_status=status)
+                pod_uid=pod['metadata']['uid'], expected_allowed=allowed, http_status=status,
+                expected_role=role, service_account=pod.get('spec', {}).get('serviceAccountName'),
+                policy_label_matches=label_matches)
             require((status == 200) == allowed and status in (0, 200), 'metadata policy mismatch or unrelated rejection')
-            component = labels.get('app.kubernetes.io/component')
-            if allowed and component in ('server', 'worker'):
-                require(body.strip() == self.r[component], 'metadata returned the wrong workload identity')
-            if labels.get('app.kubernetes.io/component') in ('server', 'worker'):
+            require(label_matches, 'metadata policy label disagrees with workload role')
+            if allowed:
+                require(body.strip() == self.r[role], 'metadata returned the wrong workload identity')
                 marker = secrets.token_hex(12)
                 url = self.r['broker_url'] + '/api/v1/chat/completions?aidash_sandbox_probe=' + marker
                 status, body = fetch(url)
