@@ -91,7 +91,19 @@ impl GenerationPolicies for NativePolicies {
 		let mode = match &self.actor {
 			// A Deployment Administrator manages policies in the named Tenant's scope.
 			Actor::DeploymentAdministrator => {
-				Mode::DeploymentAdministrator(self.store.pool.begin(scope).await?)
+				let tenant = scope
+					.tenant_name()
+					.ok_or(aidash_application::Error::Forbidden)?;
+				let mut tx = self.store.pool.begin(scope).await?;
+				crate::authorization::remote::deployment_administrator::tenant(
+					&mut *tx,
+					tenant.as_str(),
+				)
+				.await
+				.map_err(
+					crate::authorization::remote::deployment_administrator::application_error,
+				)?;
+				Mode::DeploymentAdministrator(tx)
 			}
 			Actor::Subject(identity) => {
 				if identity.tenancy()? != *scope {

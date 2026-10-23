@@ -17,6 +17,46 @@ fn deleted_tenants() -> reinhardt::query::SelectStatement {
 		.to_owned()
 }
 
+/// Deletion takes the exclusive policy lock. The caller retains this shared
+/// lock through its protected read or write.
+pub(crate) async fn tenant(
+	connection: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+) -> Result<()> {
+	crate::apps::identity::models::AuthorizationBundle::lock_snapshot(connection, tenant, false)
+		.await?;
+	Ok(())
+}
+
+/// Preserve the deleted-Tenant HTTP response at public administration ports.
+/// Worker ports keep their existing conversion to refused authority.
+pub(crate) fn application_error(error: Error) -> aidash_application::Error {
+	match error {
+		error @ Error::TenantDeleted => aidash_application::Error::Port(Box::new(error)),
+		error => error.into(),
+	}
+}
+
+/// Index configuration is allowed for required-Home Workspaces, but never for
+/// a deleted Tenant. The same policy lock protects configuration and its effects.
+pub(crate) async fn workspace_tenant(connection: &mut Transaction, workspace: Uuid) -> Result<()> {
+	// A receiver Run may name a foreign Workspace with no local Workspace row.
+	// Its already resolved transaction scope still identifies the owning Tenant.
+	if let Some(owner) = connection.scope().and_then(|scope| scope.tenant_name()) {
+		let owner = owner.as_str().to_owned();
+		return tenant(&mut **connection, &owner).await;
+	}
+	let query = Query::select()
+		.column(Alias::new("tenant"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("id").eq(Expr::value(workspace)))
+		.to_string(PostgresQueryBuilder);
+	let owner: String = crate::database::native::query_scalar(&query)
+		.scalar_one(&mut *connection)
+		.await?;
+	tenant(&mut **connection, &owner).await
+}
+
 async fn deleted_workspaces(
 	connection: &mut Transaction,
 	workspaces: &[Uuid],
@@ -105,12 +145,7 @@ pub(crate) async fn visible(connection: &mut Transaction, workspace: Uuid) -> Re
 }
 
 pub(crate) async fn require(connection: &mut Transaction, workspace: Uuid) -> Result<()> {
-	if deleted_workspaces(connection, &[workspace])
-		.await?
-		.contains(&workspace)
-	{
-		return Err(Error::TenantDeleted);
-	}
+	workspace_tenant(connection, workspace).await?;
 	if visible(connection, workspace).await? {
 		Ok(())
 	} else {

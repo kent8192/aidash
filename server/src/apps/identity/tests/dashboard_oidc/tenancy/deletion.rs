@@ -118,8 +118,90 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.as_deployment_administrator("GET", &path, Value::Null)
 		.await;
 	assert_eq!(status, 200, "{body}");
+	// A protected read waits for the same policy lock that deletion owns.
+	{
+		let mut policy_lock = d.federation.store.pool.begin(&scope).await.unwrap();
+		let lock = reinhardt::query::Query::select()
+			.column(reinhardt::query::Alias::new("tenant"))
+			.from(reinhardt::query::Alias::new("authorization_bundles"))
+			.and_where(
+				reinhardt::query::Expr::col("tenant").eq(reinhardt::query::Expr::value(&tenant)),
+			)
+			.lock(reinhardt::query::LockType::Update)
+			.to_string(reinhardt::query::PostgresQueryBuilder);
+		let _: String = aidash_server::database::native::query_scalar(&lock)
+			.scalar_one(&mut *policy_lock)
+			.await
+			.unwrap();
+		let read = d.as_deployment_administrator("GET", &path, Value::Null);
+		tokio::pin!(read);
+		assert!(
+			tokio::time::timeout(std::time::Duration::from_millis(250), &mut read)
+				.await
+				.is_err(),
+			"the read must retain a policy lease"
+		);
+		policy_lock.rollback().await.unwrap();
+		let (status, body) = read.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	d.federation
+		.store
+		.keyless
+		.permit_origin_of("http://localhost:9")
+		.unwrap();
+	let index = json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256}});
 	let (status, body) = d.delete(&alice, &context, &tenant).await;
 	assert_eq!(status, 200, "{body}");
+	let request = Uuid::new_v4();
+	for (method, endpoint, input) in [
+		("POST", format!("{path}/semantic/index"), index),
+		(
+			"GET",
+			format!("/api/generation/{tenant}/policies"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/generation/{tenant}/requests"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/generation/{tenant}/requests/{request}/spec"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/generation/{tenant}/requests/{request}/history"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/generation/{tenant}/requests/{request}/usage"),
+			Value::Null,
+		),
+		(
+			"POST",
+			format!("/api/generation/{tenant}/requests/{request}/control"),
+			json!({"action":"stop","reason":"Deleted Tenant"}),
+		),
+	] {
+		let (status, body) = d
+			.as_deployment_administrator(method, &endpoint, input.clone())
+			.await;
+		assert_eq!(status, 410, "{method} {endpoint}: {body}");
+		let (status, body) = d
+			.as_person(
+				&carol,
+				method,
+				&endpoint,
+				Some("deployment_administrator"),
+				input,
+			)
+			.await;
+		assert_eq!(status, 410, "browser {method} {endpoint}: {body}");
+	}
 
 	for method in ["GET", "PATCH"] {
 		let (status, body) = d
@@ -255,6 +337,21 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 	let purge_after: chrono::DateTime<chrono::Utc> =
 		serde_json::from_value(deletion["purge_after"].clone()).unwrap();
 	assert_eq!(purge_after - deleted_at, chrono::Duration::days(30));
+	for (method, path) in [
+		("GET", format!("/api/authorization/{tenant}/credentials")),
+		(
+			"POST",
+			format!(
+				"/api/authorization/{tenant}/credentials/{}/revoke",
+				issued["credential"]["id"].as_str().unwrap()
+			),
+		),
+	] {
+		let (status, body) = d
+			.as_deployment_administrator(method, &path, Value::Null)
+			.await;
+		assert_eq!(status, 410, "{method} {path}: {body}");
+	}
 
 	// Every way in is refused: the members' browsers learn why, while a
 	// Subject Credential sees what an unknown Tenant would.
