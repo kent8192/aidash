@@ -207,3 +207,62 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 		Err(crate::Error::Conflict(_))
 	));
 }
+
+struct ResearchContracts;
+impl CoreToolCatalog for ResearchContracts {
+	fn specifications(&self, capabilities: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
+		Contracts.specifications(capabilities)
+	}
+	fn provider_available(&self, descriptor: &ToolDescriptor) -> Result<()> {
+		if descriptor.provider.starts_with("research.") {
+			Ok(())
+		} else {
+			Err(crate::Error::Forbidden)
+		}
+	}
+}
+
+#[rstest::rstest]
+#[case::before_page_images(false)]
+#[case::already_expanded_legacy_bundle(true)]
+#[tokio::test]
+async fn adding_page_views_preserves_existing_immutable_research_bundle_bytes(
+	#[case] had_view: bool,
+) {
+	let validation = DefinitionValidation::new(Arc::new(ResearchContracts));
+	let groups = packages::declarations(&validation, NODE).unwrap();
+	let mut writer = Writer::default();
+	let mut previous = vec![];
+	for group in groups
+		.iter()
+		.filter(|group| matches!(group.name.as_str(), "research_page" | "research_fixture"))
+	{
+		let mut old = group.bundle.clone();
+		old.version = "1.0.0".into();
+		if !had_view {
+			old.config["members"]
+				.as_array_mut()
+				.unwrap()
+				.retain(|member| !member["id"].as_str().unwrap().ends_with(".view"));
+			old.capabilities
+				.retain(|capability| capability != "research.view");
+		}
+		writer
+			.entries
+			.insert((old.id.clone(), old.version.clone()), old.clone());
+		previous.push(old);
+	}
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	for old in previous {
+		assert_eq!(writer.entries[&(old.id.clone(), "1.0.0".into())], old);
+		let current = &writer.entries[&(old.id.clone(), "1.1.0".into())];
+		assert!(
+			current.config["members"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.any(|member| member["id"].as_str().unwrap().ends_with(".view"))
+		);
+	}
+}

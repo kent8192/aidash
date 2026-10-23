@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aidash-activation-provision
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: provision
+          image: aidash:local
+          imagePullPolicy: IfNotPresent
+          command: [aidash, activation-provision]
+          envFrom:
+            - secretRef: { name: aidash-local-app }
+          env:
+            - { name: AIDASH_NODE_ID, value: "aidash://node-a" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
