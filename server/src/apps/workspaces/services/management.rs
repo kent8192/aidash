@@ -84,6 +84,15 @@ impl CollaborationManagement {
 		input: StateInput,
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			let scope = f.store.workspace_tenancy(id).await?;
+			crate::authorization::remote::deployment_administrator::require(
+				&mut f.store.pool.begin(&scope).await?,
+				id,
+			)
+			.await?;
+			return Err(Error::Forbidden);
+		}
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
@@ -142,15 +151,17 @@ impl CollaborationManagement {
 		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
 		let existing = f.store.task(&listing, id).await?;
 		let scope = f.store.workspace_tenancy(existing.workspace_id).await?;
+		let mut tx = f.store.pool.begin(&scope).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut f.store.pool.begin(&scope).await?,
+			&mut tx,
 			existing.workspace_id,
 		)
 		.await?;
 		let task = f
 			.store
-			.abandon_task(&scope, id, input.revision, &input.reason)
+			.abandon_task_in(&mut tx, id, input.revision, &input.reason, "human")
 			.await?;
+		tx.commit().await?;
 		f.notify.notify_waiters();
 		Ok(task)
 	}

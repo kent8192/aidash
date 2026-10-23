@@ -185,6 +185,7 @@ impl Authorization {
 	pub async fn revisions(&self, tenant: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
 		self.pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				crate::authorization::remote::deployment_administrator::tenant(tx, tenant).await?;
 				AuthorizationRevision::page(tx, tenant, after, limit).await
 			})
 			.await
@@ -193,6 +194,7 @@ impl Authorization {
 	pub async fn decisions(&self, tenant: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
 		self.pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				crate::authorization::remote::deployment_administrator::tenant(tx, tenant).await?;
 				AuthorizationDecision::page(tx, tenant, after, limit).await
 			})
 			.await

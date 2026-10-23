@@ -1601,8 +1601,11 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 /// step that then needs a new retrieval follows the outage policy. Once the
 /// provider recovers, the retry retrieves again and the next step reuses it.
 #[rstest::rstest]
+#[case::run_message(false)]
+#[case::pending_index(true)]
 #[tokio::test]
 async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+	#[case] pending_entry: bool,
 	#[with(true, false, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -1641,21 +1644,52 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 	assert_eq!(remote_retrievals(&p).await, 1, "an unchanged key is reused");
 	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
 
-	// Act: a Run message changes the query inputs of the Retrieval Key.
-	let (status, body) = request(
-		&p.aa,
-		&p.token,
-		"POST",
-		&format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
-		json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
-	)
-	.await;
+	let (path, body) = if pending_entry {
+		let workspace =
+			p.a.store
+				.task(&TEST_FIXTURE, p.task)
+				.await
+				.unwrap()
+				.workspace_id;
+		(
+			format!("/api/workspaces/{workspace}/semantic/entries"),
+			json!({"key":"pending-during-outage","expected_revision":0,"source":{"kind":"memory","text":"New Home knowledge: ochre falcon."},"metadata":{}}),
+		)
+	} else {
+		(
+			format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+			json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
+		)
+	};
+	let (status, body) = request(&p.aa, &p.token, "POST", &path, body).await;
 	assert_eq!(status, 200, "{body}");
+	if pending_entry {
+		assert_eq!(body["state"], "PENDING", "{body}");
+	}
 	for _ in 0..10 {
 		if p.run().await.recovery.retry.is_some() {
 			break;
 		}
 		p.step().await;
+	}
+
+	if pending_entry {
+		// Home first invalidates the old cached observation. Recovery must
+		// discard it, then the fresh read waits for the incomplete index.
+		let stale = p.run().await;
+		assert_eq!(
+			serde_json::to_value(stale.recovery.semantic_reason).unwrap(),
+			"stale"
+		);
+		advance_semantic_retry(&p).await;
+		for _ in 0..10 {
+			p.step().await;
+			if p.run().await.recovery.semantic_reason
+				== Some(aidash_domain::semantic::Failure::Unavailable)
+			{
+				break;
+			}
+		}
 	}
 
 	// Assert: the step that needs a new retrieval follows the outage policy.
@@ -1665,20 +1699,33 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 		.retry
 		.as_ref()
 		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
-	assert_eq!(retry.count, 1, "{run:?}");
+	assert_eq!(retry.count, if pending_entry { 2 } else { 1 }, "{run:?}");
 	assert_eq!(
 		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
 		"unavailable"
 	);
 	assert_eq!(run.control.as_str(), "ACTIVE");
 	assert_eq!(p.requests.lock().await.len(), 3, "no inference");
-	assert!(
-		home_embeddings(&p).await > outage,
-		"the Home tried to embed"
-	);
+	if pending_entry {
+		assert_eq!(
+			home_embeddings(&p).await,
+			outage,
+			"indexing must finish before embedding"
+		);
+	} else {
+		assert!(
+			home_embeddings(&p).await > outage,
+			"the Home tried to embed"
+		);
+	}
 
 	// Act: the provider recovers and the retry is due.
 	failing.store(false, Ordering::Release);
+	if pending_entry {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+	}
 	advance_semantic_retry(&p).await;
 	step_to_model_request(&p, 4).await;
 	// Assert: the retry retrieves again, and the next step reuses it.
@@ -4333,6 +4380,20 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
+	// Required-Home content stays protected, while installation administration
+	// may still configure the live Tenant's index without reading its contents.
+	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
+	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
+	assert_eq!(status, 200, "{index}");
+	let (status, configured) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{configured}");
 	p.close().await;
 }
 

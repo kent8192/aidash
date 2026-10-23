@@ -24,7 +24,12 @@ pub fn prepare() -> io::Result<bool> {
 		return Ok(true);
 	}
 	std::fs::create_dir_all(path.parent().ok_or_else(|| io::Error::other("test path"))?)?;
-	// The runner asserts that persistence was tested across distinct native PIDs.
+	// A PID can be reused after exit, especially on Windows. The launch ID
+	// proves that each persistence phase started a fresh native process.
+	std::fs::write(
+		path.with_file_name("launch-id"),
+		uuid::Uuid::new_v4().to_string(),
+	)?;
 	std::fs::write(path.with_file_name("pid"), std::process::id().to_string())?;
 	Ok(false)
 }

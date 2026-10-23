@@ -923,7 +923,7 @@ impl ExecutionEnvironment for Bench {
 		_entry: &Entry,
 		_key: Option<&RetrievalKey>,
 		_degrade_on_outage: bool,
-	) -> Result<Option<Value>> {
+	) -> SemanticContextRead {
 		unexpected("ExecutionEnvironment.semantic_context")
 	}
 	async fn run_message_limit(&self, _run: &Run) -> Result<usize> {
