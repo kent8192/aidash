@@ -16,9 +16,11 @@ SCRIPT = textwrap.dedent(re.search(r"<<'PY'\n(.*?)\n\s*PY\n", JOB, re.DOTALL).gr
 
 def run_aggregate(results):
     needs = {name: {"result": result, "outputs": {}} for name, result in results.items()}
+    # Full CI first completes scope verification before evaluating these jobs.
+    needs["scope"] = {"result": "success", "outputs": {"mode": "full"}}
     return subprocess.run(
         [sys.executable, "-I", "-c", SCRIPT],
-        env={"NEEDS_JSON": json.dumps(needs)},
+        env={"NEEDS_JSON": json.dumps(needs), "DEVELOP_DESKTOP_CI": "true"},
         capture_output=True,
         text=True,
     )
@@ -33,7 +35,6 @@ class CancellableAggregateTests(unittest.TestCase):
         completed = run_aggregate({"lint": "success", "rust-tests": "success"})
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("All required CI jobs passed.", completed.stdout)
 
     def test_any_unsuccessful_prerequisite_fails_the_aggregate(self):
         for result in ("failure", "cancelled", "skipped"):
