@@ -132,6 +132,7 @@ impl AgentConfig {
 					let context: NativeContext =
 						serde_json::from_value(binding.definition.config.clone())?;
 					match context.source {
+						NativeSource::WorkspaceObservation {} => {}
 						NativeSource::ConversationMemory {} => result.conversation_memory = true,
 						NativeSource::SemanticMemory {} => result.semantic_memory = true,
 						NativeSource::WorkspaceRetrieval { on_unavailable } => {
