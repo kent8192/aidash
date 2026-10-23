@@ -113,7 +113,7 @@ impl ResearchJournalResult {
 			let record = Self::new()
 				.id(Uuid::new_v4())
 				.tenant(tenant)
-				.run_id(run)
+				.run(run)
 				.invocation_key(reference.invocation.clone())
 				.digest(reference.digest.clone())
 				.reference(Json(serde_json::to_value(&reference)?))
