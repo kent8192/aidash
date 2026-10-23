@@ -41,11 +41,40 @@ services:
         condition: service_healthy
   nats:
     image: nats:2.12-alpine
-    command: ["-js", "-sd", "/data"]
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
       - "127.0.0.1:${AIDASH_NATS_PORT:-42270}:4222"
     volumes:
       - nats:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "--spider",
+          "http://127.0.0.1:8222/healthz?js-enabled-only=true",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  activation-provision:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NATS_URL: nats://nats:4222
+      AIDASH_DEPLOYMENT_ID: ${AIDASH_DEPLOYMENT_ID:-aidash://node-a}
+    command: ["activation-provision"]
+    depends_on:
+      nats:
+        condition: service_healthy
   # A generic local OIDC issuer; deploy/local-oidc/compose.yaml wires it in.
   oidc-issuer:
     profiles: [oidc]
@@ -141,6 +170,8 @@ services:
       memory-recovery-init:
         condition: service_completed_successfully
       provider-credential-keys:
+        condition: service_completed_successfully
+      activation-provision:
         condition: service_completed_successfully
       nats:
         condition: service_started

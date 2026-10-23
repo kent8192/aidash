@@ -209,7 +209,9 @@ The tests cover startup, unsafe-origin rejection, fixture broker handoff, Graph
 canvas/labels/fit, connection changes, SSE resume/reset, cookie omission, denied
 navigation/opener IPC, and the absence of refresh/revoke requests across profile
 changes and restarts. Three sequential WDIO launchers start distinct native
-processes, verified by PID, while retaining the same profile metadata. Each phase
+processes, verified by a fresh UUID for each launch, while retaining the same
+profile metadata. PIDs are retained for cleanup and diagnostics because an OS
+may reuse a PID after a process exits. Each phase
 has a four-minute process timeout and no automatic test retries. Failure cleanup
 stops the app and removes any legacy test credentials.
 Screenshots and a JSON result are written to `desktop/artifacts/wdio/<platform>`.

@@ -1,4 +1,10 @@
-import { test, expect } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import { createTenant, defaultNode } from "./tenant-fixture";
 import {
   installBearerDashboard,
@@ -8,12 +14,10 @@ import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
-test("generation dashboard manages policy, approval, completion and retained history in both languages", async ({
-  page,
-  request,
-}) => {
-  // Each of the three assignments opens the channel's task sheet twice.
-  test.setTimeout(180000);
+async function createGenerationScenario(
+  page: Page,
+  request: APIRequestContext,
+) {
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
   let semanticRoot = "";
@@ -61,6 +65,28 @@ test("generation dashboard manages policy, approval, completion and retained his
     provider,
     KeylessFixture.generation,
   );
+  const dispose = async () => {
+    provider.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      provider.close((error) => (error ? reject(error) : resolve())),
+    );
+    if (semanticIndex) {
+      const current = await request.get(`${semanticRoot}/index`, {
+        headers: cleanupHeaders,
+      });
+      if (current.ok()) {
+        const index = await current.json();
+        const response = await request.post(`${semanticRoot}/index`, {
+          headers: cleanupHeaders,
+          data: {
+            expected_revision: index.revision,
+            spec: { ...index.spec, enabled: false },
+          },
+        });
+        expect(response.ok()).toBe(true);
+      }
+    }
+  };
   try {
     const id = `generation-${randomUUID()}`;
     const tenant = await createTenant(
@@ -475,165 +501,192 @@ test("generation dashboard manages policy, approval, completion and retained his
       await expect(row).toContainText("承認待ち");
       return row;
     };
-    const completed = await assign("Generated research");
-    await page
-      .getByRole("button", { name: "ポリシーを編集", exact: true })
-      .click();
-    await dialog
-      .getByLabel("権限属性（JSON）", { exact: true })
-      .fill('{"team":"later"}');
-    await dialog.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    await completed.click();
-    await expect(dialog).toContainText("調査スペシャリスト");
-    await expect(dialog).toContainText("生成確認モデル · 1.0.0");
-    await expect(dialog.locator(".generation-permissions")).toContainText(
-      '"team": "research"',
-    );
-    await expect(dialog.locator(".generation-permissions")).not.toContainText(
-      '"team": "later"',
-    );
-    await dialog
-      .getByLabel("判断の理由", { exact: true })
-      .fill("定義と上限を確認済み");
-    await expect(dialog).toContainText("承認済み圧縮 · 1.0.0");
-    await expect(dialog).toContainText("圧縮呼び出し消費数 / 上限");
-    await expect(dialog).toContainText("Approved embedding · 1.0.0");
-    await expect(dialog).toContainText("埋め込み試行数");
-    await page.screenshot({
-      path: "../private/dashboard-generation-approval-ja.png",
-      fullPage: true,
-    });
-    await dialog
-      .getByRole("button", { name: "生成を承認", exact: true })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    // A deferred activation reaches the Run through recovery, ~10 s later.
-    await expect(completed).toContainText("完了", { timeout: 60000 });
-    await completed.click();
-    await expect(dialog).toContainText("26 / 200,000");
-    expect(semanticContexts).toEqual([
-      expect.objectContaining({
-        matches: [
-          expect.objectContaining({
-            entry_id: memory.id,
-            text: "A car carries passengers.",
-          }),
-        ],
-      }),
-    ]);
-    expect(embeddingCalls).toBe(2);
-    await expect(dialog.locator(".generation-history")).toContainText(
-      "定義と上限を確認済み",
-    );
-    await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
-    await selectDashboardLanguage(page, "en-US");
-    await expect(page).toHaveURL(/\/creator\?.*view=generation/);
-    await expect(page.locator(".generation-page")).toBeVisible();
-    await page
-      .locator(".generation-request")
-      .filter({ hasText: "Generated research" })
-      .click();
-    await expect(
-      dialog.getByText("Lifecycle history", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByText("Charged tokens / limit", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByText("Embedding attempts", { exact: true }),
-    ).toBeVisible();
-    await page.screenshot({
-      path: "../private/dashboard-generation-complete-en.png",
-      fullPage: true,
-    });
-    await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await selectDashboardLanguage(page, "ja-JP");
-    const denied = await assign("Rejected specialist");
-    await denied.click();
-    await dialog
-      .getByLabel("判断の理由", { exact: true })
-      .fill("今回は生成しない");
-    await dialog
-      .getByRole("button", { name: "生成を拒否", exact: true })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    await expect(denied).toContainText("拒否済み");
-    const stopped = await assign("Stopped specialist");
-    await stopped.click();
-    await dialog
-      .getByLabel("判断の理由", { exact: true })
-      .fill("要求を停止する");
-    await dialog
-      .getByRole("button", { name: "Agentを停止", exact: true })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    await expect(stopped).toContainText("停止済み");
-    await stopped.click();
-    await dialog
-      .getByLabel("判断の理由", { exact: true })
-      .fill("履歴を保持して整理する");
-    await dialog
-      .getByRole("button", { name: "要求をアーカイブ", exact: true })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    await expect(stopped).toContainText("アーカイブ済み");
-    await page
-      .getByRole("button", { name: "生成を無効化", exact: true })
-      .click();
-    await expect(page.locator(".generation-policy .badge")).toHaveText("無効");
-    await page
-      .getByRole("button", { name: "生成を有効化", exact: true })
-      .click();
-    await expect(page.locator(".generation-policy .badge")).toHaveText("有効");
-    await page.screenshot({
-      path: "../private/dashboard-generation-page-ja.png",
-      fullPage: true,
-    });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({
-      path: "../private/dashboard-generation-mobile-ja.png",
-      fullPage: true,
-    });
-    const policies = await api(
-      `/api/generation/${tenant}/policies`,
-      undefined,
-      credential.token,
-    );
-    expect(policies[0].generated_count).toBe(3);
-    expect(policies[0].allocated_tokens).toBe(26);
-    expect(policies[0].allocated_embedding_calls).toBe(1);
-    const jobs = await api(
-      `/api/generation/${tenant}/requests`,
-      undefined,
-      credential.token,
-    );
-    expect(jobs.map((job: { status: string }) => job.status).sort()).toEqual([
-      "COMPLETED",
-      "DELETED",
-      "DENIED",
-    ]);
-    expect(errors).toEqual([]);
-  } finally {
-    provider.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      provider.close((error) => (error ? reject(error) : resolve())),
-    );
-    if (semanticIndex) {
-      const current = await request.get(`${semanticRoot}/index`, {
-        headers: cleanupHeaders,
+    const approveAndComplete = async () => {
+      const completed = await assign("Generated research");
+      await page
+        .getByRole("button", { name: "ポリシーを編集", exact: true })
+        .click();
+      await dialog
+        .getByLabel("権限属性（JSON）", { exact: true })
+        .fill('{"team":"later"}');
+      await dialog.getByRole("button", { name: "保存", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await completed.click();
+      await expect(dialog).toContainText("調査スペシャリスト");
+      await expect(dialog).toContainText("生成確認モデル · 1.0.0");
+      await expect(dialog.locator(".generation-permissions")).toContainText(
+        '"team": "research"',
+      );
+      await expect(dialog.locator(".generation-permissions")).not.toContainText(
+        '"team": "later"',
+      );
+      await dialog
+        .getByLabel("判断の理由", { exact: true })
+        .fill("定義と上限を確認済み");
+      await expect(dialog).toContainText("承認済み圧縮 · 1.0.0");
+      await expect(dialog).toContainText("圧縮呼び出し消費数 / 上限");
+      await expect(dialog).toContainText("Approved embedding · 1.0.0");
+      await expect(dialog).toContainText("埋め込み試行数");
+      await page.screenshot({
+        path: "../private/dashboard-generation-approval-ja.png",
+        fullPage: true,
       });
-      if (current.ok()) {
-        const index = await current.json();
-        const response = await request.post(`${semanticRoot}/index`, {
-          headers: cleanupHeaders,
-          data: {
-            expected_revision: index.revision,
-            spec: { ...index.spec, enabled: false },
-          },
-        });
-        expect(response.ok()).toBe(true);
-      }
-    }
+      await dialog
+        .getByRole("button", { name: "生成を承認", exact: true })
+        .click();
+      await expect(dialog).toHaveCount(0);
+      // A deferred activation reaches the Run through recovery, ~10 s later.
+      await expect(completed).toContainText("完了", { timeout: 60000 });
+      await completed.click();
+      await expect(dialog).toContainText("26 / 200,000");
+      expect(semanticContexts).toEqual([
+        expect.objectContaining({
+          matches: [
+            expect.objectContaining({
+              entry_id: memory.id,
+              text: "A car carries passengers.",
+            }),
+          ],
+        }),
+      ]);
+      expect(embeddingCalls).toBe(2);
+      await expect(dialog.locator(".generation-history")).toContainText(
+        "定義と上限を確認済み",
+      );
+      await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
+      await selectDashboardLanguage(page, "en-US");
+      await expect(page).toHaveURL(/\/creator\?.*view=generation/);
+      await expect(page.locator(".generation-page")).toBeVisible();
+      await page
+        .locator(".generation-request")
+        .filter({ hasText: "Generated research" })
+        .click();
+      await expect(
+        dialog.getByText("Lifecycle history", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        dialog.getByText("Charged tokens / limit", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        dialog.getByText("Embedding attempts", { exact: true }),
+      ).toBeVisible();
+      await page.screenshot({
+        path: "../private/dashboard-generation-complete-en.png",
+        fullPage: true,
+      });
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      await selectDashboardLanguage(page, "ja-JP");
+    };
+    const rejectAndArchive = async () => {
+      const denied = await assign("Rejected specialist");
+      await denied.click();
+      await dialog
+        .getByLabel("判断の理由", { exact: true })
+        .fill("今回は生成しない");
+      await dialog
+        .getByRole("button", { name: "生成を拒否", exact: true })
+        .click();
+      await expect(dialog).toHaveCount(0);
+      await expect(denied).toContainText("拒否済み");
+      const stopped = await assign("Stopped specialist");
+      await stopped.click();
+      await dialog
+        .getByLabel("判断の理由", { exact: true })
+        .fill("要求を停止する");
+      await dialog
+        .getByRole("button", { name: "Agentを停止", exact: true })
+        .click();
+      await expect(dialog).toHaveCount(0);
+      await expect(stopped).toContainText("停止済み");
+      await stopped.click();
+      await dialog
+        .getByLabel("判断の理由", { exact: true })
+        .fill("履歴を保持して整理する");
+      await dialog
+        .getByRole("button", { name: "要求をアーカイブ", exact: true })
+        .click();
+      await expect(dialog).toHaveCount(0);
+      await expect(stopped).toContainText("アーカイブ済み");
+      await page
+        .getByRole("button", { name: "生成を無効化", exact: true })
+        .click();
+      await expect(page.locator(".generation-policy .badge")).toHaveText(
+        "無効",
+      );
+      await page
+        .getByRole("button", { name: "生成を有効化", exact: true })
+        .click();
+      await expect(page.locator(".generation-policy .badge")).toHaveText(
+        "有効",
+      );
+      await page.screenshot({
+        path: "../private/dashboard-generation-page-ja.png",
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({
+        path: "../private/dashboard-generation-mobile-ja.png",
+        fullPage: true,
+      });
+      const policies = await api(
+        `/api/generation/${tenant}/policies`,
+        undefined,
+        credential.token,
+      );
+      expect(policies[0].generated_count).toBe(3);
+      expect(policies[0].allocated_tokens).toBe(26);
+      expect(policies[0].allocated_embedding_calls).toBe(1);
+      const jobs = await api(
+        `/api/generation/${tenant}/requests`,
+        undefined,
+        credential.token,
+      );
+      expect(jobs.map((job: { status: string }) => job.status).sort()).toEqual([
+        "COMPLETED",
+        "DELETED",
+        "DENIED",
+      ]);
+      expect(errors).toEqual([]);
+    };
+    return { approveAndComplete, rejectAndArchive, dispose };
+  } catch (error) {
+    await dispose();
+    throw error;
   }
+}
+
+// The journey shares one browser and Tenant deliberately. Each serial phase
+// has its own deadline, so slow approval/execution cannot spend the history
+// and policy-management phase's budget. A failed phase skips its dependants.
+test.describe.serial("generation dashboard", () => {
+  test.describe.configure({ timeout: 90000 });
+  let context: BrowserContext;
+  let scenario: Awaited<ReturnType<typeof createGenerationScenario>>;
+
+  test.beforeAll(async ({ browser, baseURL }) => {
+    context = await browser.newContext({
+      baseURL,
+      viewport: { width: 1440, height: 1000 },
+    });
+  });
+  test.afterAll(async () => {
+    try {
+      await scenario?.dispose();
+    } finally {
+      await context?.close();
+    }
+  });
+
+  test("configures the embedding model and generation policy", async () => {
+    scenario = await createGenerationScenario(
+      await context.newPage(),
+      context.request,
+    );
+  });
+  test("approves a pinned definition and completes semantic work in both languages", async () => {
+    await scenario.approveAndComplete();
+  });
+  test("rejects and archives requests while retaining history and policy controls", async () => {
+    await scenario.rejectAndArchive();
+  });
 });

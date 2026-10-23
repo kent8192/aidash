@@ -24,6 +24,7 @@ dependencies = [
   "k8s-restart-postgres",
   "k8s-wait-postgres",
   "k8s-wait-nats",
+  "k8s-activation-provision",
   "k8s-memory-recovery",
   "k8s-helm",
   "k8s-restart-server",
@@ -151,6 +152,16 @@ args = [
   "statefulset/nats",
   "--timeout=300s",
 ]
+
+[tasks.k8s-activation-provision]
+private = true
+script_runner = "sh"
+script = '''
+set -eu
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local delete job aidash-activation-provision --ignore-not-found
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local apply -f deploy/local-k8s/activation-provision.yaml
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local wait --for=condition=complete job/aidash-activation-provision --timeout=120s
+'''
 
 [tasks.k8s-memory-recovery]
 private = true

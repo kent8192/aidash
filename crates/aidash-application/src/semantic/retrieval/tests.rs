@@ -465,7 +465,10 @@ async fn inaccessible_candidates_do_not_consume_provider_allowance(#[case] rejec
 #[case::stale_index(1)]
 #[case::changed_source(2)]
 #[tokio::test]
-async fn incomplete_authorized_candidates_stop_before_provider_effects(#[case] incomplete: u8) {
+async fn incomplete_authorized_candidates_stop_before_provider_effects(
+	#[case] incomplete: u8,
+	#[values(false, true)] run_context: bool,
+) {
 	let (calls, mut scope, vector) = fixture();
 	match incomplete {
 		0 => scope.rows[0].state = "PENDING".into(),
@@ -473,20 +476,28 @@ async fn incomplete_authorized_candidates_stop_before_provider_effects(#[case] i
 		2 => scope.digest = content_digest("old content"),
 		_ => unreachable!(),
 	}
+	let controls = controls(true, true);
 	let error = search(
 		&mut scope,
 		&vector,
 		index().workspace_id,
 		&input(),
-		None,
-		None,
+		run_context.then(Uuid::new_v4),
+		run_context.then_some(&controls),
 	)
 	.await
 	.unwrap_err();
-	assert_eq!(
-		error.to_string(),
-		"semantic index is incomplete; inspect entries and retry after indexing"
-	);
+	if run_context {
+		assert!(
+			matches!(error, Error::RemoteSemantic(Failure::Unavailable)),
+			"{error:?}"
+		);
+	} else {
+		assert_eq!(
+			error.to_string(),
+			"semantic index is incomplete; inspect entries and retry after indexing"
+		);
+	}
 	assert_eq!(
 		*calls.lock().unwrap(),
 		[

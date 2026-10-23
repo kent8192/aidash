@@ -166,6 +166,22 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	/// Resolve existing page and file selections before admitting another
+	/// Research page image, under the same worker authority lease.
+	pub(crate) async fn model_media(
+		&self,
+		store: &Store,
+		run: &Run,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<crate::provider::ContentPart>> {
+		aidash_application::execution::media::selected(
+			&mut crate::bootstrap::selected_media(store, run, self.access.clone()),
+			selections,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	/// The scope of every transaction this authority's Run opens.
 	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
 		self.access.read().await.tenancy()
