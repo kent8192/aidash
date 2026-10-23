@@ -48,8 +48,12 @@ plan. Deployment Administrators have no separate execution or connection path.
 ## Configure an agent's model
 
 Choose ChatGPT in the Registry model form and select a model available to your
-connection. Plan model availability depends on that connection and the
-provider. The model source is `plan_connection: "chatgpt"`; do not combine it
+connection. Without a connection, enter a model slug manually. The form marks
+its code-defined context and output defaults as unverified by the provider;
+review them before approving the definition. Registration does not authorize
+execution: the Run's owner still needs an eligible connection to that model.
+Plan model availability depends on that connection and the provider. The model
+source is `plan_connection: "chatgpt"`; do not combine it
 with `provider_credential` or an environment key. The Responses endpoint is
 `https://api.openai.com/v1`.
 
@@ -58,6 +62,11 @@ versions remain explicit Registry metadata. Review any manually entered
 defaults before approving a model. The provider model slug must be one the
 owner's connection can use. Registering or approving a model never shares a
 Plan Connection with another subject.
+
+The Agent form first selects a provider and credential source, then a versioned
+model definition from the Tenant's Registry. The ChatGPT group links to personal
+settings when the current subject has no active connection. Tenant Provider
+Credentials, personal Plan Connections and Keyless endpoints stay distinct.
 
 Legacy, Ordered and Native projection are supported. Native maps messages,
 function calls and matching function outputs to Responses items. Every call
