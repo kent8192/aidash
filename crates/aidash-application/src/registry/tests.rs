@@ -752,7 +752,7 @@ async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
 	let entry = definition(
 		"chatgpt-model",
 		"model",
-		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{},"projection_versions":["legacy","ordered"]}),
+		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{},"projection_versions":["legacy","ordered","native"]}),
 	);
 	for local in [false, true] {
 		assert!(
@@ -776,7 +776,6 @@ async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
 			("streaming", json!(false)),
 			("modalities", json!(["text", "audio"])),
 			("cache_mode", json!("explicit")),
-			("projection_versions", json!(["native"])),
 			("model_id", json!("gpt/../fixture")),
 		] {
 			let mut changed = entry.clone();

@@ -33,3 +33,32 @@ fn plan_models_advertise_their_declared_image_route() {
 			.is_empty()
 	);
 }
+
+/// Native is a supported plan projection without relaxing the plan's stream,
+/// media or cache restrictions.
+#[test]
+fn native_plan_models_keep_the_plan_usage_restrictions() {
+	let mut model = plan_model(&["text", "image"]);
+	model.projection_versions = vec![crate::projection::ProjectionVersion::Native];
+	model.validate_plan_usage().unwrap();
+	model
+		.require_projection(crate::projection::ProjectionVersion::Native)
+		.unwrap();
+	for (field, value) in [
+		("streaming", json!(false)),
+		("cache_mode", json!("explicit")),
+		("modalities", json!(["text", "audio"])),
+		(
+			"media_routes",
+			json!([{
+				"tag":"fixture", "formats":["image/png"], "source":"fixture",
+				"verified_at":"2026-10-23T00:00:00Z", "expires_at":"2026-10-24T00:00:00Z"
+			}]),
+		),
+	] {
+		let mut value_model = serde_json::to_value(&model).unwrap();
+		value_model[field] = value;
+		let invalid: ModelConfig = serde_json::from_value(value_model).unwrap();
+		assert!(invalid.validate_plan_usage().is_err(), "{field}");
+	}
+}
