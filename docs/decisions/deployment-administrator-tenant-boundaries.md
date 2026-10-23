@@ -84,6 +84,7 @@ that a Deployment Administrator grant becomes a Tenant policy allowance.
 | P14 | Research Retention Rules, their history, Evidence Revocation, and revocation records                     | Move into a Tenant. The Tenant decides retention within Deployment ceilings and whether to revoke its evidence; workers apply those decisions                                                                                        | I1                                 |
 | P15 | Tenant audit history during deletion and after purge                                                     | Close ordinary audit APIs while deleted or purged. A valid restore re-enables ordinary Tenant-authorized reads; retained history is erased under `audit_retention_days`                                                              | I1, coordinated with #368          |
 | P16 | Agent Generation policies, assignments, requests, history, usage, specifications, and lifecycle controls | Move into a Tenant. Policy configuration, request reasons and generated specifications are Tenant content, and every mutation requires its existing Tenant action                                                                    | I1                                 |
+| P17 | Transaction submit/list/details/abort APIs                                                               | Move into a Tenant. Manifests, Workspace state, Task artifacts and transaction history are Tenant content; submission, reads and abort require Subject ownership and the existing Tenant policy                                      | I1                                 |
 
 ### Inventory anchors
 
@@ -100,6 +101,12 @@ at implementation time:
   content-free Run management, with pause/cancel only.
 - `server/src/apps/identity/services/provider_credentials.rs`: the shared
   administrator allowance affects more than listing.
+- `server/src/apps/federation/transactions/urls.rs`, `views/protocol.rs`, and
+  `services/protocol.rs::principal`: authenticated `/api/transactions`
+  submit/list/details/abort map a Deployment Administrator to an absent Subject.
+  Trace `crates/aidash-application/src/transactions/management.rs` and the native
+  management repository: this fallback skips Subject ownership and policy,
+  exposing complete manifests and history and permitting mutations.
 - `server/src/apps/knowledge/repositories/access.rs` and
   `services/service.rs`: knowledge and Semantic access without Subject policy.
 - `server/src/apps/registry/workbench/repositories/authority.rs`, `profile.rs`,
@@ -266,7 +273,7 @@ three carry `bug`, `breaking-change`, and `severity:high`.
 
 | Track | Proposed Issue title                                                                                                                             | Completion boundary                                                                                                                                                    |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| I1    | [#484: Enforce Tenant authority on remaining Deployment Administrator content and settings paths](https://github.com/kent8192/aidash/issues/484) | P01, P03–P05, P07–P16; preserve P08 inspection/draft denials and enforce its remaining content boundaries                                                              |
+| I1    | [#484: Enforce Tenant authority on remaining Deployment Administrator content and settings paths](https://github.com/kent8192/aidash/issues/484) | P01, P03–P05, P07–P17; preserve P08 inspection/draft denials and enforce its remaining content boundaries                                                              |
 | I2    | [#485: Make Run management an audited content-free safety control](https://github.com/kent8192/aidash/issues/485)                                | P06, including minimal GET, expected Tenant/control version, retries, receipts, audit, lifecycle gates, and same-release refusal of ordinary administrator Run control |
 | I3    | [#486: Remove Deployment Administrator Peer Graph Grants and remote Graph bypasses](https://github.com/kent8192/aidash/issues/486)               | P02, including grant persistence/routes, administrator protocol branches, and #241 design reconciliation                                                               |
 
@@ -304,6 +311,11 @@ until those changes land.
   Cover Agent Generation policy reads/writes, assignments, request lists, history,
   usage, specifications, lifecycle and foreign-generation controls before any
   content is serialized or effects occur.
+- Cover Transaction submit/list/details/abort with manifests containing
+  Workspace state and Task artifacts, plus complete manifest/history reads.
+  Administrator requests must be refused before serialization or mutation;
+  authorized Subjects retain their existing ownership and policy checks, and
+  unauthorized same-Tenant and cross-Tenant callers remain refused.
 - Preserve Workbench inspection/draft denials. Cover incident create/list/detail/
   update/events, catalog audit, permission context, and reports with copied
   evidence; require Tenant filtering even for collections. Ensure no empty-list
