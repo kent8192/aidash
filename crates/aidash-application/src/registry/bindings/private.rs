@@ -88,7 +88,6 @@ pub fn attach(entry: &mut Entry, node: &str, documents: &Value) -> Result<Entry>
 			schema_version: 1,
 			context_source: None,
 			source: NativeSource::PrivateReferences { digest },
-			..
 		})?,
 	})
 }

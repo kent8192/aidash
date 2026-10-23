@@ -19,6 +19,7 @@ pub struct NativeContext {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeSource {
+	WorkspaceObservation {},
 	ConversationMemory {},
 	SemanticMemory {},
 	WorkspaceRetrieval {
@@ -133,6 +134,7 @@ impl NativeContext {
 			return declaration.clone();
 		}
 		let operation = match self.source {
+			NativeSource::WorkspaceObservation { .. } => "workspace_observation",
 			NativeSource::ConversationMemory { .. } => "conversation_memory",
 			NativeSource::SemanticMemory { .. } => "semantic_memory",
 			NativeSource::WorkspaceRetrieval { .. } => "workspace_retrieval",
@@ -144,6 +146,9 @@ impl NativeContext {
 		let read = match self.source {
 			NativeSource::ConversationMemory { .. } | NativeSource::SemanticMemory { .. } => {
 				vec!["memory_recall"]
+			}
+			NativeSource::WorkspaceObservation { .. } => {
+				vec!["workspace_observe", "workspace_read"]
 			}
 			NativeSource::WorkspaceRetrieval { .. } => vec!["workspace_read"],
 			NativeSource::PrivateReferences { .. } | NativeSource::ReferenceAttachments { .. } => {
@@ -334,4 +339,71 @@ mod tests {
 		};
 		assert!(invalid.validate("source").is_err());
 	}
+}
+
+/// Explicit source policies name capabilities in the same admitted closure. The
+/// frozen Tool descriptors pin each operation/provider edge without duplicating schemas.
+pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result<()> {
+	use crate::context::source::PinPolicy;
+	for source in snapshot.bindings.iter().filter(|b| {
+		matches!(b.definition.kind.as_str(), "source" | "memory")
+			&& b.definition.config.get("schema_version").is_some()
+	}) {
+		let native: NativeContext = serde_json::from_value(source.definition.config.clone())?;
+		let Some(declaration) = &native.context_source else {
+			continue;
+		};
+		declaration.validate()?;
+		let mut baseline = native.clone();
+		baseline.context_source = None;
+		let baseline = baseline.declaration(&source.identity);
+		if declaration.provider != baseline.provider || declaration.operation != baseline.operation
+		{
+			return Err(Error::Invalid(
+				"context source provider operation is unavailable".into(),
+			));
+		}
+		for (identity, kind) in declaration.references() {
+			let binding = snapshot
+				.bindings
+				.iter()
+				.find(|b| {
+					b.identity == identity
+						&& b.definition.kind == kind
+						&& b.excluded_reason.is_none()
+				})
+				.ok_or_else(|| {
+					Error::Invalid(
+						"context source dependency requires an active exact Binding".into(),
+					)
+				})?;
+			if kind == "tool" {
+				let descriptor: crate::tool::providers::ToolDescriptor =
+					serde_json::from_value(binding.definition.config.clone())?;
+				let contract = descriptor.declared_contract(identity)?;
+				if binding
+					.provider_implementation
+					.as_ref()
+					.is_none_or(|id| id.is_empty())
+					|| binding
+						.provider_contract_digest
+						.as_deref()
+						.is_none_or(|d| contract.pinned(d).ok().flatten().is_none())
+				{
+					return Err(Error::Invalid(
+						"context source Tool provider operation is not pinned".into(),
+					));
+				}
+			} else if let PinPolicy::Scored { mode, .. } = &declaration.pin {
+				let config: crate::decision::DeciderConfig =
+					serde_json::from_value(binding.definition.config.clone())?;
+				if config.hook != crate::decision::Hook::ContextSelection || config.mode != *mode {
+					return Err(Error::Invalid(
+						"source selection Decider hook or mode differs from declaration".into(),
+					));
+				}
+			}
+		}
+	}
+	Ok(())
 }

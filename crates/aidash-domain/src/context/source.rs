@@ -399,3 +399,52 @@ pub fn accepted_delivery(
 		accepted_inference,
 	})
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionFailure {
+	ForbiddenDisclosure,
+	Unapproved,
+	BudgetExhausted,
+	StateTooLarge,
+	ProviderUnavailable,
+	InvalidAnswers,
+	AuthorityUnavailable,
+	JournalUnavailable,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionEvidence {
+	pub boundary: crate::decision::Boundary,
+	pub decider: crate::decision::DeciderPin,
+	pub mode: Mode,
+	pub query_digest: String,
+	pub candidate_digest: String,
+	pub state_digest: String,
+	pub route: Option<u32>,
+	pub threshold: Option<crate::decision::Probability>,
+	pub questions: crate::decision::Questions,
+	pub answers: std::collections::BTreeMap<String, crate::decision::Probability>,
+	pub attempts: Vec<crate::decision::AttemptEvidence>,
+	pub proposed: Vec<String>,
+	pub selected: Vec<String>,
+	pub failure: Option<SelectionFailure>,
+}
+#[derive(Debug, Clone)]
+pub struct SourceSelection {
+	/// Candidate identity keys retained for the request. Shadow always retains the original set.
+	pub selected: Vec<String>,
+	pub evidence: SelectionEvidence,
+}
+
+impl SelectionFailure {
+	pub fn pause_reason(self) -> super::recovery::Failure {
+		use super::recovery::Failure;
+		match self {
+			Self::ForbiddenDisclosure => Failure::SourceSelectionForbidden,
+			Self::Unapproved => Failure::SourceSelectionUnapproved,
+			Self::BudgetExhausted => Failure::SourceSelectionCallsExhausted,
+			_ => Failure::SourceSelectionUnavailable,
+		}
+	}
+}
