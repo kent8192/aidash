@@ -2766,9 +2766,21 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
-	let originals = fixture.run.context.history.clone();
+	let mut originals = fixture.run.context.history.clone();
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(fixture.run.context.execution_summary.is_some());
+	// Force another insufficient pruning while the previous summary exists.
+	let earlier_head = fixture.run.context.journal.head;
+	thinking_with_history(&mut fixture, 40);
+	originals.extend(
+		fixture
+			.run
+			.context
+			.history
+			.iter()
+			.filter(|entry| entry.seq > earlier_head)
+			.cloned(),
+	);
 
 	// The check before pruning passes; the source is revoked before the
 	// check that follows it.
@@ -2795,6 +2807,10 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 			.count(),
 		2,
 		"{step:?}"
+	);
+	assert!(
+		step.contains(&"decision.rejected"),
+		"the staged decision and charged attempts must be settled: {step:?}"
 	);
 	for provider in ["provider.infer", "summarizer.infer"] {
 		assert!(!step.contains(&provider), "{provider}: {step:?}");

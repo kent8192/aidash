@@ -221,11 +221,14 @@ impl DecisionJournal for FixtureDecision {
 	}
 	async fn commit(
 		&self,
-		_: &Evidence,
+		evidence: &Evidence,
 		context: Option<&Context>,
 		_: Option<&RetainedState>,
 	) -> Result<()> {
 		self.backend.record("decision.commit");
+		if evidence.outcome == aidash_domain::decision::Outcome::Rejected {
+			self.backend.record("decision.rejected");
+		}
 		if let Some(context) = context {
 			let mut run = self.run.clone();
 			run.context = context.clone();
