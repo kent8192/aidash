@@ -95,9 +95,10 @@ impl GenerationPolicies for NativePolicies {
 					.tenant_name()
 					.ok_or(aidash_application::Error::Forbidden)?;
 				let mut tx = self.store.pool.begin(scope).await?;
-				crate::authorization::remote::deployment_administrator::tenant(
+				crate::apps::identity::models::AuthorizationBundle::lock_snapshot(
 					&mut *tx,
 					tenant.as_str(),
+					exclusive,
 				)
 				.await
 				.map_err(

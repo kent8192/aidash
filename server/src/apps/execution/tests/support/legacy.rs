@@ -14,6 +14,42 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
+/// Wait until database work is blocked by this fixture's lock, including a
+/// waiter queued behind another blocked transaction.
+#[allow(dead_code)] // Only concurrency regressions need a database lock barrier.
+pub async fn wait_for_blocked(pool: &aidash_server::database::native::Pool, pid: i32, count: i64) {
+	use aidash_application::tenancy::TEST_FIXTURE;
+	use reinhardt::query::{
+		Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	};
+	let query = Query::select()
+		.expr(Expr::cust("COUNT(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(SimpleExpr::CustomWithExpr(
+			"? = ANY(pg_blocking_pids(pid)) OR EXISTS (SELECT 1 FROM unnest(pg_blocking_pids(pid)) AS blocker WHERE ? = ANY(pg_blocking_pids(blocker)))".into(),
+			vec![Expr::value(pid).into(), Expr::value(pid).into()],
+		))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let blocked: i64 = pool
+				.atomic(&TEST_FIXTURE, async |tx| {
+					aidash_server::database::native::query_scalar(&query)
+						.scalar_one(tx)
+						.await
+				})
+				.await
+				.unwrap();
+			if blocked >= count {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the HTTP operation reached the fixture's database lock");
+}
+
 #[allow(dead_code)] // Browser-authentication suites seed current-format sessions directly.
 pub fn browser_session_digest(value: impl AsRef<[u8]>) -> Vec<u8> {
 	use sha2::Digest as _;

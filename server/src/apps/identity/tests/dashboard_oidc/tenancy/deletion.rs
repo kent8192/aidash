@@ -158,6 +158,16 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		("POST", format!("{path}/semantic/index"), index),
 		(
 			"GET",
+			format!("/api/authorization/{tenant}/revisions"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/authorization/{tenant}/decisions"),
+			Value::Null,
+		),
+		(
+			"GET",
 			format!("/api/generation/{tenant}/policies"),
 			Value::Null,
 		),
@@ -755,6 +765,93 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
+	// A blocked mutation must keep deletion's policy fence until its effect commits.
+	for (table, id, endpoint, input) in [
+		(
+			"runs",
+			run,
+			format!("/api/runs/{run}/control"),
+			json!({"action":"pause"}),
+		),
+		(
+			"tasks",
+			task,
+			format!("/api/tasks/{task}/abandon"),
+			json!({"revision":0,"reason":"operator cleanup"}),
+		),
+	] {
+		if table == "tasks" {
+			let query = Query::update()
+				.table(Alias::new("tasks"))
+				.value(Alias::new("status"), "FAILED")
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder);
+			d.federation
+				.store
+				.pool
+				.atomic(&scope, async |tx| {
+					aidash_server::database::native::query(&query)
+						.execute(tx)
+						.await?;
+					Ok(())
+				})
+				.await
+				.unwrap();
+		}
+		let mut row_lock = d.federation.store.pool.begin(&scope).await.unwrap();
+		let pid: i32 = aidash_server::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("pg_backend_pid()"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut *row_lock)
+		.await
+		.unwrap();
+		let query = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new(table))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder);
+		let _: Uuid = aidash_server::database::native::query_scalar(&query)
+			.scalar_one(&mut *row_lock)
+			.await
+			.unwrap();
+		let operation = d.as_deployment_administrator("POST", &endpoint, input);
+		tokio::pin!(operation);
+		tokio::select! {
+			result = &mut operation => panic!("mutation did not wait for its row: {result:?}"),
+			() = common::wait_for_blocked(&d.federation.store.pool, pid, 1) => {},
+		}
+		let mut deletion_fence = d.federation.store.pool.begin(&scope).await.unwrap();
+		{
+			let query = Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("authorization_bundles"))
+				.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder);
+			let acquire = async {
+				aidash_server::database::native::query_scalar::<String>(&query)
+					.scalar_one(&mut *deletion_fence)
+					.await
+					.unwrap()
+			};
+			tokio::pin!(acquire);
+			assert!(
+				tokio::time::timeout(std::time::Duration::from_millis(250), &mut acquire)
+					.await
+					.is_err(),
+				"{endpoint} released its policy fence before mutation"
+			);
+			row_lock.rollback().await.unwrap();
+			let (status, body) = operation.await;
+			assert_eq!(status, 200, "{endpoint}: {body}");
+			acquire.await;
+		}
+		deletion_fence.rollback().await.unwrap();
+	}
 	let state = || async {
 		sqlx::query_as::<_, (String, Option<String>)>(
 			"SELECT control, error FROM runs WHERE id = $1",
