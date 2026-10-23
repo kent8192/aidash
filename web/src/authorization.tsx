@@ -222,8 +222,11 @@ function TenantAuthorization({
     refetchInterval: 5000,
   });
   const missing =
-    snapshot.error instanceof ApiError && snapshot.error.status === 404;
-  const current = !snapshot.isError ? snapshot.data : undefined;
+    access.can("policy.read") &&
+    snapshot.error instanceof ApiError &&
+    snapshot.error.status === 404;
+  const current =
+    access.can("policy.read") && !snapshot.isError ? snapshot.data : undefined;
   const admissions = useQuery({
     queryKey: ["authorization", tenant, "transaction-revocations"],
     queryFn: () => transactionRevocations(path),
@@ -291,7 +294,7 @@ function TenantAuthorization({
       setError("");
     }
   };
-  const modal = !!editor || issuing || !!revoking;
+  const modal = (!!current && !!editor) || issuing || !!revoking;
   return (
     <>
       <div className="grid min-w-0 gap-3">
@@ -496,7 +499,7 @@ function TenantAuthorization({
           />
         )}
       </>
-      {editor && (
+      {current && editor && (
         <Modal title={t("authEditPolicy")} close={close}>
           <PolicyEditor
             snapshot={editor}

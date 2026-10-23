@@ -158,6 +158,7 @@ impl TenantAdministrator {
 		db: &Pool,
 		offset: u64,
 		mine: bool,
+		active: bool,
 	) -> Result<Vec<Credential>> {
 		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
@@ -176,6 +177,7 @@ impl TenantAdministrator {
 				self.tenant(),
 				mine.then_some(self.mapping_id),
 				offset,
+				active,
 			)
 			.await
 		})

@@ -332,6 +332,18 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		.add_operation(Operation::CreateNamedIndex {
+			table: "authorization_credentials".to_owned(),
+			name: "authorization_credentials_active_mapping".to_owned(),
+			columns: vec!["mapping_id".to_owned(), "expires_at".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some("mapping_id IS NOT NULL AND revoked_at IS NULL".to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
 			table: "authorization_decisions".to_owned(),
 			name: "authorization_decisions_tenant".to_owned(),
 			columns: vec!["tenant".to_owned(), "sequence".to_owned()],

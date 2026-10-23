@@ -58,12 +58,18 @@ impl AuthorizationCredential {
 		tenant: &str,
 		issued_through: Option<Uuid>,
 		offset: u64,
+		active: bool,
 	) -> Result<Vec<Credential>> {
 		let mut credentials = Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
 			.filter(Self::field_issued_by().ne("dashboard-oidc"));
 		if let Some(mapping) = issued_through {
 			credentials = credentials.filter(Self::field_mapping_id().eq(Some(mapping)));
+		}
+		if active {
+			credentials = credentials
+				.filter(Self::field_revoked_at().is_null())
+				.filter(Self::field_expires_at().gt(Utc::now()));
 		}
 		Ok(credentials
 			.order_by(&["-created_at", "id"])
