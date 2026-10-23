@@ -32,8 +32,13 @@ pub struct GraphOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GraphViewer {
-	Subject { tenant: String, subject: String },
-	DeploymentAdministrator { id: Uuid },
+	/// A subject of the sending Tenant, the one its Federation token names.
+	Subject {
+		subject: String,
+	},
+	DeploymentAdministrator {
+		id: Uuid,
+	},
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GraphNode {

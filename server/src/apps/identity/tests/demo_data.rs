@@ -7,7 +7,7 @@
 mod native_database;
 use aidash_server::apps::identity::models::{
 	AuthorizationBundle, AuthorizationCatalog, AuthorizationCatalogHistory, DemoDataLoad,
-	DemoTenant, Tenant,
+	DemoTenant, Node, Tenant,
 };
 use aidash_server::apps::identity::services::tenant_purge;
 use aidash_server::registry::Search;
@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-const NODE: &str = "aidash://demo-data-test";
+const DEPLOYMENT: &str = "aidash://demo-data-test";
 
 /// The structure the repository checks in, which every Environment loads.
 fn structure() -> Value {
@@ -36,8 +36,8 @@ fn settings(directory: &Path, enabled: bool) {
 		format!(
 			r#"[core]
 secret_key = "demo-data-fixture-secret-key-not-for-production-at-least-50-bytes"
-[node]
-node_id = {NODE:?}
+[deployment]
+id = {DEPLOYMENT:?}
 endpoint = "http://127.0.0.1:8080"
 api_token = "demo-data-fixture-token-at-least-16"
 [demo_data]
@@ -84,6 +84,8 @@ fn write(directory: &Path, name: &str, document: &Value) -> PathBuf {
 struct Rows {
 	/// Structure key to Tenant name.
 	tenants: BTreeMap<String, String>,
+	/// Tenant name to its default Node address.
+	nodes: BTreeMap<String, aidash_domain::nodes::NodeAddress>,
 	/// Tenant name to its policy revision and subjects.
 	policies: BTreeMap<String, (i64, Value)>,
 	/// Tenant name to the approved `id@version` entries.
@@ -102,6 +104,22 @@ async fn rows(f: &DatabaseFixture) -> Rows {
 			.await?
 			.into_iter()
 			.map(|named| (named.key, named.tenant))
+			.collect();
+		let deployment = aidash_domain::nodes::DeploymentId::parse(DEPLOYMENT).unwrap();
+		let nodes: BTreeMap<_, _> = Node::objects()
+			.filter(Node::field_is_default().eq(true))
+			.all_with_db(tx)
+			.await?
+			.into_iter()
+			.map(|node| {
+				(
+					node.tenant,
+					aidash_domain::nodes::NodeAddress {
+						deployment: deployment.clone(),
+						node: aidash_domain::nodes::NodeName::parse(&node.name).unwrap(),
+					},
+				)
+			})
 			.collect();
 		let policies = AuthorizationBundle::objects()
 			.all()
@@ -122,6 +140,7 @@ async fn rows(f: &DatabaseFixture) -> Rows {
 			.await?
 		{
 			assert!(binding.enabled);
+			assert_eq!(binding.node, nodes[&binding.tenant].node.as_str());
 			approved
 				.entry(binding.tenant)
 				.or_default()
@@ -130,6 +149,7 @@ async fn rows(f: &DatabaseFixture) -> Rows {
 		approved.values_mut().for_each(|entries| entries.sort());
 		Ok(Rows {
 			tenants,
+			nodes,
 			policies,
 			approved,
 			history: AuthorizationCatalogHistory::objects()
@@ -214,7 +234,8 @@ async fn demo_data_loads_once_and_adds_only_what_is_missing(#[future] database: 
 		assert!(subjects(&loaded, globex).contains(&fictional.to_owned()));
 	}
 	// Approving an agent version made the agent a subject of the policy.
-	let agent = aidash_server::domain::qualified_agent(NODE, "research-assistant", "1.0.0");
+	let agent =
+		aidash_server::domain::qualified_agent(&loaded.nodes[acme], "research-assistant", "1.0.0");
 	assert!(loaded.policies[acme].1.get(&agent).is_some());
 	assert_eq!(
 		loaded.approved[acme],
@@ -230,15 +251,18 @@ async fn demo_data_loads_once_and_adds_only_what_is_missing(#[future] database: 
 		["demo-gpt-4o-mini@1.0.0", "support-triage@1.0.0"]
 	);
 	assert_eq!(loaded.history, 6);
-	// The Registry holds the entries, with the tool bound to this Node.
-	let registry =
-		aidash_server::apps::registry::repositories::Registry::new(f.pool().await, NODE).unwrap();
+	// The Registry holds the entries, with the tool bound to this Deployment.
+	let registry = aidash_server::apps::registry::repositories::Registry::new(
+		f.pool().await,
+		&aidash_domain::nodes::DeploymentId::parse(DEPLOYMENT).unwrap(),
+	)
+	.unwrap();
 	let tenant = aidash_domain::tenancy::TenantName::new(acme.clone()).unwrap();
 	let tool = registry
 		.get(&tenant, "weather-lookup", "1.0.0")
 		.await
 		.unwrap();
-	assert_eq!(tool.config["registry_node"], NODE);
+	assert_eq!(tool.config["registry_deployment"], DEPLOYMENT);
 	let listed = registry.list(&tenant, &Search::default()).await.unwrap();
 	assert!(listed.iter().any(|entry| entry.id == "research-assistant"));
 
@@ -334,7 +358,12 @@ async fn a_purged_demo_tenant_is_not_recreated_by_a_changed_load(
 	.execute(&pool)
 	.await
 	.unwrap();
-	let store = Store::from_pool(pool.clone(), NODE.into()).await.unwrap();
+	let store = Store::from_pool(
+		pool.clone(),
+		aidash_domain::nodes::DeploymentId::parse(DEPLOYMENT).unwrap(),
+	)
+	.await
+	.unwrap();
 
 	// Act: purge the Tenant's rows. The Store shares the fixture's pool, so it
 	// stays open for the reload below.

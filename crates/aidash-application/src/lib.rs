@@ -36,6 +36,14 @@ pub enum Error {
 	Conflict(String),
 	#[error("{0}")]
 	NotFound(String),
+	/// The request is well formed and the facts it names do not hold, such as a
+	/// Deployment that does not publish the key it was registered with.
+	#[error("{0}")]
+	Unprocessable(String),
+	/// `[deployment] federation` is off, or this Deployment holds no Deployment
+	/// Key, so nothing is sent to another Deployment.
+	#[error("federation_disabled")]
+	FederationDisabled,
 	/// The build's admission gate refused new work; the code is shown to the caller.
 	#[error("{0}")]
 	Refused(String),

@@ -90,7 +90,7 @@ impl RecoveryBatch for Batch {
 #[async_trait]
 impl CoordinatorRepository for Repository {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 
 	fn now(&self) -> DateTime<Utc> {
@@ -182,8 +182,11 @@ pub(crate) struct Transport {
 #[async_trait]
 impl ParticipantTransport for Transport {
 	async fn decision(&self, manifest: &Manifest) -> ApplicationResult<Status> {
+		let own = transport::participant(&self.runtime, manifest)
+			.ok_or_else(|| aidash_application::Error::Forbidden)?;
 		transport::remote::<native::Status>(
 			&self.runtime,
+			transport::as_node(&self.runtime, own).await?,
 			&manifest.coordinator,
 			"GET",
 			&format!("/transactions/{}/decision", manifest.id),
@@ -200,22 +203,27 @@ impl ParticipantTransport for Transport {
 		operation: ParticipantOperation,
 	) -> ApplicationResult<LocalStatus> {
 		let response: ApplicationResult<native::LocalStatus> =
-			if node == self.runtime.config.node_id {
+			if aidash_domain::nodes::same_deployment(node, self.runtime.config.deployment.as_str())
+			{
 				match operation {
 					ParticipantOperation::Reserve => {
-						participant::reserve(&self.runtime, &manifest.coordinator, manifest).await
+						participant::reserve(&self.runtime, None, &manifest.coordinator, manifest)
+							.await
 					}
 					ParticipantOperation::Prepare => {
-						participant::prepare(&self.runtime, &manifest.coordinator, manifest).await
+						participant::prepare(&self.runtime, None, &manifest.coordinator, manifest)
+							.await
 					}
 					ParticipantOperation::Finish => {
-						participant::finish(&self.runtime, &manifest.coordinator, manifest).await
+						participant::finish(&self.runtime, None, &manifest.coordinator, manifest)
+							.await
 					}
 				}
 				.map_err(Into::into)
 			} else {
 				transport::remote(
 					&self.runtime,
+					transport::as_node(&self.runtime, &manifest.coordinator).await?,
 					node,
 					"POST",
 					&format!("/transactions/{}", operation.as_str()),

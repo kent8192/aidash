@@ -2,8 +2,8 @@
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
-	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CredentialInput,
-	CredentialPage,
+	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CatalogQuery,
+	CredentialInput, CredentialPage,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
 use crate::authorization::identity::Actor;
@@ -25,8 +25,9 @@ pub async fn catalog(
 	#[inject] service: Depends<PolicyAdministration>,
 	#[inject] actor: crate::authorization::identity::Actor,
 	Path(tenant): Path<String>,
+	Query(query): Query<CatalogQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.catalog(actor, tenant).await)
+	crate::http::json(service.catalog(actor, tenant, query.node).await)
 }
 
 #[post(
@@ -54,7 +55,11 @@ pub async fn approve_catalog(
 	Path(tenant): Path<String>,
 	Json(input): Json<CatalogApprovals>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.approve(actor, tenant, input.approvals).await)
+	crate::http::json(
+		service
+			.approve(actor, tenant, input.node, input.approvals)
+			.await,
+	)
 }
 
 #[post(

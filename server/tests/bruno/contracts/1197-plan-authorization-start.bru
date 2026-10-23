@@ -1,5 +1,5 @@
 meta {
-  name: 1197 plan-authorization-start - Deployment Administrator bearer owns no Plan Connection
+  name: 1197 plan-authorization-start - Plan Tokens are not an accepted field
   type: http
   seq: 1197
 }
@@ -17,7 +17,7 @@ headers {
 }
 
 body:text {
-  {}
+  {"access_token": "pasted"}
 }
 
 script:pre-request {
@@ -33,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+  test("Exact HTTP 422", function () { expect(res.getStatus()).to.equal(422); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

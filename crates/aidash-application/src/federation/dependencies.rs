@@ -4,10 +4,7 @@ use crate::{
 	ports::federation::dependencies::{DependencyScope, DependencyTransport},
 };
 use aidash_domain::{
-	federation::{
-		dependencies::{Checked, Input, LIMIT, Reference},
-		protocol::compatible,
-	},
+	federation::dependencies::{Checked, Input, LIMIT, Reference},
 	registry::{EntityRef, rules::digest},
 };
 use serde_json::json;
@@ -101,7 +98,6 @@ pub async fn verify_peer(
 pub async fn verify_all(
 	scope: &mut dyn DependencyScope,
 	transport: &dyn DependencyTransport,
-	protocol: &str,
 	mut pending: Vec<Reference>,
 ) -> Result<bool> {
 	let mut visited = BTreeSet::new();
@@ -126,19 +122,11 @@ pub async fn verify_all(
 			if !scope.decide(&resource, "federation.discover").await? {
 				return Ok(false);
 			}
-			let Some(peer) = scope.peer(node).await? else {
+			let Some(route) = scope.route(node).await? else {
 				return Ok(false);
 			};
-			if !compatible(protocol, &peer.protocol_version) {
-				return Ok(false);
-			}
-			let (tenant, subject) = scope.identity();
-			let input = Input {
-				tenant: tenant.into(),
-				subject: subject.into(),
-				reference,
-			};
-			let Some(checked) = transport.check(&peer, &input, remaining).await else {
+			let input = Input { reference };
+			let Some(checked) = transport.check(&route, &input, remaining).await else {
 				return Ok(false);
 			};
 			checked

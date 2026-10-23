@@ -30,8 +30,6 @@ pub enum Reference {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
-	pub tenant: String,
-	pub subject: String,
 	pub reference: Reference,
 }
 

@@ -48,6 +48,8 @@ pub(crate) struct NativeHome {
 	/// which has no local actor.
 	pub actor: Option<Actor>,
 	pub principal: Option<Principal>,
+	/// The address of the Node the request arrived at, for a peer's request.
+	pub receiver: Option<String>,
 }
 struct Scope {
 	access: Access,
@@ -87,7 +89,10 @@ impl HomeGenerationRepository for NativeHome {
 		}
 	}
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
+	}
+	fn receiver(&self) -> Option<&str> {
+		self.receiver.as_deref()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -138,9 +143,17 @@ impl HomeGenerationRepository for NativeHome {
 		};
 		Ok(Box::new(Scope { access }))
 	}
-	async fn prepare(&self, target: &str, id: Uuid) -> Result<Prepared> {
+	async fn prepare(&self, home: &str, target: &str, id: Uuid) -> Result<Prepared> {
+		let Some(Actor::Subject(identity)) = &self.actor else {
+			return Err(Error::Forbidden.into());
+		};
+		let home = aidash_domain::nodes::NodeAddress::parse(home)?;
 		peer::authority_request(
 			&self.federation,
+			&aidash_domain::federation::route::Sender {
+				node: Some(home.node),
+				..peer::node_sender(&identity.tenant)?
+			},
 			target,
 			"/scoped/generation/prepare",
 			&json!({"intent_id":id}),
@@ -188,6 +201,9 @@ impl ForeignGenerationGuard for Scope {
 }
 #[async_trait]
 impl HomeGenerationScope for Scope {
+	fn home_address(&self) -> String {
+		self.access.node_reference().to_owned()
+	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) {
 		self.access.subjects = subjects;
 	}

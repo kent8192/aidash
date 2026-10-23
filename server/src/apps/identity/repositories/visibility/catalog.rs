@@ -18,10 +18,17 @@ impl RetainedCatalogScope for NativeReads<'_> {
 		self.access.remember_catalog(reference);
 	}
 	async fn enabled(&mut self, reference: &EntityRef, lock: bool) -> Result<Option<bool>> {
+		let node = self.access.catalog_node().await?;
 		let (tx, tenant) = self.access.tenant_transaction();
-		crate::apps::identity::models::AuthorizationCatalog::enabled_in(tx, tenant, reference, lock)
-			.await
-			.map_err(Into::into)
+		crate::apps::identity::models::AuthorizationCatalog::enabled_in(
+			tx,
+			tenant,
+			node.as_str(),
+			reference,
+			lock,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry> {
 		crate::apps::registry::models::Definition::read_in(

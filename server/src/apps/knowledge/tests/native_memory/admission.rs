@@ -119,7 +119,8 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 		.bank
 	} else {
 		Bank {
-			home: store.node_id.clone(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,

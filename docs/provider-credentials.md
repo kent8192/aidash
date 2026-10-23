@@ -17,7 +17,7 @@ removed from model and embedding configurations in #158: `provider_access`
 has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
 Every model-provider key therefore comes from a Secret Store, on
-Cloud and self-hosted nodes alike. Peer, sandbox, runner and vector store
+Cloud and self-hosted nodes alike. Sandbox, runner and vector store
 references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
 transports can no longer name one (#296).
 
@@ -185,7 +185,7 @@ It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
 random raw string of at least 32 bytes, through `{ env = "..." }` or
 `{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
 `AIDASH_SECRET_*` environment names are rejected because that namespace holds
-Deployment secrets such as Peer Credentials. Names that skill imports pass to the `gh` CLI, such
+Deployment secrets, such as a declared Research provider's key. Names that skill imports pass to the `gh` CLI, such
 as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
 because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
 Fingerprints use independent derived Tenant keys,

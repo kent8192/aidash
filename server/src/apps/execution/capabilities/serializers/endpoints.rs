@@ -73,6 +73,8 @@ pub(crate) struct DownloadChunk {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecipientQuery {
 	pub(crate) node_id: String,
+	/// The sending Run, whose executing Node owns the route and identity.
+	pub(crate) run_id: Option<Uuid>,
 	pub(crate) cursor: Option<Uuid>,
 }
 

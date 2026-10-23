@@ -68,7 +68,7 @@ impl Process {
 				if mode == "server" { 0 } else { 2 },
 			))
 			.env("DATABASE_URL", database.as_str())
-			.env("AIDASH_NODE_ID", &f.config.node_id)
+			.env("AIDASH_DEPLOYMENT_ID", f.config.deployment.as_str())
 			.env("AIDASH_ENDPOINT", &f.config.endpoint)
 			.env(
 				"AIDASH_LISTEN",
@@ -181,7 +181,10 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 			.column(a("id"))
 			.from(a("runs"))
 			.and_where(Expr::col(a("task_id")).eq(Expr::value(task)))
-			.and_where(Expr::col(a("home_node")).eq(Expr::value(&f.config.node_id)))
+			.and_where(Expr::cust(format!(
+				"starts_with(home_node, '{}/')",
+				f.config.deployment
+			)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(f.store.pool.fixture_driver())
@@ -621,7 +624,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	.unwrap();
 	let envelope = aidash_server::activation::Envelope {
 		version: 1,
-		node_id: f.config.node_id.clone(),
+		node_id: f.config.deployment.to_string(),
 		run_id: run,
 		activation_id: row.0,
 		generation: row.1,
@@ -827,9 +830,13 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 		.delete_stream(&broker.stream_name)
 		.await
 		.unwrap();
-	let restored = Broker::provision(&environment.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
+	let restored = Broker::provision(
+		&environment.nats_url,
+		f.config.deployment.as_str(),
+		&settings,
+	)
+	.await
+	.unwrap();
 	online.send_replace(true);
 	std::fs::remove_file(&pause).unwrap();
 	complete(&f, third).await;
@@ -1198,6 +1205,7 @@ async fn startup_reconciliation_drains_all_batches(
 		a("task_id"),
 		a("workspace_id"),
 		a("home_node"),
+		a("node"),
 		a("agent_id"),
 		a("agent_version"),
 		a("control"),
@@ -1208,7 +1216,12 @@ async fn startup_reconciliation_drains_all_batches(
 			Uuid::new_v4().into(),
 			Uuid::new_v4().into(),
 			Uuid::new_v4().into(),
-			f.config.node_id.clone().into(),
+			aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme")
+				.to_string()
+				.into(),
+			aidash_domain::nodes::NodeName::derived("acme")
+				.to_string()
+				.into(),
 			"fixture".into(),
 			"1.0.0".into(),
 			"PAUSED".into(),
@@ -1232,7 +1245,7 @@ async fn startup_reconciliation_drains_all_batches(
 		namespace: schema.clone(),
 		..Default::default()
 	};
-	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+	let broker = Broker::provision(&f.config.nats_url, f.config.deployment.as_str(), &settings)
 		.await
 		.unwrap();
 	let runtime = aidash_server::activation::Runtime::new(f.clone(), settings, false);
@@ -1273,7 +1286,7 @@ async fn embedded_worker_uses_dedicated_activation_broker(
 		namespace: schema.clone(),
 		..Default::default()
 	};
-	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+	let broker = Broker::provision(&f.config.nats_url, f.config.deployment.as_str(), &settings)
 		.await
 		.unwrap();
 	broker
@@ -1407,15 +1420,19 @@ async fn child_runtime(
 	let database = std::env::var("AIDASH_ACTIVATION_CHILD_DATABASE").unwrap();
 	let node = "aidash://execution-test";
 	let pool = sqlx::PgPool::connect(&database).await.unwrap();
-	let store = aidash_server::store::Store::from_pool(pool, node.into())
-		.await
-		.unwrap();
+	let store = aidash_server::store::Store::from_pool(
+		pool,
+		aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
+	)
+	.await
+	.unwrap();
 	Federation {
 		sandbox: Default::default(),
-		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
+		registry: aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)
+			.unwrap(),
 		store,
 		config: aidash_server::config::Config {
-			node_id: node.into(),
+			deployment: aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
 			endpoint: "http://127.0.0.1:8080".into(),
 			database_url: database,
 			nats_url: "nats://127.0.0.1:1".into(),
@@ -1427,7 +1444,10 @@ async fn child_runtime(
 			),
 			demo_data: false,
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),
@@ -1682,7 +1702,7 @@ fn prepared_activation(
 		};
 		let broker = Broker::provision(
 			&runtime.federation.config.nats_url,
-			&runtime.federation.config.node_id,
+			runtime.federation.config.deployment.as_str(),
 			&settings,
 		)
 		.await
@@ -1749,7 +1769,7 @@ fn initial_command(
 		cmd.args([mode])
 			.envs(environment.await)
 			.env("DATABASE_URL", database.as_str())
-			.env("AIDASH_NODE_ID", &f.config.node_id)
+			.env("AIDASH_DEPLOYMENT_ID", f.config.deployment.as_str())
 			.env("AIDASH_ENDPOINT", &f.config.endpoint)
 			.env(
 				"AIDASH_LISTEN",
@@ -1985,13 +2005,13 @@ fn initial_environment(
 					.query_pairs()
 					.map(|(key, value)| (key.to_string(), value.to_string())),
 			);
-		settings.node.node_id = f.config.node_id.clone();
-		settings.node.endpoint = f.config.endpoint.clone();
-		settings.node.api_token = f.config.api_token.clone();
-		settings.node.nats_url = f.config.nats_url.clone();
-		settings.node.web_dir = f.config.web_dir.clone();
-		settings.node.background_enabled = true;
-		settings.node.worker_count = worker_count;
+		settings.deployment.id = f.config.deployment.to_string();
+		settings.deployment.endpoint = f.config.endpoint.clone();
+		settings.deployment.api_token = f.config.api_token.clone();
+		settings.deployment.nats_url = f.config.nats_url.clone();
+		settings.deployment.web_dir = f.config.web_dir.clone();
+		settings.deployment.background_enabled = true;
+		settings.deployment.worker_count = worker_count;
 		settings.dashboard.oidc = f.config.oidc.clone();
 		// A child process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();

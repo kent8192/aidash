@@ -51,6 +51,7 @@ impl ExecutionRecoveryStore for Scope {
 impl WorkerStep for Scope {
 	fn metadata(&self) -> RunMetadata {
 		RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::nil(),
 			task_id: Uuid::nil(),
 			workspace_id: Uuid::nil(),

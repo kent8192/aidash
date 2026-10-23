@@ -442,7 +442,7 @@ def public_health(output):
                 value = json.load(response)
                 if (
                     response.status == 200
-                    and value.get("node_id") == "aidash://" + output["runtime_secret"]
+                    and value.get("deployment") == "aidash://" + output["runtime_secret"]
                 ):
                     return
         except (OSError, ValueError):

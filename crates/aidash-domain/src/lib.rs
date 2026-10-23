@@ -13,6 +13,7 @@ pub mod keyless;
 pub mod media;
 pub mod memory;
 pub mod model;
+pub mod nodes;
 pub mod offering;
 pub mod plan_connections;
 pub mod policy;

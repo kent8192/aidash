@@ -176,7 +176,7 @@ pub async fn record(scope: &dyn RunMessages, key: &str, content: &str) -> Result
 		return Ok(message);
 	}
 	scope.legacy_message(key, content).await?;
-	let full_key = remote::full_key(scope.node(), scope.run().task_id, key);
+	let full_key = remote::full_key(scope.executor(), scope.run().task_id, key);
 	snapshot_messages(scope)
 		.await?
 		.into_iter()
@@ -197,7 +197,11 @@ pub async fn history(scope: &dyn RunMessages) -> Result<Vec<Message>> {
 					"legacy peer message snapshot may omit run history".into(),
 				));
 			}
-			messages.extend(remote::legacy_history(scope.node(), scope.run(), legacy));
+			messages.extend(remote::legacy_history(
+				scope.executor(),
+				scope.run(),
+				legacy,
+			));
 			return Ok(messages);
 		};
 		let count = page.len();
@@ -210,7 +214,7 @@ pub async fn history(scope: &dyn RunMessages) -> Result<Vec<Message>> {
 
 pub async fn historical_batch(scope: &dyn RunMessages) -> Result<Vec<(String, Message)>> {
 	Ok(remote::historical_batch(
-		scope.node(),
+		scope.executor(),
 		scope.run(),
 		history(scope).await?,
 	)?)
@@ -262,7 +266,7 @@ pub async fn deliver(scope: &dyn RunMessages) -> Result<()> {
 		}
 		let message = record(scope, &input.idempotency_key, &input.content).await?;
 		remote::validate_delivery(
-			scope.node(),
+			scope.executor(),
 			scope.run(),
 			&input.idempotency_key,
 			&input.content,

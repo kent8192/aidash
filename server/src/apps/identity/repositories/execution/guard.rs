@@ -23,7 +23,7 @@ pub(crate) struct RunGuard<'a> {
 #[async_trait]
 impl RunGuardScope for RunGuard<'_> {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
@@ -81,7 +81,7 @@ impl RunGuardScope for RunGuard<'_> {
 	async fn require_live(&mut self, task: Uuid, agent: &EntityRef) -> Result<()> {
 		crate::generation::provision::require_live(
 			self.access,
-			&self.federation.config.node_id,
+			self.federation.config.deployment.as_str(),
 			task,
 			agent,
 		)

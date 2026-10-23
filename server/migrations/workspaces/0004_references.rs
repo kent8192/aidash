@@ -363,6 +363,18 @@ pub(super) fn migration() -> Migration {
 				deferrable: None,
 			},
 		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "workspaces".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "workspaces_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),

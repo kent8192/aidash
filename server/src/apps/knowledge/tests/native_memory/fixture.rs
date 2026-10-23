@@ -11,6 +11,22 @@ use reinhardt::db::orm::{Json, Model};
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
+/// The Tenant's default Node, as `tenants::create` writes it.
+async fn default_node(pool: &sqlx::PgPool, tenant: &str) {
+	let name = aidash_domain::nodes::NodeName::derived(tenant);
+	sqlx::query("INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp()) ON CONFLICT (name) DO NOTHING")
+		.bind(name.as_str())
+		.bind(tenant)
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator') ON CONFLICT DO NOTHING")
+		.bind(tenant)
+		.bind(name.as_str())
+		.execute(pool)
+		.await
+		.unwrap();
+}
 pub(super) fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -25,13 +41,13 @@ pub(super) fn replace_memory_binding(agent: &mut Entry, provider: EntityRef) {
 		.iter_mut()
 		.find(|binding| binding["kind"] == "memory")
 		.unwrap();
-	binding["target"] = json!({"registry_node":"aidash://native-memory","id":provider.id,"version":provider.version});
+	binding["target"] = json!({"registry_deployment":"aidash://native-memory","id":provider.id,"version":provider.version});
 }
 pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entry {
 	if kind == "agent" {
 		let mut bindings = vec![];
 		if let Some(provider) = config.get("memory").filter(|value| !value.is_null()) {
-			bindings.push(json!({"kind":"memory","target":{"registry_node":"aidash://native-memory","id":provider["id"],"version":provider["version"]},"narrow":{}}));
+			bindings.push(json!({"kind":"memory","target":{"registry_deployment":"aidash://native-memory","id":provider["id"],"version":provider["version"]},"narrow":{}}));
 		}
 		for source in config
 			.get("sources")
@@ -39,7 +55,7 @@ pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entr
 			.into_iter()
 			.flatten()
 		{
-			bindings.push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
+			bindings.push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
 		}
 		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
 	}
@@ -124,7 +140,7 @@ pub(super) async fn setup_endpoint_policy(
 ) -> (Store, Registry, Uuid) {
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
-		"aidash://native-memory".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://native-memory").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -153,17 +169,21 @@ pub(super) async fn setup_endpoint_policy(
 		})
 		.await
 		.unwrap();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	default_node(store.pool.fixture_driver(), "acme").await;
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
 		.await
 		.unwrap();
 	registry.seed_system().await.unwrap();
+	// A Bank's home is a Node address, which lengthens every recalled Unit. The
+	// window leaves the Run's memory budget room for the two Units the
+	// provenance-bound cases read.
 	for (kind, id, config) in [
 		(
 			"model",
 			"m",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":32768,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":34816,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"embedding",

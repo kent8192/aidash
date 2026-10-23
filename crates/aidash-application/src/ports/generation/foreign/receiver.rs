@@ -16,6 +16,8 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ForeignGenerationReceiverScope: Send {
 	fn authority(&self) -> Authority;
+	/// The receiving Node policy resource, distinct from its transport address.
+	async fn node_resource(&mut self) -> Result<Resource>;
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn policy(&mut self, id: &str) -> Result<Policy>;
@@ -33,10 +35,11 @@ pub trait ForeignGenerationReceiver: Send + Sync {
 	fn node_id(&self) -> &str;
 	fn now(&self) -> DateTime<Utc>;
 	async fn describe(&self, source: &str, id: Uuid) -> Result<Intent>;
+	/// The mapped authority of `subject` of `source` at the receiving Node
+	/// this repository was built for.
 	async fn begin(
 		&self,
 		source: &str,
-		tenant: &str,
 		subject: &str,
 	) -> Result<Box<dyn ForeignGenerationReceiverScope>>;
 }

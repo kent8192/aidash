@@ -38,7 +38,6 @@ pub(crate) struct Repository {
 pub(crate) struct Scope {
 	pub tx: crate::database::native::Transaction,
 	pub actor: Actor,
-	node: String,
 }
 impl Scope {
 	fn authority(&mut self) -> authority::Scope<'_> {
@@ -56,7 +55,7 @@ impl DraftRepository for Repository {
 		authority::principal(&self.actor)
 	}
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
 		self.runtime
@@ -84,7 +83,6 @@ impl DraftRepository for Repository {
 					.begin(&self.actor.tenancy()?)
 					.await?,
 				actor: self.actor.clone(),
-				node: self.runtime.config.node_id.clone(),
 			})
 		}
 		.await;
@@ -173,16 +171,10 @@ impl DraftScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
-		crate::apps::execution::models::event_records::append(
-			&mut self.tx,
-			&self.node,
-			None,
-			kind,
-			payload,
-		)
-		.await
-		.map(|_| ())
-		.map_err(Into::into)
+		crate::apps::execution::models::event_records::append(&mut self.tx, None, kind, payload)
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
 	}
 	async fn shares(&mut self, draft: Uuid) -> Result<Vec<ShareRecord>> {
 		Ok(AgentDraftShare::page(&mut self.tx, draft)

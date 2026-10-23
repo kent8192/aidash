@@ -30,10 +30,12 @@ FIXTURE_WORKSPACE_READS = {
 }
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
+# A Federation token (ADR 0064) is signed with a Deployment Key and bound to its
+# request, so a Bruno request cannot carry a valid one: these scenarios only
+# prove the boundary refuses what it cannot verify.
 PEER = {
-    "Authorization": "Bearer {{peer_token}}",
-    "X-Aidash-Node": "{{peer_node}}",
-    "X-Aidash-Protocol": "0.2",
+    "Authorization": "Bearer not-a-federation-token",
+    "X-Aidash-Protocol": "0.4",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
@@ -42,6 +44,8 @@ COOKIE = {
 }
 # A built-in every Tenant's Registry holds from its creation (ADR 0033).
 BUILTIN = {"id": "aidash.workspace_read", "version": "1.0.0"}
+# A well-formed Node name no Tenant holds.
+NODE = "brave-otter-k3m9q2xa"
 APPROVAL = {"entry": BUILTIN, "enabled": True, "expected_revision": 0}
 AGENT = {"id": "research", "version": "1.0.0"}
 # Tenant routes: a Deployment Administrator reaches no Tenant's Registry,
@@ -73,11 +77,11 @@ TENANT_ROUTES = {
         "refusal": "Subject without registry.create cannot import an Agent Plugin",
     },
     "POST /api/authorization/{tenant}/catalog": {
-        "body": APPROVAL,
+        "body": {"node": "{{tenant_node}}", **APPROVAL},
         "refusal": "Subject without catalog.approve cannot approve a version",
     },
     "POST /api/authorization/{tenant}/catalog/approvals": {
-        "body": {"approvals": [APPROVAL]},
+        "body": {"node": "{{tenant_node}}", "approvals": [{**APPROVAL}]},
         "refusal": "Subject without catalog.approve cannot approve a closure",
     },
     "POST /api/marketplace/installations/{id}/activation": {
@@ -124,14 +128,18 @@ TENANT_ROUTES = {
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
     "GET /api/registry/versions": [
-        ("Tenant subject lists only the versions it may read", 200, SUBJECT, None,
+        ("Tenant subject lists only the versions it may read", 200, SUBJECT,
+         "/api/registry/versions?node={{tenant_node}}",
          "expect(res.getBody().versions).to.eql([]);"),
-        ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT, None, ""),
+        ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT,
+         "/api/registry/versions?node={{tenant_node}}", ""),
     ],
     "GET /api/authorization/{tenant}/catalog": [
-        ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT, None,
+        ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT,
+         "/api/authorization/{{tenant}}/catalog?node={{tenant_node}}",
          "expect(res.getBody()).to.eql([]);"),
-        ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT, None, ""),
+        ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT,
+         "/api/authorization/{{tenant}}/catalog?node={{tenant_node}}", ""),
     ],
     "GET /api/registry": [
         ("Subject discovers no definition it may not read", 200, SUBJECT, None,
@@ -236,6 +244,8 @@ def render():
                 value = (
                     "{{tenant}}"
                     if parameter == "tenant"
+                    else NODE
+                    if parameter == "node"
                     else MISSING
                     if parameter in route["uuid_parameters"]
                     else "__bruno_missing__"
@@ -245,6 +255,8 @@ def render():
             value = (
                 "{{tenant}}"
                 if parameter == "tenant"
+                else NODE
+                if parameter == "node"
                 else MISSING
                 if parameter in route["uuid_parameters"]
                 else "__bruno_missing__"
@@ -399,25 +411,6 @@ def render():
                 "scenario": "fresh browser session",
             }
         )
-    add(
-        "POST /api/peers",
-        "Register the authenticated protocol peer",
-        200,
-        headers=DEPLOYMENT_ADMINISTRATOR,
-        body='{"node_id":"{{peer_node}}","endpoint":"{{peer_base}}","credential_env":"AIDASH_SECRET_BRUNO_PEER","protocol_version":"0.2","enabled":true}',
-        checks='expect(res.getBody().node_id).to.equal(bru.getEnvVar("peer_node"));expect(res.getBody().enabled).to.equal(true);',
-        seq=39,
-    )
-    add(
-        "POST /api/peers",
-        "Register the source node at the real receiver",
-        200,
-        path="{{peer_base}}/api/peers",
-        headers={"Authorization": "Bearer {{peer_deployment_administrator_token}}"},
-        body='{"node_id":"{{node_id}}","endpoint":"{{base_url}}","credential_env":"AIDASH_SECRET_BRUNO_MAIN","protocol_version":"0.2","enabled":true}',
-        checks='expect(res.getBody().node_id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().enabled).to.equal(true);',
-        seq=40,
-    )
     add(
         "POST /auth/activity",
         "Browser activity rejects missing CSRF",
@@ -614,9 +607,9 @@ def render():
                     else 'expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");'
                 )
                 if path == "/health":
-                    checks += 'expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")});'
+                    checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
-                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.3");'
+                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.4");'
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
@@ -761,54 +754,25 @@ def render():
             )
             add(
                 endpoint,
-                "Require the peer node identity",
-                401,
-                headers={k: v for k, v in PEER.items() if k != "X-Aidash-Node"},
+                "Reject the retired federation protocol 0.3",
+                400,
+                headers={**PEER, "X-Aidash-Protocol": "0.3"},
                 immutable=method != "GET",
             )
             add(
                 endpoint,
-                "Require the peer bearer credential",
+                "Require the Federation token",
                 401,
                 headers={k: v for k, v in PEER.items() if k != "Authorization"},
                 immutable=method != "GET",
             )
-            if route["json"]:
-                add(
-                    endpoint,
-                    "Authenticated peer rejects malformed JSON",
-                    400,
-                    headers=PEER,
-                    body="{",
-                    media="application/json",
-                    immutable=True,
-                )
-            elif method == "GET" and route["uuid_parameters"]:
-                bad = path
-                for parameter in route["uuid_parameters"]:
-                    bad = bad.replace("{" + parameter + "}", "not-a-uuid")
-                add(
-                    endpoint,
-                    "Authenticated peer rejects malformed resource IDs",
-                    400,
-                    path=bad,
-                    headers=PEER,
-                )
-            elif path == "/federation/v0.1/observe":
-                add(
-                    endpoint,
-                    "Peer observes only its own execution state",
-                    200,
-                    headers=PEER,
-                    checks='expect(res.getBody()).to.be.an("object");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));',
-                )
-            else:
-                add(
-                    endpoint,
-                    "Unknown admission cannot supply receiving authority",
-                    403,
-                    headers=PEER,
-                )
+            add(
+                endpoint,
+                "Refuse a token that does not verify",
+                401,
+                headers=PEER,
+                immutable=method != "GET",
+            )
             continue
         if path == "/api/tenants" and method == "POST":
             # The creation API authenticates itself, after parsing the body.
@@ -853,6 +817,30 @@ def render():
                 headers=SUBJECT, immutable=True)
             add(endpoint, "Only a deleted Tenant can be purged", 409,
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/nodes.rs":
+            # Creating a Node as a Deployment Administrator would change the shared Tenant.
+            if method == "GET":
+                add(endpoint, "Subject without node.read cannot list the Nodes", 403, headers=SUBJECT)
+                add(endpoint, "Deployment Administrator lists the Tenant's one default Node", 200,
+                    headers=DEPLOYMENT_ADMINISTRATOR,
+                    checks='expect(res.getBody()).to.be.an("array");expect(res.getBody().filter(node => node.default)).to.have.lengthOf(1);')
+            elif method == "POST":
+                add(endpoint, "Subject Credential bearer never creates a Node", 403,
+                    headers=SUBJECT, body=json.dumps({"label": "Bruno node"}), immutable=True)
+                add(endpoint, "Blank Node label is rejected", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"label": "   "}), immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            else:
+                unknown = "/api/tenants/{{tenant}}/nodes/" + NODE
+                body = json.dumps({"label": "Renamed"})
+                add(endpoint, "Subject Credential bearer never relabels a Node", 403,
+                    path=unknown, headers=SUBJECT, body=body, immutable=True)
+                add(endpoint, "An unknown Node cannot be relabelled", 404,
+                    path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
@@ -1005,6 +993,7 @@ def render():
             # A person's Approval Mode and Approval Rules are their own: only the
             # owner's dashboard or desktop session reaches them, and a Tenant
             # Administrator's read needs a Mapping session too, never a bearer.
+            uri = path + "?node={{tenant_node}}" if "node" in route["query_parameters"] else None
             body = (
                 json.dumps({"expected_revision": 0, "default_mode": "manual"})
                 if path.endswith("/approval-preferences/mine")
@@ -1017,19 +1006,19 @@ def render():
                 else None
             )
             add(endpoint, "Forged bearer cannot reach a person's approval settings", 401,
-                headers={"Authorization": "Bearer forged"}, body=body)
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body)
             for label, headers in [
                 ("Deployment Administrator bearer owns no approval settings", DEPLOYMENT_ADMINISTRATOR),
                 ("Subject Credential bearer never reaches approval settings", SUBJECT),
             ]:
-                add(endpoint, label, 403, headers=headers, body=body, immutable=method != "GET")
+                add(endpoint, label, 403, path=uri, headers=headers, body=body, immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
                 add(endpoint, "Unknown approval fields are rejected", 422,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
@@ -1199,12 +1188,14 @@ def render():
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
         if route["name"] == "file_recipient_list":
-            uri = path + "?node_id={{node_id}}"
+            uri = path + "?node_id={{node_id}}/{{tenant_node}}"
             status = 403
             checks = ""
             label = "Subject without file transfer permission cannot list recipients"
         if route["name"] in {"marketplace-administration", "workbench-test-profiles"}:
             uri = path + "?tenant={{tenant}}"
+        if route["name"] in {"authorization-catalog", "registry-versions"}:
+            uri = path + "?node=" + NODE
         if route["name"] in {
             "generation-history",
             "workbench-list-incidents",

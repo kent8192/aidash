@@ -3,29 +3,30 @@ use crate::apps::registry::repositories::Registry;
 use crate::database::native::Pool;
 use crate::registry::Entry;
 use crate::{Error, Result};
+use aidash_domain::nodes::DeploymentId;
 use aidash_domain::tenancy::TenantName;
 use serde_json::Value;
 
-/// The text in an entry's `config` that stands for the Deployment's node id. A
-/// Tool descriptor and an Agent's binding targets must name the Node that
+/// The text in an entry's `config` that stands for the Deployment id. A
+/// Tool descriptor and an Agent's binding targets must name the Deployment that
 /// holds them, which a checked-in structure cannot know.
-pub(super) const NODE: &str = "$node";
+pub(super) const DEPLOYMENT: &str = "$deployment";
 
 /// Registers `entries` in order, so an entry's dependencies come first. An
 /// identical entry is a no-op; different content under the same id and
 /// version fails, and the error names the entry.
 pub(super) async fn register(
 	pool: &Pool,
-	node: &str,
+	deployment: &DeploymentId,
 	key: &str,
 	tenant: &str,
 	entries: &[Entry],
 ) -> Result<()> {
-	let registry = Registry::new(pool.clone(), node)?;
+	let registry = Registry::new(pool.clone(), deployment)?;
 	let tenant = TenantName::new(tenant)?;
 	for entry in entries {
 		let mut entry = entry.clone();
-		bind_node(&mut entry.config, node);
+		bind_deployment(&mut entry.config, deployment.as_str());
 		let (id, version) = (entry.id.clone(), entry.version.clone());
 		registry.register(&tenant, entry).await.map_err(|error| {
 			Error::Invalid(format!(
@@ -36,14 +37,16 @@ pub(super) async fn register(
 	Ok(())
 }
 
-/// Replaces every string equal to [`NODE`] in `value` with `node`.
-fn bind_node(value: &mut Value, node: &str) {
+/// Replaces every string equal to [`DEPLOYMENT`] in `value` with `deployment`.
+fn bind_deployment(value: &mut Value, deployment: &str) {
 	match value {
-		Value::String(text) if text == NODE => *text = node.into(),
-		Value::Array(items) => items.iter_mut().for_each(|item| bind_node(item, node)),
+		Value::String(text) if text == DEPLOYMENT => *text = deployment.into(),
+		Value::Array(items) => items
+			.iter_mut()
+			.for_each(|item| bind_deployment(item, deployment)),
 		Value::Object(members) => members
 			.values_mut()
-			.for_each(|member| bind_node(member, node)),
+			.for_each(|member| bind_deployment(member, deployment)),
 		_ => {}
 	}
 }
@@ -54,19 +57,19 @@ mod tests {
 	use serde_json::json;
 
 	#[test]
-	fn only_whole_strings_naming_the_node_are_replaced() {
+	fn only_whole_strings_naming_the_deployment_are_replaced() {
 		let mut config = json!({
-			"registry_node": "$node",
-			"bindings": [{"target": {"registry_node": "$node", "id": "$node-tool"}}],
-			"note": "ask $node"
+			"registry_deployment": "$deployment",
+			"bindings": [{"target": {"registry_deployment": "$deployment", "id": "$deployment-tool"}}],
+			"note": "ask $deployment"
 		});
-		bind_node(&mut config, "aidash://demo");
+		bind_deployment(&mut config, "aidash://demo");
 		assert_eq!(
 			config,
 			json!({
-				"registry_node": "aidash://demo",
-				"bindings": [{"target": {"registry_node": "aidash://demo", "id": "$node-tool"}}],
-				"note": "ask $node"
+				"registry_deployment": "aidash://demo",
+				"bindings": [{"target": {"registry_deployment": "aidash://demo", "id": "$deployment-tool"}}],
+				"note": "ask $deployment"
 			})
 		);
 	}

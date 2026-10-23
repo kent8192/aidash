@@ -1,6 +1,6 @@
 //! Federation effects retain native authorization and transaction fences.
 use crate::Result;
-use aidash_domain::federation::Peer;
+use aidash_domain::federation::route::Route;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -16,7 +16,7 @@ pub struct PeerReply {
 pub trait PeerTransport: Send + Sync {
 	async fn request(
 		&self,
-		peer: &Peer,
+		route: &Route,
 		method: &str,
 		path: &str,
 		body: Option<&Value>,
@@ -25,8 +25,13 @@ pub trait PeerTransport: Send + Sync {
 
 #[async_trait]
 pub trait FederationRepository: Send + Sync {
-	async fn peers(&self) -> Result<Vec<Peer>>;
-	async fn peer(&self, node: &str) -> Result<Peer>;
+	/// The way to `node` for the sender this repository was built for: its
+	/// enabled Node Registration of the target, or the target itself when it
+	/// is another Node of the sender's own Tenant.
+	async fn route(&self, node: &str) -> Result<Route>;
+	/// Every Node the sender addresses: the Nodes registered at it and the
+	/// other Nodes of its own Tenant.
+	async fn routes(&self) -> Result<Vec<Route>>;
 }
 
 pub mod dependencies;
@@ -39,4 +44,6 @@ pub mod authority;
 
 pub mod run_messages;
 
-pub mod peers;
+pub mod inbound;
+
+pub mod registrations;

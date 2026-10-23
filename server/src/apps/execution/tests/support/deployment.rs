@@ -68,7 +68,7 @@ pub fn deployment_command_excluding(
 		)
 		.env("AIDASH_BASE_DIR", directory)
 		.env("DATABASE_URL", database_url)
-		.env("AIDASH_NODE_ID", "aidash://manage-fixture")
+		.env("AIDASH_DEPLOYMENT_ID", "aidash://manage-fixture")
 		.env("AIDASH_ENDPOINT", "http://127.0.0.1:0")
 		.env(
 			"AIDASH_API_TOKEN",

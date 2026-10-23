@@ -11,7 +11,7 @@ fn id(value: u128) -> Uuid {
 #[fixture]
 fn run() -> Run {
 	serde_json::from_value::<RawRun>(json!({
-		"id":id(1),"task_id":id(2),"workspace_id":id(3),"home_node":"aidash://home",
+		"id":id(1),"task_id":id(2),"workspace_id":id(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home",
 		"agent_id":"agent","agent_version":"1","phase":"READY","control":"CANCELLED",
 		"step":4,"revision":7,"observed_input_seq":9,"ledger_worker_ready":true,
 		"error":"old error","lease_owner":id(5),"lease_until":"2030-01-01T00:00:00Z",

@@ -1,5 +1,5 @@
 meta {
-  name: 0254 remote-grant-revoke - Anonymous request is rejected
+  name: 0254 remote-grant-revoke - Unrecognized bearer cannot mutate state
   type: http
   seq: 254
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

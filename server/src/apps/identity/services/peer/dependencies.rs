@@ -17,18 +17,18 @@ pub async fn provide(#[inject] runtime: Federation) -> PeerDependencies {
 }
 
 impl PeerDependencies {
-	pub(crate) async fn verify(&self, headers: HeaderMap, input: Input) -> Result<Checked> {
-		verify(self.runtime.clone(), headers, input).await
+	pub(crate) async fn verify(&self, admitted: Admitted, input: Input) -> Result<Checked> {
+		verify(self.runtime.clone(), admitted, input).await
 	}
 }
 
-pub(crate) async fn verify(f: Federation, headers: HeaderMap, input: Input) -> Result<Checked> {
+pub(crate) async fn verify(f: Federation, admitted: Admitted, input: Input) -> Result<Checked> {
 	aidash_application::federation::dependencies::require_local_target(
 		&input.reference,
-		&f.config.node_id,
+		&admitted.receiver.to_string(),
 	)?;
-	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-	let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
+	let mut access = super::access(&f, &admitted).await?;
+	access.set_node(admitted.receiver.node.clone());
 	let result = aidash_application::federation::dependencies::verify_peer(
 		&mut crate::bootstrap::dependency_scope(&mut access),
 		&input.reference,
@@ -42,12 +42,12 @@ impl Access {
 	/// Append an edge even when the local graph has already visited a source.
 	/// Deduplication happens at the coordinator, after each edge's authority is checked.
 	pub(crate) async fn received_semantic_visible(&mut self, run: Uuid) -> Result<bool> {
-		let bound: Option<(String, Uuid)> = {
+		let bound: Option<(String, Uuid, String)> = {
 			let query_bind_1 = run;
 			let query_bind_2 = &self.identity.tenant;
 			crate::database::native::query_as(
 				&Query::select()
-					.columns(["source_node", "grant_id"].map(Alias::new))
+					.columns(["source_node", "grant_id", "node"].map(Alias::new))
 					.from(Alias::new("authorization_remote_admissions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id=? AND tenant=? AND description->'semantic'->>'mode'='required_home')"
@@ -59,16 +59,17 @@ impl Access {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.columns(&["source_node", "grant_id"])
+			.columns(&["source_node", "grant_id", "node"])
 			.fetch_optional(&mut **self.tx)
 			.await?
 		};
-		let Some((node_id, grant_id)) = bound else {
+		let Some((node_id, grant_id, node)) = bound else {
 			return Ok(true);
 		};
 		let reference = Reference::Grant {
 			node_id,
-			execution_node: self.node_id.clone(),
+			// The Node this Run executes at, which the Home's grant names.
+			execution_node: format!("{}/{node}", self.node_id),
 			grant_id,
 			admission_id: run,
 		};
@@ -84,7 +85,6 @@ impl Access {
 		aidash_application::federation::dependencies::verify_all(
 			&mut crate::bootstrap::dependency_scope(self),
 			&transport,
-			crate::config::PROTOCOL_VERSION,
 			pending,
 		)
 		.await
@@ -94,7 +94,7 @@ impl Access {
 
 use reinhardt::query::QueryStatementBuilder as _;
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 use reinhardt::query::SimpleExpr;
 

@@ -275,9 +275,11 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 			.0,
 		200
 	);
-	f.c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&f.c.f.config.node_id, "reviewer", "1.1.0")] =
-		json!({"kind":"agent"});
+	f.c.policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
+		"reviewer",
+		"1.1.0",
+	)] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
 			&f.c.app,
@@ -296,7 +298,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -361,7 +363,8 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	let app = f.c.app.clone();
 	let token = f.bob.clone();
 	let path = format!("/api/tasks/{child}/delegate");
-	let input = json!({"node_id":f.c.f.config.node_id,"agent":{"id":"reviewer","version":"1.1.0"}});
+	let input =
+		json!({"node_id":f.c.f.config.deployment,"agent":{"id":"reviewer","version":"1.1.0"}});
 	let child_path = path.clone();
 	let child_input = input.clone();
 	let admitting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
+  defaultNode,
   registryVersion,
   routeRegistryVersions,
   routeTenantActions,
@@ -52,18 +53,15 @@ async function dashboard(
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({ json: { access, node_id: "aidash://node" } });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/state")
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://node",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: versions()
             .filter(
@@ -78,7 +76,6 @@ async function dashboard(
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
     if (
@@ -159,6 +156,7 @@ test("the Registry list follows next_offset through every page", async ({
   page,
 }) => {
   await dashboard(page, tenantSubject, () => []);
+  await routeTenantActions(page, []);
   const offsets: string[] = [];
   await page.route(
     (url) => url.pathname === "/api/registry/versions",
@@ -305,6 +303,7 @@ test("a new agent version starts from the groups of the latest approved earlier 
       enabled: true,
       expected_revision: 0,
       groups: ["reviewers"],
+      node: defaultNode.name,
     },
   });
   await expect(
@@ -339,6 +338,7 @@ test("without subject.group.update an agent approval keeps the default group", a
     entry: ref("helper"),
     enabled: true,
     expected_revision: 0,
+    node: defaultNode.name,
   });
 });
 
@@ -421,6 +421,7 @@ test("an approval refused for a dependency approves the whole closure in one req
         },
         { entry: ref("planner"), enabled: true, expected_revision: 0 },
       ],
+      node: defaultNode.name,
     },
   });
   await expect(closure).toHaveCount(0);
@@ -492,6 +493,7 @@ test("withdrawing fences on the approval revision and reports a conflict", async
     entry: ref("search"),
     enabled: false,
     expected_revision: 3,
+    node: defaultNode.name,
   });
 });
 
@@ -500,7 +502,7 @@ test("a tool version shows what a call does, and approving it covers a read-only
 }) => {
   const tool = (id: string, transport: Record<string, unknown>) =>
     entry(id, "tool", {
-      registry_node: "aidash://node",
+      registry_deployment: "aidash://node",
       provider: `integration.${transport.transport}@1`,
       operation: "invoke",
       default_alias: id,
@@ -522,7 +524,7 @@ test("a tool version shows what a call does, and approving it covers a read-only
   });
   const delegate = tool("delegate", {
     transport: "agent",
-    node_id: "aidash://node",
+    node_id: `aidash://node/${defaultNode.name}`,
     agent: ref("worker"),
   });
   const approved = new Set<string>();

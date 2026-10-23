@@ -50,10 +50,11 @@ fn repository() -> Repository {
 	Repository(Arc::new(Mutex::new(State {
 		raw: Some(RawRun {
 			metadata: RunMetadata {
+				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				id: id(1),
 				task_id: id(2),
 				workspace_id: id(3),
-				home_node: "aidash://local".into(),
+				home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 				agent_id: "producer".into(),
 				agent_version: "1".into(),
 				phase: RunPhase::Ready,

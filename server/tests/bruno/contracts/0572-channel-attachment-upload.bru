@@ -1,5 +1,5 @@
 meta {
-  name: 0572 channel-attachment-upload - Anonymous request is rejected
+  name: 0572 channel-attachment-upload - Unrecognized bearer cannot mutate state
   type: http
   seq: 572
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

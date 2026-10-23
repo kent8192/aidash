@@ -11,20 +11,23 @@ use uuid::Uuid;
 fn manifest() -> Manifest {
 	Manifest {
 		id: Uuid::from_u128(1),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T01:00:00Z".parse().unwrap(),
-		participants: ["aidash://home", "aidash://peer"]
-			.into_iter()
-			.map(|node| Participant {
-				node_id: node.into(),
-				mutations: vec![Mutation::WorkspaceState {
-					workspace_id: Uuid::from_u128(2),
-					expected_revision: 0,
-					state: json!({}),
-				}],
-			})
-			.collect(),
+		participants: [
+			"aidash://home/airy-hawk-2lu4as22",
+			"aidash://peer/airy-hawk-2lu4as22",
+		]
+		.into_iter()
+		.map(|node| Participant {
+			node_id: node.into(),
+			mutations: vec![Mutation::WorkspaceState {
+				workspace_id: Uuid::from_u128(2),
+				expected_revision: 0,
+				state: json!({}),
+			}],
+		})
+		.collect(),
 	}
 }
 
@@ -56,6 +59,8 @@ struct State {
 	log: Vec<String>,
 	trusted: bool,
 	failure: Option<String>,
+	/// The Tenant that holds the coordinator's Node, if it is a Node here.
+	coordinator_tenant: Option<String>,
 }
 
 #[derive(Clone)]
@@ -68,6 +73,7 @@ impl Adapter {
 			log: vec![],
 			trusted: true,
 			failure: None,
+			coordinator_tenant: Some("tenant".into()),
 		})))
 	}
 	fn event(&self, event: &str) -> Result<()> {
@@ -86,7 +92,7 @@ impl Adapter {
 #[async_trait]
 impl AdmissionScope for Adapter {
 	fn node_id(&self) -> &str {
-		"aidash://home"
+		"aidash://home/airy-hawk-2lu4as22"
 	}
 	fn now(&self) -> DateTime<Utc> {
 		"2030-01-01T00:00:00Z".parse().unwrap()
@@ -107,10 +113,10 @@ impl AdmissionScope for Adapter {
 		}
 		Ok(())
 	}
-	async fn resolve_peer(&mut self, _node: &str) -> Result<()> {
-		self.event("resolve_peer")
+	async fn node_tenant(&mut self, _node: &str) -> Result<Option<String>> {
+		Ok(self.0.lock().unwrap().coordinator_tenant.clone())
 	}
-	async fn trusted(&mut self, _node: &str) -> Result<bool> {
+	async fn trusted(&mut self, _: &str, _node: &str, _origin: Option<&Origin>) -> Result<bool> {
 		self.event("trusted")?;
 		Ok(self.0.lock().unwrap().trusted)
 	}
@@ -249,26 +255,13 @@ async fn replay_never_rebinds_another_origin(manifest: Manifest, origin: Origin)
 }
 
 #[rstest]
-#[case::peer_missing(true)]
-#[case::trust_disabled(false)]
 #[tokio::test]
-async fn peer_resolution_and_trust_precede_admission(manifest: Manifest, #[case] missing: bool) {
+async fn trust_precedes_admission(manifest: Manifest) {
 	let mut adapter = Adapter::new();
-	{
-		let mut state = adapter.0.lock().unwrap();
-		state.trusted = false;
-		if missing {
-			state.failure = Some("resolve_peer".into());
-		}
-	}
+	adapter.0.lock().unwrap().trusted = false;
 	let result = submit_in(&mut adapter, &manifest, None).await;
-	if missing {
-		assert!(matches!(result, Err(Error::External(message)) if message == "resolve_peer"));
-		assert_eq!(adapter.log(), ["status", "resolve_peer"]);
-	} else {
-		assert!(matches!(result, Err(Error::Forbidden)));
-		assert_eq!(adapter.log(), ["status", "resolve_peer", "trusted"]);
-	}
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(adapter.log(), ["status", "trusted"]);
 }
 
 #[rstest]
@@ -280,14 +273,7 @@ async fn new_origin_is_bound_inside_the_same_admission_scope(manifest: Manifest,
 		.unwrap();
 	assert_eq!(
 		adapter.log(),
-		[
-			"status",
-			"resolve_peer",
-			"trusted",
-			"admit",
-			"bind_origin",
-			"match_origin"
-		]
+		["status", "trusted", "admit", "bind_origin", "match_origin"]
 	);
 	assert_eq!(adapter.0.lock().unwrap().origin.as_ref(), Some(&origin));
 }
@@ -301,7 +287,7 @@ async fn invalid_submission_never_reads_storage(mut manifest: Manifest, #[case] 
 	if invalid {
 		manifest.id = Uuid::nil();
 	} else {
-		manifest.coordinator = "aidash://peer".into();
+		manifest.coordinator = "aidash://peer/airy-hawk-2lu4as22".into();
 	}
 	assert!(matches!(
 		submit_in(&mut adapter, &manifest, None).await,
@@ -345,4 +331,33 @@ async fn failed_submission_preserves_its_commit_boundary(
 	let log = adapter.log();
 	assert_eq!(log.contains(&"rollback".into()), !committed);
 	assert!(!log.contains(&"wake".into()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_coordinator_of_another_tenant_is_refused_whatever_the_participants_are(
+	manifest: Manifest,
+	origin: Origin,
+) {
+	let mut adapter = Adapter::new();
+	adapter.0.lock().unwrap().coordinator_tenant = Some("other".into());
+	let result = submit_in(&mut adapter, &manifest, Some(&origin)).await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!adapter.log().contains(&"admit".to_owned()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_coordinator_that_is_no_node_of_this_deployment_is_refused(
+	manifest: Manifest,
+	origin: Origin,
+) {
+	let mut adapter = Adapter::new();
+	adapter.0.lock().unwrap().coordinator_tenant = None;
+	for origin in [None, Some(&origin)] {
+		let result = submit_in(&mut adapter, &manifest, origin).await;
+		assert!(
+			matches!(result, Err(Error::Invalid(message)) if message == "submit to the named coordinator")
+		);
+	}
 }

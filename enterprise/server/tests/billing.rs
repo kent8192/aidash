@@ -67,6 +67,10 @@ impl Cloud {
 			settings(),
 			Offering::Cloud,
 		);
+		federation.config.tier_limits = aidash_enterprise_server::BUILD
+			.extension
+			.tier_limits(&federation.store)
+			.unwrap();
 		let app = common::application(federation.clone()).await;
 		Self {
 			federation,
@@ -333,8 +337,11 @@ impl Cloud {
 			);
 		}
 		let agent = registered.unwrap();
-		let owner =
-			aidash_server::domain::qualified_agent(&f.store.node_id, &agent.id, &agent.version);
+		let owner = aidash_server::domain::qualified_agent(
+			&f.store.deployment.node(workspace.node.clone()),
+			&agent.id,
+			&agent.version,
+		);
 		f.store
 			.claim(&scope, task.id, task.revision, &owner, &agent)
 			.await
@@ -345,6 +352,69 @@ impl Cloud {
 		drop(self.app);
 		common::cleanup(self.federation, &self.url, &self.database).await;
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_creation_uses_the_enterprise_adapter_and_current_subscription(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	// Arrange
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_of(&alice).await;
+	d.make_personal(&tenant).await;
+	let path = format!("/api/tenants/{tenant}/nodes");
+	// Act / Assert: Free covers its existing default Node only.
+	let (status, refused) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Second"}),
+		)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(refused["error"], "node_limit_reached");
+	let account = d.account(&alice, Some("team")).await;
+	let (_, (status, attached)) = d.attach(&alice, &context, &alice, &tenant, account).await;
+	assert_eq!(status, 200, "{attached}");
+	assert_eq!(attached["state"], "attached");
+	let (status, created) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Second"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	// Billing reads the real count before allowing a Tier change as well.
+	let mut billing = aidash_enterprise_server::billing::billing(&d.federation).unwrap();
+	let mut limits = sandbox_defaults();
+	limits["tiers"]["team"]["nodes"] = json!(1);
+	billing.settings = Arc::new(Settings::from_value(limits).unwrap());
+	let changed = billing.change_tier(alice.identity, account, "team").await;
+	assert!(
+		matches!(changed, Err(aidash_server::Error::Conflict(ref code)) if code == "tier_node_limit"),
+		"{changed:?}"
+	);
+	// The adapter reads a later Subscription state, rather than caching the Tier.
+	d.subscribe(account, "team", Status::Suspended).await;
+	let (status, refused) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Third"}),
+		)
+		.await;
+	assert_eq!(status, 409, "{refused}");
+	assert_eq!(refused["error"], "billing_suspended");
+	d.finish().await;
 }
 
 fn refusal(result: aidash_server::Result<()>) -> String {
@@ -462,6 +532,64 @@ async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
 	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	// A page image is stored bytes too. It belongs to a Research fragment of a
+	// Run, so the Run comes from a real claim and the source, snapshot and
+	// fragment rows are the ones its foreign keys require. A Team Tenant with
+	// no paid Subscription refuses a Run, so the creator's personal Tenant
+	// runs on the Free Tier.
+	d.make_personal(&kept).await;
+	d.queue_run(&kept).await.unwrap();
+	let pool = d.federation.store.pool.fixture_driver();
+	let run: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE tenant = $1")
+		.bind(&kept)
+		.fetch_one(pool)
+		.await
+		.unwrap();
+	let (source, snapshot, fragment) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+	let digest = format!("sha256:{}", "0".repeat(64));
+	let mut seed = pool.begin().await.unwrap();
+	sqlx::query(
+		"INSERT INTO research_sources (id, tenant, run_id, url, title) VALUES ($1, $2, $3, 'https://example.com/report.pdf', 'Report')",
+	)
+	.bind(source)
+	.bind(&kept)
+	.bind(run)
+	.execute(&mut *seed)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO research_snapshots (id, tenant, run_id, source_id, requested_url, url, title, media_type, fetched_at, raw_digest, text_digest, completeness, lines, text_bytes) VALUES ($1, $2, $3, $4, 'https://example.com/report.pdf', 'https://example.com/report.pdf', 'Report', 'application/pdf', clock_timestamp(), $5, $5, 'complete', '[]'::jsonb, 0)",
+	)
+	.bind(snapshot)
+	.bind(&kept)
+	.bind(run)
+	.bind(source)
+	.bind(&digest)
+	.execute(&mut *seed)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO research_fragments (id, tenant, run_id, snapshot_id, text, line_start, line_end, pages, image_page, image_media_type, image_width, image_height, image_digest) VALUES ($1, $2, $3, $4, '', 0, 0, '[1]'::jsonb, 1, 'image/png', 1, 1, $5)",
+	)
+	.bind(fragment)
+	.bind(&kept)
+	.bind(run)
+	.bind(snapshot)
+	.bind(&digest)
+	.execute(&mut *seed)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO research_page_images (fragment_id, tenant, run_id, bytes, created_at) VALUES ($1, $2, $3, $4, clock_timestamp())",
+	)
+	.bind(fragment)
+	.bind(&kept)
+	.bind(run)
+	.bind(vec![0_u8; 4000])
+	.execute(&mut *seed)
+	.await
+	.unwrap();
+	seed.commit().await.unwrap();
 	let now = Utc::now();
 	let samples =
 		aidash_server::apps::execution::services::storage_usage::samples(&d.federation.store, now)
@@ -471,7 +599,7 @@ async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
 		.iter()
 		.map(|sample| (sample.tenant.clone(), sample.bytes))
 		.collect();
-	assert!(bytes.contains(&(kept.clone(), 1234)), "{bytes:?}");
+	assert!(bytes.contains(&(kept.clone(), 1234 + 4000)), "{bytes:?}");
 	assert!(bytes.contains(&(deleted.clone(), 77)), "{bytes:?}");
 	let meter = Meter {
 		pool: d.control().clone(),
@@ -497,7 +625,7 @@ async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
 			.unwrap();
 	assert_eq!(
 		stored,
-		vec![(kept, 1234)],
+		vec![(kept, 1234 + 4000)],
 		"the deleted Tenant is not metered"
 	);
 	d.finish().await;
@@ -569,6 +697,87 @@ async fn records_older_than_the_retention_period_are_swept_and_the_rest_survive(
 		.await;
 	let attachments: i64 = d.scalar("SELECT count(*) FROM billing_attachments").await;
 	assert_eq!((pods, samples, attachments), (1, 1, 0));
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn accounts_and_subscriptions_past_the_retention_period_are_swept_and_the_rest_survive(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let now = Utc::now();
+	let old = cutoff(now, 7) - Duration::days(1);
+	let recent = cutoff(now, 7) + Duration::days(1);
+	let created_long_ago = old - Duration::days(30);
+	let ended_long_ago = d.account(&alice, None).await;
+	let ended_recently = d.account(&alice, None).await;
+	let never_subscribed = d.account(&alice, None).await;
+	let attached = d.account(&alice, None).await;
+	let consenting = d.account(&alice, None).await;
+	d.subscribe(ended_long_ago, "team", Status::Canceled).await;
+	d.subscribe(ended_recently, "team", Status::Canceled).await;
+	let pool = d.federation.store.pool.fixture_driver();
+	for (account, created, ended) in [
+		(ended_long_ago, created_long_ago, Some(old)),
+		(ended_recently, created_long_ago, Some(recent)),
+		(never_subscribed, old, None),
+		(attached, old, None),
+		(consenting, old, None),
+	] {
+		sqlx::query("UPDATE billing_accounts SET created_at = $2 WHERE id = $1")
+			.bind(account)
+			.bind(created)
+			.execute(pool)
+			.await
+			.unwrap();
+		if let Some(ended) = ended {
+			sqlx::query("UPDATE billing_subscriptions SET updated_at = $2 WHERE account_id = $1")
+				.bind(account)
+				.bind(ended)
+				.execute(pool)
+				.await
+				.unwrap();
+		}
+	}
+	sqlx::query(
+		"INSERT INTO billing_attachments (tenant, account_id, attached_at, consented_by_administrator, consented_by_owner) VALUES ($1, $2, clock_timestamp(), $3, $3)",
+	)
+	.bind(&tenant)
+	.bind(attached)
+	.bind(alice.identity)
+	.execute(pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO billing_attachment_consents (id, tenant, account_id, party, identity_id, created_at, expires_at) VALUES ($1, $2, $3, 'tenant_administrator', $4, clock_timestamp(), clock_timestamp() + interval '7 days')",
+	)
+	.bind(Uuid::new_v4())
+	.bind(&tenant)
+	.bind(consenting)
+	.bind(alice.identity)
+	.execute(pool)
+	.await
+	.unwrap();
+	store::sweep(d.control(), cutoff(now, 7), now)
+		.await
+		.unwrap();
+	let mut accounts: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM billing_accounts")
+		.fetch_all(pool)
+		.await
+		.unwrap();
+	accounts.sort();
+	let mut expected = vec![ended_recently, attached, consenting];
+	expected.sort();
+	assert_eq!(accounts, expected);
+	let subscriptions: Vec<Uuid> =
+		sqlx::query_scalar("SELECT account_id FROM billing_subscriptions")
+			.fetch_all(pool)
+			.await
+			.unwrap();
+	assert_eq!(subscriptions, vec![ended_recently]);
 	d.finish().await;
 }
 
@@ -1079,5 +1288,120 @@ async fn a_deployment_administrator_reads_usage_as_json_and_csv(
 		)
 		.await;
 	assert_eq!(status, 400);
+	d.finish().await;
+}
+
+/// Pauses the processor before publishing the new locally readable Tier.
+struct DelayedTier {
+	pool: aidash_server::database::native::Pool,
+	entered: tokio::sync::Notify,
+	release: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl PaymentState for DelayedTier {
+	async fn subscription(&self, account: Uuid) -> aidash_server::Result<Option<Subscription>> {
+		store::subscription(&self.pool, account).await
+	}
+	async fn change_tier(&self, account: Uuid, tier: &str) -> aidash_server::Result<()> {
+		self.entered.notify_one();
+		self.release.notified().await;
+		store::record_subscription(
+			&self.pool,
+			account,
+			&Subscription {
+				tier: tier.into(),
+				status: Status::Active,
+				grace_ends_at: None,
+			},
+		)
+		.await
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_tier_downgrade_and_node_creation_share_the_capacity_lock(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let mut d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let account = d.account(&alice, Some("team")).await;
+	let (_, (status, body)) = d.attach(&alice, &context, &alice, &tenant, account).await;
+	assert_eq!(status, 200, "{body}");
+	let mut tiers = sandbox_defaults();
+	tiers["tiers"]["small"] =
+		json!({"tenants":5,"nodes":1,"pod_seconds":3600,"storage_bytes":1073741824});
+	let tiers = Arc::new(Settings::from_value(tiers).unwrap());
+	let payments = Arc::new(DelayedTier {
+		pool: d.control().clone(),
+		entered: Default::default(),
+		release: Default::default(),
+	});
+	d.federation.config.tier_limits = Arc::new(Gate {
+		pool: d.control().clone(),
+		settings: tiers.clone(),
+		payments: payments.clone(),
+		offering: Offering::Cloud,
+	});
+	d.app.context.set_singleton(d.federation.clone());
+	let billing = Billing {
+		pool: d.control().clone(),
+		settings: tiers,
+		payments: payments.clone(),
+		nodes: Arc::new(aidash_enterprise_server::billing::nodes::StoredNodes(
+			d.federation.store.pool.clone(),
+		)),
+	};
+	{
+		let change = billing.change_tier(alice.identity, account, "small");
+		tokio::pin!(change);
+		tokio::select! {
+			_ = payments.entered.notified() => {},
+			result = &mut change => panic!("processor did not wait: {result:?}"),
+		}
+		let path = format!("/api/tenants/{tenant}/nodes");
+		let create = d.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Concurrent"}),
+		);
+		tokio::pin!(create);
+		// The request must reach the database capacity lock, rather than being
+		// allowed to commit under the old paid Tier while the processor waits.
+		let blocked = async {
+			loop {
+				let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory' AND query LIKE '%pg_advisory_xact_lock%'")
+					.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+				if waiting > 0 {
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		};
+		let attempted = tokio::select! {
+			result = &mut create => Some(result),
+			result = tokio::time::timeout(std::time::Duration::from_secs(5), blocked) => { result.expect("Node creation must wait at the capacity lock"); None },
+		};
+		payments.release.notify_one();
+		change.await.unwrap();
+		let (status, body) = match attempted {
+			Some(result) => result,
+			None => create.await,
+		};
+		assert_eq!(status, 403, "creation must see the downgraded Tier: {body}");
+		assert_eq!(body["error"], "node_limit_reached");
+		assert_eq!(
+			store::subscription(d.control(), account)
+				.await
+				.unwrap()
+				.unwrap()
+				.tier,
+			"small"
+		);
+	}
+
 	d.finish().await;
 }

@@ -19,7 +19,6 @@ pub use human_requests::HumanRequest;
 mod inbox;
 pub use inbox::Inbox;
 mod invocations;
-pub(crate) mod journals;
 pub use invocations::Invocation;
 mod input_ledger;
 mod run_inputs;

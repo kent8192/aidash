@@ -93,10 +93,10 @@ pub(crate) async fn activate(
 /// The destination must verify this binding before creating its local Run.
 pub(crate) async fn activation_binding(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: VerifyInput,
 ) -> Result<Uuid> {
-	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let node = &admitted.sender.to_string();
 	aidash_application::authorization::home::activation_binding(
 		&crate::bootstrap::peer_home_execution_repository(&f),
 		node,
@@ -106,7 +106,7 @@ pub(crate) async fn activation_binding(
 	.map_err(Into::into)
 }
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 #[derive(Clone)]
 pub struct RemoteExecutionManagement {

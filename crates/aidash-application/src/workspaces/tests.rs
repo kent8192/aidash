@@ -39,9 +39,15 @@ impl Fixture {
 }
 #[async_trait]
 impl ConversationScope for Fixture {
-	async fn create_workspace(&mut self, title: &str, goal: &str) -> Result<Workspace> {
+	async fn create_workspace(
+		&mut self,
+		title: &str,
+		goal: &str,
+		_: Option<&aidash_domain::nodes::NodeName>,
+	) -> Result<Workspace> {
 		self.operations.push("workspace.create".into());
 		Ok(Workspace {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			title: title.into(),
 			goal: goal.into(),
@@ -136,6 +142,7 @@ fn request<'a>(reference: &'a EntityRef, kind: &'a str) -> ConversationRequest<'
 		goal: "Goal",
 		target: reference,
 		target_kind: kind,
+		node: None,
 	}
 }
 

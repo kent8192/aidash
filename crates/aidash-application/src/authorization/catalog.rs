@@ -77,6 +77,7 @@ mod tests;
 pub async fn set_in(
 	scope: &mut dyn crate::ports::catalog::CatalogMutation,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	reference: &EntityRef,
 	expected_revision: i64,
 	enabled: bool,
@@ -87,7 +88,7 @@ pub async fn set_in(
 		return Err(Error::NotFound("registry entry".into()));
 	}
 	let binding = scope
-		.compare_and_set(tenant, reference, expected_revision, enabled)
+		.compare_and_set(tenant, node, reference, expected_revision, enabled)
 		.await?
 		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
 	scope.history(&binding, actor).await?;
@@ -97,6 +98,7 @@ pub async fn set_in(
 pub async fn set_catalog(
 	scope: &mut dyn crate::ports::catalog::CatalogAdministrator,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	reference: &EntityRef,
 	expected_revision: i64,
 	enabled: bool,
@@ -109,7 +111,16 @@ pub async fn set_catalog(
 	if !aidash_domain::marketplace::installations::catalog_update_allowed(&definition) {
 		return Err(Error::Forbidden);
 	}
-	set_in(scope, tenant, reference, expected_revision, enabled, actor).await
+	set_in(
+		scope,
+		tenant,
+		node,
+		reference,
+		expected_revision,
+		enabled,
+		actor,
+	)
+	.await
 }
 
 #[cfg(test)]

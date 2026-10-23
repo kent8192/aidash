@@ -39,7 +39,7 @@ impl DisclosureGate for Permit {
 }
 
 async fn agent(store: &Store) -> Entry {
-	seed(&Registry::new(store.pool.clone(), &store.node_id).unwrap()).await
+	seed(&Registry::new(store.pool.clone(), &store.deployment).unwrap()).await
 }
 
 async fn leased_run(store: &Store, agent: &Entry) -> Run {

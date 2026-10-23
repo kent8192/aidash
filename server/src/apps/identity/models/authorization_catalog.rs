@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 pub struct AuthorizationCatalog {
 	#[field(field_type = "text", primary_key = true)]
 	pub tenant: String,
+	/// The Node the approval applies to.
+	#[field(primary_key = true, field_type = "text")]
+	pub node: String,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(primary_key = true, field_type = "text", db_column = "entry_id")]
 	pub entry_key: String,

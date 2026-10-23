@@ -8,6 +8,9 @@ use crate::apps::identity::models::AuthorizationDecision;
 use crate::database::native::Pool;
 use crate::{Error, Result, store::Store};
 use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde_json::{Value, json};
 use std::ops::{Deref, DerefMut};
 use uuid::Uuid;
@@ -22,6 +25,7 @@ mod visibility;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CatalogAdmission {
 	tenant: String,
+	node: Option<aidash_domain::nodes::NodeName>,
 	subject: String,
 	revision: i64,
 	inherited_lease: bool,
@@ -113,8 +117,16 @@ pub(crate) struct Access {
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
-	pub(crate) peer_client: reqwest::Client,
+	/// How this authority's reads reach other Nodes. A transaction lent to a
+	/// disclosure check holds none, so its remote proofs are unavailable.
+	pub(crate) wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 	pub(crate) node_id: String,
+	/// The Node of the Workspace or Run this authority serves, once known.
+	/// Catalog Approvals are per Node; an Access with no Node yet uses the
+	/// Tenant's default Node.
+	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
+	/// The address of `node`, which Federation references name Nodes by.
+	pub(crate) node_address: Option<String>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
@@ -209,6 +221,7 @@ impl Access {
 	) -> CatalogAdmission {
 		CatalogAdmission {
 			tenant: self.identity.tenant.clone(),
+			node: self.node.clone(),
 			subject: self.identity.subject.clone(),
 			revision: self.snapshot.revision,
 			inherited_lease: self.inherited_lease,
@@ -235,19 +248,51 @@ impl Access {
 	) -> Result<Self> {
 		Self::begin_on(
 			&store.pool,
-			&store.node_id,
-			store.semantic_client.clone(),
+			store.deployment.as_str(),
+			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
 			identity,
 			exclusive,
 		)
 		.await
 	}
 
+	/// The authority of a subject of the Tenant's own policy that holds no
+	/// credential: a Node of the same Tenant acting for one of its subjects
+	/// (ADR 0064). Its policy snapshot is locked like any authority's; code
+	/// that needs a credential, such as a durable Run identity, fails closed on
+	/// the nil credential.
+	pub(crate) async fn begin_subject(
+		store: &Store,
+		tenant: &str,
+		subject: &str,
+		exclusive: bool,
+	) -> Result<Self> {
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id: Uuid::nil(),
+			tenant: tenant.into(),
+			subject: subject.into(),
+		};
+		let mut tx = store.pool.begin(&identity.tenancy()?).await?;
+		let snapshot = Authorization::load_with_mode(&mut tx, tenant, exclusive).await?;
+		if !super::identity::enabled(&snapshot, subject) {
+			return Err(Error::Forbidden);
+		}
+		Ok(Self::from_transaction(
+			tx,
+			&store.pool,
+			store.deployment.as_str(),
+			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			&identity,
+			snapshot,
+		))
+	}
+
 	/// Revalidate another saved disclosure authority using existing pool capacity.
 	pub(crate) async fn begin_on(
 		pool: &Pool,
 		node: &str,
-		client: reqwest::Client,
+		wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 		identity: &SubjectIdentity,
 		exclusive: bool,
 	) -> Result<Self> {
@@ -255,7 +300,7 @@ impl Access {
 		let mut tx = pool.begin(&identity.tenancy()?).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self::from_transaction(
-			tx, pool, node, client, identity, snapshot,
+			tx, pool, node, wire, identity, snapshot,
 		))
 	}
 
@@ -263,7 +308,7 @@ impl Access {
 		tx: crate::database::native::Transaction,
 		pool: &Pool,
 		node: &str,
-		client: reqwest::Client,
+		wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 		identity: &SubjectIdentity,
 		snapshot: Snapshot,
 	) -> Self {
@@ -281,8 +326,10 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
-			peer_client: client,
+			wire,
 			node_id: node.to_owned(),
+			node: None,
+			node_address: None,
 			tx: AccessTransaction::new(tx),
 			identity: identity.clone(),
 			snapshot,
@@ -393,8 +440,10 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
-			peer_client: lease.peer_client.clone(),
+			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
+			node: lease.node.clone(),
+			node_address: lease.node_address.clone(),
 			tx: AccessTransaction::new(tx),
 			identity: lease.identity.clone(),
 			snapshot: lease.snapshot.clone(),
@@ -494,12 +543,104 @@ impl Access {
 	}
 
 	pub async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		aidash_application::authorization::workspaces::resource(
+		let resource = aidash_application::authorization::workspaces::resource(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
-		.await
-		.map_err(Into::into)
+		.await?;
+		let node = self.workspace_node(id).await?;
+		self.set_node(node);
+		Ok(resource)
+	}
+
+	/// Names the Node this authority serves. Approvals proven for another Node
+	/// do not carry over.
+	pub(crate) fn set_node(&mut self, node: aidash_domain::nodes::NodeName) {
+		if self.node.as_ref() != Some(&node) {
+			self.approved_catalog.clear();
+			self.node_address = Some(format!("{}/{node}", self.node_id));
+			self.node = Some(node);
+		}
+	}
+
+	/// Load an owned Node's policy resource in this authority transaction.
+	pub(crate) async fn node_resource(
+		&mut self,
+		name: &aidash_domain::nodes::NodeName,
+	) -> Result<Resource> {
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *self.tx,
+			&self.identity.tenant,
+			name.as_str(),
+		)
+		.await?;
+		Ok(self.resource(
+			"node",
+			node.name.as_str(),
+			json!({"label":node.label,"default":node.default}),
+		))
+	}
+
+	/// Authorize work on an owned Node using its current policy attributes,
+	/// then select its Catalog and Federation identity.
+	pub(crate) async fn use_node(&mut self, name: aidash_domain::nodes::NodeName) -> Result<()> {
+		let resource = self.node_resource(&name).await?;
+		self.require(
+			&resource,
+			aidash_domain::identity::tenant_administration::NODE_USE,
+		)
+		.await?;
+		self.set_node(name);
+		Ok(())
+	}
+
+	/// The Node of a Workspace of this Access's Tenant.
+	pub(crate) async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeName> {
+		let name: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.tx)
+		.await?;
+		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
+	}
+
+	/// The Node whose Catalog Approvals apply: the Workspace's or Run's once an
+	/// operation has named it, the Tenant's default Node otherwise.
+	pub(crate) async fn catalog_node(&mut self) -> Result<aidash_domain::nodes::NodeName> {
+		if let Some(node) = &self.node {
+			return Ok(node.clone());
+		}
+		let name: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(
+					Expr::col(Alias::new("tenant")).eq(Expr::value(self.identity.tenant.clone())),
+				)
+				.and_where(Expr::col(Alias::new("is_default")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.tx)
+		.await?;
+		let node = aidash_domain::nodes::NodeName::parse(&name)?;
+		self.set_node(node.clone());
+		Ok(node)
+	}
+
+	/// The address of the Node whose Catalog Approvals apply.
+	pub(crate) async fn catalog_address(&mut self) -> Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.catalog_node().await?;
+		Ok(aidash_domain::nodes::NodeAddress {
+			deployment: aidash_domain::nodes::DeploymentId::parse(&self.node_id)?,
+			node,
+		})
 	}
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
@@ -700,8 +841,10 @@ impl NativeAccess {
 	pub(crate) fn remote_identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
-	pub(crate) fn remote_transport_parts(&self) -> (&reqwest::Client, &str) {
-		(&self.access.peer_client, &self.access.node_id)
+	pub(crate) fn remote_transport(
+		&self,
+	) -> Option<crate::apps::federation::remote::services::wire::Wire> {
+		self.access.wire.clone()
 	}
 	pub(crate) fn cached_remote_read(&self, run: Uuid) -> Option<bool> {
 		self.access.cached_remote_read(run)
@@ -747,6 +890,12 @@ impl NativeAccess {
 }
 
 impl Access {
+	/// How a Federation reference names the Node this authority serves: its
+	/// address once the Node is known, the Deployment id before.
+	pub(crate) fn node_reference(&self) -> &str {
+		self.node_address.as_deref().unwrap_or(&self.node_id)
+	}
+
 	/// Read the same current policy environment used by worker inference decisions.
 	pub(in crate::apps::identity) fn execution_node(&self) -> Option<&str> {
 		self.environment["node_id"].as_str()

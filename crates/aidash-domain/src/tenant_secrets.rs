@@ -68,9 +68,17 @@ pub fn normalize_hosts(hosts: &[String]) -> Result<Vec<String>> {
 /// Secret never travels in plaintext: the endpoint is HTTPS, or HTTP to a
 /// literal loopback address.
 pub fn endpoint_host(endpoint: &str) -> Result<String> {
-	crate::configuration::validate_peer_endpoint(endpoint)?;
+	crate::configuration::validate_endpoint(endpoint)?;
 	let url =
 		url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+	if url.scheme() != "https"
+		&& !matches!(url.host(), Some(url::Host::Ipv4(address)) if address.is_loopback())
+		&& !matches!(url.host(), Some(url::Host::Ipv6(address)) if address.is_loopback())
+	{
+		return Err(Error::Invalid(
+			"a Tenant Secret endpoint requires HTTPS or a literal loopback HTTP address".into(),
+		));
+	}
 	url.host_str()
 		.map(str::to_ascii_lowercase)
 		.ok_or_else(|| Error::Invalid("invalid endpoint URL".into()))

@@ -49,7 +49,7 @@ pub(crate) async fn reserve_many(
 	for access in accesses {
 		access.resume_inherited().await?;
 		let current = crate::bootstrap::generation_inference_authority_scope(access)
-			.requests(&store.node_id)
+			.requests(store.deployment.as_str())
 			.await;
 		access.suspend().await?;
 		requests.extend(current?);

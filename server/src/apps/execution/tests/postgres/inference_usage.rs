@@ -100,7 +100,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 ) {
 	// Arrange
 	let (store, url, schema) = _store_fixture.parts();
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Usage", "Record inference usage")
@@ -232,7 +232,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 }
 
 async fn leased_run(store: &Store, token: Uuid) -> Run {
-	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Usage", "Record inference usage")

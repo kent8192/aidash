@@ -41,6 +41,9 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 						.eq(Expr::value(&self.access.identity.tenant)),
 				)
 				.and_where(Expr::cust("c.enabled"))
+				.and_where(Expr::cust(
+					"c.node = (SELECT n.name FROM nodes n WHERE n.tenant = c.tenant AND n.is_default)",
+				))
 				.and_where(Expr::cust("r.metadata->>'kind'").is_in(["agent", "tool", "skill"]))
 				.order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
 				.order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)

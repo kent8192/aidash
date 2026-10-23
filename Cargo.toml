@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 aidash-domain = { path = "crates/aidash-domain" }
 aidash-application = { path = "crates/aidash-application" }
+aidash-capability = { path = "crates/aidash-capability" }
 aidash-harness = { path = "crates/aidash-harness" }
 aidash-runtime = { path = "crates/aidash-runtime" }
 aidash-integrations = { path = "crates/aidash-integrations" }

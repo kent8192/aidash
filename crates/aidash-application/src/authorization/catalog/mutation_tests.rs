@@ -1,6 +1,7 @@
 use super::*;
 use crate::ports::catalog::{CatalogAdministrator, CatalogMutation};
 use aidash_domain::identity::{Principal, catalog::Binding};
+use aidash_domain::nodes::NodeName;
 use async_trait::async_trait;
 use rstest::rstest;
 use serde_json::json;
@@ -22,6 +23,7 @@ fn reference() -> EntityRef {
 fn binding() -> Binding {
 	Binding {
 		tenant: "tenant".into(),
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		entry_id: "skill".into(),
 		entry_version: "1.0.0".into(),
 		enabled: false,
@@ -43,6 +45,7 @@ impl CatalogMutation for Fixture {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		_: &NodeName,
 		reference: &EntityRef,
 		revision: i64,
 		enabled: bool,
@@ -97,6 +100,7 @@ async fn deployment_administrator_history_label_cannot_elevate_a_subject_before_
 	let result = set_catalog(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		false,
@@ -115,6 +119,7 @@ async fn invalid_revision_cannot_read_or_mutate_catalog(#[case] revision: i64) {
 	let result = set_catalog(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		revision,
 		false,
@@ -134,6 +139,7 @@ async fn missing_definition_cannot_create_approval_or_history() {
 	let result = set_in(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		0,
 		true,
@@ -151,6 +157,7 @@ async fn lost_revision_race_never_appends_a_new_history_row() {
 	let result = set_in(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		false,
@@ -171,6 +178,7 @@ async fn failed_update_keeps_its_retry_error_without_history() {
 	let result = set_in(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		false,
@@ -191,6 +199,7 @@ async fn failed_history_returns_the_failure_to_the_transaction_owner() {
 	let result = set_in(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		false,
@@ -210,6 +219,7 @@ async fn administrator_rechecks_tenant_and_ownership_before_cas_and_history() {
 	let result = set_catalog(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		false,
@@ -230,7 +240,7 @@ async fn administrator_rechecks_tenant_and_ownership_before_cas_and_history() {
 	);
 	assert_eq!(
 		serde_json::to_value(result).unwrap(),
-		json!({"tenant":"tenant","entry_id":"skill","entry_version":"1.0.0","enabled":false,"revision":2})
+		json!({"tenant":"tenant","node":"brave-otter-k3m9q2xa","entry_id":"skill","entry_version":"1.0.0","enabled":false,"revision":2})
 	);
 }
 #[rstest]
@@ -248,6 +258,7 @@ async fn projected_catalog_approvals_are_owned_by_marketplace_activation(#[case]
 	let result = set_catalog(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		enabled,
@@ -264,6 +275,7 @@ async fn marketplace_uses_the_same_cas_inside_its_existing_protected_scope() {
 	let result = set_in(
 		&mut scope,
 		"tenant",
+		&node(),
 		&reference(),
 		1,
 		false,
@@ -280,4 +292,8 @@ async fn marketplace_uses_the_same_cas_inside_its_existing_protected_scope() {
 			"history:tenant:skill:1.0.0:2:false:deployment-administrator-activation"
 		]
 	);
+}
+
+fn node() -> NodeName {
+	"brave-otter-k3m9q2xa".parse().unwrap()
 }

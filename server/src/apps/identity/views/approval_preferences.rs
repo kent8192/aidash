@@ -4,12 +4,14 @@
 use super::super::{
 	oidc::BrowserOrigin,
 	serializers::approval_preferences::{
-		ApprovalDeciderUpdate, PreferencesUpdate, RuleInput, ThreadModeUpdate,
+		ApprovalDeciderUpdate, NodeQuery, PreferencesUpdate, RuleInput, ThreadModeUpdate,
 	},
 	services::approval_preferences::ApprovalPreferences,
 };
 use crate::{authorization::identity::Actor, http::json::Json};
-use reinhardt::{Depends, Path, Response, StatusCode, delete, get, http::ViewResult, post, put};
+use reinhardt::{
+	Depends, Path, Query, Response, StatusCode, delete, get, http::ViewResult, post, put,
+};
 use uuid::Uuid;
 
 fn json<T: serde::Serialize>(result: crate::Result<T>) -> ViewResult<Response> {
@@ -26,8 +28,9 @@ pub async fn preferences(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
+	Query(query): Query<NodeQuery>,
 ) -> ViewResult<Response> {
-	json(service.preferences(actor, origin, tenant).await)
+	json(service.preferences(actor, origin, tenant, query.node).await)
 }
 
 #[put(
@@ -40,11 +43,12 @@ pub async fn update_preferences(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
+	Query(query): Query<NodeQuery>,
 	Json(input): Json<PreferencesUpdate>,
 ) -> ViewResult<Response> {
 	json(
 		service
-			.update_preferences(actor, origin, tenant, input)
+			.update_preferences(actor, origin, tenant, query.node, input)
 			.await,
 	)
 }
@@ -158,8 +162,9 @@ pub async fn decider(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
+	Query(query): Query<NodeQuery>,
 ) -> ViewResult<Response> {
-	json(service.decider(actor, origin, tenant).await)
+	json(service.decider(actor, origin, tenant, query.node).await)
 }
 
 #[put(
@@ -172,7 +177,12 @@ pub async fn set_decider(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
+	Query(query): Query<NodeQuery>,
 	Json(input): Json<ApprovalDeciderUpdate>,
 ) -> ViewResult<Response> {
-	json(service.set_decider(actor, origin, tenant, input).await)
+	json(
+		service
+			.set_decider(actor, origin, tenant, query.node, input)
+			.await,
+	)
 }

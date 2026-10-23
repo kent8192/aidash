@@ -25,12 +25,11 @@ test.beforeEach(async ({ page }) => {
       return route.fulfill({
         json: {
           access: tenantSubject,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [
             {
@@ -68,48 +67,15 @@ test.beforeEach(async ({ page }) => {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [
-            {
-              node_id: "aidash://remote",
-              endpoint: "http://remote",
-              enabled: true,
-            },
-          ],
         },
       });
     if (path === "/api/registry" && route.request().method() === "POST")
       return route.fulfill({ json: route.request().postDataJSON() });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
-    if (path === "/api/discover")
-      return route.fulfill({
-        json: {
-          agents: [
-            {
-              node_id: "aidash://remote",
-              entity: {
-                id: "executor",
-                version: "1.0.0",
-                kind: "agent",
-                name: { en: "Remote executor" },
-              },
-            },
-            {
-              node_id: "aidash://remote",
-              entity: {
-                id: "researcher",
-                version: "3.0.0",
-                kind: "agent",
-                name: { en: "Remote researcher" },
-              },
-            },
-          ],
-          errors: [],
-        },
-      });
     return route.fulfill({ json: [] });
   });
-  await routeTenantActions(page, ["registry.create"]);
+  await routeTenantActions(page, ["registry.create"], {
+    deployment: "aidash://test",
+  });
   await routeRegistryVersions(page, () => []);
   await page.goto("/registry");
   await page
@@ -232,56 +198,41 @@ test("edited registration uses a new request key", async ({ page }) => {
   expect(keys[0]).not.toBe(keys[1]);
 });
 
-for (const remote of [false, true]) {
-  test(`agent tool uses fixed task arguments (${remote ? "remote" : "local"})`, async ({
-    page,
-  }) => {
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Entity type").selectOption("tool");
-    await dialog
-      .getByRole("button", { name: "Add argument", exact: true })
-      .click();
-    await dialog.getByLabel("Argument name", { exact: true }).fill("unrelated");
-    await dialog.getByLabel("Connection type").selectOption("agent");
-    await expect(
-      dialog.getByRole("button", { name: "Add argument", exact: true }),
-    ).toHaveCount(0);
-    if (remote) {
-      await dialog
-        .getByLabel("Node", { exact: true })
-        .selectOption("aidash://remote");
-      await dialog
-        .getByLabel("Remote agent", { exact: true })
-        .selectOption({ label: "Remote executor · 1.0.0" });
-    } else {
-      await dialog
-        .getByLabel("Executor agent")
-        .selectOption("coordinator@2.0.0");
-    }
-    const posted = page.waitForRequest(
-      (request) =>
-        request.url().endsWith("/api/registry") && request.method() === "POST",
-    );
-    await dialog
-      .getByRole("button", { name: "Register entity", exact: true })
-      .click();
-    expect((await posted).postDataJSON().schema).toEqual({
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        description: { type: "string" },
-        requirements: { type: "object", additionalProperties: true },
-        dependencies: {
-          type: "array",
-          items: { type: "string", format: "uuid" },
-        },
-        parent_id: { type: ["string", "null"], format: "uuid" },
+test("agent tool uses fixed task arguments", async ({ page }) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog
+    .getByRole("button", { name: "Add argument", exact: true })
+    .click();
+  await dialog.getByLabel("Argument name", { exact: true }).fill("unrelated");
+  await dialog.getByLabel("Connection type").selectOption("agent");
+  await expect(
+    dialog.getByRole("button", { name: "Add argument", exact: true }),
+  ).toHaveCount(0);
+  await dialog.getByLabel("Executor agent").selectOption("coordinator@2.0.0");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().schema).toEqual({
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      description: { type: "string" },
+      requirements: { type: "object", additionalProperties: true },
+      dependencies: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
       },
-      required: ["title", "description"],
-      additionalProperties: false,
-    });
+      parent_id: { type: ["string", "null"], format: "uuid" },
+    },
+    required: ["title", "description"],
+    additionalProperties: false,
   });
-}
+});
 
 test("cluster chooses an exact agent version", async ({ page }) => {
   const dialog = page.getByRole("dialog");
@@ -371,7 +322,7 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
     .click();
   expect((await posted).postDataJSON()).toMatchObject({
     config: {
-      registry_node: "aidash://test",
+      registry_deployment: "aidash://test",
       provider: "integration.mcp@1",
       operation: "invoke",
       default_alias: "integration_invoke",
@@ -592,7 +543,7 @@ test("HTTP tools validate duplicate argument names and support typed lists", asy
     .click();
   expect((await posted).postDataJSON()).toMatchObject({
     config: {
-      registry_node: "aidash://test",
+      registry_deployment: "aidash://test",
       provider: "integration.http@1",
       operation: "invoke",
       transport: {
@@ -652,68 +603,6 @@ test("HTTP arguments preserve JSON Schema constraints", async ({ page }) => {
   });
 });
 
-test("remote agent tools identify the peer and exact executor", async ({
-  page,
-}) => {
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Entity type").selectOption("tool");
-  await dialog.getByLabel("Connection type").selectOption("agent");
-  await dialog
-    .getByLabel("Node", { exact: true })
-    .selectOption("aidash://remote");
-  await dialog
-    .getByLabel("Remote agent", { exact: true })
-    .selectOption({ label: "Remote researcher · 3.0.0" });
-  const posted = page.waitForRequest(
-    (request) =>
-      request.url().endsWith("/api/registry") && request.method() === "POST",
-  );
-  await dialog
-    .getByRole("button", { name: "Register entity", exact: true })
-    .click();
-  expect((await posted).postDataJSON().config.transport).toEqual({
-    transport: "agent",
-    node_id: "aidash://remote",
-    agent: { id: "researcher", version: "3.0.0" },
-  });
-});
-
-test("peer discovery errors allow an explicit remote reference", async ({
-  page,
-}) => {
-  await page.route("**/api/discover", (route) =>
-    route.fulfill({
-      json: {
-        agents: [],
-        errors: [{ node_id: "aidash://remote", error: "peer unavailable" }],
-      },
-    }),
-  );
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Entity type").selectOption("tool");
-  await dialog.getByLabel("Connection type").selectOption("agent");
-  await dialog
-    .getByLabel("Node", { exact: true })
-    .selectOption("aidash://remote");
-  await expect(dialog.getByRole("alert")).toContainText("peer unavailable");
-  await dialog
-    .getByRole("button", { name: "Enter a remote agent reference" })
-    .click();
-  await dialog.getByLabel("Remote agent reference").fill("researcher");
-  await dialog.getByLabel("Remote agent version").fill("3.0.0");
-  const posted = page.waitForRequest(
-    (request) =>
-      request.url().endsWith("/api/registry") && request.method() === "POST",
-  );
-  await dialog
-    .getByRole("button", { name: "Register entity", exact: true })
-    .click();
-  expect((await posted).postDataJSON().config.transport.agent).toEqual({
-    id: "researcher",
-    version: "3.0.0",
-  });
-});
-
 test("bundle members allow one version per ID and reenable siblings on removal", async ({
   page,
 }) => {
@@ -738,7 +627,11 @@ test("bundle members allow one version per ID and reenable siblings on removal",
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
   expect((await posted).postDataJSON().config.members).toEqual([
-    { registry_node: "aidash://test", id: "shared-tool", version: "2.0.0" },
+    {
+      registry_deployment: "aidash://test",
+      id: "shared-tool",
+      version: "2.0.0",
+    },
   ]);
 });
 

@@ -152,6 +152,7 @@ fn run(snapshot: BindingSnapshot) -> Run {
 		..Default::default()
 	};
 	Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),
 		workspace_id: Uuid::new_v4(),

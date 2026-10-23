@@ -122,12 +122,11 @@ pub(crate) async fn check(
 			return Err(Error::Forbidden);
 		}
 		let pool = lease.tx().pool().clone();
-		let client = crate::semantic::backend::client()?;
 		let mut access = crate::authorization::access::Access::from_transaction(
 			lease.tx().lend(),
 			&pool,
 			&destination.home,
-			client,
+			None,
 			&identity,
 			snapshot,
 		);

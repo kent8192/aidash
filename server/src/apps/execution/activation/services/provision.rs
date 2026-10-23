@@ -19,19 +19,19 @@ impl SettingsView for ActivationTarget {
 				"activation target has no aliases".into(),
 			));
 		}
-		let node_id = settings.require_path::<String>(&["node", "node_id"])?;
-		crate::config::validate_node_id(&node_id).map_err(|_| {
-			BuildError::Deserialization("node.node_id must be a valid Aidash identity".into())
+		let node_id = settings.require_path::<String>(&["deployment", "id"])?;
+		aidash_domain::nodes::DeploymentId::parse(&node_id).map_err(|_| {
+			BuildError::Deserialization("deployment.id must be a valid Deployment id".into())
 		})?;
 		let nats_url = settings
-			.optional_path::<String>(&["node", "nats_url"])?
+			.optional_path::<String>(&["deployment", "nats_url"])?
 			.unwrap_or_else(|| "nats://127.0.0.1:4222".into());
 		let url = reqwest::Url::parse(&nats_url).map_err(|_| {
-			BuildError::Deserialization("node.nats_url must identify a NATS server".into())
+			BuildError::Deserialization("deployment.nats_url must identify a NATS server".into())
 		})?;
 		if !matches!(url.scheme(), "nats" | "tls" | "ws" | "wss") || url.host_str().is_none() {
 			return Err(BuildError::Deserialization(
-				"node.nats_url must identify a NATS server".into(),
+				"deployment.nats_url must identify a NATS server".into(),
 			));
 		}
 		Ok(Self { node_id, nats_url })

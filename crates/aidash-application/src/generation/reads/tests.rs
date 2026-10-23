@@ -36,6 +36,7 @@ impl Repository {
 	fn new(subject: bool) -> Self {
 		let mut job = test_support::request(1);
 		job.home_node = "aidash://home".into();
+		job.foreign_intent = Some(serde_json::json!({}));
 		Self {
 			principal: if subject {
 				Principal::Subject {

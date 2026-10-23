@@ -1,5 +1,5 @@
 meta {
-  name: 0492 core_cleanup_status - Anonymous request is rejected
+  name: 0492 core_cleanup_status - Application read preserves the typed response contract
   type: http
   seq: 492
 }
@@ -12,9 +12,11 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{contract_token}}
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json"); });
 }

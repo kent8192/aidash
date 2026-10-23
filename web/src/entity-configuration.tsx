@@ -4,7 +4,9 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Alert, Check, Group, Hint, pairClass } from "./components/patterns";
 import { useQuery } from "@tanstack/react-query";
-import { discover, registryMcpToolHint } from "./generated/aidash";
+import { discoveryQuery, useNodes } from "./nodes";
+import { registryDeployment } from "./node-selection";
+import { registryMcpToolHint } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
 import { useRef, useState } from "react";
@@ -282,6 +284,7 @@ export function EntityConfiguration({
 }) {
   const { t } = useI18n();
   const entityLabel = useEntityLabel(data.registry);
+  const deployment = registryDeployment(data);
   const [adapter, setAdapter] = useState("native_memory");
   const [sourceValue, setSourceValue] = useState("{}");
   const [transport, setTransport] = useState("http");
@@ -307,7 +310,7 @@ export function EntityConfiguration({
   const [skillFiles, setSkillFiles] = useState<SkillPayload["files"]>([]);
   const [skillSource, setSkillSource] = useState<string>();
   const [agent, setAgent] = useState("");
-  const [node, setNode] = useState(data.node.id);
+  const [node, setNode] = useState(deployment);
   const [fields, setFields] = useState<Argument[]>([]);
   const agents = data.registry.filter((entry) => entry.kind === "agent");
   const selectedAgent = agents.find(
@@ -319,10 +322,11 @@ export function EntityConfiguration({
   const [remoteId, setRemoteId] = useState("");
   const [remoteVersion, setRemoteVersion] = useState("1.0.0");
   const [manualRemote, setManualRemote] = useState(false);
+  const sendingNode = useNodes().selected;
   const discovery = useQuery({
-    queryKey: ["discovery", "tool-picker"],
-    queryFn: () => discover({}),
-    enabled: kind === "tool" && transport === "agent" && node !== data.node.id,
+    ...discoveryQuery(sendingNode),
+    queryKey: ["discovery", "tool-picker", sendingNode?.name ?? null],
+    enabled: kind === "tool" && transport === "agent" && node !== deployment,
     retry: false,
   });
   const remoteAgents = discovery.isError
@@ -439,7 +443,7 @@ export function EntityConfiguration({
           transport,
           node_id: node,
           agent:
-            node === data.node.id
+            node === deployment
               ? reference
               : { id: remoteId, version: remoteVersion },
         }
@@ -466,7 +470,7 @@ export function EntityConfiguration({
                 (e) => `${e.id}@${e.version}` === key,
               )!;
               return {
-                registry_node: data.node.id,
+                registry_deployment: deployment,
                 id: entry.id,
                 version: entry.version,
               };
@@ -482,7 +486,7 @@ export function EntityConfiguration({
             ? { coordinator: reference }
             : kind === "tool"
               ? {
-                  registry_node: data.node.id,
+                  registry_deployment: deployment,
                   provider: `integration.${transport}@1`,
                   operation: "invoke",
                   default_alias: alias,
@@ -782,21 +786,12 @@ export function EntityConfiguration({
                     setManualRemote(false);
                   }}
                 >
-                  <option value={data.node.id}>
-                    <ReferenceName id={data.node.id} />
+                  <option value={deployment}>
+                    <ReferenceName id={deployment} />
                   </option>
-                  {data.peers
-                    .filter(
-                      (peer) => peer.enabled && peer.node_id !== data.node.id,
-                    )
-                    .map((peer) => (
-                      <option key={peer.node_id} value={peer.node_id}>
-                        <ReferenceName id={peer.node_id} />
-                      </option>
-                    ))}
                 </NativeSelect>
               </Field>
-              {node === data.node.id ? (
+              {node === deployment ? (
                 agentSelect
               ) : (
                 <>

@@ -21,4 +21,4 @@ Three guards keep it out of production:
 - Demo data goes through the same services as an administrator's requests, so its Tenants get the same initial policies and Registry.
 - A failed load leaves no record, so the next deploy retries it. Every step must be idempotent.
 - Demo data holds no Provider Credentials, so ADR 0006 still holds: a person connects one through Provider Authorization before a Demo agent can run.
-- Demo Tenants run on the Deployment's own node until Nodes land (#241).
+- Each Demo Tenant receives a default Node, and its Demo Catalog Approvals belong to that Node (#241). Registry references name the Deployment through `registry_deployment`; the structure uses `$deployment` for its id.
