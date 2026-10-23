@@ -122,8 +122,13 @@ async fn attempt(store: &Store, run: Uuid, key: &str) -> (Option<String>, Value)
 }
 
 #[rstest::rstest]
+#[case::normal(false, false)]
+#[case::late_settlement(true, false)]
+#[case::ordinary_retention_first(false, true)]
 #[tokio::test]
 async fn expired_provider_results_become_tombstones_that_still_verify_citations(
+	#[case] late_settlement: bool,
+	#[case] retention_first: bool,
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
@@ -175,6 +180,18 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		.await
 		.unwrap();
 	let document: Uuid = serde_json::from_value(read["data"]["document_id"].clone()).unwrap();
+	store
+		.invocation_start(
+			&ACME,
+			&run,
+			token,
+			"q1",
+			"research_find",
+			&json!({"document_id":document,"query":"STRASSE"}),
+			true,
+		)
+		.await
+		.unwrap();
 	let hit = research
 		.find(
 			&call("q1"),
@@ -207,7 +224,32 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	// Act: within the terms nothing goes; past them the sweep purges.
 	age(&store, run.id, 29).await;
 	assert_eq!(swept().await.unwrap(), 0);
+	if retention_first {
+		let sql = Query::update()
+			.table(Alias::new("research_snapshots"))
+			.value_expr(Alias::new("purged_at"), Expr::current_timestamp())
+			.value(Alias::new("purge_reason"), "retention")
+			.value(Alias::new("lines"), json!([]))
+			.value(Alias::new("text_bytes"), 0_i64)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(document)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
+			.execute(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
 	age(&store, run.id, 31).await;
+	if late_settlement {
+		let sql = Query::update()
+			.table(Alias::new("research_attempts"))
+			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
+			.execute(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
 	let purged = swept().await.unwrap();
 
 	// Assert: both Provider results are tombstones, marked by their reason.
@@ -244,7 +286,11 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	assert!(snapshot.lines.is_empty());
 	assert_eq!(
 		snapshot.purged.map(|purge| purge.reason),
-		Some(PurgeReason::AccountTerms)
+		Some(if retention_first {
+			PurgeReason::Retention
+		} else {
+			PurgeReason::AccountTerms
+		})
 	);
 	assert_eq!(snapshot.readable(), Err(Failure::SnapshotPurged));
 	// The page title came from the provider, so it goes too.
@@ -258,6 +304,38 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	assert_eq!(fragment.text, "");
 	assert_eq!(fragment.passage_digest, passage_digest(&delivered.text));
 	assert_eq!(fragment.text_digest, delivered.text_digest);
+	let late_find = store
+		.invocation_finish(&ACME, &run, token, "q1", &hit)
+		.await
+		.unwrap();
+	assert_eq!(late_find["error"]["code"], "result_expired", "{late_find}");
+	let page = PageProvider::fetch(
+		&termed,
+		&reqwest::Url::parse(&evidence.source(run.id, source).await.unwrap().unwrap().url).unwrap(),
+	)
+	.await
+	.unwrap();
+	assert!(matches!(
+		evidence
+			.record_snapshot(
+				run.id,
+				"f1",
+				source,
+				"https://example.com/late",
+				&page,
+				&Limits::default()
+			)
+			.await
+			.unwrap(),
+		Err(Failure::ResultExpired)
+	));
+	assert!(matches!(
+		evidence
+			.record_sources(run.id, "s1", &[], 10)
+			.await
+			.unwrap(),
+		Err(Failure::ResultExpired)
+	));
 	// The Harness learns which results to replace in later requests.
 	let expired = ExecutionStore::expired_research(&store.for_run(ACME.clone()), &run)
 		.await
@@ -321,12 +399,64 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 	assert_eq!(found["status"], "ok", "{found}");
 	age(&store, run.id, 2).await;
 	let mut ended = termed.terms.clone();
+	// A recorded future end is still usable until its effective date.
+	ended.terminated_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+	assert_eq!(
+		aidash_server::research::sweep_account_terms(&store, &[ended.clone()])
+			.await
+			.unwrap(),
+		0
+	);
+	let future = research
+		.search(
+			&Call {
+				run: run.id,
+				context_revision: 0,
+				key: "future-end",
+				provider: "research.fixture@1",
+				disclosure_approval: true,
+			},
+			&Termed {
+				fixture: FixtureResearch::default(),
+				terms: ended.clone(),
+			},
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(future["status"], "ok", "{future}");
 
+	// Simulate the recorded effective date passing. A later declaration cannot
+	// replace the immutable termination row, so advance the fixture's stored clock.
+	ended_ago(&store, "ending", 1).await;
 	// Act: the agreement ended yesterday; its deletion period has not passed.
 	ended.terminated_at = Some(chrono::Utc::now() - chrono::Duration::days(1));
 	let within = aidash_server::research::sweep_account_terms(&store, &[ended.clone()])
 		.await
 		.unwrap();
+	let renewed = Termed {
+		fixture: FixtureResearch::default(),
+		terms: AccountTerms {
+			agreement_reference: "renewed-agreement".into(),
+			..termed.terms.clone()
+		},
+	};
+	let refused = research
+		.search(
+			&Call {
+				run: run.id,
+				context_revision: 0,
+				key: "renewed",
+				provider: "research.fixture@1",
+				disclosure_approval: true,
+			},
+			&renewed,
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(refused["error"]["code"], "account_unavailable", "{refused}");
+	assert!(evidence.attempt(run.id, "renewed").await.unwrap().is_none());
 	// The declaration is removed; the recorded end still applies, and a
 	// later end never replaces it.
 	ended_ago(&store, "ending", 8).await;
@@ -339,7 +469,7 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 		.unwrap();
 
 	// Assert
-	assert_eq!((within, undeclared, again), (0, 1, 0));
+	assert_eq!((within, undeclared, again), (0, 2, 0));
 	assert_eq!(
 		attempt(&store, run.id, "s1").await,
 		(Some("account_terms".into()), json!("result_expired"))
@@ -360,3 +490,6 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 	assert_eq!(recorded, 1);
 	cleanup(store, &url, &schema).await;
 }
+
+#[path = "account_terms/journal_results.rs"]
+mod journal_results;

@@ -8,11 +8,28 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoValue, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
+	Alias, Expr, ExprTrait, IntoIden, IntoValue, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
+
+/// Serialize restoration through external Plan Connection retirement without
+/// holding policy or deletion row locks that retirement itself may need.
+/// The caller keeps this transaction until retirement and restoration finish.
+pub(crate) async fn lock_restore(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()> {
+	let (sql, values) = Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pg_advisory_xact_lock".into_iden(),
+			vec![SimpleExpr::FunctionCall(
+				"hashtextextended".into_iden(),
+				vec![Expr::value(tenant).into(), Expr::value(391_351_i64).into()],
+			)],
+		))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
 
 /// The reason a Tenant Deletion leaves on the Runs it stops. A restore turns
 /// these Runs into cancelled ones; nothing resumes them.

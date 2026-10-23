@@ -138,6 +138,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.semantic_degraded").await
 	}
+	/// Resolve immutable Research references for this execution projection.
+	/// A store without Research references keeps the supplied context.
+	async fn resolve_research(&self, _run: &mut Run) -> Result<()> {
+		Ok(())
+	}
 	/// Persist a workspace's recovery before a later memory failure reloads the
 	/// Run. Keep the current lease and adopt the saved Run revision.
 	async fn recover_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {

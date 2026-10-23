@@ -2135,3 +2135,31 @@ fn the_resume_cycle_changes_the_decision_identity() {
 		first
 	);
 }
+
+#[test]
+fn a_question_budget_matches_the_largest_encoded_request_with_escaped_text() {
+	let state = json!({"history": "quote\" and 日本語".repeat(1000)});
+	let questions = Questions::from([
+		(
+			"q\"1".into(),
+			aidash_domain::decision::Question {
+				description: "short".into(),
+				answer_type: AnswerType::Noul,
+			},
+		),
+		(
+			"q2".into(),
+			aidash_domain::decision::Question {
+				description: "a long \"quoted\" instruction".repeat(100),
+				answer_type: AnswerType::Noul,
+			},
+		),
+	]);
+	let framing_reserve =
+		super::state::single_question_request_bytes(&state, &Questions::new()).unwrap();
+	let largest = questions.iter().map(|(id, question)| serde_json::to_vec(&json!({"state": state, "questions": { id: {"type": "noul", "instructions": question.description}}})).unwrap().len()).max().unwrap();
+	assert_eq!(
+		super::state::single_question_request_bytes(&state, &questions).unwrap(),
+		largest + framing_reserve
+	);
+}

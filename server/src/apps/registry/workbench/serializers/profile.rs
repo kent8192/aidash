@@ -15,3 +15,10 @@ impl From<AgentTestProfile> for TestProfile {
 		}
 	}
 }
+
+/// The exclusive ID cursor of a bounded administration page.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilePageQuery {
+	pub after: Option<String>,
+}

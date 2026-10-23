@@ -175,6 +175,7 @@ pub const TABLES: &[Table] = &[
 	// recorded ends of Research account holders' agreements (ADR 0058)
 	table("execution", "research_account_terminations", DeploymentWide),
 	table("execution", "research_attempts", TenantOwned),
+	table("execution", "research_journal_results", TenantOwned),
 	table("execution", "research_fragments", TenantOwned),
 	table("execution", "research_originals", TenantOwned),
 	table("execution", "research_page_images", TenantOwned),

@@ -140,6 +140,10 @@ struct State {
 	research_checks: std::sync::atomic::AtomicUsize,
 	/// Provider results the Research account terms no longer keep.
 	expired_research: aidash_domain::research::expiry::ExpiredResults,
+	expired_research_after: Option<usize>,
+	/// A result the persistence boundary replaces when its account expires.
+	settled_research: Option<Value>,
+	expiry_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -414,6 +418,14 @@ impl ExecutionStore for Backend {
 		_: &Run,
 	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
 		self.record("store.expired_research");
+		let check = self.0.expiry_checks.fetch_add(1, Ordering::SeqCst);
+		if self
+			.0
+			.expired_research_after
+			.is_some_and(|after| check < after)
+		{
+			return Ok(Default::default());
+		}
 		Ok(self.0.expired_research.clone())
 	}
 	async fn unknown_evidence(
@@ -496,6 +508,7 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
+		let output = self.0.settled_research.as_ref().unwrap_or(output);
 		self.0
 			.invocations
 			.lock()
@@ -1523,6 +1536,9 @@ fn fixture() -> Fixture {
 		research_revoked_after: None,
 		research_checks: Default::default(),
 		expired_research: Default::default(),
+		expired_research_after: None,
+		settled_research: None,
+		expiry_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,
@@ -2205,6 +2221,7 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 	};
 	// Jev keeps the leading text of an old result as a plain string.
 	let entries = [context::HistoryEntry {
+		research: None,
 		seq: 1,
 		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
 	}];
@@ -2788,9 +2805,21 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
-	let originals = fixture.run.context.history.clone();
+	let mut originals = fixture.run.context.history.clone();
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(fixture.run.context.execution_summary.is_some());
+	// Force another insufficient pruning while the previous summary exists.
+	let earlier_head = fixture.run.context.journal.head;
+	thinking_with_history(&mut fixture, 40);
+	originals.extend(
+		fixture
+			.run
+			.context
+			.history
+			.iter()
+			.filter(|entry| entry.seq > earlier_head)
+			.cloned(),
+	);
 
 	// The check before pruning passes; the source is revoked before the
 	// check that follows it.
@@ -2817,6 +2846,10 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 			.count(),
 		2,
 		"{step:?}"
+	);
+	assert!(
+		step.contains(&"decision.rejected"),
+		"the staged decision and charged attempts must be settled: {step:?}"
 	);
 	for provider in ["provider.infer", "summarizer.infer"] {
 		assert!(!step.contains(&provider), "{provider}: {step:?}");

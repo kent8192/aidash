@@ -40,6 +40,11 @@ impl ProviderResultRetention for ProviderResults {
 			async {
 				let mut tx = super::retention_transaction(&self.store).await?;
 				for termination in terminations {
+					super::lock(
+						tx.as_mut(),
+						&format!("research-account:{}", termination.account_id),
+					)
+					.await?;
 					let (sql, values) = Query::insert()
 						.into_table(Alias::new(ResearchAccountTermination::table_name()))
 						.columns(
@@ -106,14 +111,9 @@ impl ProviderResultRetention for ProviderResults {
 				Alias::new(column),
 			)
 		};
-		// Retention starts when the result was retrieved, at settlement. An
-		// attempt that never settled counts from its dispatch.
-		let retrieved_at = || {
-			Func::coalesce(vec![
-				Expr::col(attempt("completed_at")).into(),
-				Expr::col(attempt("created_at")).into(),
-			])
-		};
+		// Dispatch is the conservative durable age. A late recovery settlement
+		// must never give already-recorded provider artifacts a new lifetime.
+		let retrieved_at = || Expr::col(attempt("created_at"));
 		let mut due = retrieved_at().lte(Expr::value(retrieved_before));
 		if !accounts.is_empty() {
 			due = due.or(Expr::col(attempt("retention_account_id"))

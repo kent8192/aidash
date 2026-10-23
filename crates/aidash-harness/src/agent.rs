@@ -163,6 +163,15 @@ impl<'a> Executor<'a> {
 					let result = outcome.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?;
+					let result = if aidash_domain::research::revocation::result_operation(&result)
+						.is_some()
+					{
+						store
+							.invocation_finish(run, token, &keys[offset], &result)
+							.await?
+					} else {
+						result
+					};
 					outputs[offset] =
 						Some(denial.map_or(result, |message| json!({"error":message})));
 					continue;
@@ -257,13 +266,13 @@ impl<'a> Executor<'a> {
 			let event = ContextEvent::tool(call.clone(), output.clone());
 			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 			let growth = context::tool_event_growth(&context, &event);
-			context.push(event);
+			context.push_invocation(event, &keys[offset]);
 			let progress = run.state.tool_mut()?;
 			progress.request_tokens = progress.request_tokens.saturating_add(growth);
 			home.report(
 				&format!("{}:tool", keys[offset]),
 				"remote.tool.completed",
-				json!({"run_id":run.id,"call":call,"result":output}),
+				json!({"run_id":run.id,"call":call,"result":context.history.last().expect("just appended tool result").durable_event()["result"]}),
 			)
 			.await?;
 		}
@@ -773,7 +782,7 @@ impl<'a> Executor<'a> {
 	/// restored from the Context Journal and redacted the same way. Unlike a
 	/// revoked summary source this never pauses, because revoked evidence is
 	/// never readable again and the Run continues without research. The
-	/// Context Journal keeps what the model already read.
+	/// Context Journal retains immutable references whose owned bytes are removed.
 	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
 		use aidash_application::research::revocation;
 		let store = self.environment.store();
@@ -795,10 +804,10 @@ impl<'a> Executor<'a> {
 	/// Execution Summary that absorbed one is discarded and its range
 	/// restored from the Context Journal, without pausing. A revoked Run's
 	/// results are placeholders already.
-	async fn apply_research_expiry(&self, run: &mut Run) -> Result<()> {
+	async fn apply_research_expiry(&self, run: &mut Run) -> Result<bool> {
 		use aidash_application::research::{account_terms, revocation};
 		if run.context.research_revoked || !revocation::may_carry_research(&run.context) {
-			return Ok(());
+			return Ok(false);
 		}
 		let store = self.environment.store();
 		let expired = store.expired_research(run).await?;
@@ -807,8 +816,7 @@ impl<'a> Executor<'a> {
 			&expired,
 			&revocation::RunJournal { store, run: run.id },
 		)
-		.await?;
-		Ok(())
+		.await
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
@@ -1064,6 +1072,7 @@ impl<'a> Executor<'a> {
 			.get_for_run(&*run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent = self.environment.agent(&entry)?;
+		store.resolve_research(run).await?;
 		// Separate phase poll frames to keep typed execution within the default worker stack.
 		match run.state.clone() {
 			RunState::Ready(_) => {
@@ -1697,12 +1706,14 @@ impl<'a> Executor<'a> {
                 // Pruning may release authority for Jev I/O, and a local Run's
                 // sources may change during it too; a source revoked meanwhile
                 // must reach neither the summarizer nor the model.
-                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 match plan {
-                    None => {}
+                    None => self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?,
                     Some(mut plan) => {
                         let staged = plan.staged.take();
-                        let summarized = Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await;
+                        let summarized = async {
+                            self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await
+                        }.await;
                         // A pruning no summary completed changes nothing (ADR 0056).
                         if summarized.is_err() && let (Some(staged), Some(ports)) = (&staged, &decider) {
                             let gate = aidash_application::decision::DecisionGate { authority: ports.authority.as_ref(), journal: ports.journal.as_ref(), provider: ports.provider.as_ref() };
@@ -1723,6 +1734,10 @@ impl<'a> Executor<'a> {
 				{
 					self.apply_research_revocation(run).await?;
 					store.save_run(run, token, "run.research_revoked").await?;
+					return Ok(());
+				}
+				if self.apply_research_expiry(run).await? {
+					store.save_run(run, token, "run.research_expired").await?;
 					return Ok(());
 				}
 				if let Some(guard) = guard {
@@ -2738,6 +2753,12 @@ impl<'a> Executor<'a> {
 						Err(e) => return Err(e),
 					}
 				};
+                // Revalidate Research before deriving any media selection. A completed
+                // replay may now be a tombstone under expired account terms.
+                let research_result = aidash_domain::research::revocation::result_operation(&output).is_some();
+                let (output, unfinished_key) = if research_result {
+                    (store.invocation_finish(run, token, &key, &output).await?, None)
+                } else { (output, unfinished_key) };
 				if let Some(selection) =
 					contract.behavior.model_media_selection(&call.arguments, &output)
 				{
@@ -2811,13 +2832,9 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-				// The stored result replaces a research result whose account
-				// terms ended meanwhile (ADR 0058).
-				let output = if invocation.status != "COMPLETED" {
-					store.invocation_finish(run, token, &key, &output).await?
-				} else {
-					output
-				};
+                let output = if invocation.status != "COMPLETED" && !research_result {
+                    store.invocation_finish(run, token, &key, &output).await?
+                } else { output };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() {
@@ -2864,7 +2881,7 @@ impl<'a> Executor<'a> {
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
-				context.push(event);
+				context.push_invocation(event, &key);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);
 				run.context = context.clone();
@@ -2901,7 +2918,7 @@ impl<'a> Executor<'a> {
 				home.report(
 					&format!("{key}:tool"),
 					"remote.tool.completed",
-					json!({"run_id":run.id,"call":call,"result":output}),
+					json!({"run_id":run.id,"call":call,"result":context.history.last().expect("just appended tool result").durable_event()["result"]}),
 				)
 				.await?;
 				store.save_run(run, token, "run.tool_recorded").await?;
