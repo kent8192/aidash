@@ -2,6 +2,7 @@
 
 use crate::apps::knowledge::services::states::SemanticEntryState;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,13 @@ pub struct SemanticEntry {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "semantic_entries_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::knowledge::models::SemanticIndexe>,
 	#[field(field_type = "text")]
 	pub key: String,
 	#[field]

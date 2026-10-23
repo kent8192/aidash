@@ -1,6 +1,7 @@
 //! Persistent dashboard_sessions records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -13,8 +14,12 @@ pub struct DashboardSession {
 	pub token_hash: Vec<u8>,
 	#[field]
 	pub csrf_hash: Vec<u8>,
-	#[field]
-	pub identity_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		db_constraint = "dashboard_sessions_identity_id_fkey",
+		db_index = false
+	)]
+	pub identity: ForeignKeyField<crate::apps::identity::models::DashboardIdentity>,
 	#[field(field_type = "text", null = true)]
 	pub provider_sid: Option<String>,
 	#[field]
@@ -51,4 +56,4 @@ crate::native_record!(DashboardSession {
 	desktop,
 	desktop_idle_seconds,
 	access_expires_at
-});
+} relations { identity });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release candidates and their staging gate, executed from the protected development branch.
+"""Release candidates, staging gates and CI verification, executed from protected code.
 
 PR code is never checked out or executed. Every API write uses fixed endpoints
 and JSON input; the installation token remains outside deployment artifacts.
@@ -18,6 +18,7 @@ from urllib.parse import quote, urlencode
 import zipfile
 
 from cloud import CommandError, run
+from delivery import merged_release
 from policy import IMAGE_KINDS, Refused
 from release_diagnostics import emit, endpoint, errors, phase, response
 
@@ -382,11 +383,65 @@ def accept_staging(config, event, receipt):
 
 
 @phase
+def verify_ci(config, event, sha, mode):
+    """Reuse exact development CI only for an unchanged, authenticated release."""
+    if (not SHA.fullmatch(sha) or event.get("repository", {}).get("full_name") != config["repository"]
+            or not re.fullmatch(r"develop/[0-9]+\.[0-9]+\.[0-9]+", config["develop_branch"])
+            or not re.fullmatch(r"[A-Za-z0-9_-]+\[bot\]", config["release_app_bot_login"])):
+        raise Refused("Lightweight CI requires the configured repository and release App")
+    repo = config["repository"]
+    if mode == "release":
+        if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+            raise Refused("Release CI must verify a pull request merge result")
+        announced = event.get("pull_request", {})
+        pr = api(f"repos/{repo}/pulls/{int(announced['number'])}")
+        metadata = provenance(config, pr)
+        if (metadata is None or pr.get("state") != "open" or pr.get("merged_at")
+                or pr.get("merge_commit_sha") != sha
+                or pr.get("head", {}).get("sha") != announced.get("head", {}).get("sha")):
+            raise Refused("Only the current immutable managed release can reuse development CI")
+        source = metadata["source_sha"]
+        current_candidate(config, source)
+        merged = api(f"repos/{repo}/git/commits/{sha}")
+        original = api(f"repos/{repo}/git/commits/{source}")
+        if merged["tree"]["sha"] != original["tree"]["sha"]:
+            raise Refused("The release merge result differs from the tested source tree")
+    elif mode == "main":
+        if (os.environ.get("GITHUB_EVENT_NAME") not in {"push", "workflow_dispatch"}
+                or os.environ.get("GITHUB_REF") != "refs/heads/main"
+                or os.environ.get("GITHUB_EVENT_NAME") == "push" and (event.get("ref") != "refs/heads/main" or event.get("after") != sha)):
+            raise Refused("Main CI must verify the exact main push or dispatch")
+        pr, source = merged_release(config, sha)
+        metadata = provenance(config, pr)
+        if metadata is None:
+            raise Refused("Main must retain the original release App provenance")
+        slug = config["release_app_bot_login"][:-5]
+        checks = [value for value in pages(f"repos/{repo}/commits/{source}/check-runs", "check_runs")
+                  if value.get("name") == CHECK and value.get("app", {}).get("slug") == slug]
+        latest = max(checks, key=lambda item: item["id"]) if checks else {}
+        if (latest.get("status") != "completed" or latest.get("conclusion") != "success"
+                or not re.fullmatch(r"aidash-staging/1:[1-9][0-9]*:[1-9][0-9]*:" + source, latest.get("external_id") or "")):
+            raise Refused("Main requires the release App's successful original staging check")
+    else:
+        raise Refused("Unknown lightweight CI mode")
+    completed = source_ci(config, source)
+    if completed["id"] != metadata["ci_run_id"]:
+        raise Refused("Release provenance does not identify the successful source CI")
+    emit("ci.verified", mode=mode, source_sha=source, merge_sha=sha, ci_run_id=completed["id"])
+
+
+@phase
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["context", "candidate", "staging"])
+    parser.add_argument("action", choices=["context", "candidate", "staging", "verify-ci"])
     parser.add_argument("--receipt", type=Path)
     args = parser.parse_args()
+    if args.action == "verify-ci":
+        config = {"repository": os.environ["GITHUB_REPOSITORY"], "develop_branch": os.environ.get("DEVELOP_BRANCH", ""),
+                  "release_app_bot_login": os.environ.get("RELEASE_APP_BOT_LOGIN", "")}
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        verify_ci(config, event, os.environ["GITHUB_SHA"], os.environ["CI_MODE"])
+        return
     if os.environ.get("GITHUB_EVENT_NAME") != "workflow_run":
         raise Refused("Release automation only accepts workflow completion events")
     config = configuration()

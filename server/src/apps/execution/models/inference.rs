@@ -1,5 +1,6 @@
 //! Inference Attempts and their display-only progress rows.
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,8 +15,15 @@ pub struct InferenceAttempt {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "inference_attempt_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field]
 	pub usage_attempt: Uuid,
 	#[field(field_type = "text", null = true)]
@@ -45,8 +53,15 @@ pub struct InferenceProgressRecord {
 	/// Allocated per Run by the repository, not by the database.
 	#[field(primary_key = true, auto_increment = false)]
 	pub seq: i64,
-	#[field]
-	pub attempt_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "inference_progress_attempt",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub attempt: ForeignKeyField<crate::apps::execution::models::inference::InferenceAttempt>,
 	#[field(field_type = "text")]
 	pub kind: String,
 	#[field]
