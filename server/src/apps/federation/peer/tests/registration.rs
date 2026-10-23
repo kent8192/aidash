@@ -55,7 +55,7 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	.await;
 	let remote_runtime = federate(&remote, &[]);
 	let local_runtime = federate(&local, &[&remote.server.url, &relocated.url]);
-	tenant_root(&local_runtime, "acme").await;
+	crate::endpoint::tenant_scope(&local_runtime.store, "acme").await;
 	tenant_root(&remote_runtime, "other").await;
 	let owner = default_node(&local_runtime.store, "acme").await.node;
 	let source = default_node(&remote_runtime.store, "other")
@@ -150,7 +150,7 @@ async fn a_registration_refuses_a_stranger_a_stale_revision_and_a_self_registrat
 	let remote = Box::pin(remote).await;
 	let remote_runtime = federate(&remote, &[]);
 	let local_runtime = federate(&local, &[&remote.server.url]);
-	tenant_root(&local_runtime, "acme").await;
+	crate::endpoint::tenant_scope(&local_runtime.store, "acme").await;
 	tenant_root(&remote_runtime, "other").await;
 	let owner = default_node(&local_runtime.store, "acme").await;
 	let source = default_node(&remote_runtime.store, "other")
@@ -212,7 +212,7 @@ async fn concurrent_first_registrations_of_one_node_create_exactly_one_revision(
 	let remote = Box::pin(remote).await;
 	let remote_runtime = federate(&remote, &[]);
 	let local_runtime = federate(&local, &[&remote.server.url]);
-	tenant_root(&local_runtime, "acme").await;
+	crate::endpoint::tenant_scope(&local_runtime.store, "acme").await;
 	tenant_root(&remote_runtime, "other").await;
 	let owner = default_node(&local_runtime.store, "acme").await.node;
 	let source = default_node(&remote_runtime.store, "other")

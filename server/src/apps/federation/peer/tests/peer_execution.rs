@@ -371,6 +371,8 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 ) {
 	let home = home.await;
 	let child = child.await;
+	endpoint::tenant_scope(&home.runtime.store, "acme").await;
+	endpoint::tenant_scope(&child.runtime.store, "acme").await;
 	endpoint::register_fixture_agent(&home, "parent").await;
 	endpoint::register_fixture_agent(&child, "public-child").await;
 	let home_runtime = peering::enable(&home.runtime, &home.context);
@@ -394,7 +396,8 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 			)
 			.await
 			.unwrap();
-		assert_eq!(decoded(registered).0, 200);
+		let (status, body) = decoded(registered);
+		assert_eq!(status, 200, "{body}");
 	}
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_deployment":home.runtime.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.deployment,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
