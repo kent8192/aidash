@@ -57,7 +57,19 @@ impl GenerationControls for NativeControls {
 		let mode = match &self.actor {
 			// A Deployment Administrator controls a job in the named Tenant's scope.
 			Actor::DeploymentAdministrator => {
-				Mode::DeploymentAdministrator(self.runtime.store.pool.begin(scope).await?)
+				let tenant = scope
+					.tenant_name()
+					.ok_or(aidash_application::Error::Forbidden)?;
+				let mut tx = self.runtime.store.pool.begin(scope).await?;
+				crate::authorization::remote::deployment_administrator::tenant(
+					&mut *tx,
+					tenant.as_str(),
+				)
+				.await
+				.map_err(
+					crate::authorization::remote::deployment_administrator::application_error,
+				)?;
+				Mode::DeploymentAdministrator(tx)
 			}
 			Actor::Subject(identity) => {
 				if identity.tenancy()? != *scope {

@@ -406,6 +406,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m pip install PyYAML==6.0.3
+      - run: python3 -m unittest discover -s scripts -p test_local_activation.py
       - run: python3 -m unittest discover -s scripts -p test_helm_execution.py
   acceptance:
     name: Federation tests
