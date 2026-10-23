@@ -577,3 +577,29 @@ async fn a_permitted_mcp_origin_follows_no_redirects() {
 	server.abort();
 	let _ = server.await;
 }
+
+#[tokio::test]
+async fn an_unpermitted_plaintext_mcp_hint_is_refused_before_discovery() {
+	let (endpoint, server) = serve(mcp_server(
+		vec![
+			json!([{"name":"lookup", "inputSchema":{"type":"object"}, "annotations":{"readOnlyHint":true}}]),
+		],
+		false,
+	))
+	.await;
+	let address: std::net::SocketAddr = reqwest::Url::parse(&endpoint)
+		.unwrap()
+		.socket_addrs(|| None)
+		.unwrap()[0];
+	let endpoint = format!("http://public.example:{}/mcp", address.port());
+	let public = reqwest::Client::builder()
+		.no_proxy()
+		.resolve("public.example", address)
+		.build()
+		.unwrap();
+	let mut clients = clients();
+	clients.public = public;
+	let result = mcp_read_only_hint(&clients, &KeylessAccess::default(), &endpoint, "lookup").await;
+	server.abort();
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+}

@@ -66,6 +66,19 @@ impl ToolClients {
 	}
 }
 
+/// Invocation and pre-registration discovery apply the same origin/TLS rule.
+fn tool_destination(origins: &KeylessAccess, endpoint: &str) -> Result<Destination> {
+	let destination = origins.destination(endpoint)?;
+	if destination == Destination::PublicOnly {
+		let url = reqwest::Url::parse(endpoint)
+			.map_err(|_| Error::Invalid("invalid tool endpoint URL".into()))?;
+		if url.scheme() != "https" {
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(destination)
+}
+
 /// A Tenant chooses a tool's endpoint, so the Keyless endpoint rule decides
 /// where each call may connect (ADR 0036).
 #[derive(Clone)]
@@ -79,16 +92,9 @@ impl HttpTools {
 	}
 	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
 	fn client(&self, endpoint: &str) -> Result<&reqwest::Client> {
-		match self.origins.destination(endpoint)? {
+		match tool_destination(&self.origins, endpoint)? {
 			Destination::Permitted => Ok(&self.clients.permitted),
-			Destination::PublicOnly => {
-				let url = reqwest::Url::parse(endpoint)
-					.map_err(|_| Error::Invalid("invalid tool endpoint URL".into()))?;
-				if url.scheme() != "https" {
-					return Err(Error::Forbidden);
-				}
-				Ok(&self.clients.public)
-			}
+			Destination::PublicOnly => Ok(&self.clients.public),
 			Destination::Forbidden => {
 				tracing::warn!("tool endpoint refused: its host is a non-public address");
 				Err(Error::Forbidden)
@@ -225,7 +231,7 @@ pub async fn mcp_read_only_hint(
 	tool_name: &str,
 ) -> Result<Option<bool>> {
 	crate::validate_endpoint(endpoint)?;
-	let client = clients.keyless(origins.destination(endpoint)?)?;
+	let client = clients.keyless(tool_destination(origins, endpoint)?)?;
 	// One budget covers the handshake and every page; dropping the session on
 	// timeout closes it.
 	tokio::time::timeout(MCP_LIST_TIMEOUT, async {

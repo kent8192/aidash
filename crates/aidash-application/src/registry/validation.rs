@@ -94,23 +94,28 @@ impl DefinitionValidation {
 		bindings: &aidash_domain::registry::bindings::AgentBindings,
 	) -> Result<()> {
 		for plugin in &bindings.agent_plugins {
-			for (name, server) in &plugin.servers {
-				let McpServer::Remote(remote) = server else {
-					continue;
-				};
-				let reason =
-					match self.refused_endpoint(&remote.url.origin().ascii_serialization())? {
-						None => continue,
-						Some(EndpointRefusal::NonPublic) => "",
-						Some(EndpointRefusal::PlainHttp) => {
-							" needs HTTPS unless its origin is permitted"
-						}
-					};
-				return Err(Error::Invalid(format!(
-					"AGENT_PLUGIN_SERVER_FORBIDDEN: {}/{name}{reason}",
-					plugin.name
-				)));
-			}
+			self.validate_agent_plugin(plugin)?;
+		}
+		Ok(())
+	}
+	/// Enforce the Deployment's endpoint policy before an imported plugin is stored.
+	pub fn validate_agent_plugin(
+		&self,
+		plugin: &aidash_domain::agent_plugin::AgentPluginRef,
+	) -> Result<()> {
+		for (name, server) in &plugin.servers {
+			let McpServer::Remote(remote) = server else {
+				continue;
+			};
+			let reason = match self.refused_endpoint(&remote.url.origin().ascii_serialization())? {
+				None => continue,
+				Some(EndpointRefusal::NonPublic) => "",
+				Some(EndpointRefusal::PlainHttp) => " needs HTTPS unless its origin is permitted",
+			};
+			return Err(Error::Invalid(format!(
+				"AGENT_PLUGIN_SERVER_FORBIDDEN: {}/{name}{reason}",
+				plugin.name
+			)));
 		}
 		Ok(())
 	}
