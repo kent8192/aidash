@@ -846,6 +846,7 @@ impl ExecutionEnvironment for Bench {
 		&self,
 		request: ContextSourceRead<'_>,
 		_worker: Uuid,
+		_frame: SourceQueryFrame<'_>,
 	) -> SemanticContextRead {
 		let result = match request {
 			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(

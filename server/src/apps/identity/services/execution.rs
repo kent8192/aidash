@@ -1070,10 +1070,15 @@ impl Guard {
 		decider: &aidash_domain::decision::DeciderPin,
 		config: &aidash_domain::decision::DeciderConfig,
 		pins: &[aidash_domain::decision::SourcePin],
+		source: &aidash_domain::registry::bindings::QualifiedRef,
+		query_policy: aidash_domain::context::source::QueryPolicy,
 	) -> Result<()> {
 		let mut access = self.access.write().await;
 		let mut workspace = access.workspace(self.run.workspace_id).await?;
 		workspace.attributes["context_selection"] = json!(decider);
+		workspace.attributes["hook"] = json!("context_selection");
+		workspace.attributes["source"] = json!(source);
+		workspace.attributes["query_policy"] = json!(query_policy);
 		workspace.attributes["inference_model"] = json!(self.agent.model);
 		workspace.attributes["decider"] = json!(decider.identity);
 		workspace.attributes["selector_routes"] = json!(config.routes);
@@ -1082,6 +1087,7 @@ impl Guard {
 		workspace.attributes["query_disclosure"] = json!(true);
 		access.require(&workspace, "semantic.disclose").await
 	}
+
 	pub(crate) async fn recheck_source_observation(
 		&self,
 		store: &Store,

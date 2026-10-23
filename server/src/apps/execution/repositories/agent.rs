@@ -958,8 +958,9 @@ impl ExecutionEnvironment for Environment<'_> {
 		&self,
 		request: ContextSourceRead<'_>,
 		worker: Uuid,
+		frame: SourceQueryFrame<'_>,
 	) -> SemanticContextRead {
-		self.collect_context_source(request, worker).await
+		self.collect_context_source(request, worker, frame).await
 	}
 
 	fn node_id(&self) -> &str {
