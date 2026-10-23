@@ -1549,9 +1549,10 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 
 /// Issue #236: a remote Ordered Run keeps reusing its Home retrieval through an
 /// outage of the Home embedding provider while its Retrieval Key holds. A Run
-/// message sent during the outage changes the key's query inputs; only the
-/// step that then needs a new retrieval follows the outage policy. Once the
-/// provider recovers, the retry retrieves again and the next step reuses it.
+/// message changes the key's query inputs; a pending entry changes its Home
+/// corpus digest. Only a step that needs a new retrieval follows the outage
+/// policy. Once the provider recovers, the retry retrieves again and the next
+/// step reuses it.
 #[rstest::rstest]
 #[case::run_message(false)]
 #[case::pending_index(true)]
@@ -1618,30 +1619,13 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 	if pending_entry {
 		assert_eq!(body["state"], "PENDING", "{body}");
 	}
+	// The refreshed Home corpus digest changes the Retrieval Key before reuse,
+	// so a pending entry waits for indexing without a separate stale retry.
 	for _ in 0..10 {
 		if p.run().await.recovery.retry.is_some() {
 			break;
 		}
 		p.step().await;
-	}
-
-	if pending_entry {
-		// Home first invalidates the old cached observation. Recovery must
-		// discard it, then the fresh read waits for the incomplete index.
-		let stale = p.run().await;
-		assert_eq!(
-			serde_json::to_value(stale.recovery.semantic_reason).unwrap(),
-			"stale"
-		);
-		advance_semantic_retry(&p).await;
-		for _ in 0..10 {
-			p.step().await;
-			if p.run().await.recovery.semantic_reason
-				== Some(aidash_domain::semantic::Failure::Unavailable)
-			{
-				break;
-			}
-		}
 	}
 
 	// Assert: the step that needs a new retrieval follows the outage policy.
@@ -1651,7 +1635,7 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 		.retry
 		.as_ref()
 		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
-	assert_eq!(retry.count, if pending_entry { 2 } else { 1 }, "{run:?}");
+	assert_eq!(retry.count, 1, "{run:?}");
 	assert_eq!(
 		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
 		"unavailable"
