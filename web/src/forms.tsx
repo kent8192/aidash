@@ -33,6 +33,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { EntityConfiguration } from "./entity-configuration";
 import { useNodes } from "./nodes";
+import { PlanModelPicker } from "./plan-model-picker";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
 import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
@@ -360,6 +361,7 @@ export function EntityForm({
   const entityLabel = useEntityLabel(data.registry);
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
+  const [modelSource, setModelSource] = useState("openrouter");
   const [modelName, setModelName] = useState("");
   const [customModelName, setCustomModelName] = useState<string | null>(null);
   const [defaultName] = useState(() => {
@@ -418,11 +420,19 @@ export function EntityForm({
                 }
               : kind === "model"
                 ? {
-                    provider: "openrouter",
+                    provider:
+                      modelSource === "keyless" ? "openai" : modelSource,
+                    ...(modelSource === "chatgpt"
+                      ? {
+                          plan_connection: "chatgpt",
+                          streaming: true,
+                          projection_versions: ["legacy", "ordered", "native"],
+                        }
+                      : modelSource === "openrouter"
+                        ? { provider_credential: "openrouter" }
+                        : {}),
                     model_id: s("model_id"),
                     endpoint: s("endpoint"),
-                    // Runs use the Tenant's OpenRouter Provider Credential.
-                    provider_credential: "openrouter",
                     reasoning_effort: s("reasoning_effort") || null,
                     context_window: Number(s("context_window")),
                     max_output_tokens: Number(s("max_output_tokens")),
@@ -679,7 +689,82 @@ export function EntityForm({
         ) : kind === "model" ? (
           <>
             <Hint>{t("modelHelp")}</Hint>
-            <OpenRouterModelPicker onNameChange={setModelName} />
+            <Field label={t("provider")}>
+              <NativeSelect
+                name="model_source"
+                value={modelSource}
+                onChange={(event) => {
+                  setModelSource(event.target.value);
+                  setModelName("");
+                  setCustomModelName(null);
+                }}
+              >
+                <option value="openrouter">
+                  OpenRouter · {t("providerCredentials")}
+                </option>
+                {data.access.kind === "subject" && (
+                  <option value="chatgpt">
+                    ChatGPT · {t("planConnections")}
+                  </option>
+                )}
+                <option value="keyless">
+                  {t("openaiCompatible")} · Keyless
+                </option>
+              </NativeSelect>
+            </Field>
+            <div key={modelSource} className="grid min-w-0 gap-4">
+              {modelSource === "openrouter" ? (
+                <OpenRouterModelPicker onNameChange={setModelName} />
+              ) : modelSource === "chatgpt" &&
+                data.access.kind === "subject" ? (
+                <PlanModelPicker
+                  tenant={data.access.tenant}
+                  subject={data.access.subject}
+                  onNameChange={setModelName}
+                />
+              ) : (
+                <>
+                  <Notice tone="warning">{t("keylessEndpointHelp")}</Notice>
+                  <Field label={t("endpoint")}>
+                    <Input
+                      name="endpoint"
+                      type="url"
+                      required
+                      placeholder="http://127.0.0.1:11434/v1"
+                    />
+                  </Field>
+                  <Field label={t("modelId")}>
+                    <Input
+                      name="model_id"
+                      required
+                      onChange={(event) => setModelName(event.target.value)}
+                    />
+                  </Field>
+                  <div className={pairClass}>
+                    <Field label={t("contextWindow")}>
+                      <Input
+                        name="context_window"
+                        type="number"
+                        min={1}
+                        required
+                        defaultValue={128000}
+                      />
+                    </Field>
+                    <Field label={t("modelMaxOutputTokens")}>
+                      <Input
+                        name="max_output_tokens"
+                        type="number"
+                        min={1}
+                        required
+                        defaultValue={16384}
+                      />
+                    </Field>
+                  </div>
+                  <input type="hidden" name="modalities" value='["text"]' />
+                  <input type="hidden" name="cost" value="{}" />
+                </>
+              )}
+            </div>
           </>
         ) : kind === "embedding" ? (
           <>

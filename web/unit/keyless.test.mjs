@@ -54,3 +54,17 @@ test("definitions without a usable HTTP endpoint carry no notice", () => {
   ])
     assert.equal(keylessOrigin({ kind: "model", config }), null);
 });
+
+test("personal plan models are never classified as keyless endpoints", () => {
+  assert.equal(
+    keylessOrigin({
+      kind: "model",
+      config: {
+        provider: "chatgpt",
+        plan_connection: "chatgpt",
+        endpoint: "https://api.openai.com/v1",
+      },
+    }),
+    null,
+  );
+});

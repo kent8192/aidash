@@ -48,6 +48,8 @@ import { useTenantActions } from "../tenant-administration";
 import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
+import { ModelSource } from "../model-source";
+import { PlanConnectionsPage } from "../plan-connections";
 import { ProviderCredentialsPage } from "../provider-credentials";
 import { RecordView } from "../record-view";
 import { SemanticPage } from "../semantic";
@@ -75,6 +77,7 @@ const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   clusters: Network,
   deployment: Container,
   providerCredentials: KeyRound,
+  planConnections: KeyRound,
   marketplace: Store,
   approvals: ShieldCheck,
 };
@@ -208,6 +211,7 @@ function EntryRow({
   name,
   description,
   keyless,
+  source,
   kind,
   tags,
   approval,
@@ -217,6 +221,7 @@ function EntryRow({
   name: string;
   description: string;
   keyless: string | null;
+  source: ReactNode;
   kind: string;
   tags: readonly string[];
   approval: ReactNode;
@@ -241,6 +246,7 @@ function EntryRow({
               {description}
             </p>
           )}
+          {source}
           {keyless && (
             <p className="truncate">
               <KeylessOrigin origin={keyless} />
@@ -390,6 +396,7 @@ function EntryList({
                   name={entityName(version.entry)}
                   description={local(version.entry.description)}
                   keyless={keylessOrigin(version.entry)}
+                  source={<ModelSource entry={version.entry} />}
                   kind={version.entry.kind}
                   tags={version.entry.tags ?? []}
                   approval={<ApprovalBadge version={version} />}
@@ -558,6 +565,20 @@ export function Configuration({
               <UsagePanel />
             </>
           )}
+          {section === "planConnections" &&
+            (data.access.kind === "subject" ? (
+              <PlanConnectionsPage
+                key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                tenant={data.access.tenant}
+                subject={data.access.subject}
+              />
+            ) : (
+              <Notice role="status">
+                {locale === "ja-JP"
+                  ? "Plan 接続はログイン中の Subject 個人の設定です。"
+                  : "Plan Connections belong to a signed-in subject."}
+              </Notice>
+            ))}
           {section === "providerCredentials" && (
             <ProviderCredentialsPage access={data.access} />
           )}

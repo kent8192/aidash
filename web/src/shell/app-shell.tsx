@@ -97,6 +97,7 @@ const settingsIcons: Record<
   clusters: Network,
   deployment: Rocket,
   providerCredentials: KeyRound,
+  planConnections: KeyRound,
   marketplace: Store,
   approvals: ShieldCheck,
 };

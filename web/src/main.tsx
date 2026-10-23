@@ -74,6 +74,7 @@ import {
   type Theme,
   type ThemePreference,
 } from "./theme";
+import { PlanConnectionBanner } from "./plan-connections";
 import { AppShell } from "./shell/app-shell";
 import { AuthCard } from "./shell/auth-card";
 import { Alert, Loading } from "./components/patterns";
@@ -908,6 +909,21 @@ function Dashboard({
           }}
         >
           <BillingNotice />
+          {data?.access.kind === "subject" && (
+            <PlanConnectionBanner
+              key={`${browserSessionId}:${context}`}
+              tenant={data.access.tenant}
+              subject={data.access.subject}
+              required={data.registry.some(
+                (entry) =>
+                  entry.kind === "model" &&
+                  Boolean(
+                    (entry.config as { plan_connection?: string } | null)
+                      ?.plan_connection,
+                  ),
+              )}
+            />
+          )}
           {((error && !selection) || state.isError) && (
             <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
               {error && !selection && <Alert>{error}</Alert>}
