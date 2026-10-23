@@ -282,32 +282,42 @@ export function approvalNotice(
     agent_id?: string | null;
     agent_version?: string | null;
     requester: string;
+    sampling_target?: { plugin: string; server: string } | null;
   },
   ja: boolean,
 ): string {
   const what =
-    card.kind === "tool_call"
+    card.kind === "sampling"
       ? ja
-        ? "ツール呼び出し"
-        : "Tool call"
-      : card.kind === "disclosure"
-        ? card.operation === "search"
-          ? ja
-            ? "Web 検索"
-            : "Web search"
+        ? "Sampling の承認"
+        : "Sampling approval"
+      : card.kind === "tool_call"
+        ? ja
+          ? "ツール呼び出し"
+          : "Tool call"
+        : card.kind === "disclosure"
+          ? card.operation === "search"
+            ? ja
+              ? "Web 検索"
+              : "Web search"
+            : ja
+              ? "ページ読み取り"
+              : "Page reading"
           : ja
-            ? "ページ読み取り"
-            : "Page reading"
-        : ja
-          ? "外部接続"
-          : "Outbound request";
+            ? "外部接続"
+            : "Outbound request";
   const agent = card.agent_id
     ? `${card.agent_id}@${card.agent_version ?? ""}`
     : null;
   return [
     what,
     // A tool call's target is an internal address, so the tool stands for it.
-    card.kind === "tool_call" ? toolLabel(card) : card.targets.join(", "),
+    card.kind === "sampling"
+      ? card.sampling_target &&
+        `${card.sampling_target.plugin}/${card.sampling_target.server}`
+      : card.kind === "tool_call"
+        ? toolLabel(card)
+        : card.targets.join(", "),
     agent,
     ja ? `依頼者 ${card.requester}` : `requested by ${card.requester}`,
   ]

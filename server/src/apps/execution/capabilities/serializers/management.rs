@@ -60,6 +60,10 @@ pub struct ApprovalCard {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub call: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub sampling_target: Option<aidash_domain::agent_plugin::interaction::SamplingTarget>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub sampling: Option<aidash_domain::agent_plugin::interaction::SamplingRequest>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider: Option<String>,
 	/// The price of this one request, recorded when approval was requested
 	/// and charged to the Research account holder: an estimate, not an

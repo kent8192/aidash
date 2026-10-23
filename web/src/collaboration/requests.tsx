@@ -1,3 +1,4 @@
+import { elicitationMessage } from "./elicitation";
 import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { Alert, Facts } from "../components/patterns";
@@ -113,7 +114,7 @@ export function ChannelRequests({
           <article className={frame} key={`${item.node}:${item.request.id}`}>
             {kicker}
             <h3 className="mt-1.5 text-sm font-semibold leading-snug text-foreground">
-              {item.request.prompt}
+              {elicitationMessage(item.request)}
             </h3>
             {meta}
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -159,7 +160,7 @@ export function ChannelRequests({
           >
             {kicker}
             <span className="mt-1.5 block text-sm font-semibold leading-snug text-foreground">
-              {item.request.prompt}
+              {elicitationMessage(item.request)}
             </span>
             {meta}
             <span className="mt-2.5 inline-flex items-center gap-1 text-xs font-medium text-brand">

@@ -766,6 +766,56 @@ test("Allow for this Run still carries its targets and expiry", async ({
   expect(typeof decisions[0].expires_at).toBe("string");
 });
 
+test("Sampling approval shows the server messages and grants only the pinned server", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { subject: true });
+  const digest = `sha256:${"ab".repeat(32)}`;
+  const target = `sampling:${JSON.stringify(["researcher", "reports", "writer", digest, "https://mcp.example.com"])}`;
+  const decisions = await inbox(page, [
+    pending({
+      kind: "sampling",
+      tool: null,
+      version: null,
+      action: "sampling.request_unapproved",
+      targets: [target],
+      sampling_target: {
+        agent: "researcher",
+        plugin: "reports",
+        server: "writer",
+        digest,
+        origin: "https://mcp.example.com",
+      },
+      sampling: {
+        system_prompt: "Summarize only this server request",
+        messages: [{ role: "user", text: "Server report draft" }],
+        max_tokens: 64,
+      },
+    }),
+  ]);
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Decisions/ }).click();
+  const card = page.getByRole("article", {
+    name: "Sampling approval",
+    exact: true,
+  });
+  await expect(card).toContainText("Summarize only this server request");
+  await expect(card).toContainText("Server report draft");
+  await expect(card).toContainText("includeContext: none");
+  await expect(card).toContainText("Run's model and budget");
+  await expect(card).toContainText(digest);
+  await card.getByRole("checkbox").check();
+  await card
+    .getByRole("button", { name: "Allow for this Run", exact: true })
+    .click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0]).toMatchObject({
+    choice: "allow_run",
+    targets: [target],
+  });
+  expect(errors).toEqual([]);
+});
+
 /** A Thread whose Run shows `items` among its approvals and grants. */
 async function runApprovals(page: Page, items: unknown[], ja = false) {
   const area = {

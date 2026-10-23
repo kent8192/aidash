@@ -31,9 +31,15 @@ pub enum PersistedCapability {
 	ToolBatchState,
 	/// `RecoveryState` remembers steps that ran with Degraded context (ADR 0059).
 	DegradedContext,
+	/// A logical MCP call retains its continuation and input checkpoint.
+	McpCallState,
 }
 impl PersistedCapability {
-	pub const ALL: &'static [Self] = &[Self::ToolBatchState, Self::DegradedContext];
+	pub const ALL: &'static [Self] = &[
+		Self::ToolBatchState,
+		Self::DegradedContext,
+		Self::McpCallState,
+	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
 	pub fn supported() -> &'static [Self] {
@@ -43,6 +49,7 @@ impl PersistedCapability {
 		match self {
 			Self::ToolBatchState => "tool_batch_state",
 			Self::DegradedContext => "degraded_context",
+			Self::McpCallState => "mcp_call_state",
 		}
 	}
 }
@@ -57,7 +64,10 @@ impl ToolCallState {
 	/// capability those fields need.
 	fn required_capabilities(&self) -> impl IntoIterator<Item = PersistedCapability> {
 		// A persisted Tool Batch end (#119) is rejected by workers built before it.
-		self.batch_end.map(|_| PersistedCapability::ToolBatchState)
+		self.batch_end
+			.map(|_| PersistedCapability::ToolBatchState)
+			.into_iter()
+			.chain(self.mcp.as_ref().map(|_| PersistedCapability::McpCallState))
 	}
 }
 impl RecoveryState {

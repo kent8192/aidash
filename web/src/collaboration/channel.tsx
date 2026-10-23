@@ -315,23 +315,22 @@ export function Channel({
       event.kind === "human.answered"
         ? deadlineLabel(event, copy.noAnswerBeforeDeadline)
         : view.events[event.kind];
-    const task = label && eventTask(event, tasks);
+    if (!label) return [];
+    const task = eventTask(event, tasks);
     const skipped =
       event.kind === "run.plugin_tools_pinned"
         ? skippedServers(event.data)
         : [];
     const text = task ? `${label}: ${task.title}` : label;
-    return label
-      ? [
-          {
-            id: event.id,
-            created_at: event.created_at,
-            text: skipped.length
-              ? `${text} (${view.skippedServers}: ${skipped.join(", ")})`
-              : text,
-          },
-        ]
-      : [];
+    return [
+      {
+        id: event.id,
+        created_at: event.created_at,
+        text: skipped.length
+          ? `${text} (${view.skippedServers}: ${skipped.join(", ")})`
+          : text,
+      },
+    ];
   });
   const participantLabel = (item: (typeof agents)[number]) =>
     agentLabel(item.node, {

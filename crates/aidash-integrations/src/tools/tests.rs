@@ -525,7 +525,7 @@ async fn an_mcp_endpoint_outside_the_permitted_origins_is_never_contacted() {
 	assert!(
 		matches!(
 			mcp_read_only_hint(&clients, &permitting([]), &name, "lookup").await,
-			Err(Error::External(_))
+			Err(Error::Forbidden)
 		),
 		"a name resolving to loopback is refused"
 	);

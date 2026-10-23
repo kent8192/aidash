@@ -10,7 +10,7 @@ use std::{
 	collections::HashSet,
 	sync::{
 		Arc, Mutex,
-		atomic::{AtomicUsize, Ordering::SeqCst},
+		atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
 	},
 };
 
@@ -18,6 +18,8 @@ pub const PATH: &str = "/mcp";
 
 #[derive(Default)]
 pub struct FakeMcp {
+	modern: AtomicBool,
+	inputs: Mutex<Option<Value>>,
 	tools: Mutex<Vec<Value>>,
 	live: Mutex<HashSet<String>>,
 	issued: AtomicUsize,
@@ -46,6 +48,11 @@ impl FakeMcp {
 			tools: Mutex::new(tools),
 			..Self::default()
 		})
+	}
+
+	pub fn modern_inputs(&self, inputs: Value) {
+		self.modern.store(true, SeqCst);
+		*self.inputs.lock().unwrap() = Some(inputs);
 	}
 
 	/// The requests of one MCP method, as their `params`, in arrival order.
@@ -96,6 +103,35 @@ impl FakeMcp {
 			.unwrap()
 			.push((method.clone(), body["params"].clone()));
 		let id = body.get("id").cloned();
+		if self.modern.load(SeqCst) {
+			assert!(session.is_none());
+			let id = id.unwrap();
+			return match method.as_str() {
+				"server/discover" => answer(
+					id,
+					json!({"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"private"}),
+				),
+				"tools/list" => answer(id, json!({"tools":self.tools.lock().unwrap().clone()})),
+				"tools/call"
+					if body["params"].get("requestState").is_none()
+						|| self.inputs.lock().unwrap().as_ref() == Some(&json!({})) =>
+				{
+					answer(
+						id,
+						json!({"resultType":"input_required","requestState":"sealed-request-state","inputRequests":self.inputs.lock().unwrap().clone().unwrap()}),
+					)
+				}
+				"tools/call" => {
+					assert_eq!(body["params"]["requestState"], "sealed-request-state");
+					answer(
+						id,
+						json!({"resultType":"complete","content":[{"type":"text","text":"continued result"}]}),
+					)
+				}
+				_ => panic!("unexpected modern method {method}"),
+			};
+		}
+
 		if method == "initialize" {
 			let session = format!("session-{}", self.issued.fetch_add(1, SeqCst) + 1);
 			self.live.lock().unwrap().insert(session.clone());

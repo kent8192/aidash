@@ -1,6 +1,7 @@
 //! Approval requests, human decisions and worker authorization retain one live scope.
 pub use crate::ports::capabilities::approvals::{
-	JudgeRequest, Refusal, Settlement, ToolCallApproval, ToolCallRequest, ToolCallTarget,
+	JudgeRequest, Refusal, SamplingApprovalRequest, Settlement, ToolCallApproval, ToolCallRequest,
+	ToolCallTarget,
 };
 use crate::{
 	Error, Result,
@@ -34,7 +35,10 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 /// Approval records of outbound reads.
 const OUTBOUND: &str = "outbound";
 /// The kind of every approval record a Run can hold.
-pub const KINDS: [&str; 3] = [OUTBOUND, DISCLOSURE, TOOL_CALL];
+pub const KINDS: [&str; 4] = [OUTBOUND, DISCLOSURE, TOOL_CALL, SAMPLING];
+pub const SAMPLING: &str = "sampling";
+pub const SAMPLE_UNAPPROVED: &str = "sampling.request_unapproved";
+pub mod sampling;
 /// Approval records of Web disclosures share the capability approval flow.
 pub const DISCLOSURE: &str = "disclosure";
 /// Approval records of Tenant tool calls share it too (ADR 0075).
@@ -220,7 +224,23 @@ async fn advise(
 	name: &str,
 	target: &Resource,
 ) -> Result<Advice> {
-	let settings = scope.approval_settings(run).await?;
+	let mut settings = scope.approval_settings(run).await?;
+	if kind == ApprovalKind::Sampling
+		&& let Some(settings) = &mut settings
+		&& let Some(raw) = name.strip_prefix("sampling:")
+		&& let Ok(parts) = serde_json::from_str::<Vec<Value>>(raw)
+		&& parts.len() == 5
+	{
+		let deny = format!("sampling:{}", json!(&parts[..3]));
+		for rule in &mut settings.rules {
+			if rule.kind == ApprovalKind::Sampling
+				&& rule.effect == RuleEffect::Deny
+				&& rule.target == RuleTarget::Exact(deny.clone())
+			{
+				rule.target = RuleTarget::Exact(name.into());
+			}
+		}
+	}
 	let root = scope.chain_root().map(str::to_owned);
 	let (Some(settings), Some(person)) = (settings, root) else {
 		return Ok(Advice::Ask);
@@ -239,6 +259,7 @@ async fn advise(
 		) {
 			Resolution::Approve(by) => Advice::Approve { by, person },
 			Resolution::Refuse(by) => Advice::Refuse { by, person },
+			Resolution::Judge if kind == ApprovalKind::Sampling => Advice::Ask,
 			Resolution::Judge => Advice::Judge,
 			Resolution::Ask | Resolution::Proceed => Advice::Ask,
 		},
@@ -310,7 +331,11 @@ fn target_of(
 	// A Run grant from an "allow for this Run" decision names the action it
 	// covers; it protects the same resource as the approval it came from.
 	Ok(
-		if record.kind == TOOL_CALL || grants(record, CALL_UNAPPROVED) {
+		if record.kind == SAMPLING || grants(record, SAMPLE_UNAPPROVED) {
+			let target: aidash_domain::agent_plugin::interaction::SamplingTarget =
+				serde_json::from_value(record.data["sampling_target"].clone())?;
+			(sampling::resource(scope, &target, run), SAMPLE_UNAPPROVED)
+		} else if record.kind == TOOL_CALL || grants(record, CALL_UNAPPROVED) {
 			let tool = ToolCallTarget::from_record(&record.data)?;
 			let operation = record.data["operation"].as_str().unwrap_or_default();
 			(tool_resource(scope, &tool, operation, run), CALL_UNAPPROVED)
@@ -456,9 +481,17 @@ pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> 
 	}
 	let expired = record.expires_at.is_some_and(|t| t < Utc::now());
 	let mut result = approvals::projection(record, expired);
-	if record.kind == TOOL_CALL {
+	if matches!(record.kind.as_str(), TOOL_CALL | SAMPLING) {
 		// What the approver is asked to allow: the exact call.
-		for field in ["tool", "version", "plugin_tool", "operation", "call"] {
+		for field in [
+			"tool",
+			"version",
+			"plugin_tool",
+			"operation",
+			"call",
+			"sampling_target",
+			"sampling",
+		] {
 			result[field] = record.data[field].clone();
 		}
 	}
@@ -493,6 +526,11 @@ fn rule_of(record: &Record) -> Result<(ApprovalKind, String)> {
 			.ok_or_else(|| Error::Invalid("approval record is missing its target".into()))
 	};
 	Ok(match record.kind.as_str() {
+		SAMPLING => {
+			let target: aidash_domain::agent_plugin::interaction::SamplingTarget =
+				serde_json::from_value(data["sampling_target"].clone())?;
+			(ApprovalKind::Sampling, target.allow_target())
+		}
 		OUTBOUND => (ApprovalKind::Outbound, text(&data["targets"][0])?),
 		DISCLOSURE => {
 			let operation = serde_json::from_value(data["operation"].clone())?;
@@ -510,15 +548,13 @@ fn rule_of(record: &Record) -> Result<(ApprovalKind, String)> {
 }
 /// Approval records of every kind share one decision API.
 async fn load_approval(scope: &mut dyn ApprovalScope, id: Uuid) -> Result<Record> {
-	match scope.load(id, OUTBOUND).await {
-		Err(Error::NotFound(_)) => {}
-		other => return other,
+	for kind in KINDS {
+		match scope.load(id, kind).await {
+			Err(Error::NotFound(_)) => {}
+			other => return other,
+		}
 	}
-	match scope.load(id, DISCLOSURE).await {
-		Err(Error::NotFound(_)) => {}
-		other => return other,
-	}
-	scope.load(id, TOOL_CALL).await
+	Err(Error::NotFound("approval unavailable".into()))
 }
 /// Whether the current reader can turn this pending approval into an allow
 /// rule. The dashboard and decision path share the live advance ceiling.
@@ -652,7 +688,9 @@ pub async fn decide(
 			let mut data = json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"operation":record.data["operation"]});
 			// What a grant covers beyond its destination depends on the approval.
 			// A tool grant outlives new user input, so it has no context revision.
-			if record.kind == TOOL_CALL {
+			if record.kind == SAMPLING {
+				data["sampling_target"] = record.data["sampling_target"].clone();
+			} else if record.kind == TOOL_CALL {
 				data["tool"] = record.data["tool"].clone();
 				data["version"] = record.data["version"].clone();
 				data["plugin_tool"] = record.data["plugin_tool"].clone();
@@ -1195,7 +1233,7 @@ async fn recorded_tool_call(
 		// The approval changed since it was loaded: an Evidence Revocation closed
 		// it or the approver revoked it. That wins the race.
 		Err(Error::Conflict(_)) => {
-			let current = scope.load(record.id, TOOL_CALL).await?;
+			let current = scope.load(record.id, &record.kind).await?;
 			Ok(settled_tool_call(&current))
 		}
 		Err(error) => Err(error),

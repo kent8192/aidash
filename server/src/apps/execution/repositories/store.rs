@@ -3018,6 +3018,7 @@ impl Store {
 				| "run.semantic_recovered"
 				| "run.estimate_pinned"
 				| "run.plugin_tools_pinned"
+				| "run.mcp_checkpoint"
 				| "context.summary_revoked"
 		);
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
@@ -3607,8 +3608,22 @@ impl Store {
 		replay_safe: bool,
 	) -> Result<Invocation> {
 		let mut tx = self.pool.begin(scope).await?;
-		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
-			.await?;
+		// An acknowledged MCP input continues the already admitted logical
+		// call. New user input is consumed after it finishes, as for a live call.
+		let continuation = matches!(tool, "mcp.round" | "mcp.sampling")
+			&& run
+				.state
+				.tool()
+				.ok()
+				.and_then(|state| state.mcp.as_ref())
+				.is_some_and(|checkpoint| {
+					checkpoint.input.is_some()
+						&& key.starts_with(&format!("{}:mcp:", checkpoint.key))
+				});
+		if !continuation {
+			self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
+				.await?;
+		}
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
 		let invocation = self
 			.start_invocation_in(&mut tx, run, key, tool, input, replay_safe)
@@ -3824,6 +3839,19 @@ impl Store {
 		key: &str,
 		result: &Value,
 	) -> Result<Value> {
+		self.finish_invocation(scope, run, worker, key, result, None)
+			.await
+	}
+	#[allow(clippy::too_many_arguments)]
+	pub(crate) async fn finish_invocation(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		result: &Value,
+		sampling: Option<aidash_domain::provider::progress::InferenceAttemptId>,
+	) -> Result<Value> {
 		let mut tx = self
 			.pool
 			.begin(scope)
@@ -3853,6 +3881,9 @@ impl Store {
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
 			)
 			.await?;
+		}
+		if let Some(attempt) = sampling {
+			super::inference::accept_sampling(tx.as_mut(), &self.node_id, run.id, attempt).await?;
 		}
 		tx.commit().await?;
 		// The caller carries on with what was stored, never the expired copy.

@@ -3,22 +3,32 @@
 //! opens a missing entry on demand and gives up idle ones.
 use crate::{
 	Error, Result,
-	tools::{
-		TOOL_TIMEOUT, ToolClients,
-		mcp::{BoundedClient, call_error, initialization_error, result_value},
-	},
+	tools::{TOOL_TIMEOUT, ToolClients},
 };
+use aidash_application::ports::tools::PluginInputs;
 use aidash_application::{
 	ports::tools::{ListFailure, PluginServer, PluginSessions},
 	provider_access::KeylessAccess,
+};
+use aidash_domain::agent_plugin::interaction::{
+	CallCheckpoint, InputRequest, RequiredInput, ToolRound,
 };
 use aidash_domain::agent_plugin::{
 	ListedTool, PluginName, RemoteServer, ServerName, schema_digest,
 };
 use async_trait::async_trait;
 use reqwest::header::{HeaderName, HeaderValue};
+#[allow(deprecated)] // Both accepted MCP revisions still require sampling.
 use rmcp::{
-	RoleClient, ServiceExt,
+	ClientHandler, ErrorData,
+	model::{
+		CallToolResponse, ClientConfig, CreateMessageRequestParams, CreateMessageResult,
+		ElicitRequestParams, ElicitResult,
+	},
+	service::RequestContext,
+};
+use rmcp::{
+	ClientLifecycleMode, ClientServiceExt, RoleClient,
 	model::{CallToolRequestParams, PaginatedRequestParams},
 	service::{ClientInitializeError, RunningService, ServiceError},
 	transport::{
@@ -26,6 +36,7 @@ use rmcp::{
 		streamable_http_client::{StreamableHttpClientTransportConfig, StreamableHttpError},
 	},
 };
+use rmcp_modern as rmcp;
 use serde_json::Value;
 use std::{
 	collections::HashMap,
@@ -35,12 +46,119 @@ use std::{
 use tokio::time::timeout;
 use uuid::Uuid;
 
+#[derive(Default)]
+struct ActiveCall {
+	open: bool,
+	input: Option<Arc<dyn PluginInputs>>,
+}
+#[derive(Default)]
+struct Inputs {
+	sequence: std::sync::atomic::AtomicU64,
+	active: Arc<Mutex<ActiveCall>>,
+	serial: tokio::sync::Mutex<()>,
+}
+struct InputScope(Arc<Mutex<ActiveCall>>);
+impl Drop for InputScope {
+	fn drop(&mut self) {
+		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = ActiveCall::default();
+	}
+}
+impl Inputs {
+	fn enter(&self, input: Option<Arc<dyn PluginInputs>>) -> Result<InputScope> {
+		let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+		if active.open {
+			return Err(Error::Conflict("MCP_CALL_OVERLAP".into()));
+		}
+		*active = ActiveCall { open: true, input };
+		Ok(InputScope(self.active.clone()))
+	}
+	async fn request(
+		&self,
+		id: String,
+		method: &str,
+		params: Value,
+	) -> std::result::Result<Value, ErrorData> {
+		let _serial = self
+			.serial
+			.try_lock()
+			.map_err(|_| ErrorData::invalid_request("MCP_INPUT_OVERLAP", None))?;
+		let input = self
+			.active
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.input
+			.clone()
+			.ok_or_else(|| ErrorData::invalid_request("MCP_INPUT_DENIED", None))?;
+		input
+			.request(
+				format!(
+					"{}:{id}",
+					self.sequence
+						.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+				),
+				InputRequest {
+					method: method.into(),
+					params,
+				},
+			)
+			.await
+			.map_err(|_| ErrorData::internal_error("MCP input was refused or failed", None))
+	}
+}
+#[allow(deprecated)] // Sampling remains part of Aidash's client contract.
+impl ClientHandler for Inputs {
+	async fn list_roots(
+		&self,
+		_context: RequestContext<RoleClient>,
+	) -> std::result::Result<rmcp::model::ListRootsResult, ErrorData> {
+		Err(ErrorData::method_not_found::<
+			rmcp::model::ListRootsRequestMethod,
+		>())
+	}
+	fn get_info(&self) -> ClientConfig {
+		serde_json::from_value(serde_json::json!({
+			"protocolVersion":"2026-07-28", "capabilities":{"sampling":{},"elicitation":{"form":{}}},
+			"clientInfo":{"name":"aidash","version":env!("CARGO_PKG_VERSION")}
+		}))
+		.expect("static MCP client configuration")
+	}
+	async fn create_message(
+		&self,
+		params: CreateMessageRequestParams,
+		context: RequestContext<RoleClient>,
+	) -> std::result::Result<CreateMessageResult, ErrorData> {
+		let raw = serde_json::to_value(params)
+			.map_err(|_| ErrorData::invalid_params("MCP_SAMPLING_INVALID", None))?;
+		let value = self
+			.request(context.id.to_string(), "sampling/createMessage", raw)
+			.await?;
+		serde_json::from_value(value)
+			.map_err(|_| ErrorData::internal_error("MCP sampling response invalid", None))
+	}
+	async fn create_elicitation(
+		&self,
+		params: ElicitRequestParams,
+		context: RequestContext<RoleClient>,
+	) -> std::result::Result<ElicitResult, ErrorData> {
+		let raw = serde_json::to_value(params)
+			.map_err(|_| ErrorData::invalid_params("MCP_ELICITATION_INVALID", None))?;
+		let value = self
+			.request(context.id.to_string(), "elicitation/create", raw)
+			.await?;
+		serde_json::from_value(value)
+			.map_err(|_| ErrorData::internal_error("MCP elicitation response invalid", None))
+	}
+}
+
 const IDLE_LIMIT: Duration = Duration::from_secs(10 * 60);
 const MAX_SESSIONS: usize = 512;
 const MAX_PAGES: usize = 10;
 const MAX_LISTED_SCHEMA_BYTES: usize = 1 << 20;
 
-type Service = RunningService<RoleClient, ()>;
+mod wire;
+use wire::{BoundedClient, call_error, initialization_error};
+
+type Service = RunningService<RoleClient, Inputs>;
 type Failure = StreamableHttpError<reqwest::Error>;
 type Attempt<T> = std::result::Result<T, Fault>;
 
@@ -91,7 +209,7 @@ impl State {
 	/// The session if it is still usable, which counts as using it.
 	fn live(&mut self, key: &Key) -> Option<Arc<Service>> {
 		let entry = self.entries.get_mut(key)?;
-		if entry.used.elapsed() <= self.idle
+		if (entry.used.elapsed() <= self.idle || Arc::strong_count(&entry.service) > 1)
 			&& !entry.service.is_closed()
 			&& !entry.service.is_transport_closed()
 		{
@@ -105,24 +223,29 @@ impl State {
 	/// Dropping a session cancels it, and its worker then ends the server-side session.
 	fn sweep(&mut self) {
 		let idle = self.idle;
-		self.entries.retain(|_, entry| entry.used.elapsed() <= idle);
+		self.entries.retain(|_, entry| {
+			entry.used.elapsed() <= idle || Arc::strong_count(&entry.service) > 1
+		});
 	}
 
 	/// Keeps `service` unless another call opened a session for `key` first, then makes room by
 	/// dropping the least recently used sessions.
-	fn adopt(&mut self, key: Key, service: Arc<Service>) -> Arc<Service> {
+	fn adopt(&mut self, key: Key, service: Arc<Service>) -> Result<Arc<Service>> {
 		self.sweep();
 		if let Some(existing) = self.live(&key) {
-			return existing;
+			return Ok(existing);
 		}
 		while self.entries.len() >= self.capacity {
 			let Some(oldest) = self
 				.entries
 				.iter()
+				.filter(|(_, entry)| Arc::strong_count(&entry.service) == 1)
 				.min_by_key(|(_, entry)| entry.used)
 				.map(|(key, _)| key.clone())
 			else {
-				break;
+				return Err(Error::External(
+					"MCP session capacity is occupied by active calls".into(),
+				));
 			};
 			self.entries.remove(&oldest);
 		}
@@ -133,7 +256,17 @@ impl State {
 				used: Instant::now(),
 			},
 		);
-		service
+		Ok(service)
+	}
+
+	fn touch(&mut self, key: &Key, service: &Arc<Service>) {
+		if let Some(entry) = self
+			.entries
+			.get_mut(key)
+			.filter(|entry| Arc::ptr_eq(&entry.service, service))
+		{
+			entry.used = Instant::now();
+		}
 	}
 
 	/// Removes `service` only, never a newer session that took its place.
@@ -196,10 +329,15 @@ impl McpPluginSessions {
 		}
 		let client = self
 			.clients
-			.select(&self.origins, config.url.as_str())
+			.select_mcp(&self.origins, config.url.as_str())
 			.map_err(Fault::Early)?;
 		let service = open(client, config).await?;
-		Ok((self.state().adopt(key.clone(), Arc::new(service)), true))
+		Ok((
+			self.state()
+				.adopt(key.clone(), Arc::new(service))
+				.map_err(Fault::Early)?,
+			true,
+		))
 	}
 }
 
@@ -230,34 +368,100 @@ impl PluginSessions for McpPluginSessions {
 		arguments: Value,
 		_key: &str,
 	) -> Result<Value> {
+		match timeout(
+			TOOL_TIMEOUT,
+			self.round(
+				run,
+				server,
+				config,
+				tool,
+				expected_digest,
+				arguments,
+				_key,
+				None,
+				None,
+			),
+		)
+		.await
+		.map_err(|_| Fault::Timeout.for_call())??
+		{
+			ToolRound::Complete(value) => Ok(value),
+			ToolRound::InputRequired(_) => Err(Error::Invalid(
+				"MCP_INPUT_DENIED: interactive inputs are unavailable in this execution profile"
+					.into(),
+			)),
+		}
+	}
+
+	async fn round(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		tool: &str,
+		expected_digest: &str,
+		arguments: Value,
+		_key: &str,
+		checkpoint: Option<&CallCheckpoint>,
+		inputs: Option<Arc<dyn PluginInputs>>,
+	) -> Result<ToolRound> {
 		let arguments = arguments
 			.as_object()
 			.cloned()
 			.ok_or_else(|| Error::Invalid("tool arguments must be an object".into()))?;
 		let key = Key::new(run, server);
-		let mut retried = false;
-		loop {
-			let (service, opened) = self.session(&key, config).await.map_err(Fault::for_call)?;
-			if opened && let Err(fault) = verify(&service, tool, expected_digest).await {
-				// A session kept after a refusal would let the next call skip the check.
-				self.state().forget(&key, &service);
-				return Err(fault.for_call());
+		let (service, opened) = self.session(&key, config).await.map_err(Fault::for_call)?;
+		if opened && let Err(fault) = verify(&service, tool, expected_digest).await {
+			self.state().forget(&key, &service);
+			return Err(fault.for_call());
+		}
+		let _scope = service.service().enter(inputs)?;
+		let mut request = CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments);
+		if let Some(checkpoint) = checkpoint
+			&& let Some(input) = &checkpoint.input
+		{
+			if checkpoint.next_input().is_some() {
+				return Err(Error::Invalid("MCP_INPUT_INCOMPLETE".into()));
 			}
-			let request =
-				CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments.clone());
-			match timeout(TOOL_TIMEOUT, service.call_tool(request)).await {
-				Ok(Ok(result)) => return result_value(result),
-				// Only a request the server rejected for its session was never run, so only
-				// that one is safe to send again; any other failure may have run the tool.
-				Ok(Err(error)) if !retried && session_expired(&error) => {
-					retried = true;
-					self.state().forget(&key, &service);
-				}
-				Ok(Err(error)) => return Err(call_error(&error)),
-				Err(_) => {
-					self.state().forget(&key, &service);
-					return Err(Fault::Timeout.for_call());
-				}
+			request.request_state = input.request_state.clone();
+			request.input_responses =
+				(!input.requests.is_empty()).then(|| checkpoint.responses.clone());
+		}
+		// Session recovery never replays a sent tool request. A lost result is
+		// reconciled through the invocation journal, including Read-only tools.
+		let result = service.call_tool_once(request).await;
+		self.state().touch(&key, &service);
+		match result {
+			Ok(CallToolResponse::Complete(result)) => {
+				Ok(ToolRound::Complete(wire::result_value(result)?))
+			}
+			Ok(CallToolResponse::InputRequired(result)) => {
+				let requests = result
+					.input_requests
+					.unwrap_or_default()
+					.into_iter()
+					.map(|(id, request)| {
+						let raw = serde_json::to_value(request)?;
+						Ok((
+							id,
+							InputRequest {
+								method: raw["method"].as_str().unwrap_or_default().into(),
+								params: raw["params"].clone(),
+							},
+						))
+					})
+					.collect::<Result<_>>()?;
+				let input = RequiredInput {
+					request_state: result.request_state,
+					requests,
+				};
+				input.validate()?;
+				Ok(ToolRound::InputRequired(input))
+			}
+			Ok(_) => Err(Error::Invalid("MCP_TASKS_UNSUPPORTED".into())),
+			Err(error) => {
+				self.state().forget(&key, &service);
+				Err(call_error(&error))
 			}
 		}
 	}
@@ -271,6 +475,7 @@ impl PluginSessions for McpPluginSessions {
 /// Waits for the server-side session to end when no call still holds it; otherwise the last
 /// holder's drop cancels it.
 async fn end(service: Arc<Service>) {
+	service.cancellation_token().cancel();
 	if let Ok(service) = Arc::try_unwrap(service) {
 		let _ = service.cancel().await;
 	}
@@ -285,14 +490,28 @@ async fn open(client: &reqwest::Client, config: &RemoteServer) -> Attempt<Servic
 			HeaderValue::from_str(&header.value).map_err(|_| invalid())?,
 		);
 	}
-	let transport = StreamableHttpClientTransport::with_client(
-		BoundedClient(client.clone()),
-		StreamableHttpClientTransportConfig::with_uri(config.url.as_str()).custom_headers(headers),
-	);
-	timeout(TOOL_TIMEOUT, ().serve(transport))
-		.await
-		.map_err(|_| Fault::Timeout)?
-		.map_err(|error| Fault::Init(Box::new(error)))
+	let mut transport_config =
+		StreamableHttpClientTransportConfig::with_uri(config.url.as_str()).custom_headers(headers);
+	transport_config.reinit_on_expired_session = false;
+	transport_config.max_sse_event_size = 256_000;
+	let transport =
+		StreamableHttpClientTransport::with_client(BoundedClient(client.clone()), transport_config);
+	timeout(
+		TOOL_TIMEOUT,
+		Inputs::default().serve_with_lifecycle(
+			transport,
+			ClientLifecycleMode::Auto {
+				preferred_versions: vec![rmcp::model::ProtocolVersion::LATEST],
+				legacy_version: Some(
+					serde_json::from_value(serde_json::json!("2025-06-18"))
+						.expect("supported legacy MCP revision"),
+				),
+			},
+		),
+	)
+	.await
+	.map_err(|_| Fault::Timeout)?
+	.map_err(|error| Fault::Init(Box::new(error)))
 }
 
 /// Every tool of the server, within the page and size limits.
@@ -392,12 +611,11 @@ fn transport_failure(error: &ServiceError) -> Option<&Failure> {
 	}
 }
 
-fn session_expired(error: &ServiceError) -> bool {
-	matches!(transport_failure(error), Some(Failure::SessionExpired))
-}
-
 /// The server could not be reached at all, as opposed to answering unusably.
 fn unreachable(error: &ClientInitializeError) -> bool {
+	if let ClientInitializeError::LegacyFallbackFailed { fallback, .. } = error {
+		return unreachable(fallback);
+	}
 	let ClientInitializeError::TransportError { error, .. } = error else {
 		return false;
 	};

@@ -17,7 +17,7 @@ use std::{
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
 
-pub const SERVER_TIMEOUT: Duration = Duration::from_secs(10);
+pub const SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const CONCURRENCY: usize = 4;
 /// The cause code of a server that did not answer in time.

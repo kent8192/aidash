@@ -122,6 +122,24 @@ impl ExecutionStore for RunStore {
 		.await?;
 		Ok(())
 	}
+	async fn checkpoint_mcp(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(&self.store, &self.scope, run, token, "run.mcp_checkpoint").await?;
+		Ok(())
+	}
+	async fn finish_sampling(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		result: &Value,
+		attempt: InferenceAttemptId,
+	) -> Result<Value> {
+		self.store
+			.finish_invocation(&self.scope, run, token, key, result, Some(attempt))
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn calibration_samples(
 		&self,
 		upstream_model: &str,
@@ -224,6 +242,30 @@ impl ExecutionStore for RunStore {
 			status: result.status,
 			result: result.result,
 		})
+	}
+	async fn completed_invocation(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		name: &str,
+		input: &Value,
+	) -> Result<Option<Value>> {
+		self.store
+			.pool
+			.atomic(&self.scope, async |tx| {
+				use crate::apps::execution::models::{
+					Invocation as InvocationRecord, Run as RunRecord,
+				};
+				if !RunRecord::hold_worker(tx, run.id, token).await? {
+					return Err(crate::Error::Conflict(
+						"worker lease lost while recalling sampling".into(),
+					));
+				}
+				InvocationRecord::completed(tx, run.id, key, name, input).await
+			})
+			.await
+			.map_err(Into::into)
 	}
 	async fn invocation_start_batch(
 		&self,
@@ -595,6 +637,22 @@ impl ExecutionAuthority for Authority<'_> {
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
 			.tool_call_approval(&self.federation.store, run, request)
+			.await
+			.map_err(Into::into)
+	}
+	async fn sampling_approval(
+		&self,
+		run: &Run,
+		request: aidash_application::ports::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<aidash_application::ports::capabilities::approvals::ToolCallApproval> {
+		// A Run executing for another Node asks that Node through a human request
+		// and never reaches this capability approval (ADR 0075).
+		let authority = self
+			.guard
+			.local_authority()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.sampling_approval(&self.federation.store, run, request)
 			.await
 			.map_err(Into::into)
 	}
@@ -1020,6 +1078,13 @@ impl ExecutionEnvironment for Environment<'_> {
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
+	fn mcp_limits(&self) -> aidash_domain::agent_plugin::interaction::InteractionLimits {
+		let profile = &self.federation.store.capabilities.0;
+		let mut limits = profile.mcp;
+		limits.human_wait_seconds = limits.human_wait_seconds.min(profile.approval_seconds);
+		limits
+	}
+
 	async fn pin_plugin_tools(
 		&self,
 		run: &Run,

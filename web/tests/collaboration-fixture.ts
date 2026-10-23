@@ -266,6 +266,7 @@ export async function setup(
     tenantActions?: string[];
     /** When the Run waiting for the question continues without an answer. */
     answerBy?: string;
+    elicitation?: { message: string; schema: Record<string, unknown> };
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -410,6 +411,10 @@ export async function setup(
   }
   if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";
   if (options.answerBy) data.human_requests[0].answer_by = options.answerBy;
+  if (options.elicitation) {
+    data.human_requests[0].kind = "MCP_ELICITATION";
+    data.human_requests[0].prompt = JSON.stringify(options.elicitation);
+  }
   const deadlineEvents: unknown[] = [];
   const messages: Record<string, Message[]> = {
     "workspace-one": [

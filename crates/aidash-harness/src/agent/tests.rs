@@ -4773,7 +4773,9 @@ fn ordered(fixture: &mut Fixture) {
 fn ordered_parts(request: &ModelRequest) -> (&str, &str) {
 	match &request.context {
 		ModelContext::Ordered(context) => (&context.stable, &context.volatile),
-		ModelContext::Legacy(_) | ModelContext::Native(_) => panic!("expected an Ordered request"),
+		ModelContext::Legacy(_) | ModelContext::Native(_) | ModelContext::Sampling(_) => {
+			panic!("expected an Ordered request")
+		}
 	}
 }
 

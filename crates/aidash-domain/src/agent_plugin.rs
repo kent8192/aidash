@@ -10,6 +10,7 @@ mod alias;
 mod expand;
 #[cfg(test)]
 pub(crate) mod fixtures;
+pub mod interaction;
 mod manifest;
 mod mcp;
 mod paths;

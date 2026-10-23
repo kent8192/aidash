@@ -54,6 +54,7 @@ fn plugin_files(url: &str) -> Vec<PluginFile> {
 /// Keeps the model's view of each request: the tools it was offered.
 #[derive(Default)]
 struct Model {
+	sampling: Mutex<Vec<Value>>,
 	offered: Mutex<Vec<Vec<String>>>,
 }
 
@@ -61,6 +62,14 @@ impl Model {
 	/// Calls every plugin tool the first time it can, the Read-only one first, then finishes.
 	fn reply(&self, request: &reinhardt::Request) -> reinhardt::Response {
 		let body = request.json::<Value>().unwrap();
+		if body["messages"][0]["content"] == "sampling-only-system" {
+			assert!(body.get("tools").is_none());
+			assert!(body.to_string().contains("Server sampling"));
+			assert!(!body.to_string().contains("Look it up, then update it"));
+			self.sampling.lock().unwrap().push(body);
+			return reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"sample completion"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}})).unwrap();
+		}
+
 		let offered: Vec<String> = body["tools"]
 			.as_array()
 			.into_iter()
@@ -529,6 +538,248 @@ async fn a_cancelled_run_ends_its_sessions_without_the_harness_closing_them(
 		[("lookup".to_owned(), json!({"q":"call 0"}))],
 		"the call that waited for its approval never ran"
 	);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_sampling_request_once(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	use aidash_domain::{RunState, WaitingState};
+	let world = world(fixture, false).await;
+	world.mcp.modern_inputs(json!({
+        "a-form":{"method":"elicitation/create","params":{"mode":"form","message":"Choose a label","requestedSchema":{"type":"object","properties":{"label":{"type":"string","enum":["ok","no"]}},"required":["label"]}}},
+        "b-sample":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Server sampling"}}],"systemPrompt":"sampling-only-system","maxTokens":32,"includeContext":"allServers"}},
+        "c-sample":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Server sampling"}}],"systemPrompt":"sampling-only-system","maxTokens":32}}
+    }));
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+	let waiting = step_until(&harness, &world, |run| matches!(&run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Human { .. }))).await;
+	let RunState::Waiting(wait) = &waiting.state else {
+		unreachable!()
+	};
+	let WaitingState::Human { request_id, .. } = wait.as_ref() else {
+		unreachable!()
+	};
+	assert_eq!(world.mcp.calls().len(), 1);
+	assert!(world.model.sampling.lock().unwrap().is_empty());
+	let (status, value) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/human-requests/{request_id}/answer"),
+		json!({"action":"accept","content":{"label":"ok"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{value}");
+	let waiting = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
+	let (sampling, _) = awaited_tool_call(&waiting).unwrap();
+	let (_, inbox) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/capabilities/approvals?state=pending&role=approver",
+		Value::Null,
+	)
+	.await;
+	let card = inbox["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|card| card["id"] == json!(sampling))
+		.unwrap();
+	assert_eq!(card["kind"], "sampling");
+	assert_eq!(card["sampling"]["system_prompt"], "sampling-only-system");
+	assert_eq!(card["sampling"]["max_tokens"], 32);
+	assert_eq!(world.mcp.calls().len(), 1);
+	let (status, value) = request(&world.app, &world.token, "POST", &format!("/api/capabilities/approvals/{sampling}/decide"), json!({"idempotency_key":uuid::Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(10)})).await;
+	assert_eq!(status, 200, "{value}");
+	let after = step_until(&harness, &world, |run| {
+		awaited_tool_call(run).is_some() && results(run).len() == 1
+	})
+	.await;
+	assert_eq!(world.model.sampling.lock().unwrap().len(), 2);
+	let calls = world.mcp.requests("tools/call");
+	assert_eq!(calls.len(), 2);
+	assert_eq!(calls[1]["arguments"], calls[0]["arguments"]);
+	assert_eq!(
+		calls[1]["inputResponses"]["a-form"]["content"]["label"],
+		"ok"
+	);
+	assert_eq!(
+		calls[1]["inputResponses"]["b-sample"]["content"]["text"],
+		"sample completion"
+	);
+	assert_eq!(
+		events(&world, "inference.accepted").await.len(),
+		3,
+		"ordinary model response and two separately journaled samples"
+	);
+	assert_eq!(results(&after).len(), 1);
+	assert_eq!(world.mcp.sessions_issued(), 0);
+
+	// A crash can leave the earlier input checkpoint after both accepted
+	// sampling responses have committed. Reuse those responses even when the
+	// approval later expires; neither the provider nor the wire call repeats.
+	world
+		.f
+		.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			use aidash_server::apps::execution::{
+				capabilities::models::CoreRecords, models::Run as RunRecord,
+			};
+			use reinhardt::db::orm::Model;
+			let mut approval = CoreRecords::objects().get(sampling).get_with_db(tx).await?;
+			approval.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+			CoreRecords::objects()
+				.update_with_conn(tx, &approval)
+				.await?;
+			let mut record = RunRecord::objects()
+				.get(world.run.id)
+				.get_with_db(tx)
+				.await?;
+			record.phase = serde_json::from_value(json!(waiting.phase()))?;
+			record.pending = waiting.stored_pending().unwrap().into();
+			record.context = serde_json::to_value(&waiting.context)?.into();
+			record.lease_owner = None;
+			record.lease_until = None;
+			record.ledger_worker_ready = true;
+			RunRecord::objects().update_with_conn(tx, &record).await?;
+			Ok(())
+		})
+		.await
+		.unwrap();
+	let recovered = step_until(&harness, &world, |run| results(run).len() == 1).await;
+	assert_eq!(results(&recovered), results(&after));
+	assert_eq!(world.model.sampling.lock().unwrap().len(), 2);
+	assert_eq!(world.mcp.requests("tools/call").len(), 2);
+	assert_eq!(events(&world, "inference.accepted").await.len(), 3);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn new_user_input_during_a_modern_wait_does_not_discard_the_admitted_call(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	use aidash_domain::{RunState, WaitingState};
+	let world = world(fixture, false).await;
+	world.mcp.modern_inputs(json!({"form":{"method":"elicitation/create","params":{"message":"Continue?","requestedSchema":{"type":"object","properties":{}}}}}));
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+	let waiting = step_until(&harness, &world, |run| matches!(&run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Human { .. }))).await;
+	let RunState::Waiting(wait) = &waiting.state else {
+		unreachable!()
+	};
+	let WaitingState::Human { request_id, .. } = wait.as_ref() else {
+		unreachable!()
+	};
+	let limit = world.f.run_message_limit(&waiting).await.unwrap();
+	world
+		.f
+		.store
+		.accept_run_message(
+			&TEST_FIXTURE,
+			waiting.id,
+			"human",
+			"Follow-up while waiting",
+			"during-mcp-wait",
+			limit,
+		)
+		.await
+		.unwrap();
+	let (status, response) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/human-requests/{request_id}/answer"),
+		json!({"action":"decline"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	let after = step_until(&harness, &world, |run| !results(run).is_empty()).await;
+	let calls = world.mcp.requests("tools/call");
+	assert_eq!(calls.len(), 2);
+	assert_eq!(calls[1]["arguments"], calls[0]["arguments"]);
+	assert_eq!(calls[1]["inputResponses"]["form"]["action"], "decline");
+	assert_eq!(results(&after).len(), 1);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_modern_sampling_denial_finishes_the_logical_call_without_a_continuation_or_inference(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world(fixture, false).await;
+	world.mcp.modern_inputs(json!({"sample":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Server sampling"}}],"systemPrompt":"sampling-only-system","maxTokens":32}}}));
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+	let waiting = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	let (_, inbox) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/capabilities/approvals?state=pending&role=approver",
+		Value::Null,
+	)
+	.await;
+	let card = inbox["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap();
+	assert_eq!(card["kind"], "sampling");
+	let (status, value) = request(&world.app, &world.token, "POST", &format!("/api/capabilities/approvals/{approval}/decide"), json!({"idempotency_key":uuid::Uuid::new_v4(),"expected_revision":card["revision"],"choice":"deny"})).await;
+	assert_eq!(status, 200, "{value}");
+	let after = step_until(&harness, &world, |run| results(run).len() == 1).await;
+	assert_eq!(results(&after)[0].1["error"], "MCP_SAMPLING_REFUSED");
+	assert!(world.model.sampling.lock().unwrap().is_empty());
+	assert_eq!(world.mcp.calls().len(), 1);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn state_only_modern_rounds_exhaust_the_continuation_limit_without_resetting_it(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world(fixture, false).await;
+	world.mcp.modern_inputs(json!({}));
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+	let after = step_until(&harness, &world, |run| results(run).len() == 1).await;
+	assert_eq!(results(&after)[0].1["error"], "MCP_CONTINUATION_LIMIT");
+	assert_eq!(
+		world.mcp.calls().len(),
+		11,
+		"initial request plus ten continuations"
+	);
+	assert_eq!(events(&world, "mcp.input_failed").await.len(), 1);
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

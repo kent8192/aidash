@@ -2048,6 +2048,7 @@ impl<'a> Executor<'a> {
 					home_approval: None,
 					approval: None,
 					batch_end: None,
+					mcp: None,
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
@@ -2069,7 +2070,7 @@ impl<'a> Executor<'a> {
 				// the home node while this run was already awaiting finalization.
 				self.environment.reconcile_run_messages(run).await?;
 				let included_input_seq = run.included_input_seq();
-				if store
+				if run.state.tool()?.mcp.is_none() && store
 					.run_inputs(run.id)
 					.await?
 					.last()
@@ -2699,7 +2700,12 @@ impl<'a> Executor<'a> {
 						return Ok(());
 					}
 				}
-				let invocation = store
+				let invocation = if tool.mcp_rounds() {
+                    let Some(guard) = guard else { return self.tool_error(run, token, call, cursor, "MCP inputs require local authority".into()).await; };
+                    let Some(output) = self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await? else { return Ok(()); };
+                    InvocationOutcome { status: "COMPLETED".into(), result: Some(output) }
+                } else {
+                    store
 					.invocation_start(
 						run,
 						token,
@@ -2708,7 +2714,8 @@ impl<'a> Executor<'a> {
 						&call.arguments,
 						contract.replay_safe(),
 					)
-					.await?;
+					.await?
+                };
 				if invocation.status == "UNCERTAIN" {
 					if let Some(guard) = guard {
 						guard.action("human.request", "run", run.id).await?;
@@ -2964,7 +2971,7 @@ impl<'a> Executor<'a> {
 									&& *expires_at > chrono::Utc::now(),
 							})
 						}
-						WaitingState::Reconciliation { key, .. } => {
+						WaitingState::Reconciliation { key, resume, .. } => {
 							#[derive(serde::Deserialize)]
 							struct ReconciliationAnswer {
 								#[serde(deserialize_with = "aidash_domain::required_json")]
@@ -2976,9 +2983,12 @@ impl<'a> Executor<'a> {
 										"reconciliation response must contain result".into(),
 									)
 								})?;
-							store
-								.invocation_finish(run, token, key, &answer.result)
-								.await?;
+                            let result = if resume.mcp.as_ref().is_some_and(|checkpoint| *key == format!("{}:mcp:round:{}", checkpoint.key, checkpoint.continuation_sends)) {
+                                // A person's reconciliation is final tool data, even when
+                                // it resembles the adapter's trusted protocol envelope.
+                                serde_json::to_value(aidash_domain::agent_plugin::interaction::ToolRound::Complete(answer.result))?
+                            } else { answer.result };
+                            store.invocation_finish(run, token, key, &result).await?;
 						}
 						_ => {}
 					}
@@ -3586,6 +3596,7 @@ fn summary_dependencies(
 
 mod approval;
 mod completion;
+mod mcp;
 mod progress;
 #[cfg(test)]
 mod tests;

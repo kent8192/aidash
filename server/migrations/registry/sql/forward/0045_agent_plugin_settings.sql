@@ -1,7 +1,7 @@
 -- PostgreSQL function bodies have no typed migration operation. DDL only.
 -- Agent Bindings accept what an Agent version decides about the servers of the
 -- Agent Plugins it takes in (#414, ADR 0072). The body keeps every key of
--- 0041_agent_plugins_definition and adds `agent_plugin_settings`: an object
+-- 0042_external_services and adds `agent_plugin_settings`: an object
 -- whose members are objects (plugin name to server name to settings). A
 -- settings object holds only `tools` (an array of strings, or null), `exposure`
 -- (`eager` or `deferred`, or null) and `read_only` (an array of objects with a
@@ -164,7 +164,7 @@ BEGIN
   IF jsonb_typeof(item) <> 'object' OR item - ARRAY['kind','target','alias','narrow','members','exposure']::text[] <> '{}'::jsonb
   OR COALESCE(item->'exposure','null'::jsonb) <> 'null'::jsonb
   AND NOT (deferred AND item->>'kind' IN ('tool','bundle','skill') AND COALESCE(item->>'exposure' IN ('eager','deferred'),false))
-  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source'),false)
+  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source','external_service'),false)
   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(item->'target'),false)
   OR jsonb_typeof(COALESCE(item->'narrow','{}'::jsonb)) <> 'object'
   OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;

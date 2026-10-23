@@ -44,6 +44,7 @@ impl Registry {
 		origins: aidash_application::provider_access::KeylessAccess,
 	) -> Self {
 		self.keyless = Some(origins);
+		self
 	}
 	/// Whether definitions may name Tenant Secrets (ADR 0051).
 	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {

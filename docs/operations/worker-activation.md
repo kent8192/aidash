@@ -158,6 +158,16 @@ Degraded context, and keeps it for as long as that record is kept. Only Agents w
 `workspace_retrieval` sources opt in with `on_unavailable: degrade` write it, so roll out
 every worker before an Agent opts in.
 
+Agent Plugin logical MCP calls (#414) require `mcp_call_state` while a
+`ToolCallState.mcp` checkpoint exists, including through human, approval and
+reconciliation waits. A recovered capable worker reuses journaled wire results;
+unknown sent requests go to reconciliation. Modern human waits release the lease,
+while legacy in-session waits retain it. Deploy the new API servers and workers
+before allowing plugin client inputs: `MCP_ELICITATION` is also a new stored human
+request kind that old API binaries cannot decode. A rollback keeps the migrated
+schema and needs a capable worker for outstanding MCP checkpoints; reversing the
+human-request migration requires that no MCP elicitation rows remain.
+
 On shutdown, stop new pulls/claims and drain the current step. Do not clear a lease
 while an external effect might still run. Never delete the durable on shutdown.
 `activation_quarantine` stores only a digest, bounded reason, sequence, and time;

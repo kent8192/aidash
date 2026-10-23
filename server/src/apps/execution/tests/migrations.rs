@@ -351,7 +351,7 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0049_foreign_key_relations_state".to_owned()
+			"0051_mcp_elicitation_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());

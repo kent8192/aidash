@@ -261,7 +261,7 @@ fn an_unavailable_server_is_skipped_with_its_cause_and_the_others_still_pin() {
 }
 
 #[test]
-fn stdio_servers_are_ignored_entirely() {
+fn stdio_servers_are_reported_unavailable_and_not_pinned() {
 	let plugin = reference_with_servers(
 		"acme-tools",
 		json!({"docs": remote("docs"), "local": {"type": "stdio", "command": "node"}}),
@@ -282,10 +282,14 @@ fn stdio_servers_are_ignored_entirely() {
 
 	assert_eq!(unlisted, listed);
 	assert_eq!(
+		listed.findings[0].finding.detail,
+		"stdio_session_unavailable"
+	);
+	assert_eq!(
 		pinned_names(&listed),
 		[("acme-tools".into(), "docs".into(), vec!["a"])]
 	);
-	assert!(listed.findings.is_empty());
+	assert_eq!(listed.findings.len(), 1);
 }
 
 #[test]

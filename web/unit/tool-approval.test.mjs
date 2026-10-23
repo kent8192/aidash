@@ -161,6 +161,23 @@ test("a notification names the tool and the Agent, never the arguments", () => {
   );
 });
 
+test("a sampling notification identifies its server without exposing messages or rule syntax", () => {
+  const sampling = {
+    ...card,
+    kind: "sampling",
+    targets: ["sampling:internal-target"],
+    sampling_target: { plugin: "reports", server: "writer" },
+  };
+  assert.equal(
+    approvalNotice(sampling, false),
+    "Sampling approval · reports/writer · researcher@1.0.0 · requested by alice",
+  );
+  assert.match(
+    approvalNotice(sampling, true),
+    /^Sampling の承認 · reports\/writer/,
+  );
+});
+
 const pluginCard = {
   ...card,
   tool: "agent-plugin:acme/docs/search",

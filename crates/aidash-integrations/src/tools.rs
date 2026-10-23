@@ -50,10 +50,19 @@ pub struct ToolClients {
 	permitted: reqwest::Client,
 	/// Every other endpoint: each new connection resolves public addresses only.
 	public: reqwest::Client,
+	mcp_permitted: reqwest::Client,
+	mcp_public: reqwest::Client,
 }
 impl ToolClients {
 	pub fn new() -> Result<Self> {
 		Ok(Self {
+			mcp_public: crate::keyless::public_client_timeout(None, TOOL_CONNECT_TIMEOUT)?,
+			mcp_permitted: reqwest::Client::builder()
+				.connect_timeout(TOOL_CONNECT_TIMEOUT)
+				.redirect(reqwest::redirect::Policy::none())
+				.no_proxy()
+				.build()
+				.map_err(crate::http_error)?,
 			permitted: reqwest::Client::builder()
 				.timeout(TOOL_TIMEOUT)
 				.connect_timeout(TOOL_CONNECT_TIMEOUT)
@@ -64,6 +73,18 @@ impl ToolClients {
 			public: crate::keyless::public_client(TOOL_TIMEOUT, TOOL_CONNECT_TIMEOUT)?,
 		})
 	}
+	pub(crate) fn select_mcp(
+		&self,
+		origins: &KeylessAccess,
+		endpoint: &str,
+	) -> Result<&reqwest::Client> {
+		match origins.destination(endpoint)? {
+			Destination::Permitted => Ok(&self.mcp_permitted),
+			Destination::PublicOnly => Ok(&self.mcp_public),
+			Destination::Forbidden => Err(Error::Forbidden),
+		}
+	}
+
 	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
 	pub(crate) fn select(
 		&self,

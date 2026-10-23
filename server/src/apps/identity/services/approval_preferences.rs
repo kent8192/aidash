@@ -176,6 +176,24 @@ fn judged(
 				"capability.approve",
 			)
 		}
+		ApprovalKind::Sampling => {
+			let raw = exact
+				.and_then(|target| target.strip_prefix("sampling:"))
+				.and_then(|raw| serde_json::from_str::<Vec<Value>>(raw).ok());
+			let logical = raw
+				.filter(|parts| parts.len() >= 3)
+				.map(|parts| format!("sampling:{}", json!(&parts[..3])))
+				.unwrap_or_else(|| id.into());
+			(
+				resource(
+					bundle,
+					"sampling",
+					&logical,
+					json!({"action":"sampling.request_unapproved"}),
+				),
+				"capability.approve",
+			)
+		}
 		ApprovalKind::Outbound => {
 			let origin = exact.unwrap_or(id);
 			(
@@ -238,6 +256,7 @@ fn judged(
 fn named_targets(bundle: &PolicyBundle, kind: ApprovalKind) -> BTreeSet<String> {
 	let resource_kind = match kind {
 		ApprovalKind::ToolCall => "tool",
+		ApprovalKind::Sampling => "sampling",
 		ApprovalKind::Outbound => "outbound",
 		ApprovalKind::WebSearch | ApprovalKind::PageReading => "research",
 		ApprovalKind::Generation => "generation",

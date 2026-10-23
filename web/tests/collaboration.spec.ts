@@ -1103,6 +1103,66 @@ test("channel intervention answers a human request without settings navigation",
   expect(errors).toEqual([]);
 });
 
+for (const action of ["accept", "decline", "cancel"] as const) {
+  test(`MCP elicitation ${action} sends a typed response from the Thread`, async ({
+    page,
+  }) => {
+    const { submissions, errors } = await setup(page, {
+      subject: true,
+      elicitation: {
+        message: "Choose the report settings",
+        schema: {
+          type: "object",
+          properties: {
+            market: {
+              type: "string",
+              title: "Market",
+              enum: ["Japan", "Canada"],
+            },
+            count: { type: "integer", title: "Count", minimum: 1, maximum: 5 },
+            publish: { type: "boolean", title: "Publish" },
+          },
+          required: ["market", "count", "publish"],
+        },
+      },
+    });
+    await page.goto("/");
+    await page
+      .getByRole("button")
+      .filter({ hasText: "Choose the report settings" })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Do not enter secrets or credentials");
+    if (action === "accept") {
+      await dialog.getByLabel("Market", { exact: true }).selectOption("Japan");
+      await dialog.getByLabel("Count", { exact: true }).fill("3");
+      await dialog.getByLabel("Publish", { exact: true }).selectOption("false");
+    }
+    await dialog
+      .getByRole("button", {
+        name:
+          action === "accept"
+            ? "Accept"
+            : action === "decline"
+              ? "Decline"
+              : "Cancel",
+        exact: true,
+      })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    expect(
+      submissions.find(
+        (item) => item.path === "/api/human-requests/question-one/answer",
+      )?.body,
+    ).toEqual(
+      action === "accept"
+        ? { action, content: { market: "Japan", count: 3, publish: false } }
+        : { action },
+    );
+    expect(errors).toEqual([]);
+  });
+}
+
 test("a waiting question says when its Run continues on its own", async ({
   page,
 }) => {

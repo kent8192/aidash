@@ -1,5 +1,5 @@
 -- PostgreSQL function bodies have no typed migration operation. DDL only.
--- Restore the 0041_agent_plugins_definition Agent Binding contract. Downgrading
+-- Restore the 0042_external_services Agent Binding contract. Downgrading
 -- refuses stored `agent_plugin_settings` rather than leaving rows that the
 -- restored contract and earlier binaries reject. It also refuses while any Run,
 -- finished or not, pins an Agent definition that declares them in its Binding
@@ -153,7 +153,7 @@ BEGIN
   IF jsonb_typeof(item) <> 'object' OR item - ARRAY['kind','target','alias','narrow','members','exposure']::text[] <> '{}'::jsonb
   OR COALESCE(item->'exposure','null'::jsonb) <> 'null'::jsonb
   AND NOT (deferred AND item->>'kind' IN ('tool','bundle','skill') AND COALESCE(item->>'exposure' IN ('eager','deferred'),false))
-  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source'),false)
+  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source','external_service'),false)
   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(item->'target'),false)
   OR jsonb_typeof(COALESCE(item->'narrow','{}'::jsonb)) <> 'object'
   OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;

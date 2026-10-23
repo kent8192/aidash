@@ -393,7 +393,7 @@ Skills may have empty instructions, as one with a Skill Binding may.
 Only `streamable-http` servers are called from the server process. A Run lists
 every remote server of its Agent's plugins (`tools/list`) at its first step,
 before its first model request and outside any transaction, at most four at a
-time, for up to 10 s per server and 30 s in all. The result is the Run's
+time, for up to 15 s per server and 30 s in all. The per-server budget includes the modern discovery probe and legacy fallback. The result is the Run's
 `plugin_tools`. It is saved with `run.plugin_tools_pinned`, so a recovered Run
 never lists again, and the Binding snapshot stays what admission resolved.
 
@@ -428,6 +428,70 @@ opens another, lists the tools again and answers `CAPABILITY_CHANGED` for a
 tool whose input schema no longer has the pinned digest. A call that may already
 have run is never sent again. All of a Run's sessions end when it finishes,
 fails or expires, and an idle session ends on its own.
+
+### MCP client inputs and continuations
+
+Agent Plugin servers may use MCP 2025-06-18's initialized session or MCP
+2026-07-28's discovery and self-contained requests. The package format remains
+Agent Plugins 1.0.0. Modern HTTP has no protocol session. A recognized modern
+version or authentication rejection never causes a downgrade. All connections
+retain the public-address rule below.
+
+A modern `input_required` result is a checkpoint of the original logical tool
+call. Its opaque `requestState`, required inputs, responses and deadlines are
+saved in the Run, separately from model-visible tool results. Inputs are handled
+one at a time, up to 16 in a batch; every required response must be ready before
+a continuation is sent. The original tool, arguments, pinned server, schema and
+Tool call approval remain in force. The worker releases its lease during a
+modern human wait. A legacy callback instead keeps the call and lease open;
+overlapping or out-of-call requests are refused. Roots are not advertised and
+root requests are refused; resources, prompts, URL elicitation and sampling tools
+are not used.
+
+Sampling is addressed to a Designated approver through the existing capability
+approval API, with `kind: sampling`. Its card shows the server, copy, origin,
+messages, system prompt and capped maxTokens. `includeContext` is always `none`,
+model preferences are ignored, and the completion uses the Run's model and
+Provider Credential Binding without prompt caching. Each sampling request has
+its own inference reservation, Inference Attempt and Usage Record. There is no
+automatic provider retry. A journaled completion is reused after a worker restart;
+an uncertain attempt is never sampled again.
+
+A sampling Run grant covers one Agent Plugin server of this Run until its grant
+expiry; new user input does not end it. `sampling.request_unapproved` requires an
+explicit policy action on a resource of kind `sampling`; a wildcard allow does
+not bypass this approval. The resource id is the logical target
+`sampling:["<agent>","<plugin>","<server>"]`. An individual allow or ask Approval
+Rule adds the copy digest and origin to that array. An individual deny rule
+keeps only the first three elements, following copy/origin changes. Explicit
+`every` rules retain their stated scope. Don't ask refuses, Bypass works within
+the policy ceiling, and Auto asks a person instead of the approval Decider.
+
+Form elicitation appears in the Thread with primitive fields and
+accept/decline/cancel actions. Answers are schema-checked and the form warns
+against entering secrets. The deadline is the shorter of the person's Answer
+Deadline and the remaining MCP human-wait allowance; expiry declines the form.
+Late answers are rejected atomically under the request lock.
+
+The capability profile (`AIDASH_CAPABILITY_PROFILE`) accepts an optional `mcp`
+object. Defaults are `human_wait_seconds: 900`, `continuation_sends: 10`, and
+`sampling_tokens: 4096`. Human waiting is cumulative across all inputs and rounds
+of one logical call and is also capped by `approval_seconds`; sampling output is
+further capped by the Run model's output limit. Supported Deployment ranges are
+1-3600 seconds, 1-100 continuation sends, and 1-1,000,000 sampling tokens. Initial
+requests do not count as continuations; state-only continuation rounds do.
+Exhaustion produces `MCP_CONTINUATION_LIMIT` and an `mcp.input_failed` event.
+
+A modern sampling refusal, expiry, budget failure or provider failure ends the
+logical call locally without a continuation. Legacy replies with an MCP error
+and lets its open tool call continue. Elicitation decline/cancel are normal
+responses in both protocols. Lost sent calls and continuations are reconciled;
+even Read-only calls are never automatically replayed.
+
+Stdio servers are currently left out with `stdio_session_unavailable`. Their
+runner, package preparation/installation, PLUGIN_DATA and remote Tenant Secret
+bindings follow the remaining #405-dependent phase; importing their package
+still executes nothing. See [the accepted remaining-work decisions](../design/agent-plugin-mcp-continuations.md).
 
 ### Tool call approval
 

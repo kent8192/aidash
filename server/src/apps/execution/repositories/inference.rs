@@ -504,6 +504,17 @@ pub(crate) async fn finish(
 	close(tx, node, &target, attempt.0, outcome).await
 }
 
+pub(crate) async fn accept_sampling(
+	tx: &mut dyn TransactionExecutor,
+	node: &str,
+	run: Uuid,
+	attempt: InferenceAttemptId,
+) -> Result<()> {
+	let target = target(&mut *tx, run).await?;
+	close(tx, node, &target, attempt.0, ProgressOutcome::Accepted).await?;
+	Ok(())
+}
+
 /// Delete text and tool-call rows of attempts finished longer than the retention
 /// window ago. `started` and `outcome` rows live as long as the Run.
 pub(crate) async fn prune(tx: &mut dyn TransactionExecutor) -> Result<u64> {

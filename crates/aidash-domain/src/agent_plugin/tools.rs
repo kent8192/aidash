@@ -132,6 +132,13 @@ pub fn pin(
 	for plugin in plugins {
 		for (server, kind) in &plugin.servers {
 			if !matches!(kind, McpServer::Remote(_)) {
+				pinner.note(
+					plugin,
+					server,
+					Outcome::Skipped,
+					Reason::ServerUnavailable,
+					"stdio_session_unavailable".into(),
+				);
 				continue;
 			}
 			let choice = settings

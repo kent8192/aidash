@@ -116,6 +116,15 @@ pub struct ToolCallRequest {
 	pub read_only: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct SamplingApprovalRequest {
+	pub key: String,
+	pub target: aidash_domain::agent_plugin::interaction::SamplingTarget,
+	pub request: aidash_domain::agent_plugin::interaction::SamplingRequest,
+	pub expires_at: DateTime<Utc>,
+	pub area: Option<Uuid>,
+}
+
 /// Why a Tool call approval refuses the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {

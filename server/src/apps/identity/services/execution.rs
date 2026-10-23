@@ -324,6 +324,39 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	pub async fn sampling_approval(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: aidash_application::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<aidash_application::capabilities::approvals::ToolCallApproval> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			// A core Run's approval belongs to its Working Area, so its Thread
+			// lists it; other Runs have none.
+			let area =
+				crate::apps::execution::repositories::sessions::run_area(&mut access, run.id)
+					.await?
+					.flatten()
+					.map(|area| area.id);
+			let request = aidash_application::capabilities::approvals::SamplingApprovalRequest {
+				area,
+				..request
+			};
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::sampling::request(
+				&mut scope,
+				&run.metadata(),
+				request,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	/// The Approval Mode that covers `run` now, under the worker's current
 	/// authority lease: the one of the person its delegation chain starts at,
 	/// for the Run's Thread. `None` when no person's mode covers the Run
