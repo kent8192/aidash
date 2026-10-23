@@ -416,12 +416,32 @@ impl ModelRequest {
 		self.estimate.request_estimate(&self.byte_estimate())
 	}
 
+	/// Measure this same request with a separate, frozen snapshot without
+	/// changing execution estimates, prompts, fitting or compaction decisions.
+	pub fn request_estimate_with_snapshot(
+		&self,
+		snapshot: &estimate::EstimateSnapshot,
+	) -> Option<usage::RequestEstimate> {
+		snapshot.usable().then(|| {
+			snapshot
+				.request_estimate(&self.byte_estimate_for_snapshot(&self.content_parts, snapshot))
+		})
+	}
+
 	/// Conservative UTF-8 byte estimate, split by unit.
 	pub fn byte_estimate(&self) -> estimate::ByteEstimate {
 		self.byte_estimate_with_parts(&self.content_parts)
 	}
 
 	pub fn byte_estimate_with_parts(&self, parts: &[ContentPart]) -> estimate::ByteEstimate {
+		self.byte_estimate_for_snapshot(parts, &self.estimate)
+	}
+
+	fn byte_estimate_for_snapshot(
+		&self,
+		parts: &[ContentPart],
+		snapshot: &estimate::EstimateSnapshot,
+	) -> estimate::ByteEstimate {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the transmitted array framing, excluding only encoded media
 		// payload bytes, and reserve a bounded media estimate.
@@ -435,8 +455,7 @@ impl ModelRequest {
 		};
 		// A tokenized snapshot counts the same body, so the count covers
 		// exactly the text the byte basis measures (ADR 0017).
-		let tokenized = self
-			.estimate
+		let tokenized = snapshot
 			.encoding()
 			.and_then(|encoding| encoding.count_body(&body))
 			.map(|tokens| tokens.saturating_add(salt));
