@@ -10,6 +10,9 @@
     "allow-remove-connection",
     "allow-desktop-login",
     "allow-desktop-access",
-    "allow-desktop-logout"
+    "allow-desktop-logout",
+    "allow-plan-listen",
+    "allow-plan-wait",
+    "allow-plan-cancel"
   ]
 }
