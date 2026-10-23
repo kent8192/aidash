@@ -47,6 +47,9 @@ impl Catalog {
 			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
+		result.insert(
+			aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap(),
+		);
 		for operation in crate::registry::system::operations() {
 			result.core(operation);
 		}
@@ -230,7 +233,7 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 	assert_eq!(serde_json::to_value(&saved).unwrap(), encoded);
 	assert_eq!(
 		saved.bindings.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len()
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 1
 	);
 	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
@@ -1585,6 +1588,32 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 	.await
 	.unwrap();
 	ForeignAgentSnapshot::from_snapshot(saved).unwrap()
+}
+
+#[tokio::test]
+async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_identity() {
+	use aidash_domain::{
+		context::source::QueryPolicy,
+		registry::bindings::{source_defaults, sources},
+	};
+	let mut catalog = Catalog::new();
+	let identity = source_defaults::workspace_observation_reference(NODE);
+	let source = catalog.entries.get_mut(&identity).unwrap();
+	let mut native: sources::NativeContext = serde_json::from_value(source.config.clone()).unwrap();
+	let mut custom = native.declaration(&identity);
+	custom.query = QueryPolicy::AcceptedInputsFirstV1;
+	native.context_source = Some(custom);
+	source.config = serde_json::to_value(native).unwrap();
+	// This is a valid, freshly admitted graph with correct digests, so rejection
+	// comes from the receiver export boundary rather than corrupt snapshot bytes.
+	let saved = snapshot(&mut catalog, &agent_config(), true).await.unwrap();
+	saved.validate().unwrap();
+	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("unsupported private or cross-Node dependency")
+	);
 }
 
 #[tokio::test]

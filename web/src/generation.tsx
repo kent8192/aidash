@@ -12,6 +12,7 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Table, TableBody, TableCell, TableRow } from "./components/ui/table";
 import { RemoteGenerationAssignForm } from "./remote-generation";
+import { ApprovalObservation } from "./approval-observation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
@@ -468,7 +469,11 @@ function PolicyEditor({
   );
   const [error, setError] = useState("");
   const embeddings = entries.filter((entry) => entry.kind === "embedding");
-  const deciders = entries.filter((entry) => entry.kind === "decider");
+  const deciders = entries.filter(
+    (entry) =>
+      entry.kind === "decider" &&
+      (entry.config as { hook?: string }).hook === "compaction",
+  );
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
   const window = Number(modelEntry?.config.context_window ?? 0);
@@ -687,6 +692,7 @@ function PolicyEditor({
           </p>
         </div>
         <AgentBindings
+          generated
           value={bindings}
           change={setBindings}
           cluster={Boolean(cluster)}
@@ -793,6 +799,11 @@ function PolicyEditor({
             )}
           </NativeSelect>
         </Field>
+        <Hint>
+          {locale === "ja-JP"
+            ? "生成チェーンでは、この正確なバージョンだけを使用します。組み込み aidash.compaction-decider@1.0.0 は自動追加されません。Catalog Approval・現在の認証情報・祖先を含む呼び出し予算が必要です。"
+            : "Generated chains use only this exact version. The built-in aidash.compaction-decider@1.0.0 is not added automatically. Catalog Approval, current credentials and ancestor call budgets are required."}
+        </Hint>
         {decider && (
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label={t("generationCompactionPerAgent")}>
@@ -1098,6 +1109,11 @@ function RequestDetail({
             </time>,
           ],
         ]}
+      />
+      <ApprovalObservation
+        tenant={tenant}
+        kind="generation"
+        approval={request.id}
       />
       {usage.isError ? (
         <Alert>{usage.error.message}</Alert>

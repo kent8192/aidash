@@ -14,12 +14,14 @@ mod approval_state;
 mod dispatch;
 mod judge;
 pub mod observation;
+mod source_selection;
 mod state;
 pub use approval_state::{ApprovalState, ApprovalTool, build_approval_state};
 pub use dispatch::{attempt_identity, decision_identity};
 pub use judge::{
 	Judgement, Ruling, approval_evidence_identity, approval_input_digest, settlement_of,
 };
+pub use source_selection::{source_selection_input_digest, source_selection_pins};
 pub use state::{BuiltState, build_compaction_state, compaction_disclosure};
 
 /// Digest the complete inference input before redacting its classification view.

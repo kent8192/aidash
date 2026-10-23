@@ -698,3 +698,93 @@ test("an External service form submits its destination, methods and Secret attac
     },
   });
 });
+
+test("source declarations preserve exact tools and prevent mandatory Home filtering", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("source");
+  await dialog
+    .getByLabel("Context source", { exact: true })
+    .selectOption("workspace_retrieval");
+  await dialog.getByLabel("Configure an explicit source declaration").check();
+  await dialog
+    .getByLabel("Provider operation: provider", { exact: true })
+    .fill("workspace");
+  await dialog
+    .getByLabel("Provider operation", { exact: true })
+    .fill("retrieve");
+  await dialog.getByLabel("Pin policy").selectOption("on_demand");
+  await dialog.getByLabel("Required-Home contribution").check();
+  await expect(dialog.getByLabel("Pin policy")).toHaveValue("always");
+  await expect(
+    dialog.getByLabel("Pin policy").locator('option[value="on_demand"]'),
+  ).toBeDisabled();
+  await dialog.getByLabel("Pin policy").selectOption("scored");
+  await expect(
+    dialog.getByLabel("Selection mode").locator('option[value="enforce"]'),
+  ).toBeDisabled();
+  await expect(dialog.getByLabel("Selection mode")).toHaveValue("shadow");
+  await dialog.getByLabel("Pin policy").selectOption("always");
+  await dialog
+    .getByLabel("Query policy")
+    .selectOption("accepted-inputs-first@1");
+  const read = dialog.getByLabel("Exact read tools");
+  const version = JSON.stringify({
+    registry_deployment: "aidash://test",
+    id: "shared-tool",
+    version: "2.0.0",
+  });
+  await read.selectOption(version);
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.context_source).toMatchObject({
+    provider: "workspace",
+    operation: "retrieve",
+    pin: { policy: "always" },
+    tools: {
+      read: [
+        {
+          registry_deployment: "aidash://test",
+          id: "shared-tool",
+          version: "2.0.0",
+        },
+      ],
+    },
+    query: "accepted-inputs-first@1",
+    volatility: "step",
+    required_home: true,
+  });
+});
+
+test("new observation Deciders pin their own contract and remain Shadow", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("decider");
+  await dialog.getByLabel("Decision hook").selectOption("approval_observation");
+  await expect(dialog.locator('[name="decider_mode"]')).toHaveValue("shadow");
+  await expect(dialog.locator('[name="decider_mode"]')).toBeDisabled();
+  await dialog.getByLabel("Jev Route threshold").fill("0.2");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config).toMatchObject({
+    hook: "approval_observation",
+    mode: "shadow",
+    builder: "aidash.approval-observation/1",
+    option_source: "pending_action/1",
+    rule: "approval.observe/1",
+    state_retention: { enabled: false },
+    routes: [{ threshold: "3fc999999999999a" }],
+  });
+});
