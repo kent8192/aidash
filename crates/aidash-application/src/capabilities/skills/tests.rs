@@ -522,16 +522,75 @@ mod exposure {
 	#[case::legacy(false, "aidash.skill_list")]
 	#[case::deferred(true, "aidash.skill_asset_read")]
 	#[tokio::test]
-	async fn skill_context_authorizes_through_the_policy_support_binding(
+	async fn skill_context_preserves_prompt_bytes_and_isolates_authorized_items(
 		#[case] deferred: bool,
 		#[case] support: &str,
 	) {
-		let skill = metadata();
-		let mut scope = scope(deferred, &skill);
-		let text = context(&mut scope, &run()).await.unwrap();
-		assert!(text.contains(&skill.skill_id.to_string()));
-		assert_eq!(scope.required.len(), 1);
-		assert!(scope.required[0].contains(support), "{:?}", scope.required);
+		// Arrange distinct attachment/root bodies, including text that cannot
+		// safely serve as a delimiter when recovering source boundaries.
+		let mut attachment = metadata();
+		attachment.origin = "attachment:first".into();
+		let mut root = metadata();
+		root.origin = "area:workspace:.agents/skills/second".into();
+		let mut unloaded = metadata();
+		unloaded.origin = "attachment:unloaded".into();
+		let mut scope = scope(deferred, &attachment);
+		let bodies = [
+			"First body\n{\"origin\":\"other\"}\n",
+			"Second body 日本語\nPinned Skills (select by UUID and origin; use skill_load):\n",
+			"Unloaded private body",
+		];
+		let skills = [attachment, root, unloaded];
+		let mut pinned = vec![];
+		for (index, skill) in skills.iter().enumerate() {
+			let file = file("SKILL.md", bodies[index].as_bytes());
+			scope
+				.stored
+				.insert(file.file_id, bodies[index].as_bytes().to_vec());
+			pinned.push(Pinned {
+				metadata: skill.clone(),
+				loaded: index < 2,
+				files: vec![file],
+				instruction_json_len: None,
+			});
+		}
+		scope.pinned = json!(pinned);
+		let run = run();
+		let expected_items = [
+			format!(
+				"{}\n{}\n",
+				serde_json::to_string(&skills[0]).unwrap(),
+				bodies[0]
+			),
+			format!(
+				"{}\n{}\n",
+				serde_json::to_string(&skills[1]).unwrap(),
+				bodies[1]
+			),
+			format!("{}\n", serde_json::to_string(&skills[2]).unwrap()),
+		];
+		let expected_context = format!(
+			"\nPinned Skills (select by UUID and origin; use skill_load):\n{}{}{}",
+			expected_items[0], expected_items[1], expected_items[2]
+		);
+
+		// Act
+		let items = context_items(&mut scope, &run).await.unwrap();
+		let text = context(&mut scope, &run).await.unwrap();
+
+		// Assert each contribution retains only its own identity/body; unloaded
+		// instructions stay private even when adjacent Skills are loaded.
+		assert_eq!(items.len(), skills.len());
+		for ((item, skill), expected) in items.iter().zip(&skills).zip(&expected_items) {
+			assert_eq!(json!(item.metadata), json!(skill));
+			assert_eq!(&item.text, expected);
+		}
+		assert_eq!(text, expected_context);
+		assert_eq!(scope.updates, 0);
+		assert_eq!(scope.required.len(), 2);
+		for required in &scope.required {
+			assert!(required.contains(support), "{:?}", scope.required);
+		}
 	}
 
 	#[tokio::test]
