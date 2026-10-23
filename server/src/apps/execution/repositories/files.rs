@@ -134,7 +134,7 @@ impl FileScopePort for Scope<'_> {
 	}
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry> {
 		let store = self.store.ok_or_else(missing)?;
-		let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id)?;
+		let registry = crate::registry::Registry::new(store.pool.clone(), &store.deployment)?;
 		let tenant = aidash_domain::tenancy::TenantName::new(self.access.identity.tenant.clone())?;
 		registry
 			.get_for_run(
@@ -508,7 +508,7 @@ impl FileScopePort for Scope<'_> {
 	}
 	async fn documents(&mut self, entry: &Entry) -> Result<Value> {
 		let store = self.store.ok_or_else(missing)?;
-		let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id)?;
+		let registry = crate::registry::Registry::new(store.pool.clone(), &store.deployment)?;
 		let tenant = aidash_domain::tenancy::TenantName::new(self.access.identity.tenant.clone())?;
 		crate::knowledge::load(&registry, &tenant, entry)
 			.await

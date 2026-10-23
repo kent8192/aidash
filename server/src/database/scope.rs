@@ -67,6 +67,52 @@ pub(crate) fn tenant_of(table: &str, column: &str, key: Uuid) -> SimpleExpr {
 	)
 }
 
+/// The Node of a Workspace, as the value of an `INSERT`'s `node` column: a
+/// Task, Run, event or generation request belongs to its Workspace's Node.
+pub(crate) fn workspace_node(workspace: Uuid) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		"(SELECT node FROM workspaces WHERE id = ?)".to_owned(),
+		vec![Expr::value(workspace).into()],
+	)
+}
+
+/// The default Node of `tenant`, for work that has no Workspace of its own, such
+/// as a Run a peer's Home admitted until Node Registrations name the receiving
+/// Node (#241).
+pub(crate) fn default_node(tenant: &str) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		"(SELECT name FROM nodes WHERE tenant = ? AND is_default)".to_owned(),
+		vec![Expr::value(tenant.to_owned()).into()],
+	)
+}
+
+/// The address of `node` in `deployment`, as the value of a `home_node` column
+/// for work that runs where its Task is.
+pub(crate) fn node_address(deployment: &str, node: SimpleExpr) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		"(? || '/' || ?)".to_owned(),
+		vec![Expr::value(deployment.to_owned()).into(), node],
+	)
+}
+
+/// A `home` (or `home_node`) column holding the address of any Node of
+/// `deployment`.
+pub(crate) fn in_deployment(column: &str, deployment: &str) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		format!("(starts_with({column}, ?))"),
+		vec![Expr::value(format!("{deployment}/")).into()],
+	)
+}
+
+/// A Run (or generation request) of table alias `table` whose Home is its own
+/// Node in `deployment`.
+pub(crate) fn local_home(table: &str, deployment: &str) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		format!("({table}.home_node = ? || '/' || {table}.node)"),
+		vec![Expr::value(deployment.to_owned()).into()],
+	)
+}
+
 /// The Tenant of the row of `table` whose `column` is `key`, for a child row
 /// built in Rust.
 pub(crate) async fn parent_tenant(
@@ -90,8 +136,7 @@ pub(crate) async fn parent_tenant(
 }
 
 /// The Tenant of an event: its Workspace's, or the transaction scope's when it
-/// concerns no Workspace, such as a Marketplace installation. A Deployment
-/// Administrator's event, such as a peer registration, concerns none.
+/// concerns no Workspace, such as a Marketplace installation.
 pub(crate) fn event_tenant(workspace: Option<Uuid>) -> SimpleExpr {
 	match workspace {
 		Some(workspace) => tenant_of("workspaces", "id", workspace),
@@ -126,6 +171,22 @@ pub fn test_fixture_driver(
 			})
 		})
 		.connect_lazy_with(options)
+}
+
+/// Starts a SQLx transaction that holds the test-fixture Deployment Scope, for
+/// fixtures that write Tenant-owned rows through a pool with no scope of its
+/// own. Only debug builds have it, and clippy keeps it out of server code.
+#[cfg(debug_assertions)]
+pub async fn begin_fixture_deployment(
+	pool: &sqlx::PgPool,
+) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+	let mut transaction = pool.begin().await?;
+	sqlx::query("SELECT set_config($1, 'deployment', true), set_config($2, '', true)")
+		.bind(SCOPE_SETTING)
+		.bind(TENANT_SETTING)
+		.execute(&mut *transaction)
+		.await?;
+	Ok(transaction)
 }
 
 /// Write `scope` into the transaction's settings. Call it once, before any

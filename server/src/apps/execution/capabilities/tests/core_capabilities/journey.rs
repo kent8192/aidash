@@ -157,7 +157,7 @@ async fn journey_fixture(
 	_core: CoreFuture,
 	#[future(awt)]
 	#[from(super::transfer_tests::connected_nodes)]
-	#[with(3,"aidash://journey","aidash://journey-_state.recipient",_core.clone())]
+	#[with(3,"aidash://journey","aidash://journey-recipient",_core.clone())]
 	peers: super::transfer_tests::ConnectedNodes,
 ) -> Journey {
 	let JourneyState {
@@ -173,13 +173,13 @@ async fn journey_fixture(
 	} = peers;
 	let server = _provider.await;
 	let receiver = admit(&peer).await;
-	*recipient.lock().unwrap() = json!({"node_id":peer.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
+	*recipient.lock().unwrap() = json!({"node_id":common::default_node(&peer.f.store,"acme").await,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
 	let (status, result) = request(
 		&c.app,
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.2.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.2.0"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
@@ -274,7 +274,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	};
 	assert!(answered_approval);
 	assert_eq!(j.effects.load(Ordering::SeqCst), 1);
-	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
+	let secret = j.c.f.config.api_token.clone();
 	assert!(!finished.context.to_string().contains(&secret));
 	let requests = j.requests.lock().unwrap().clone();
 	assert!(requests.len() > 10);
@@ -445,7 +445,7 @@ fn journey_router(
 .route("/effect", http::Method::POST, reply(move |request: reinhardt::Request| {let headers = request.headers.clone();let _body = request.json::<Value>().unwrap();
 		let counter = counter.clone();
 		async move {
-			// A Tool never forwards a Deployment secret such as the Peer Credential (#296).
+			// A Tool never forwards a Deployment secret such as the Deployment Administrator token (#296).
 			assert!(headers.get("authorization").is_none());
 			counter.fetch_add(1, Ordering::SeqCst);
 			reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
@@ -462,7 +462,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		let mut agent = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.node_id,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_deployment":c.f.config.deployment,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
 		agent.config["max_steps"] = json!(200);
 		for entry in [tool, agent] {
 			let (status, result) = request(
@@ -479,13 +479,13 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 				&c.token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
 			)
 			.await;
 			assert_eq!(status, 200, "{result}");
 		}
 		c.policy["subjects"]
-			[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
+			[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"), "research", "1.2.0")] =
 			json!({"kind":"agent"});
 		crate::common::require_tool_call_approval(&mut c.policy);
 		crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;

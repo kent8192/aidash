@@ -1,7 +1,7 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { DisplayProvider, ReferenceName } from "./record-view";
+import { DisplayProvider } from "./record-view";
 import {
   createRootRoute,
   createRoute,
@@ -16,12 +16,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import {
-  state as getState,
-  session as getSession,
-  mesh as getMesh,
-  discover,
-} from "./generated/aidash";
+import { state as getState, session as getSession } from "./generated/aidash";
+import { nodeLabel, nodeView } from "./node-selection";
+import { discoveryQuery, useNodeSelection } from "./nodes";
 import { subscribe } from "./event-stream";
 import { coalescedRefresh } from "./query-refresh";
 import {
@@ -79,7 +76,7 @@ import {
 } from "./theme";
 import { AppShell } from "./shell/app-shell";
 import { AuthCard } from "./shell/auth-card";
-import { Alert, Loading, Notice } from "./components/patterns";
+import { Alert, Loading } from "./components/patterns";
 import { authCopy, shellCopy } from "./shell/copy";
 import { signInMethods } from "@slots/sign-in";
 import { BillingNotice } from "@slots/billing";
@@ -310,19 +307,37 @@ function Dashboard({
     session.data?.access.kind === "subject"
       ? session.data.access.subject
       : null;
+  // The Tenant is known from the selected Mapping before `/api/session`
+  // answers, so the Nodes are read while State is.
+  const mappedTenant =
+    browserSession?.mappings.find(
+      (mapping) => mappingContext(mapping) === context,
+    )?.tenant ?? null;
+  const remembered = useNodeSelection(subjectTenant ?? mappedTenant);
+  // State lists every Node of the Tenant; the dashboard works in one: the Node
+  // of the open Workspace, whichever way it was reached, and otherwise the
+  // Node this browser remembers.
+  const everything = state.isError ? undefined : state.data;
+  const channelNode = route.channel
+    ? everything?.workspaces.find((value) => value.id === route.channel)?.node
+    : undefined;
+  const current =
+    remembered.nodes.find((value) => value.name === channelNode) ??
+    remembered.selected;
+  const nodes = useMemo(
+    () => ({ ...remembered, selected: current }),
+    [remembered, current],
+  );
+  const nodeState = useMemo(
+    () => (everything ? nodeView(everything, current) : undefined),
+    [everything, current],
+  );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   const [queueOpen, setQueueOpen] = useState(false);
-  const mesh = useQuery({
-    queryKey: ["mesh"],
-    queryFn: () => getMesh(),
-    enabled: connected && deploymentAdministrator,
-    refetchInterval: 3000,
-  });
   const discovery = useQuery({
-    queryKey: ["discovery"],
-    queryFn: () => discover({}),
-    enabled: connected,
+    ...discoveryQuery(current),
+    enabled: connected && !nodes.pending,
     refetchInterval: 10000,
   });
   const go = (
@@ -544,7 +559,6 @@ function Dashboard({
             "workspace",
             "channel-history",
             "run",
-            "mesh",
             "marketplace",
             "generation",
             "provider-credentials",
@@ -768,8 +782,7 @@ function Dashboard({
         )}
       </AuthCard>
     );
-  const data = state.isError ? undefined : state.data;
-  const remote = mesh.isError ? undefined : mesh.data;
+  const data = nodes.pending ? undefined : nodeState;
   const selectedRef = data
     ? chooseChannel(data.workspaces, route.channel)
     : undefined;
@@ -778,23 +791,27 @@ function Dashboard({
     data?.workspaces.find((value) => value.id === selectedRef.id);
   const currentChannel = workspace?.id ?? route.channel;
   const runs = data
-    ? [
-        ...data.runs.map((run) => ({ run, node: data.node.id })),
-        ...(deploymentAdministrator
-          ? (remote?.nodes.flatMap((node) =>
-              node.runs.map((run) => ({ run, node: node.node_id })),
-            ) ?? [])
-          : []),
-      ]
+    ? data.runs.map((run) => ({ run, node: data.node.id }))
     : [];
-  const requests = data
-    ? [
-        ...data.human_requests.map((request) => ({
-          request,
-          node: data.node.id,
-        })),
-      ]
-    : [];
+  // What awaits the person is Tenant-wide: a request in another Node's
+  // Workspace is as pending as one in the selected Node's.
+  const requests = (everything?.human_requests ?? []).map((request) => {
+    const owner = everything?.workspaces.find(
+      (value) => value.id === request.workspace_id,
+    );
+    const title = owner?.title ?? "";
+    return {
+      request,
+      node:
+        nodes.nodes.find((value) => value.name === owner?.node)?.address ??
+        everything?.deployment.id ??
+        "",
+      workspace:
+        owner && nodes.nodes.length > 1
+          ? `${nodeLabel(nodes.nodes, owner.node)} / ${title}`
+          : title,
+    };
+  });
   const visit = (target: NoticeTarget) => {
     // An approval is decided in the decision queue, where its card lives.
     if (target.kind === "approval") return setQueueOpen(true);
@@ -802,31 +819,27 @@ function Dashboard({
       target.kind === "human"
         ? requests.find(
             (item) =>
-              item.node === target.node &&
-              item.request.id === target.id &&
-              item.request.response === null,
+              item.request.id === target.id && item.request.response === null,
           )
         : undefined;
     const task =
-      target.kind === "task" && target.node === data?.node.id
-        ? data.tasks.find((task) => task.id === target.id)
+      target.kind === "task"
+        ? everything?.tasks.find((task) => task.id === target.id)
         : undefined;
-    if (!item && !task) return;
-    if (
-      data &&
-      target.node === data.node.id &&
-      data.workspaces.some((workspace) => workspace.id === target.workspace)
-    )
-      go("collaboration", { channel: target.workspace, focus: "" });
-    if (item) open({ kind: "human", ...item });
+    const owner = everything?.workspaces.find(
+      (workspace) => workspace.id === target.workspace,
+    );
+    if ((!item && !task) || !owner) return;
+    nodes.select(owner.node);
+    go("collaboration", { channel: owner.id, focus: "" });
+    if (item) open({ kind: "human", request: item.request, node: item.node });
     if (task) open({ kind: "taskDetail", task });
   };
   return (
-    <DisplayProvider data={data}>
+    <DisplayProvider data={data} nodes={nodes}>
       <NotificationProvider
         key={`${browserSessionId}:${context}`}
-        data={data}
-        remote={deploymentAdministrator ? remote : undefined}
+        data={everything}
         approvals={inbox.pending}
         locale={locale}
         theme={theme}
@@ -882,6 +895,12 @@ function Dashboard({
               request: () => void requestRegistration(),
             },
             chooseContext,
+            chooseNode: (name) => {
+              nodes.select(name);
+              // The open Workspace belongs to the Node being left.
+              if (workspace && workspace.node !== name)
+                go("collaboration", { channel: "" });
+            },
             setLocale,
             logOut: (allDevices) => void logOut(allDevices),
             preference,
@@ -889,11 +908,7 @@ function Dashboard({
           }}
         >
           <BillingNotice />
-          {((error && !selection) ||
-            state.isError ||
-            (data &&
-              deploymentAdministrator &&
-              (mesh.isError || (remote?.errors.length ?? 0) > 0))) && (
+          {((error && !selection) || state.isError) && (
             <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
               {error && !selection && <Alert>{error}</Alert>}
               {state.isError && (
@@ -923,21 +938,6 @@ function Dashboard({
                   )}
                 </Alert>
               )}
-              {data &&
-                deploymentAdministrator &&
-                (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
-                  <Notice tone="warning" role="status">
-                    <p>{t("remoteUnavailable")}</p>
-                    {remote?.errors.map((peer) => (
-                      <p
-                        key={peer.node_id}
-                        className="font-mono text-[11px] text-muted-foreground"
-                      >
-                        <ReferenceName id={peer.node_id} />: {peer.error}
-                      </p>
-                    ))}
-                  </Notice>
-                )}
             </div>
           )}
           {!data && !state.isError && (
@@ -1061,7 +1061,7 @@ function Dashboard({
             }
             data={data}
             stateError={state.isError ? state.error.message : undefined}
-            nodeId={session.data.node_id}
+            nodeId={current?.address ?? ""}
             deploymentAdministrator={deploymentAdministrator}
             workspace={currentChannel || undefined}
             close={() => go("collaboration", { focus: "" })}
@@ -1073,7 +1073,6 @@ function Dashboard({
               selection={selection}
               data={data}
               discovery={discovery.isError ? undefined : discovery.data}
-              mesh={remote}
               open={open}
               close={() => setSelection(null)}
               submit={submit}

@@ -56,7 +56,7 @@ function research(revokedAt: string | null, can: boolean, searches = 2) {
   };
 }
 
-async function openRun(page: Page) {
+async function openRun(page: Page, label = "Researcher") {
   await page.goto("/collaboration?channel=workspace-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
@@ -64,14 +64,14 @@ async function openRun(page: Page) {
   await page
     .getByRole("dialog")
     .getByRole("button")
-    .filter({ hasText: "Researcher" })
+    .filter({ hasText: label })
     .click();
 }
 
 test("a permitted reader revokes a Run's evidence with a reason and then sees the record", async ({
   page,
 }) => {
-  const { errors } = await setup(page, { locale: "en-US" });
+  const { errors } = await setup(page, { subject: true, locale: "en-US" });
   let revokedAt: string | null = null;
   const posted: unknown[] = [];
   await page.route("**/api/runs/*/research**", (route: Route) => {
@@ -132,7 +132,7 @@ test("a permitted reader revokes a Run's evidence with a reason and then sees th
 test("a reader without the permission is not offered revocation and sees only that it happened", async ({
   page,
 }) => {
-  await setup(page, { locale: "en-US" });
+  await setup(page, { subject: true, locale: "en-US" });
   let revokedAt: string | null = null;
   const reads: string[] = [];
   await page.route("**/api/runs/*/research**", (route: Route) => {
@@ -162,7 +162,7 @@ test("a reader without the permission is not offered revocation and sees only th
 test("a reader who loses the permission no longer sees the record read before", async ({
   page,
 }) => {
-  await setup(page, { locale: "en-US" });
+  await setup(page, { subject: true, locale: "en-US" });
   let can = true;
   await page.route("**/api/runs/*/research**", (route: Route) => {
     const path = new URL(route.request().url()).pathname;
@@ -185,6 +185,30 @@ test("a reader who loses the permission no longer sees the record read before", 
   await expect(section.getByRole("status")).toContainText(
     "This Run's research evidence was revoked",
   );
+});
+
+test("a Deployment Administrator reads a local Node Run's research audit record", async ({
+  page,
+}) => {
+  const { errors, revokeAgents } = await setup(page, { locale: "en-US" });
+  revokeAgents();
+  await page.route("**/api/runs/*/research**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return route.fulfill({
+      json: path.endsWith("/research")
+        ? research("2026-10-17T09:00:00Z", true)
+        : { ...record("run-0", "subject:acme/alice"), tenant: "acme" },
+    });
+  });
+  await openRun(page, "Unavailable item");
+  const section = page.getByRole("region", {
+    name: "Research evidence",
+    exact: true,
+  });
+  await expect(section).toContainText(
+    "The rights holder asked us to remove the page.",
+  );
+  expect(errors).toEqual([]);
 });
 
 type View = {
@@ -243,12 +267,11 @@ async function trust(
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -259,11 +282,8 @@ async function trust(
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/retention") {
       if (request.method() === "PUT") {
         const body = request.postDataJSON();

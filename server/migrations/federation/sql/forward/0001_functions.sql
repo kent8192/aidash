@@ -22,7 +22,8 @@ BEGIN
        AND TG_TABLE_NAME IN ('authorization_bundles','authorization_revisions',
            'authorization_credentials','authorization_decisions',
            'authorization_peer_mappings','authorization_peer_mapping_history',
-           'authorization_peer_graph_grants','peers') THEN
+           'authorization_peer_graph_grants','node_registrations',
+           'node_registration_history') THEN
         RETURN NULL;
     END IF;
     SELECT transaction_id INTO pending FROM atomic_gate WHERE singleton FOR SHARE NOWAIT;

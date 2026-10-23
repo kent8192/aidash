@@ -297,7 +297,8 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
   expect(errors).toEqual([]);
 });
 
-// Needs the enabled peer that scoped_golden_path.verify registers.
+// The mapped subject belongs to a Node of another Tenant of the same
+// Deployment, which this Tenant's default Node registers.
 test(
   "peer identity mappings preserve revisions, credential rotation and bilingual administration",
   { tag: "@golden-path" },
@@ -317,11 +318,23 @@ test(
       expect(response.status(), await response.text()).toBe(200);
       return response.json();
     };
-    const state = await api("/api/state");
-    const peer = state.peers.find(
-      (value: { enabled: boolean }) => value.enabled,
+    const otherTenant = await createTenant(
+      request,
+      "acceptance-access-token",
+      `peer-source-${randomUUID()}`,
     );
-    expect(peer, "fixture requires a configured peer").toBeTruthy();
+    const [home] = (await api(`/api/tenants/${tenant}/nodes`)) as {
+      name: string;
+    }[];
+    const [source] = (await api(`/api/tenants/${otherTenant}/nodes`)) as {
+      address: string;
+    }[];
+    await api(`/api/tenants/${tenant}/nodes/${home.name}/registrations`, {
+      source_node: source.address,
+      atomic_transactions: false,
+      enabled: true,
+      expected_revision: 0,
+    });
     await api(base, {
       expected_revision: 1,
       bundle: { tenant, subjects: { bridge: { kind: "user" } }, policies: [] },
@@ -347,12 +360,12 @@ test(
     });
     await panel.getByRole("button", { name: "Add peer mapping" }).click();
     const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByLabel("Receiving node", { exact: true }),
+    ).toHaveValue(home.name);
     await dialog
       .getByLabel("Source node", { exact: true })
-      .selectOption(peer.node_id);
-    await dialog
-      .getByLabel("Source tenant", { exact: true })
-      .fill("remote-tenant");
+      .selectOption(source.address);
     await dialog
       .getByLabel("Source subject", { exact: true })
       .fill("remote-user");
@@ -369,12 +382,12 @@ test(
     await panel.getByRole("button", { name: "Edit peer mapping" }).click();
     await expect(
       dialog.getByLabel("Source node", { exact: true }),
-    ).toBeDisabled();
+    ).not.toBeEditable();
     // A Deployment Administrator on another session advances the revision while this form is open.
     const current = (await api(`${base}/peer-mappings`))[0];
     const input = {
+      node: current.node,
       source_node: current.source_node,
-      source_tenant: current.source_tenant,
       source_subject: current.source_subject,
       credential_id: current.credential_id,
       expected_revision: 1,

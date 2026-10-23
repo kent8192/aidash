@@ -17,6 +17,7 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 	if aidash_application::registry::system::builtin_reference(reference) {
 		return system_document(access, reference).await.map(Some);
 	}
+	let node = access.catalog_node().await?;
 	let query = if access.inherited_lease {
 		Query::select()
 			.column((Alias::new("r"), Alias::new("metadata")))
@@ -70,7 +71,14 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 						)))
 						.eq(Expr::cust("$3")),
 					)
-					.add(Expr::col((Alias::new("c"), Alias::new("enabled")))),
+					.add(Expr::col((Alias::new("c"), Alias::new("enabled"))))
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("c"),
+							Alias::new("node"),
+						)))
+						.eq(Expr::cust("$4")),
+					),
 			)
 			.to_string(PostgresQueryBuilder)
 	} else {
@@ -126,7 +134,14 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 						)))
 						.eq(Expr::cust("$3")),
 					)
-					.add(Expr::col((Alias::new("c"), Alias::new("enabled")))),
+					.add(Expr::col((Alias::new("c"), Alias::new("enabled"))))
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("c"),
+							Alias::new("node"),
+						)))
+						.eq(Expr::cust("$4")),
+					),
 			)
 			.lock(LockType::Share)
 			.lock_tables([Alias::new("c")])
@@ -136,12 +151,14 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 		.bind(&access.identity.tenant)
 		.bind(&reference.id)
 		.bind(&reference.version)
+		.bind(node.as_str())
 		.scalar_optional(&mut **access.tx)
 		.await?;
 
 	Ok(document)
 }
 async fn documents(access: &mut Access) -> Result<Vec<Value>> {
+	let node = access.catalog_node().await?;
 	let query = if access.inherited_lease {
 		Query::select()
 			.column((Alias::new("r"), Alias::new("metadata")))
@@ -181,7 +198,14 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 						)))
 						.eq(Expr::cust("$1")),
 					)
-					.add(Expr::col((Alias::new("c"), Alias::new("enabled")))),
+					.add(Expr::col((Alias::new("c"), Alias::new("enabled"))))
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("c"),
+							Alias::new("node"),
+						)))
+						.eq(Expr::cust("$2")),
+					),
 			)
 			.order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
 			.order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)
@@ -225,7 +249,14 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 						)))
 						.eq(Expr::cust("$1")),
 					)
-					.add(Expr::col((Alias::new("c"), Alias::new("enabled")))),
+					.add(Expr::col((Alias::new("c"), Alias::new("enabled"))))
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("c"),
+							Alias::new("node"),
+						)))
+						.eq(Expr::cust("$2")),
+					),
 			)
 			.order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
 			.order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)
@@ -235,6 +266,7 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 	};
 	let mut documents: Vec<Value> = crate::database::native::query_scalar(&query)
 		.bind(&access.identity.tenant)
+		.bind(node.as_str())
 		.scalar_all(&mut **access.tx)
 		.await?;
 

@@ -25,6 +25,7 @@ struct Scope {
 }
 fn run() -> Run {
 	Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(9),
 		task_id: Uuid::from_u128(10),
 		workspace_id: Uuid::from_u128(1),

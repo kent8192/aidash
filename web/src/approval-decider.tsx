@@ -24,6 +24,7 @@ import {
 } from "./catalog-approval";
 import { deciderRecipients } from "./decider";
 import { Field, Panel, useI18n } from "./ui";
+import { useNodes } from "./nodes";
 
 /** A link to the Registry with one Decider version's Catalog Approval open. */
 export function CatalogApprovalLink({
@@ -68,6 +69,7 @@ export function ApprovalDeciderPanel({
   const { locale, entityName } = useI18n();
   const copy = approvalCopy[locale].decider;
   const client = useQueryClient();
+  const node = useNodes().selected?.name;
   const decider = useApprovalDecider(tenant);
   const versions = useRegistryVersions({ kind: "subject", tenant, subject });
   const [busy, setBusy] = useState(false);
@@ -100,12 +102,14 @@ export function ApprovalDeciderPanel({
     setError("");
     try {
       client.setQueryData(
-        approvalDeciderKey(tenant),
+        approvalDeciderKey(tenant, node),
         await approvalDeciderUpdate(
           encodeURIComponent(tenant),
           deciderUpdate(current, choice),
+          { node },
         ),
       );
+      await client.invalidateQueries({ queryKey: approvalDeciderKey(tenant) });
       setSaved(true);
       // Which modes this Tenant's people can use follows from the Decider.
       await client.invalidateQueries({

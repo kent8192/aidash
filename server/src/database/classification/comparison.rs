@@ -129,15 +129,6 @@ pub fn compare(observed: &BTreeMap<String, Observed>, tables: &[Table], list_fil
 				let expected = template.get_or_insert_with(|| using.clone());
 				assert_eq!(&using, expected, "{} departs from the template", table.name);
 			}
-			Classification::Pending(issue) => {
-				assert!(
-					!actual.row_security && actual.policies == 0,
-					"{} is enforced; classify it Tenant-owned: {actual:?}",
-					table.name
-				);
-				// #241 gives Nodes and peers a Tenant.
-				assert_eq!(issue, 241, "{}: no step of #223 is #{issue}", table.name);
-			}
 			Classification::DeploymentWide => assert!(
 				!actual.row_security && actual.policies == 0,
 				"{} is Deployment-wide but has row-level security: {actual:?}",

@@ -35,7 +35,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		let node = self.runtime.config.node_id.clone();
+		let node = self.runtime.config.deployment.to_string();
 		crate::apps::registry::repositories::bindings::preview(
 			&mut *self.access.tx,
 			&node,
@@ -56,8 +56,16 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
+	async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> aidash_application::Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.access.workspace_node(workspace).await?;
+		self.access.set_node(node.clone());
+		Ok(self.runtime.config.deployment.node(node))
+	}
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -80,12 +88,12 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let f = self.runtime;
 		let previous_depth: Option<i32> = {
 			let query_bind_1 = &access.identity.tenant;
-			let query_bind_2 = &f.config.node_id;
+			let query_bind_2 = f.config.deployment.as_str();
 			let query_bind_3 = &access.subjects;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("MAX(depth)"))
 			.from(reinhardt::query::Alias::new("generation_requests"))
-			.and_where(SimpleExpr::CustomWithExpr("(tenant = ? AND (? || '/agents/' || agent_id || '@' || agent_version) = ANY(?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned())]))
+			.and_where(SimpleExpr::CustomWithExpr("(tenant = ? AND (? || '/' || node || '/agents/' || agent_id || '@' || agent_version) = ANY(?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned())]))
 			.to_string(reinhardt::query::PostgresQueryBuilder))
 	.scalar_one(&mut **access.tx)
 	.await?
@@ -146,8 +154,33 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			let query_bind_15 = depth;
 			let query_bind_16 = limits.tokens_per_agent;
 			let query_bind_17 = creation.lifetime_seconds;
-			let query_bind_18 = creation.home_node;
 			let query_bind_19 = creation.foreign_intent.clone();
+			let deployment = self.runtime.config.deployment.as_str();
+			let (node, home_node, local_task, local_workspace) = match &creation.foreign_intent {
+				None => (
+					crate::database::scope::workspace_node(task.workspace_id),
+					crate::database::scope::node_address(
+						deployment,
+						crate::database::scope::workspace_node(task.workspace_id),
+					),
+					Expr::value(task_id).into(),
+					Expr::value(task.workspace_id).into(),
+				),
+				Some(intent) => (
+					Expr::value(
+						access
+							.node
+							.as_ref()
+							.ok_or(Error::Forbidden)?
+							.as_str()
+							.to_owned(),
+					)
+					.into(),
+					Expr::value(intent["home_node"].as_str().unwrap_or_default().to_owned()).into(),
+					SimpleExpr::from(Expr::cust("NULL::uuid")),
+					SimpleExpr::from(Expr::cust("NULL::uuid")),
+				),
+			};
 			crate::database::query_as(
 				&reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("generation_requests"))
@@ -170,6 +203,9 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 						reinhardt::query::Alias::new("token_limit"),
 						reinhardt::query::Alias::new("expires_at"),
 						reinhardt::query::Alias::new("home_node"),
+						reinhardt::query::Alias::new("node"),
+						reinhardt::query::Alias::new("local_task_id"),
+						reinhardt::query::Alias::new("local_workspace_id"),
 						reinhardt::query::Alias::new("foreign_intent"),
 					])
 					.from_subquery(
@@ -242,10 +278,10 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 								"(CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => ?))".to_owned(),
 								vec![Expr::value(query_bind_17.to_owned()).into()],
 							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_18.to_owned()).into()],
-							))
+							.expr(home_node)
+							.expr(node)
+							.expr(local_task)
+							.expr(local_workspace)
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_19.to_owned()).into()],
@@ -465,10 +501,14 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let Some(root) = access.subjects.first().cloned() else {
 			return Ok(None);
 		};
+		let Some(node) = access.node.clone() else {
+			return Ok(None);
+		};
 		identity::settings_for_root(
 			&mut *access.tx,
 			&access.snapshot.bundle,
 			&access.identity.tenant,
+			&node,
 			&root,
 		)
 		.await
@@ -567,7 +607,7 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 					))
 					.from(reinhardt::query::Alias::new("generation_requests"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(task_id = ? AND home_node='')".to_owned(),
+						"(task_id = ? AND local_task_id IS NOT NULL)".to_owned(),
 						vec![Expr::value(query_bind_1.to_owned()).into()],
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -713,7 +753,7 @@ impl GenerationCreationScope for Session {
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		let node = self.runtime.config.node_id.clone();
+		let node = self.runtime.config.deployment.to_string();
 		crate::apps::registry::repositories::bindings::preview(
 			&mut *self.access.tx,
 			&node,
@@ -734,8 +774,16 @@ impl GenerationCreationScope for Session {
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
+	async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> aidash_application::Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.access.workspace_node(workspace).await?;
+		self.access.set_node(node.clone());
+		Ok(self.runtime.config.deployment.node(node))
+	}
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()

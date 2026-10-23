@@ -389,7 +389,7 @@ async fn rule_as(fixture: &Fixture, case: Case, binding: Restrictions) -> Result
 	.unwrap();
 	let pin = DeciderPin {
 		identity: QualifiedRef {
-			registry_node: NODE.into(),
+			registry_deployment: NODE.into(),
 			id: definition.id.clone(),
 			version: definition.version.clone(),
 		},

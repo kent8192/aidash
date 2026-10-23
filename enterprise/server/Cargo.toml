@@ -49,6 +49,7 @@ uuid.workspace = true
 [dev-dependencies]
 # The Community server's test support needs the test-only ports (ADR 0006).
 aidash-application = { workspace = true, features = ["test-support"] }
+aidash-capability.workspace = true
 aidash-integrations = { workspace = true, features = ["test-support"] }
 base64 = "0.22"
 bytes = "1"
@@ -58,6 +59,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "use_pem",
 ] }
 regex = "1.12"
+secrecy = "0.10"
 reinhardt = { workspace = true, features = ["test", "testcontainers"] }
 rstest.workspace = true
 sqlx = { version = "0.8.6", default-features = false, features = [

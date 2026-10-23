@@ -109,8 +109,7 @@ pub async fn due(
 					Some(Approval { state, expires_at }) if state == "pending" => expires_at,
 					_ => Some(now),
 				}
-			} else if m.home_node == node
-				&& matches!(wait.as_ref(), WaitingState::Dependencies { .. })
+			} else if m.is_local(node) && matches!(wait.as_ref(), WaitingState::Dependencies { .. })
 			{
 				if scope.dependencies_ready(m.task_id).await? {
 					Some(now)

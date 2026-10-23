@@ -31,8 +31,13 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- if or (not (kindIs "map" $d)) (ne (keys $d | sortAlpha | join ",") "broker,fingerprint_key,store") -}}{{ fail $invalid }}{{- end -}}
 {{- $store := $d.store -}}
 {{- if not (kindIs "invalid" $store) -}}
+{{- if and (kindIs "map" $store) (eq (toJson $store.kind) "\"postgres\"") -}}
+{{- if or (ne (keys $store | sortAlpha | join ",") "kind,master_key") (ne (toJson $store.master_key) (toJson (dict "env" "AIDASH_PROVIDER_STORE_MASTER_KEY"))) -}}{{ fail "providerCredentials.settings.store must reference AIDASH_PROVIDER_STORE_MASTER_KEY for a PostgreSQL Store" }}{{- end -}}
+{{- if not (kindIs "invalid" $d.broker) -}}{{ fail "A PostgreSQL Store cannot configure a Credential Broker" }}{{- end -}}
+{{- else -}}
 {{- if or (not (kindIs "map" $store)) (ne (keys $store | sortAlpha | join ",") "byok_project_id,environment_id,kind") (ne (toJson $store.kind) "\"secret_manager\"") (not (kindIs "string" $store.byok_project_id)) (not (kindIs "string" $store.environment_id)) -}}{{ fail "providerCredentials.settings.store must be a Secret Manager Store {kind, byok_project_id, environment_id}" }}{{- end -}}
 {{- if or (not (regexMatch "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" $store.byok_project_id)) (not (regexMatch "^(develop|test|pr-[1-9][0-9]*)$" $store.environment_id)) -}}{{ fail "providerCredentials.settings.store names an invalid BYOK project or Environment" }}{{- end -}}
+{{- end -}}
 {{- if ne (toJson $d.fingerprint_key) (toJson (dict "env" "AIDASH_PROVIDER_FINGERPRINT_KEY")) -}}{{ fail "providerCredentials.settings.fingerprint_key must reference AIDASH_PROVIDER_FINGERPRINT_KEY when a Store is managed" }}{{- end -}}
 {{- else if not (kindIs "invalid" $d.fingerprint_key) -}}{{ fail $invalid }}
 {{- end -}}
@@ -58,7 +63,7 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- end -}}
 {{- if and (hasKey $g "auth_helper") (not (has $g.auth_helper (list "firebase" "public_origin"))) -}}{{ fail "gcip.settings auth_helper must be firebase or public_origin" }}{{- end -}}
 {{- if or (not (kindIs "string" $g.project_id)) (not $g.project_id) (not (kindIs "string" $g.web_api_key)) (not (trim $g.web_api_key)) (not (kindIs "map" $g.tenant_bindings)) -}}{{ fail "gcip.settings needs project_id, web_api_key and tenant_bindings" }}{{- end -}}
-{{- if or (not .Values.node.endpoint) (ne (toJson $g.public_origin) (toJson .Values.node.endpoint)) -}}{{ fail "gcip.settings public_origin must equal node.endpoint" }}{{- end -}}
+{{- if or (not .Values.deployment.endpoint) (ne (toJson $g.public_origin) (toJson .Values.deployment.endpoint)) -}}{{ fail "gcip.settings public_origin must equal deployment.endpoint" }}{{- end -}}
 {{- toJson $s -}}
 {{- end -}}
 

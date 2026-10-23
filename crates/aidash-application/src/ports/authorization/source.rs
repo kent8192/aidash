@@ -28,7 +28,11 @@ pub mod grants;
 
 #[async_trait]
 pub trait SourcePeerScope: Send {
-	async fn peer(&mut self, node: &str) -> Result<Option<aidash_domain::federation::Peer>>;
+	/// The sender's enabled route to `node`, read in the source transaction.
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>>;
 }
 
 pub mod semantic;

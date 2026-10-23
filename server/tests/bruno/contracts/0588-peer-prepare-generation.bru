@@ -1,5 +1,5 @@
 meta {
-  name: 0588 peer-prepare-generation - Require the peer node identity
+  name: 0588 peer-prepare-generation - Refuse a token that does not verify
   type: http
   seq: 588
 }
@@ -12,8 +12,8 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{peer_token}}
-  X-Aidash-Protocol: 0.2
+  Authorization: Bearer not-a-federation-token
+  X-Aidash-Protocol: 0.4
 }
 
 script:pre-request {

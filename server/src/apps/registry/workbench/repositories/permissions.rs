@@ -32,12 +32,12 @@ impl PermissionRepository for Repository<'_> {
 		super::authority::principal(&self.actor)
 	}
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn PermissionScope + '_>> {
 		Ok(Box::new(Scope {
 			policy: self.runtime.config.dashboard_policy(),
-			node: self.runtime.config.node_id.clone(),
+			node: self.runtime.config.deployment.to_string(),
 			tx: Box::new(
 				self.runtime
 					.store
@@ -67,7 +67,7 @@ impl PermissionScope for Scope {
 			},
 			&crate::bootstrap::registry_validation(),
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.clone(),
+				registry_deployment: node.clone(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},
@@ -106,7 +106,11 @@ impl PermissionScope for Scope {
 			.await?;
 			return Ok(Some(true));
 		}
-		AuthorizationCatalog::enabled_in(self.tx.as_mut(), tenant, entry, true)
+		// Workbench permissions are the Tenant's; they read the default Node's approvals.
+		let node = crate::apps::identity::repositories::nodes::default_of(self.tx.as_mut(), tenant)
+			.await?
+			.name;
+		AuthorizationCatalog::enabled_in(self.tx.as_mut(), tenant, node.as_str(), entry, true)
 			.await
 			.map_err(Into::into)
 	}

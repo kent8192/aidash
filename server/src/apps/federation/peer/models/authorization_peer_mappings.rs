@@ -11,13 +11,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub struct AuthorizationPeerMapping {
 	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
+	#[field(primary_key = true, field_type = "text")]
+	pub node: String,
+	#[field(primary_key = true, field_type = "text")]
 	pub source_node: String,
 	#[field(primary_key = true, field_type = "text")]
-	pub source_tenant: String,
-	#[field(primary_key = true, field_type = "text")]
 	pub source_subject: String,
-	#[field(field_type = "text")]
-	pub tenant: String,
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
@@ -44,7 +44,7 @@ impl AuthorizationPeerMapping {
 	) -> Result<Vec<Self>> {
 		Ok(Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
-			.order_by(&["source_node", "source_tenant", "source_subject"])
+			.order_by(&["node", "source_node", "source_subject"])
 			.offset(offset)
 			.limit(limit)
 			.all_with_db(db)

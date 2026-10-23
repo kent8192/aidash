@@ -105,6 +105,7 @@ fn scope() -> Scope {
 	let mut job = test_support::request(11);
 	job.task_id = task.id;
 	job.home_node = intent.home_node.clone();
+	job.foreign_intent = Some(serde_json::json!({}));
 	job.tenant = authority.tenant.clone();
 	job.credential_id = authority.credential_id;
 	job.subject_chain = authority.subjects.clone();

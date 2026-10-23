@@ -1,7 +1,11 @@
 //! Mapping writes own their transaction; inbound reads hold the resolved credential and policy lease.
 use crate::Result;
 use crate::tenancy::TenancyScope;
-use aidash_domain::identity::peer_mapping::{Mapping, PeerMappingInput};
+use aidash_domain::{
+	identity::peer_mapping::{Mapping, PeerMappingInput},
+	nodes::{DeploymentId, NodeAddress, NodeName},
+	tenancy::TenantName,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -19,9 +23,15 @@ pub trait MappingWrite: Send + Sized {
 	) -> Result<()> {
 		Ok(())
 	}
-	/// Requires `node` to be an enabled peer, read in this transaction once
-	/// the writer is authorized, so a refused writer learns nothing of it.
-	async fn enabled_peer(&mut self, node: &str) -> Result<()>;
+	/// Requires `source` to be registered and enabled at `node`, read in this
+	/// transaction once the writer is authorized, so a refused writer learns
+	/// nothing of it.
+	async fn enabled_registration(
+		&mut self,
+		tenant: &str,
+		node: &NodeName,
+		source: &NodeAddress,
+	) -> Result<()>;
 	/// Refuses a credential no Peer Mapping may bind, whether or not it is
 	/// enabled.
 	async fn exportable(&mut self, tenant: &str, id: Uuid) -> Result<()>;
@@ -33,9 +43,20 @@ pub trait MappingWrite: Send + Sized {
 }
 #[async_trait]
 pub trait MappingAccess: Send {
-	async fn current(&mut self, node: &str, tenant: &str, subject: &str)
-	-> Result<Option<Mapping>>;
-	async fn peer_enabled(&mut self, node: &str) -> Result<bool>;
+	async fn current(
+		&mut self,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
+		subject: &str,
+	) -> Result<Option<Mapping>>;
+	/// Whether `source` is still registered and enabled at `node`.
+	async fn registered(
+		&mut self,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
+	) -> Result<bool>;
 	fn environment(&mut self) -> &mut Value;
 	fn context(&mut self) -> &mut Value;
 }
@@ -43,13 +64,27 @@ pub trait MappingAccess: Send {
 pub trait MappingRepository: Send + Sync {
 	type Write: MappingWrite;
 	type Access: MappingAccess;
-	fn node_id(&self) -> &str;
+	fn deployment(&self) -> &DeploymentId;
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Self::Write>;
-	async fn resolved(&self, node: &str, tenant: &str, subject: &str) -> Result<Option<Mapping>>;
+	async fn resolved(
+		&self,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
+		subject: &str,
+	) -> Result<Option<Mapping>>;
 	async fn credential_subject(&self, mapping: &Mapping) -> Result<Option<String>>;
 	async fn begin_access(
 		&self,
 		mapping: &Mapping,
+		subject: &str,
+		exclusive: bool,
+	) -> Result<Self::Access>;
+	/// An authority for a subject of the Tenant's own policy that holds no
+	/// credential: a Node of the same Tenant acting for one of its subjects.
+	async fn begin_subject(
+		&self,
+		tenant: &TenantName,
 		subject: &str,
 		exclusive: bool,
 	) -> Result<Self::Access>;

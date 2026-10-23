@@ -144,7 +144,7 @@ export function meshScene(now = Date.now()) {
   const events = Array.from({ length: 18 }, (_, i) => ({
     id: `event-${i}`,
     sequence: i,
-    node_id: home,
+    node: null,
     workspace_id: "product-lab",
     kind: [
       "task.created",
@@ -167,15 +167,6 @@ export function meshScene(now = Date.now()) {
       created_at: time(90),
     },
   ];
-  const peers = [
-    {
-      node_id: peer,
-      endpoint: "https://example.invalid",
-      credential_env: "TEST_ONLY_NOT_A_SECRET",
-      protocol_version: "0.1",
-      enabled: true,
-    },
-  ];
   const discovery = {
     agents: [
       entry("analyst", "agent", "Data Analyst"),
@@ -186,12 +177,11 @@ export function meshScene(now = Date.now()) {
   return {
     data: {
       access: { kind: "deployment_administrator" },
-      node: {
+      deployment: {
         id: home,
         endpoint: "http://localhost",
         protocol_version: "0.1",
-        capabilities: [],
-        clusters: [],
+        key: null,
       },
       registry,
       workspaces,
@@ -200,8 +190,6 @@ export function meshScene(now = Date.now()) {
       artifacts,
       events,
       conversations,
-      peers,
-      installations: [],
       human_requests: [],
     },
     discovery,

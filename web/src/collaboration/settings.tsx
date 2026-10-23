@@ -11,6 +11,7 @@ import {
   Server,
   ShieldCheck,
   Store,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -18,14 +19,6 @@ import { Badge as Tag } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
 import { focusedVersion } from "../approval-decider-model";
 import { ApprovalSettingsPage } from "../approval-settings";
 import { approvalCopy } from "../approval-settings-copy";
@@ -48,12 +41,15 @@ import {
   useRegistryVersions,
 } from "../catalog-approval";
 import type { RegistryVersion } from "../generated/models";
+import { useNodes } from "../nodes";
+import { NodesPage } from "../nodes-settings";
+import { registryDeployment } from "../node-selection";
 import { useTenantActions } from "../tenant-administration";
 import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
 import { ProviderCredentialsPage } from "../provider-credentials";
-import { RecordView, ReferenceName } from "../record-view";
+import { RecordView } from "../record-view";
 import { SemanticPage } from "../semantic";
 import type { State } from "../types";
 import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
@@ -73,6 +69,7 @@ const deploymentAdministratorSections: Partial<Record<SettingsSection, true>> =
 
 const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   node: Server,
+  nodes: Waypoints,
   agents: Bot,
   registry: Library,
   clusters: Network,
@@ -412,25 +409,26 @@ function EntryList({
 
 function NodeView({
   data,
-  open,
   disconnect,
 }: {
   data: State;
-  open: (selection: Selection) => void;
   disconnect: () => void;
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
-  const deploymentAdministrator =
-    data.access.kind === "deployment_administrator";
+  const { selected } = useNodes();
+  const deployment = registryDeployment(data);
   return (
     <div className="grid max-w-4xl min-w-0 gap-6">
       <Panel title={copy.node}>
         <Facts
           items={[
-            [copy.node, <ReferenceName id={data.node.id} />],
+            [t("deploymentId"), deployment, true],
+            ...(selected
+              ? ([[t("node"), selected.label]] as [string, string][])
+              : []),
             [t("endpoint"), data.node.endpoint, true],
-            [t("protocol"), data.node.protocol_version, true],
+            [t("protocol"), data.deployment.protocol_version, true],
           ]}
         />
       </Panel>
@@ -458,57 +456,6 @@ function NodeView({
           <p className="text-[13px] text-foreground">{t("administrator")}</p>
         )}
       </Panel>
-      {deploymentAdministrator && (
-        <Panel
-          title={t("connectedNodes")}
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              onClick={() => open({ kind: "peer" })}
-            >
-              <Plus aria-hidden />
-              {t("addPeer")}
-            </Button>
-          }
-        >
-          {data.peers.length === 0 ? (
-            <Empty />
-          ) : (
-            <div className="min-w-0 rounded-md border border-border bg-surface">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("node")}</TableHead>
-                    <TableHead>{t("endpoint")}</TableHead>
-                    <TableHead>{t("protocol")}</TableHead>
-                    <TableHead className="text-right" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.peers.map((peer) => (
-                    <TableRow key={peer.node_id} className="peer-row">
-                      <TableCell className="font-medium">
-                        <ReferenceName id={peer.node_id} />
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {peer.endpoint}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {peer.protocol_version}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Badge value={peer.enabled ? "ACTIVE" : "PAUSED"} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </Panel>
-      )}
       <Disclosure summary={t("metadata")}>
         <RecordView value={data.node} />
       </Disclosure>
@@ -669,8 +616,9 @@ export function Configuration({
               <Notice role="status">{approvalCopy[locale].personalOnly}</Notice>
             ))}
           {section === "node" && (
-            <NodeView data={data} open={open} disconnect={disconnect} />
+            <NodeView data={data} disconnect={disconnect} />
           )}
+          {section === "nodes" && <NodesPage data={data} />}
         </>
       )}
     </SettingsFrame>

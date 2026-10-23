@@ -486,7 +486,7 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 	);
 	let content = observed.content.clone();
 	let mut policy = c.policy.clone();
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-skill-list","effect":"deny","subjects":{"any":true},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[aidash_domain::registry::bindings::QualifiedRef::builtin(&c.f.config.node_id,"skill_list").resource_id()]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-skill-list","effect":"deny","subjects":{"any":true},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[aidash_domain::registry::bindings::QualifiedRef::builtin(c.f.config.deployment.as_str(),"skill_list").resource_id()]}}));
 	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
 	let blocked = loop {

@@ -49,7 +49,7 @@ pub(crate) async fn registry_response(
 			&mut crate::bootstrap::marketplace_distribution_scope(&mut access),
 			entries,
 			single,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		if single {
@@ -87,13 +87,13 @@ pub(crate) async fn state_response(
 		state.registry = aidash_application::marketplace::events::state_registry(
 			&mut scope,
 			state.registry,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		state.events = aidash_application::marketplace::events::state_events(
 			&mut scope,
 			state.events,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		Ok(state)

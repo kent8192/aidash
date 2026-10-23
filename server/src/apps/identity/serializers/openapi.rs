@@ -53,6 +53,72 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, views::tenants::relabel, &["String"])?;
+		{
+			use super::nodes as n;
+			contracts.response::<_, Vec<n::NodeRecord>>(
+				document,
+				views::nodes::list,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::list, &["String"])?;
+			contracts.request::<_, n::NodeCreation>(document, views::nodes::create)?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::create,
+				201,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::create, &["String"])?;
+			contracts.request::<_, n::NodeLabelUpdate>(document, views::nodes::relabel)?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::relabel,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::relabel, &["String", "String"])?;
+			{
+				use super::node_registrations as r;
+				contracts.response::<_, Vec<r::RegistrationRecord>>(
+					document,
+					views::node_registrations::list,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::list,
+					&["String", "String"],
+				)?;
+				contracts.query::<_, MappingPage>(document, views::node_registrations::list)?;
+				contracts.response::<_, Vec<r::RegistrationRevision>>(
+					document,
+					views::node_registrations::history,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::history,
+					&["String", "String"],
+				)?;
+				contracts.query::<_, HistoryPage>(document, views::node_registrations::history)?;
+				contracts
+					.request::<_, r::RegistrationInput>(document, views::node_registrations::set)?;
+				contracts.response::<_, r::RegistrationRecord>(
+					document,
+					views::node_registrations::set,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::set,
+					&["String", "String"],
+				)?;
+			}
+		}
 		contracts.response::<_, t::CreatedTenant>(
 			document,
 			views::tenants::recreate_personal,
@@ -292,6 +358,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, v::preferences, &["String"])?;
+		contracts.query::<_, approval::NodeQuery>(document, v::preferences)?;
 		contracts.request::<_, approval::PreferencesUpdate>(document, v::update_preferences)?;
 		contracts.response::<_, approval::Preferences>(
 			document,
@@ -300,6 +367,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, v::update_preferences, &["String"])?;
+		contracts.query::<_, approval::NodeQuery>(document, v::update_preferences)?;
 		contracts.response::<_, approval::Rules>(document, v::rules, 200, "application/json")?;
 		contracts.path(document, v::rules, &["String"])?;
 		contracts.request::<_, approval::RuleInput>(document, v::add_rule)?;
@@ -321,6 +389,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, v::decider, &["String"])?;
+		contracts.query::<_, approval::NodeQuery>(document, v::decider)?;
 		contracts.request::<_, approval::ApprovalDeciderUpdate>(document, v::set_decider)?;
 		contracts.response::<_, approval::ApprovalDecider>(
 			document,
@@ -329,6 +398,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, v::set_decider, &["String"])?;
+		contracts.query::<_, approval::NodeQuery>(document, v::set_decider)?;
 		contracts.response::<_, approval::ThreadMode>(
 			document,
 			v::thread_mode,
@@ -393,6 +463,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::policies::catalog, &["String"])?;
+	contracts.query::<_, super::policies::CatalogQuery>(document, views::policies::catalog)?;
 	contracts.response::<_, Binding>(
 		document,
 		views::policies::set_catalog,
@@ -539,6 +610,10 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::graph::peers,
 		200,
 		"application/json",
+	)?;
+	contracts.query::<_, crate::apps::federation::peer::views::management::SendingNode>(
+		document,
+		views::graph::peers,
 	)?;
 	contracts.response::<_, crate::apps::identity::serializers::peer_graph::GraphPage>(
 		document,

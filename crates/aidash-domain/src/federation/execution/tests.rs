@@ -6,7 +6,7 @@ use serde_json::json;
 pub(super) fn inspection() -> Inspection {
 	serde_json::from_value(json!({"node_id":"aidash://receiver","authority_digest":"sha256:pinned",
         "agent":{"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":""}},
-        "definitions":[],"binding_snapshot":{"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"agent","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]}})).unwrap()
+        "definitions":[],"binding_snapshot":{"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"agent","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]}})).unwrap()
 }
 #[rstest]
 #[case(0, 0, true)]
@@ -73,7 +73,7 @@ fn optional_protocol_extensions_keep_their_legacy_omission(inspection: Inspectio
 }
 
 #[rstest]
-#[case::origin("registry_node", json!("aidash://other"))]
+#[case::origin("registry_deployment", json!("aidash://other"))]
 #[case::version("version", json!("2.0.0"))]
 fn substituted_binding_snapshot_is_rejected_even_when_legacy_inspection_fields_match(
 	inspection: Inspection,

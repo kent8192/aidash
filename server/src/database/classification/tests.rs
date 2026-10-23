@@ -22,19 +22,6 @@ fn tables_are_listed_once_under_an_app_that_has_migrations() {
 	}
 }
 
-#[test]
-fn pending_tables_name_a_step_of_the_rollout() {
-	for table in TABLES {
-		if let Classification::Pending(issue) = table.classification {
-			assert!(
-				issue == 241,
-				"{}: #{issue} enforces no policies",
-				table.name
-			);
-		}
-	}
-}
-
 fn enforced() -> Observed {
 	let template = crate::database::policy::EXPRESSION.to_owned();
 	Observed {

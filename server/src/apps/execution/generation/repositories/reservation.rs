@@ -52,7 +52,7 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 				.column(Asterisk)
 				.from(Alias::new("generation_requests"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(tenant=? AND (? || '/agents/' || agent_id || '@' || agent_version)=ANY(?))"
+					"(tenant=? AND (? || '/' || node || '/agents/' || agent_id || '@' || agent_version)=ANY(?))"
 						.to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
@@ -123,7 +123,7 @@ struct Session {
 #[async_trait]
 impl GenerationReservationRepository for NativeReservation {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationReservationSession>> {
 		Ok(Box::new(Session {

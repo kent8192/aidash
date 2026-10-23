@@ -6,7 +6,7 @@ use serde_json::json;
 fn raw() -> RawRun {
 	serde_json::from_value(json!({
         "id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
-        "home_node":"aidash://home","agent_id":"producer","agent_version":"1",
+        "node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"producer","agent_version":"1",
         "phase":"THINKING","control":"PAUSED","step":3,"revision":7,
         "observed_input_seq":9,"ledger_worker_ready":true,"error":"semantic pause",
         "lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z",

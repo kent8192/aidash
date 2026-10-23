@@ -45,16 +45,18 @@ async fn working_files_require_explicit_agent_settings(
 		)
 		.await
 		.unwrap();
-	policy["subjects"]
-		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
-		json!({"kind":"agent"});
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
 	common::replace_policy(&f.store, "acme", policy.clone()).await;
 	let (status, body) = request(
 		&app,
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -63,7 +65,7 @@ async fn working_files_require_explicit_agent_settings(
 		&token,
 		"POST",
 		&format!("/api/tasks/{task}/delegate"),
-		json!({"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.1"}}),
+		json!({"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.1"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{delegation}");
@@ -212,12 +214,12 @@ fn core_runtime(
 	#[default(false)] runner: bool,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
-	let node = node.to_owned();
+	let node = aidash_domain::nodes::DeploymentId::parse(node).unwrap();
 	async move {
 		let mut owner = runtime.await;
 		let f = &mut owner.federation;
-		f.config.node_id = node.clone();
-		f.store.node_id = node.clone();
+		f.config.deployment = node.clone();
+		f.store.deployment = node.clone();
 		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
 		let mut profile = if runner {
 			(*Runtime::from_env().unwrap().0).clone()
@@ -253,7 +255,7 @@ fn capability_fixture(
 	async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let root=storage.path().to_owned();let endpoint=endpoint.await;
 let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	policy["subjects"]
-		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.1.0")] =
+		[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"), "research", "1.1.0")] =
 		json!({"kind":"agent"});
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	let (status, response) = request(
@@ -302,11 +304,11 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog/approvals",
-		json!({ "approvals": approvals }),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
-	entry.config["bindings"] = json!(offered.iter().map(|bundle| json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":bundle.id,"version":bundle.version},"narrow":{}})).collect::<Vec<_>>());
+	entry.config["bindings"] = json!(offered.iter().map(|bundle| json!({"kind":"bundle","target":{"registry_deployment":f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}})).collect::<Vec<_>>());
 	let instructions = "---\nname: analysis\ndescription: Analyze the selected CSV\nlicense: MIT\n---\nLoad this only when selected. Scripts are data.";
 	let files = json!([{"path":"references/guide.md","content":"東京\n"},{"path":"scripts/analyze.py","content":"raise RuntimeError('must never run on activation')"}]);
 	let digest =
@@ -320,11 +322,11 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
-	entry.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.node_id,"id":"fixture-skills","version":"1.0.0"},"narrow":{}}));
+	entry.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"fixture-skills","version":"1.0.0"},"narrow":{}}));
 
 	let (status, response) = request(
 		&app,
@@ -340,7 +342,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
@@ -585,7 +587,7 @@ async fn admit(c: &CoreFixture) -> aidash_server::domain::Run {
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.1.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
@@ -1186,14 +1188,16 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(value["enabled"], true, "{value}");
 	let mut policy = c.policy.clone();
-	policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "reader", "1.1.0")] =
-		json!({"kind":"agent"});
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
+		"reader",
+		"1.1.0",
+	)] = json!({"kind":"agent"});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, task) = request(
 		&c.app,
@@ -1209,7 +1213,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"reader","version":"1.1.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"reader","version":"1.1.0"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
@@ -1263,7 +1267,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	}
 	.unwrap();
 	let source = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":c.f.config.node_id,"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
 	let share_path = format!("/api/runs/{}/files/share", sender.id);
 	let (status, receipt) = request(&c.app, &c.token, "POST", &share_path, input.clone()).await;
 	assert_eq!(status, 200, "{receipt}");
@@ -1375,9 +1379,11 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 	};
 	assert_eq!(ready["extraction_state"], "ready", "{ready}");
-	c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
-		json!({"kind":"agent"});
+	c.policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.2.0",
+	)] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
 			&c.app,
@@ -1419,7 +1425,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true})
 		)
 		.await
 		.0,
@@ -1430,7 +1436,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.2.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.2.0"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");

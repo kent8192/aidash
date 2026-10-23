@@ -43,7 +43,7 @@ impl Repository {
 		let job = test_support::request(1);
 		let mut bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"tenant"})).unwrap();
 		bundle.subjects.insert(
-			qualified_agent("aidash://local", &job.agent_id, &job.agent_version),
+			job.executor_subject("aidash://local"),
 			Subject {
 				kind: SubjectKind::Agent,
 				groups: BTreeSet::new(),
@@ -628,7 +628,11 @@ async fn cancellation_discards_all_staged_lifecycle_effects(#[case] pause: &'sta
 #[tokio::test]
 async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_workspace_event() {
 	let repo = Repository::new(true);
-	repo.state.lock().unwrap().job.home_node = "aidash://home".into();
+	{
+		let mut state = repo.state.lock().unwrap();
+		state.job.home_node = "aidash://home".into();
+		state.job.foreign_intent = Some(serde_json::json!({}));
+	}
 	let job = control(&repo, "tenant", Uuid::from_u128(1), &stop())
 		.await
 		.unwrap();
@@ -636,7 +640,7 @@ async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_worksp
 	let state = repo.state.lock().unwrap();
 	assert!(state.effects.contains(&"retirement:37:alice".into()));
 	assert!(!state.effects.contains(&"event".into()));
-	let subject = qualified_agent("aidash://local", &job.agent_id, &job.agent_version);
+	let subject = job.executor_subject("aidash://local");
 	assert!(!state.authority.bundle.subjects[&subject].enabled);
 }
 #[rstest]

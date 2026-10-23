@@ -1,5 +1,5 @@
 meta {
-  name: 0468 reference_commit - Anonymous request is rejected
+  name: 0468 reference_commit - Unrecognized bearer cannot mutate state
   type: http
   seq: 468
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

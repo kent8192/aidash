@@ -106,7 +106,7 @@ impl DecisionGate<'_> {
 				"bound Decider configuration differs from its admitted pin".into(),
 			));
 		}
-		if input.decider.pin.identity.registry_node != input.boundary.node
+		if input.decider.pin.identity.registry_deployment != input.boundary.node
 			|| self.provider.implementation_id() != input.decider.pin.provider_implementation
 			|| self.provider.configuration_digest()? != input.decider.pin.configuration_digest
 		{

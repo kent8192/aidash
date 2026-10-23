@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { setup } from "./collaboration-fixture";
+import { setup, fixture } from "./collaboration-fixture";
 
 // UI contract fixtures; real execution/authorization is verified by the Rust
 // core_capabilities integration suite against PostgreSQL and gVisor.
@@ -425,7 +425,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
       {
         kind: "source",
         target: {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "skill-source",
           version: "1.0.0",
         },
@@ -434,7 +434,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
       {
         kind: "memory",
         target: {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "conversation-memory",
           version: "1.0.0",
         },
@@ -443,7 +443,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
       {
         kind: "bundle",
         target: {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "approved-shell",
           version: "1.0.0",
         },
@@ -1324,5 +1324,119 @@ test("working file downloads above 100 MiB preserve all chunks and integrity", a
   expect(offsets).toEqual(
     Array.from({ length: 26 }, (_, i) => i * chunk.length),
   );
+  expect(errors).toEqual([]);
+});
+
+test("file sharing reaches discovered Nodes with the sending Run and paginated recipients", async ({
+  page,
+}) => {
+  const { managed, errors } = await core(page);
+  const data = fixture();
+  const remote = "aidash://remote/remote-node";
+  const sibling = "aidash://home/sibling-node";
+  const queries: URLSearchParams[] = [];
+  const file = {
+    file_id: "share-one",
+    path: "share.txt",
+    digest: "a".repeat(64),
+    size: 4,
+    scope: "working",
+    media_type: "text/plain",
+  };
+  const shares: Record<string, unknown>[] = [];
+  await page.route("**/api/discover**", (route) =>
+    route.fulfill({
+      json: {
+        agents: [remote, sibling, remote].map((node_id) => ({
+          node_id,
+          entity: data.registry.find((entry) => entry.kind === "agent"),
+        })),
+        failures: [],
+      },
+    }),
+  );
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/working-areas")
+      return route.fulfill({
+        json: {
+          items: [{ ...managed, id: managed.area_id, manifest: [file] }],
+          next_cursor: null,
+        },
+      });
+    if (url.pathname.endsWith("/working-area"))
+      return route.fulfill({
+        json: { ...managed, id: managed.area_id, manifest: [file] },
+      });
+    if (url.pathname === "/api/file-recipients") {
+      queries.push(url.searchParams);
+      return route.fulfill({
+        json: {
+          items: url.searchParams.get("cursor")
+            ? [
+                {
+                  node_id: url.searchParams.get("node_id"),
+                  agent_id: "reviewer",
+                  agent_version: "1.0.0",
+                  thread_id: "remote-thread",
+                },
+              ]
+            : [],
+          next_cursor: url.searchParams.get("cursor") ? null : "next-page",
+        },
+      });
+    }
+    if (url.pathname.endsWith("/files/share")) {
+      shares.push(request.postDataJSON());
+      return route.fulfill({
+        json: { operation_id: "new-transfer", status: "pending" },
+      });
+    }
+    if (url.pathname === "/api/file-transfers/new-transfer")
+      return route.fulfill({
+        json: {
+          operation_id: "new-transfer",
+          status: "completed",
+          receipt: { accepted: true },
+        },
+      });
+    return route.fallback();
+  });
+  await openThread(page);
+  await page
+    .getByRole("checkbox", { name: "Share: share.txt", exact: true })
+    .check();
+  const select = page.getByRole("combobox", { name: "Node", exact: true });
+  await expect(
+    select.locator("option").filter({ hasText: remote }),
+  ).toHaveCount(1);
+  await select.selectOption(remote);
+  await page
+    .getByRole("button", { name: "More recipients", exact: true })
+    .click();
+  await page
+    .getByRole("combobox", { name: "Recipient Agent, version and thread" })
+    .selectOption({ label: "reviewer@1.0.0 · remote-thread" });
+  await page
+    .getByRole("button", { name: "Send this snapshot", exact: true })
+    .click();
+  await expect.poll(() => shares.length).toBe(1);
+  expect(shares[0].recipient).toEqual({
+    node_id: remote,
+    agent_id: "reviewer",
+    agent_version: "1.0.0",
+    thread_id: "remote-thread",
+  });
+  expect(
+    queries
+      .filter((query) => query.get("node_id") === remote)
+      .map((query) => query.get("run_id")),
+  ).toEqual(["run-0", "run-0"]);
+  await expect(
+    page.getByText("Recipient storage confirmed.", { exact: false }).first(),
+  ).toBeVisible();
+  await select.selectOption(sibling);
+  await expect.poll(() => queries.at(-1)?.get("node_id")).toBe(sibling);
   expect(errors).toEqual([]);
 });

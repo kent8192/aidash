@@ -4,7 +4,6 @@ cd "$(dirname "$0")/.."
 scripts/build-test-postgres.sh
 export RUSTC_WRAPPER=
 export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
-export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
 export AIDASH_SSE_EVIDENCE_DIR="${AIDASH_SSE_EVIDENCE_DIR:-$PWD/target/sse-evidence/$(date -u +%Y%m%dT%H%M%SZ)}"
 mkdir -p "$AIDASH_SSE_EVIDENCE_DIR"
 if [[ "${1:-}" != "" && "${1:-}" != "--benchmark" ]]; then

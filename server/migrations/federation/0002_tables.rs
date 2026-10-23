@@ -132,20 +132,6 @@ pub(super) fn migration() -> Migration {
 				            partition: None,
 				        })
 		.add_operation(Operation::CreateTable {
-			name: "atomic_peer_trust".to_owned(),
-			columns: vec![
-				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
-				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
-					.with_not_null(true)
-					.with_default(Some("CURRENT_TIMESTAMP".to_owned())),
-			],
-			constraints: vec![],
-			without_rowid: None,
-			interleave_in_parent: None,
-			partition: None,
-		})
-		.add_operation(Operation::CreateTable {
 			name: "atomic_preflights".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
@@ -187,7 +173,7 @@ pub(super) fn migration() -> Migration {
 				        })
 		.add_operation(Operation::CreateTable {
 					name: "authorization_peer_mapping_history".to_owned(),
-					columns: vec![ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true).with_default(Some(r#"nextval('public.authorization_peer_mapping_history_sequence_seq'::regclass)"#.to_owned())), ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true), ColumnDefinition::new("source_tenant", FieldType::Text).with_not_null(true), ColumnDefinition::new("source_subject", FieldType::Text).with_not_null(true), ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true), ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true), ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true), ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true), ColumnDefinition::new("actor", FieldType::Text).with_not_null(true), ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					columns: vec![ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true).with_default(Some(r#"nextval('public.authorization_peer_mapping_history_sequence_seq'::regclass)"#.to_owned())), ColumnDefinition::new("node", FieldType::Text).with_not_null(true), ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true), ColumnDefinition::new("source_subject", FieldType::Text).with_not_null(true), ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true), ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true), ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true), ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true), ColumnDefinition::new("actor", FieldType::Text).with_not_null(true), ColumnDefinition::new("updated_at", FieldType::TimestampTz)
 							.with_not_null(true)
 							.with_default(Some(r#"clock_timestamp()"#.to_owned()))],
 					constraints: vec![Constraint::Check {
@@ -201,8 +187,8 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "authorization_peer_mappings".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("source_tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_subject", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true),
@@ -225,6 +211,7 @@ pub(super) fn migration() -> Migration {
 			name: "authorization_remote_admissions".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
@@ -263,6 +250,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("task_revision", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true),
@@ -306,29 +294,76 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		// Every revision of a Node Registration, in order (#241).
 		.add_operation(Operation::CreateTable {
-			name: "peer_events".to_owned(),
+			name: "node_registration_history".to_owned(),
 			columns: vec![
-				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("event_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("sequence", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some(r#"nextval('public.node_registration_history_sequence_seq'::regclass)"#.to_owned())),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_endpoint", FieldType::Text),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text),
+				ColumnDefinition::new("source_key_id", FieldType::Text),
+				ColumnDefinition::new("atomic_transactions", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
 			],
-			constraints: vec![],
+			constraints: vec![
+				Constraint::Check {
+					name: "node_registration_history_revision_check".to_owned(),
+					expression: r#"(revision > 0)"#.to_owned(),
+				},
+				Constraint::Check {
+					name: "node_registration_history_counterpart_check".to_owned(),
+					expression: r#"(((source_endpoint IS NULL) = (source_public_key_pem IS NULL)) AND ((source_public_key_pem IS NULL) = (source_key_id IS NULL)))"#.to_owned(),
+				},
+			],
 			without_rowid: None,
 			interleave_in_parent: None,
 			partition: None,
 		})
+		// A Tenant Administrator's decision that one of its Nodes accepts one
+		// named Node of another Tenant, pinning the key of another Deployment (#241).
 		.add_operation(Operation::CreateTable {
-			name: "peers".to_owned(),
+			name: "node_registrations".to_owned(),
 			columns: vec![
-				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("endpoint", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("credential_env", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("protocol_version", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("enabled", FieldType::Boolean)
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_endpoint", FieldType::Text),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text),
+				ColumnDefinition::new("source_key_id", FieldType::Text),
+				ColumnDefinition::new("atomic_transactions", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
 					.with_not_null(true)
-					.with_default(Some("true".to_owned())),
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
 			],
-			constraints: vec![],
+			constraints: vec![
+				Constraint::Check {
+					name: "node_registrations_revision_check".to_owned(),
+					expression: r#"(revision > 0)"#.to_owned(),
+				},
+				Constraint::Check {
+					name: "node_registrations_counterpart_check".to_owned(),
+					expression: r#"(((source_endpoint IS NULL) = (source_public_key_pem IS NULL)) AND ((source_public_key_pem IS NULL) = (source_key_id IS NULL)))"#.to_owned(),
+				},
+			],
 			without_rowid: None,
 			interleave_in_parent: None,
 			partition: None,

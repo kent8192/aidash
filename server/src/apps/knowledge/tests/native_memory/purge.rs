@@ -30,7 +30,8 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		.await
 		.unwrap();
 	let bank = Bank {
-		home: store.node_id.clone(),
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,
@@ -382,9 +383,12 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let mut reopened = Store::from_pool(store.pool.fixture_driver().clone(), store.node_id.clone())
-		.await
-		.unwrap();
+	let mut reopened = Store::from_pool(
+		store.pool.fixture_driver().clone(),
+		store.deployment.clone(),
+	)
+	.await
+	.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.
 	reopened.keyless = store.keyless.clone();
 	let reopened = aidash_server::semantic::services::memory_recovery::attach(

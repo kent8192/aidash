@@ -26,7 +26,7 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 			// Only authored edges travel. The receiving Node materializes its
 			// own required/default declarations during registration.
 			for binding in config.bindings {
-				if binding.target.registry_node != node {
+				if binding.target.registry_deployment != node {
 					return Err(Error::Forbidden);
 				}
 				let kind = match binding.kind {
@@ -58,7 +58,9 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 				serde_json::from_value(entry.config.clone())
 					.map_err(|error| Error::Invalid(format!("invalid Tool descriptor: {error}")))?;
 			if let Some(lifecycle) = descriptor.lifecycle {
-				if lifecycle.poll.registry_node != node || lifecycle.cancel.registry_node != node {
+				if lifecycle.poll.registry_deployment != node
+					|| lifecycle.cancel.registry_deployment != node
+				{
 					return Err(Error::Forbidden);
 				}
 				refs.extend(
@@ -85,7 +87,7 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 			if bundle
 				.members
 				.iter()
-				.any(|reference| reference.registry_node != node)
+				.any(|reference| reference.registry_deployment != node)
 			{
 				return Err(Error::Forbidden);
 			}
@@ -98,14 +100,14 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 		}
 		"memory" | "source" | "reranker" => {
 			let identity = aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			};
 			for (reference, kind) in
 				aidash_domain::registry::bindings::definition_references(&identity, entry)?
 			{
-				if reference.registry_node != node {
+				if reference.registry_deployment != node {
 					return Err(Error::Forbidden);
 				}
 				refs.push((reference.local(), kind));
@@ -265,7 +267,7 @@ pub async fn resolve(
 			&["transport", "node_id", "agent"]
 		}
 		"tool" => &[
-			"registry_node",
+			"registry_deployment",
 			"provider",
 			"operation",
 			"tier",
@@ -393,7 +395,7 @@ pub async fn resolve(
 			&mut Bindings { scope, node },
 			validation,
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},
@@ -475,7 +477,7 @@ impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
 		&mut self,
 		reference: &aidash_domain::registry::bindings::QualifiedRef,
 	) -> Result<Entry> {
-		if reference.registry_node != self.node {
+		if reference.registry_deployment != self.node {
 			return Err(Error::Forbidden);
 		}
 		local(self.scope, &reference.local()).await

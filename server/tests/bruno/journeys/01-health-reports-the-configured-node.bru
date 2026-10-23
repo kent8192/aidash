@@ -20,6 +20,6 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")});
+    expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});
   });
 }

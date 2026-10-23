@@ -31,6 +31,23 @@ body:json {
       },
       "policies": [
         {
+          "id": "workspace-node",
+          "effect": "allow",
+          "subjects": {
+            "ids": [
+              "alice"
+            ]
+          },
+          "actions": [
+            "node.use"
+          ],
+          "resources": {
+            "kinds": [
+              "node"
+            ]
+          }
+        },
+        {
           "id": "workspace-owner",
           "effect": "allow",
           "subjects": {

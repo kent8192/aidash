@@ -699,7 +699,9 @@ pub async fn usage(pool: &Pool, from: NaiveDate, to: NaiveDate) -> Result<Vec<Us
 }
 
 /// Deletes what has outlived `cutoff`: metering records, and the attachments
-/// of Tenants purged before it. Expired consents go too.
+/// of Tenants purged before it. Expired consents go too, then the canceled
+/// Subscriptions that ended before `cutoff`, then the Accounts left with no
+/// Subscription, attachment or consent that were created before it.
 pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Result<()> {
 	pool.atomic(&TenancyScope::NoTenant, async |tx| {
 		execute(
@@ -733,6 +735,40 @@ pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Re
 			Query::delete()
 				.from_table(Alias::new(BillingAttachmentConsent::table_name()))
 				.and_where(Expr::col("expires_at").lte(Expr::value(now))),
+		)
+		.await?;
+		// `updated_at` is when Aidash learned of the cancellation, the closest
+		// record it keeps of when the Subscription ended.
+		execute(
+			tx,
+			Query::delete()
+				.from_table(Alias::new(BillingSubscription::table_name()))
+				.and_where(Expr::col("status").eq(Expr::value(Status::Canceled.as_str())))
+				.and_where(Expr::col("updated_at").lt(Expr::value(cutoff))),
+		)
+		.await?;
+		// Subscriptions that ended before the cutoff are gone by now, so an
+		// Account with none left ended its last one before it. The creation
+		// check covers an Account that never had one. A live consent names the
+		// Account and blocks the delete through the foreign key, so the Account
+		// waits until that consent expires.
+		execute(
+			tx,
+			Query::delete()
+				.from_table(Alias::new(BillingAccount::table_name()))
+				.and_where(Expr::col("created_at").lt(Expr::value(cutoff)))
+				.and_where(Expr::cust(
+					"NOT EXISTS (SELECT 1 FROM billing_subscriptions s \
+					 WHERE s.account_id = billing_accounts.id)",
+				))
+				.and_where(Expr::cust(
+					"NOT EXISTS (SELECT 1 FROM billing_attachments a \
+					 WHERE a.account_id = billing_accounts.id)",
+				))
+				.and_where(Expr::cust(
+					"NOT EXISTS (SELECT 1 FROM billing_attachment_consents c \
+					 WHERE c.account_id = billing_accounts.id)",
+				)),
 		)
 		.await?;
 		Ok(())

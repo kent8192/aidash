@@ -138,7 +138,10 @@ class RemoteMemory(Cluster):
         self.apply({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "provider"}, "spec": {
             "replicas": 1, "selector": {"matchLabels": {"app": "provider"}}, "template": {
                 "metadata": {"labels": {"app": "provider"}}, "spec": {"containers": [{"name": "provider", "image": "python:3.12-alpine",
-                    "command": ["python3", "/fixture/fixture.py"], "volumeMounts": [{"name": "fixture", "mountPath": "/fixture"}]}],
+                    "command": ["python3", "/fixture/fixture.py"],
+                    "env": [{"name": "AIDASH_FIXTURE_HOME_NODE", "value": self.nodes[0]["address"]},
+                            {"name": "AIDASH_FIXTURE_EXECUTOR_NODE", "value": self.nodes[1]["address"]}],
+                    "volumeMounts": [{"name": "fixture", "mountPath": "/fixture"}]}],
                     "volumes": [{"name": "fixture", "configMap": {"name": "provider"}}]}}}})
         self.service("provider", 8080, {"app": "provider"})
         self.rollout("provider")
@@ -153,7 +156,7 @@ class RemoteMemory(Cluster):
         entry = {"id": name, "version": "1.0.0", "kind": kind, "name": {"en": name}, "description": {"en": "Synthetic cluster fixture"},
                  "capabilities": capabilities or [], "languages": ["en"], "schema": {"type": "object"}, "config": config}
         self.ok(self.user(node, "/api/registry", entry))
-        self.ok(self.user(node, f"/api/authorization/{self.tenants[node]}/catalog", {"entry": ref(entry), "expected_revision": 0, "enabled": True}))
+        self.ok(self.user(node, f"/api/authorization/{self.tenants[node]}/catalog", {"node": self.nodes[node]["node"], "entry": ref(entry), "expected_revision": 0, "enabled": True}))
         # Hash the canonical stored definition, including server-default fields.
         stored = self.ok(self.user(node, f"/api/registry/{name}/1.0.0"))
         self.entries[node][name] = stored
@@ -161,18 +164,18 @@ class RemoteMemory(Cluster):
 
     def configure(self):
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
-        self.tenants = [self.created_response(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
+        self.tenants = [self.nodes[node]["tenant"] for node in range(2)]
         for node in range(2):
-            subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
+            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
             self.tokens.append(credential["token"])
             # Peer Mappings require an administrator; a Subject bearer cannot create them.
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": self.tenants[1 - node], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
             self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
-            self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "schema_version": 1, "bindings": [{"kind": "memory", "target": {"registry_node": f"aidash://tx-{node:02}", "id": "home-memory", "version": "1.0.0"}, "narrow": {}}], "remove_default": []})
+            self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "schema_version": 1, "bindings": [{"kind": "memory", "target": {"registry_deployment": f"aidash://tx-{node:02}", "id": "home-memory", "version": "1.0.0"}, "narrow": {}}], "remove_default": []})
         self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "model": "home-vector", "model_version": "1", "dimensions": 3}
         self.register(0, "embedding", "home-embedding", self.embedding)
 
@@ -183,16 +186,16 @@ class RemoteMemory(Cluster):
             "enabled": True, "auto_context": True, "max_sources": 100, "max_results": 10, "max_result_tokens": 4096, "max_input_bytes": 32768}}))
         entries = []
         for key, owner, text in [("shared", None, "Iridium archive marker: ochre falcon."),
-                                 ("exact", "aidash://tx-01/agents/research@1.0.0", "Exact executor marker: silver fern."),
-                                 ("other-node", "aidash://tx-00/agents/research@1.0.0", "DO NOT DISCLOSE: Home Agent scope."),
-                                 ("other-version", "aidash://tx-01/agents/research@1.0.1", "DO NOT DISCLOSE: other definition version.")]:
+                                 ("exact", f"{self.nodes[1]['address']}/agents/research@1.0.0", "Exact executor marker: silver fern."),
+                                 ("other-node", f"{self.nodes[0]['address']}/agents/research@1.0.0", "DO NOT DISCLOSE: Home Agent scope."),
+                                 ("other-version", f"{self.nodes[1]['address']}/agents/research@1.0.1", "DO NOT DISCLOSE: other definition version.")]:
             entries.append(self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries", {"key": key, "expected_revision": 0, "source": {"kind": "memory", "text": text}, "agent": owner, "metadata": {}})))
         self.until(lambda: all(e["state"] == "READY" for e in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))), "Home index ready")
         return workspace, entries[0]
 
     def activate(self, task, agent):
         grant = str(uuid.uuid4())
-        payload = {"id": grant, "node_id": "aidash://tx-01", "agent": agent, "ttl_seconds": 1800,
+        payload = {"id": grant, "node_id": self.nodes[1]["address"], "agent": agent, "ttl_seconds": 1800,
                    "semantic": {"mode": "required_home", "embedding": {"id": "home-embedding", "version": "1.0.0"}}}
         self.ok(self.user(0, f"/api/tasks/{task}/remote-grants", payload))
         activated = self.ok(self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/activate", {}))
@@ -238,7 +241,7 @@ class RemoteMemory(Cluster):
 
     def descriptor(self, node, name):
         entry = self.entries[node][name]
-        return {"node_id": f"aidash://tx-{node:02}", "entry": ref(entry), "digest": digest(entry), "configuration_digest": digest(entry["config"])}
+        return {"node_id": self.nodes[node]["address"], "entry": ref(entry), "digest": digest(entry), "configuration_digest": digest(entry["config"])}
 
     def generated_task(self, workspace, policy_suffix=""):
         parent_policy = "remote-parent" + policy_suffix
@@ -271,7 +274,7 @@ class RemoteMemory(Cluster):
         child_spec.update(template=self.entries[1]["research"], approval_required=True,
             remote={"embedding": {"provider": self.descriptor(0, "home-embedding"), "calls_per_agent": 10, "call_budget": 40}})
         self.ok(self.user(1, f"/api/generation/{self.tenants[1]}/policies/{child_policy}", {"expected_revision": 0, "spec": child_spec}))
-        intent = {"id": str(uuid.uuid4()), "node_id": "aidash://tx-01", "policy_id": child_policy, "policy_revision": 1, "ttl_seconds": 1800, "reason": "Foreign generated child acceptance"}
+        intent = {"id": str(uuid.uuid4()), "node_id": self.nodes[1]["address"], "policy_id": child_policy, "policy_revision": 1, "ttl_seconds": 1800, "reason": "Foreign generated child acceptance"}
         route = f"/api/tasks/{child}/remote-generation"
         pending = self.ok(self.user(0, route, intent))
         assert pending["status"] == "PENDING_APPROVAL" and not pending["prepared"], pending

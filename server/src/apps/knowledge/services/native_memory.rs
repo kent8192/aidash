@@ -565,7 +565,7 @@ pub(crate) async fn run_mutate(
 	key: &str,
 	changes: &[Change],
 ) -> Result<Vec<Unit>> {
-	if run.home_node != store.node_id {
+	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
@@ -612,7 +612,7 @@ pub(crate) async fn run_recall(
 	query: RecallQuery,
 	reflect: bool,
 ) -> Result<Outcome> {
-	if run.home_node != store.node_id {
+	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
@@ -689,19 +689,35 @@ pub(crate) async fn scope(
 	action: &str,
 ) -> Result<()> {
 	bank.validate()?;
-	if bank.home != store.node_id {
+	if aidash_domain::nodes::deployment_of(&bank.home) != store.deployment {
 		return Err(Error::Forbidden);
 	}
-	let tenant: Option<String> = native::query_scalar(
+	let node: Option<String> = native::query_scalar(
 		&Query::select()
-			.column(Alias::new("tenant"))
+			.column(("workspaces", "node"))
 			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(bank.workspace)))
+			.inner_join(
+				Alias::new("workspaces"),
+				Expr::col(("authorization_workspaces", "workspace_id"))
+					.equals(("workspaces", "id")),
+			)
+			.and_where(Expr::col(("workspaces", "id")).eq(Expr::value(bank.workspace)))
+			.and_where(
+				Expr::col(("authorization_workspaces", "tenant"))
+					.eq(Expr::value(bank.tenant.clone())),
+			)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **lease.tx())
 	.await?;
-	if tenant.as_deref() != Some(bank.tenant.as_str()) {
+	let Some(node) = node else {
+		return Err(Error::Forbidden);
+	};
+	let home = store
+		.deployment
+		.node(aidash_domain::nodes::NodeName::parse(&node)?)
+		.to_string();
+	if bank.home != home {
 		return Err(Error::Forbidden);
 	}
 	units::authorize(lease, bank, action).await
@@ -732,9 +748,13 @@ pub(crate) async fn bank_provider(
 			"agent",
 		)
 		.await?;
-		let config =
-			super::super::repositories::bindings::configuration(lease, &tenant, &agent, &bank.home)
-				.await?;
+		let config = super::super::repositories::bindings::configuration(
+			lease,
+			&tenant,
+			&agent,
+			aidash_domain::nodes::deployment_of(&bank.home),
+		)
+		.await?;
 		if config.memory.as_ref() != Some(provider) {
 			return Err(Error::Conflict(
 				"memory provider differs from the participant's accepted Agent version".into(),
@@ -840,7 +860,7 @@ pub async fn upgrade_participant(
 			&mut lease,
 			&bank.tenant,
 			&accepted,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		if let Some(provider) = &configuration.memory {
@@ -924,12 +944,21 @@ pub async fn create_participant(
 		)
 		.scalar_one(&mut **lease.tx())
 		.await?;
+		let node: String = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **lease.tx())
+		.await?;
 		let accepted = definition(&mut lease, &tenant, &input.agent, "agent").await?;
 		let configuration = super::super::repositories::bindings::configuration(
 			&mut lease,
 			&tenant,
 			&accepted,
-			&store.node_id,
+			store.deployment.as_str(),
 		)
 		.await?;
 		let principal = lease.saved()?["subject"]
@@ -938,7 +967,7 @@ pub async fn create_participant(
 			.to_owned();
 		let id = Uuid::now_v7();
 		let bank = Bank {
-			home: store.node_id.clone(),
+			home: format!("{}/{node}", store.deployment),
 			tenant,
 			workspace,
 			participant: Some(id),
@@ -1188,7 +1217,10 @@ pub async fn participants(
 		query
 			.column(reinhardt::query::ColumnRef::Asterisk)
 			.from(Alias::new("memory_participants"))
-			.and_where(Expr::col("home").eq(store.node_id.as_str()))
+			.and_where(crate::database::scope::in_deployment(
+				"home",
+				store.deployment.as_str(),
+			))
 			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 			.and_where(Expr::col("deleted").eq(false))
 			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)

@@ -1,7 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 import { expectSvgFitted } from "./graph-fit-assertions";
 import { installBearerDashboard } from "./auth-fixture";
-import { registryVersion, tenantSubject } from "./registry-fixture";
+import {
+  defaultNode,
+  registryVersion,
+  routeTenantActions,
+  tenantSubject,
+} from "./registry-fixture";
+
+const nodeAddress = `aidash://test/${defaultNode.name}`;
 
 function entity(
   id: string,
@@ -27,12 +34,11 @@ function entity(
 function fixture() {
   return {
     access: tenantSubject,
-    node: {
+    deployment: {
       id: "aidash://test",
       endpoint: "http://localhost",
       protocol_version: "0.1",
-      capabilities: [],
-      clusters: [],
+      key: null,
     },
     registry: [
       entity("researcher", "agent", "Researcher", {
@@ -62,7 +68,7 @@ function fixture() {
         title: "Collect evidence",
         description: "Verified task",
         status: "COMPLETED",
-        owner: "aidash://test/agents/researcher@1.0.0",
+        owner: `${nodeAddress}/agents/researcher@1.0.0`,
         created_by: "human",
         workspace_id: "workspace-1",
         revision: 1,
@@ -72,8 +78,9 @@ function fixture() {
     runs: [
       {
         id: "run-1",
+        node: defaultNode.name,
         workspace_id: "workspace-1",
-        home_node: "aidash://test",
+        home_node: nodeAddress,
         agent_id: "researcher",
         agent_version: "1.0.0",
         task_id: "task-1",
@@ -87,6 +94,7 @@ function fixture() {
     workspaces: [
       {
         id: "workspace-1",
+        node: defaultNode.name,
         title: "Research",
         goal: "Collect evidence",
         state: {},
@@ -99,7 +107,6 @@ function fixture() {
     conversations: [],
     human_requests: [],
     installations: [],
-    peers: [],
   };
 }
 async function setup(page: Page, locale = "en-US") {
@@ -107,7 +114,10 @@ async function setup(page: Page, locale = "en-US") {
   const errors: string[] = [];
   const requests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await installBearerDashboard(page, "fixture-token");
+  await installBearerDashboard(page, "fixture-token", {
+    tenant: tenantSubject.tenant,
+    name: tenantSubject.subject,
+  });
   await page.addInitScript((language) => {
     localStorage.setItem("aidash-locale", language);
   }, locale);
@@ -117,7 +127,7 @@ async function setup(page: Page, locale = "en-US") {
     if (path === "/api/events/stream") return route.abort();
     const json =
       path === "/api/session"
-        ? { access: data.access, node_id: data.node.id }
+        ? { access: data.access, node_id: data.deployment.id }
         : path === "/api/state"
           ? data
           : path === "/api/registry/versions"
@@ -125,23 +135,22 @@ async function setup(page: Page, locale = "en-US") {
                 versions: data.registry.map((entry) => registryVersion(entry)),
                 next_offset: null,
               }
-            : path === "/api/mesh"
-              ? { nodes: [], errors: [] }
-              : path === "/api/discover"
-                ? { agents: [], errors: [] }
-                : path.startsWith("/api/runs/")
-                  ? { run: data.runs[0], invocations: [], memory: [] }
-                  : path === "/api/workspaces/workspace-1"
-                    ? {
-                        workspace: data.workspaces[0],
-                        tasks: data.tasks,
-                        artifacts: [],
-                        messages: [],
-                        events: [],
-                      }
-                    : [];
+            : path === "/api/discover"
+              ? { agents: [], errors: [] }
+              : path.startsWith("/api/runs/")
+                ? { run: data.runs[0], invocations: [], memory: [] }
+                : path === "/api/workspaces/workspace-1"
+                  ? {
+                      workspace: data.workspaces[0],
+                      tasks: data.tasks,
+                      artifacts: [],
+                      messages: [],
+                      events: [],
+                    }
+                  : [];
     await route.fulfill({ json });
   });
+  await routeTenantActions(page, [], { deployment: "aidash://test" });
   await page.goto("/agents");
   await page
     .locator(".entity-card")
@@ -344,7 +353,6 @@ for (const locale of ["en-US", "ja-JP"]) {
     const backgroundPaths = new Set([
       "/api/state",
       "/api/session",
-      "/api/mesh",
       "/api/discover",
       "/api/events/stream",
     ]);

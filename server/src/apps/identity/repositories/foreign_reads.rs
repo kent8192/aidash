@@ -40,7 +40,7 @@ pub(crate) async fn retired_run_catalog_read(
 	else {
 		return Ok(false);
 	};
-	if row.home_node == access.node_id
+	if row.is_local(&access.node_id)
 		|| row.agent_id != reference.id
 		|| row.agent_version != reference.version
 		|| row
@@ -49,7 +49,7 @@ pub(crate) async fn retired_run_catalog_read(
 			.as_ref()
 			.is_none_or(|snapshot| {
 				!snapshot.remote
-					|| snapshot.agent.registry_node != access.node_id
+					|| snapshot.agent.registry_deployment != access.node_id
 					|| snapshot.agent.id != reference.id
 					|| snapshot.agent.version != reference.version
 			}) {
@@ -150,17 +150,28 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 	) -> Result<Option<Uuid>> {
 		let mapped: Option<Uuid> = {
 			let query_bind_1 = &run.home_node;
-			let query_bind_2 = &d.source_tenant;
+			let query_bind_2 = run.node.as_str();
 			let query_bind_3 = &d.source_subject;
 			let query_bind_4 = &self.0.identity.tenant;
-			crate::database::native::query_scalar(&Query::select()
-				.column(Alias::new("credential_id"))
-				.from(Alias::new("authorization_peer_mappings"))
-				.and_where(SimpleExpr::CustomWithExpr("(source_node=? AND source_tenant=? AND source_subject=? AND tenant=? AND enabled)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder))
-		.scalar_optional(&mut **self.0.tx)
-		.await?
+			crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("credential_id"))
+					.from(Alias::new("authorization_peer_mappings"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(source_node=? AND node=? AND source_subject=? AND tenant=? AND enabled)"
+							.to_owned(),
+						vec![
+							Expr::value(query_bind_1.to_owned()).into(),
+							Expr::value(query_bind_2.to_owned()).into(),
+							Expr::value(query_bind_3.to_owned()).into(),
+							Expr::value(query_bind_4.to_owned()).into(),
+						],
+					))
+					.lock(LockType::Share)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **self.0.tx)
+			.await?
 		};
 
 		Ok(mapped)
@@ -199,7 +210,7 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 					// immutable row whose digest was admitted, rather than the draft
 					// retained by the generation request before publication.
 					.column((Alias::new("r"), Alias::new("metadata")))
-					.from_as(Alias::new("generation_requests"), Alias::new("g")).join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("authorization_catalog"), Alias::new("c")), Expr::cust("c.tenant=g.tenant AND c.entry_id=g.agent_id AND c.entry_version=g.agent_version"))
+					.from_as(Alias::new("generation_requests"), Alias::new("g")).join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("authorization_catalog"), Alias::new("c")), Expr::cust("c.tenant=g.tenant AND c.node=g.node AND c.entry_id=g.agent_id AND c.entry_version=g.agent_version"))
 					.join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")), Expr::cust("r.tenant=g.tenant AND r.id=g.agent_id AND r.version=g.agent_version"))
 					.and_where(SimpleExpr::CustomWithExpr("(g.tenant=? AND g.home_node=? AND g.task_id=? AND g.grant_id=? AND g.admission_id=? AND g.agent_id=? AND g.agent_version=? AND g.foreign_intent=? AND g.credential_id=? AND g.prepared AND g.status=ANY(?) AND g.quota_released AND NOT c.enabled AND g.retired_catalog_revision=c.revision)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into(), Expr::value(query_bind_6.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into(), Expr::value(query_bind_9.to_owned()).into(), crate::database::text_array(query_bind_10.to_owned())]))
 					.lock(LockType::Share).lock_tables([Alias::new("g"), Alias::new("c"), Alias::new("r")])

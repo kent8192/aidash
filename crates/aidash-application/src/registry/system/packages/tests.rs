@@ -109,7 +109,7 @@ fn research_groups_declare_interchangeable_provider_operations() {
 			assert_eq!(descriptor.tier, tier);
 			let contract = descriptor
 				.declared_contract(QualifiedRef {
-					registry_node: "aidash://node".into(),
+					registry_deployment: "aidash://node".into(),
 					id: entry.id.clone(),
 					version: entry.version.clone(),
 				})

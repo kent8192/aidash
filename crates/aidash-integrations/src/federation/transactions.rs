@@ -1,25 +1,25 @@
 //! Atomic protocol replies keep their deadline, body bound and retry classification.
-use super::PeerHttp;
+use super::HttpTransport;
 use aidash_application::{Error, Result};
-use aidash_domain::federation::Peer;
+use aidash_domain::federation::route::Route;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, time::Duration};
 
-impl PeerHttp {
-	/// Resolve the current enabled peer inside the same ten-second deadline as
+impl HttpTransport {
+	/// Resolve the current enabled route inside the same ten-second deadline as
 	/// sending, headers and the complete body. The server supplies persistence;
-	/// credentials still rotate at each send through the existing transport.
+	/// each send mints its own token.
 	pub async fn transaction<T: DeserializeOwned>(
 		&self,
-		peer: impl Future<Output = Result<Peer>>,
+		route: impl Future<Output = Result<Route>>,
 		method: &str,
 		path: &str,
 		body: Option<&impl Serialize>,
 	) -> Result<T> {
 		let value = body.map(serde_json::to_value).transpose()?;
 		tokio::time::timeout(Duration::from_secs(10), async {
-			let peer = peer.await?;
-			let response = self.send(&peer, method, path, value.as_ref()).await?;
+			let route = route.await?;
+			let response = self.send(&route, method, path, value.as_ref()).await?;
 			let status = response.status();
 			if !status.is_success() {
 				return Err(match status {

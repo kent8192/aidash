@@ -14,7 +14,6 @@ use aidash_application::{
 use aidash_domain::{
 	Task,
 	federation::{
-		Peer,
 		dependencies::Reference,
 		execution::home::{Grant, HomeBinding},
 	},
@@ -113,10 +112,11 @@ impl ProducerScope for Producer<'_> {
 }
 #[async_trait]
 impl SourcePeerScope for Scope<'_> {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		super::persistence::peer(self.access, node)
-			.await
-			.map_err(Into::into)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.access.route_to(node).await.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -165,13 +165,14 @@ impl SourceReadScope for Scope<'_> {
 		}))
 	}
 	fn record_admission(&mut self, node: &str, grant: Uuid, admission: Uuid) -> Result<()> {
+		let home_node = self.access.node_reference().to_owned();
 		self.access
 			.dependency_frontier
 			.as_mut()
 			.ok_or(NativeError::Forbidden)?
 			.push(Reference::Admission {
 				node_id: node.into(),
-				home_node: self.access.node_id.clone(),
+				home_node,
 				grant_id: grant,
 				admission_id: admission,
 			});

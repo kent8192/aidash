@@ -95,7 +95,7 @@ pub async fn read(
 				kind: "binding_changed".into(),
 				at: record.created_at,
 				actor: Some(record.actor),
-				details: json!({"tenant":tenant,"revision":record.revision,"enabled":record.enabled}),
+				details: json!({"tenant":tenant,"node":record.node,"revision":record.revision,"enabled":record.enabled}),
 			});
 		}
 	}
@@ -123,7 +123,7 @@ pub async fn read(
 		observed_at: Utc::now(),
 		items,
 		next_offset,
-		source_boundary: "Connected-node Registry, authorized sandbox records, tenant Catalog history and visible incident history, limited to the latest 100 records per source. Other nodes and hidden records are not represented.".into(),
+		source_boundary: "Connected Deployment Registry, authorized sandbox records, per-Node Catalog history for the selected Tenant and visible incident history, limited to the latest 100 records per source. Other Deployments and hidden records are not represented.".into(),
 	})
 }
 #[cfg(test)]

@@ -95,8 +95,8 @@ async fn loaded(pool: &Pool, digest: &str) -> Result<bool> {
 /// A Tenant that a reviewer deleted is left deleted: it gets nothing more,
 /// and nobody is mapped into it.
 async fn load(pool: &Pool, config: &Config, inputs: &Inputs) -> Result<()> {
-	let node = &config.node_id;
-	let named = tenants::ensure(pool, node, &inputs.structure).await?;
+	let deployment = &config.deployment;
+	let named = tenants::ensure(pool, deployment.as_str(), &inputs.structure).await?;
 	let mut live = BTreeMap::new();
 	for tenant in &inputs.structure.tenants {
 		let name = &named[&tenant.key];
@@ -105,8 +105,17 @@ async fn load(pool: &Pool, config: &Config, inputs: &Inputs) -> Result<()> {
 			tracing::warn!(key = %tenant.key, "demo-data skips a deleted Tenant");
 			continue;
 		}
-		registry::register(pool, node, &tenant.key, name, &tenant.registry).await?;
-		approvals::approve(pool, node, &tenant.key, name, &tenant.approvals).await?;
+		let node = pool
+			.atomic(&TenancyScope::tenant(name)?, async |tx| {
+				crate::apps::identity::repositories::nodes::default_of(tx, name).await
+			})
+			.await?;
+		let address = aidash_domain::nodes::NodeAddress {
+			deployment: deployment.clone(),
+			node: node.name,
+		};
+		registry::register(pool, deployment, &tenant.key, name, &tenant.registry).await?;
+		approvals::approve(pool, &address, &tenant.key, name, &tenant.approvals).await?;
 		live.insert(tenant.key.clone(), name.clone());
 	}
 	let people: Vec<Person> = inputs

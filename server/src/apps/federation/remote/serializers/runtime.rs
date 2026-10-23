@@ -1,19 +1,6 @@
 // Serializable contracts for remote.
 
-use crate::apps::federation::peer::models::Peer as PeerRecord;
 use crate::apps::federation::remote::models::Delegation as DelegationRecord;
-
-impl From<PeerRecord> for Peer {
-	fn from(record: PeerRecord) -> Self {
-		Self {
-			node_id: record.node_id,
-			endpoint: record.endpoint,
-			credential_env: record.credential_env,
-			protocol_version: record.protocol_version,
-			enabled: record.enabled,
-		}
-	}
-}
 
 impl From<DelegationRecord> for Delegation {
 	fn from(record: DelegationRecord) -> Self {
@@ -27,4 +14,4 @@ impl From<DelegationRecord> for Delegation {
 	}
 }
 
-pub use aidash_domain::federation::{Delegation, DiscoveredAgent, Discovery, Offer, Peer};
+pub use aidash_domain::federation::{Delegation, DiscoveredAgent, Discovery, Offer};

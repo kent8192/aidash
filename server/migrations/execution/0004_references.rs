@@ -462,6 +462,42 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
+			table: "events".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "events_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "runs".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "runs_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_requests".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "generation_requests_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
 			table: "generation_budgets".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "generation_budgets_tenant_root_fkey".to_owned(),

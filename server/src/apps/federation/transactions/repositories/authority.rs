@@ -49,6 +49,14 @@ where
 			.await
 			.map_err(Into::into)
 	}
+	async fn require_target_node(
+		&mut self,
+		node: &str,
+		target: &aidash_domain::transactions::authority::Target,
+	) -> Result<()> {
+		super::mutation::require_target_node(&mut **self.access.tx, node, &target.kind, target.id)
+			.await
+	}
 	async fn inherit_task(&mut self, task: Uuid) -> Result<()> {
 		crate::authorization::execution::inherit_task_origin(&mut self.access, task)
 			.await
