@@ -22,7 +22,7 @@
     "reproducibility_limitations"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "enum": [1, 2] },
     "experiment_id": { "type": "string", "pattern": "^fte-[0-9a-f]{12}$" },
     "tier": { "enum": ["deterministic", "live"] },
     "created_at": {
@@ -86,10 +86,16 @@
           "type": ["array", "null"],
           "items": { "type": "string" }
         },
+        "requested_routes": { "type": "object" },
+        "reported_routes": {
+          "type": ["array", "null"],
+          "items": { "type": "object" }
+        },
         "route": { "type": ["string", "null"] },
         "mutable_alias": { "type": "boolean" }
       }
     },
+    "execution_order": { "type": "object" },
     "harness": {
       "type": "object",
       "additionalProperties": false,
@@ -127,7 +133,9 @@
         "properties": {
           "task": { "type": "string" },
           "comparison": { "type": "string" },
-          "arm": { "enum": ["baseline", "candidate"] },
+          "arm": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "route_id": { "type": "string" },
+          "model_configuration": { "type": "object" },
           "label": { "type": "string" },
           "agent": { "$ref": "#/$defs/registration" },
           "agent_fields": { "type": "object" },
@@ -143,7 +151,7 @@
         }
       }
     },
-    "repeat_count": { "type": "integer", "minimum": 1, "maximum": 64 },
+    "repeat_count": { "type": "integer", "minimum": 1, "maximum": 250 },
     "limits": {
       "type": "object",
       "additionalProperties": false,

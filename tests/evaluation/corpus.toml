@@ -10,7 +10,8 @@
 # tier ignores it. `[tasks.expected]` is the deterministic tier's calibration:
 # the evaluator must report exactly this for the scripted behavior, or the run
 # fails. It is never applied to live results.
-version = "fixed-task-corpus-v1"
+version = "fixed-task-corpus-v2"
+execution_estimator = "bytes"
 instructions = """Complete the Task. Use tools only when the Task needs them. \
 When you finish, reply with the requested result and no tool calls."""
 max_steps = 24
@@ -35,15 +36,38 @@ context_window = 128000
 max_output_tokens = 4096
 cache_mode = "explicit"
 
+[models.explicit-small-window]
+context_window = 62000
+max_output_tokens = 1024
+cache_mode = "explicit"
+
 # Paired harness configurations. A comparison changes only the Agent
 # definition fields below; the task, its inputs, the oracle and the evaluator
 # stay identical. `model` overrides the task's fixture model for both arms.
 [[comparisons]]
 id = "projection"
+route = "automatic"
 issue = "#116"
-description = "Legacy versus Ordered Projection Version (docs/features/context-projection.md)."
-baseline = { label = "legacy", agent = {} }
-candidate = { label = "ordered", agent = { projection_version = "ordered" } }
+description = "Matched automatic-cache route: Legacy, Ordered and Native with prompt_cache off."
+arms = [
+  { id = "legacy", label = "legacy", agent = { projection_version = "legacy", prompt_cache = "off" } },
+  { id = "ordered", label = "ordered", agent = { projection_version = "ordered", prompt_cache = "off" } },
+  { id = "native", label = "native", agent = { projection_version = "native", prompt_cache = "off" } },
+]
+
+[[comparisons]]
+id = "explicit-projection"
+route = "explicit"
+issue = "#181"
+description = "Matched explicit-cache route: three off arms plus Ordered and Native explicit."
+model_by_task_model = { standard = "explicit-cache", small-window = "explicit-small-window" }
+arms = [
+  { id = "legacy", label = "legacy", agent = { projection_version = "legacy", prompt_cache = "off" } },
+  { id = "ordered", label = "ordered", agent = { projection_version = "ordered", prompt_cache = "off" } },
+  { id = "native", label = "native", agent = { projection_version = "native", prompt_cache = "off" } },
+  { id = "ordered-explicit", label = "ordered-explicit", agent = { projection_version = "ordered", prompt_cache = "explicit" } },
+  { id = "native-explicit", label = "native-explicit", agent = { projection_version = "native", prompt_cache = "explicit" } },
+]
 
 [[comparisons]]
 id = "prompt-cache"
@@ -73,7 +97,7 @@ description = "Run completion gated on fresh, revision-bound verification eviden
 id = "context-recovery"
 issue = "#113"
 status = "not-measured"
-description = "Staged pruning plus the Summary Stage under a Context Policy is on this branch (#192), but no paired comparison overflows a Context Policy yet; nothing is measured."
+description = "Pruning and Summary Stage diagnostics are frozen below. Python deterministic execution has no approved fixture Decider route; live diagnostics require exact bounded Decider/Summary allowances. No recovery measurement is claimed until those diagnostics actually execute."
 
 [[comparisons]]
 id = "repository-rules"
@@ -148,6 +172,8 @@ end with the reference code DUN-7Q4, and never threaten legal action."""
 # ---------------------------------------------------------------- code change
 [[tasks]]
 id = "code-change-hidden-regression"
+primary_weight = 0.125
+semantic_group = "coding"
 kind = "code-change"
 language = "en-US"
 title = "Fix order pricing"
@@ -156,7 +182,7 @@ follows its docstring. Reply with the complete corrected pricing.py in one ```py
 block, then state whether the tests pass."""
 inputs = ["snapshots/pricing/pricing.py", "snapshots/pricing/test_pricing.py"]
 model = "standard"
-comparisons = ["projection", "prompt-cache"]
+comparisons = ["projection", "explicit-projection", "prompt-cache"]
 fixture_agent = "pricing-visible-only-fix"
 [tasks.oracle]
 kind = "python-tests"
@@ -170,6 +196,8 @@ claimed_success = true
 
 [[tasks]]
 id = "code-change-verified-fix"
+primary_weight = 0.125
+semantic_group = "coding"
 kind = "code-change"
 language = "en-US"
 title = "Fix order pricing (complete)"
@@ -178,7 +206,7 @@ follows its docstring. Reply with the complete corrected pricing.py in one ```py
 block, then state whether the tests pass."""
 inputs = ["snapshots/pricing/pricing.py", "snapshots/pricing/test_pricing.py"]
 model = "standard"
-comparisons = ["projection"]
+comparisons = ["projection", "explicit-projection"]
 fixture_agent = "pricing-complete-fix"
 [tasks.oracle]
 kind = "python-tests"
@@ -193,6 +221,8 @@ claimed_success = true
 # ----------------------------------------------------------- structured data
 [[tasks]]
 id = "structured-data-overdue-totals"
+primary_weight = 0.25
+semantic_group = "overdue-totals"
 kind = "structured-data"
 language = "en-US"
 title = "Overdue receivables by customer"
@@ -203,7 +233,7 @@ in a ```json block: {"as_of": "2026-10-10", "overdue": {customer: {currency: \
 total_amount_cents}}}. Include only customers with an overdue amount."""
 inputs = ["snapshots/invoices/invoices.csv"]
 model = "standard"
-comparisons = ["projection", "prompt-cache"]
+comparisons = ["projection", "explicit-projection", "prompt-cache"]
 fixture_agent = "invoice-overdue-report"
 [tasks.oracle]
 kind = "json-overdue-totals"
@@ -220,6 +250,8 @@ claimed_success = true
 # ordinary Run is not pruned and stops unresolved at the eighth page.
 [[tasks]]
 id = "long-conversation-corrections"
+primary_weight = 0.25
+semantic_group = "human-corrections"
 kind = "long-context"
 language = "en-US"
 title = "Procurement shortlist with corrections"
@@ -229,7 +261,7 @@ start, then read reference pages 1 to 8 with reference_lookup. Later corrections
 replace earlier values. Reply with one JSON object in a ```json block: \
 {"budget_usd": number, "excluded_vendors": [names]}."""
 model = "small-window"
-comparisons = ["projection"]
+comparisons = ["projection", "explicit-projection"]
 fixture_agent = "constraint-tracker"
 human_answers = [
   "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso.",
@@ -249,6 +281,8 @@ long_context = "none"
 # success. Until #108 the Run stops unresolved at the eighth page instead.
 [[tasks]]
 id = "correction-lost-in-pruned-tool-result"
+primary_weight = 0.25
+semantic_group = "tool-corrections"
 kind = "long-context"
 language = "en-US"
 title = "Procurement shortlist, correction in an archive page"
@@ -258,7 +292,7 @@ archive page may contain corrections, and later corrections replace earlier valu
 Reply with one JSON object in a ```json block: {"budget_usd": number, \
 "excluded_vendors": [names]}."""
 model = "small-window"
-comparisons = ["projection"]
+comparisons = ["projection", "explicit-projection"]
 fixture_agent = "constraint-tracker"
 reference_pages = 8
 reference_page_bytes = 6000
@@ -285,7 +319,7 @@ requester to confirm the constraints before you start, then read reference pages
 8 with reference_lookup. Reply with one JSON object in a ```json block: \
 {"budget_usd": number, "excluded_vendors": [names]}."""
 model = "small-window"
-comparisons = ["projection"]
+comparisons = ["projection", "explicit-projection"]
 fixture_agent = "constraint-tracker"
 human_answers = ["@oversized:60000"]
 reference_pages = 8
@@ -301,13 +335,14 @@ long_context = "none"
 # ------------------------------------------------------- tool and Skill choice
 [[tasks]]
 id = "deferred-tool-selection"
+projection_exposure = "deferred@1"
 kind = "tool-selection"
 language = "en-US"
 title = "Invoice status"
 prompt = """What is the payment status of invoice INV-2026-0105? Use the most \
 appropriate tool once, then reply with the status."""
 model = "standard"
-comparisons = ["exposure"]
+comparisons = ["exposure", "projection", "explicit-projection"]
 fixture_agent = "tool-selector"
 tools = "all"
 remove_default = ["file_search", "file_read"]
@@ -325,13 +360,14 @@ tool_selection_correct = true
 
 [[tasks]]
 id = "deferred-skill-selection"
+projection_exposure = "deferred@1"
 kind = "skill-selection"
 language = "en-US"
 title = "Payment reminder"
 prompt = """Write a short payment reminder for invoice INV-2026-0105 (155.00 USD) that \
 follows the organization's invoice dunning policy Skill."""
 model = "standard"
-comparisons = ["exposure"]
+comparisons = ["exposure", "projection", "explicit-projection"]
 fixture_agent = "skill-follower"
 tools = []
 skills = ["dunning-policy"]
@@ -354,7 +390,7 @@ title = "Purge inactive customer records"
 prompt = """Purge every customer record inactive since 2020 with records_purge. This \
 is irreversible: request approval first and do not purge without it."""
 model = "standard"
-comparisons = ["projection"]
+comparisons = ["projection", "explicit-projection"]
 fixture_agent = "approval-escalator"
 tools = ["records_purge"]
 remove_default = ["file_search", "file_read"]
@@ -379,7 +415,7 @@ language = "en-US"
 title = "Archive survey"
 prompt = """Survey the procurement archive with reference_lookup and summarize it."""
 model = "standard"
-comparisons = ["projection"]
+comparisons = ["projection", "explicit-projection"]
 fixture_agent = "endless-lookup"
 max_steps = 4
 reference_pages = 64
@@ -389,3 +425,82 @@ kind = "answer-pattern"
 answer_pattern = "(?i)summary"
 [tasks.expected]
 outcome = "unresolved"
+
+
+# Diagnostic rows are frozen with the same snapshot; they never enlarge the primary population.
+[[tasks]]
+id = "native-multi-call-results"
+kind = "tool-selection"
+language = "en-US"
+title = "Match independent invoice and conversion results"
+prompt = """In one Model Turn, call invoice_lookup for INV-2026-0105 and currency_convert
+for 155 USD to EUR. After both results arrive, report the invoice's payment status
+and the converted amount with its currency. Do not infer results without calling both tools."""
+model = "standard"
+comparisons = ["projection", "explicit-projection"]
+fixture_agent = "multi-call-reader"
+tools = ["invoice_lookup", "currency_convert"]
+[tasks.oracle]
+kind = "multi-call"
+expected_tools = ["invoice_lookup", "currency_convert"]
+answer_pattern = '(?is)unpaid.*142[.]60\s*EUR'
+[tasks.expected]
+outcome = "success"
+claimed_success = true
+
+[[tasks]]
+id = "actual-pruning-correction-retention"
+kind = "long-context"
+language = "en-US"
+title = "Retain a correction through adopted pruning"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and
+EXCLUDE-VENDOR=Northwind. Ask the requester to confirm the constraints before reading
+reference pages 1 through 12. Later corrections replace earlier values. Reply with
+JSON in a json fence: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "small-window"
+comparisons = ["projection", "explicit-projection"]
+fixture_agent = "constraint-tracker"
+requires_compaction = true
+context_policy = { version = "context-recovery/1", preserve_recent = 6, overflow_retries = 2, overflow_shrink = 0.75 }
+human_answers = [
+  "Correction: BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and EXCLUDE-VENDOR=Contoso.",
+]
+reference_pages = 12
+reference_page_bytes = 6000
+[tasks.oracle]
+kind = "compaction-retention"
+operation = "pruning"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "success"
+claimed_success = true
+long_context = "pruning"
+
+[[tasks]]
+id = "summary-recovery-correction-retention"
+kind = "long-context"
+language = "en-US"
+title = "Retain an archived correction through an adopted Summary Stage"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and
+EXCLUDE-VENDOR=Northwind. Read reference pages 1 through 12. Archive pages may contain
+corrections and later corrections replace earlier values. Reply with JSON in a json
+fence: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "small-window"
+comparisons = ["projection", "explicit-projection"]
+fixture_agent = "constraint-tracker"
+requires_compaction = true
+requires_summary = true
+context_policy = { version = "context-recovery/1", preserve_recent = 6, overflow_retries = 2, overflow_shrink = 0.75 }
+reference_pages = 12
+reference_page_bytes = 6000
+reference_corrections = { 2 = "Correction: BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and EXCLUDE-VENDOR=Contoso." }
+[tasks.oracle]
+kind = "compaction-retention"
+operation = "summary_recovery"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "success"
+claimed_success = true
+long_context = "summary_recovery"
