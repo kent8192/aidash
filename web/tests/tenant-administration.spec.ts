@@ -1100,68 +1100,109 @@ test("cached policy details disappear when policy.read is removed", async ({
   ).toHaveCount(0);
 });
 
-test("an open peer edit hides cached mapping details when read access is removed", async ({
-  page,
-}) => {
-  await page.clock.install();
-  await setup(page, { locale: "en-US", subject: true });
-  let readable = true;
-  let authorityReads = 0;
-  await page.route("**/api/tenants/acme/administration", (route) => {
-    authorityReads++;
-    return route.fulfill({
-      json: {
-        tenant: "acme",
-        actions: readable
-          ? ["peer_mapping.read", "peer_mapping.update"]
-          : ["peer_mapping.update"],
-        issuable_subjects: [],
-        assignable_groups: [],
-        policy_revision: 1,
-      },
-    });
-  });
-  await page.route("**/api/authorization/acme/peer-mappings**", (route) =>
-    route.fulfill({
-      json: [
-        {
+for (const peerEdit of [true, false]) {
+  test(`an open ${peerEdit ? "peer edit" : "credential revoke"} dialog hides cached details after permission loss`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await setup(page, { locale: "en-US", subject: true });
+    let readable = true;
+    let authorityReads = 0;
+    await page.route("**/api/tenants/acme/administration", (route) => {
+      authorityReads++;
+      return route.fulfill({
+        json: {
           tenant: "acme",
-          source_node: "peer-node",
-          source_tenant: "private-source",
-          source_subject: "private-subject",
-          credential_id: "private-credential",
-          enabled: true,
-          revision: 1,
-          actor: "alice",
-          updated_at: "2026-10-23T00:00:00Z",
+          actions: peerEdit
+            ? readable
+              ? ["peer_mapping.read", "peer_mapping.update"]
+              : ["peer_mapping.update"]
+            : readable
+              ? ["credential.read", "credential.revoke", "credential.issue"]
+              : ["credential.issue"],
+          issuable_subjects: peerEdit ? [] : ["ci"],
+          assignable_groups: [],
+          policy_revision: 1,
         },
-      ],
-    }),
-  );
-  await page.goto("/trust?view=authorization");
-  await page
-    .getByRole("button", { name: "Edit peer mapping", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByLabel("Source tenant", { exact: true })).toHaveValue(
-    "private-source",
-  );
-  readable = false;
-  await page.clock.fastForward(2000);
-  // Refresh authority while the edit remains mounted, as on returning to the tab.
-  await page.evaluate(() =>
-    window.dispatchEvent(new Event("visibilitychange")),
-  );
-  await expect.poll(() => authorityReads).toBeGreaterThan(1);
-  await expect(dialog).toHaveCount(0);
-  await expect(page.getByText("private-source / private-subject")).toHaveCount(
-    0,
-  );
-  // The remaining update grant still permits creation without revealing old rows.
-  await page
-    .getByRole("button", { name: "Add peer mapping", exact: true })
-    .click();
-  await expect(dialog.getByLabel("Source tenant", { exact: true })).toHaveValue(
-    "",
-  );
-});
+      });
+    });
+    await page.route("**/api/authorization/acme/credentials**", (route) =>
+      route.fulfill({
+        json:
+          peerEdit || new URL(route.request().url()).searchParams.has("mine")
+            ? []
+            : [
+                {
+                  id: "00000000-0000-4000-8000-000000000777",
+                  tenant: "acme",
+                  subject: "private-service",
+                  created_at: "2026-10-23T00:00:00Z",
+                  expires_at: "2099-10-23T00:00:00Z",
+                  revoked_at: null,
+                  issued_by: "alice",
+                  mapping_id: null,
+                },
+              ],
+      }),
+    );
+    await page.route("**/api/authorization/acme/peer-mappings**", (route) =>
+      route.fulfill({
+        json: [
+          {
+            tenant: "acme",
+            source_node: "peer-node",
+            source_tenant: "private-source",
+            source_subject: "private-subject",
+            credential_id: "private-credential",
+            enabled: true,
+            revision: 1,
+            actor: "alice",
+            updated_at: "2026-10-23T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    await page.goto("/trust?view=authorization");
+    await page
+      .getByRole("button", {
+        name: peerEdit ? "Edit peer mapping" : "Revoke",
+        exact: true,
+      })
+      .click();
+    const dialog = page.getByRole("dialog");
+    if (peerEdit) {
+      await expect(
+        dialog.getByLabel("Source tenant", { exact: true }),
+      ).toHaveValue("private-source");
+    } else {
+      await expect(
+        dialog.getByText("private-service", { exact: true }),
+      ).toBeVisible();
+    }
+    readable = false;
+    await page.clock.fastForward(2000);
+    // Refresh authority while the edit remains mounted, as on returning to the tab.
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("visibilitychange")),
+    );
+    await expect.poll(() => authorityReads).toBeGreaterThan(1);
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page.getByText(
+        peerEdit ? "private-source / private-subject" : "private-service",
+      ),
+    ).toHaveCount(0);
+    // Remaining write authority permits new work without revealing cached records.
+    await page
+      .getByRole("button", {
+        name: peerEdit ? "Add peer mapping" : "Issue credential",
+        exact: true,
+      })
+      .click();
+    await expect(
+      dialog.getByLabel(peerEdit ? "Source tenant" : "Subject", {
+        exact: true,
+      }),
+    ).toHaveValue(peerEdit ? "" : "ci");
+  });
+}

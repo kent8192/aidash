@@ -294,7 +294,9 @@ function TenantAuthorization({
       setError("");
     }
   };
-  const modal = (!!current && !!editor) || issuing || !!revoking;
+  const canRevoke =
+    access.can("credential.read") && access.can("credential.revoke");
+  const modal = (!!current && !!editor) || issuing || (canRevoke && !!revoking);
   return (
     <>
       <div className="grid min-w-0 gap-3">
@@ -454,21 +456,20 @@ function TenantAuthorization({
                               : "authActive"
                         }
                       />
-                      {!credential.revoked_at &&
-                        access.can("credential.revoke") && (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="col-span-2 justify-self-start sm:col-span-1"
-                            disabled={busy}
-                            onClick={() => {
-                              setError("");
-                              setRevoking(credential);
-                            }}
-                          >
-                            {t("authRevoke")}
-                          </Button>
-                        )}
+                      {!credential.revoked_at && canRevoke && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="col-span-2 justify-self-start sm:col-span-1"
+                          disabled={busy}
+                          onClick={() => {
+                            setError("");
+                            setRevoking(credential);
+                          }}
+                        >
+                          {t("authRevoke")}
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </RowList>
@@ -601,7 +602,7 @@ function TenantAuthorization({
           </div>
         </Modal>
       )}
-      {revoking && (
+      {revoking && canRevoke && (
         <Modal title={t("authRevoke")} close={close}>
           <div className="grid min-w-0 gap-3">
             <p className="text-[13px] leading-relaxed text-muted-foreground">
