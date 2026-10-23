@@ -25,7 +25,8 @@ The Restore Channel belongs to the backup's project and region. A successful
 Restore operation is a data restoration milestone; application acceptance follows.
 
 1. Identify who is running the drill, release SHA and image digests. Export the current update
-   entry to `private/drill-entry.json`; it must name `pre_update_backup` and have
+   entry to `private/drill-entry.json` and identify the production lifecycle state
+   bucket; it must name `pre_update_backup` and have
    no `writers_started`. Record the seal time, last acknowledged writes and exact
    fixture contents/high-water marks for every Node database, outbox, JetStream,
    tasks, Runs, artifacts, source memory and semantic projections. Record the
@@ -61,10 +62,16 @@ Restore operation is a data restoration milestone; application acceptance follow
 
    ```sh
    python3 infra/gcp/restore_drill.py prepare --directory private/drill-2026-10 \
-     --entry private/drill-entry.json --settings private/drill-settings.json
+     --entry private/drill-entry.json --settings private/drill-settings.json \
+     --state-bucket <production-lifecycle-state-bucket>
    python3 infra/gcp/restore_drill.py apply --directory private/drill-2026-10
    python3 infra/gcp/restore_drill.py restore --directory private/drill-2026-10
    ```
+
+   `prepare` and the final pre-Restore check reread `lifecycle/state.json` from
+   that bucket using `gcloud storage cat`. A changed baseline or a live
+   `writers_started` marker refuses the restore. Keep the source sealed for the
+   entire drill; a saved export alone cannot establish current quiescence.
 
    A retry reuses the same Restore ID and verifies its baseline and filters.
    Inspect failed operations; success does not set `application_verified`.
@@ -98,7 +105,10 @@ Restore operation is a data restoration milestone; application acceptance follow
    compare its identity/content before and after. Cross-project omission alone
    does not prove `DELETE_AND_RESTORE` preserves an existing claim.
 9. Write `private/drill-2026-10/verification.json` with these fields. Every check
-   is a Boolean backed by the raw `report`; begin with `false` and change only
+   is a Boolean backed by the raw `report`; use the full 40-character release
+   commit SHA, SHA-256 image digests, and nonblank person/report strings. The
+   fault time must be no later than the receipt's preparation time, and verified
+   time no earlier than its restore completion. Begin with `false` and change only
    after observation. `baseline_high_water` records the update-start RPO check.
 
    ```json

@@ -1,4 +1,6 @@
 import copy
+import json
+import urllib.error
 import importlib.util
 import pathlib
 import tempfile
@@ -47,8 +49,8 @@ class RestoreDrillTests(unittest.TestCase):
         (drill.ROOT / "private").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=drill.ROOT / "private") as root:
             directory = pathlib.Path(root) / "drill"
-            with patch.object(drill, "call", side_effect=[BACKUP, {"volumeBackups": VOLUMES}]):
-                receipt = drill.prepare(directory, {"pre_update_backup": NAME}, SETTINGS)
+            with patch.object(drill, "call", side_effect=[BACKUP, {"volumeBackups": VOLUMES}]), patch.object(drill.subprocess, "check_output", return_value=json.dumps({"environments": {"production": {"pre_update_backup": NAME}}})):
+                receipt = drill.prepare(directory, {"pre_update_backup": NAME}, SETTINGS, "aidash-production-state")
             self.assertRegex(receipt["project_id"], r"^aidash-drill-[a-f0-9]{12}$")
             self.assertEqual(drill.load(directory), receipt)
             variables = drill.read(directory / "terraform.tfvars.json")
@@ -58,7 +60,7 @@ class RestoreDrillTests(unittest.TestCase):
                 drill.load(directory)
 
     def test_restore_excludes_secrets_ledger_and_every_workload_but_does_not_claim_acceptance(self):
-        receipt = {"id": "012345abcdef", "project_id": "aidash-drill-012345abcdef", "settings": SETTINGS, "backup": NAME}
+        receipt = {"id": "012345abcdef", "project_id": "aidash-drill-012345abcdef", "settings": SETTINGS, "backup": NAME, "state_bucket": "aidash-production-state"}
         prefix = "projects/aidash-drill-012345abcdef/locations/us-central1"
         target = {"project_id": receipt["project_id"], "cluster": prefix + "/clusters/restore-drill", "restore_plan": prefix + "/restorePlans/pre-update-drill"}
         plan = {"cluster": target["cluster"], "backupPlan": NAME.rsplit("/backups/", 1)[0], "restoreConfig": {"namespacedResourceRestoreMode": "MERGE_SKIP_ON_CONFLICT", "volumeDataRestorePolicy": "RESTORE_VOLUME_DATA_FROM_BACKUP", "selectedNamespaces": {"namespaces": [SETTINGS["namespace"]]}, "clusterResourceRestoreScope": {"noGroupKinds": True}}}
@@ -75,7 +77,7 @@ class RestoreDrillTests(unittest.TestCase):
         self.assertTrue(drill.same_filter(normalized, body["filter"]))
         self.assertFalse(drill.same_filter({"exclusionFilters": []}, body["filter"]))
         result = {**body, "filter": normalized, "state": "SUCCEEDED", "volumesRestoredCount": 1, "completeTime": "2026-10-23T01:00:00Z"}
-        with tempfile.TemporaryDirectory() as root, patch.object(drill, "outputs", return_value=target), patch.object(drill, "call", side_effect=[BACKUP, {"volumeBackups": VOLUMES}, plan, {}, result]) as cloud:
+        with tempfile.TemporaryDirectory() as root, patch.object(drill, "outputs", return_value=target), patch.object(drill.subprocess, "check_output", return_value=json.dumps({"environments": {"production": {"pre_update_backup": NAME}}})), patch.object(drill, "call", side_effect=[BACKUP, {"volumeBackups": VOLUMES}, plan, {}, urllib.error.HTTPError("restore", 404, "pending", {}, None), result]) as cloud, patch.object(drill.time, "sleep"):
             directory = pathlib.Path(root)
             drill.restore(directory, receipt)
             self.assertEqual(receipt["phase"], "resources_restored")
@@ -85,14 +87,53 @@ class RestoreDrillTests(unittest.TestCase):
     def test_human_acceptance_requires_every_check_and_the_two_hour_target(self):
         for seconds, accepted in [(3600, True), (7201, False)]:
             with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as root:
-                receipt = {"phase": "resources_restored"}
-                evidence = {"performed_by": "drill runner", "revision": "012345abcdef", "image_digests": ["sha256:fixture"], "fault_at": "2026-10-23T00:00:00+00:00", "verified_at": "2026-10-23T01:00:00+00:00" if seconds == 3600 else "2026-10-23T02:00:01+00:00", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+                receipt = {"phase": "resources_restored", "prepared_at": "2026-10-23T00:00:00Z", "restore_completed_at": "2026-10-23T00:30:00Z"}
+                evidence = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64], "fault_at": "2026-10-23T00:00:00+00:00", "verified_at": "2026-10-23T01:00:00+00:00" if seconds == 3600 else "2026-10-23T02:00:01+00:00", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
                 drill.record(pathlib.Path(root), receipt, evidence)
                 self.assertEqual(receipt["application_verified"], accepted)
                 self.assertEqual(receipt["measured_rto_seconds"], seconds)
                 evidence["checks"]["ledger_preserved"] = False
                 drill.record(pathlib.Path(root), receipt, evidence)
                 self.assertFalse(receipt["application_verified"])
+
+    def test_restore_refuses_a_live_writer_marker_after_prepare(self):
+        receipt = {"id": "012345abcdef", "project_id": "aidash-drill-012345abcdef", "settings": SETTINGS, "backup": NAME, "state_bucket": "aidash-production-state"}
+        prefix = "projects/aidash-drill-012345abcdef/locations/us-central1"
+        target = {"project_id": receipt["project_id"], "cluster": prefix + "/clusters/restore-drill", "restore_plan": prefix + "/restorePlans/pre-update-drill"}
+        plan = {"cluster": target["cluster"], "backupPlan": NAME.rsplit("/backups/", 1)[0], "restoreConfig": {"namespacedResourceRestoreMode": "MERGE_SKIP_ON_CONFLICT", "volumeDataRestorePolicy": "RESTORE_VOLUME_DATA_FROM_BACKUP", "selectedNamespaces": {"namespaces": [SETTINGS["namespace"]]}, "clusterResourceRestoreScope": {"noGroupKinds": True}}}
+        for entry in [{"pre_update_backup": NAME, "writers_started": True}, {"pre_update_backup": NAME + "0"}]:
+            with self.subTest(entry=entry), tempfile.TemporaryDirectory() as root, patch.object(drill, "outputs", return_value=target), patch.object(drill.subprocess, "check_output", return_value=json.dumps({"environments": {"production": entry}})), patch.object(drill, "call", side_effect=[BACKUP, {"volumeBackups": VOLUMES}, plan, {}, {**drill.restore_body(receipt), "state": "SUCCEEDED", "volumesRestoredCount": 1}]) as cloud:
+                with self.assertRaises(ValueError):
+                    drill.restore(pathlib.Path(root), receipt)
+                self.assertTrue(all(call.args[0] == "GET" for call in cloud.call_args_list))
+
+    def test_release_evidence_requires_typed_revision_digests_and_receipt_milestones(self):
+        valid = {"performed_by": "drill runner", "revision": "a" * 40, "image_digests": ["sha256:" + "b" * 64], "fault_at": "2026-10-23T00:00:00Z", "verified_at": "2026-10-23T01:00:00Z", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+        invalid = [("revision", True), ("revision", "short"), ("image_digests", [""]), ("image_digests", "sha256:" + "b" * 64), ("image_digests", [True]), ("image_digests", ["sha256:fixture"]), ("report", {"path": "report"}), ("performed_by", "  "), ("fault_at", "2026-10-23T00:10:00Z"), ("verified_at", "2026-10-23T00:20:00Z")]
+        for field, value in invalid:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as root:
+                receipt = {"phase": "resources_restored", "prepared_at": "2026-10-23T00:00:00Z", "restore_completed_at": "2026-10-23T00:30:00Z"}
+                evidence = {**valid, field: value}
+                with self.assertRaises(ValueError):
+                    drill.record(pathlib.Path(root), receipt, evidence)
+                self.assertNotIn("application_verified", receipt)
+                self.assertFalse((pathlib.Path(root) / "human-evidence.json").exists())
+
+    def test_cleanup_deletes_child_volume_restores_before_destroying_infrastructure(self):
+        receipt = {"project_id": "aidash-drill-012345abcdef", "restore": "projects/aidash-drill-012345abcdef/locations/us-central1/restorePlans/pre-update-drill/restores/drill-012345abcdef"}
+        calls = []
+        def cloud(method, resource):
+            calls.append((method, resource))
+            if method == "DELETE":
+                if not resource.endswith("?force=true"):
+                    raise urllib.error.HTTPError(resource, 400, "VolumeRestores exist", {}, None)
+                return {}
+            raise urllib.error.HTTPError(resource, 404, "deleted", {}, None)
+        with tempfile.TemporaryDirectory() as root, patch.object(drill, "call", side_effect=cloud), patch.object(drill, "terraform") as terraform:
+            drill.destroy(pathlib.Path(root), receipt)
+            self.assertEqual(receipt["phase"], "destroyed")
+            self.assertEqual(calls, [("DELETE", receipt["restore"] + "?force=true"), ("GET", receipt["restore"])])
+            self.assertEqual(terraform.call_count, 2)
 
     def test_cleanup_refuses_a_source_project_restore(self):
         receipt = {"project_id": "aidash-drill-012345abcdef", "restore": "projects/aidash-production/locations/us-central1/restorePlans/production/restores/real"}

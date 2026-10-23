@@ -106,13 +106,24 @@ def same_filter(observed, expected):
     return all(selectors(observed, key) == selectors(expected, key) for key in ["inclusionFilters", "exclusionFilters"])
 
 
-def prepare(directory, entry, settings):
+def current_entry(bucket, backup):
+    require(isinstance(bucket, str) and re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]", bucket), "Supply the production lifecycle state bucket")
+    state = json.loads(subprocess.check_output(["gcloud", "storage", "cat", f"gs://{bucket}/lifecycle/state.json"], text=True, timeout=60))
+    entry = state.get("environments", {}).get("production", {})
+    require(entry.get("pre_update_backup") == backup, "The live production update entry no longer names this baseline")
+    require(not entry.get("writers_started"), "Writers started after this backup; use forward repair instead")
+    return entry
+
+
+def prepare(directory, entry, settings, state_bucket):
+    prepared_at = dt.datetime.now(dt.UTC).isoformat()
     require(not directory.exists(), "Choose a new drill directory; never reuse another drill's state")
     require(directory.resolve().is_relative_to((ROOT / "private").resolve()), "Keep drill state and evidence in this checkout's private/ directory")
     required = {"billing_account", "folder_id", "region", "client_cidr", "namespace", "ledger_claim", "source_cluster"}
     require(set(settings) == required and all(isinstance(v, str) and v for v in settings.values()), "Supply exactly the documented drill settings")
     backup = entry.get("pre_update_backup", "")
     require(BACKUP.fullmatch(backup), "Invalid Pre-update Backup name")
+    current_entry(state_bucket, backup)
     observed = call("GET", backup)
     claims = validate_baseline(entry, settings, observed, volume_inventory(backup))
     identifier = uuid.uuid4().hex[:12]
@@ -123,8 +134,8 @@ def prepare(directory, entry, settings):
         shutil.copy2(MODULE / name, directory / name)
     write(directory / "terraform.tfvars.json", variables)
     receipt = {"id": identifier, "project_id": variables["project_id"], "backup": backup,
-               "settings": settings, "baseline": {"writers_started": False, "volume_claims": claims},
-               "prepared_at": dt.datetime.now(dt.UTC).isoformat(), "phase": "prepared",
+               "settings": settings, "state_bucket": state_bucket, "baseline": {"writers_started": False, "volume_claims": claims},
+               "prepared_at": prepared_at, "phase": "prepared",
                "inputs_sha256": {name: digest(directory / name) for name in ["main.tf", ".terraform.lock.hcl", "terraform.tfvars.json"]}}
     write(directory / "receipt.json", receipt)
     return receipt
@@ -158,6 +169,7 @@ def restore(directory, receipt):
     require(config.get("namespacedResourceRestoreMode") == "MERGE_SKIP_ON_CONFLICT" and config.get("volumeDataRestorePolicy") == "RESTORE_VOLUME_DATA_FROM_BACKUP" and config.get("selectedNamespaces", {}).get("namespaces") == [receipt["settings"]["namespace"]] and config.get("clusterResourceRestoreScope", {}).get("noGroupKinds") is True, "Restore plan scope drifted")
     name = target["restore_plan"] + "/restores/drill-" + receipt["id"]
     body = restore_body(receipt)
+    current_entry(receipt["state_bucket"], receipt["backup"])
     receipt.update(restore=name, phase="restoring")
     write(directory / "receipt.json", receipt)
     try:
@@ -165,9 +177,18 @@ def restore(directory, receipt):
     except urllib.error.HTTPError as error:
         if error.code != 409:
             raise
-    deadline = time.monotonic() + 1800
+    started = time.monotonic()
+    deadline = started + 1800
+    visible = False
     while time.monotonic() < deadline:
-        result = call("GET", name)
+        try:
+            result = call("GET", name)
+        except urllib.error.HTTPError as error:
+            if error.code == 404 and not visible and time.monotonic() < started + 60:
+                time.sleep(10)
+                continue
+            raise
+        visible = True
         require(result.get("backup") == body["backup"] and same_filter(result.get("filter", {}), body["filter"]), "Existing restore has different exclusions or baseline")
         if result.get("state") == "SUCCEEDED":
             require(result.get("resourcesFailedCount", 0) == 0 and result.get("volumesRestoredCount", 0) > 0, "No successful data-volume restore")
@@ -182,10 +203,15 @@ def restore(directory, receipt):
 def record(directory, receipt, evidence):
     require(receipt["phase"] == "resources_restored", "Complete the isolated data restore first")
     require(set(evidence) == {"performed_by", "revision", "image_digests", "fault_at", "verified_at", "checks", "report"}, "Use the documented human evidence fields")
-    require(set(evidence["checks"]) == CHECKS and all(type(v) is bool for v in evidence["checks"].values()), "Record every acceptance check as true or false")
-    require(all(evidence[k] for k in ["performed_by", "revision", "image_digests", "report"]), "Name the person running the drill, revision/images and raw report")
-    start, end = [dt.datetime.fromisoformat(evidence[k]) for k in ["fault_at", "verified_at"]]
-    require(start.tzinfo and end.tzinfo and end >= start, "Use ordered timestamps with time zones")
+    require(isinstance(evidence["checks"], dict) and set(evidence["checks"]) == CHECKS and all(type(v) is bool for v in evidence["checks"].values()), "Record every acceptance check as true or false")
+    require(all(isinstance(evidence[k], str) and evidence[k].strip() for k in ["performed_by", "report"]), "Name the person running the drill and the raw report")
+    require(isinstance(evidence["revision"], str) and re.fullmatch(r"[a-fA-F0-9]{40}", evidence["revision"]), "Record the full release commit SHA")
+    images = evidence["image_digests"]
+    require(isinstance(images, list) and images and all(isinstance(image, str) and re.fullmatch(r"sha256:[a-f0-9]{64}", image) for image in images), "Record every image as a SHA-256 content digest")
+    timestamps = [evidence["fault_at"], receipt["prepared_at"], receipt["restore_completed_at"], evidence["verified_at"]]
+    require(all(isinstance(value, str) for value in timestamps), "Use timestamps with time zones")
+    start, prepared, restored, end = [dt.datetime.fromisoformat(value) for value in timestamps]
+    require(all(value.utcoffset() is not None for value in [start, prepared, restored, end]) and start <= prepared <= restored <= end, "The recovery interval must include preparation and the completed restore")
     seconds = (end - start).total_seconds()
     passed = all(evidence["checks"].values()) and seconds <= 7200
     write(directory / "human-evidence.json", evidence)
@@ -199,7 +225,7 @@ def destroy(directory, receipt):
         name = receipt["restore"]
         require(name.startswith(f"projects/{receipt['project_id']}/"), "Refuse to delete any source-project restore")
         try:
-            call("DELETE", name)
+            call("DELETE", name + "?force=true")
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
@@ -225,12 +251,13 @@ def main():
     parser.add_argument("--directory", type=pathlib.Path, required=True)
     parser.add_argument("--entry", type=pathlib.Path)
     parser.add_argument("--settings", type=pathlib.Path)
+    parser.add_argument("--state-bucket")
     parser.add_argument("--evidence", type=pathlib.Path)
     args = parser.parse_args()
     directory = args.directory.resolve()
     if args.action == "prepare":
-        require(args.entry and args.settings, "prepare needs --entry and --settings")
-        receipt = prepare(directory, read(args.entry), read(args.settings))
+        require(args.entry and args.settings and args.state_bucket, "prepare needs --entry, --settings and --state-bucket")
+        receipt = prepare(directory, read(args.entry), read(args.settings), args.state_bucket)
         print("Prepared isolated project:", receipt["project_id"])
         return
     receipt = load(directory)
