@@ -1480,3 +1480,6 @@ async fn servers_without_a_postgres_store_refuse_to_enable_plan_connections(
 	}
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[path = "plan_connections/journey.rs"]
+mod journey;
