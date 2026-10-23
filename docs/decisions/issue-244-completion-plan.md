@@ -79,6 +79,13 @@ its head, owner and hosted acceptance; inherit it after integration into develop
 rather than racing its author or independently reproducing it. Its unresolved
 delivery is an explicit final acceptance dependency.
 
+Issue 405 owns the live preview runtime. PR 461 supplies host-bound Secrets and
+sandbox egress; it does not implement a preview that survives Run completion.
+Task 11 may verify the existing generic usage consumer independently, but actual
+preview start/Run completion/stop acceptance depends on Issue 405. Do not invent
+a second preview runtime here or report a synthetic meter contract as preview
+end-to-end evidence.
+
 Each task adds its primary behavioral regression at the strongest owning
 boundary, demonstrates the intended pre-fix failure, implements the change,
 runs its focused verification and commits. Do not duplicate a contract at every
@@ -185,8 +192,9 @@ evidence of a live Node.
       Credentials, an existing Worker lease, HTTP and same-process Federation, and
       active streaming. The deleted Node is refused; a sibling Node still works.
 - [ ] Connect deletion to cancellation of nonterminal Runs and queued work,
-      including hosted previews and delegated work, using existing cancellation and
-      revocation paths. Preserve decided atomic commits and existing recovery rules.
+      including delegated work, using existing cancellation and revocation paths.
+      Record the stop contract for Issue 405's future hosted previews. Preserve
+      decided atomic commits and existing recovery rules.
 - [ ] Verify restoration never restarts canceled work and cannot restore an
       independently revoked credential; commit `fix(execution): enforce Node lifecycle boundaries`.
 
@@ -377,16 +385,34 @@ after locks are released, and confirm from processor reports.
 
 **Files:** Extend Enterprise `billing/{meter,store,models}.rs` and migrations,
 application `usage.rs` only if source identity needs generalization, server
-`execution/services/storage_usage.rs` and Live preview stop/usage owners.
+`execution/services/storage_usage.rs`, application operation withdrawal and
+reconciliation, and the runner's allocation/termination journal.
 
 **Interfaces:** Preserve `UsageEvents::{pod_time,storage_sampled}` and operation
 deduplication. Persist account coverage intervals and a per-account/currency/
 period export ledger with durable idempotency keys. Current attachments alone
 cannot assign earlier usage after a Tenant moves Billing Accounts.
 
-- [ ] Test a preview running after Run completion, repeated stop reports,
+The existing operation withdrawal path must durably deliver confirmed usage even
+after authority is revoked. Command start/finish timestamps are not proof of Pod
+allocation lifetime, particularly when Python operations reuse a Pod. Use actual
+allocation start/stop evidence and one stable UUID per allocation. A recreated
+Pod gets another UUID; retries retain the UUID. Do not send a partial interval
+under the same ID and expect the current deduplication to extend it later.
+
+For Issue 405, use this same port for the complete allocation interval through
+actual stop, including time after the owning Run completes. The preview provider
+must retain confirmed timestamps and undelivered reports across restart.
+
+- [ ] Test the generic allocation consumer through a simulated Run-completion
+      instant, repeated stop reports,
       month-boundary/account-move splits, export retries, daily sampling by two
       replicas and a purge that changes storage from nonzero to zero.
+- [ ] Test real operation withdrawal/revocation and stop-report retries at the
+      owning journal boundary. Once Issue 405 is available, verify an actual preview
+      remains responsive after Run completion and its complete start–stop interval
+      agrees with local and selected-model usage. Keep this external acceptance
+      dependency explicit until the runtime exists and the scenario runs.
 - [ ] Record real Pod start–stop once, split billable time by coverage and period,
       preserve the existing usage/CSV contract and export through the selected model.
       Emit explicit daily zero samples for active Tenants so stale nonzero usage
@@ -395,8 +421,9 @@ cannot assign earlier usage after a Tenant moves Billing Accounts.
       counted, and deleting/restoring the whole Tenant respects the existing billing
       exemption. Commit `fix(billing): attribute retained storage and Pod usage exactly once`.
 
-Run Enterprise billing/Stripe tests and the owning storage/Live preview server
-tests. Do not rerun cryptographic negative cases here.
+Run Enterprise billing/Stripe tests and the owning storage, allocation journal
+and withdrawal tests. Actual preview acceptance also requires Issue 405's runtime.
+Do not rerun cryptographic negative cases here.
 
 ## Task 12: Billing dashboard and actual sandbox end-to-end acceptance
 
