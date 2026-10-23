@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { setup } from "./collaboration-fixture";
 import { builtInApprovalDecider } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
@@ -747,6 +748,7 @@ test("a policy reader allowed to issue credentials but not to list them can stil
         json: {
           tenant: "alpha",
           actions: ["policy.read", "credential.issue"],
+          issuable_subjects: ["ci"],
           assignable_groups: [],
           policy_revision: 3,
         },
@@ -757,7 +759,10 @@ test("a policy reader allowed to issue credentials but not to list them can stil
           revision: 3,
           bundle: {
             tenant: "alpha",
-            subjects: { alice: { kind: "user", groups: [] } },
+            subjects: {
+              alice: { kind: "user", groups: [] },
+              ci: { kind: "service", groups: [] },
+            },
             groups: {},
             roles: {},
             policies: [],
@@ -901,4 +906,132 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
   await expect(
     panel.getByText("fingerprint-296", { exact: false }),
   ).toHaveCount(0);
+});
+
+test("item-scoped issuance and peer writes work without policy or credential reads", async ({
+  page,
+}) => {
+  await setup(page, {
+    locale: "en-US",
+    subject: true,
+    tenantActions: ["peer_mapping.read", "peer_mapping.update"],
+  });
+  let policyReads = 0;
+  let credentialReads = 0;
+  const issued = {
+    id: "00000000-0000-4000-8000-000000000001",
+    tenant: "acme",
+    subject: "ci",
+    created_at: "2026-10-23T00:00:00Z",
+    expires_at: "2099-10-23T00:00:00Z",
+    revoked_at: null,
+    issued_by: "alice",
+    mapping_id: null,
+  };
+  await page.route("**/api/tenants/acme/administration", (route) =>
+    route.fulfill({
+      json: {
+        tenant: "acme",
+        actions: ["peer_mapping.read", "peer_mapping.update"],
+        issuable_subjects: ["ci"],
+        assignable_groups: [],
+        policy_revision: 1,
+      },
+    }),
+  );
+  await page.route("**/api/authorization/acme", (route) => {
+    policyReads++;
+    return route.fulfill({
+      status: 403,
+      json: { error: "policy read denied" },
+    });
+  });
+  await page.route("**/api/authorization/acme/credentials**", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      expect(request.postDataJSON().subject).toBe("ci");
+      return route.fulfill({
+        json: { credential: issued, token: "fixture-issued-once" },
+      });
+    }
+    if (!new URL(request.url()).searchParams.has("mine")) credentialReads++;
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/authorization/acme/peer-mappings**", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.goto("/trust?view=authorization");
+  await page
+    .getByRole("button", { name: "Issue credential", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Subject", { exact: true })).toHaveValue("ci");
+  await dialog
+    .getByRole("button", { name: "Issue credential", exact: true })
+    .click();
+  await expect(dialog.getByRole("textbox")).toHaveValue("fixture-issued-once");
+  await dialog
+    .getByRole("button", { name: "I have saved the token", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Add peer mapping", exact: true })
+    .click();
+  await expect(
+    dialog
+      .getByLabel("Local credential", { exact: true })
+      .locator(`option[value="${issued.id}"]`),
+  ).toBeEnabled();
+  await dialog
+    .getByLabel("Local credential", { exact: true })
+    .selectOption(issued.id);
+  await expect(
+    dialog.getByLabel("Local credential", { exact: true }),
+  ).toHaveValue(issued.id);
+  expect(policyReads).toBe(0);
+  expect(credentialReads).toBe(0);
+});
+
+test("a member can revoke an active self-issued credential after two hundred historical rows", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US", subject: true, tenantActions: [] });
+  const offsets: number[] = [];
+  const revoked: string[] = [];
+  const row = (id: string, ended = true) => ({
+    id,
+    tenant: "acme",
+    subject: "alice",
+    created_at: "2026-10-23T00:00:00Z",
+    expires_at: "2099-10-23T00:00:00Z",
+    revoked_at: ended ? "2026-10-23T01:00:00Z" : null,
+    issued_by: "alice",
+    mapping_id: "mapping",
+  });
+  await page.route("**/api/authorization/acme/credentials**", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      revoked.push(new URL(request.url()).pathname);
+      return route.fulfill({ json: row("older-active") });
+    }
+    const offset = Number(
+      new URL(request.url()).searchParams.get("offset") ?? 0,
+    );
+    offsets.push(offset);
+    return route.fulfill({
+      json:
+        offset === 0
+          ? Array.from({ length: 200 }, (_, n) => row(`history-${n}`))
+          : [row("older-active", revoked.length > 0)],
+    });
+  });
+  await page.goto("/trust?view=authorization");
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Confirm revocation", exact: true })
+    .click();
+  await expect
+    .poll(() => revoked)
+    .toContain("/api/authorization/acme/credentials/older-active/revoke");
+  expect(offsets).toContain(200);
 });

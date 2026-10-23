@@ -510,6 +510,34 @@ impl TenantAdministrator {
 			{
 				actions.push(rules::CREDENTIAL_CREATE.to_owned());
 			}
+			let mapped: BTreeSet<_> = DashboardMapping::objects()
+				.filter(DashboardMapping::field_tenant().eq(self.tenant()))
+				.all_with_db(tx)
+				.await?
+				.into_iter()
+				.map(|mapping| mapping.subject)
+				.collect();
+			let mut issuable_subjects = vec![];
+			for (id, subject) in &snapshot.bundle.subjects {
+				if aidash_domain::identity::authority::enabled(&snapshot.bundle, id)
+					&& matches!(
+						subject.kind,
+						aidash_domain::policy::SubjectKind::Service
+							| aidash_domain::policy::SubjectKind::Agent
+					) && !mapped.contains(id)
+					&& self
+						.allowed(
+							tx,
+							&snapshot,
+							rules::CREDENTIAL_ISSUE,
+							id,
+							json!({"kind": subject.kind}),
+						)
+						.await?
+				{
+					issuable_subjects.push(id.clone());
+				}
+			}
 			let label = super::Tenant::objects()
 				.filter(super::Tenant::field_name().eq(tenant))
 				.all_with_db(tx)
@@ -520,6 +548,7 @@ impl TenantAdministrator {
 				label,
 				tenant: self.tenant().to_owned(),
 				actions,
+				issuable_subjects,
 				assignable_groups: if administrator {
 					rules::assignable_groups(&snapshot.bundle)
 				} else {
