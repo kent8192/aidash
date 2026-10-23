@@ -14,8 +14,8 @@ BEGIN
  END LOOP;
  IF (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements((tools->'read') || (tools->'write')) e) THEN RETURN false; END IF;
  IF COALESCE(tools->'detail','null'::jsonb) <> 'null'::jsonb AND NOT COALESCE(public.aidash_qualified_ref_is_valid(tools->'detail'),false) THEN RETURN false; END IF;
- IF value ? 'volatility' AND value->>'volatility' NOT IN ('run','step') THEN RETURN false; END IF;
- IF value ? 'query' AND value->>'query' NOT IN ('task-inputs@1','accepted-inputs-first@1') THEN RETURN false; END IF;
+ IF value ? 'volatility' AND NOT COALESCE(value->>'volatility' IN ('run','step'),false) THEN RETURN false; END IF;
+ IF value ? 'query' AND NOT COALESCE(value->>'query' IN ('task-inputs@1','accepted-inputs-first@1'),false) THEN RETURN false; END IF;
  IF value ? 'refresh' AND value->>'refresh' IS DISTINCT FROM 'revision-bound@1' THEN RETURN false; END IF;
  IF value ? 'required_home' AND jsonb_typeof(value->'required_home') <> 'boolean' THEN RETURN false; END IF;
  disclosure := COALESCE(value->'disclosure','{"previews":false,"query":false}'::jsonb);
@@ -38,7 +38,7 @@ BEGIN
  IF jsonb_typeof(value) <> 'object' OR value - ARRAY['schema_version','source','context_source']::text[] <> '{}'::jsonb
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb OR jsonb_typeof(value->'source') <> 'object' THEN RETURN false; END IF;
  source := value->'source'; adapter := source->>'adapter';
- IF value ? 'context_source' AND NOT COALESCE(public.aidash_source_declaration_is_valid(value->'context_source', CASE adapter WHEN 'private_references' THEN 'references' WHEN 'reference_attachments' THEN 'references' WHEN 'skill_attachments' THEN 'skills' WHEN 'skill_roots' THEN 'skills' ELSE adapter END),false) THEN RETURN false; END IF;
+ IF COALESCE(value->'context_source','null'::jsonb) <> 'null'::jsonb AND NOT COALESCE(public.aidash_source_declaration_is_valid(value->'context_source', CASE adapter WHEN 'private_references' THEN 'references' WHEN 'reference_attachments' THEN 'references' WHEN 'skill_attachments' THEN 'skills' WHEN 'skill_roots' THEN 'skills' ELSE adapter END),false) THEN RETURN false; END IF;
  IF kind = 'memory' THEN RETURN adapter IN ('conversation_memory','semantic_memory') AND source - 'adapter' = '{}'::jsonb; END IF;
  IF kind <> 'source' THEN RETURN false; END IF;
  RETURN CASE adapter
@@ -75,7 +75,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.aidash_native_context_is_valid(value jsonb, kind text) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 BEGIN
- IF value ? 'context_source' AND (kind <> 'source' OR NOT COALESCE(public.aidash_source_declaration_is_valid(value->'context_source','semantic_memory'),false)) THEN RETURN false; END IF;
+ IF COALESCE(value->'context_source','null'::jsonb) <> 'null'::jsonb AND NOT COALESCE(public.aidash_source_declaration_is_valid(value->'context_source','semantic_memory'),false) THEN RETURN false; END IF;
  RETURN public.aidash_native_context_before_sources(value - 'context_source',kind);
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END $$;

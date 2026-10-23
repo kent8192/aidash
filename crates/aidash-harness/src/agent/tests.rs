@@ -5449,6 +5449,10 @@ impl Backend {
 					.map(|content| {
 						let digest = aidash_domain::registry::rules::digest(content);
 						context::source::SourceContribution {
+							placement: Some(context::source::SourcePlacement {
+								slot: "semantic_memory".into(),
+								pointer: String::new(),
+							}),
 							identity: context::source::CandidateIdentity {
 								source: QualifiedRef::builtin("aidash://node", "source"),
 								item: "semantic_memory".into(),
