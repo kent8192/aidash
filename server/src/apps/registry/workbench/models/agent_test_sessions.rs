@@ -1,6 +1,7 @@
 //! Persistent agent_test_sessions records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,13 @@ use serde_json::Value;
 pub struct AgentTestSession {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
-	#[field]
-	pub draft_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "agent_test_sessions_draft_id_fkey",
+		db_index = false
+	)]
+	pub draft: ForeignKeyField<crate::apps::registry::workbench::models::AgentDraft>,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]

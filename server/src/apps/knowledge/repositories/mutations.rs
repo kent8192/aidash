@@ -74,7 +74,13 @@ impl SemanticConfigurationRepository for NativeConfiguration {
 	}
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {
 		Ok(Box::new(Configuration {
-			lease: Some(Lease::begin(&self.store, &self.actor, self.workspace).await?),
+			lease: Some(
+				Lease::begin(&self.store, &self.actor, self.workspace)
+					.await
+					.map_err(
+						crate::authorization::remote::deployment_administrator::application_error,
+					)?,
+			),
 		}))
 	}
 }

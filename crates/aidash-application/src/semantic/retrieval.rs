@@ -141,6 +141,12 @@ pub async fn prepare(
 		allowed.insert(entry.point_id, (entry, text));
 	}
 	if incomplete {
+		// A Run waits for the complete index under its bounded outage policy.
+		// Keep this outside search_or_outage's degradable provider failures:
+		// opting into degraded context must not turn indexing into a partial read.
+		if agent_controls.is_some() {
+			return Err(Error::RemoteSemantic(Failure::Unavailable));
+		}
 		return Err(Error::Conflict(
 			"semantic index is incomplete; inspect entries and retry after indexing".into(),
 		));

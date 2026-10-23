@@ -2,10 +2,11 @@
 
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model as ModelTrait;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::macros::Model;
+use reinhardt::model;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockBehavior, LockType, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
@@ -13,14 +14,20 @@ use reinhardt::query::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[model_config(app_label = "federation", table_name = "atomic_gate")]
+#[model(app_label = "federation", table_name = "atomic_gate")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtomicGate {
 	#[field(primary_key = true, default = true)]
 	pub singleton: bool,
 
-	#[field(db_column = "transaction_id", null = true)]
-	pub transaction_id: Option<uuid::Uuid>,
+	#[rel(
+		foreign_key,
+		db_constraint = "atomic_gate_transaction_id_fkey",
+		db_index = false,
+		null = true
+	)]
+	pub transaction:
+		ForeignKeyField<crate::apps::federation::transactions::models::AtomicParticipant>,
 	#[field(default = 0)]
 	pub commit_epoch: i64,
 }

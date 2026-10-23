@@ -2,22 +2,28 @@
 
 use crate::apps::workspaces::services::states::TaskStatus;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
-use reinhardt::macros::Model;
+use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[model_config(app_label = "workspaces", table_name = "tasks")]
+#[model(app_label = "workspaces", table_name = "tasks")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 
-	#[field(db_column = "workspace_id")]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "tasks_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 	#[field(field_type = "text")]
 	pub title: String,
 	#[field(field_type = "text")]
@@ -33,8 +39,14 @@ pub struct Task {
 	#[field]
 	pub dependencies: Vec<Uuid>,
 
-	#[field(db_column = "parent_id", null = true)]
-	pub parent_id: Option<uuid::Uuid>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "tasks_parent_id_fkey",
+		db_index = false,
+		null = true
+	)]
+	pub parent: ForeignKeyField<crate::apps::workspaces::models::Task>,
 	#[field(default = 0)]
 	pub revision: i64,
 	#[field(field_type = "text", null = true)]

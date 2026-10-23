@@ -43,13 +43,14 @@ impl GenerationPages for Pages {
 		self.store
 			.pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				crate::authorization::remote::deployment_administrator::tenant(tx, tenant).await?;
 				crate::apps::execution::generation::models::GenerationRequest::page(
 					tx, tenant, offset,
 				)
 				.await
 			})
 			.await
-			.map_err(Into::into)
+			.map_err(crate::authorization::remote::deployment_administrator::application_error)
 	}
 }
 struct Scope {
@@ -89,35 +90,65 @@ impl GenerationReads for NativeReads {
 		tenant: &str,
 		id: Uuid,
 	) -> aidash_application::Result<Vec<History>> {
-		Ok(crate::database::query_as(&history_query())
+		let mut tx = self
+			.store
+			.pool
+			.begin(&TenancyScope::tenant(tenant)?)
+			.await?;
+		crate::authorization::remote::deployment_administrator::tenant(&mut *tx, tenant)
+			.await
+			.map_err(crate::authorization::remote::deployment_administrator::application_error)?;
+		let history = crate::database::query_as(&history_query())
 			.bind(tenant)
 			.bind(id)
-			.fetch_all(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
-			.await?)
+			.fetch_all(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(history)
 	}
 	async fn deployment_administrator_usage(
 		&self,
 		tenant: &str,
 		id: Uuid,
 	) -> aidash_application::Result<Usage> {
-		crate::database::query_as(&usage_query())
+		let mut tx = self
+			.store
+			.pool
+			.begin(&TenancyScope::tenant(tenant)?)
+			.await?;
+		crate::authorization::remote::deployment_administrator::tenant(&mut *tx, tenant)
+			.await
+			.map_err(crate::authorization::remote::deployment_administrator::application_error)?;
+		let usage = crate::database::query_as(&usage_query())
 			.bind(tenant)
 			.bind(id)
-			.fetch_optional(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
+			.fetch_optional(&mut *tx)
 			.await?
-			.ok_or(aidash_application::Error::Forbidden)
+			.ok_or(aidash_application::Error::Forbidden)?;
+		tx.commit().await?;
+		Ok(usage)
 	}
 	async fn deployment_administrator_specification(
 		&self,
 		tenant: &str,
 		id: Uuid,
 	) -> aidash_application::Result<Value> {
-		crate::database::native::query_scalar(&spec_query())
+		let mut tx = self
+			.store
+			.pool
+			.begin(&TenancyScope::tenant(tenant)?)
+			.await?;
+		crate::authorization::remote::deployment_administrator::tenant(&mut *tx, tenant)
+			.await
+			.map_err(crate::authorization::remote::deployment_administrator::application_error)?;
+		let specification = crate::database::native::query_scalar(&spec_query())
 			.bind(tenant)
 			.bind(id)
-			.scalar_optional(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
+			.scalar_optional(&mut *tx)
 			.await?
-			.ok_or(aidash_application::Error::Forbidden)
+			.ok_or(aidash_application::Error::Forbidden)?;
+		tx.commit().await?;
+		Ok(specification)
 	}
 }
 #[async_trait]
