@@ -3,7 +3,6 @@ use crate::{Error, Result, ports::authorization::peer::PeerInspectionScope};
 use aidash_domain::{
 	federation::execution::{Definition, Inspection, admission::InspectInput},
 	policy::SubjectKind,
-	qualified_agent,
 	registry::{EntityRef, Entry, rules::digest},
 };
 use serde_json::json;
@@ -42,9 +41,14 @@ async fn inspect_in(
 	pinned: Option<&Inspection>,
 ) -> Result<Inspection> {
 	// Receiving external execution is separate from advertising metadata.
-	let resource = access.resource("node", access.node_id(), json!({}));
+	let resource = access.receiver_resource().await?;
 	access.require(&resource, "federation.execute").await?;
-	let executor = qualified_agent(access.node_id(), &input.agent.id, &input.agent.version);
+	// The agent runs on the receiving Node, whose address names its subject.
+	let executor = aidash_domain::agent_subject(
+		&access.receiver_address(),
+		&input.agent.id,
+		&input.agent.version,
+	);
 	if access
 		.bundle()
 		.subjects
@@ -81,13 +85,13 @@ async fn inspect_in(
 		access.bindings(&entry).await?
 	};
 	if !snapshot.remote
-		|| snapshot.agent.registry_node != access.node_id()
+		|| snapshot.agent.registry_deployment != access.node_id()
 		|| snapshot.agent.local() != input.agent
 	{
 		return Err(Error::Forbidden);
 	}
 	for pinned in &snapshot.definitions {
-		if pinned.identity.registry_node != access.node_id() {
+		if pinned.identity.registry_deployment != access.node_id() {
 			return Err(Error::Forbidden);
 		}
 		let action = match pinned.definition.kind.as_str() {
@@ -127,13 +131,14 @@ async fn inspect_in(
 		)
 		.await?;
 	}
+	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
 		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,
-		node_id: access.node_id().to_owned(),
+		node_id: access.receiver_address(),
 		authority_digest: digest(
-			&json!({"source_node":node,"source_tenant":input.tenant,"source_subject":input.subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
+			&json!({"source_node":node,"source_subject":source_subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
 		),
 		agent: entry,
 		definitions: definitions.into_values().collect(),

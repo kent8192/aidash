@@ -1,9 +1,7 @@
 //! Admission uses the existing transaction and immutable coordinator records.
 use super::authority::persistence;
 use crate::apps::federation::transactions::{
-	models::{AtomicPeerTrust, coordinator_records},
-	serializers::authority as dto,
-	services::fault,
+	models::coordinator_records, serializers::authority as dto, services::fault,
 };
 use crate::{Error, federation::Federation};
 use aidash_application::{
@@ -28,7 +26,7 @@ pub(crate) struct Scope<'a> {
 #[async_trait]
 impl AdmissionScope for Scope<'_> {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
@@ -45,17 +43,43 @@ impl AdmissionScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn resolve_peer(&mut self, node: &str) -> Result<()> {
-		self.runtime
-			.peer(node)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+	async fn node_tenant(&mut self, node: &str) -> Result<Option<String>> {
+		let Ok(address) = aidash_domain::nodes::NodeAddress::parse(node) else {
+			return Ok(None);
+		};
+		if address.deployment != self.runtime.config.deployment {
+			return Ok(None);
+		}
+		crate::apps::identity::repositories::node_registrations::name_tenant(
+			self.tx,
+			address.node.as_str(),
+		)
+		.await
+		.map_err(Into::into)
 	}
-	async fn trusted(&mut self, node: &str) -> Result<bool> {
-		AtomicPeerTrust::permits(self.tx, node)
+	async fn trusted(
+		&mut self,
+		coordinator: &str,
+		node: &str,
+		origin: Option<&Origin>,
+	) -> Result<bool> {
+		let coordinator = aidash_domain::nodes::NodeAddress::parse(coordinator)?;
+		// A submitter with no origin is the Deployment Administrator, who acts as
+		// the Tenant of the coordinator Node.
+		let tenant = match origin {
+			Some(origin) => aidash_domain::tenancy::TenantName::new(origin.tenant.clone())?,
+			None => self.runtime.node_tenant_of(&coordinator.node).await?,
+		};
+		let sender = aidash_domain::federation::route::Sender {
+			tenant,
+			node: Some(coordinator.node),
+			subject: None,
+		};
+		Ok(self
+			.runtime
+			.route(&sender, node)
 			.await
-			.map_err(Into::into)
+			.is_ok_and(|route| route.atomic_transactions))
 	}
 	async fn admit(&mut self, manifest: &Manifest) -> Result<Status> {
 		coordinator_records::admit_in(self.tx, manifest)

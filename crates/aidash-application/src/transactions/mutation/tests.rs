@@ -29,7 +29,7 @@ fn run() -> RawRun {
 		..Default::default()
 	};
 	RawRun {
-		metadata: serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"home_node":"aidash://home","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap(),
+		metadata: serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap(),
 		context: json!(context),
 		pending: encode(&RunState::ToolCall(Box::default()), &RecoveryState::default()).unwrap(),
 	}
@@ -64,7 +64,7 @@ fn manifest(local: &str, mutations: Vec<Mutation>, other: Option<Participant>) -
 	participants.extend(other);
 	Manifest {
 		id: Uuid::from_u128(9),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/brave-otter-k3m9q2xa".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T00:00:00Z".parse().unwrap(),
 		participants,
@@ -82,7 +82,7 @@ struct Scope {
 	calls: Vec<&'static str>,
 	keys: Vec<String>,
 	outputs: Vec<(Uuid, Uuid, String, Uuid)>,
-	events: Vec<(String, Option<Uuid>, String, Value)>,
+	events: Vec<(Option<Uuid>, String, Value)>,
 }
 #[fixture]
 fn scope(task: Task, run: RawRun) -> Scope {
@@ -119,6 +119,7 @@ impl MutationScope for Scope {
 	) -> Result<Workspace> {
 		self.call("workspace")?;
 		Ok(Workspace {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			title: "Workspace".into(),
 			goal: "Goal".into(),
@@ -195,14 +196,12 @@ impl MutationScope for Scope {
 	}
 	async fn append_event(
 		&mut self,
-		node: &str,
 		workspace: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
 		self.call("event")?;
-		self.events
-			.push((node.into(), workspace, kind.into(), data));
+		self.events.push((workspace, kind.into(), data));
 		Ok(())
 	}
 }
@@ -223,8 +222,12 @@ async fn task_guards_precede_delegation_and_writes(
 		"owner" => scope.task.owner = None,
 		_ => scope.children = true,
 	}
-	let manifest = manifest("aidash://home", vec![completion()], None);
-	let error = apply(&mut scope, "aidash://home", &manifest)
+	let manifest = manifest(
+		"aidash://home/brave-otter-k3m9q2xa",
+		vec![completion()],
+		None,
+	);
+	let error = apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
 		.await
 		.unwrap_err();
 	assert_eq!(error.to_string(), message);
@@ -242,14 +245,18 @@ async fn delegated_task_requires_its_executor_pair(
 	#[case] mutations: Option<Vec<Mutation>>,
 	#[case] message: &str,
 ) {
-	scope.delegated = Some("aidash://worker".into());
+	scope.delegated = Some("aidash://worker/brave-otter-k3m9q2xa".into());
 	let peer = mutations.map(|mutations| Participant {
-		node_id: "aidash://worker".into(),
+		node_id: "aidash://worker/brave-otter-k3m9q2xa".into(),
 		mutations,
 	});
-	let manifest = manifest("aidash://home", vec![completion()], peer);
+	let manifest = manifest(
+		"aidash://home/brave-otter-k3m9q2xa",
+		vec![completion()],
+		peer,
+	);
 	assert_eq!(
-		apply(&mut scope, "aidash://home", &manifest)
+		apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -262,17 +269,19 @@ async fn delegated_task_requires_its_executor_pair(
 #[rstest]
 #[tokio::test]
 async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mut scope: Scope) {
-	scope.delegated = Some("aidash://worker".into());
+	scope.delegated = Some("aidash://worker/brave-otter-k3m9q2xa".into());
 	scope.source = Some(Uuid::from_u128(6));
 	let manifest = manifest(
-		"aidash://home",
+		"aidash://home/brave-otter-k3m9q2xa",
 		vec![completion()],
 		Some(Participant {
-			node_id: "aidash://worker".into(),
+			node_id: "aidash://worker/brave-otter-k3m9q2xa".into(),
 			mutations: vec![finalization()],
 		}),
 	);
-	apply(&mut scope, "aidash://home", &manifest).await.unwrap();
+	apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
+		.await
+		.unwrap();
 	let key = format!("atomic:{}:task:{}", manifest.id, scope.task.id);
 	assert_eq!(scope.keys.as_slice(), std::slice::from_ref(&key));
 	assert_eq!(
@@ -302,7 +311,6 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 	assert_eq!(
 		scope.events,
 		[(
-			"aidash://home".into(),
 			Some(scope.task.workspace_id),
 			"task.completed".into(),
 			json!({"task":task,"artifact":{"id":Uuid::from_u128(8),"workspace_id":scope.task.workspace_id,"task_id":scope.task.id,"kind":"text","name":"Answer","content":"Done","created_by":scope.task.owner,"idempotency_key":key,"created_at":scope.task.created_at}})
@@ -330,9 +338,13 @@ async fn run_preconditions_take_precedence_over_corrupt_execution_state(
 		"lease" => scope.leased = true,
 		_ => scope.run.metadata.task_id = Uuid::from_u128(7),
 	}
-	let manifest = manifest("aidash://worker", vec![finalization()], None);
+	let manifest = manifest(
+		"aidash://worker/brave-otter-k3m9q2xa",
+		vec![finalization()],
+		None,
+	);
 	assert!(
-		matches!(apply(&mut scope, "aidash://worker", &manifest).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == "run must be quiescent at its expected tool-call revision")
+		matches!(apply(&mut scope, "aidash://worker/brave-otter-k3m9q2xa", &manifest).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == "run must be quiescent at its expected tool-call revision")
 	);
 	assert_eq!(scope.calls, ["run"]);
 }
@@ -366,12 +378,20 @@ async fn execution_state_is_checked_before_home_pair_and_writes(
 		)
 		.unwrap();
 	}
-	let manifest = manifest("aidash://worker", vec![finalization()], None);
+	let manifest = manifest(
+		"aidash://worker/brave-otter-k3m9q2xa",
+		vec![finalization()],
+		None,
+	);
 	assert_eq!(
-		apply(&mut scope, "aidash://worker", &manifest)
-			.await
-			.unwrap_err()
-			.to_string(),
+		apply(
+			&mut scope,
+			"aidash://worker/brave-otter-k3m9q2xa",
+			&manifest
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
 		message
 	);
 	assert_eq!(scope.calls, ["run"]);
@@ -387,36 +407,44 @@ async fn run_completion_requires_the_home_task_pair(
 	#[case] message: &str,
 ) {
 	let home = mutations.map(|mutations| Participant {
-		node_id: "aidash://home".into(),
+		node_id: "aidash://home/brave-otter-k3m9q2xa".into(),
 		mutations,
 	});
-	let manifest = manifest("aidash://worker", vec![finalization()], home);
+	let manifest = manifest(
+		"aidash://worker/brave-otter-k3m9q2xa",
+		vec![finalization()],
+		home,
+	);
 	assert_eq!(
-		apply(&mut scope, "aidash://worker", &manifest)
-			.await
-			.unwrap_err()
-			.to_string(),
+		apply(
+			&mut scope,
+			"aidash://worker/brave-otter-k3m9q2xa",
+			&manifest
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
 		message
 	);
 	assert_eq!(scope.calls, ["run"]);
 }
 
 #[rstest]
-#[case::local("aidash://home", Some(Uuid::from_u128(2)))]
-#[case::foreign("aidash://worker", None)]
+#[case::local("aidash://home/brave-otter-k3m9q2xa", Some(Uuid::from_u128(2)))]
+#[case::foreign("aidash://worker/brave-otter-k3m9q2xa", None)]
 #[tokio::test]
 async fn execution_event_preserves_raw_usage_and_home_visibility(
 	mut scope: Scope,
 	#[case] node: &str,
 	#[case] workspace: Option<Uuid>,
 ) {
-	let (mutations, other) = if node == "aidash://home" {
+	let (mutations, other) = if node == "aidash://home/brave-otter-k3m9q2xa" {
 		(vec![finalization(), completion()], None)
 	} else {
 		(
 			vec![finalization()],
 			Some(Participant {
-				node_id: "aidash://home".into(),
+				node_id: "aidash://home/brave-otter-k3m9q2xa".into(),
 				mutations: vec![completion()],
 			}),
 		)
@@ -426,7 +454,6 @@ async fn execution_event_preserves_raw_usage_and_home_visibility(
 	assert_eq!(
 		scope.events[0],
 		(
-			node.into(),
 			workspace,
 			"run.completed".into(),
 			json!({"run_id":scope.run.id,"task_id":scope.run.task_id,"workspace_id":scope.run.workspace_id,"agent_id":"agent","phase":"COMPLETED","step":7,"error":null,"context_usage":{"input_tokens":11,"output_tokens":4,"context_window":128000,"compactions":2}})
@@ -446,9 +473,13 @@ async fn provenance_failures_stop_event_publication(
 ) {
 	scope.source = Some(Uuid::from_u128(6));
 	scope.failure = Some(failure);
-	let manifest = manifest("aidash://home", vec![completion()], None);
+	let manifest = manifest(
+		"aidash://home/brave-otter-k3m9q2xa",
+		vec![completion()],
+		None,
+	);
 	assert_eq!(
-		apply(&mut scope, "aidash://home", &manifest)
+		apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
 			.await
 			.unwrap_err()
 			.to_string(),

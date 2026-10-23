@@ -59,7 +59,8 @@ impl RegistryManagement {
 		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = crate::apps::registry::repositories::versions::page(
 			&mut access,
-			&f.config.node_id,
+			f.config.deployment.as_str(),
+			page.node,
 			page.offset,
 		)
 		.await;
@@ -96,7 +97,7 @@ impl RegistryManagement {
 			entry,
 			key,
 			true,
-			&f.config.node_id,
+			f.config.deployment.as_str(),
 		)
 		.await
 		.map_err(Into::into);

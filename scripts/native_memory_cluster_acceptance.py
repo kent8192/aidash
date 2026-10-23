@@ -102,18 +102,18 @@ class NativeMemory(RemoteMemory):
                 "max_model_calls": 4, "max_model_tokens": 32768, "max_cost_micros": 10000, "max_retries": 2, "max_call_seconds": 30},
             "semantic_link_min_similarity_millionths": 700000, "learn_from_runs": False, "maintain_observations": False, "refresh_mental_models": False}}
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
-        self.tenants = [self.created_response(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
+        self.tenants = [self.nodes[node]["tenant"] for node in range(2)]
         for node in range(2):
             def binding(kind, target, origin=node):
-                return {"kind": kind, "target": {"registry_node": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
-            subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
-            subjects[f"aidash://tx-{node:02}/agents/learning@1.0.0"] = {"kind": "agent"}
+                return {"kind": kind, "target": {"registry_deployment": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
+            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
+            subjects[f"{self.nodes[node]['address']}/agents/learning@1.0.0"] = {"kind": "agent"}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
             self.tokens.append(credential["token"])
             # Peer Mappings require an administrator; a Subject bearer cannot create them.
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": self.tenants[1 - node], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             for kind, name, config in [
                 ("model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
                 ("embedding", "home-embedding", self.embedding), ("reranker", "native-reranker", {"provider": "rrf"}),
@@ -161,7 +161,7 @@ class NativeMemory(RemoteMemory):
 
     def activate(self, task, agent):
         grant = str(uuid.uuid4())
-        self.ok(self.user(0, f"/api/tasks/{task}/remote-grants", {"id": grant, "node_id": "aidash://tx-01", "agent": agent, "ttl_seconds": 1800,
+        self.ok(self.user(0, f"/api/tasks/{task}/remote-grants", {"id": grant, "node_id": self.nodes[1]["address"], "agent": agent, "ttl_seconds": 1800,
             "semantic": {"mode": "required_home", "embedding": ref(self.entries[0]["home-embedding"]), "native": self.selection}}))
         activated = self.ok(self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/activate", {}))
         assert self.ok(self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/activate", {}))["admission_id"] == activated["admission_id"]

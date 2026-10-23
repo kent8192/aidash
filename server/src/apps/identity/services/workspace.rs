@@ -3,8 +3,8 @@
 //! its own read permission. Run contents retain their source read requirements.
 use super::{access::Access, identity::SubjectIdentity};
 use crate::{
-	Result, apps::execution::serializers::state::StateResponse, config::NodeIdentity, domain::*,
-	store::Store,
+	Result, apps::execution::serializers::state::StateResponse, config::DeploymentIdentity,
+	domain::*, store::Store,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -32,12 +32,14 @@ impl Access {
 		store: &Store,
 		title: &str,
 		goal: &str,
+		node: Option<&aidash_domain::nodes::NodeName>,
 	) -> Result<Workspace> {
 		aidash_application::workspaces::mutations::create(
 			&mut crate::bootstrap::workspace_mutations(self, store),
 			Uuid::new_v4(),
 			title,
 			goal,
+			node,
 		)
 		.await
 		.map_err(Into::into)
@@ -224,9 +226,16 @@ impl Workspaces {
 		access.finish(result).await
 	}
 
-	pub async fn create(&self, title: &str, goal: &str) -> Result<Workspace> {
+	pub async fn create(
+		&self,
+		title: &str,
+		goal: &str,
+		node: Option<&aidash_domain::nodes::NodeName>,
+	) -> Result<Workspace> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
-		let result = access.create_workspace(&self.store, title, goal).await;
+		let result = access
+			.create_workspace(&self.store, title, goal, node)
+			.await;
 		access.finish(result).await
 	}
 
@@ -280,7 +289,7 @@ impl Workspaces {
 		access.finish(result).await
 	}
 
-	pub async fn state(&self, node: NodeIdentity) -> Result<StateResponse> {
+	pub async fn state(&self, deployment: DeploymentIdentity) -> Result<StateResponse> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = aidash_application::authorization::state::state(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
@@ -291,7 +300,7 @@ impl Workspaces {
 				tenant: self.identity.tenant.clone(),
 				subject: self.identity.subject.clone(),
 			},
-			node,
+			deployment,
 			registry: state.registry,
 			workspaces: state.workspaces,
 			tasks: state.tasks,
@@ -300,7 +309,6 @@ impl Workspaces {
 			human_requests: state.human_requests,
 			conversations: state.conversations,
 			events: state.events,
-			peers: vec![],
 		})
 		.map_err(Into::into);
 		access.finish(result).await

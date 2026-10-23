@@ -24,8 +24,8 @@ import {
   semanticHistory,
   semanticCleanup,
   channelMessageHistory,
-  discover,
 } from "./generated/aidash";
+import { discoveryQuery, useNodes } from "./nodes";
 import type {
   SemanticEntry,
   SemanticIndexSpec,
@@ -142,9 +142,9 @@ function SemanticWorkspace({
 }) {
   const { t } = useI18n();
   const labels = useRecordLabels();
+  const sendingNode = useNodes().selected;
   const discovery = useQuery({
-    queryKey: ["discovery"],
-    queryFn: () => discover({}),
+    ...discoveryQuery(sendingNode),
     retry: false,
   });
   const agentLabel = useAgentLabel(
@@ -910,9 +910,9 @@ function AgentScope({
   id?: string;
 }) {
   const { t } = useI18n();
+  const sendingNode = useNodes().selected;
   const discovery = useQuery({
-    queryKey: ["discovery"],
-    queryFn: () => discover({}),
+    ...discoveryQuery(sendingNode),
     retry: false,
   });
   const agentLabel = useAgentLabel(

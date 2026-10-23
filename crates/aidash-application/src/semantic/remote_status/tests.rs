@@ -140,13 +140,14 @@ impl StatusScope for Scope {
 		}
 		let timestamp = DateTime::from_timestamp(1000, 0).unwrap();
 		Ok(Some(Request {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			tenant: "tenant".into(),
 			policy_id: "policy".into(),
 			policy_revision: 7,
 			task_id: Uuid::from_u128(10),
 			home_node: "home".into(),
-			foreign_intent: None,
+			foreign_intent: Some(json!({})),
 			prepared: true,
 			grant_id: None,
 			admission_id: None,

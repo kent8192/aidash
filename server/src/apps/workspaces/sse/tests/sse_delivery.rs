@@ -70,7 +70,7 @@ impl Fixture {
 		let (stop, stopping) = tokio::sync::watch::channel(false);
 		let service = self.service.clone();
 		let url = self.f.config.nats_url.clone();
-		let node = self.f.config.node_id.clone();
+		let node = self.f.config.deployment.to_string();
 		let task = tokio::spawn(async move {
 			service.run(&url, &node, stopping).await.unwrap();
 		});
@@ -129,7 +129,11 @@ async fn hint(client: &async_nats::Client, f: &Federation, payload: Value) {
 		.publish(
 			format!(
 				"aidash.{}.events",
-				f.config.node_id.strip_prefix("aidash://").unwrap()
+				f.config
+					.deployment
+					.as_str()
+					.strip_prefix("aidash://")
+					.unwrap()
 			),
 			payload.to_string().into(),
 		)
@@ -162,7 +166,7 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 		.await
 		.unwrap();
 	// Unknown UUIDs, incorrect Workspace hints and supplied data never become frames.
-	hint(&nats, &fixture.f, json!({"specversion":"1.0","id":Uuid::new_v4(),"source":fixture.f.config.node_id,"subject":ws,"sequence":i64::MAX,"data":{"secret":"forged"},"dataref":"http://127.0.0.1:1/must-not-fetch"})).await;
+	hint(&nats, &fixture.f, json!({"specversion":"1.0","id":Uuid::new_v4(),"source":fixture.f.config.deployment,"subject":ws,"sequence":i64::MAX,"data":{"secret":"forged"},"dataref":"http://127.0.0.1:1/must-not-fetch"})).await;
 	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let rolled_back = fixture
 		.f
@@ -175,7 +179,12 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 		)
 		.await
 		.unwrap();
-	hint(&nats, &fixture.f, rolled_back.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		rolled_back.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	assert!(
 		tokio::time::timeout(Duration::from_millis(150), selected.next())
 			.await
@@ -192,12 +201,33 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 	let first = fixture.emit(ws, 1).await;
 	let second = fixture.emit(ws, 2).await;
 	// Duplicate and reverse order are merely wakeups; only canonical order is emitted.
-	hint(&nats, &fixture.f, second.cloud_event()).await;
-	hint(&nats, &fixture.f, first.cloud_event()).await;
-	hint(&nats, &fixture.f, second.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		second.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
+	hint(
+		&nats,
+		&fixture.f,
+		first.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
+	hint(
+		&nats,
+		&fixture.f,
+		second.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	for stream in [&mut selected, &mut all] {
 		for event in [&first, &second] {
-			assert_eq!(frame(stream).await, (event.sequence, event.cloud_event()));
+			assert_eq!(
+				frame(stream).await,
+				(
+					event.sequence,
+					event.cloud_event(fixture.f.config.deployment.as_str())
+				)
+			);
 		}
 	}
 	assert!(
@@ -261,7 +291,10 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 	for event in &expected {
 		assert_eq!(
 			frame(&mut stream).await,
-			(event.sequence, event.cloud_event())
+			(
+				event.sequence,
+				event.cloud_event(fixture.f.config.deployment.as_str())
+			)
 		);
 	}
 	assert!(
@@ -313,7 +346,12 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
 		.unwrap();
-	hint(&nats, &fixture.f, healthy.cloud_event()).await;
+	hint(
+		&nats,
+		&fixture.f,
+		healthy.cloud_event(fixture.f.config.deployment.as_str()),
+	)
+	.await;
 	assert_eq!(
 		frame(&mut idle).await.0,
 		healthy.sequence,
@@ -456,7 +494,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 	let ws = fixture.workspaces[0];
 	let mut all = fixture.stream(-1, None, None).await;
 	let mut selected = fixture.stream(-1, Some(ws), None).await;
-	let mut denied = policy(&fixture.f.config.node_id);
+	let mut denied = policy(fixture.f.config.deployment.as_str());
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[ws]}}));
 	for (revision, bundle) in [
 		(1, denied),
@@ -464,7 +502,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 			2,
 			json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 		),
-		(3, policy(&fixture.f.config.node_id)),
+		(3, policy(fixture.f.config.deployment.as_str())),
 	] {
 		let (status, value) = request(
 			&fixture.app,
@@ -524,7 +562,13 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		)
 		.await
 		.unwrap();
-	assert_eq!(frame(&mut all).await, (large.sequence, large.cloud_event()));
+	assert_eq!(
+		frame(&mut all).await,
+		(
+			large.sequence,
+			large.cloud_event(fixture.f.config.deployment.as_str())
+		)
+	);
 	drop((all, selected));
 	fixture.finish().await;
 }
@@ -537,11 +581,15 @@ type SseFuture =
 fn sse_runtime(#[from(common::runtime)] runtime: common::RuntimeFuture) -> common::RuntimeFuture {
 	async move {
 		let mut r = runtime.await;
-		r.federation.config.node_id = format!("aidash://sse-{}", Uuid::new_v4().simple());
-		r.federation.store.node_id = r.federation.config.node_id.clone();
+		r.federation.config.deployment = aidash_domain::nodes::DeploymentId::parse(&format!(
+			"aidash://sse-{}",
+			Uuid::new_v4().simple()
+		))
+		.unwrap();
+		r.federation.store.deployment = r.federation.config.deployment.clone();
 		r.federation.registry = aidash_server::registry::Registry::new(
 			r.federation.store.pool.clone(),
-			&r.federation.config.node_id,
+			&r.federation.config.deployment,
 		)
 		.unwrap();
 		r
@@ -585,7 +633,7 @@ fn sse_fixture(
 			deployment_administrator,
 			"POST",
 			"/api/authorization/acme",
-			json!({"expected_revision":0,"bundle":policy(&f.config.node_id)}),
+			json!({"expected_revision":0,"bundle":policy(f.config.deployment.as_str())}),
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");

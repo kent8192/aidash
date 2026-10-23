@@ -276,7 +276,7 @@ fn event(sequence: i64, visible: bool) -> Event {
 	Event {
 		sequence,
 		id: Uuid::from_u128(sequence as u128),
-		node_id: "aidash://local".into(),
+		node: None,
 		workspace_id: Some(Uuid::from_u128(1)),
 		kind: "task.created".into(),
 		data: json!({"visible":visible}),

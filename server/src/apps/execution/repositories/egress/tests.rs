@@ -31,12 +31,32 @@ use reinhardt::{
 use serde_json::json;
 use uuid::Uuid;
 
+const RUNNER_TOKEN_ENV: &str = "AIDASH_TEST_EGRESS_RUNNER_TOKEN";
+
 #[rstest::rstest]
 #[tokio::test]
 #[timeout(std::time::Duration::from_secs(180))]
 async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_bindings(
-	#[future(awt)] database: DatabaseFixture,
+	#[future] database: DatabaseFixture,
 ) {
+	if std::env::var_os(RUNNER_TOKEN_ENV).is_none() {
+		// Give only this fixture process a Runner credential without mutating the
+		// environment shared by other tests or requiring manual credential setup.
+		let status = tokio::process::Command::new(std::env::current_exe().unwrap())
+			.args([
+				"--exact",
+				"egress_tests::native_gateway_serializes_cumulative_limits_and_refuses_revoked_bindings",
+				"--nocapture",
+			])
+			.env(RUNNER_TOKEN_ENV, "native-egress-fixture-token")
+			.kill_on_drop(true)
+			.status()
+			.await
+			.unwrap();
+		assert!(status.success(), "native gateway fixture failed: {status}");
+		return;
+	}
+	let database = database.await;
 	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
 	let settings = settings::settings_for(&database.url);
 	let mut f = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
@@ -60,7 +80,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	};
 	profile.runner = Some(RunnerProfile {
 		endpoint: runner.url.clone(),
-		token_env: "AIDASH_SECRET_TEST_PEER".into(),
+		token_env: RUNNER_TOKEN_ENV.into(),
 		image: format!("sandbox@sha256:{}", "b".repeat(64)),
 		runtime_class: "fixture-runsc".into(),
 		namespace: "fixture-sandbox".into(),
@@ -100,7 +120,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			"agent",
 			"research",
 			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Fixture",
-            "bindings":[{"kind":"external_service","target":{"registry_node":f.store.node_id,"id":"images","version":"1.0.0"}}],"remove_default":[]}),
+            "bindings":[{"kind":"external_service","target":{"registry_deployment":f.store.deployment.to_string(),"id":"images","version":"1.0.0"}}],"remove_default":[]}),
 		),
 	] {
 		f.registry.register(&tenant, serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()).await.unwrap();
@@ -137,7 +157,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	};
 	let mut access = Access::begin(&f.store, &identity).await.unwrap();
 	access.subjects.push(aidash_domain::qualified_agent(
-		&f.store.node_id,
+		&f.store.deployment.node(run.node.clone()),
 		&agent.id,
 		&agent.version,
 	));
@@ -251,6 +271,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	tx.commit().await.unwrap();
 	auth.set_catalog(
 		"acme",
+		&run.node,
 		&aidash_domain::registry::EntityRef {
 			id: "images".into(),
 			version: "1.0.0".into(),
@@ -272,6 +293,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	// Metering rechecks Run control, including on an already admitted stream.
 	auth.set_catalog(
 		"acme",
+		&run.node,
 		&aidash_domain::registry::EntityRef {
 			id: "images".into(),
 			version: "1.0.0".into(),
@@ -301,10 +323,7 @@ impl reinhardt::Handler for RunnerReply {
 	async fn handle(&self, request: reinhardt::Request) -> reinhardt::http::ViewResult<Response> {
 		assert_eq!(
 			request.headers["authorization"].to_str().unwrap(),
-			format!(
-				"Bearer {}",
-				std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
-			)
+			format!("Bearer {}", std::env::var(RUNNER_TOKEN_ENV).unwrap())
 		);
 		Ok(Response::ok()
 			.with_json(&json!({"status":"running","started_at":self.started}))

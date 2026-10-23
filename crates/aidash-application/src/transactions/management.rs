@@ -1,14 +1,8 @@
 //! Live disclosure, immutable ownership and trust changes for every management adapter.
 use crate::{Error, Result, ports::transactions::management::ManagementRepository};
 use aidash_domain::{
-	federation::Peer,
 	identity::execution::ExecutionPrincipal,
-	transactions::{
-		Manifest,
-		authority::Status,
-		coordination::LocalStatus,
-		management::{Details, Trust, TrustChange},
-	},
+	transactions::{Manifest, authority::Status, coordination::LocalStatus, management::Details},
 };
 use futures_util::{StreamExt, stream};
 use uuid::Uuid;
@@ -112,49 +106,6 @@ pub async fn abort(
 
 pub async fn participants(repository: &dyn ManagementRepository) -> Result<Vec<LocalStatus>> {
 	repository.participants().await
-}
-
-pub async fn trust_list(repository: &dyn ManagementRepository) -> Result<Vec<TrustChange>> {
-	let rows = repository.trusts().await?;
-	let mut result = Vec::with_capacity(rows.len());
-	for trust in rows {
-		let pending_transactions = if trust.enabled {
-			Vec::new()
-		} else {
-			repository.pending_peer(&trust.node_id).await?
-		};
-		result.push(TrustChange {
-			trust,
-			pending_transactions,
-		});
-	}
-	Ok(result)
-}
-
-pub async fn trust(repository: &dyn ManagementRepository, input: Trust) -> Result<TrustChange> {
-	if input.enabled {
-		repository.ensure_peer(&input.node_id).await?;
-	}
-	let mut scope = repository.trust_scope().await?;
-	let trust = scope.set(input).await?;
-	let pending_transactions = if trust.enabled {
-		Vec::new()
-	} else {
-		scope.pending_peer(&trust.node_id).await?
-	};
-	Ok(TrustChange {
-		trust,
-		pending_transactions,
-	})
-}
-
-pub async fn restore_peer(
-	repository: &dyn ManagementRepository,
-	node: &str,
-	reference: &str,
-) -> Result<Peer> {
-	let credential = repository.credential(reference)?;
-	repository.restore_peer(node, reference, &credential).await
 }
 
 pub async fn decision(

@@ -93,7 +93,7 @@ pub(crate) struct GrantScope<'a> {
 #[async_trait]
 impl ExecutionGrantRepository for Grants<'_> {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn grant(&self, run: Uuid) -> Result<Option<ExecutionGrant>> {
 		let result: NativeResult<Option<Grant>> = async {

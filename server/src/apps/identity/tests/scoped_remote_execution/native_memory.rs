@@ -2,6 +2,26 @@
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 
+/// The receiver's check at Home that the Run's admitted reads stay disclosable.
+async fn verify_dependencies(p: &Pair, deadline: std::time::Duration) -> reqwest::RequestBuilder {
+	let home = common::default_node(&p.a.store, "acme").await;
+	let executor = common::default_node(&p.b.store, "acme").await;
+	common::peering::signed(
+		&p.a.client,
+		&p.a.config.endpoint,
+		"/scoped/dependencies/verify",
+		(&p.b, &executor),
+		&home,
+		"alice",
+		&json!({"reference":{
+			"kind":"grant","node_id":home.to_string(),"execution_node":executor.to_string(),
+			"grant_id":p.grant,"admission_id":p.admission,
+		}}),
+	)
+	.await
+	.timeout(deadline)
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn spent_home_memory_budget_pauses_the_remote_run_with_only_a_follow_up(
@@ -78,15 +98,23 @@ async fn spent_home_memory_budget_pauses_the_remote_run_with_only_a_follow_up(
 	);
 	// Exercise the actual peer response: older readers get the established,
 	// follow-up-only reason, while current readers retain the specific cause.
-	let peer_status: Value =
-		p.a.request(
-			&p.b.config.node_id,
-			http::Method::POST,
-			"/scoped/execution/status",
-			Some(&json!({"grant_id":p.grant})),
-		)
-		.await
-		.unwrap();
+	let home = common::default_node(&p.a.store, "acme").await;
+	let executor = common::default_node(&p.b.store, "acme").await;
+	let response = common::peering::signed(
+		&p.a.client,
+		&p.b.config.endpoint,
+		"/scoped/execution/status",
+		(&p.a, &home),
+		&executor,
+		"alice",
+		&json!({"grant_id":p.grant}),
+	)
+	.await
+	.send()
+	.await
+	.unwrap();
+	assert_eq!(response.status(), http::StatusCode::OK);
+	let peer_status: Value = response.json().await.unwrap();
 	assert_eq!(peer_status["semantic_reason"], "context_budget");
 	assert_eq!(peer_status["semantic_cause"], "durable_memory_budget");
 	let (status, body) = request(
@@ -475,7 +503,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 	.unwrap();
 	let mut reopened = aidash_server::store::Store::from_pool(
 		p.b.store.pool.fixture_driver().clone(),
-		p.b.store.node_id.clone(),
+		p.b.store.deployment.clone(),
 	)
 	.await
 	.unwrap();
@@ -532,7 +560,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 	assert_eq!(banks.len(), 2, "{receipt}");
 	let ids = ["private", "shared"];
 	for (bank, key) in banks.iter().zip(ids) {
-		assert_eq!(bank["bank"]["home"], p.a.config.node_id);
+		assert_eq!(bank["bank"]["home"], node_of(&p.a));
 		assert_eq!(bank["recall"]["status"], "ready", "{receipt}");
 		let units = bank["recall"]["units"].as_array().unwrap();
 		assert_eq!(units.len(), 1);
@@ -706,7 +734,7 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 		assert!(
 			!usage.is_empty(),
 			"native recall must debit {}",
-			node.config.node_id
+			node.config.deployment
 		);
 		assert!(
 			usage
@@ -832,24 +860,11 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	.unwrap();
 	// Exercise the Home peer verifier directly: a deliberate >1024-visit DAG
 	// isolates the policy boundary from the receiver's ten-second transport cap.
-	let response =
-		p.a.client
-			.clone()
-			.post(format!(
-				"{}/federation/v0.1/scoped/dependencies/verify",
-				p.a.config.endpoint
-			))
-			.timeout(deadline)
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &p.b.config.node_id)
-			.header("x-aidash-protocol", "0.2")
-			.json(&json!({"tenant":"acme","subject":"alice","reference":{
-				"kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
-				"grant_id":p.grant,"admission_id":p.admission,
-			}}))
-			.send()
-			.await
-			.unwrap();
+	let response = verify_dependencies(&p, deadline)
+		.await
+		.send()
+		.await
+		.unwrap();
 	let status = response.status();
 	let body: Value = response.json().await.unwrap();
 	assert_eq!(status.as_u16(), 200, "{body}");
@@ -941,22 +956,14 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 		count > 1024,
 		"the policy admits more dependencies than the old fixed ceiling"
 	);
-	let verify = || {
-		p.a.client
-			.clone()
-			.post(format!(
-				"{}/federation/v0.1/scoped/dependencies/verify",
-				p.a.config.endpoint
-			))
-			.timeout(deadline)
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &p.b.config.node_id)
-			.header("x-aidash-protocol", "0.2")
-			.json(&json!({"tenant":"acme","subject":"alice","reference":{
-            "kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
-            "grant_id":p.grant,"admission_id":p.admission}}))
-	};
-	let body: Value = verify().send().await.unwrap().json().await.unwrap();
+	let body: Value = verify_dependencies(&p, deadline)
+		.await
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
 	assert_eq!(body["visible"], true, "{body}");
 	let last: &Unit = selected.last().unwrap();
 	memory::mutate(
@@ -978,7 +985,14 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 	)
 	.await
 	.unwrap();
-	let body: Value = verify().send().await.unwrap().json().await.unwrap();
+	let body: Value = verify_dependencies(&p, deadline)
+		.await
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
 	assert_eq!(
 		body["visible"], false,
 		"a corrected later-page revision invalidates the grant: {body}"

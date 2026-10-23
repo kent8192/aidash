@@ -9,7 +9,6 @@ use aidash_domain::{
 	generation::intent::{Input, Intent, Prepared},
 	identity::Principal,
 	policy::{Subject, SubjectKind},
-	qualified_agent,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -25,7 +24,9 @@ pub async fn lease(
 	if record.cancelled
 		|| intent.target_node != source
 		|| intent.expires_at <= repository.now()
-		|| intent.home_node != repository.node_id()
+		|| repository
+			.receiver()
+			.is_some_and(|receiver| intent.home_node != receiver)
 	{
 		return Err(Error::Forbidden);
 	}
@@ -45,7 +46,9 @@ pub async fn lease(
 			return Err(Error::Forbidden);
 		}
 		home_authority(scope.as_mut(), &task, source, &intent.policy_id).await?;
-		if scope.lineage(repository.node_id()).await? != intent.lineage {
+		if intent.home_node != scope.home_address()
+			|| scope.lineage(repository.node_id()).await? != intent.lineage
+		{
 			return Err(Error::Forbidden);
 		}
 		Ok(())
@@ -66,6 +69,7 @@ pub async fn request(
 		return Err(Error::Forbidden);
 	};
 	input.validate(repository.node_id())?;
+	let mut home_node = String::new();
 	let mut scope = repository.begin().await?;
 	let result = async {
 		scope.inherit_task_origin(task_id).await?;
@@ -74,9 +78,14 @@ pub async fn request(
 			return Err(Error::Conflict("task is already assigned".into()));
 		}
 		home_authority(scope.as_mut(), &task, &input.node_id, &input.policy_id).await?;
+		let home = scope.home_address();
+		if input.node_id == home {
+			return Err(Error::Invalid("invalid remote generation intent".into()));
+		}
+		home_node = home.clone();
 		let intent = Intent {
 			id: input.id,
-			home_node: repository.node_id().into(),
+			home_node: home,
 			source_tenant: tenant.clone(),
 			source_subject: subject.clone(),
 			task,
@@ -111,15 +120,20 @@ pub async fn request(
 		return Err(scope.abort(error).await);
 	}
 	scope.finish().await?;
-	let prepared = repository.prepare(&input.node_id, input.id).await?;
+	let prepared = repository
+		.prepare(&home_node, &input.node_id, input.id)
+		.await?;
 	if prepared.intent_id != input.id || prepared.node_id != input.node_id {
 		return Err(Error::Forbidden);
 	}
 	if prepared.prepared {
 		let (mut scope, intent) = lease(repository, &input.node_id, input.id, true).await?;
 		let result = async {
-			let subject =
-				qualified_agent(&input.node_id, &prepared.agent.id, &prepared.agent.version);
+			let subject = aidash_domain::agent_subject(
+				&input.node_id,
+				&prepared.agent.id,
+				&prepared.agent.version,
+			);
 			let value = Subject {
 				kind: SubjectKind::Agent,
 				roles: Default::default(),

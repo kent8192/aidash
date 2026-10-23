@@ -58,7 +58,7 @@ impl SourceAuthorityScope for Scope<'_> {
 #[async_trait]
 impl SemanticBindingScope for Scope<'_> {
 	fn home_node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn binding_tenant(&self) -> &str {
 		&self.access.identity.tenant
@@ -74,7 +74,7 @@ impl SemanticBindingScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn binding_lineage(&mut self) -> Result<Vec<Ancestor>> {
-		crate::generation::remote::lineage(self.access, &self.runtime.config.node_id)
+		crate::generation::remote::lineage(self.access, self.runtime.config.deployment.as_str())
 			.await
 			.map_err(Into::into)
 	}
@@ -85,7 +85,7 @@ impl SemanticBindingScope for Scope<'_> {
 		generation: Option<&aidash_domain::semantic::remote::NativeOrigin>,
 	) -> Result<aidash_domain::semantic::remote::NativeBinding> {
 		crate::apps::knowledge::services::remote_memory::bind(
-			&self.runtime.store.node_id,
+			self.runtime.store.deployment.as_str(),
 			&mut crate::semantic::service::Lease::Inherited(self.access),
 			workspace,
 			request,

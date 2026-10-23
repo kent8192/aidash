@@ -23,7 +23,7 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://lease-test".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -91,7 +91,7 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://lease-test".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
 	)
 	.await
 	.unwrap();

@@ -44,7 +44,7 @@ async fn snapshot_mode(
 		},
 		&crate::bootstrap::registry_validation().with_provider_credentials(configured),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			id: agent.id.clone(),
 			version: agent.version.clone(),
 		},
@@ -188,7 +188,7 @@ pub(crate) async fn authorized(
 	let node = access.node_id.clone();
 	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
 	for definition in &snapshot.definitions {
-		if definition.identity.registry_node != node {
+		if definition.identity.registry_deployment != node {
 			return Err(Error::Forbidden);
 		}
 		let current = crate::authorization::catalog::entry(
@@ -233,7 +233,7 @@ async fn preview_mode(
 		),
 		&crate::bootstrap::registry_validation().with_provider_credentials(configured),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			id: entry.id.clone(),
 			version: entry.version.clone(),
 		},
@@ -258,7 +258,7 @@ pub(crate) async fn require_operation(
 			aidash_application::Error::Invalid("Run has no Binding snapshot".into())
 		})?;
 	snapshot.validate()?;
-	if snapshot.agent.registry_node != access.node_id {
+	if snapshot.agent.registry_deployment != access.node_id {
 		return Err(aidash_application::Error::Forbidden);
 	}
 	let binding = snapshot.operation(operation)?;

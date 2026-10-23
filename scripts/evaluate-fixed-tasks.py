@@ -558,7 +558,7 @@ def run_deterministic(args, binary_directory):
                 # Servers log in as the role row-level security binds; setup below as the owner.
                 "DATABASE_URL": f"postgres://aidash_server:{urllib.parse.quote(password, safe='')}@127.0.0.1:"
                                 f"{published_port(postgres, 5432)}/aidash_evaluation",
-                "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
+                "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_DEPLOYMENT_ID": node_id,
                 "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": deployment_administrator,
                 "AIDASH_API_RATE_BURST": "100000", "AIDASH_WEB_DIR": str(web),
                 # A loaded host can exceed the default request deadline on reads that poll Runs.

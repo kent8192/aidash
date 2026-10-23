@@ -77,9 +77,9 @@ test("reinitializes an open tab after its shared session is replaced", async ({
     .toBeNull();
 });
 
-// Needs the golden path's two-node mesh and existing runs.
+// Needs the golden path's existing runs.
 test(
-  "observes the two-node execution and all management screens",
+  "observes the execution and all management screens",
   { tag: "@golden-path" },
   async ({ page }) => {
     const errors: string[] = [];
@@ -96,7 +96,7 @@ test(
     await page
       .getByRole("button", { name: "ノード構成と通信", exact: true })
       .click();
-    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
+    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(1);
     await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
     for (const view of [
       "agents",
@@ -223,11 +223,11 @@ test("creates a workspace and task and receives live assignment changes", async 
     reordered = true;
     await route.fulfill({ response, json: discovery });
   };
-  await page.route("**/api/discover", reorder);
+  await page.route("**/api/discover**", reorder);
   await expect.poll(() => reordered, { timeout: 15000 }).toBe(true);
   await expect(select.locator("option:checked")).toHaveText(selectedLabel!);
   // Discovery keeps polling; stop rewriting it so no fetch outlives the test.
-  await page.unroute("**/api/discover", reorder);
+  await page.unroute("**/api/discover**", reorder);
 
   await page
     .getByRole("dialog")

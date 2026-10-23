@@ -25,6 +25,7 @@ fn scope() -> Scope {
 		tenant: "tenant".into(),
 		subject: "primary".into(),
 		workspace: Workspace {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			title: "saved".into(),
 			goal: "goal".into(),
@@ -110,7 +111,22 @@ impl WorkspaceMutations for Scope {
 		};
 		self.touch(action)
 	}
-	async fn insert_workspace(&mut self, id: Uuid, title: &str, goal: &str) -> Result<Workspace> {
+	async fn use_node(
+		&mut self,
+		requested: Option<&aidash_domain::nodes::NodeName>,
+	) -> Result<aidash_domain::nodes::NodeName> {
+		self.touch("node.use")?;
+		Ok(requested
+			.cloned()
+			.unwrap_or_else(|| "brave-otter-k3m9q2xa".parse().unwrap()))
+	}
+	async fn insert_workspace(
+		&mut self,
+		id: Uuid,
+		_: &aidash_domain::nodes::NodeName,
+		title: &str,
+		goal: &str,
+	) -> Result<Workspace> {
 		assert_eq!(id, self.workspace.id);
 		assert_eq!(title, "title");
 		assert_eq!(goal, "goal");
@@ -174,13 +190,18 @@ impl WorkspaceMutations for Scope {
 async fn workspace_creation_authorizes_the_saved_primary_owner_before_atomic_writes(
 	mut scope: Scope,
 ) {
-	let value = create(&mut scope, Uuid::from_u128(1), "title", "goal")
+	let value = create(&mut scope, Uuid::from_u128(1), "title", "goal", None)
 		.await
 		.unwrap();
 	assert_eq!(value.id, scope.workspace.id);
 	assert_eq!(
 		scope.calls,
-		vec!["workspace.create", "workspace_insert", "owner_record"]
+		vec![
+			"workspace.create",
+			"node.use",
+			"workspace_insert",
+			"owner_record"
+		]
 	);
 	assert_eq!(
 		scope.resources[0].0.attributes,
@@ -193,13 +214,14 @@ async fn workspace_creation_authorizes_the_saved_primary_owner_before_atomic_wri
 async fn workspace_creation_denial_prevents_the_workspace_and_ownership_writes(mut scope: Scope) {
 	scope.denied = Some("workspace.create");
 	assert!(matches!(
-		create(&mut scope, Uuid::from_u128(1), "title", "goal").await,
+		create(&mut scope, Uuid::from_u128(1), "title", "goal", None).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls, vec!["workspace.create"]);
 }
 #[rstest]
 #[case::policy("workspace.create")]
+#[case::node("node.use")]
 #[case::row("workspace_insert")]
 #[case::ownership("owner_record")]
 #[tokio::test]
@@ -208,7 +230,7 @@ async fn creation_errors_preserve_their_identity_at_the_original_transaction_bou
 	#[case] fail: &'static str,
 ) {
 	scope.fail = Some(fail);
-	let Error::Port(error) = create(&mut scope, Uuid::from_u128(1), "title", "goal")
+	let Error::Port(error) = create(&mut scope, Uuid::from_u128(1), "title", "goal", None)
 		.await
 		.unwrap_err()
 	else {

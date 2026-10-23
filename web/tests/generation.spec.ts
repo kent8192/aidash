@@ -5,7 +5,7 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
-import { createTenant } from "./tenant-fixture";
+import { createTenant, defaultNode } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -127,6 +127,7 @@ async function createGenerationScenario(
       subject: "alice",
     });
     cleanupHeaders.authorization = `Bearer ${credential.token}`;
+    const node = await defaultNode(request, credential.token, tenant);
     await api(
       "/api/registry",
       {
@@ -153,6 +154,7 @@ async function createGenerationScenario(
         entry: { id, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );
@@ -194,6 +196,7 @@ async function createGenerationScenario(
         entry: { id: decider, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );
@@ -218,6 +221,7 @@ async function createGenerationScenario(
         entry: { id: memoryDescriptor, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );
@@ -320,6 +324,7 @@ async function createGenerationScenario(
         entry: { id: embedder, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
+        node: node.name,
       },
       credential.token,
     );

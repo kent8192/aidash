@@ -22,13 +22,6 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 				)
 				.with_value("contacts", json!({}))
 				.with_value("migrations", json!({}))
-				.with_value(
-					"node",
-					json!({
-						"node_id":"aidash://endpoint-test", "endpoint":"http://localhost",
-						"api_token":"deployment-administrator-endpoint-fixture", "background_enabled":false
-					}),
-				)
 				.with_value("dashboard", json!({}))
 				.with_value("provider_credentials", json!({}))
 				.with_value("kubernetes", json!({}))
@@ -40,7 +33,13 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 				.with_value("research_providers", json!({}))
 				.with_value("research_retention", json!({}))
 				.with_value("workbench_test_limits", json!({}))
-				.with_value("deployment", json!({})),
+				.with_value(
+					"deployment",
+					json!({
+						"id":"aidash://endpoint-test", "endpoint":"http://localhost",
+						"api_token":"deployment-administrator-endpoint-fixture", "background_enabled":false
+					}),
+				),
 		)
 		.build_composed::<ProjectSettings>()
 		.expect("valid native endpoint settings")

@@ -4,7 +4,6 @@ use aidash_domain::{
 	Task, TaskStatus,
 	identity::commands::{self, Metadata},
 	policy::Resource,
-	qualified_agent,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -42,7 +41,7 @@ pub async fn prepare(scope: &mut dyn RemoteCommandScope, input: Command<'_>) -> 
 		return Err(Error::Forbidden);
 	}
 	let task = scope.task(bound.task_id).await?;
-	let owner = qualified_agent(input.node, input.agent, input.version);
+	let owner = aidash_domain::agent_subject(input.node, input.agent, input.version);
 	let metadata = commands::prepare(input.operation, input.data)?;
 	if let Some(tool) = commands::builtin(input.operation) {
 		scope.require_builtin(tool).await?;

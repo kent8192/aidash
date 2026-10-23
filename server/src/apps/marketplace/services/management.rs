@@ -167,7 +167,7 @@ impl MarketplaceManagement {
 				offset: input.offset,
 				limit: input.limit,
 			},
-			&f.store.node_id,
+			f.store.deployment.as_str(),
 		)
 		.await
 		.map_err(Into::into);
@@ -177,7 +177,7 @@ impl MarketplaceManagement {
 	pub(crate) async fn detail(&self, actor: Actor, key: String) -> Result<Response> {
 		let f = self.runtime.clone();
 		let mut access = begin(&f.store, subject(&actor)?, false).await?;
-		let result = distribution::detail(&mut access, &key, &f.store.node_id).await;
+		let result = distribution::detail(&mut access, &key, f.store.deployment.as_str()).await;
 		handoff(&f.store, access, result).await
 	}
 
@@ -197,7 +197,7 @@ impl MarketplaceManagement {
 				offset: input.offset,
 				limit: input.limit,
 			},
-			&f.store.node_id,
+			f.store.deployment.as_str(),
 		)
 		.await;
 		let (result, next) = match result {
@@ -289,7 +289,7 @@ impl MarketplaceManagement {
 		let mut access = begin(&f.store, subject(&actor)?, false).await?;
 		let result = aidash_application::marketplace::management::list_installations(
 			&mut crate::bootstrap::marketplace_distribution_scope(&mut access),
-			&f.store.node_id,
+			f.store.deployment.as_str(),
 		)
 		.await
 		.map_err(Into::into);
@@ -304,7 +304,13 @@ impl MarketplaceManagement {
 	) -> Result<Response> {
 		let f = self.runtime.clone();
 		let mut access = begin(&f.store, subject(&actor)?, false).await?;
-		let result = installations::view(&mut access, &id, query.revision, &f.store.node_id).await;
+		let result = installations::view(
+			&mut access,
+			&id,
+			query.revision,
+			f.store.deployment.as_str(),
+		)
+		.await;
 		handoff(&f.store, access, result).await
 	}
 
@@ -358,9 +364,10 @@ impl MarketplaceManagement {
 			)
 			.await?;
 			if enabled {
+				let node = access.catalog_address().await?;
 				crate::apps::identity::repositories::catalog_approvals::admit_agents(
 					&mut access,
-					&f.config.node_id,
+					&node,
 					&[revision.entry],
 				)
 				.await?;
@@ -401,12 +408,13 @@ impl MarketplaceManagement {
 					),
 					&crate::bootstrap::registry_validation_for(&f.store),
 					&input,
-					&f.store.node_id,
+					f.store.deployment.as_str(),
 				)
 				.await?;
+			let node = access.catalog_address().await?;
 			crate::apps::identity::repositories::catalog_approvals::admit_agents(
 				&mut access,
-				&f.config.node_id,
+				&node,
 				&entries,
 			)
 			.await?;
@@ -458,7 +466,7 @@ impl MarketplaceManagement {
 			&mut crate::bootstrap::marketplace_publication_scope(&f.store, &mut access),
 			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&distribution::command(&input),
-			&f.store.node_id,
+			f.store.deployment.as_str(),
 		)
 		.await
 		.map_err(Into::into);

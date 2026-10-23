@@ -1,7 +1,7 @@
 meta {
-  name: 0120 sessions-session-info - Desktop bearer resolves the OIDC identity
+  name: 0120 sessions-session-info - Revoked desktop bearer cannot resolve a session
   type: http
-  seq: 54
+  seq: 59
 }
 
 get {
@@ -16,6 +16,6 @@ headers {
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Desktop bearer resolves the OIDC identity contract", function () { expect(res.getBody().mappings).to.be.an("array").that.is.not.empty;expect(res.getBody().id).to.be.a("string"); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

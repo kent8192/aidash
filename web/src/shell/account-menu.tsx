@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from "react";
-import { Languages, LogOut, SunMoon, UserRoundCog } from "lucide-react";
+import { Languages, LogOut, Server, SunMoon, UserRoundCog } from "lucide-react";
 import { initials } from "../collaboration/avatar";
 import { NativeSelect } from "../components/ui/native-select";
 import { Button } from "../components/ui/button";
@@ -10,6 +10,7 @@ import { useI18n, type Locale } from "../ui";
 import { authCopy, shellCopy } from "./copy";
 import { CreateTenantForm, type CreatedTenant } from "../tenancy";
 import { DeletedTenants, type DeletedTenant } from "../tenant-deletion";
+import { useNodes } from "../nodes";
 import { AccountEntries } from "@slots/account-menu";
 
 export type Account = {
@@ -42,6 +43,8 @@ export type Account = {
     request: () => void;
   };
   chooseContext: (context: string) => void;
+  /** Works in another Node of the Tenant. */
+  chooseNode: (name: string) => void;
   setLocale: (locale: Locale) => void;
   logOut: (allDevices: boolean) => void;
   preference: ThemePreference;
@@ -98,6 +101,7 @@ export function AccountPanel({ account }: { account: Account }) {
   const shared = account.sharedAccess;
   const personalMapping = account.mappings.some((mapping) => mapping.personal);
   const themeGroup = useId();
+  const { nodes, selected } = useNodes();
   return (
     <div className="grid text-[13px]">
       <div className="flex items-center gap-2.5 px-2 pb-3 pt-1.5">
@@ -186,6 +190,26 @@ export function AccountPanel({ account }: { account: Account }) {
           </div>
         )}
       </Group>
+      {nodes.length > 0 && (
+        <Group label={copy.node} icon={Server}>
+          <label>
+            <span className="sr-only">{copy.node}</span>
+            <NativeSelect
+              data-testid="node-selector"
+              value={selected?.name ?? ""}
+              onChange={(event) => account.chooseNode(event.target.value)}
+              className="text-xs"
+            >
+              {nodes.map((node) => (
+                <option key={node.name} value={node.name}>
+                  {node.label}
+                  {node.default ? ` (${copy.nodeDefault})` : ""}
+                </option>
+              ))}
+            </NativeSelect>
+          </label>
+        </Group>
+      )}
       <Group label={copy.language} icon={Languages}>
         <label>
           <span className="sr-only">{t("language")}</span>

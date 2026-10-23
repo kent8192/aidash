@@ -8,6 +8,7 @@ use aidash_domain::{
 	},
 	generation::remote::Ancestor,
 	identity::execution::ExecutionPrincipal,
+	nodes::NodeName,
 	policy::{PolicyBundle, Resource},
 	registry::{EntityRef, Entry},
 	run_state::RunInspection,
@@ -18,7 +19,12 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 pub trait PeerInspectionScope: Send {
+	/// The Deployment identity used by Registry references.
 	fn node_id(&self) -> &str;
+	/// The address of the receiving Node, which an inspection reports.
+	fn receiver_address(&self) -> String;
+	/// The receiving Node's name and current label/default policy attributes.
+	async fn receiver_resource(&mut self) -> Result<Resource>;
 	fn identity(&self) -> ExecutionPrincipal;
 	fn bundle(&self) -> &PolicyBundle;
 	fn subjects(&self) -> &[String];
@@ -104,8 +110,16 @@ pub trait AdmissionMessages: Send + Sync {
 pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 	type Scope: PeerAdmissionScope;
 	fn node_id(&self) -> &str;
-	async fn request(&self, source: &str, path: &str, input: &Value) -> Result<Value>;
-	async fn mapped(&self, source: &str, tenant: &str, subject: &str) -> Result<Self::Scope>;
+	/// A callback to `source`, sent from the receiving Node `receiver`.
+	async fn request(
+		&self,
+		receiver: &NodeName,
+		source: &str,
+		path: &str,
+		input: &Value,
+	) -> Result<Value>;
+	async fn mapped(&self, receiver: &NodeName, source: &str, subject: &str)
+	-> Result<Self::Scope>;
 	async fn verify_record(&self, id: Uuid, source: &str) -> Result<Option<Record>>;
 	async fn status_record(&self, source: &str, grant: Uuid) -> Result<Option<Record>>;
 	async fn status_run(&self, id: Uuid, source: &str) -> Result<Option<RunInspection>>;

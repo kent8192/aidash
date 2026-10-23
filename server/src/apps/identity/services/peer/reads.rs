@@ -22,16 +22,17 @@ impl Access {
 		let Some(run) = self.read_run else {
 			return Ok(());
 		};
+		let own = self.node_reference().to_owned();
 		let local: Vec<_> = agents
 			.iter()
-			.filter(|agent| agent.node_id == self.node_id)
+			.filter(|agent| agent.node_id == own)
 			.map(|agent| agent.entity.clone())
 			.collect();
 		self.track_registry(&local).await?;
 		// This independent commit precedes invocation/context persistence, so a
 		// killed worker cannot retain metadata without its visibility dependency.
 		let mut tx = self.pool.begin(&self.tenancy()?).await?;
-		for agent in agents.iter().filter(|agent| agent.node_id != self.node_id) {
+		for agent in agents.iter().filter(|agent| agent.node_id != own) {
 			let metadata = serde_json::to_value(&agent.entity)?;
 			{
 				let query_bind_1 = run;
@@ -116,7 +117,7 @@ impl Access {
 
 pub(crate) use crate::apps::identity::serializers::peer_reads::VerifyInput;
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 #[derive(Clone)]
 pub struct PeerReads {
@@ -129,13 +130,15 @@ pub async fn provide_reads(#[inject] runtime: Federation) -> PeerReads {
 }
 
 impl PeerReads {
-	pub(crate) async fn verify(&self, headers: HeaderMap, input: VerifyInput) -> Result<bool> {
+	pub(crate) async fn verify(&self, admitted: Admitted, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();
 		aidash_domain::federation::registry_reads::validate(&input.references)?;
-		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
-		let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
+		let mut access = super::access(&f, &admitted).await?;
 		let result = aidash_application::federation::registry_reads::verify(
-			&mut crate::bootstrap::registry_verification_scope(&mut access, &f.config.node_id),
+			&mut crate::bootstrap::registry_verification_scope(
+				&mut access,
+				&admitted.receiver.node,
+			),
 			&input.references,
 		)
 		.await

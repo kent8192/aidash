@@ -53,12 +53,11 @@ async function approvingTenant(page: Page, locale: "en-US" | "ja-JP") {
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://node",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -69,7 +68,6 @@ async function approvingTenant(page: Page, locale: "en-US" | "ja-JP") {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
     if (path === "/api/marketplace/installations")
@@ -334,12 +332,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         return route.fulfill({
           json: {
             access,
-            node: {
+            deployment: {
               id: "aidash://node",
               endpoint: "http://localhost",
               protocol_version: "0.1",
-              capabilities: [],
-              clusters: [],
+              key: null,
             },
             registry: [entry],
             workspaces: [],
@@ -350,7 +347,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             conversations: [],
             human_requests: [],
             installations: [],
-            peers: [],
           },
         });
       if (secondContext && path.startsWith("/api/marketplace/"))
@@ -605,18 +601,15 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             node_id: "aidash://node",
           },
         });
-      if (url.pathname === "/api/mesh")
-        return route.fulfill({ json: { nodes: [], errors: [] } });
       if (url.pathname === "/api/state")
         return route.fulfill({
           json: {
             access: { kind: "deployment_administrator" },
-            node: {
+            deployment: {
               id: "aidash://node",
               endpoint: "http://localhost",
               protocol_version: "0.1",
-              capabilities: [],
-              clusters: [],
+              key: null,
             },
             registry: [],
             workspaces: [],
@@ -627,7 +620,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             conversations: [],
             human_requests: [],
             installations: [],
-            peers: [],
           },
         });
       if (url.pathname === "/api/marketplace/administration") {

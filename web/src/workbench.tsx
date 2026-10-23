@@ -1,4 +1,5 @@
 import { AgentBindings, type Binding } from "./agent-bindings";
+import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
 import { Badge as ToneBadge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
@@ -1973,7 +1974,7 @@ export function Workbench({
         <AgentBindings
           value={editing.config}
           entries={data.registry}
-          node={data.node.id}
+          node={registryDeployment(data)}
           cluster={Boolean(editing.config.cluster)}
           change={(configuration) =>
             change((value) => {

@@ -23,7 +23,7 @@ fn scope() -> Scope {
 			description: String::new(),
 			status: TaskStatus::Claimed,
 			requirements: json!({}),
-			owner: Some(qualified_agent("aidash://peer", "agent", "1")),
+			owner: Some(aidash_domain::agent_subject("aidash://peer", "agent", "1")),
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
@@ -109,7 +109,7 @@ async fn fresh_commands_authorize_the_saved_task_and_builtin_in_the_existing_ord
 	assert_eq!(prepared.task.id, Uuid::from_u128(2));
 	assert_eq!(
 		prepared.owner,
-		qualified_agent("aidash://peer", "agent", "1")
+		aidash_domain::agent_subject("aidash://peer", "agent", "1")
 	);
 	assert_eq!(
 		prepared.key,

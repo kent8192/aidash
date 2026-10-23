@@ -4,27 +4,27 @@ use super::{
 	dispatch::{self, FinalizeInput, Input},
 };
 use crate::{Result, federation::Federation};
+use aidash_application::federation::inbound::Admitted;
 use aidash_application::generation::protocol;
-use http::HeaderMap;
 
 pub(crate) async fn reserve(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Input,
 ) -> Result<Vec<Reserved>> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = &admitted.sender.to_string();
 	protocol::reserve(
-		&crate::bootstrap::generation_protocol_authority(&f),
+		&crate::bootstrap::generation_protocol_receiver(&f, admitted.receiver.node.clone()),
 		source,
 		input,
 	)
 	.await
 	.map_err(Into::into)
 }
-pub(crate) async fn verify(f: Federation, headers: HeaderMap, input: Input) -> Result<bool> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+pub(crate) async fn verify(f: Federation, admitted: Admitted, input: Input) -> Result<bool> {
+	let source = &admitted.sender.to_string();
 	protocol::verify(
-		&crate::bootstrap::generation_protocol_authority(&f),
+		&crate::bootstrap::generation_protocol_receiver(&f, admitted.receiver.node.clone()),
 		&crate::bootstrap::generation_protocol_repository(&f.store),
 		&crate::bootstrap::generation_dispatch_repository(
 			&f.store,
@@ -40,10 +40,10 @@ pub(crate) async fn verify(f: Federation, headers: HeaderMap, input: Input) -> R
 }
 pub(crate) async fn finalize(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: FinalizeInput,
 ) -> Result<bool> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = &admitted.sender.to_string();
 	protocol::finalize(
 		&crate::bootstrap::generation_settlement_repository(
 			&f.store,

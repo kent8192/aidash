@@ -1,10 +1,12 @@
 //! Portable Capability Token contracts. Private production keys stay in KMS.
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+
+pub mod federation;
+mod jws;
 
 pub const TOKEN_TTL_SECS: u64 = 60;
 pub const TOKEN_TYPE: &str = "aidash-capability+jwt";
@@ -71,14 +73,6 @@ pub struct Claims {
 	pub hosts: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Header {
-	alg: String,
-	typ: String,
-	kid: String,
-}
-
 /// Safe, stable broker-owned failure codes. No rejected input is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Failure {
@@ -102,6 +96,15 @@ pub enum Failure {
 	ClaimViolation,
 }
 
+impl From<jws::Rejection> for Failure {
+	fn from(rejection: jws::Rejection) -> Self {
+		match rejection {
+			jws::Rejection::UnknownKid => Self::UnknownKid,
+			jws::Rejection::Malformed | jws::Rejection::InvalidSignature => Self::InvalidSignature,
+		}
+	}
+}
+
 /// Signing is an external port; it takes the exact JWS input, never a digest.
 #[async_trait::async_trait]
 pub trait TokenSigner: Send + Sync {
@@ -113,22 +116,16 @@ pub trait TokenSigner: Send + Sync {
 pub struct SignError;
 
 pub async fn mint(claims: &Claims, signer: &dyn TokenSigner) -> Result<SecretString, SignError> {
-	if claims.kid != signer.kid() {
-		return Err(SignError);
-	}
-	let header = Header {
-		alg: "EdDSA".into(),
-		typ: TOKEN_TYPE.into(),
-		kid: claims.kid.clone(),
-	};
-	let input = format!("{}.{}", encode(&header)?, encode(claims)?);
-	let signature = signer.sign(input.as_bytes()).await?;
-	Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature)).into())
+	jws::mint(claims, TOKEN_TYPE, &claims.kid, signer).await
 }
-fn encode(value: &impl Serialize) -> Result<String, SignError> {
-	serde_json::to_vec(value)
-		.map(|value| URL_SAFE_NO_PAD.encode(value))
-		.map_err(|_| SignError)
+
+/// The 32 raw bytes of an Ed25519 public key in SubjectPublicKeyInfo PEM, which
+/// a Deployment Key ID digests.
+pub fn public_key_bytes(pem: &str) -> Result<[u8; 32], SignError> {
+	use ed25519_dalek::pkcs8::DecodePublicKey;
+	Ok(VerifyingKey::from_public_key_pem(pem)
+		.map_err(|_| SignError)?
+		.to_bytes())
 }
 
 /// The broker uses only injected public keys. Verification makes no network call.
@@ -160,29 +157,9 @@ impl PublicKeys {
 		audience: &str,
 		now: u64,
 	) -> Result<Claims, Failure> {
-		if token.len() > 8192 {
-			return Err(Failure::InvalidSignature);
-		}
-		let mut parts = token.split('.');
-		let (Some(header), Some(payload), Some(signature), None) =
-			(parts.next(), parts.next(), parts.next(), parts.next())
-		else {
-			return Err(Failure::InvalidSignature);
-		};
-		let header: Header = decode(header)?;
-		if header.alg != "EdDSA" || header.typ != TOKEN_TYPE {
-			return Err(Failure::InvalidSignature);
-		}
-		let key = self.0.get(&header.kid).ok_or(Failure::UnknownKid)?;
-		let signature = URL_SAFE_NO_PAD
-			.decode(signature)
-			.map_err(|_| Failure::InvalidSignature)?;
-		let signature = Signature::from_slice(&signature).map_err(|_| Failure::InvalidSignature)?;
-		let input = token.rsplit_once('.').ok_or(Failure::InvalidSignature)?.0;
-		key.verify_strict(input.as_bytes(), &signature)
-			.map_err(|_| Failure::InvalidSignature)?;
-		let claims: Claims = decode(payload)?;
-		if claims.kid != header.kid {
+		let (kid, claims): (String, Claims) =
+			jws::verify(token, TOKEN_TYPE, self).map_err(Failure::from)?;
+		if claims.kid != kid {
 			return Err(Failure::UnknownKid);
 		}
 		if claims.iss != issuer || claims.aud != audience {
@@ -252,12 +229,6 @@ impl PublicKeys {
 		Ok(claims)
 	}
 }
-fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, Failure> {
-	let bytes = URL_SAFE_NO_PAD
-		.decode(value)
-		.map_err(|_| Failure::InvalidSignature)?;
-	serde_json::from_slice(&bytes).map_err(|_| Failure::InvalidSignature)
-}
 
 /// In-memory Ed25519 adapter for deterministic tests; never used by Cloud composition.
 pub struct InMemorySigner {
@@ -273,6 +244,14 @@ impl InMemorySigner {
 	}
 	pub fn public_key(&self) -> VerifyingKey {
 		self.key.verifying_key()
+	}
+	/// The public key as a Deployment publishes it: SubjectPublicKeyInfo PEM.
+	pub fn public_key_pem(&self) -> String {
+		use ed25519_dalek::pkcs8::{EncodePublicKey, spki::der::pem::LineEnding};
+		self.key
+			.verifying_key()
+			.to_public_key_pem(LineEnding::LF)
+			.expect("an Ed25519 public key always encodes")
 	}
 }
 #[async_trait::async_trait]

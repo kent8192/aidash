@@ -1,6 +1,6 @@
 DROP TRIGGER atomic_write_guard ON public.remote_run_message_fences;
-DROP TRIGGER atomic_write_guard ON public.peers;
-DROP TRIGGER atomic_write_guard ON public.peer_events;
+DROP TRIGGER atomic_write_guard ON public.node_registrations;
+DROP TRIGGER atomic_write_guard ON public.node_registration_history;
 DROP TRIGGER atomic_write_guard ON public.delegations;
 DROP TRIGGER atomic_write_guard ON public.authorization_remote_grants;
 DROP TRIGGER atomic_write_guard ON public.authorization_remote_grant_reads;

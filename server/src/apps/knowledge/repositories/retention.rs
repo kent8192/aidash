@@ -75,7 +75,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 				workspace: row.try_get("workspace_id")?,
 				participant: row.try_get("participant_id")?,
 			};
-			if bank.home != store.node_id {
+			if aidash_domain::nodes::deployment_of(&bank.home) != store.deployment {
 				return Err(Error::Forbidden);
 			}
 			// An indexer can retain a workspace reader while opening another

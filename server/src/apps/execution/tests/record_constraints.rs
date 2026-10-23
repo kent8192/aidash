@@ -914,7 +914,7 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	let mut other_kind = serde_json::to_value(model()).unwrap();
 	other_kind["id"] = json!("not-a-model");
 	other_kind["kind"] = json!("tool");
-	other_kind["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9999/tool","replay":"read_only"}});
+	other_kind["config"] = json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9999/tool","replay":"read_only"}});
 	insert_entry(f.store.pool.fixture_driver(), &other_kind)
 		.await
 		.unwrap();
@@ -994,7 +994,7 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 		.await
 		.unwrap();
 	let mut linked_agent_config = agent["config"].clone();
-	linked_agent_config["bindings"] = json!([{"kind":"tool","target":{"registry_node":"aidash://execution-test","id":"not-a-model","version":"1.0.0"},"narrow":{}},{"kind":"skill","target":{"registry_node":"aidash://execution-test","id":"test-skill","version":"1.0.0"},"narrow":{}}]);
+	linked_agent_config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":"aidash://execution-test","id":"not-a-model","version":"1.0.0"},"narrow":{}},{"kind":"skill","target":{"registry_deployment":"aidash://execution-test","id":"test-skill","version":"1.0.0"},"narrow":{}}]);
 	linked_agent_config["cluster"] = json!({"id":"test-cluster","version":"1.0.0"});
 	update_registry_config(
 		f.store.pool.fixture_driver(),
@@ -1095,22 +1095,22 @@ async fn tool_configs_reject_undecodable_shapes(
 	tool["id"] = json!("tool");
 	tool["kind"] = json!("tool");
 	for config in [
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"not a URL","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"ftp://example.com","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http:///missing-host","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://user:pass@example.com","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://example.com?token=value","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/path#fragment","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://example.com?token=value","tool_name":"call","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"native","operation":"http_get","allowed_hosts":[]}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost","replay":"invalid"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent","idempotency_argument":" \t\n\u{2003}"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.agent@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":"bad node","agent":{"id":"agent","version":"1.0.0"}}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost","replay":"read_only","unexpected":true}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost","credential_env":"OPENAI_API_KEY","replay":"read_only"}}),
-		json!({"registry_node":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://localhost","credential_env":"SECRET_TOKEN","tool_name":"call","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"not a URL","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"ftp://example.com","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http:///missing-host","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://user:pass@example.com","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://example.com?token=value","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/path#fragment","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://example.com?token=value","tool_name":"call","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"native","operation":"http_get","allowed_hosts":[]}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost","replay":"invalid"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent","idempotency_argument":" \t\n\u{2003}"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.agent@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":"bad node","agent":{"id":"agent","version":"1.0.0"}}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost","replay":"read_only","unexpected":true}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost","credential_env":"OPENAI_API_KEY","replay":"read_only"}}),
+		json!({"registry_deployment":"aidash://execution-test","provider":"integration.mcp@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"mcp","endpoint":"http://localhost","credential_env":"SECRET_TOKEN","tool_name":"call","replay":"read_only"}}),
 	] {
 		tool["config"] = config;
 		check_rejected(
@@ -1125,7 +1125,7 @@ async fn tool_configs_reject_undecodable_shapes(
 	] {
 		reqwest::Url::parse(endpoint).unwrap();
 		tool["id"] = json!(id);
-		tool["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{
+		tool["config"] = json!({"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{
 			"transport":"http",
 			"endpoint":endpoint,
 			"replay":"read_only"
@@ -1150,7 +1150,7 @@ async fn tool_configs_reject_undecodable_shapes(
 			json!({"transport":"mcp","endpoint":"http://localhost","credential_env":"AIDASH_SECRET_TOOL_TOKEN","tool_name":"call","replay":"read_only"}),
 		),
 	] {
-		tool["config"] = json!({"registry_node":"aidash://execution-test","provider":provider,"operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":transport});
+		tool["config"] = json!({"registry_deployment":"aidash://execution-test","provider":provider,"operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":transport});
 		check_rejected(
 			insert_entry(f.store.pool.fixture_driver(), &tool).await,
 			"registry_tool_config",

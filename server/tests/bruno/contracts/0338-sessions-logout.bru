@@ -1,5 +1,5 @@
 meta {
-  name: 0338 sessions-logout - No opaque session
+  name: 0338 sessions-logout - Revoked browser session
   type: http
   seq: 338
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Cookie: {{session_cookie}}
 }
 
 tests {

@@ -3,12 +3,12 @@ use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::peer::PeerMappings;
 use crate::apps::identity::serializers::peer::PeerMappingInput;
 use crate::apps::identity::serializers::peer::{DiscoveryInput, HistoryPage, MappingPage};
+use crate::apps::identity::services::http_auth::InboundCall;
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
 use reinhardt::Depends;
 use reinhardt::Path;
 use reinhardt::Query;
-use reinhardt::Request;
 use reinhardt::Response;
 use reinhardt::http::ViewResult;
 use reinhardt::{get, post};
@@ -65,8 +65,8 @@ pub async fn set(
 )]
 pub async fn discover(
 	#[inject] service: Depends<PeerMappings>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<DiscoveryInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.discover(request.headers, input).await)
+	crate::http::json(service.discover(peer.0, input).await)
 }

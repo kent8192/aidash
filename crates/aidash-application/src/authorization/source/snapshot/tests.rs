@@ -9,7 +9,7 @@ struct Scope {
 	calls: Vec<&'static str>,
 }
 fn snapshot() -> WorkspaceSnapshot {
-	serde_json::from_value(json!({"workspace":{"id":Uuid::from_u128(2),"title":"workspace","goal":"intent","state":{},"revision":3,"created_at":"2026-10-04T00:00:00Z"},"tasks":[],"artifacts":[],"events":[],"messages":[]})).unwrap()
+	serde_json::from_value(json!({"workspace":{"id":Uuid::from_u128(2),"node":"brave-otter-k3m9q2xa","title":"workspace","goal":"intent","state":{},"revision":3,"created_at":"2026-10-04T00:00:00Z"},"tasks":[],"artifacts":[],"events":[],"messages":[]})).unwrap()
 }
 #[async_trait]
 impl SnapshotScope for Scope {

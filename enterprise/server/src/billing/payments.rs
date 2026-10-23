@@ -71,7 +71,9 @@ pub trait PaymentState: Send + Sync {
 	async fn subscription(&self, account: Uuid) -> Result<Option<Subscription>>;
 
 	/// Moves the Subscription to `tier`. The caller has already checked the
-	/// limits; the processor makes the change and reports it back.
+	/// limits while holding the covered Tenants' capacity locks. Success must
+	/// publish the new locally readable Subscription before returning, so a
+	/// waiting Node creation observes its new limit.
 	async fn change_tier(&self, account: Uuid, tier: &str) -> Result<()>;
 }
 

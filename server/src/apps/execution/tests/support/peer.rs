@@ -36,15 +36,15 @@ fn peer_runtime(
 	fixed_listener: ListenerFuture,
 	runtime: RuntimeFuture,
 ) -> RuntimeFuture {
-	let node_id = node_id.to_owned();
+	let node_id = aidash_domain::nodes::DeploymentId::parse(node_id).unwrap();
 	async move {
 		let mut owner = runtime.await;
 		let f = &mut owner.federation;
-		f.config.node_id = node_id;
-		f.store.node_id = f.config.node_id.clone();
+		f.config.deployment = node_id;
+		f.store.deployment = f.config.deployment.clone();
 		f.config.endpoint = format!("http://{}", fixed_listener.await.local_addr().unwrap());
 		f.registry =
-			aidash_server::registry::Registry::new(f.store.pool.clone(), &f.config.node_id)
+			aidash_server::registry::Registry::new(f.store.pool.clone(), &f.config.deployment)
 				.unwrap()
 				.with_keyless_origins(f.store.keyless.clone());
 		owner

@@ -1,9 +1,10 @@
 //! HTTP endpoints backed by injected application services.
+use crate::apps::identity::services::http_auth::InboundCall;
 use crate::capabilities::transfer::receiver as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Request, Response, post};
+use reinhardt::{Depends, Response, post};
 
 #[post(
 	"/federation/v0.1/scoped/files/negotiate",
@@ -12,10 +13,10 @@ use reinhardt::{Depends, Request, Response, post};
 )]
 pub async fn negotiate(
 	#[inject] service: Depends<TransferReceivers>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Requester>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::negotiate(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::negotiate(service.runtime.clone(), peer.0, input).await)
 }
 
 #[post(
@@ -25,10 +26,10 @@ pub async fn negotiate(
 )]
 pub async fn prepare(
 	#[inject] service: Depends<TransferReceivers>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Identity>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::prepare(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::prepare(service.runtime.clone(), peer.0, input).await)
 }
 
 #[post(
@@ -38,10 +39,10 @@ pub async fn prepare(
 )]
 pub async fn chunk(
 	#[inject] service: Depends<TransferReceivers>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Chunk>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::chunk(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::chunk(service.runtime.clone(), peer.0, input).await)
 }
 
 #[post(
@@ -51,10 +52,10 @@ pub async fn chunk(
 )]
 pub async fn commit(
 	#[inject] service: Depends<TransferReceivers>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Identity>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::commit(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::commit(service.runtime.clone(), peer.0, input).await)
 }
 
 #[post(
@@ -64,10 +65,10 @@ pub async fn commit(
 )]
 pub async fn status(
 	#[inject] service: Depends<TransferReceivers>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Identity>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::status(service.runtime.clone(), request.headers.clone(), input).await)
+	crate::http::json(api::status(service.runtime.clone(), peer.0, input).await)
 }
 
 #[post(
@@ -77,12 +78,10 @@ pub async fn status(
 )]
 pub async fn recipients(
 	#[inject] service: Depends<TransferReceivers>,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<Requester>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		api::recipients(service.runtime.clone(), request.headers.clone(), input).await,
-	)
+	crate::http::json(api::recipients(service.runtime.clone(), peer.0, input).await)
 }
 
 use crate::capabilities::transfer::{Chunk, Identity, Requester};

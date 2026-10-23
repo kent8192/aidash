@@ -15,7 +15,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 pub mod deletion;
-mod words;
+pub(crate) mod words;
 
 /// The subject a Tenant Creator is mapped to.
 pub const OWNER: &str = "owner";
@@ -101,6 +101,8 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"message.create",
 	"message.read",
 	"model.infer",
+	"node.read",
+	"node.use",
 	"registry.create",
 	"registry.read",
 	"run.control",
@@ -129,9 +131,29 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"workspace.update",
 ];
 
-const RANDOM_LENGTH: usize = 8;
+pub(crate) const RANDOM_LENGTH: usize = 8;
 const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 const LABEL_MAX: usize = 64;
+/// The longest name `assigned_name` can draw.
+pub(crate) const ASSIGNED_NAME_MAX_LEN: usize =
+	words::LONGEST_ADJECTIVE + 1 + words::LONGEST_NOUN + 1 + RANDOM_LENGTH;
+
+/// Draws `<adjective>-<noun>-<8 random characters>` from 16 bytes of
+/// caller-supplied entropy. Tenant names and Node names share this form.
+pub(crate) fn assigned_name(entropy: [u8; 16]) -> String {
+	let adjective = words::ADJECTIVES[usize::from(entropy[0]) % words::ADJECTIVES.len()];
+	let noun = words::NOUNS[usize::from(entropy[1]) % words::NOUNS.len()];
+	let mut random = u64::from_le_bytes(entropy[2..10].try_into().expect("eight bytes"))
+		^ u64::from(u32::from_le_bytes(
+			entropy[10..14].try_into().expect("four bytes"),
+		));
+	let mut suffix = String::with_capacity(RANDOM_LENGTH);
+	for _ in 0..RANDOM_LENGTH {
+		suffix.push(char::from(ALPHABET[(random % 36) as usize]));
+		random /= 36;
+	}
+	format!("{adjective}-{noun}-{suffix}")
+}
 
 /// The identifier Aidash assigns to a Tenant: `<adjective>-<noun>-<8 random
 /// characters>`. Nobody chooses it, it never changes and it is never reused.
@@ -142,18 +164,7 @@ impl TenantName {
 	/// Draws a name from 16 bytes of caller-supplied entropy, such as a random
 	/// UUID, so this crate stays free of a random source.
 	pub fn from_entropy(entropy: [u8; 16]) -> Self {
-		let adjective = words::ADJECTIVES[usize::from(entropy[0]) % words::ADJECTIVES.len()];
-		let noun = words::NOUNS[usize::from(entropy[1]) % words::NOUNS.len()];
-		let mut random = u64::from_le_bytes(entropy[2..10].try_into().expect("eight bytes"))
-			^ u64::from(u32::from_le_bytes(
-				entropy[10..14].try_into().expect("four bytes"),
-			));
-		let mut suffix = String::with_capacity(RANDOM_LENGTH);
-		for _ in 0..RANDOM_LENGTH {
-			suffix.push(char::from(ALPHABET[(random % 36) as usize]));
-			random /= 36;
-		}
-		Self(format!("{adjective}-{noun}-{suffix}"))
+		Self(assigned_name(entropy))
 	}
 
 	pub fn as_str(&self) -> &str {
@@ -201,6 +212,8 @@ pub struct TenancyRules {
 	pub deletion_grace_days: u32,
 	/// How long audit history outlives a Tenant's purge before it is deleted.
 	pub audit_retention_days: u32,
+	/// How many Nodes a Tenant may hold. A Tier may be stricter.
+	pub nodes_per_tenant: u32,
 }
 
 impl TenancyRules {
@@ -216,6 +229,7 @@ impl TenancyRules {
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
 			audit_retention_days: deletion::DEFAULT_AUDIT_RETENTION_DAYS,
+			nodes_per_tenant: DEFAULT_NODES_PER_TENANT,
 		};
 		match offering {
 			Offering::Cloud => Self {
@@ -226,6 +240,19 @@ impl TenancyRules {
 			Offering::SelfHosted | Offering::Dedicated => administered,
 		}
 	}
+}
+
+/// The "Nodes per Tenant" Tenancy Rule every Offering starts with.
+pub const DEFAULT_NODES_PER_TENANT: u32 = 10;
+
+/// A configured "Nodes per Tenant" value: 1 to 1000.
+pub fn nodes_per_tenant(value: u32) -> Result<u32> {
+	if !(1..=1000).contains(&value) {
+		return Err(Error::Invalid(
+			"tenancy.nodes_per_tenant must be between 1 and 1000".into(),
+		));
+	}
+	Ok(value)
 }
 
 /// Why an External Identity may not create a Tenant now.

@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
+  defaultNode,
   registryVersion,
   routeRegistryVersions,
   routeTenantActions,
@@ -58,18 +59,15 @@ async function registry(page: Page, actions: string[]) {
       return route.fulfill({
         json: { access: tenantSubject, node_id: "aidash://node" },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/state")
       return route.fulfill({
         json: {
           access: tenantSubject,
-          node: {
+          deployment: {
             id: "aidash://node",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: versions()
             .filter((version) => version.approval?.enabled)
@@ -82,7 +80,6 @@ async function registry(page: Page, actions: string[]) {
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
     if (path === "/api/authorization/acme/catalog") {
@@ -159,6 +156,7 @@ test("an approved Keyless definition keeps saying where it sends requests", asyn
       entry: { id: "pending-keyless-embedding", version: "1.0.0" },
       enabled: true,
       expected_revision: 0,
+      node: defaultNode.name,
     },
   ]);
 });

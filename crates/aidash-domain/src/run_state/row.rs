@@ -7,6 +7,7 @@ pub struct RunMetadata {
 	pub id: Uuid,
 	pub task_id: Uuid,
 	pub workspace_id: Uuid,
+	pub node: crate::nodes::NodeName,
 	pub home_node: String,
 	pub agent_id: String,
 	pub agent_version: String,
@@ -38,6 +39,7 @@ impl RawRun {
 			id: m.id,
 			task_id: m.task_id,
 			workspace_id: m.workspace_id,
+			node: m.node.clone(),
 			home_node: m.home_node.clone(),
 			agent_id: m.agent_id.clone(),
 			agent_version: m.agent_version.clone(),
@@ -100,6 +102,7 @@ impl Run {
 			id: self.id,
 			task_id: self.task_id,
 			workspace_id: self.workspace_id,
+			node: self.node.clone(),
 			home_node: self.home_node.clone(),
 			agent_id: self.agent_id.clone(),
 			agent_version: self.agent_version.clone(),
@@ -148,6 +151,22 @@ impl From<Run> for RunInspection {
 			state_error: None,
 			lease_wait: None,
 		}
+	}
+}
+
+impl RunMetadata {
+	/// Whether the Run's Home is its own executing Node in `deployment`.
+	pub fn is_local(&self, deployment: &str) -> bool {
+		crate::nodes::is_home(&self.home_node, deployment, self.node.as_str())
+	}
+
+	/// The subject of the Run's agent on its executing Node in `deployment`.
+	pub fn executor_subject(&self, deployment: &str) -> String {
+		crate::entities::agent_subject(
+			&format!("{deployment}/{}", self.node),
+			&self.agent_id,
+			&self.agent_version,
+		)
 	}
 }
 

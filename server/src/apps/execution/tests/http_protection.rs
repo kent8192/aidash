@@ -138,6 +138,18 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	assert_eq!(peer_denied.status_code(), 401);
 	assert_eq!(peer_denied.headers()["cache-control"], "no-store");
 	assert_eq!(peer_denied.headers()["referrer-policy"], "no-referrer");
+	for version in ["0.2", "0.3"] {
+		let refused = server
+			.request(http::Method::POST, "/federation/v0.1/scoped/discover")
+			.body(bytes::Bytes::copy_from_slice(b"{}"))
+			.header(http::header::CONTENT_TYPE, "application/json")
+			.header("authorization", "Bearer not-read-before-the-version")
+			.header("x-aidash-protocol", version)
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(refused.status_code(), 400, "protocol {version}");
+	}
 	let public = server.get("/api/openapi.json").await.unwrap();
 	assert_eq!(public.status_code(), 200);
 	assert!(!public.headers().contains_key("cache-control"));

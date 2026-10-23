@@ -88,7 +88,7 @@ pub async fn prepare(
 	}
 	let original_subjects = scope.subjects().to_vec();
 	let mut delegated = scope.subjects().to_vec();
-	delegated.push(aidash_domain::qualified_agent(
+	delegated.push(aidash_domain::agent_subject(
 		&input.recipient.node_id,
 		&input.recipient.agent_id,
 		&input.recipient.agent_version,
@@ -127,7 +127,7 @@ pub async fn prepare(
 	let description = Description {
 		protocol: "file-transfer/1".into(),
 		transfer_id: id,
-		source_node: scope.node_id().to_owned(),
+		source_node: format!("{}/{}", scope.node_id(), run.node),
 		target: input.recipient,
 		source_tenant: scope.tenant().to_owned(),
 		source_subject: scope.principal().to_owned(),
@@ -197,7 +197,7 @@ pub async fn authority<'a>(
 		let entry = scope.entry( &description.source_agent, "agent.execute").await?;
 		scope.check_pinned( &entry).await?;
         scope.require_bound_operation(run.id, "file_share").await?;
-		let mut delegated=scope.subjects().to_vec();delegated.push(aidash_domain::qualified_agent(
+		let mut delegated=scope.subjects().to_vec();delegated.push(aidash_domain::agent_subject(
 			&description.target.node_id,
 			&description.target.agent_id,
 			&description.target.agent_version,
@@ -269,6 +269,8 @@ pub async fn reconcile(repository: &dyn TransferRepository, id: Uuid) -> Result<
 	let description: Description = serde_json::from_value(record.data["description"].clone())?;
 	let response: Value = repository
 		.request(
+			&description.source_tenant,
+			&description.source_node,
 			&description.target.node_id,
 			"/scoped/files/status",
 			&json!(Identity {
@@ -313,6 +315,8 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 	if snapshot.data["prepared"] == true {
 		let status: Value = repository
 			.request(
+				&description.source_tenant,
+				&description.source_node,
 				&description.target.node_id,
 				"/scoped/files/status",
 				&json!(identity),
@@ -327,6 +331,8 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 		finish(scope, Ok(())).await?;
 		let negotiation: Value = repository
 			.request(
+				&description.source_tenant,
+				&description.source_node,
 				&description.target.node_id,
 				"/scoped/files/negotiate",
 				&json!(Requester {
@@ -344,6 +350,8 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 		}
 		let accepted: Value = repository
 			.request(
+				&description.source_tenant,
+				&description.source_node,
 				&description.target.node_id,
 				"/scoped/files/prepare",
 				&json!(identity),
@@ -379,6 +387,8 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 				}
 				let accepted: Value = repository
 					.request(
+						&description.source_tenant,
+						&description.source_node,
 						&description.target.node_id,
 						"/scoped/files/chunk",
 						&json!(Chunk {
@@ -408,6 +418,8 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 		// check their original identities; model input never supplies a token.
 		let receipt: Value = repository
 			.request(
+				&description.source_tenant,
+				&description.source_node,
 				&description.target.node_id,
 				"/scoped/files/commit",
 				&json!(identity),

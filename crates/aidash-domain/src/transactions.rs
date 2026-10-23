@@ -1,5 +1,5 @@
 //! Immutable transaction manifests and monotonic coordinator decisions.
-use crate::{ArtifactInput, Error, configuration::validate_node_id};
+use crate::{ArtifactInput, Error, nodes::NodeAddress};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,16 +60,34 @@ impl Manifest {
 	where
 		E: From<Error> + From<serde_json::Error>,
 	{
-		validate_node_id(&self.coordinator)?;
+		NodeAddress::parse(&self.coordinator)?;
 		if self.id.is_nil() || self.participants.is_empty() || self.participants.len() > 16 {
 			return Err(
 				Error::Invalid("transaction requires an ID and 1..16 participants".into()).into(),
 			);
 		}
+		// A Deployment takes part with one Node, so a Deployment-level answer to
+		// "does this transaction run here" names exactly one Node.
+		let mut hosts = std::collections::BTreeMap::new();
+		for node in std::iter::once(&self.coordinator).chain(
+			self.participants
+				.iter()
+				.map(|participant| &participant.node_id),
+		) {
+			if hosts
+				.insert(crate::nodes::deployment_of(node), node)
+				.is_some_and(|other| other != node)
+			{
+				return Err(Error::Invalid(
+					"a transaction names at most one Node of each Deployment".into(),
+				)
+				.into());
+			}
+		}
 		let mut previous: Option<&str> = None;
 		let mut count = 0;
 		for participant in &self.participants {
-			validate_node_id(&participant.node_id)?;
+			NodeAddress::parse(&participant.node_id)?;
 			if previous.is_some_and(|p| p >= participant.node_id.as_str())
 				|| participant.mutations.len() > 64
 			{
@@ -141,10 +159,13 @@ impl Manifest {
 	pub fn digest(&self) -> std::result::Result<String, serde_json::Error> {
 		Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
 	}
-	pub fn local(&self, node: &str) -> std::result::Result<&Participant, MissingParticipant> {
+	/// The participant that is exactly the Node at `address`. Another Node of
+	/// the same Deployment, such as another Tenant's, is never the same
+	/// participant.
+	pub fn local(&self, address: &str) -> std::result::Result<&Participant, MissingParticipant> {
 		self.participants
 			.iter()
-			.find(|p| p.node_id == node)
+			.find(|p| p.node_id == address)
 			.ok_or(MissingParticipant)
 	}
 }

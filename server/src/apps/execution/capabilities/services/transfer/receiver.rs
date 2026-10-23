@@ -1,55 +1,62 @@
 //! Native peer headers and schema contracts adapt to the receiver application protocol.
-use super::{Access, Chunk, Federation, HeaderMap, Identity, Requester, Result, Uuid, Value};
+use super::{Access, Chunk, Federation, Identity, Requester, Result, Uuid, Value};
 use aidash_application::capabilities::transfer::receiver as application;
+use aidash_application::federation::inbound::Admitted;
 pub(crate) async fn negotiate(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Requester,
 ) -> Result<Value> {
-	let repository = crate::bootstrap::transfer_repository(&f);
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let repository =
+		crate::bootstrap::transfer_receiver_repository(&f, admitted.receiver.node.clone());
+	let source = &admitted.sender.to_string();
 	application::negotiate(&repository, source, input.into())
 		.await
 		.map_err(Into::into)
 }
-pub(crate) async fn prepare(f: Federation, headers: HeaderMap, input: Identity) -> Result<Value> {
-	let repository = crate::bootstrap::transfer_repository(&f);
+pub(crate) async fn prepare(f: Federation, admitted: Admitted, input: Identity) -> Result<Value> {
+	let repository =
+		crate::bootstrap::transfer_receiver_repository(&f, admitted.receiver.node.clone());
 	application::require_admission(&repository).map_err(crate::Error::from)?;
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = &admitted.sender.to_string();
 	application::prepare(&repository, source, input.into())
 		.await
 		.map_err(Into::into)
 }
-pub(crate) async fn chunk(f: Federation, headers: HeaderMap, input: Chunk) -> Result<Value> {
-	let repository = crate::bootstrap::transfer_repository(&f);
+pub(crate) async fn chunk(f: Federation, admitted: Admitted, input: Chunk) -> Result<Value> {
+	let repository =
+		crate::bootstrap::transfer_receiver_repository(&f, admitted.receiver.node.clone());
 	application::require_admission(&repository).map_err(crate::Error::from)?;
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = &admitted.sender.to_string();
 	application::chunk(&repository, source, input.into())
 		.await
 		.map_err(Into::into)
 }
-pub(crate) async fn commit(f: Federation, headers: HeaderMap, input: Identity) -> Result<Value> {
-	let repository = crate::bootstrap::transfer_repository(&f);
+pub(crate) async fn commit(f: Federation, admitted: Admitted, input: Identity) -> Result<Value> {
+	let repository =
+		crate::bootstrap::transfer_receiver_repository(&f, admitted.receiver.node.clone());
 	application::require_admission(&repository).map_err(crate::Error::from)?;
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = &admitted.sender.to_string();
 	application::commit(&repository, source, input.into())
 		.await
 		.map_err(Into::into)
 }
-pub(crate) async fn status(f: Federation, headers: HeaderMap, input: Identity) -> Result<Value> {
-	let repository = crate::bootstrap::transfer_repository(&f);
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+pub(crate) async fn status(f: Federation, admitted: Admitted, input: Identity) -> Result<Value> {
+	let repository =
+		crate::bootstrap::transfer_receiver_repository(&f, admitted.receiver.node.clone());
+	let source = &admitted.sender.to_string();
 	application::status(&repository, source, input.into())
 		.await
 		.map_err(Into::into)
 }
 pub(crate) async fn recipients(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Requester,
 ) -> Result<Value> {
-	let repository = crate::bootstrap::transfer_repository(&f);
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let repository =
+		crate::bootstrap::transfer_receiver_repository(&f, admitted.receiver.node.clone());
+	let source = &admitted.sender.to_string();
 	application::recipients(&repository, source, input.into())
 		.await
 		.map_err(Into::into)
@@ -59,9 +66,11 @@ pub(crate) async fn recipient_list(
 	access: &mut Access,
 	cursor: Option<Uuid>,
 ) -> Result<Value> {
+	let node = access.catalog_node().await?;
+	let address = f.config.deployment.node(node).to_string();
 	application::recipient_list(
 		&mut crate::bootstrap::transfer_scope(Some(&f.store), access),
-		&f.config.node_id,
+		&address,
 		cursor,
 	)
 	.await

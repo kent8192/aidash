@@ -1,4 +1,4 @@
-use crate::apps::federation::peer::services::records::PeerRecords;
+use crate::apps::federation::remote::repositories::routes;
 use crate::{
 	Error, Result,
 	config::Config,
@@ -7,6 +7,7 @@ use crate::{
 	store::{RunResponseMessage, Store},
 };
 use aidash_application::tenancy::TenancyScope;
+use aidash_domain::federation::route::{Route, Sender};
 use reinhardt::DiError;
 use reinhardt::DiResult;
 use reinhardt::Injectable;
@@ -142,7 +143,7 @@ impl Federation {
 	pub async fn for_workers(&self) -> Result<Self> {
 		let store = self.store.isolated_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.node_id)?
+			registry: Registry::new(store.pool.clone(), &store.deployment)?
 				.with_keyless_origins(store.keyless.clone()),
 			store,
 			..self.clone()
@@ -151,7 +152,7 @@ impl Federation {
 	pub async fn for_recovery(&self) -> Result<Self> {
 		let store = self.store.recovery_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.node_id)?
+			registry: Registry::new(store.pool.clone(), &store.deployment)?
 				.with_keyless_origins(store.keyless.clone()),
 			store,
 			..self.clone()
@@ -160,58 +161,96 @@ impl Federation {
 	pub async fn for_runtime_workers(&self) -> Result<Self> {
 		let store = self.store.worker_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.node_id)?
+			registry: Registry::new(store.pool.clone(), &store.deployment)?
 				.with_keyless_origins(store.keyless.clone()),
 			store,
 			..self.clone()
 		})
 	}
 
-	pub async fn peers(&self) -> Result<Vec<Peer>> {
-		PeerRecords::new(&self.store.pool, &self.config.node_id)
-			.list()
+	/// The Tenant that holds `node`, from the Deployment-wide record of Node names.
+	pub(crate) async fn node_tenant_of(
+		&self,
+		node: &aidash_domain::nodes::NodeName,
+	) -> Result<aidash_domain::tenancy::TenantName> {
+		let holder = self
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				crate::apps::identity::repositories::node_registrations::name_tenant(
+					tx,
+					node.as_str(),
+				)
+				.await
+			})
+			.await?
+			.ok_or_else(|| Error::NotFound("node not found".into()))?;
+		Ok(aidash_domain::tenancy::TenantName::new(holder)?)
+	}
+	/// The Tenant that holds the Node at `address`, or `None` when the address
+	/// is not a Node of this Deployment.
+	pub(crate) async fn tenant_of_node_address(&self, address: &str) -> Result<Option<String>> {
+		let Ok(address) = aidash_domain::nodes::NodeAddress::parse(address) else {
+			return Ok(None);
+		};
+		if address.deployment != self.config.deployment {
+			return Ok(None);
+		}
+		self.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				crate::apps::identity::repositories::node_registrations::name_tenant(
+					tx,
+					address.node.as_str(),
+				)
+				.await
+			})
 			.await
 	}
-	pub async fn peer(&self, node: &str) -> Result<Peer> {
-		PeerRecords::new(&self.store.pool, &self.config.node_id)
-			.enabled(node)
-			.await
+	/// The sender's way to `node`, or `Unauthorized` when it has none.
+	pub async fn route(&self, sender: &Sender, node: &str) -> Result<Route> {
+		self.store
+			.pool
+			.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
+				routes::route_to(tx, &self.config.deployment, sender, node, false).await
+			})
+			.await?
+			.ok_or_else(routes::unregistered)
 	}
-
-	pub async fn register_peer(&self, peer: Peer) -> Result<Peer> {
-		crate::bootstrap::peer_authority(self)
-			.register(peer)
+	/// Every Node the sender addresses.
+	pub async fn routes(&self, sender: &Sender) -> Result<Vec<Route>> {
+		self.store
+			.pool
+			.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
+				routes::all(tx, &self.config.deployment, sender, false).await
+			})
 			.await
-			.map_err(Into::into)
-	}
-	pub async fn authenticate_peer(&self, node: &str, supplied: &str) -> Result<()> {
-		crate::bootstrap::peer_authority(self)
-			.authenticate(node, supplied)
-			.await
-			.map_err(Into::into)
 	}
 	pub async fn request<T: DeserializeOwned>(
 		&self,
+		sender: &Sender,
 		node: &str,
 		method: Method,
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<T> {
-		crate::bootstrap::federation(self)
+		crate::bootstrap::federation(self, sender)
 			.request(node, method.as_str(), path, body)
 			.await
 			.map_err(Into::into)
 	}
 	pub(crate) async fn peer_response(
 		&self,
+		sender: &Sender,
 		node: &str,
 		method: Method,
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<reqwest::Response> {
-		let peer = self.peer(node).await?;
-		crate::bootstrap::peer_transport(self)
-			.send(&peer, method.as_str(), path, body)
+		let route = self.route(sender, node).await?;
+		super::wire::Wire::of(self)
+			.http
+			.send(&route, method.as_str(), path, body)
 			.await
 			.map_err(Into::into)
 	}
@@ -331,14 +370,49 @@ impl Home {
 		authority.discover(&self.federation, search).await
 	}
 	pub fn owner(&self) -> String {
-		qualified_agent(
-			&self.federation.config.node_id,
-			&self.run.agent_id,
-			&self.run.agent_version,
-		)
+		self.run
+			.executor_subject(self.federation.config.deployment.as_str())
 	}
 	pub fn local(&self) -> bool {
-		self.run.home_node == self.federation.config.node_id
+		self.run
+			.is_local(self.federation.config.deployment.as_str())
+	}
+	/// The Node at which this remote Run executes, as the Home's callbacks are
+	/// sent from it. A callback acts as the Node and names no subject.
+	async fn admitted_sender(&self) -> Result<Sender> {
+		let scope = self.tenancy().await?;
+		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.clone();
+		let node: String = self
+			.federation
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
+				use reinhardt::db::orm::execution::convert_values;
+				use reinhardt::query::{
+					Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+				};
+				let (sql, values) = Query::select()
+					.column(Alias::new("node"))
+					.from(Alias::new("authorization_remote_admissions"))
+					.and_where(Expr::col("id").eq(Expr::value(self.run.id)))
+					.build(PostgresQueryBuilder);
+				let row = reinhardt::db::backends::TransactionExecutor::fetch_optional(
+					tx,
+					&sql,
+					convert_values(values),
+				)
+				.await?
+				.ok_or(Error::Forbidden)?;
+				Ok(row
+					.get("node")
+					.map_err(reinhardt::core::exception::Error::from)?)
+			})
+			.await?;
+		Ok(Sender {
+			tenant,
+			node: Some(aidash_domain::nodes::NodeName::parse(&node)?),
+			subject: None,
+		})
 	}
 	pub(crate) async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
 		if let Some(grant) =
@@ -347,6 +421,7 @@ impl Home {
 		{
 			return crate::authorization::peer::authority_request(
 				&self.federation,
+				&self.admitted_sender().await?,
 				&self.run.home_node,
 				"/scoped/execution/commands",
 				&json!({"grant_id":grant,"admission_id":self.run.id,"operation":op,"data":data}),
@@ -890,7 +965,7 @@ impl Injectable for Federation {
 }
 
 pub use crate::apps::federation::remote::serializers::runtime::{
-	Delegation, DiscoveredAgent, Discovery, Offer, Peer,
+	Delegation, DiscoveredAgent, Discovery, Offer,
 };
 
 impl Federation {

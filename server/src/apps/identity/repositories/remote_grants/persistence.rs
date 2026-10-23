@@ -4,7 +4,6 @@ use crate::apps::identity::repositories::home_execution::{Repository, Scope};
 use crate::{
 	Result as NativeResult,
 	authorization::{access::Access, identity::SubjectIdentity},
-	federation::Peer,
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
@@ -85,6 +84,9 @@ impl SourceAuthorityScope for Scope {
 }
 #[async_trait]
 impl GrantScope for Scope {
+	fn home_address(&self) -> String {
+		self.access.node_reference().to_owned()
+	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) {
 		self.access.subjects = subjects;
 	}
@@ -240,7 +242,8 @@ impl GrantScope for Scope {
 							reinhardt::query::Alias::new("root_subject"),
 							reinhardt::query::Alias::new("subject_chain"),
 							reinhardt::query::Alias::new("inspection"),
-							reinhardt::query::Alias::new("expires_at")
+							reinhardt::query::Alias::new("expires_at"),
+							reinhardt::query::Alias::new("node")
 						])
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -288,6 +291,8 @@ impl GrantScope for Scope {
 									"(CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => ?))".to_owned(),
 									vec![Expr::value(query_bind_11.to_owned()).into()]
 								))
+								// The Home Node issuing the grant is its Workspace's.
+								.expr(crate::database::scope::workspace_node(query_bind_4))
 								.to_owned()
 						)
 						.to_owned()
@@ -392,13 +397,10 @@ impl GrantScope for Scope {
 impl GrantRepository for Repository {
 	type Scope = Scope;
 	fn source_node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn source_identity(&self) -> Option<ExecutionPrincipal> {
 		HomeRepository::identity(self)
-	}
-	fn protocol_version(&self) -> &str {
-		crate::config::PROTOCOL_VERSION
 	}
 	fn validation(&self) -> aidash_application::registry::DefinitionValidation {
 		crate::bootstrap::registry_validation_for(&self.runtime.store)
@@ -451,36 +453,29 @@ impl GrantRepository for Repository {
 	}
 	async fn source_request<T: DeserializeOwned + Send>(
 		&self,
+		home: &str,
 		node: &str,
 		path: &str,
 		input: &Value,
+		identity: &ExecutionPrincipal,
 	) -> Result<T> {
-		HomeRepository::request(self, node, path, input).await
+		let sender = aidash_domain::federation::route::Sender {
+			node: Some(aidash_domain::nodes::NodeAddress::parse(home)?.node),
+			subject: Some(identity.subject.clone()),
+			..crate::authorization::peer::node_sender(&identity.tenant)?
+		};
+		crate::authorization::peer::authority_request(&self.runtime, &sender, node, path, input)
+			.await
+			.map_err(Into::into)
 	}
 }
 
 #[async_trait]
 impl aidash_application::ports::authorization::source::SourcePeerScope for Scope {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		peer(&mut self.access, node).await.map_err(Into::into)
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		self.access.route_to(node).await.map_err(Into::into)
 	}
-}
-
-pub(crate) async fn peer(access: &mut Access, node: &str) -> NativeResult<Option<Peer>> {
-	Ok({
-		let query_bind_1 = node;
-		crate::database::query_as(
-			&Query::select()
-				.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-				.from(Alias::new("peers"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ? AND enabled)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **access.tx)
-		.await?
-	})
 }

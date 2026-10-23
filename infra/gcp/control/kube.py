@@ -660,7 +660,7 @@ def app_values(cluster, identity, output, release, sha, settings):
 
     return {
         "image": {"repository": repository, "digest": digest},
-        "node": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
+        "deployment": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
         "existingSecret": "app-runtime",
         "memoryRecovery": {
             "existingClaim": "memory-recovery",

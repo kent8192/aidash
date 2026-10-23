@@ -27,6 +27,7 @@ import {
   authenticatedFetch,
   dashboardContext,
 } from "./transport";
+import { useNodes } from "./nodes";
 import { Badge as StatusBadge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import {
@@ -136,9 +137,11 @@ export function ScopedMarketplace({
   tenant: string;
   approves: boolean;
 }) {
-  const { locale, local } = useI18n();
+  const { locale, local, t } = useI18n();
   const copy = marketplaceCopy[locale];
   const cache = useQueryClient();
+  // An activation is decided against the default Node's Catalog Approvals.
+  const { home } = useNodes();
   const context = ["marketplace", dashboardContext(), identity];
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string>();
@@ -301,8 +304,9 @@ export function ScopedMarketplace({
   }
   const activate = (item: MarketplaceInstallationRevision, enabled: boolean) =>
     run(async () => {
+      if (!home) throw new Error(t("nodeUnavailable"));
       const binding = (
-        await authorizationCatalog(encodeURIComponent(tenant))
+        await authorizationCatalog(tenant, { node: home.name })
       ).find(
         (value) =>
           value.entry_id === item.entry.id &&

@@ -33,6 +33,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 # The server counts tokenized Request Estimates (ADR 0017).
 aidash-domain = { workspace = true, features = ["token-encodings"] }
 aidash-application.workspace = true
+aidash-capability.workspace = true
 aidash-harness.workspace = true
 aidash-runtime.workspace = true
 aidash-integrations.workspace = true

@@ -56,11 +56,11 @@ export function presentRecord(
     return typeof record.id === "string" &&
       typeof record.version === "string" &&
       Object.keys(record).every((key) =>
-        ["id", "version", "registry_node"].includes(key),
+        ["id", "version", "registry_deployment"].includes(key),
       )
-      ? typeof record.registry_node === "string"
+      ? typeof record.registry_deployment === "string"
         ? (labels.get(
-            `${record.registry_node}/${record.id}@${record.version}`,
+            `${record.registry_deployment}/${record.id}@${record.version}`,
           ) ?? `${unavailable} · ${record.version}`)
         : label(record.id, record.version)
       : value;

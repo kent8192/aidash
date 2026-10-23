@@ -1,5 +1,5 @@
 use super::*;
-use aidash_application::{Error, Result, ports::Credentials};
+use crate::federation::tests::{Server, TestKey, route, serve, transport, verified};
 use aidash_domain::federation::dependencies::Reference;
 use axum::{
 	Json, Router,
@@ -11,38 +11,16 @@ use axum::{
 };
 use rstest::rstest;
 use serde_json::Value;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
-struct Keys(RwLock<Option<String>>);
-impl Credentials for Keys {
-	fn resolve(&self, reference: &str) -> Result<String> {
-		assert_eq!(reference, "FIXTURE_KEY");
-		self.0
-			.read()
-			.unwrap()
-			.clone()
-			.ok_or_else(|| Error::Invalid("fixture key unavailable".into()))
-	}
-}
-struct Server(tokio::task::JoinHandle<()>);
-impl Drop for Server {
-	fn drop(&mut self) {
-		self.0.abort();
-	}
-}
-type Calls = Arc<Mutex<Vec<(String, String, String, Value)>>>;
+type Calls = Arc<Mutex<Vec<(HeaderMap, Value)>>>;
 async fn receive(
 	Path(mode): Path<String>,
 	State(calls): State<Calls>,
 	headers: HeaderMap,
 	Json(input): Json<Value>,
 ) -> Response {
-	calls.lock().unwrap().push((
-		headers["authorization"].to_str().unwrap().into(),
-		headers["x-aidash-node"].to_str().unwrap().into(),
-		headers["x-aidash-protocol"].to_str().unwrap().into(),
-		input.clone(),
-	));
+	calls.lock().unwrap().push((headers, input.clone()));
 	match mode.as_str() {
 		"reject" => StatusCode::FORBIDDEN.into_response(),
 		"malformed" => "not JSON".into_response(),
@@ -54,7 +32,7 @@ async fn receive(
 		_ => Json(json!({"visible":true,"pending":[input["reference"]]})).into_response(),
 	}
 }
-async fn fixture(mode: &str) -> (Server, PeerHttp, Peer, Input, Arc<Keys>, Calls) {
+async fn fixture(mode: &str) -> (Server, HttpTransport, Route, Input, Arc<TestKey>, Calls) {
 	let calls = Arc::new(Mutex::new(vec![]));
 	let app = Router::new()
 		.route(
@@ -62,51 +40,31 @@ async fn fixture(mode: &str) -> (Server, PeerHttp, Peer, Input, Arc<Keys>, Calls
 			post(receive),
 		)
 		.with_state(calls.clone());
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/scenario/{mode}/", listener.local_addr().unwrap());
-	let server = Server(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap()
-	}));
-	let keys = Arc::new(Keys(RwLock::new(Some("before-rotation".into()))));
-	let client = PeerHttp {
-		client: reqwest::Client::builder()
-			.redirect(reqwest::redirect::Policy::none())
-			.build()
-			.unwrap(),
-		node_id: "aidash://home".into(),
-		credentials: keys.clone(),
-	};
-	let peer = Peer {
-		node_id: "aidash://leaf".into(),
-		endpoint,
-		credential_env: "FIXTURE_KEY".into(),
-		protocol_version: "0.1".into(),
-		enabled: true,
-	};
+	let (server, origin) = serve(app).await;
+	let key = TestKey::new();
+	let client = transport(&key, &origin);
+	let route = route(&format!("{origin}/scenario/{mode}/"), Some("mapped-reader"));
 	let input = Input {
-		tenant: "mapped-tenant".into(),
-		subject: "mapped-reader".into(),
 		reference: Reference::Registry {
-			node_id: peer.node_id.clone(),
+			node_id: route.target.to_string(),
 			id: "agent".into(),
 			version: "1.0.0".into(),
 			digest: "approved".into(),
 		},
 	};
-	(server, client, peer, input, keys, calls)
+	(server, client, route, input, key, calls)
 }
 
 #[rstest]
 #[tokio::test]
-async fn dependency_rpc_preserves_mapped_identity_headers_and_key_rotation() {
-	let (_server, client, peer, input, keys, calls) = fixture("ok").await;
+async fn dependency_rpc_signs_each_call_as_the_mapped_reader() {
+	let (_server, client, route, input, key, calls) = fixture("ok").await;
 	let first = client
-		.check(&peer, &input, Duration::from_secs(20))
+		.check(&route, &input, Duration::from_secs(20))
 		.await
 		.unwrap();
-	*keys.0.write().unwrap() = Some("after-rotation".into());
 	let second = client
-		.check(&peer, &input, Duration::from_secs(20))
+		.check(&route, &input, Duration::from_secs(20))
 		.await
 		.unwrap();
 	assert!(first.visible && second.visible);
@@ -114,16 +72,19 @@ async fn dependency_rpc_preserves_mapped_identity_headers_and_key_rotation() {
 	assert_eq!(second.pending, first.pending);
 	let calls = calls.lock().unwrap();
 	assert_eq!(calls.len(), 2);
-	assert_eq!(
-		calls[0],
-		(
-			"Bearer before-rotation".into(),
-			"aidash://home".into(),
-			"0.1".into(),
-			serde_json::to_value(&input).unwrap()
-		)
-	);
-	assert_eq!(calls[1].0, "Bearer after-rotation");
+	for (headers, body) in calls.iter() {
+		assert_eq!(headers["x-aidash-protocol"], "0.4");
+		let claims = verified(
+			&key,
+			headers,
+			"POST",
+			"/scoped/dependencies/verify",
+			&serde_json::to_vec(body).unwrap(),
+		);
+		assert_eq!(claims.subject, "mapped-reader");
+		assert_eq!(body, &json!({"reference":input.reference}));
+	}
+	assert_ne!(calls[0].0["authorization"], calls[1].0["authorization"]);
 }
 
 #[rstest]
@@ -132,10 +93,10 @@ async fn dependency_rpc_preserves_mapped_identity_headers_and_key_rotation() {
 #[case("oversize")]
 #[tokio::test]
 async fn invalid_remote_proof_denies_visibility(#[case] mode: &str) {
-	let (_server, client, peer, input, _keys, calls) = fixture(mode).await;
+	let (_server, client, route, input, _keys, calls) = fixture(mode).await;
 	assert!(
 		client
-			.check(&peer, &input, Duration::from_secs(20))
+			.check(&route, &input, Duration::from_secs(20))
 			.await
 			.is_none()
 	);
@@ -144,12 +105,12 @@ async fn invalid_remote_proof_denies_visibility(#[case] mode: &str) {
 
 #[rstest]
 #[tokio::test]
-async fn unavailable_credentials_prevent_any_peer_request() {
-	let (_server, client, peer, input, keys, calls) = fixture("ok").await;
-	*keys.0.write().unwrap() = None;
+async fn a_disabled_deployment_sends_nothing() {
+	let (_server, mut client, route, input, _key, calls) = fixture("ok").await;
+	client.egress.enabled = false;
 	assert!(
 		client
-			.check(&peer, &input, Duration::from_secs(20))
+			.check(&route, &input, Duration::from_secs(20))
 			.await
 			.is_none()
 	);
@@ -159,10 +120,10 @@ async fn unavailable_credentials_prevent_any_peer_request() {
 #[rstest]
 #[tokio::test]
 async fn remaining_graph_deadline_bounds_the_entire_response_body() {
-	let (_server, client, peer, input, _keys, calls) = fixture("late-body").await;
+	let (_server, client, route, input, _keys, calls) = fixture("late-body").await;
 	let result = tokio::time::timeout(
 		Duration::from_secs(1),
-		client.check(&peer, &input, Duration::from_millis(50)),
+		client.check(&route, &input, Duration::from_millis(50)),
 	)
 	.await
 	.expect("graph deadline must stop a stalled body");

@@ -1,15 +1,14 @@
 import type { Artifact } from "../src/generated/models";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
-import { registryVersion } from "./registry-fixture";
+import { defaultNode, registryVersion } from "./registry-fixture";
 
-function fixture(reference = false) {
-  const node = {
+export function fixture(reference = false) {
+  const deployment = {
     id: "aidash://home",
     endpoint: "http://localhost",
     protocol_version: "0.2",
-    capabilities: [],
-    clusters: [],
+    key: null,
   };
   const component = (id: string, kind: string, name: string, config = {}) => ({
     id,
@@ -30,6 +29,7 @@ function fixture(reference = false) {
   const workspaces = [
     {
       id: "workspace-one",
+      node: defaultNode.name,
       title: "Research",
       goal: "Find reliable evidence",
       state: {},
@@ -38,6 +38,7 @@ function fixture(reference = false) {
     },
     {
       id: "workspace-two",
+      node: defaultNode.name,
       title: "Planning",
       goal: "Plan the next release",
       state: {},
@@ -61,9 +62,10 @@ function fixture(reference = false) {
   }));
   const runs = tasks.map((task, index) => ({
     id: `run-${index}`,
+    node: defaultNode.name,
     task_id: task.id,
     workspace_id: task.workspace_id,
-    home_node: node.id,
+    home_node: `${deployment.id}/${defaultNode.name}`,
     agent_id: "researcher",
     agent_version: "1.0.0",
     phase: "THINKING",
@@ -99,7 +101,7 @@ function fixture(reference = false) {
   }));
   const data = {
     access: { kind: "deployment_administrator" },
-    node,
+    deployment,
     workspaces,
     tasks,
     runs,
@@ -111,7 +113,6 @@ function fixture(reference = false) {
     ],
     conversations: [],
     events: [],
-    peers: [],
     artifacts: [] as Artifact[],
     installations: [],
     human_requests: [
@@ -239,8 +240,6 @@ export async function setup(
     subject?: boolean;
     dashboardContext?: string | null;
     olderMessages?: number;
-    remoteParticipant?: boolean;
-    meshErrors?: boolean;
     runMemory?: boolean;
     latestMessageChangesOnPoll?: boolean;
     messageAttachment?: boolean;
@@ -256,7 +255,7 @@ export async function setup(
     semanticPause?: string;
     failureDeliveryRun?: boolean;
     openTask?: boolean;
-    foreignRun?: boolean;
+    foreignRun?: boolean | string;
     remoteAssignment?: boolean;
     nativeMemory?: boolean;
     nativeMemoryDisabled?: boolean;
@@ -299,7 +298,8 @@ export async function setup(
         kind,
         created_at: `2026-09-24T${time}Z`,
         data: payload,
-        node_id: data.node.id,
+        node: defaultNode.name,
+        node_id: data.deployment.id,
         sequence: index + 1,
         workspace_id: "workspace-one",
       }))
@@ -327,7 +327,11 @@ export async function setup(
     }
   }
   if (options.openTask) data.tasks[0].status = "OPEN";
-  if (options.foreignRun) data.runs[0].home_node = "aidash://remote-home";
+  if (options.foreignRun)
+    data.runs[0].home_node =
+      typeof options.foreignRun === "string"
+        ? options.foreignRun
+        : "aidash://remote-home";
   if (options.remoteAssignment)
     data.registry.push({
       ...data.registry[1],
@@ -342,7 +346,7 @@ export async function setup(
         {
           kind: "memory",
           target: {
-            registry_node: data.node.id,
+            registry_deployment: data.deployment.id,
             id: "native-memory",
             version: "1.0.0",
           },
@@ -376,7 +380,7 @@ export async function setup(
         {
           kind: "bundle",
           target: {
-            registry_node: data.node.id,
+            registry_deployment: data.deployment.id,
             id: "approved-host-tools",
             version: "1.0.0",
           },
@@ -563,9 +567,18 @@ export async function setup(
       ? { kind: "subject", tenant: "acme", subject: "alice" }
       : data.access;
     if (path === "/api/session")
-      return route.fulfill({ json: { access, node_id: data.node.id } });
+      return route.fulfill({ json: { access, node_id: data.deployment.id } });
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
+    if (path === "/api/tenants/acme/nodes")
+      return route.fulfill({
+        json: [
+          {
+            ...defaultNode,
+            address: `${data.deployment.id}/${defaultNode.name}`,
+          },
+        ],
+      });
     if (path === "/api/tenants/acme/administration")
       return route.fulfill({
         json: {
@@ -596,39 +609,6 @@ export async function setup(
           next: null,
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({
-        json: {
-          nodes: [
-            ...(labRuns.length
-              ? [{ node_id: "aidash://lab", runs: labRuns, human_requests: [] }]
-              : []),
-            ...(options.remoteParticipant
-              ? [
-                  {
-                    node_id: "aidash://peer",
-                    runs: [
-                      {
-                        ...data.runs[0],
-                        id: "remote-run",
-                        task_id: "remote-task",
-                      },
-                    ],
-                    human_requests: [],
-                  },
-                ]
-              : []),
-          ],
-          errors: options.meshErrors
-            ? [
-                {
-                  node_id: "aidash://peer-down",
-                  error: "connection refused",
-                },
-              ]
-            : [],
-        },
-      });
     if (path.endsWith("/remote-grants/inspect"))
       return route.fulfill({
         json: {
@@ -645,7 +625,7 @@ export async function setup(
             .map((entity) => ({
               node_id: options.remoteAssignment
                 ? "aidash://remote"
-                : data.node.id,
+                : data.deployment.id,
               entity:
                 options.remoteAssignment && options.nativeMemory
                   ? {
@@ -659,7 +639,7 @@ export async function setup(
                                   ...binding,
                                   target: {
                                     ...binding.target,
-                                    registry_node: "aidash://remote",
+                                    registry_deployment: "aidash://remote",
                                     id: "remote-native",
                                   },
                                 }
@@ -891,7 +871,9 @@ export async function setup(
         kind: "human.answered",
         created_at: "2026-09-22T10:20:00Z",
         data: { ...request },
-        node_id: data.node.id,
+        node: data.workspaces.find(
+          (workspace) => workspace.id === request.workspace_id,
+        )!.node,
         sequence: 100,
         workspace_id: request.workspace_id,
       });

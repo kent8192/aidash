@@ -285,7 +285,7 @@ async fn bundle_publication_names_builtin_members_but_never_ships_one(
 	host.config = serde_json::to_value(core_descriptor(node, "outbound_get").unwrap()).unwrap();
 	scope.entries.insert(host.id.clone(), host);
 	let qualified = |id: &str| QualifiedRef {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		id: id.into(),
 		version: "1.0.0".into(),
 	};
@@ -344,7 +344,8 @@ async fn bundle_publication_accepts_portable_host_descriptors() {
 	scope.entries.insert(host.id.clone(), host);
 	let root = scope.entries.get_mut("source").unwrap();
 	root.kind = "bundle".into();
-	root.config = json!({"members":[{"registry_node":node,"id":"host-get","version":"1.0.0"}]});
+	root.config =
+		json!({"members":[{"registry_deployment":node,"id":"host-get","version":"1.0.0"}]});
 	let result = publish(&mut scope, &validation(), &command(), node)
 		.await
 		.unwrap();

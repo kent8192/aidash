@@ -3,6 +3,7 @@ use crate::Result;
 use aidash_domain::{
 	Conversation, NewTask, Task, Workspace,
 	federation::Delegation,
+	nodes::NodeName,
 	registry::{EntityRef, Entry},
 };
 use async_trait::async_trait;
@@ -12,7 +13,12 @@ use uuid::Uuid;
 /// failure rolls back writes and persists denial audit under the existing policy.
 #[async_trait]
 pub trait ConversationScope: Send {
-	async fn create_workspace(&mut self, title: &str, goal: &str) -> Result<Workspace>;
+	async fn create_workspace(
+		&mut self,
+		title: &str,
+		goal: &str,
+		node: Option<&NodeName>,
+	) -> Result<Workspace>;
 	async fn workspace_context(&mut self, workspace: Uuid) -> Result<()>;
 	async fn require_workspace(&mut self, action: &str) -> Result<()>;
 	async fn registry_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;

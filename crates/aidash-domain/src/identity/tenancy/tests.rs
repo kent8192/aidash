@@ -107,6 +107,7 @@ fn each_offering_supplies_its_column_of_defaults(
 			invitations: true,
 			deletion_grace_days: 30,
 			audit_retention_days: 365,
+			nodes_per_tenant: 10,
 		}
 	);
 }

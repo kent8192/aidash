@@ -47,7 +47,6 @@ pub struct Message {
 impl Message {
 	pub(crate) async fn append_in(
 		tx: &mut dyn TransactionExecutor,
-		node: &str,
 		workspace: Uuid,
 		sender: &str,
 		content: &str,
@@ -85,8 +84,7 @@ impl Message {
 		if let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? {
 			let message: MessageContract =
 				serde_json::from_value(QueryRow::from_backend_row(row).data)?;
-			event_records::append(tx, node, Some(workspace), "message.created", json!(message))
-				.await?;
+			event_records::append(tx, Some(workspace), "message.created", json!(message)).await?;
 			Ok(message)
 		} else {
 			let message = Self::objects()

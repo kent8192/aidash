@@ -14,6 +14,7 @@ use aidash_domain::{
 			RemoteExecutionControlState, RemoteExecutionPhase,
 		},
 	},
+	nodes::NodeName,
 	registry::{AgentConfig, EntityRef},
 	semantic::{Failure, remote::VERSION},
 };
@@ -57,6 +58,7 @@ pub async fn run_grant<R: PeerAdmissionRecords + ?Sized>(
 }
 pub async fn receiver_lease<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	description: Description,
 ) -> Result<(R::Scope, Description)> {
@@ -65,11 +67,7 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		return Err(Error::Forbidden);
 	}
 	let mut scope = repository
-		.mapped(
-			source,
-			&description.source_tenant,
-			&description.source_subject,
-		)
+		.mapped(receiver, source, &description.source_subject)
 		.await?;
 	let result = async {
 		scope.context()["source_workspace_id"] = json!(description.task.workspace_id);
@@ -77,8 +75,6 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		scope.context()["source_task_revision"] = json!(description.task.revision);
 		let input = InspectInput {
 			task_id: Some(description.task.id),
-			tenant: description.source_tenant.clone(),
-			subject: description.source_subject.clone(),
 			agent: EntityRef {
 				id: description.inspection.agent.id.clone(),
 				version: description.inspection.agent.version.clone(),
@@ -139,12 +135,14 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 /// Ask Home to describe the grant. No receiver transaction is held during this RPC.
 async fn described<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	grant: Uuid,
 ) -> Result<Described> {
 	let reply = Described::from_value(
 		repository
 			.request(
+				receiver,
 				source,
 				"/scoped/execution/grants/describe",
 				&json!({"grant_id":grant}),
@@ -153,7 +151,7 @@ async fn described<R: PeerAdmissionRepository>(
 	)?;
 	let description = &reply.description;
 	if description.source_node != source
-		|| description.target_node != repository.node_id()
+		|| description.target_node != format!("{}/{receiver}", repository.node_id())
 		|| description.grant_id != grant
 		|| description.task.status != TaskStatus::Open
 	{
@@ -162,10 +160,11 @@ async fn described<R: PeerAdmissionRepository>(
 	Ok(reply)
 }
 /// Lease the receiver authority Home describes, keeping the Workspace corpus
-/// digest the same reply reports (#191). `None` when Home's protocol predates
-/// the digest or the grant carries no Home semantic access.
+/// digest the same reply reports (#191). `None` when the grant carries no Home
+/// semantic access.
 async fn described_lease<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	grant: Uuid,
 ) -> Result<(R::Scope, Description, Option<String>)> {
@@ -173,25 +172,27 @@ async fn described_lease<R: PeerAdmissionRepository>(
 	let Described {
 		description,
 		corpus_digest,
-	} = described(repository, source, grant).await?;
-	let (scope, description) = receiver_lease(repository, source, description).await?;
+	} = described(repository, receiver, source, grant).await?;
+	let (scope, description) = receiver_lease(repository, receiver, source, description).await?;
 	Ok((scope, description, corpus_digest))
 }
 pub async fn lease<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	grant: Uuid,
 ) -> Result<(R::Scope, Description)> {
 	// The digest only matters to a worker's Retrieval Key.
-	let (scope, description, _) = described_lease(repository, source, grant).await?;
+	let (scope, description, _) = described_lease(repository, receiver, source, grant).await?;
 	Ok((scope, description))
 }
 pub async fn admit<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	grant: Uuid,
 ) -> Result<Admission> {
-	let (mut scope, description) = lease(repository, source, grant).await?;
+	let (mut scope, description) = lease(repository, receiver, source, grant).await?;
 	let result = async {
 		scope.lock_admission(source, &description).await?;
 		if scope.legacy_conflict(source, &description, grant).await? {
@@ -229,6 +230,7 @@ pub async fn admit<R: PeerAdmissionRepository>(
 }
 pub async fn verify<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	id: Uuid,
 ) -> Result<bool> {
@@ -236,7 +238,7 @@ pub async fn verify<R: PeerAdmissionRepository>(
 		.verify_record(id, source)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let (scope, description) = lease(repository, source, record.grant_id).await?;
+	let (scope, description) = lease(repository, receiver, source, record.grant_id).await?;
 	let result = if record.matches(&scope.identity(), scope.subjects(), &description)? {
 		Ok(true)
 	} else {
@@ -251,8 +253,13 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 	let Some(grant) = run_grant(repository, run).await? else {
 		return Ok(None);
 	};
+	let record_node = repository
+		.record(run.id)
+		.await?
+		.ok_or(Error::Forbidden)?
+		.node;
 	let (mut scope, description, corpus_digest) =
-		match described_lease(repository, &run.home_node, grant).await {
+		match described_lease(repository, &record_node, &run.home_node, grant).await {
 			Ok(value) => value,
 			Err(error) => {
 				let description: Description =
@@ -283,6 +290,7 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 }
 pub async fn leaf_lease<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	grant: Uuid,
 	id: Uuid,
@@ -293,13 +301,14 @@ pub async fn leaf_lease<R: PeerAdmissionRepository>(
 		.ok_or(Error::Forbidden)?;
 	let description: Description = serde_json::from_value(record.description.clone())?;
 	if description.source_node != source
-		|| description.target_node != repository.node_id()
+		|| description.target_node != format!("{}/{receiver}", repository.node_id())
 		|| description.grant_id != grant
 	{
 		return Err(Error::Forbidden);
 	};
 	// A Home callback uses the saved description and never recursively calls Home.
-	let (mut scope, description) = receiver_lease(repository, source, description).await?;
+	let (mut scope, description) =
+		receiver_lease(repository, receiver, source, description).await?;
 	let result = async {
 		if !record.matches(&scope.identity(), scope.subjects(), &description)? {
 			return Err(Error::Forbidden);
@@ -325,6 +334,7 @@ pub async fn leaf_lease<R: PeerAdmissionRepository>(
 }
 pub async fn activate<R: PeerAdmissionRepository>(
 	repository: &R,
+	receiver: &NodeName,
 	source: &str,
 	id: Uuid,
 	grant: Uuid,
@@ -332,6 +342,7 @@ pub async fn activate<R: PeerAdmissionRepository>(
 	let bound: Uuid = serde_json::from_value(
 		repository
 			.request(
+				receiver,
 				source,
 				"/scoped/execution/grants/activation",
 				&json!({"grant_id":grant}),
@@ -341,7 +352,7 @@ pub async fn activate<R: PeerAdmissionRepository>(
 	if bound != id {
 		return Err(Error::Forbidden);
 	};
-	let (mut scope, description) = lease(repository, source, grant).await?;
+	let (mut scope, description) = lease(repository, receiver, source, grant).await?;
 	let result = async {
 		let record = scope.activation_record(id).await?.ok_or(Error::Forbidden)?;
 		if !record.matches(&scope.identity(), scope.subjects(), &description)? {

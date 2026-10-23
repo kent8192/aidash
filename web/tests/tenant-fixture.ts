@@ -15,6 +15,26 @@ export async function createTenant(
   return ((await response.json()) as { name: string }).name;
 }
 
+/** The Node a new Tenant starts with. A Catalog Approval names the Node it
+ *  applies to, and an approved agent's subject is keyed by the Node's address,
+ *  `<address>/agents/<id>@<version>`. */
+export async function defaultNode(
+  request: APIRequestContext,
+  token: string,
+  tenant: string,
+): Promise<{ name: string; address: string }> {
+  const response = await request.get(`/api/tenants/${tenant}/nodes`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  expect(response.status(), await response.text()).toBe(200);
+  const nodes = (await response.json()) as {
+    name: string;
+    address: string;
+    default: boolean;
+  }[];
+  return nodes.find((node) => node.default)!;
+}
+
 /** The golden path's subject in Node A's research Tenant. Only Tenant
  *  subjects do Tenant work (#371), so live specs that create Workspaces or
  *  assign the golden path's agents act as it. golden_path.py issues the

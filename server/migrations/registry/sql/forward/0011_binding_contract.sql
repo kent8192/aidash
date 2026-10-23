@@ -1,9 +1,9 @@
 CREATE OR REPLACE FUNCTION public.aidash_qualified_ref_is_valid(value jsonb) RETURNS boolean
 LANGUAGE sql IMMUTABLE STRICT AS $$
  SELECT COALESCE(jsonb_typeof(value) = 'object'
- AND value - ARRAY['registry_node','id','version']::text[] = '{}'::jsonb
- AND jsonb_typeof(value->'registry_node') = 'string' AND jsonb_typeof(value->'id') = 'string' AND jsonb_typeof(value->'version') = 'string'
- AND value->>'registry_node' ~ '^aidash://[A-Za-z0-9-]{1,100}$'
+ AND value - ARRAY['registry_deployment','id','version']::text[] = '{}'::jsonb
+ AND jsonb_typeof(value->'registry_deployment') = 'string' AND jsonb_typeof(value->'id') = 'string' AND jsonb_typeof(value->'version') = 'string'
+ AND value->>'registry_deployment' ~ '^aidash://[A-Za-z0-9-]{1,100}$'
  AND value->>'id' ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$'
  AND value->>'version' ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$', false)
 $$;
@@ -17,10 +17,10 @@ BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
  OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps']::text[] <> '{}'::jsonb
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
- OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
  IF COALESCE(value->'cluster','null'::jsonb) <> 'null'::jsonb
- AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+ AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_deployment":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
  IF jsonb_typeof(COALESCE(value->'max_steps','64'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'max_steps','64') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
  step_count := COALESCE(value->>'max_steps','64')::numeric;
  IF step_count NOT BETWEEN 1 AND 1000 THEN RETURN false; END IF;
@@ -115,9 +115,9 @@ BEGIN
  OR entity ?| ARRAY['installation','binding_normalization']
  OR jsonb_typeof(entity->'id') IS DISTINCT FROM 'string' OR jsonb_typeof(entity->'version') IS DISTINCT FROM 'string'
  OR entity->>'id' IS DISTINCT FROM entry_id OR entity->>'version' IS DISTINCT FROM entry_version
- OR NOT COALESCE(public.aidash_qualified_ref_is_valid(jsonb_build_object('registry_node','aidash://contract','id',entry_id,'version',entry_version)),false) THEN RETURN false; END IF;
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(jsonb_build_object('registry_deployment','aidash://contract','id',entry_id,'version',entry_version)),false) THEN RETURN false; END IF;
  FOR candidate IN SELECT jsonb_array_elements(value->'dependencies') LOOP
-  IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+  IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate || '{"registry_deployment":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
  END LOOP;
  RETURN COALESCE(CASE entity->>'kind'
  WHEN 'agent' THEN public.aidash_agent_bindings_is_valid(entity->'config')

@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[rstest]
 #[tokio::test]
-async fn identity_is_public_but_federation_requires_a_peer_credential(
+async fn identity_is_public_but_federation_requires_a_federation_token(
 	endpoint: crate::endpoint::EndpointFuture,
 	#[from(untrusted_client)]
 	#[with(endpoint.clone())]
@@ -27,7 +27,7 @@ async fn identity_is_public_but_federation_requires_a_peer_credential(
 		.unwrap();
 	// Assert
 	let identity = assert_json(identity, 200);
-	assert_eq!(identity["id"], app.runtime.config.node_id);
+	assert_eq!(identity["id"], app.runtime.config.deployment);
 	assert_eq!(identity["protocol_version"], PROTOCOL_VERSION);
 	assert_json(missing_protocol, 400);
 	assert_json(invalid_peer, 401);
@@ -45,8 +45,7 @@ fn untrusted_client(
 		let client = client.await;
 		for (name, value) in [
 			("x-aidash-protocol", PROTOCOL_VERSION),
-			("x-aidash-node", "aidash://unknown-peer"),
-			("Authorization", "Bearer invalid-peer-credential"),
+			("Authorization", "Bearer invalid-federation-token"),
 		] {
 			client.set_header(name, value).await.unwrap();
 		}

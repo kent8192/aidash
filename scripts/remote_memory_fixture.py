@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic, in-cluster providers. Only synthetic acceptance data is captured."""
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -61,9 +62,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not parent:
                     semantic = current["semantic_memory"]
                     encoded = json.dumps(semantic)
-                    assert semantic["home_node"] == "aidash://tx-00", semantic
+                    assert semantic["home_node"] == self.server.home_node, semantic
                     assert "ochre falcon" in encoded and "DO NOT DISCLOSE" not in encoded, semantic
-                    assert semantic["executor"].startswith("aidash://tx-01/agents/"), semantic
+                    assert semantic["executor"].startswith(self.server.executor_node + "/agents/"), semantic
                     assert semantic["sources"] and semantic["result"]["matches"], semantic
                     assert all(item["revision"] > 0 for item in semantic["sources"]), semantic
                     LOCK.wait_for(lambda: not STATE["hold_inference"], timeout=300)
@@ -83,5 +84,13 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": "acceptance assertion failed"})
 
 
+def serve(handler=Handler):
+    home = os.environ["AIDASH_FIXTURE_HOME_NODE"]
+    executor = os.environ["AIDASH_FIXTURE_EXECUTOR_NODE"]
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), handler)
+    server.home_node, server.executor_node = home, executor
+    server.serve_forever()
+
+
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+    serve()

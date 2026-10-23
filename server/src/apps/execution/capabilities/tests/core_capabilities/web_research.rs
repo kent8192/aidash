@@ -102,9 +102,11 @@ async fn research_fixture(
 	core: CoreFuture,
 ) -> Research {
 	let mut c = core.await;
-	c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
-		json!({"kind":"agent"});
+	c.policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
+		"research",
+		VERSION,
+	)] = json!({"kind":"agent"});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	let bundle =
 		c.f.registry
@@ -131,7 +133,7 @@ async fn research_fixture(
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog/approvals",
-		json!({ "approvals": approvals }),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
@@ -147,14 +149,14 @@ async fn research_fixture(
 	agent.version = VERSION.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Research with the bound tools.");
-	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_node":c.f.config.node_id,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_deployment":c.f.config.deployment,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
 	agent.config["remove_default"] = json!([]);
 	for (method, path, body) in [
 		("POST", "/api/registry".to_owned(), json!(agent)),
 		(
 			"POST",
 			"/api/authorization/acme/catalog".to_owned(),
-			json!({"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
 		),
 	] {
 		let (status, value) = request(&c.app, &c.token, method, &path, body).await;
@@ -201,9 +203,12 @@ impl Research {
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}
 	async fn register_search_only_agent(&mut self) {
-		let node = self.c.f.config.node_id.clone();
-		self.c.policy["subjects"]
-			[aidash_server::domain::qualified_agent(&node, "research", "3.1.0")] = json!({"kind":"agent"});
+		let node = self.c.f.config.deployment.to_string();
+		self.c.policy["subjects"][aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(&node, "acme"),
+			"research",
+			"3.1.0",
+		)] = json!({"kind":"agent"});
 		let mut agent = self
 			.c
 			.f
@@ -217,13 +222,13 @@ impl Research {
 			.unwrap();
 		agent.version = "3.1.0".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
+		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 		for (path, body) in [
 			("/api/registry", json!(agent)),
 			(
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
 			),
 		] {
 			let (status, value) = request(&self.c.app, &self.c.token, "POST", path, body).await;
@@ -236,7 +241,7 @@ impl Research {
 			&self.c.token,
 			"POST",
 			&format!("/api/tasks/{}/delegate", self.c.task),
-			json!({"node_id":self.c.f.config.node_id,"agent":{"id":"research","version":VERSION}}),
+			json!({"node_id":self.c.f.config.deployment,"agent":{"id":"research","version":VERSION}}),
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");
@@ -1130,6 +1135,71 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 		deployment_administrator_status, 403,
 		"Deployment Administrators read no Tenant's research setup"
 	);
+	// A second Node starts without approvals, regardless of the default Catalog.
+	let (status, second) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Research Node"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{second}");
+	let name = second["name"].as_str().unwrap();
+	let path = format!("/api/research/providers?node={name}");
+	let (status, empty) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{empty}");
+	assert!(
+		empty["providers"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|provider| provider["operations"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.all(|operation| operation["approved_definitions"] == json!([]))),
+		"another Node's approvals must not appear: {empty}"
+	);
+	let (status, approved) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		"/api/authorization/acme/catalog/approvals",
+		json!({"node":name,"approvals":[{"entry":r.search_tool,"enabled":true,"expected_revision":0}]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approved}");
+	let (status, selected) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{selected}");
+	let selected = selected["providers"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|provider| provider["provider"] == "research.fixture@1")
+		.unwrap();
+	let selected = selected["operations"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|operation| operation["operation"] == "search")
+		.unwrap();
+	assert_eq!(selected["approved_definitions"], json!([r.search_tool]));
+	let mut denied = r.c.policy.clone();
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-research-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[name]}}));
+	common::replace_policy(&r.c.f.store, "acme", denied).await;
+	let (status, body) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/research/providers?node=able-oak-00000000",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 404, "{body}");
+
 	r.close().await;
 }
 

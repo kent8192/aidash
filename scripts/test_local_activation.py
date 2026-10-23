@@ -25,13 +25,14 @@ class LocalActivationTest(unittest.TestCase):
         provision = services['activation-provision']
         self.assertEqual(provision['command'], ['activation-provision'])
         self.assertEqual(provision['environment']['NATS_URL'], services['backend']['environment']['NATS_URL'])
-        self.assertEqual(provision['environment']['AIDASH_NODE_ID'], services['backend']['environment']['AIDASH_NODE_ID'])
+        self.assertEqual(provision['environment']['AIDASH_DEPLOYMENT_ID'], services['backend']['environment']['AIDASH_DEPLOYMENT_ID'])
         self.assertEqual(provision['depends_on']['nats']['condition'], 'service_healthy')
         self.assertEqual(services['backend']['depends_on']['activation-provision']['condition'], 'service_completed_successfully')
         self.assertIn('healthz?js-enabled-only=true', ' '.join(services['nats']['healthcheck']['test']))
 
     def test_compose_provisioner_and_backend_share_activation_overrides(self):
         settings = {
+            'AIDASH_DEPLOYMENT_ID': 'aidash://activation-fixture',
             'AIDASH_ACTIVATION_NAMESPACE': 'local-activation-fixture',
             'AIDASH_ACTIVATION_MAX_AGE_SECONDS': '3600',
             'AIDASH_ACTIVATION_MAX_BYTES': '10485760',
@@ -62,7 +63,7 @@ class LocalActivationTest(unittest.TestCase):
         container = pod['containers'][0]
         self.assertEqual(container['command'], ['aidash', 'activation-provision'])
         self.assertEqual(container['envFrom'], [{'secretRef': {'name': 'aidash-local-app'}}])
-        self.assertIn({'name': 'AIDASH_NODE_ID', 'value': 'aidash://node-a'}, container['env'])
+        self.assertIn({'name': 'AIDASH_DEPLOYMENT_ID', 'value': 'aidash://node-a'}, container['env'])
 
 
 if __name__ == '__main__':

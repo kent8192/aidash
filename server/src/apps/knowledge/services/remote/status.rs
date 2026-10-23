@@ -34,7 +34,7 @@ pub(crate) async fn run_receipt(
 		&mut crate::bootstrap::semantic_status_scope(
 			Some(&f.store),
 			&mut access,
-			&f.config.node_id,
+			f.config.deployment.as_str(),
 		),
 		id,
 	)

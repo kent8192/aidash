@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct AuthorizationCatalogHistory {
 	#[field(primary_key = true, field_type = "text")]
 	pub tenant: String,
+	#[field(primary_key = true, field_type = "text")]
+	pub node: String,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(primary_key = true, field_type = "text", db_column = "entry_id")]
 	pub entry_key: String,
@@ -40,7 +42,13 @@ impl AuthorizationCatalogHistory {
 			.filter(Self::field_tenant().eq(tenant))
 			.filter(Self::field_entry_key().eq(id))
 			.filter(Self::field_entry_version().eq(version))
-			.order_by(&["-created_at", "-revision", "entry_id", "entry_version"])
+			.order_by(&[
+				"-created_at",
+				"-revision",
+				"node",
+				"entry_id",
+				"entry_version",
+			])
 			.limit(100)
 			.all_with_executor(tx)
 			.await

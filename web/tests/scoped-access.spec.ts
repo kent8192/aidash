@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createTenant } from "./tenant-fixture";
+import { createTenant, defaultNode } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -78,14 +78,14 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       "acceptance-access-token",
       `tenant-${id}`,
     );
-    const state = await api("/api/state");
+    const node = await defaultNode(request, "acceptance-access-token", tenant);
     await api(`/api/authorization/${tenant}`, {
       expected_revision: 1,
       bundle: {
         tenant,
         subjects: {
           alice: { kind: "user" },
-          [`${state.node.id}/agents/${id}@1.0.0`]: { kind: "agent" },
+          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
         },
         policies: [
           {
@@ -149,6 +149,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
           entry: { id: entryId, version: "1.0.0" },
           expected_revision: 0,
           enabled: true,
+          node: node.name,
         },
         credential.token,
       );
@@ -157,7 +158,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (req) => {
-      if (/\/api\/(mesh|marketplace)(?:\?|$)/.test(req.url()))
+      if (/\/api\/marketplace(?:\?|$)/.test(req.url()))
         administrativeRequests.push(req.url());
     });
     await installBearerDashboard(page, credential.token, {

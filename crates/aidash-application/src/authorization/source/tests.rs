@@ -50,7 +50,7 @@ fn task() -> Task {
 }
 impl Scope {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+		let executor = aidash_domain::agent_subject("aidash://receiver", "agent", "1.0.0");
 		Self {
 			subjects: vec!["requester".into(), executor.clone()],
 			bundle: serde_json::from_value(

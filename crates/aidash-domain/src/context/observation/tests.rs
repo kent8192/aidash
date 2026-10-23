@@ -9,6 +9,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 	WorkspaceSnapshot {
 		workspace: Workspace {
 			id: workspace_id,
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			title: "\0".repeat(256),
 			goal: "\0".repeat(512),
 			state: json!({}),
@@ -49,7 +50,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 			.map(|sequence| Event {
 				sequence: sequence as i64,
 				id: Uuid::new_v4(),
-				node_id: "node".into(),
+				node: None,
 				workspace_id: Some(workspace_id),
 				kind: "\0".repeat(128),
 				data: json!({}),

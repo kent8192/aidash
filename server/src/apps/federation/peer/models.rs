@@ -8,9 +8,7 @@ mod authorization_peer_mappings;
 pub use authorization_peer_mappings::AuthorizationPeerMapping;
 mod authorization_remote_admissions;
 pub use authorization_remote_admissions::AuthorizationRemoteAdmission;
-mod peer_events;
-pub use peer_events::PeerEvent;
-mod peers;
-pub use peers::Peer;
-
-pub(crate) mod records;
+mod node_registration_history;
+pub use node_registration_history::NodeRegistrationHistory;
+mod node_registrations;
+pub use node_registrations::NodeRegistration;

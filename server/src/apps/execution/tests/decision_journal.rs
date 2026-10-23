@@ -82,7 +82,7 @@ fn bound(node: &str, mode: Mode) -> BoundDecider {
 	BoundDecider {
 		pin: DeciderPin {
 			identity: QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: definition.id.clone(),
 				version: definition.version.clone(),
 			},
@@ -303,7 +303,7 @@ fn boundary_in(
 		..budget(&projection)
 	};
 	Boundary {
-		node: store.node_id.clone(),
+		node: store.deployment.to_string(),
 		run: run.id,
 		step: run.step,
 		run_revision: run.revision,
@@ -354,7 +354,7 @@ async fn decide_in(
 	provider: &Provider,
 	window: usize,
 ) -> (aidash_application::Result<CompactionResult>, Context) {
-	let decider = bound(&store.node_id, mode);
+	let decider = bound(store.deployment.as_str(), mode);
 	let admitted = Policy::new(allowance(&decider, 10));
 	let policy = authority.revoke.unwrap_or(&admitted);
 	let journal =
@@ -448,7 +448,7 @@ fn record(
 		attempt: Uuid::new_v4(),
 		decision: Uuid::nil(),
 		boundary: Boundary {
-			node: store.node_id.clone(),
+			node: store.deployment.to_string(),
 			run: run.id,
 			step: run.step,
 			run_revision: run.revision,
@@ -550,7 +550,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	assert_eq!(unchanged.history.len(), run.context.history.len());
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 	// Evidence whose answers differ from the charged result is never committed.
-	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
 	let policy = Policy::new(allowance(&decider, 10));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
@@ -744,7 +744,7 @@ async fn retained_state_expires_to_its_marker(
 		panic!("a Shadow decision retains its state");
 	};
 	// State bytes that do not match their digest are never retained.
-	let decider = bound(&f.store.node_id, Mode::Shadow);
+	let decider = bound(f.store.deployment.as_str(), Mode::Shadow);
 	let policy = Policy::new(allowance(&decider, 10));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
@@ -810,7 +810,7 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
-	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
 	let policy = Policy::new(allowance(&decider, 2));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 2), &policy).unwrap();
@@ -972,7 +972,7 @@ async fn every_charge_rechecks_the_current_allowance(
 	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
-	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
 	let policy = Policy::new(allowance(&decider, 10));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
@@ -1038,7 +1038,7 @@ async fn a_decider_revoked_before_the_commit_never_retains_state(
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
 	let provider = Provider::new(Mode::Shadow);
-	let decider = bound(&f.store.node_id, Mode::Shadow);
+	let decider = bound(f.store.deployment.as_str(), Mode::Shadow);
 	let policy = Policy::new(allowance(&decider, 10));
 	let authority = Authority {
 		provider: &provider,
@@ -1088,7 +1088,7 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
-	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
 	let policy = Policy::new(allowance(&decider, 10));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
@@ -1219,7 +1219,7 @@ async fn a_staged_decision_is_recorded_only_with_the_summary_adopted_from_it(
 	assert_eq!(unchanged.history.len(), run.context.history.len());
 	assert!(staged.pruned.history.len() < run.context.history.len());
 	assert!(evidence_rows(&f.store, run.id).await.is_empty());
-	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
 	let policy = Policy::new(allowance(&decider, 10));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
@@ -1333,7 +1333,7 @@ async fn evidence_must_attest_to_the_context_and_identity_it_claims(
 	// Arrange: a rejected decision leaves evidence whose answers are charged.
 	let (rejected, _) = decide(&f.store, &run, worker, Mode::Enforce, &authority, &provider).await;
 	assert!(rejected.is_err());
-	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
 	let policy = Policy::new(allowance(&decider, 10));
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
@@ -1408,7 +1408,7 @@ fn approval_bound(node: &str, mode: Mode) -> BoundDecider {
 	BoundDecider {
 		pin: DeciderPin {
 			identity: QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: definition.id.clone(),
 				version: definition.version.clone(),
 			},
@@ -1433,7 +1433,7 @@ async fn judge_call(
 	provider: &Provider,
 	calls: u64,
 ) -> aidash_application::Result<Ruling> {
-	let decider = approval_bound(&store.node_id, mode);
+	let decider = approval_bound(store.deployment.as_str(), mode);
 	let journal = RunDecisionJournal::new(
 		store,
 		run.clone(),
@@ -1469,7 +1469,7 @@ async fn judge_call(
 	}];
 	let definition = approval_definition(mode);
 	let boundary = Boundary {
-		node: store.node_id.clone(),
+		node: store.deployment.to_string(),
 		run: run.id,
 		step: run.step,
 		run_revision: run.revision,
@@ -1670,7 +1670,7 @@ async fn approval_evidence_that_is_not_the_decision_it_names_is_refused(
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let decider = approval_bound(&f.store.node_id, Mode::Enforce);
+	let decider = approval_bound(f.store.deployment.as_str(), Mode::Enforce);
 	let journal = RunDecisionJournal::new(
 		&f.store,
 		run.clone(),

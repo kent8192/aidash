@@ -15,7 +15,7 @@ import time
 import uuid
 
 from golden_path import (
-    ROOT, TOKEN, PEER_TOKEN, api_request, approve, approve_fixture_external_requests,
+    ROOT, TOKEN, api_request, approve, approve_fixture_external_requests, default_node,
     approve_fixture_tool_calls, entity, reconcile_uncertain_http, tenant_subject,
     tool_binding, tool_descriptor, wait_for,
 )
@@ -29,7 +29,7 @@ SERVER_PASSWORD = "acceptance-server-password"
 def configure_research(base, node, fixture_url):
     """Register and approve the research closure as its Tenant's subject."""
     tenant, subject = tenant_subject(base, "Cluster acceptance", "alice", agents=(
-        f"{node}/agents/coordinator@1.0.0", f"{node}/agents/researcher@1.0.0",
+        "coordinator@1.0.0", "researcher@1.0.0",
     ))
     token = subject["token"]
     tool = entity("tool", "research-http", tool_descriptor(node, {
@@ -47,7 +47,7 @@ def configure_research(base, node, fixture_url):
     for entry in entries:
         api_request(base, "/api/registry", entry, token=token)
     approve(base, tenant, token, entries)
-    return token
+    return token, default_node(base, tenant)[1]
 
 
 def main():
@@ -81,7 +81,7 @@ def main():
         """Apply the native history as the owner before the node's release starts;
         its servers and workers log in as aidash_server and never migrate (#262)."""
         name = f"aidash-{node}-migrate"
-        apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name}, "spec": {"backoffLimit": 0, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "migrate", "image": args.image, "imagePullPolicy": "IfNotPresent", "args": ["migrate"], "envFrom": [{"secretRef": {"name": f"aidash-{node}"}}], "env": [{"name": "DATABASE_URL", "value": f"postgres://aidash_owner:{OWNER_PASSWORD}@postgres:5432/aidash_{node}"}, {"name": "AIDASH_NODE_ID", "value": f"aidash://ops-{node}"}]}]}}}})
+        apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name}, "spec": {"backoffLimit": 0, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "migrate", "image": args.image, "imagePullPolicy": "IfNotPresent", "args": ["migrate"], "envFrom": [{"secretRef": {"name": f"aidash-{node}"}}], "env": [{"name": "DATABASE_URL", "value": f"postgres://aidash_owner:{OWNER_PASSWORD}@postgres:5432/aidash_{node}"}, {"name": "AIDASH_DEPLOYMENT_ID", "value": f"aidash://ops-{node}"}]}]}}}})
         try:
             kube("wait", "--for=condition=complete", f"job/{name}", "--timeout=600s")
         finally:
@@ -120,11 +120,11 @@ def main():
         apply({"apiVersion": "v1", "kind": "List", "items": [database, nats, fixture, service("postgres", 5432), service("nats", 4222), service("fixture", 8000)]})
         kube("rollout", "status", "statefulset/postgres", "--timeout=180s")
         for node in ["a", "b"]:
-            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash_server:{SERVER_PASSWORD}@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN}})
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash_server:{SERVER_PASSWORD}@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN}})
             migrate(node)
             repo, tag = args.image.rsplit(":", 1)
             frontend_repo, frontend_tag = args.frontend_image.rsplit(":", 1)
-            subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--set-json", 'keylessEndpoints={"permittedPrivateOrigins":["http://fixture:8000"]}', "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
+            subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"deployment.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--set-json", 'keylessEndpoints={"permittedPrivateOrigins":["http://fixture:8000"]}', "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
             runtime = fixture_runtime(apply, f"ops-{node}-fixture")
             for role in ("server", "worker"):
                 name = f"ops-{node}-aidash-{role}"
@@ -145,9 +145,9 @@ def main():
         base_a = bases[0]
         # Research stays on Node A, as in golden_path.py. Scoped Golden Path
         # exercises the grant/admission protocol for execution across Nodes.
-        token = configure_research(base_a, "aidash://ops-a", "http://fixture:8000")
+        token, address = configure_research(base_a, "aidash://ops-a", "http://fixture:8000")
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"}, token=token)
-        assert {a["node_id"] for a in discovered["agents"]} == {"aidash://ops-a"}
+        assert {a["node_id"] for a in discovered["agents"]} == {address}
 
         def approve_calls():
             while not approval_stop.wait(2):
@@ -200,7 +200,7 @@ def main():
         # The public Service stays stable as its backend server Pods roll.
         for node, base in zip(["a", "b"], bases):
             identity = wait_for(lambda base=base: api_request(base, "/health"), label="rolled server")
-            assert identity["node_id"] == f"aidash://ops-{node}"
+            assert identity["deployment"] == f"aidash://ops-{node}"
         after = api_request(base_a, f"/api/workspaces/{workspace}", token=token)
         assert {t["id"] for t in after["tasks"]} == {t["id"] for t in snapshot["tasks"]}
         assert {a["id"] for a in after["artifacts"]} == {a["id"] for a in snapshot["artifacts"]}
