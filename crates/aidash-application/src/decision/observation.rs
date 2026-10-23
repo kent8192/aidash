@@ -108,13 +108,12 @@ impl ObservationInput {
 				"observation action reference changed".into(),
 			));
 		}
-		if let PendingAction::Generation { request } = &self.pending {
-			if !matches!(&frame.origin, ObservationOrigin::Generation {request: id,task,policy_id,policy_revision} if id==&request.request && task==&request.task && policy_id==&request.policy_id && policy_revision==&request.policy_revision)
-			{
-				return Err(Error::Invalid(
-					"generation observation differs from original request".into(),
-				));
-			}
+		if let PendingAction::Generation { request } = &self.pending
+			&& !matches!(&frame.origin, ObservationOrigin::Generation {request: id,task,policy_id,policy_revision} if id==&request.request && task==&request.task && policy_id==&request.policy_id && policy_revision==&request.policy_revision)
+		{
+			return Err(Error::Invalid(
+				"generation observation differs from original request".into(),
+			));
 		}
 		Ok(())
 	}
@@ -260,32 +259,32 @@ impl DecisionGate<'_> {
 			evidence.outcome = ObservationOutcome::Unavailable {
 				reason: UnavailableReason::DefinitionUnapproved,
 			};
-		} else if let Some(input) = request.input {
-			if input.validate(frame).is_ok() {
-				if self.provider.implementation_id() != decider.pin.provider_implementation
-					|| self.provider.configuration_digest()? != decider.pin.configuration_digest
-				{
-					evidence.outcome = ObservationOutcome::Unavailable {
-						reason: UnavailableReason::DefinitionUnapproved,
-					};
-				} else {
-					let disclosure = Disclosure::default();
-					let evaluation = Evaluation {
-						boundary: &boundary,
-						decider: &decider,
-						definition: request.definition.expect("validated"),
-						disclosure: &disclosure,
-						now: request.now,
-					};
-					for (index, route) in config.routes.iter().enumerate() {
-						let (record, outcome, next) = self
-							.observe_route(frame, input, &evaluation, index as u32, route)
-							.await?;
-						evidence.routes.push(record);
-						evidence.outcome = outcome;
-						if !next {
-							break;
-						}
+		} else if let Some(input) = request.input
+			&& input.validate(frame).is_ok()
+		{
+			if self.provider.implementation_id() != decider.pin.provider_implementation
+				|| self.provider.configuration_digest()? != decider.pin.configuration_digest
+			{
+				evidence.outcome = ObservationOutcome::Unavailable {
+					reason: UnavailableReason::DefinitionUnapproved,
+				};
+			} else {
+				let disclosure = Disclosure::default();
+				let evaluation = Evaluation {
+					boundary: &boundary,
+					decider: &decider,
+					definition: request.definition.expect("validated"),
+					disclosure: &disclosure,
+					now: request.now,
+				};
+				for (index, route) in config.routes.iter().enumerate() {
+					let (record, outcome, next) = self
+						.observe_route(frame, input, &evaluation, index as u32, route)
+						.await?;
+					evidence.routes.push(record);
+					evidence.outcome = outcome;
+					if !next {
+						break;
 					}
 				}
 			}
