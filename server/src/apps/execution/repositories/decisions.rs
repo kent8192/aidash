@@ -18,10 +18,10 @@ use aidash_domain::{
 	Run,
 	context::{Context, recovery::Failure},
 	decision::{
-		ApprovalEvidence, AttemptEvidence, AttemptStatus, Boundary, DeciderPin, Evidence, Mode,
-		Outcome, OutcomeLink, Probability, Questions, Restrictions, StateReference,
-		StateRetentionWitness, approval_questions, policy::ExecutionAllowance, pruning,
-		validate_digest,
+		ApprovalEvidence, AttemptEvidence, AttemptProviderReport, AttemptStatus, Boundary,
+		DeciderPin, Evidence, Mode, Outcome, OutcomeLink, Probability, Questions, Restrictions,
+		StateReference, StateRetentionWitness, approval_questions, policy::ExecutionAllowance,
+		pruning, validate_digest,
 	},
 	registry::rules,
 };
@@ -45,7 +45,7 @@ const EVIDENCE: &str = "decision_evidence";
 const STATES: &str = "decision_states";
 const OUTCOMES: &str = "decision_outcomes";
 const PENDING: &str = "pending";
-const ATTEMPT_COLUMNS: [&str; 22] = [
+const ATTEMPT_COLUMNS: [&str; 23] = [
 	"id",
 	"decision_id",
 	"run_id",
@@ -68,6 +68,7 @@ const ATTEMPT_COLUMNS: [&str; 22] = [
 	"owner_receipts",
 	"status",
 	"answers",
+	"provider_report",
 ];
 
 /// The snake_case wire label of a serialized enum, as stored in the CHECKed columns.
@@ -147,7 +148,14 @@ fn recovered(row: &native::Row) -> Result<RecoveredAttempt> {
 	if answers.is_some() != (status == AttemptStatus::Answered) {
 		return Err(Error::Invalid("corrupt stored decision answers".into()));
 	}
+	let provider_report: Option<Value> = row.try_get("provider_report")?;
+	let provider_report: AttemptProviderReport = provider_report
+		.map(serde_json::from_value)
+		.transpose()?
+		.unwrap_or_default();
+	provider_report.validate()?;
 	Ok(RecoveredAttempt {
+		provider_report,
 		permit,
 		status,
 		answers,
@@ -601,7 +609,16 @@ impl<'a> RunDecisionJournal<'a> {
 		permit: &DispatchPermit,
 		answers: Option<&BTreeMap<String, Probability>>,
 		status: AttemptStatus,
+		provider_report: &AttemptProviderReport,
 	) -> Result<()> {
+		provider_report.validate()?;
+		if status == AttemptStatus::NotDispatched
+			&& *provider_report != AttemptProviderReport::Unknown
+		{
+			return Err(Error::Invalid(
+				"undispatched attempt cannot report provider facts".into(),
+			));
+		}
 		let record = &permit.record;
 		if record.boundary.run != self.run.id {
 			return Err(Error::Invalid(
@@ -641,7 +658,10 @@ impl<'a> RunDecisionJournal<'a> {
 			));
 		}
 		if saved_status != PENDING {
-			if saved_status != status || saved_answers != answers {
+			if saved_status != status
+				|| saved_answers != answers
+				|| recovered(&saved)?.provider_report != *provider_report
+			{
 				return Err(Error::Conflict(
 					"Decision Attempt already finished differently".into(),
 				));
@@ -658,6 +678,10 @@ impl<'a> RunDecisionJournal<'a> {
 				.table(Alias::new(ATTEMPTS))
 				.value(Alias::new("status"), status.as_str())
 				.value(Alias::new("answers"), answers)
+				.value(
+					Alias::new("provider_report"),
+					serde_json::to_value(provider_report)?,
+				)
 				.value_expr(Alias::new("finished_at"), Expr::current_timestamp())
 				.and_where(Expr::col("id").eq(Expr::value(record.attempt)))
 				.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
@@ -826,6 +850,7 @@ impl<'a> RunDecisionJournal<'a> {
 					.restrictions
 					.at_least_as_strict(&record.binding_restrictions)
 				|| attempt.status != saved.status
+                || attempt.provider_report != saved.provider_report
 			{
 				return Err(Error::Invalid(
 					"decision evidence differs from its charged attempts".into(),
@@ -1355,7 +1380,20 @@ impl DecisionJournal for RunDecisionJournal<'_> {
 		answers: Option<&BTreeMap<String, Probability>>,
 		status: AttemptStatus,
 	) -> aidash_application::Result<()> {
-		Ok(self.finish(permit, answers, status).await?)
+		Ok(self
+			.finish(permit, answers, status, &AttemptProviderReport::Unknown)
+			.await?)
+	}
+	async fn finish_reported_attempt(
+		&self,
+		permit: &DispatchPermit,
+		answers: Option<&BTreeMap<String, Probability>>,
+		status: AttemptStatus,
+		provider_report: &AttemptProviderReport,
+	) -> aidash_application::Result<()> {
+		Ok(self
+			.finish(permit, answers, status, provider_report)
+			.await?)
 	}
 	async fn commit(
 		&self,

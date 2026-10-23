@@ -12,7 +12,8 @@ use aidash_application::{
 	},
 	ports::decision::{
 		Approval, DecisionAuthority, DecisionJournal, DecisionProvider, Disclosure, DispatchError,
-		DispatchRecord, PreparedDispatch, PreparedRequest, Reservation, RetainedState,
+		DispatchRecord, PreparedDispatch, PreparedRequest, ReportedDispatch, Reservation,
+		RetainedState,
 	},
 	tenancy::TEST_FIXTURE,
 };
@@ -126,6 +127,7 @@ impl CurrentAllowance for Policy {
 
 /// Answers every question in one request with the same keep probability.
 struct Provider {
+	provider_report: AttemptProviderReport,
 	digest: String,
 	keep: Probability,
 	calls: AtomicUsize,
@@ -135,6 +137,7 @@ struct Provider {
 impl Provider {
 	fn new(mode: Mode) -> Self {
 		Self {
+			provider_report: AttemptProviderReport::Unknown,
 			digest: config(mode).digest().unwrap(),
 			keep: Probability::new(0.0).unwrap(),
 			calls: AtomicUsize::new(0),
@@ -188,6 +191,13 @@ struct Dispatch<'a> {
 }
 #[async_trait]
 impl PreparedDispatch for Dispatch<'_> {
+	async fn dispatch_reported(self: Box<Self>) -> ReportedDispatch {
+		let provider_report = self.provider.provider_report.clone();
+		ReportedDispatch {
+			result: self.dispatch().await,
+			provider_report,
+		}
+	}
 	async fn dispatch(self: Box<Self>) -> Result<BTreeMap<String, Probability>, DispatchError> {
 		self.provider.calls.fetch_add(1, Ordering::SeqCst);
 		if self.provider.outage.load(Ordering::SeqCst) {
@@ -491,7 +501,17 @@ async fn an_applied_decision_commits_its_context_and_evidence_atomically(
 	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
-	let provider = Provider::new(Mode::Enforce);
+	let provider_report = AttemptProviderReport::Reported {
+		served_model: Some("typesafe/jev-1.13-20260917".into()),
+		served_host: Some("typesafe".into()),
+		input_tokens: Some(124),
+		output_tokens: Some(5),
+		cost_usd: Some(ProviderCost::new(0.000002).unwrap()),
+	};
+	let provider = Provider {
+		provider_report: provider_report.clone(),
+		..Provider::new(Mode::Enforce)
+	};
 	let authority = Authority {
 		provider: &provider,
 		forbid_after_dispatch: AtomicBool::new(false),
@@ -520,6 +540,7 @@ async fn an_applied_decision_commits_its_context_and_evidence_atomically(
 	assert_eq!(outcome, "applied");
 	assert_eq!(evidence.replay().unwrap(), evidence.branches);
 	assert_eq!(evidence.state, StateReference::Disabled);
+	assert_eq!(evidence.attempts[0].provider_report, provider_report);
 	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
 	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
 	cleanup(f, &url, &schema).await;
@@ -834,6 +855,7 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 	};
 	// Assert: an unfinished reservation recovers as uncertain with the same receipts.
 	assert_eq!(pending.status, AttemptStatus::Uncertain);
+	assert_eq!(pending.provider_report, AttemptProviderReport::Unknown);
 	assert_eq!(pending.permit, permit);
 	let mut changed = first.clone();
 	changed.request_digest = format!("sha256:{}", "f".repeat(64));
@@ -887,12 +909,40 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 	};
 	assert_eq!(still.status, AttemptStatus::Uncertain);
 	// Answers become the only reusable recovery source.
+	let provider_report = AttemptProviderReport::Reported {
+		served_model: Some("typesafe/jev-1.13".into()),
+		served_host: Some("typesafe".into()),
+		input_tokens: Some(12),
+		output_tokens: None,
+		cost_usd: Some(ProviderCost::new(0.0).unwrap()),
+	};
+	assert!(matches!(
+		journal
+			.finish_reported_attempt(
+				&permit,
+				None,
+				AttemptStatus::NotDispatched,
+				&provider_report
+			)
+			.await,
+		Err(aidash_application::Error::Invalid(_))
+	));
 	journal
-		.finish_attempt(&permit, Some(&answers), AttemptStatus::Answered)
+		.finish_reported_attempt(
+			&permit,
+			Some(&answers),
+			AttemptStatus::Answered,
+			&provider_report,
+		)
 		.await
 		.unwrap();
 	journal
-		.finish_attempt(&permit, Some(&answers), AttemptStatus::Answered)
+		.finish_reported_attempt(
+			&permit,
+			Some(&answers),
+			AttemptStatus::Answered,
+			&provider_report,
+		)
 		.await
 		.unwrap();
 	assert!(matches!(
@@ -908,6 +958,20 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 	assert_eq!(recovered.len(), 1);
 	assert_eq!(recovered[0].status, AttemptStatus::Answered);
 	assert_eq!(recovered[0].answers.as_ref(), Some(&answers));
+	assert_eq!(recovered[0].provider_report, provider_report);
+	// A retry cannot erase known provider facts while keeping the same answer/status.
+	assert!(matches!(
+		journal
+			.finish_reported_attempt(
+				&permit,
+				Some(&answers),
+				AttemptStatus::Answered,
+				&AttemptProviderReport::Unknown
+			)
+			.await,
+		Err(aidash_application::Error::Conflict(_))
+	));
+
 	// Another batch of the decision is charged only with the decision's inputs.
 	let mut sibling = record(&f.store, &run, worker, &decider, &["q2_call"], 'a');
 	sibling.decision = first.decision;

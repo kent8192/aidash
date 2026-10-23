@@ -224,6 +224,12 @@ impl ApprovalEvidence {
 				"approval restrictions are looser than the admitted Binding".into(),
 			));
 		}
+		if let Some(route) = self.route.or_else(|| self.failed_routes.last().copied()) {
+			let model = self.route_models.get(route as usize).ok_or_else(corrupt)?;
+			for attempt in &self.attempts {
+				attempt.provider_report.validate_model(model)?;
+			}
+		}
 		let questions = approval_questions();
 		let answered = validate_attempt_set(&self.attempts, &questions)?;
 		let ordered = self.failed_routes.windows(2).all(|pair| pair[0] < pair[1]);
