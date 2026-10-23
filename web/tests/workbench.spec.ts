@@ -1394,3 +1394,88 @@ test("a draft keeps the Agent Plugins it carries through an edit and save", asyn
     entry: { config: { instructions: "Edited with plugins", agent_plugins } },
   });
 });
+
+test("Tenant test settings enforce field minima and require a rules array before writing", async ({
+  page,
+}) => {
+  await setup(page, {
+    locale: "en-US",
+    subject: true,
+    tenantActions: [
+      "workbench.test_limits.update",
+      "workbench.test_profile.update",
+    ],
+  });
+  const limits = {
+    tenant: "acme",
+    revision: 1,
+    max_input_bytes: 4096,
+    max_output_tokens: 128,
+    max_total_tokens: 512,
+    max_steps: 4,
+    max_duration_secs: 30,
+    max_concurrent: 1,
+    payload_days: 7,
+    incident_evidence_days: 14,
+  };
+  const writes: unknown[] = [];
+  await page.route("**/api/workbench/test-limits/acme", (route) =>
+    route.fulfill({
+      json: {
+        limits,
+        ceilings: {
+          ...limits,
+          max_input_bytes: 1000000,
+          max_output_tokens: 8192,
+          max_total_tokens: 1000000,
+          max_steps: 64,
+          max_duration_secs: 900,
+          max_concurrent: 32,
+          payload_days: 365,
+          incident_evidence_days: 3650,
+        },
+      },
+    }),
+  );
+  await page.route("**/api/workbench/test-profiles/acme", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route("**/api/workbench/test-profiles/acme/*", (route) => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({
+      json: { id: "new", revision: 1, enabled: true, rules: [] },
+    });
+  });
+  await page.goto("/settings?view=registry");
+  await page
+    .getByRole("button", { name: "Workbench tests", exact: true })
+    .click();
+  for (const [label, minimum] of [
+    ["Input bytes", 1024],
+    ["Output tokens per call", 64],
+    ["Total tokens", 256],
+    ["Seconds per test", 5],
+  ] as const) {
+    const input = page.getByLabel(label, { exact: true });
+    await expect(input).toHaveAttribute("min", String(minimum));
+    await input.fill(String(minimum - 1));
+    expect(
+      await input.evaluate(
+        (element: HTMLInputElement) => element.validity.rangeUnderflow,
+      ),
+    ).toBe(true);
+    await input.fill(String(minimum));
+  }
+  await page.getByLabel("Profile", { exact: true }).last().fill("new");
+  await page.getByLabel("Rules (JSON)", { exact: true }).fill("{}");
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect(
+    page.getByText("Enter a valid JSON array of rules.", { exact: true }),
+  ).toBeVisible();
+  expect(writes).toEqual([]);
+  await page.getByLabel("Rules (JSON)", { exact: true }).fill("[]");
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect
+    .poll(() => writes)
+    .toEqual([{ expected_revision: 0, enabled: true, rules: [] }]);
+});

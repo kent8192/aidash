@@ -32,11 +32,13 @@ export function PeerMappings({
   tenant,
   credentials,
   editable = true,
+  readable = true,
 }: {
   tenant: string;
   credentials: Credential[];
   /** Whether the caller may create, change and disable mappings. */
   editable?: boolean;
+  readable?: boolean;
 }) {
   const { t, locale } = useI18n();
   const credentialLabels = disambiguateLabels(
@@ -62,16 +64,18 @@ export function PeerMappings({
     queryKey: ["authorization", tenant, "peer-mappings", offset],
     queryFn: () =>
       authorizationPeerMappings(path, { offset, limit: PAGE_SIZE }),
+    enabled: readable,
     refetchInterval: 5000,
   });
   const history = useQuery({
     queryKey: ["authorization", tenant, "peer-mapping-history", after],
     queryFn: () =>
       authorizationPeerMappingHistory(path, { after, limit: PAGE_SIZE }),
+    enabled: readable,
     refetchInterval: 5000,
   });
-  const rows = !mappings.isError ? mappings.data : undefined;
-  const revisions = !history.isError ? history.data : undefined;
+  const rows = readable && !mappings.isError ? mappings.data : undefined;
+  const revisions = readable && !history.isError ? history.data : undefined;
   const save = async (input: PeerMappingInput) => {
     if (busy) return;
     setBusy(true);
@@ -118,8 +122,10 @@ export function PeerMappings({
       >
         <Hint>{t("authPeerMappingHelp")}</Hint>
         {error && !editing && <Alert>{t(error)}</Alert>}
-        {mappings.isError && <Alert>{mappings.error.message}</Alert>}
-        {mappings.isPending && <Loading />}
+        {readable && mappings.isError && (
+          <Alert>{mappings.error.message}</Alert>
+        )}
+        {readable && mappings.isPending && <Loading />}
         {rows?.length === 0 && (
           <p className="text-xs text-muted-foreground">
             {t("authNoPeerMappings")}
@@ -212,8 +218,8 @@ export function PeerMappings({
         />
       </Panel>
       <Panel title={t("authPeerMappingHistory")}>
-        {history.isError && <Alert>{history.error.message}</Alert>}
-        {history.isPending && <Loading />}
+        {readable && history.isError && <Alert>{history.error.message}</Alert>}
+        {readable && history.isPending && <Loading />}
         {revisions?.length === 0 && (
           <p className="text-xs text-muted-foreground">{t("authNoHistory")}</p>
         )}

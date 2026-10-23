@@ -534,6 +534,19 @@ mod pruning_rules {
 	}
 
 	#[test]
+	fn native_removes_a_dropped_orphaned_tool_and_its_arguments() {
+		let history = vec![
+			tool(1, "orphan", &"x".repeat(2000)),
+			assistant(2, "Keep this response", &[]),
+		];
+		let units = Units::of(&history, true);
+		assert_eq!(units.turn_of[0], None);
+		let pruned = apply(&history, &BTreeMap::from([(0, Branch::Drop)]), &units);
+		assert_eq!(pruned.removed, 1);
+		assert_eq!(pruned.history, vec![history[1].clone()]);
+	}
+
+	#[test]
 	fn legacy_removes_dropped_events_and_truncates_long_results_only() {
 		let history = vec![
 			tool(1, "a", "short"),

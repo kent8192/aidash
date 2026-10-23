@@ -150,16 +150,14 @@ def valid_images(images, project):
         raise Refused("Release evidence contains an unapproved registry or mutable image")
 
 
-def authorize_production(config, main_sha, ci_check, accepted=None):
-    """Bind a human-merged release, main CI and staging artifacts to the same tree."""
-    validate_config(config)
-    if not production(config) or not SHA.fullmatch(main_sha):
-        raise Refused("Production needs an exact main SHA")
+def merged_release(config, main_sha):
+    """Resolve the human-merged release whose tested tree is current protected main."""
+    if not SHA.fullmatch(main_sha):
+        raise Refused("Release verification needs an exact main SHA")
     repo = config["repository"]
     branch = github(f"repos/{repo}/branches/main")
     if not branch.get("protected") or branch["commit"]["sha"] != main_sha:
         raise Refused("Production must deploy the current protected main SHA")
-    ci_check(dict(config, required_ci_branch="main"), main_sha)
     pulls = github(f"repos/{repo}/commits/{main_sha}/pulls?per_page=100")
     candidates = []
     for pr in pulls:
@@ -200,6 +198,17 @@ def authorize_production(config, main_sha, ci_check, accepted=None):
     parents = main_commit.get("parents", [])
     if not parents or github(f"repos/{repo}/compare/{parents[0]['sha']}...{source}").get("status") not in {"ahead", "identical"}:
         raise Refused("The candidate does not include the previous main history")
+    return pr, source
+
+
+def authorize_production(config, main_sha, ci_check, accepted=None):
+    """Bind a human-merged release, main CI and staging artifacts to the same tree."""
+    validate_config(config)
+    if not production(config):
+        raise Refused("Production needs an exact main SHA")
+    pr, source = merged_release(config, main_sha)
+    repo = config["repository"]
+    ci_check(dict(config, required_ci_branch="main"), main_sha)
     ci_check(dict(config, required_ci_branch=config["develop_branch"]), source)
     if accepted is not None:
         # Only the protected lifecycle state supplies an already admitted tuple.

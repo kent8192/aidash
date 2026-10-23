@@ -46,6 +46,7 @@ impl SandboxRepository for Repository {
 		crate::http::validate(&native).map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Box<dyn SandboxScope + '_>> {
+		self.tenant_actions.check_binding(&self.store.pool).await?;
 		Ok(Box::new(Scope {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),

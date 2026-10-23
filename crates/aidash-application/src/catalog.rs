@@ -68,7 +68,10 @@ impl CatalogCache {
 		match refreshed {
 			Some(Ok(models)) => {
 				state.failed_at = None;
-				let fetched = state.fetched.insert(Fetched { models, at: now });
+				let fetched = state.fetched.insert(Fetched {
+					models,
+					at: clock(),
+				});
 				Ok(snapshot(fetched, false))
 			}
 			failure => {

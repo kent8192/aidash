@@ -13,6 +13,8 @@ pub(crate) struct TenantAdministration {
 	/// The Tenant label every member sees.
 	pub(crate) label: Option<String>,
 	pub(crate) actions: Vec<String>,
+	/// Service/agent subjects this caller may issue a credential for.
+	pub(crate) issuable_subjects: Vec<String>,
 	/// Empty unless the caller holds a Tenant Administrator action.
 	pub(crate) assignable_groups: BTreeSet<String>,
 	/// The policy revision a membership update must name.

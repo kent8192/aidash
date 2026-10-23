@@ -551,3 +551,6 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 
 #[path = "deletion/purge.rs"]
 mod purge;
+
+#[path = "deletion/restoration.rs"]
+mod restoration;

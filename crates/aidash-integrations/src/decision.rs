@@ -279,7 +279,7 @@ impl PreparedDispatch for RouteDispatch {
 		if !access.bearer.expose_secret().is_empty() {
 			request = request.bearer_auth(access.bearer.expose_secret());
 		}
-		let response = request
+		let mut response = request
 			.send()
 			.await
 			.map_err(|_| Error::External("decision provider transport failed".into()))?;
@@ -294,12 +294,27 @@ impl PreparedDispatch for RouteDispatch {
 				Error::External(format!("decision provider returned HTTP {status}")).into(),
 			);
 		}
-		// serde_json recursion limits protect parsing structure, not payload size.
-		// There is deliberately no fixed response byte limit or retained raw body.
-		let body = response
-			.bytes()
+		// Bound the Node's transport buffer, including ignored provider metadata.
+		// Current large valid responses still fit; the limit is checked before
+		// appending each chunk and no response body is retained in evidence.
+		const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+		if response
+			.content_length()
+			.is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES as u64)
+		{
+			return Err(DispatchError::InvalidAnswers);
+		}
+		let mut body = Vec::new();
+		while let Some(chunk) = response
+			.chunk()
 			.await
-			.map_err(|_| Error::External("decision response unavailable".into()))?;
+			.map_err(|_| Error::External("decision response unavailable".into()))?
+		{
+			if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+				return Err(DispatchError::InvalidAnswers);
+			}
+			body.extend_from_slice(&chunk);
+		}
 		let answered = validate_response(&self.route, &self.questions, &body)
 			.map_err(|_| DispatchError::InvalidAnswers)?;
 		// Until Decision Evidence keeps it (#108), cost is observable only here.

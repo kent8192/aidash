@@ -210,3 +210,54 @@ async fn tenants_set_their_own_test_limits_at_the_revision_they_read(
 		.await;
 	assert_eq!((saved.max_concurrent, saved.revision), (3, 1));
 }
+
+#[rstest]
+#[tokio::test]
+async fn administration_lists_profiles_beyond_the_first_hundred(
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	credential_client: crate::endpoint::ClientFuture,
+) {
+	use aidash_server::apps::registry::workbench::models::AgentTestProfile;
+	let app = endpoint.await;
+	let alice = subject(&app, "alice", credential_client.await).await;
+	app.database
+		.fixture(async |tx| {
+			for n in 0..101 {
+				let row = AgentTestProfile::build()
+					.tenant("endpoint")
+					.id(format!("profile-{n:03}"))
+					.revision(1)
+					.enabled(n != 100)
+					.rules(reinhardt::db::orm::Json(json!([])))
+					.updated_at(chrono::Utc::now())
+					.finish();
+				AgentTestProfile::objects()
+					.create_with_conn(tx, &row)
+					.await?;
+			}
+			Ok(())
+		})
+		.await;
+	let page = assert_json(
+		app.deployment_administrator
+			.get("/api/workbench/test-profiles?tenant=endpoint")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(page.as_array().unwrap().len(), 100);
+	assert_eq!(page[0]["id"], "profile-000");
+	assert_eq!(page[99]["id"], "profile-099");
+	let rows = assert_json(
+		alice
+			.get("/api/workbench/test-profiles/endpoint")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(rows.as_array().unwrap().len(), 101);
+	assert_eq!(rows[100]["id"], "profile-100");
+	assert_eq!(rows[100]["enabled"], false);
+}

@@ -790,3 +790,35 @@ async fn an_approval_request_asks_the_block_questions_of_the_pending_call_on_eac
 	// Each Route's endpoint received exactly one request.
 	assert_eq!(bodies.lock().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn oversized_valid_decision_responses_are_refused_with_or_without_content_length() {
+	for chunked in [false, true] {
+		let router = Router::new().route("/systemone", post(move || async move {
+   let body = serde_json::to_vec(&json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":0.5}},"debug":"x".repeat(8 * 1024 * 1024)})).unwrap();
+   if chunked {
+    let chunks: Vec<_> = body.chunks(1024 * 1024).map(|chunk| Ok::<_, std::io::Error>(axum::body::Bytes::copy_from_slice(chunk))).collect();
+    axum::response::Response::new(axum::body::Body::from_stream(futures_util::stream::iter(chunks)))
+   } else {
+    let size = body.len();
+    let mut response = axum::response::Response::new(axum::body::Body::from(body));
+    response.headers_mut().insert("content-length", size.to_string().parse().unwrap());
+    response
+   }
+  }));
+		let (endpoint, _server) = server(router).await;
+		let client = provider(&endpoint, None);
+		let request = client
+			.plan(0, &json!({"goal":"authorized"}), &questions(1))
+			.unwrap()
+			.remove(0);
+		let error = client
+			.prepare(0, &request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await
+			.unwrap_err();
+		assert!(matches!(error, DispatchError::InvalidAnswers), "{error}");
+	}
+}
