@@ -895,7 +895,7 @@ async fn evaluation_export_keeps_usage_and_recovery_without_private_context(
 				.scalar_all(&mut *tx)
 				.await
 				.unwrap();
-		assert_eq!(rows, vec![]);
+		assert!(rows.is_empty());
 	}
 	tx.rollback().await.unwrap();
 	cleanup(store, &url, &schema).await;
