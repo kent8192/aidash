@@ -54,14 +54,21 @@ pub async fn authorize(
 	// Foreign Agent closures are refreshed at their owning Node by the Binding
 	// authority; never resolve their unqualified IDs through this local catalog.
 	for saved in &snapshot.definitions {
-		if saved.identity.registry_deployment != scope.node_id()
-			|| aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
-		{
+		if saved.identity.registry_deployment != scope.node_id() {
 			continue;
 		}
-		let current = scope
-			.catalog(&saved.identity.local(), "registry.read")
-			.await?;
+		let current =
+			if aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
+				|| aidash_domain::registry::bindings::defaults::is_compaction_decider(
+					&saved.definition,
+				) {
+				// Dispatch approval may be deferred; readable immutable metadata may not.
+				scope.metadata(&saved.identity.local()).await?
+			} else {
+				scope
+					.catalog(&saved.identity.local(), "registry.read")
+					.await?
+			};
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != saved.digest {
 			return Err(Error::Conflict("admitted definition changed".into()));
 		}

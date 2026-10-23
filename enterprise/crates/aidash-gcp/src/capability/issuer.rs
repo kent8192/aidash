@@ -127,15 +127,15 @@ impl TokenIssuer for CapabilityIssuer {
 				"Secret Store resource does not match the environment".into(),
 			));
 		}
-		let sub = match (context.run, context.maintenance) {
-			(Some(run), None) if !run.is_nil() => TokenSubject::Run {
+		let sub = match (context.run, context.maintenance, context.observation) {
+			(Some(run), None, None) if !run.is_nil() => TokenSubject::Run {
 				run: run.to_string(),
 				call: request
 					.call
 					.filter(|call| !call.is_nil())
 					.unwrap_or_else(uuid::Uuid::new_v4),
 			},
-			(None, Some(purpose)) => TokenSubject::Maintenance {
+			(None, Some(purpose), None) => TokenSubject::Maintenance {
 				maintenance: match purpose {
 					MaintenancePurpose::MemoryIndexing => Maintenance::MemoryIndexing,
 					MaintenancePurpose::MemoryRetention => Maintenance::MemoryRetention,
@@ -144,9 +144,19 @@ impl TokenIssuer for CapabilityIssuer {
 				},
 				tenant: context.tenant.clone(),
 			},
+			(None, None, Some(observation)) if !observation.is_nil() && context.is_decision() => {
+				TokenSubject::ApprovalObservation {
+					observation,
+					tenant: context.tenant.clone(),
+					call: request.call.filter(|call| !call.is_nil()).ok_or_else(|| {
+						Error::Invalid("observation token requires its charged attempt".into())
+					})?,
+				}
+			}
 			_ => {
 				return Err(Error::Invalid(
-					"Capability Token requires a Run or Maintenance purpose".into(),
+					"Capability Token requires one Run, Maintenance or approval observation scope"
+						.into(),
 				));
 			}
 		};

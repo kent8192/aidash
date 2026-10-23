@@ -215,7 +215,27 @@ impl GenerationLifecycleScope for Scope {
 		actor: &str,
 		reason: &str,
 	) -> aidash_application::Result<()> {
-		self.lifecycle().history(job, status, actor, reason).await
+		self.lifecycle().history(job, status, actor, reason).await?;
+		// This adapter is exclusively the explicit Approve/Deny/Stop/Delete control.
+		// Generic lifecycle transitions never emit human calibration labels.
+		let person = matches!(&self.mode,Mode::Subject(access) if access.snapshot.bundle.subjects.get(&access.identity.subject).is_some_and(|subject|subject.enabled&&subject.kind==aidash_domain::policy::SubjectKind::User));
+		if person && job.status == "PENDING_APPROVAL" {
+			let human = match status {
+				"QUEUED" => Some(aidash_domain::decision::observation::HumanLabel::Allow),
+				"DENIED" => Some(aidash_domain::decision::observation::HumanLabel::Deny),
+				_ => None,
+			};
+			if let Some(human) = human {
+				crate::apps::execution::observation::label(
+					self.lifecycle().transaction.as_mut(),
+					&job.tenant,
+					job.id,
+					human,
+				)
+				.await?;
+			}
+		}
+		Ok(())
 	}
 	async fn event(
 		&mut self,

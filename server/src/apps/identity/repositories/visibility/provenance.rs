@@ -110,18 +110,33 @@ impl ReadProvenanceScope for Reads<'_> {
 			if let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.is_null()) {
 				let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
 					serde_json::from_value(snapshot)?;
-				entries.extend(
-					snapshot
-						.definitions
-						.into_iter()
-						.filter(|definition| {
-							definition.identity.registry_deployment == this.node_id
-								&& !aidash_domain::registry::bindings::sources::is_selection_decider(
-									&definition.definition,
-								)
-						})
-						.map(|definition| (definition.identity.id, definition.identity.version)),
-				);
+				for definition in snapshot.definitions {
+					if definition.identity.registry_deployment != this.node_id {
+						continue;
+					}
+					if aidash_domain::registry::bindings::sources::is_selection_decider(
+						&definition.definition,
+					) || aidash_domain::registry::bindings::defaults::is_compaction_decider(
+						&definition.definition,
+					) {
+						// Dormant metadata remains a live policy dependency, without
+						// manufacturing a completed approval-gated Registry read.
+						let current = crate::apps::identity::services::catalog::metadata(
+							this,
+							&definition.identity.local(),
+						)
+						.await?;
+						if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?)
+							!= definition.digest
+						{
+							return Err(crate::Error::Conflict(
+								"admitted definition changed".into(),
+							));
+						}
+					} else {
+						entries.push((definition.identity.id, definition.identity.version));
+					}
+				}
 			}
 			entries.sort();
 			entries.dedup();

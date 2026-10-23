@@ -134,6 +134,9 @@ impl BindingCatalog for Catalog {
 				aidash_domain::registry::bindings::source_defaults::workspace_observation()?,
 			);
 		}
+		if reference.id == crate::registry::system::COMPACTION_DECIDER_ID {
+			return crate::registry::system::compaction_decider();
+		}
 		if let Some(operation) = reference.id.strip_prefix("aidash.") {
 			return Ok(entry(
 				&reference.id,
@@ -152,6 +155,13 @@ impl BindingCatalog for Catalog {
 }
 struct Providers;
 impl ProviderCatalog for Providers {
+	fn decision_implementation(
+		&self,
+		config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		config.validate()?;
+		Ok("fixture-decider".into())
+	}
 	fn contract(
 		&self,
 		descriptor: &ToolDescriptor,
@@ -232,6 +242,7 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 		.collect();
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
+	entries.push(crate::registry::system::compaction_decider().unwrap());
 	entries
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {
