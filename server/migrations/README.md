@@ -563,3 +563,59 @@ pruning or summary, journals those events as `imported`.
 `identity/0033_demo_data` (after `identity/0032_tenant_owned_row_level_security`) creates the three tables of Demo data (ADR 0079, ADR 0080) with typed operations. `demo_data_loads` is Deployment-wide: one row per pair of `demo-data` inputs that loaded to completion, keyed by the lowercase hex SHA-256 of their canonical JSON, written last in its own transaction so a rerun with the same digest changes nothing. `demo_tenants` is Deployment-wide and names a Tenant (purge deletes it with the Tenant): it maps a structure key (`[a-z][a-z0-9-]{0,31}`) to the Tenant name assigned to it, one key per Tenant, because Tenant labels are not unique. `demo_reservations` is Tenant-owned: it reserves a fictional subject of the Tenant for a lowercase email address, unique per `(tenant, email)`, and a check keeps `spent_at` and `spent_by` (an External Identity) set together. It references the Tenant root record through `demo_reservations_tenant_root_fkey`. `identity/0034_demo_data_state` is the generated state-only checkpoint, and `identity/0035_demo_reservations_row_level_security` (after it and `identity/0028_tenancy_policy_functions`) enforces the forced Tenant policy on `demo_reservations` with a rendered `RunSQL` asset, as `registry/0040` does.
 
 `execution/0049_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0039_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0044_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0044` is listed in `TENANT_REGISTRY_MIGRATIONS`.
+
+## Projection comparison evidence (#181)
+
+`registry/0045_projection_measurement_config` (after
+`registry/0044_foreign_key_relations_state`) adds the optional model
+`provider_route` and `estimate_diagnostics` keys. It edits the current
+`registry_model_config` allowlist from `pg_get_constraintdef`, retaining earlier
+fields and refusing a missing anchor. An exact route records `tag`, `source`,
+`verified_at` and `expires_at`; it is valid only for an OpenRouter model without
+a Plan Connection. Diagnostics accept a supported Token Encoding and bounded,
+per-projection calibration snapshots. These are observational inputs and do not
+change an Agent's Projection Version or the runtime estimator. Separate
+PostgreSQL validation functions and a named CHECK enforce their JSON shapes.
+Catalog-driven constraint edits and PL/pgSQL function bodies have no typed
+Reinhardt operation, so this database-only migration uses reversible DDL assets.
+Definitions are immutable: rollback refuses with SQLSTATE `55000` while any model
+definition contains either key, including an explicit null. Retain the migration
+or restore the pre-upgrade database rather than rewriting registered versions.
+
+`execution/0050_usage_evidence` (after
+`execution/0049_foreign_key_relations_state`) extends `inference_usage` with
+`purpose`, `requested_route`, `provider_identity` and `shadow_estimates` through
+typed Reinhardt column operations. Historical records receive `purpose = 'main'`;
+the migration then removes that default so a new dispatch supplies its purpose.
+Main and Summary provider calls have distinct durable attempt records. Requested
+routes are separate from bounded provider-reported identities; omitted provider
+facts remain unknown. Shadow snapshots do not alter dispatch. The ordinary
+column operations also update migration model state, so no separate state-only
+checkpoint is needed. Rollback drops these evidence columns and loses their
+contents; preserve required experiment exports first.
+
+`execution/0051_compaction_provider_dispatch` (after
+`execution/0050_usage_evidence`) adds nullable `provider_dispatched` to
+`context_compaction_attempts` with a typed Reinhardt column operation. A Summary
+journal entry is created before authorization and reservation, so its existence
+alone does not prove provider I/O. New Summary attempts start false; the flag
+becomes true in the same transaction as their durable Inference Usage dispatch.
+Historical null remains unknown. Export consumers can exclude a proven
+undispatched attempt from provider accounting, but must not treat null as zero
+cost. The operation updates model state and requires no state-only checkpoint.
+Rollback drops this evidence column and loses the distinction.
+
+`knowledge/0036_memory_attempt_evidence` (after
+`knowledge/0035_foreign_key_relations_state`) adds nullable `source_run_ids`,
+`reserved_tokens`, `reserved_cost_micros` and `provider_usage` to
+`memory_model_attempts` with typed Reinhardt column operations. These preserve
+physical-call lineage, original reservations and actual provider observations
+apart from settled policy tariffs. Historical rows remain null: the migration
+does not invent old ownership or provider measurements. It also needs no
+state-only checkpoint; rollback drops the added evidence columns and their
+contents. Existing Tenant row policies continue to cover both attempt tables.
+
+The [projection comparison operator guide](../../docs/projection-comparison.md)
+describes the prompt-free diagnostic export, complete attempt inventories and
+remaining live acceptance requirements. These migrations do not switch the
+projection default or rewrite pinned definitions and Runs.
