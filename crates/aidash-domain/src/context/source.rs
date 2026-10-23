@@ -21,17 +21,16 @@ pub struct SourceTools {
 	pub write: Vec<QualifiedRef>,
 	pub detail: Option<QualifiedRef>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "policy", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PinPolicy {
+	#[default]
 	Always,
 	OnDemand,
-	Scored { mode: Mode, decider: QualifiedRef },
-}
-impl Default for PinPolicy {
-	fn default() -> Self {
-		Self::Always
-	}
+	Scored {
+		mode: Mode,
+		decider: QualifiedRef,
+	},
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -206,15 +205,14 @@ impl SourceCandidate {
 			}
 			crate::decision::validate_digest(&pin.revision_digest)?;
 		}
-		if let Some(detail) = &self.detail {
-			if declaration.tools.detail.as_ref() != Some(&detail.tool)
+		if let Some(detail) = &self.detail
+			&& (declaration.tools.detail.as_ref() != Some(&detail.tool)
 				|| detail.revision != self.identity.revision
-				|| serde_json::to_vec(&detail.arguments)?.len() > 8192
-			{
-				return Err(Error::Invalid(
-					"source detail route differs from its pinned Tool or revision".into(),
-				));
-			}
+				|| serde_json::to_vec(&detail.arguments)?.len() > 8192)
+		{
+			return Err(Error::Invalid(
+				"source detail route differs from its pinned Tool or revision".into(),
+			));
 		}
 		if declaration.required_home && !self.mandatory {
 			return Err(Error::Invalid(
@@ -251,7 +249,10 @@ impl SourceBatch {
 		max_bytes: usize,
 	) -> Result<()> {
 		declaration.validate()?;
-		if self.candidates.len() > MAX_CANDIDATES
+		if matches!(
+			self.outcome,
+			SourceOutcome::Selected | SourceOutcome::Fitted | SourceOutcome::Delivered
+		) || self.candidates.len() > MAX_CANDIDATES
 			|| serde_json::to_vec(self)?.len() > max_bytes.min(MAX_SOURCE_BYTES)
 			|| (self.candidates.is_empty() && self.outcome == SourceOutcome::Fetched)
 			|| (!self.candidates.is_empty()

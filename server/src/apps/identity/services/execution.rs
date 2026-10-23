@@ -632,6 +632,19 @@ impl WorkerAuthority {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::context(store, &mut access, run).await
 	}
+	pub async fn skill_context_items(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Vec<aidash_application::capabilities::skills::ContextItem>> {
+		let mut access = self.access.write().await;
+		aidash_application::capabilities::skills::context_items(
+			&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+			&run.metadata(),
+		)
+		.await
+		.map_err(Into::into)
+	}
 	pub async fn direct_skills(
 		&self,
 		store: &Store,

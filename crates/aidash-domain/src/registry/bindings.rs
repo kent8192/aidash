@@ -128,10 +128,10 @@ pub fn definition_references(
 			}
 		}
 		"memory" | "source" if entry.config.get("schema_version").is_some() => {
-			if let Some(native) = sources::validate_definition(entry)? {
-				if let Some(declaration) = native.context_source {
-					result.extend(declaration.references());
-				}
+			if let Some(native) = sources::validate_definition(entry)?
+				&& let Some(declaration) = native.context_source
+			{
+				result.extend(declaration.references());
 			}
 		}
 		"memory" => {
@@ -887,9 +887,11 @@ impl ForeignAgentSnapshot {
 				|| matches!(
 					definition.definition.kind.as_str(),
 					"memory" | "source" | "skill"
-				) || definition.definition.kind == "agent"
-				&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
-					.is_ok_and(|agent| !agent.agent_plugins.is_empty())
+				) && !source_defaults::workspace_observation()
+					.is_ok_and(|source| source == definition.definition)
+				|| definition.definition.kind == "agent"
+					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
+						.is_ok_and(|agent| !agent.agent_plugins.is_empty())
 		}) {
 			return Err(Error::Invalid(
 				"foreign Agent has an unsupported private or cross-Node dependency".into(),
