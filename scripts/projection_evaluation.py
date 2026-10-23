@@ -29,7 +29,13 @@ requested_route is also accepted as the endpoint-tag key. `candidate` is null,
 'ordered' or 'native'; `prompt_cache_policies` selects off/explicit per route.
 Confirmation additionally needs frozen confirmation_repetitions,
 confirmation_frozen, independent_blocks, cost_bounds_enforced,
-cost_bounds[route][task][projection_or_arm], and deployment_mode_confirmed.
+cost_bounds[route][task][projection_or_arm]. Adoption requires complete imported
+pilot and deployment-mode phases on both routes; deployment_mode_confirmed is
+not evidence. Freeze deployment_repetitions and routes[route].deployment_estimator
+as {id,version,confidence,encoding?,encoding_version?}, then verify its actual
+attempts. Each route declares tokenized_applicable:false or a supported
+token_encoding, and may name reported_model_aliases/canonical_model_ids explicitly.
+No alias equivalence or estimator applicability is inferred from model names.
 These assertions do not replace missing provider, oracle, route or guard facts.
 Optional safety annotations on run_recovery are independently verified
 guard_evidence_complete, safety_violation, false_completion, constraint_loss,
@@ -44,7 +50,6 @@ from collections import Counter, defaultdict
 import copy
 import hashlib
 import json
-import math
 from pathlib import Path
 import statistics
 
@@ -91,7 +96,7 @@ TABLE_FIELDS = {
                                        "provider_id", "provider_version"},
     "context_compaction_attempts": COMMON | {"stage", "policy_version", "provider", "source_from_seq",
                                              "source_through_seq", "base_revision", "observed_input_seq",
-                                             "before_tokens", "after_tokens", "reason", "candidate_digest"},
+                                             "before_tokens", "after_tokens", "reason", "candidate_digest", "provider_dispatched"},
     "generation_embedding_usage": COMMON | {"request_id", "workspace_id", "entry_id", "provider_id",
                                              "provider_version", "request_bytes", "reserved_tokens", "reported_tokens",
                                              "accounting_kind", "provider_work_unpriced"},
@@ -266,6 +271,8 @@ def _metadata(row, allowed, tenant, table):
             raise EvidenceError("request estimate is smaller than its output reservation")
     if table == "generation_embedding_usage" and (row.get("accounting_kind") != "reservation" or row.get("provider_work_unpriced") is not True or row.get("cost_nanocredits") is not None or row.get("cost_amount") is not None):
         raise EvidenceError("embedding reservation evidence cannot assert a provider charge")
+    if "provider_dispatched" in row and row["provider_dispatched"] is not None and not isinstance(row["provider_dispatched"], bool):
+        raise EvidenceError("provider_dispatched must be boolean or unknown")
     for field in ("safety_violation", "false_completion", "constraint_loss", "guard_evidence_complete", "control_accepted"):
         if field in row and row[field] is not None and not isinstance(row[field], bool):
             raise EvidenceError(f"{field} must be boolean or unknown")
@@ -399,8 +406,11 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
             if row.get("purpose", "main") == "summary" and identifier not in compactions:
                 raise EvidenceError("Summary Usage Record is missing its compaction attempt join")
         for identifier, row in compactions.items():
-            if row.get("stage") in ("summary", "summary_recovery") and identifier not in inference:
-                raise EvidenceError("Summary compaction is missing its inference Usage Record")
+            if row.get("stage") in ("summary", "summary_recovery"):
+                if row.get("provider_dispatched") is False and identifier in inference:
+                    raise EvidenceError("Summary nondispatch contradicts its inference Usage Record")
+                if row.get("provider_dispatched") is not False and identifier not in inference:
+                    raise EvidenceError("Summary compaction is missing its inference Usage Record")
         _cost(run, True)  # Contradictory charge ownership is import corruption.
     normalized.update(export_sha256=canonical_sha256(export), tenant_id=tenant, complete_export=True)
     return normalized
@@ -459,6 +469,8 @@ def _cost(run, complete):
             # Pruning is local work; summary provider work is already in usage.
             if table == "context_compaction_attempts" and row.get("stage") in ("pruning", "prune"):
                 continue
+            if table == "context_compaction_attempts" and row.get("provider_dispatched") is False:
+                continue
             identifier = row.get("provider_work_id") or _attempt_id(row)
             unit, amount = _charge(row)
             purpose = row.get("purpose") or default_purpose
@@ -505,7 +517,7 @@ def _estimates(row):
                 "version": row.get("estimator_version"), "confidence": row.get("estimate_confidence"),
                 "output_reservation": row.get("output_reservation"), "encoding": row.get("encoding"),
                 "calibration_state": row.get("calibration_state"), "calibration_samples": row.get("calibration_samples"),
-                "overflow_demoted": row.get("overflow_demoted"), "selected": True}
+                "overflow_demoted": row.get("overflow_demoted"), "byte_basis": row.get("byte_basis"), "selected": True}
     result = [selected]
     for item in row.get("shadow_estimates") or []:
         estimate = dict(item.get("estimate", item), selected=False)
@@ -520,7 +532,95 @@ def _estimates(row):
     return result
 
 
-def _run_metrics(run, complete, requested):
+def _model_identity(row, settings):
+    """Compare two separately recorded facts, using only declared equivalences."""
+    identity = row.get("provider_identity") or {}
+    requested = settings.get("requested_route", settings.get("provider_tag"))
+    actual = identity.get("reported_route")
+    requested_row = row.get("requested_route")
+    route_status = "unknown" if not requested or not actual else "matched" if actual == requested and (requested_row is None or requested_row == requested) else "mismatch"
+    expected_model = settings.get("upstream_model")
+    aliases = []
+    for key in ("reported_model_aliases", "canonical_model_ids"):
+        values = settings.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(alias, str) or not alias for alias in values):
+            raise EvidenceError("reported model aliases/canonical IDs must be explicit nonempty strings")
+        aliases.extend(values)
+    reported = identity.get("reported_model")
+    model_status = "unknown" if not expected_model or not reported else "matched" if reported in [expected_model, *aliases] else "mismatch"
+    dispatched_model = row.get("upstream_model")
+    requested_model_status = "unknown" if not expected_model or not dispatched_model else "matched" if dispatched_model == expected_model else "mismatch"
+    statuses = (route_status, model_status, requested_model_status)
+    status = "matched" if all(status == "matched" for status in statuses) else "mismatch" if "mismatch" in statuses else "unknown"
+    return {"attempt_id": row.get("attempt_id", row.get("id")), "requested_route": requested_row,
+            "expected_route": requested, "expected_model": expected_model,
+            "dispatched_model": dispatched_model, "requested_model_status": requested_model_status,
+            "reported_identity": identity or None, "route_status": route_status,
+            "model_status": model_status, "status": status}
+
+
+def _estimate_gaps(estimate, name, expected=None):
+    gaps = []
+    for field in ("tokens", "output_reservation", "version", "byte_basis"):
+        value = estimate.get(field)
+        if type(value) is not int or value < 0 or field == "version" and value == 0:
+            gaps.append(f"{name}: {field} is unknown or invalid")
+    if estimate.get("estimator") not in ("bytes", "calibrated", "tokenized"):
+        gaps.append(f"{name}: estimator identity is unknown")
+    if estimate.get("confidence") not in ("conservative", "calibrated", "tokenized"):
+        gaps.append(f"{name}: estimator confidence is unknown")
+    if expected:
+        for declaration, recorded in (("id", "estimator"), ("version", "version"), ("confidence", "confidence"),
+                                       ("encoding", "encoding"), ("encoding_version", "encoding_version")):
+            if declaration in expected and estimate.get(recorded) != expected[declaration]:
+                gaps.append(f"{name}: actual {declaration} differs from the frozen estimator")
+    return gaps
+
+
+def _measurement_gaps(rows, settings):
+    gaps = []
+    applicable = settings.get("tokenized_applicable")
+    encoding = settings.get("token_encoding")
+    if encoding is not None:
+        applicable = True
+    if type(applicable) is not bool:
+        gaps.append("Tokenized estimator applicability was not declared")
+    required_shadows = {"calibrated"} | ({"tokenized"} if applicable is True else set())
+    for row in rows:
+        identifier = row.get("attempt_id", row.get("id", "unknown"))
+        for field in TOKENS[:4]:
+            if row.get(field) is None:
+                gaps.append(f"{identifier}: required {field} is unknown")
+        estimates = _estimates(row)
+        selected = estimates[0]
+        selected["byte_basis"] = row.get("byte_basis")
+        gaps.extend(_estimate_gaps(selected, f"{identifier} selected estimate"))
+        if row.get("purpose", "main") != "main":
+            continue
+        shadows = defaultdict(list)
+        for estimate in estimates[1:]:
+            shadows[estimate.get("requested_estimator") or estimate.get("estimator")].append(estimate)
+        for name in required_shadows:
+            values = shadows[name]
+            if len(values) != 1:
+                gaps.append(f"{identifier}: required {name} shadow is missing or duplicated")
+                continue
+            estimate = values[0]
+            if estimate.get("applicable") is False:
+                gaps.append(f"{identifier}: required {name} shadow cannot be declared inapplicable")
+            gaps.extend(_estimate_gaps(estimate, f"{identifier} {name} shadow"))
+            snapshot = estimate.get("snapshot")
+            pin = snapshot.get("estimator", {}) if isinstance(snapshot, dict) else {}
+            if pin.get("id") != name or type(pin.get("version")) is not int or pin["version"] < 1:
+                gaps.append(f"{identifier}: {name} shadow snapshot identity/version is unknown")
+            if name == "calibrated" and (type(pin.get("samples")) is not int or pin.get("ratio_ppm") is None):
+                gaps.append(f"{identifier}: frozen calibration state is unknown")
+            if name == "tokenized" and (not pin.get("encoding") or type(pin.get("encoding_version")) is not int or pin["encoding_version"] < 1 or encoding is not None and pin["encoding"] != encoding):
+                gaps.append(f"{identifier}: Tokenized encoding identity/version is missing or mismatched")
+    return sorted(set(gaps))
+
+
+def _run_metrics(run, complete, settings):
     main = [r for r in run["inference_usage"] if r.get("purpose", "main") == "main"]
     all_usage = run["inference_usage"]
     tokens = {field: _summary([row.get(field) for row in all_usage] + ([] if run["usage_available"] else [None]))
@@ -550,12 +650,8 @@ def _run_metrics(run, complete, requested):
         cache["history_prefix_transitions"] = sum(left != right for left, right in zip(prefixes, prefixes[1:]))
     route_rows = []
     for row in all_usage:
-        identity = row.get("provider_identity") or {}
-        actual = identity.get("reported_route")
-        requested_row = row.get("requested_route")
-        matched = bool(requested and actual and actual == requested and (requested_row is None or requested_row == requested))
-        route_rows.append({"attempt_id": row.get("attempt_id", row.get("id")), "requested_route": requested_row,
-                           "reported_identity": identity or None, "status": "matched" if matched else "mismatch" if actual and requested else "unknown"})
+        purpose_settings = settings.get("auxiliary_models", {}).get(row.get("purpose", "main"), settings)
+        route_rows.append(_model_identity(row, purpose_settings))
     estimates = defaultdict(list)
     for row in all_usage:
         for estimate in _estimates(row):
@@ -599,6 +695,8 @@ def _run_metrics(run, complete, requested):
             "tokens": tokens, "cost": _cost(run, complete), "cache": cache, "routes": route_rows,
             "route_complete": bool(route_rows) and all(row["status"] == "matched" for row in route_rows),
             "selected_estimators": sorted({str(row.get("estimator") or "unknown") for row in main}),
+            "selected_estimate_identities": [_estimates(row)[0] for row in main],
+            "measurement_gaps": _measurement_gaps(all_usage, settings),
             "estimator_errors": dict(estimates), "overflow": overflow, "guards": guards}
 
 
@@ -713,6 +811,64 @@ def _paired_strata(baseline, treatment, route, selected, config, expected_n=None
     return strata, reasons
 
 
+def _phase_key(phase):
+    return "deployment-mode" if phase == "deployment" else phase
+
+
+def _arm_id(run):
+    return str(run["projection"]) + ("-explicit" if run["prompt_cache"] == "explicit" else "")
+
+
+def _phase_matrix(rows, phase, arms, repeats, required_tasks):
+    reasons = []
+    if type(repeats) is not int or repeats < 1:
+        return [f"{phase}: the frozen repetition count is missing or invalid"]
+    if not rows:
+        return [f"{phase}: complete actual registered phase imports are missing"]
+    blocks = set(range(1, repeats + 1))
+    expected_tasks = set(required_tasks) | {row["task"] for row in rows}
+    unexpected = {_arm_id(row) for row in rows} - set(arms)
+    if unexpected:
+        reasons.append(f"{phase}: unexpected evaluated arms: " + ", ".join(sorted(unexpected)))
+    for arm in arms:
+        for task in sorted(expected_tasks):
+            values = [r["repeat"] for r in rows if _arm_id(r) == arm and r["task"] == task]
+            if set(values) != blocks or len(values) != repeats:
+                population = "control" if task in CONTROLS else "task"
+                reasons.append(f"{phase}: {arm}/{task} {population} has missing, duplicated or unfrozen repetition blocks")
+    return reasons
+
+
+def _deployment_estimator(settings, config):
+    expected = settings.get("deployment_estimator", config.get("deployment_estimator"))
+    if not isinstance(expected, dict) or expected.get("id") not in ("bytes", "calibrated", "tokenized") or type(expected.get("version")) is not int or expected["version"] < 1 or expected.get("confidence") not in ("conservative", "calibrated", "tokenized"):
+        return None
+    if expected["id"] == "tokenized" and (not expected.get("encoding") or type(expected.get("encoding_version")) is not int or expected["encoding_version"] < 1):
+        return None
+    return expected
+
+
+def _retained_guard_failures(rows, candidate):
+    failures, unknown = [], []
+    baselines = defaultdict(list)
+    for row in rows:
+        if row["projection"] == "legacy" and row["prompt_cache"] == "off":
+            baselines[(row["campaign_phase"], row["condition"], row["task"], row["repeat"])].append(row)
+    for row in rows:
+        if row["projection"] != candidate:
+            continue
+        context = f"{row['campaign_phase']}/{row['condition']} {row['task']} repetition {row['repeat']}"
+        if row["guards"]["safety_violation"] is True:
+            failures.append("Candidate safety violation observed: " + context + ".")
+        matches = baselines.get((row["campaign_phase"], row["condition"], row["task"], row["repeat"]), [])
+        for guard in ("false_completion", "constraint_loss"):
+            if row["guards"][guard] is True and matches and all(other["guards"][guard] is False for other in matches):
+                failures.append(f"Candidate-only {guard} regression: {context}.")
+            elif row["guards"][guard] is True and (not matches or len(matches) != 1):
+                unknown.append(f"Candidate {guard} has no unambiguous matched Legacy observation: {context}.")
+    return sorted(set(failures)), sorted(set(unknown))
+
+
 def analyze_campaign(experiments, config):
     """Return a JSON-safe reproducible artifact, with separate route decisions.
 
@@ -759,7 +915,7 @@ def analyze_campaign(experiments, config):
         if registration.get("tenant_id") is not None and evidence["tenant_id"] is not None and registration["tenant_id"] != evidence["tenant_id"]:
             raise EvidenceError("campaign registration Tenant differs from the imported export")
         live = exp["tier"] == "live" and exp["model"]["kind"] == "live-provider"
-        audit = {"experiment_id": exp["experiment_id"], "route": route, "phase": registration.get("phase", "unknown"),
+        audit = {"experiment_id": exp["experiment_id"], "route": route, "phase": _phase_key(registration.get("phase", "unknown")),
                  "condition": registration.get("condition", "unknown"), "live": live,
                  "manifest_sha256": evidence["manifest_sha256"], "export_sha256": evidence["export_sha256"],
                  "source": exp["aidash"], "corpus": exp["corpus"], "evaluator": exp["evaluator"],
@@ -769,7 +925,7 @@ def analyze_campaign(experiments, config):
         audits.append(audit)
         limitations.extend(evidence["limitations"])
         for row in evidence["runs"]:
-            run = _run_metrics(row, evidence["complete_export"], requested)
+            run = _run_metrics(row, evidence["complete_export"], route_config)
             run.update(experiment_id=exp["experiment_id"], route=route, campaign_phase=audit["phase"],
                        condition=audit["condition"], live=live, complete_export=evidence["complete_export"])
             all_runs.append(run)
@@ -800,8 +956,6 @@ def analyze_campaign(experiments, config):
             reasons.append("No candidate Projection Version was frozen.")
         if config.get("confirmation_frozen") is not True:
             reasons.append("Candidate and confirmation sample size were not frozen before confirmation.")
-        if config.get("deployment_mode_confirmed") is not True:
-            reasons.append("Independent confirmation under the intended deployment estimator is missing.")
         if config.get("independent_blocks") is not True:
             reasons.append("Independent repetition blocks are not established.")
         if not routes_config.get(route, {}).get("requested_route", routes_config.get(route, {}).get("provider_tag")):
@@ -815,10 +969,57 @@ def analyze_campaign(experiments, config):
         baseline = [r for r in primary if r["projection"] == "legacy" and r["prompt_cache"] == "off"]
         treatment = [r for r in primary if _candidate_run(r, candidate, selected, cache_policy)]
         pilot = [r for r in rows if r["campaign_phase"] == "pilot" and r["condition"] == "primary"]
+        deployment = [r for r in rows if r["campaign_phase"] == "deployment-mode" and r["condition"] == "primary"]
+        settings = routes_config.get(route, {})
+        original_tasks = set(PRIMARY_WEIGHTS) | set(CONTROLS) | set(settings.get("task_ids", []))
+        pilot_arms = ["legacy", "ordered", "native"] + (["ordered-explicit", "native-explicit"] if route == "explicit" else [])
+        if "arms" in settings and settings["arms"] != pilot_arms:
+            reasons.append("Pilot arm registration differs from the accepted three/five-arm comparison.")
+        confirmation_n = config.get("confirmation_repetitions", config.get("confirmation_repeats", "undeclared"))
+        deployment_n = settings.get("deployment_repetitions", config.get("deployment_repetitions", config.get("deployment_repeats")))
+        deployment_arms = settings.get("deployment_arms", [selected])
+        if not isinstance(deployment_arms, list) or selected not in deployment_arms or any(a not in ("legacy", selected) for a in deployment_arms):
+            deployment_arms = [selected]
+            reasons.append("Deployment-mode arm registration is missing the selected candidate or has unsupported arms.")
+        phase_matrices = {
+            "pilot": _phase_matrix(pilot, "pilot", pilot_arms, config.get("pilot_repeats", 10), original_tasks),
+            "confirmation": _phase_matrix(primary, "confirmation", ["legacy", selected], confirmation_n, original_tasks),
+            "deployment-mode": _phase_matrix(deployment, "deployment-mode", deployment_arms, deployment_n, original_tasks),
+        }
+        for phase in phase_matrices:
+            phase_audits = [a for a in route_audits if a["phase"] == phase and a["condition"] == "primary"]
+            if not phase_audits or any(not a["live"] or not a["complete_export"] or a["skipped_runs"] or a["error"] or a["attempted_runs"] != a["planned_runs"] for a in phase_audits):
+                phase_matrices[phase].append(f"{phase}: complete actual registered live imports are missing or incomplete")
+            absent = [identifier for identifier, registration in registry.items() if registration.get("route") == route and _phase_key(registration.get("phase")) == phase and registration.get("condition") == "primary" and identifier not in identifiers]
+            if absent:
+                phase_matrices[phase].append(f"{phase}: registered experiment imports are missing")
+            reasons.extend(phase_matrices[phase])
+        expected_deployment = _deployment_estimator(settings, config)
+        if expected_deployment is None:
+            reasons.append("The intended deployment estimator identity/version/confidence was not frozen.")
+        for phase_rows, phase in ((pilot, "pilot"), (primary, "confirmation"), (deployment, "deployment-mode")):
+            if any(not r["route_complete"] for r in phase_rows):
+                reasons.append(f"{phase}: actual provider endpoint/model identity is unknown or mismatched.")
+            if any(r["measurement_gaps"] for r in phase_rows):
+                reasons.append(f"{phase}: required applicable token counters, estimate identities or shadow measurements are unknown.")
+            if any(r["cache"]["identity_status"] == "unknown" for r in phase_rows):
+                reasons.append(f"{phase}: applicable Stable Prefix cache-identity transitions are unknown.")
+            if any(r["cost"]["total_nanocredits"] is None for r in phase_rows):
+                reasons.append(f"{phase}: total provider cost is unknown or incompatible.")
+            if any(not r["guards"]["guard_evidence_complete"] or r["guards"]["safety_violation"] is None for r in phase_rows):
+                reasons.append(f"{phase}: independent guard evidence is incomplete.")
+            if any(r["task"] in CONTROLS and r["guards"]["control_accepted"] is not True for r in phase_rows):
+                reasons.append(f"{phase}: independent control acceptance is missing or failed.")
+            if phase in ("pilot", "confirmation"):
+                if any(not r["selected_estimators"] or any(e != "bytes" for e in r["selected_estimators"]) for r in phase_rows):
+                    reasons.append(f"{phase}: the primary execution estimator is not the frozen Bytes mode.")
+            elif expected_deployment is not None:
+                if any(not r["selected_estimate_identities"] or any(_estimate_gaps(e, "deployment", expected_deployment) for e in r["selected_estimate_identities"]) for r in phase_rows):
+                    reasons.append("Deployment-mode attempts do not verify the frozen deployment estimator.")
         pilot_strata, pilot_reasons = _paired_strata([r for r in pilot if r["projection"] == "legacy" and r["prompt_cache"] == "off"],
                                                     [r for r in pilot if _candidate_run(r, candidate, selected, cache_policy)],
                                                     route, selected, config)
-        if pilot_reasons or any(not r["live"] or not r["route_complete"] or not r["complete_export"] for r in pilot):
+        if pilot_reasons or phase_matrices["pilot"] or any(not r["live"] or not r["route_complete"] or not r["complete_export"] or r["measurement_gaps"] for r in pilot):
             for entry in pilot_strata:
                 entry["independent_blocks"] = False
             pilot_reasons.append("Pilot evidence is incomplete, non-live, unpaired or route-incomparable.")
@@ -843,7 +1044,7 @@ def analyze_campaign(experiments, config):
         if missing:
             reasons.append("Confirmation omits original task/control rows: " + ", ".join(sorted(missing)))
         strata, pairing_reasons = _paired_strata(baseline, treatment, route, selected, config,
-                                                 config.get("confirmation_repetitions", "undeclared"))
+                                                 confirmation_n)
         reasons.extend(pairing_reasons)
         try:
             from projection_statistics import quality_bound, cost_ratio_bound
@@ -851,19 +1052,12 @@ def analyze_campaign(experiments, config):
         except ImportError:
             quality = _inconclusive("The pinned statistical implementation is unavailable.")
             economic = _inconclusive("The pinned statistical implementation is unavailable.")
-        guard_failures = []
-        if any(r["guards"]["safety_violation"] is True for r in rows if r["projection"] == candidate):
-            guard_failures.append("Candidate safety violation observed.")
-        base_pairs = {(r["task"], r["repeat"]): r for r in baseline}
-        for row in treatment:
-            other = base_pairs.get((row["task"], row["repeat"]))
-            if other:
-                for guard in ("false_completion", "constraint_loss"):
-                    if row["guards"][guard] is True and other["guards"][guard] is not True:
-                        guard_failures.append(f"Candidate-only {guard} regression: {row['task']} repetition {row['repeat']}.")
+        guard_failures, guard_unknowns = _retained_guard_failures(rows, candidate)
+        reasons.extend(guard_unknowns)
         status = "inconclusive" if reasons else "fail" if guard_failures else "pass" if quality["status"] == economic["status"] == "pass" else "fail" if "fail" in (quality["status"], economic["status"]) else "inconclusive"
         route_reports[route] = {"status": status, "reasons": sorted(set(reasons + guard_failures)),
                                 "quality_gate": quality, "economic_gate": economic, "guard_failures": sorted(set(guard_failures)),
+                                "phase_completeness": phase_matrices, "deployment_estimator": expected_deployment,
                                 "treatment": "combined-projection-and-explicit-cache" if any(r["prompt_cache"] == "explicit" for r in treatment) else "projection-with-prompt-cache-off",
                                 "candidate_arm": selected, "requested_route": routes_config.get(route, {}).get("requested_route", routes_config.get(route, {}).get("provider_tag")),
                                 "tasks": table, "all_work": _group(rows),

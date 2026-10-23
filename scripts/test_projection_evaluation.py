@@ -9,7 +9,9 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import projection_evaluation as projection
@@ -131,6 +133,32 @@ class EvidenceImportTest(unittest.TestCase):
         export["memory_model_attempts"] = [{"attempt_id": "legacy-memory", "source_run_ids": None, "provider_usage": None}]
         with self.assertRaisesRegex(projection.EvidenceError, "missing or out-of-scope"):
             projection.load_evidence(self.manifest, export)
+
+    def test_summary_without_dispatch_needs_durable_false_journal_evidence(self):
+        export = copy.deepcopy(self.export)
+        summary = export["context_compaction_attempts"][0]
+        identifier = summary["attempt_id"]
+        summary.update(provider_dispatched=False, outcome="unauthorized")
+        export["inference_usage"] = [r for r in export["inference_usage"] if r["attempt_id"] != identifier]
+        export["run_inventory"][0]["attempt_ids"]["inference_usage"].remove(identifier)
+        imported = projection.load_evidence(self.manifest, export)
+        report = projection.analyze_campaign([imported], configuration(self.manifest))
+        self.assertEqual(report["runs"][0]["cost"]["total_nanocredits"], 30)
+        self.assertEqual(report["runs"][0]["cost"]["provider_work_count"], 2)
+        for state in (None, True, "missing"):
+            with self.subTest(state=state):
+                corrupt = copy.deepcopy(export)
+                row = corrupt["context_compaction_attempts"][0]
+                if state == "missing":
+                    row.pop("provider_dispatched")
+                else:
+                    row["provider_dispatched"] = state
+                with self.assertRaisesRegex(projection.EvidenceError, "missing its inference"):
+                    projection.load_evidence(self.manifest, corrupt)
+        contradictory = copy.deepcopy(self.export)
+        contradictory["context_compaction_attempts"][0]["provider_dispatched"] = False
+        with self.assertRaisesRegex(projection.EvidenceError, "nondispatch contradicts"):
+            projection.load_evidence(self.manifest, contradictory)
 
 
 class AccountingReportTest(unittest.TestCase):
@@ -266,6 +294,192 @@ class AccountingReportTest(unittest.TestCase):
         self.assertIsNone(report["runs"][0]["overflow"]["provider_rejections"])
         self.assertEqual(report["campaign_all_work"]["estimator_errors"]["tokenized"]["status"], "unknown-not-reported")
         self.assertEqual(report["decision"]["status"], "inconclusive")
+
+
+def gate_campaign():
+    """Construct normalized imports for the report's own prerequisite boundary.
+
+    Import integrity has the owner-boundary matrix above. Here the statistics
+    engine is independently covered and supplies passing bounds, so removing
+    one report prerequisite cannot be masked by low-power statistical results.
+    These are synthetic test records, never provider performance evidence.
+    """
+    manifest, export = example()
+    seed = projection.load_evidence(manifest, export)
+    config = {"candidate": "native", "confirmation_frozen": True, "confirmation_repetitions": 2,
+              "pilot_repeats": 10, "deployment_repetitions": 1, "deployment_mode_confirmed": True,
+              "independent_blocks": True, "cost_bounds_enforced": True, "experiments": {}, "routes": {},
+              "cost_bounds": {}}
+    imports = []
+    tasks = list(projection.PRIMARY_WEIGHTS) + list(projection.CONTROLS)
+    for route in ("automatic", "explicit"):
+        model, endpoint = "model-" + route, "endpoint-" + route
+        arms = ["legacy", "ordered", "native"] + (["ordered-explicit", "native-explicit"] if route == "explicit" else [])
+        config["routes"][route] = {"provider_tag": endpoint, "upstream_model": model, "arms": arms,
+            "deployment_estimator": {"id": "calibrated", "version": 2, "confidence": "calibrated"},
+            "tokenized_applicable": route == "automatic"}
+        if route == "automatic":
+            config["routes"][route]["token_encoding"] = "o200k_base"
+        config["cost_bounds"][route] = {task: {"legacy": 100, "native": 100} for task in projection.PRIMARY_WEIGHTS}
+        for phase, repeats, selected in (("pilot", 10, arms), ("confirmation", 2, ["legacy", "native"]),
+                                         ("deployment-mode", 1, ["native"])):
+            imported = copy.deepcopy(seed)
+            exp = imported["experiment"]
+            exp.update(experiment_id=f"fte-{len(imports) + 1:012x}", tier="live", repeat_count=repeats)
+            exp["model"]["kind"] = "live-provider"
+            exp["aidash"].update(binary_sha256="b" * 64, server_revision="a" * 40)
+            exp["variants"] = [{"task": task, "arm": arm} for task in tasks for arm in selected]
+            imported["runs"] = []
+            config["experiments"][exp["experiment_id"]] = {"route": route, "phase": phase, "condition": "primary"}
+            for task in tasks:
+                for arm in selected:
+                    for repeat in range(1, repeats + 1):
+                        run = copy.deepcopy(seed["runs"][0])
+                        identifier = f"{route}/{phase}/{task}/{arm}/{repeat}"
+                        run.update(key=identifier, run_id=identifier, task=task, arm=arm, repeat=repeat,
+                                   projection=arm.split("-")[0], prompt_cache="explicit" if arm.endswith("explicit") else "off",
+                                   outcome="success", oracle_passed=True, constraint_retention=True,
+                                   context_compaction_attempts=[], decision_attempts=[], memory_model_attempts=[],
+                                   generation_embedding_usage=[], recovery={"guard_evidence_complete": True,
+                                       "safety_violation": False, "control_accepted": True})
+                        row = copy.deepcopy(seed["runs"][0]["inference_usage"][0])
+                        row.update(attempt_id=identifier, run_id=identifier, cost_nanocredits=100 if arm == "legacy" else 50,
+                                   upstream_cost_nanocredits=None, byte_basis=300, requested_route=endpoint,
+                                   upstream_model=model, projection_version={"legacy": 1, "ordered": 2, "native": 3}[arm.split("-")[0]],
+                                   cache_identity=None if arm == "legacy" else "stable-identity",
+                                   provider_identity={"reported_model": model, "reported_provider": "provider", "reported_route": endpoint})
+                        if phase == "deployment-mode":
+                            row.update(estimator="calibrated", estimator_version=2, estimate_confidence="calibrated")
+                        if route == "automatic":
+                            row["shadow_estimates"].append({"snapshot": {"step": 0, "estimator": {
+                                "id": "tokenized", "version": 1, "encoding": "o200k_base", "encoding_version": 1}},
+                                "estimate": {"tokens": 110, "output_reservation": 20, "byte_basis": 300,
+                                             "estimator": "tokenized", "version": 1, "confidence": "tokenized"}})
+                        run["inference_usage"] = [row]
+                        imported["runs"].append(run)
+            imports.append(imported)
+    return imports, config
+
+
+class AdoptionPrerequisiteTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.imports, cls.config = gate_campaign()
+
+    def analyze(self, imports=None, config=None):
+        engine = types.SimpleNamespace(quality_bound=lambda rows: {"status": "pass", "bounds": {}},
+                                       cost_ratio_bound=lambda rows: {"status": "pass", "bounds": {}})
+        with mock.patch.dict(sys.modules, {"projection_statistics": engine}):
+            return projection.analyze_campaign(self.imports if imports is None else imports,
+                                               self.config if config is None else config)
+
+    def test_complete_registered_phases_and_known_measurements_can_reach_the_gate(self):
+        report = self.analyze()
+        self.assertEqual(report["decision"]["status"], "pass", report["routes"]["automatic"]["reasons"])
+        self.assertFalse(report["decision"]["keep_legacy"])
+
+    def test_confirmation_boolean_cannot_replace_missing_pilot_or_deployment_imports(self):
+        for phase in ("pilot", "deployment-mode"):
+            with self.subTest(phase=phase):
+                imports = [e for e in self.imports if self.config["experiments"][e["experiment"]["experiment_id"]]["phase"] != phase]
+                report = self.analyze(imports)
+                self.assertEqual(report["decision"]["status"], "inconclusive")
+                self.assertTrue(report["decision"]["keep_legacy"])
+                self.assertTrue(report["routes"]["automatic"]["phase_completeness"][phase])
+
+    def test_deployment_attempts_must_verify_the_frozen_estimator(self):
+        imports = copy.deepcopy(self.imports)
+        deployment = next(e for e in imports if self.config["experiments"][e["experiment"]["experiment_id"]]["phase"] == "deployment-mode")
+        deployment["runs"][0]["inference_usage"][0].update(estimator="bytes", estimator_version=1, estimate_confidence="conservative")
+        report = self.analyze(imports)
+        self.assertEqual(report["decision"]["status"], "inconclusive")
+        self.assertIn("Deployment-mode attempts do not verify the frozen deployment estimator.", report["routes"]["automatic"]["reasons"])
+
+    def test_controls_must_cover_each_arm_and_each_frozen_repetition(self):
+        for missing_arm in ("legacy", "native"):
+            with self.subTest(arm=missing_arm):
+                imports = copy.deepcopy(self.imports)
+                confirmation = imports[1]
+                control = "approval-escalation"
+                confirmation["runs"] = [r for r in confirmation["runs"] if not (r["arm"] == missing_arm and r["task"] == control)]
+                # A self-consistent narrower manifest still cannot erase a frozen control.
+                confirmation["experiment"]["variants"] = [v for v in confirmation["experiment"]["variants"] if not (v["arm"] == missing_arm and v["task"] == control)]
+                report = self.analyze(imports)
+                self.assertEqual(report["decision"]["status"], "inconclusive")
+                self.assertTrue(any(f"{missing_arm}/{control} control" in r for r in report["routes"]["automatic"]["phase_completeness"]["confirmation"]))
+        imports = copy.deepcopy(self.imports)
+        row = next(r for r in imports[1]["runs"] if r["arm"] == "native" and r["task"] in projection.CONTROLS and r["repeat"] == 2)
+        row["repeat"] = 3
+        self.assertEqual(self.analyze(imports)["decision"]["status"], "inconclusive")
+
+    def test_required_token_estimate_and_shadow_unknowns_block_adoption(self):
+        mutations = {"input": lambda r: r.__setitem__("input_tokens", None),
+                     "output": lambda r: r.__setitem__("output_tokens", None),
+                     "cache-read": lambda r: r.__setitem__("cache_read_tokens", None),
+                     "cache-write": lambda r: r.__setitem__("cache_write_tokens", None),
+                     "version": lambda r: r.__setitem__("estimator_version", None),
+                     "confidence": lambda r: r.__setitem__("estimate_confidence", None),
+                     "estimate": lambda r: r.__setitem__("estimated_tokens", None),
+                     "shadows": lambda r: r.__setitem__("shadow_estimates", []),
+                     "calibrated-shadow": lambda r: r["shadow_estimates"][0]["estimate"].__setitem__("tokens", None),
+                     "tokenized-shadow": lambda r: r["shadow_estimates"].pop()}
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                imports = copy.deepcopy(self.imports)
+                mutate(imports[1]["runs"][0]["inference_usage"][0])
+                report = self.analyze(imports)
+                self.assertEqual(report["decision"]["status"], "inconclusive")
+                self.assertTrue(report["runs"][len(imports[0]["runs"])]["measurement_gaps"])
+
+    def test_model_identity_needs_exact_or_explicitly_declared_alias_evidence(self):
+        for value in (None, "wrong-model", "model-automatic-20261023"):
+            with self.subTest(model=value):
+                imports = copy.deepcopy(self.imports)
+                imports[1]["runs"][0]["inference_usage"][0]["provider_identity"]["reported_model"] = value
+                report = self.analyze(imports)
+                self.assertEqual(report["decision"]["status"], "inconclusive")
+                observed = report["runs"][len(imports[0]["runs"])]["routes"][0]
+                self.assertEqual(observed["model_status"], "unknown" if value is None else "mismatch")
+        imports, config = copy.deepcopy(self.imports), copy.deepcopy(self.config)
+        imports[1]["runs"][0]["inference_usage"][0]["provider_identity"]["reported_model"] = "explicit-canonical-model"
+        config["routes"]["automatic"]["canonical_model_ids"] = ["explicit-canonical-model"]
+        self.assertEqual(self.analyze(imports, config)["decision"]["status"], "pass")
+
+    def test_candidate_only_pilot_guard_regressions_veto_passing_confirmation(self):
+        for guard in ("false_completion", "constraint_loss"):
+            with self.subTest(guard=guard):
+                imports = copy.deepcopy(self.imports)
+                row = next(r for r in imports[0]["runs"] if r["arm"] == "native" and r["task"] == "long-conversation-corrections")
+                if guard == "false_completion":
+                    row.update(outcome="false_completion", oracle_passed=False)
+                else:
+                    row["constraint_retention"] = False
+                report = self.analyze(imports)
+                self.assertEqual(report["decision"]["status"], "fail")
+                self.assertTrue(any(guard in reason and "pilot/primary" in reason for reason in report["routes"]["automatic"]["guard_failures"]))
+
+    def test_retained_warm_cache_regression_and_unpaired_deployment_loss_cannot_be_ignored(self):
+        imports, config = copy.deepcopy(self.imports), copy.deepcopy(self.config)
+        warm = copy.deepcopy(imports[0])
+        warm["experiment"].update(experiment_id="fte-000000000099", repeat_count=1)
+        warm["experiment"]["variants"] = [{"task": "long-conversation-corrections", "arm": arm} for arm in ("legacy", "native")]
+        warm["runs"] = [r for r in warm["runs"] if r["task"] == "long-conversation-corrections" and r["arm"] in ("legacy", "native") and r["repeat"] == 1]
+        for row in warm["runs"]:
+            row["run_id"] = "warm/" + row["run_id"]
+            row["inference_usage"][0]["attempt_id"] = "warm/" + row["inference_usage"][0]["attempt_id"]
+            row["inference_usage"][0]["run_id"] = row["run_id"]
+            if row["arm"] == "native":
+                row.update(outcome="false_completion", oracle_passed=False)
+        config["experiments"][warm["experiment"]["experiment_id"]] = {"route": "automatic", "phase": "pilot", "condition": "cross-run-warm"}
+        report = self.analyze(imports + [warm], config)
+        self.assertEqual(report["decision"]["status"], "fail")
+        self.assertTrue(any("pilot/cross-run-warm" in reason for reason in report["routes"]["automatic"]["guard_failures"]))
+        imports = copy.deepcopy(self.imports)
+        row = next(r for r in imports[2]["runs"] if r["task"] == "long-conversation-corrections")
+        row["constraint_retention"] = False
+        report = self.analyze(imports)
+        self.assertTrue(report["decision"]["keep_legacy"])
+        self.assertTrue(any("no unambiguous matched Legacy" in reason for reason in report["routes"]["automatic"]["reasons"]))
 
 
 if __name__ == "__main__":
