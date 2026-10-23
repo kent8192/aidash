@@ -258,6 +258,43 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	.await;
 	assert_eq!(status, 200, "{stopped}");
 	assert_eq!(stopped["status"], "STOPPED");
+	let settlement: String = sqlx::query_scalar(
+		&Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![
+					Expr::value(uuid::Uuid::parse_str(job["id"].as_str().unwrap()).unwrap()).into(),
+				],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		settlement, "human_allow",
+		"Stop must not turn the earlier explicit approval into a denial"
+	);
+	let attempts: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_attempts",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		attempts, 0,
+		"the disabled default never dispatches an observer"
+	);
+
 	assert_eq!(
 		request(
 			&app,
@@ -563,6 +600,32 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 		)
 		.await,
 		denied
+	);
+
+	let settlement: String = sqlx::query_scalar(
+		&Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![
+					Expr::value(
+						uuid::Uuid::parse_str(accepted["generation"]["id"].as_str().unwrap())
+							.unwrap(),
+					)
+					.into(),
+				],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		settlement, "human_deny",
+		"explicit Deny and its duplicate delivery keep one typed label"
 	);
 	assert_eq!(request(&app, &token, "POST", &retry, body).await.0, 200);
 	let (_, policies) = request(

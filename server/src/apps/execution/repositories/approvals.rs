@@ -227,8 +227,9 @@ impl ApprovalScope for Scope<'_> {
 			.map(|records| records.into_iter().map(domain).collect())
 			.map_err(Into::into)
 	}
+
 	async fn insert(&mut self, creation: Creation) -> Result<Record> {
-		records::insert(
+		let record = records::insert(
 			self.access,
 			creation.id,
 			creation.area,
@@ -237,10 +238,16 @@ impl ApprovalScope for Scope<'_> {
 			creation.data,
 			creation.expires,
 		)
-		.await
-		.map(domain)
-		.map_err(Into::into)
+		.await?;
+		crate::apps::execution::observation::enqueue_capability(
+			self.access,
+			&record,
+			self.run.as_deref(),
+		)
+		.await?;
+		Ok(domain(record))
 	}
+
 	async fn transfer_owner(&mut self, id: Uuid, owner: &str) -> Result<()> {
 		let result: NativeResult<()> = async {
 			{
