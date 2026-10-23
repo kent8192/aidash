@@ -240,6 +240,16 @@ async fn administration_lists_profiles_beyond_the_first_hundred(
 			Ok(())
 		})
 		.await;
+	let page = assert_json(
+		app.deployment_administrator
+			.get("/api/workbench/test-profiles?tenant=endpoint")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(page.as_array().unwrap().len(), 100);
+	assert_eq!(page[0]["id"], "profile-000");
+	assert_eq!(page[99]["id"], "profile-099");
 	let rows = assert_json(
 		alice
 			.get("/api/workbench/test-profiles/endpoint")

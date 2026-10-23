@@ -38,9 +38,28 @@ impl AgentTestProfile {
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 	) -> Result<Vec<TestProfile>> {
-		Ok(Self::objects()
+		Self::list(tx, tenant, Some(100)).await
+	}
+
+	pub(crate) async fn administered(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+	) -> Result<Vec<TestProfile>> {
+		Self::list(tx, tenant, None).await
+	}
+
+	async fn list(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		limit: Option<usize>,
+	) -> Result<Vec<TestProfile>> {
+		let mut query = Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
-			.order_by(&["id"])
+			.order_by(&["id"]);
+		if let Some(limit) = limit {
+			query = query.limit(limit);
+		}
+		Ok(query
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?

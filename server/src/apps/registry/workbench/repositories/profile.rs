@@ -87,7 +87,7 @@ impl ProfileRepository for Repository<'_> {
 						aidash_domain::identity::tenant_administration::COLLECTION,
 					)
 					.await?;
-				AgentTestProfile::page(tx, tenant).await
+				AgentTestProfile::administered(tx, tenant).await
 			})
 			.await;
 		actions.record_denial(pool).await?;
