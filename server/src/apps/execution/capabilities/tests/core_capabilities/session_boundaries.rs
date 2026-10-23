@@ -30,7 +30,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", child["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.1.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 	)
 	.await;
 	assert_eq!(status, 409, "{denied}");
@@ -55,7 +55,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", other["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.1.0"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");

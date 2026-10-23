@@ -1,4 +1,5 @@
 import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
+import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -28,9 +29,10 @@ import { AgentDocuments } from "./agent-documents";
 import { AgentPluginImport } from "./agent-plugin-import";
 import { agentPlugins } from "./agent-plugins";
 import type { ReferenceDocument } from "./generated/models";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { EntityConfiguration } from "./entity-configuration";
+import { useNodes } from "./nodes";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
 import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
@@ -41,10 +43,45 @@ import {
   taskCreate,
   registryCreate,
   personalAgentCreate,
-  peerCreate,
   taskDelegate,
 } from "./generated/aidash";
 export type Submit = (request: () => Promise<unknown>) => Promise<boolean>;
+/**
+ * Where a new Workspace goes: the Node the person works in, unless the Tenant
+ * has others to choose from. `field` is that choice (absent while there is
+ * nothing to choose) and `follow` moves the dashboard to the Node chosen.
+ */
+function useNodeChoice(): {
+  node: string | undefined;
+  field: ReactNode;
+  follow: () => void;
+} {
+  const { t } = useI18n();
+  const { nodes, selected, select } = useNodes();
+  const [chosen, setChosen] = useState<string>();
+  const node = chosen ?? selected?.name;
+  return {
+    node,
+    follow: () => {
+      if (node) select(node);
+    },
+    field: nodes.length > 1 && (
+      <Field label={t("node")}>
+        <NativeSelect
+          name="node"
+          value={node ?? ""}
+          onChange={(event) => setChosen(event.target.value)}
+        >
+          {nodes.map((value) => (
+            <option key={value.name} value={value.name}>
+              {value.label}
+            </option>
+          ))}
+        </NativeSelect>
+      </Field>
+    ),
+  };
+}
 const split = (s: string) =>
   s
     .split(",")
@@ -73,6 +110,7 @@ const CLEF_ROUTE = {
 };
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
+  const where = useNodeChoice();
   const entityLabel = useEntityLabel(data.registry);
   const targets = data.registry.filter((e) =>
     ["agent", "cluster"].includes(e.kind),
@@ -84,13 +122,17 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
         (e) => `${e.id}@${e.version}` === value.target,
       );
       if (!target) throw new Error(t("choose"));
-      await submit(() =>
-        conversationCreate({
-          ...value,
-          target: ref(value.target),
-          target_kind: target.kind,
-        }),
-      );
+      if (
+        await submit(() =>
+          conversationCreate({
+            ...value,
+            target: ref(value.target),
+            target_kind: target.kind,
+            node: where.node,
+          }),
+        )
+      )
+        where.follow();
     },
   });
   return (
@@ -147,6 +189,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
           </Field>
         )}
       </form.Field>
+      {where.field}
       <form.Subscribe selector={(s) => s.isSubmitting}>
         {(pending) => (
           <Button
@@ -163,6 +206,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
 }
 export function WorkspaceForm({ submit }: { submit: Submit }) {
   const { t } = useI18n();
+  const where = useNodeChoice();
   return (
     <form
       className={formClass}
@@ -173,8 +217,11 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
           workspaceCreate({
             title: String(d.get("title")),
             goal: String(d.get("goal")),
+            node: where.node,
           }),
-        );
+        ).then((created) => {
+          if (created) where.follow();
+        });
       }}
     >
       <Field label={t("title")}>
@@ -183,6 +230,7 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
       <Field label={t("goal")}>
         <Textarea name="goal" rows={4} required />
       </Field>
+      {where.field}
       <Button className="justify-self-end">{t("create")}</Button>
     </form>
   );
@@ -453,7 +501,7 @@ export function EntityForm({
             !hasInstructionalBinding(
               core.bindings,
               data.registry,
-              data.node.id,
+              registryDeployment(data),
               agentPlugins({ kind, config: pluginConfig }) ?? [],
             )
           )
@@ -589,7 +637,7 @@ export function EntityForm({
               value={core}
               change={setCore}
               cluster={Boolean(cluster)}
-              node={data.node.id}
+              node={registryDeployment(data)}
               entries={data.registry}
             />
             <AgentPluginImport config={pluginConfig} change={setPluginConfig} />
@@ -732,53 +780,6 @@ export function EntityForm({
       <Button className="justify-self-end" disabled={readingDocuments}>
         {t("register")}
       </Button>
-    </form>
-  );
-}
-export function PeerForm({ submit }: { submit: Submit }) {
-  const { t } = useI18n();
-  return (
-    <form
-      className={formClass}
-      onSubmit={(e) => {
-        e.preventDefault();
-        const d = new FormData(e.currentTarget);
-        void submit(() =>
-          peerCreate({
-            node_id: String(d.get("node_id")),
-            endpoint: String(d.get("endpoint")),
-            credential_env: String(d.get("credential_env")),
-            protocol_version: "0.2",
-            enabled: true,
-          }),
-        );
-      }}
-    >
-      <Field label={t("node")}>
-        <Input
-          name="node_id"
-          placeholder="aidash://node-b"
-          required
-          className="font-mono text-xs"
-        />
-      </Field>
-      <Field label={t("endpoint")}>
-        <Input
-          name="endpoint"
-          type="url"
-          placeholder="http://127.0.0.1:8081"
-          required
-        />
-      </Field>
-      <Field label={t("peerCredential")}>
-        <Input
-          name="credential_env"
-          placeholder="AIDASH_SECRET_NODE_B"
-          required
-          className="font-mono text-xs"
-        />
-      </Field>
-      <Button className="justify-self-end">{t("addPeer")}</Button>
     </form>
   );
 }

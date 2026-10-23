@@ -327,7 +327,7 @@ pub(super) async fn recover(store: &Store, seconds: i32) -> Result<Option<(Run, 
 		token,
 		seconds,
 		None,
-		&store.node_id,
+		store.deployment.as_str(),
 		&mut cursor,
 	)
 	.await?

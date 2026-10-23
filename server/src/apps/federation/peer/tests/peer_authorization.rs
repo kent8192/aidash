@@ -4,22 +4,23 @@
 mod endpoint;
 #[path = "../../../execution/tests/support/execution.rs"]
 mod execution_fixtures;
-#[path = "../../../execution/tests/support/isolated.rs"]
-mod isolated;
 #[path = "../../../execution/tests/support/native_database.rs"]
 mod native_database;
+#[path = "../../../execution/tests/support/federation.rs"]
+mod peering;
 // Discovery uses the successful provider fixture; adapter suites use the other modes.
 #[allow(dead_code)]
 #[path = "../../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
 
 use aidash_server::apps::{
-	federation::peer::models::{AuthorizationPeerMappingHistory, Peer},
+	federation::peer::models::AuthorizationPeerMappingHistory,
 	identity::models::AuthorizationCredential,
 };
 use chrono::{Duration, Utc};
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
+use peering::{Bearer, Remote};
 use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
@@ -27,26 +28,38 @@ use std::future::Future;
 use uuid::Uuid;
 
 const SOURCE: &str = "aidash://source";
-const PEER_ENV: &str = "AIDASH_SECRET_PEER_DISCOVERY_FIXTURE";
-const PEER_SECRET: &str = "peer-discovery-fixture-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/// The Node of `SOURCE` that sends the requests, and the stand-in Deployment
+/// that signs for it.
+fn sender() -> String {
+	aidash_domain::nodes::NodeName::derived("source").to_string()
+}
 
 #[fixture]
-fn discovery(#[future] execution: ExecutionFixture) -> impl Future<Output = ExecutionFixture> {
+fn discovery(
+	#[future] execution: ExecutionFixture,
+) -> impl Future<Output = (ExecutionFixture, Remote)> {
 	let execution = Box::pin(execution);
 	async move {
 		let execution = execution.await;
-		let peer = Peer::build()
-			.node_id(SOURCE)
-			.endpoint("http://127.0.0.1:1")
-			.credential_env(PEER_ENV)
-			.protocol_version("0.2")
-			.enabled(true)
-			.finish();
-		Peer::objects()
-			.create_with_conn(&mut execution.app.database.lease.handle(), &peer)
+		let remote = Remote::start(SOURCE).await;
+		let runtime = peering::enable(&execution.app.runtime, &execution.app.context);
+		peering::permit(&runtime, &remote.endpoint);
+		let owner = crate::endpoint::default_node(&runtime.store, "acme")
+			.await
+			.node;
+		let registered = execution
+			.app
+			.deployment_administrator
+			.post(
+				&peering::registration_path("acme", owner.as_str()),
+				&remote.registration(&sender()),
+				"json",
+			)
 			.await
 			.unwrap();
-		execution
+		crate::endpoint::assert_json(registered, 200);
+		(execution, remote)
 	}
 }
 
@@ -88,55 +101,41 @@ async fn request(
 	(response.status_code(), response.json_value().unwrap())
 }
 
-async fn discover(
-	app: &EndpointFixture,
-	node: &str,
-	token: &str,
-	tenant: &str,
-	subject: &str,
-) -> (u16, Value) {
-	let authorization = format!("Bearer {token}");
-	let response = async {
-		let client = &(app.anonymous);
-		let mut request = client
-			.request(http::Method::POST, "/federation/v0.1/scoped/discover")
-			.body(bytes::Bytes::copy_from_slice(
-				json!({"tenant":tenant,"subject":subject,"search":{}})
-					.to_string()
-					.as_bytes(),
-			))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &[
-			("Authorization", authorization.as_str()),
-			("x-aidash-node", node),
-			("x-aidash-protocol", "0.2"),
-		] {
-			request = request.header(*name, *value);
-		}
-		request.send().await
-	}
-	.await
-	.unwrap();
+async fn receiving_node(
+	f: &aidash_server::federation::Federation,
+) -> aidash_domain::nodes::NodeName {
+	crate::endpoint::default_node(&f.store, "acme").await.node
+}
+
+async fn discover(app: &EndpointFixture, bearer: Bearer<'_>, subject: &str) -> (u16, Value) {
+	let receiver = crate::endpoint::default_node(&app.runtime.store, "acme").await;
+	let response = peering::post_as(
+		&app.anonymous,
+		&receiver.to_string(),
+		bearer,
+		subject,
+		"/federation/v0.1/scoped/discover",
+		&json!({"search":{}}),
+	)
+	.await;
 	(response.status_code(), response.json_value().unwrap())
 }
 
 #[rstest]
 #[tokio::test]
 async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
-	#[future] discovery: ExecutionFixture,
+	#[future] discovery: (ExecutionFixture, Remote),
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
-	let execution = Box::pin(discovery).await;
+	let (execution, remote) = Box::pin(discovery).await;
 	let app = &execution.app;
 	let f = &app.runtime;
 	let mut policy = execution.policy;
 	// A peer record is a fixture prerequisite, not a substitute for the inbound
 	// middleware: every discovery below passes through real authentication.
-	let peer_token = PEER_SECRET;
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.0,
 		403
 	);
 	let (_, issued) = request(
@@ -149,7 +148,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	.await;
 	let subject_token = execution.subject_token.as_str();
 	let credential = &issued["credential"]["id"];
-	let mut mapping = json!({"source_node":SOURCE,"source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
+	let mut mapping = json!({"node":receiving_node(f).await,"source_node":remote.node(&sender()),"source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
 	let path = "/api/authorization/acme/peer-mappings";
 	assert_eq!(
 		request(app, subject_token, "POST", path, mapping.clone())
@@ -198,16 +197,19 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 			.0,
 		409
 	);
-	for (node, token, tenant, subject, expected) in [
-		(SOURCE, peer_token, "remote", "bob", 200),
-		(SOURCE, peer_token, "other", "bob", 403),
-		(SOURCE, peer_token, "remote", "alice", 403),
-		("aidash://forged", peer_token, "remote", "bob", 401),
-		(SOURCE, subject_token, "remote", "bob", 401),
-		(SOURCE, f.config.api_token.as_str(), "remote", "bob", 401),
+	let stranger = Remote::start(SOURCE).await;
+	let unregistered = aidash_domain::nodes::NodeName::derived("forged").to_string();
+	for (bearer, subject, expected) in [
+		(Bearer::Signed(&remote, sender()), "bob", 200),
+		(Bearer::Signed(&remote, sender()), "alice", 403),
+		// A Node nobody registered, and a key nobody pinned, answer alike.
+		(Bearer::Signed(&remote, unregistered), "bob", 401),
+		(Bearer::Signed(&stranger, sender()), "bob", 401),
+		(Bearer::Raw(subject_token), "bob", 401),
+		(Bearer::Raw(f.config.api_token.as_str()), "bob", 401),
 	] {
-		let (status, body) = discover(app, node, token, tenant, subject).await;
-		assert_eq!(status, expected, "{node} {tenant}/{subject}: {body}");
+		let (status, body) = discover(app, bearer, subject).await;
+		assert_eq!(status, expected, "{subject}: {body}");
 		if status == 200 {
 			assert_eq!(body.as_array().unwrap().len(), 1);
 			assert_eq!(body[0]["id"], "research");
@@ -222,7 +224,9 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		200
 	);
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.0,
 		403
 	);
 	mapping["expected_revision"] = json!(2);
@@ -239,6 +243,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -250,7 +255,9 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	.await
 	.unwrap();
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.1,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.1,
 		json!([])
 	);
 	aidash_server::authorization::Authorization {
@@ -258,6 +265,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -282,7 +290,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		.0,
 		200
 	);
-	let (status, entries) = discover(app, SOURCE, peer_token, "remote", "bob").await;
+	let (status, entries) = discover(app, Bearer::Signed(&remote, sender()), "bob").await;
 	assert_eq!(status, 200);
 	assert_eq!(entries, json!([]));
 	// Credential revocation invalidates even an enabled, previously used map.
@@ -302,7 +310,9 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		200
 	);
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.0,
 		403
 	);
 	mapping["expected_revision"] = json!(3);
@@ -383,16 +393,12 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 #[rstest]
 #[tokio::test]
 async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_discovery(
-	#[future] discovery: ExecutionFixture,
+	#[future] discovery: (ExecutionFixture, Remote),
 ) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
-	let execution = Box::pin(discovery).await;
+	let (execution, remote) = Box::pin(discovery).await;
 	let app = &execution.app;
 	let f = &app.runtime;
 	let mut policy = execution.policy;
-	let peer_token = PEER_SECRET;
 	let (_, issued) = request(
 		app,
 		&f.config.api_token,
@@ -402,7 +408,7 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	)
 	.await;
 	let credential = issued["credential"]["id"].clone();
-	let mapping = json!({"source_node":SOURCE,"source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
+	let mapping = json!({"node":receiving_node(f).await,"source_node":remote.node(&sender()),"source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
 	let mut other_policy = policy.clone();
 	other_policy["tenant"] = json!("other");
 	crate::endpoint::tenant_root(f, "other").await;
@@ -450,7 +456,23 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		json!({"subject":"alice"}),
 	)
 	.await;
+	// The same sending subject may be mapped at another Tenant's Node once that
+	// Node registers the sender; a conflict within one Node answers 409.
+	let other_node = crate::endpoint::default_node(&f.store, "other").await.node;
+	assert_eq!(
+		request(
+			app,
+			&f.config.api_token,
+			"POST",
+			&peering::registration_path("other", other_node.as_str()),
+			remote.registration(&sender())
+		)
+		.await
+		.0,
+		200
+	);
 	let mut other_mapping = mapping.clone();
+	other_mapping["node"] = json!(other_node);
 	other_mapping["credential_id"] = other_issued["credential"]["id"].clone();
 	assert_eq!(
 		request(
@@ -462,9 +484,8 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		)
 		.await
 		.0,
-		409
+		200
 	);
-	other_mapping["expected_revision"] = json!(1);
 	assert_eq!(
 		request(
 			app,
@@ -491,7 +512,9 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		200
 	);
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.0,
 		403
 	);
 	policy["subjects"]["alice"]["enabled"] = json!(true);
@@ -509,7 +532,9 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		200
 	);
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.0,
 		200
 	);
 	// Expiry is a durable database clock check, including for active mappings.
@@ -529,7 +554,9 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		})
 		.await;
 	assert_eq!(
-		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
+		discover(app, Bearer::Signed(&remote, sender()), "bob")
+			.await
+			.0,
 		403
 	);
 }

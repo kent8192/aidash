@@ -5,13 +5,19 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "../components/ui/popover";
-import type { HumanRequest, State } from "../types";
+import type { HumanRequest } from "../types";
 import type { ApprovalCard } from "../generated/models";
 import { ApprovalCardView } from "../capabilities/approvals";
 import { Badge, useI18n } from "../ui";
 import { shellCopy } from "./copy";
 
-export type PendingDecision = { request: HumanRequest; node: string };
+export type PendingDecision = {
+  request: HumanRequest;
+  /** The address of the Node whose Workspace asked. */
+  node: string;
+  /** What names the asking Workspace, with its Node when the Tenant has several. */
+  workspace: string;
+};
 
 /** Capability approvals addressed to the signed-in approver. */
 export type ApprovalInbox = {
@@ -25,14 +31,12 @@ export type ApprovalInbox = {
  * and may revoke. Hidden while empty.
  */
 export function DecisionQueue({
-  data,
   decisions,
   inbox,
   open,
   onOpenChange,
   select,
 }: {
-  data?: State;
   decisions: PendingDecision[];
   inbox: ApprovalInbox;
   open: boolean;
@@ -96,12 +100,7 @@ export function DecisionQueue({
                     <span className="flex min-w-0 items-center gap-2">
                       <Badge value={decision.request.kind} />
                       <span className="truncate font-mono text-[11px] text-faint">
-                        {decision.node === data?.node.id
-                          ? (data.workspaces.find(
-                              (value) =>
-                                value.id === decision.request.workspace_id,
-                            )?.title ?? decision.node)
-                          : decision.node}
+                        {decision.workspace || decision.node}
                       </span>
                       <span className="ml-auto shrink-0 font-mono text-[11px] text-faint tabular">
                         {copy.ago(minutes)}

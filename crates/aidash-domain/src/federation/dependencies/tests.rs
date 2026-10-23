@@ -9,15 +9,13 @@ use serde_json::json;
 fn node_qualified_edges_preserve_the_wire_contract(#[case] value: serde_json::Value) {
 	// Act
 	let reference: Reference = serde_json::from_value(value.clone()).unwrap();
-	let input: Input =
-		serde_json::from_value(json!({"tenant":"acme","subject":"alice","reference":value}))
-			.unwrap();
+	let input: Input = serde_json::from_value(json!({"reference":value})).unwrap();
 	// Assert
 	assert_eq!(serde_json::to_value(&reference).unwrap(), value);
 	assert_eq!(reference.node(), value["node_id"].as_str().unwrap());
 	assert_eq!(
 		serde_json::to_value(input).unwrap(),
-		json!({"tenant":"acme","subject":"alice","reference":value})
+		json!({"reference":value})
 	);
 	let mut unknown = value;
 	unknown["authority_override"] = json!(true);
@@ -27,7 +25,7 @@ fn node_qualified_edges_preserve_the_wire_contract(#[case] value: serde_json::Va
 #[rstest]
 fn peer_input_rejects_unrecognized_authority_fields() {
 	let result = serde_json::from_value::<Input>(
-		json!({"tenant":"acme","subject":"alice","reference":{"kind":"registry","node_id":"aidash://home","id":"agent","version":"1.0.0","digest":"approved"},"deployment_administrator":true}),
+		json!({"reference":{"kind":"registry","node_id":"aidash://home","id":"agent","version":"1.0.0","digest":"approved"},"deployment_administrator":true}),
 	);
 	assert!(result.is_err());
 }

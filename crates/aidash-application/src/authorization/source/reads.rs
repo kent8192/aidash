@@ -20,8 +20,7 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 	if bound.admission_id != admission || bound.task_id != grant.task_id {
 		return Ok(false);
 	}
-	let protocol = scope.protocol_version().to_owned();
-	super::grants::require_peer(scope, node, &protocol).await?;
+	super::grants::require_peer(scope, node).await?;
 	let task = scope.read_task(grant.task_id).await?;
 	if task.revision != bound.task_revision {
 		return Ok(false);

@@ -16,6 +16,12 @@ pub trait TransactionAuthorityScope: Send {
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
 	fn qualified_resource(&self, kind: &str, node: &str, id: Uuid) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	/// Validate stored ownership in the same authority transaction before any disclosure.
+	async fn require_target_node(
+		&mut self,
+		node: &str,
+		target: &aidash_domain::transactions::authority::Target,
+	) -> Result<()>;
 	async fn inherit_task(&mut self, task: Uuid) -> Result<()>;
 	async fn inherit_local_run(&mut self, run: &RunMetadata) -> Result<()>;
 	async fn source_admission(

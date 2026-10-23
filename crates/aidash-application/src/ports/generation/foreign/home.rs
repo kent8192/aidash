@@ -12,6 +12,9 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait HomeGenerationScope: ForeignGenerationGuard {
+	/// The address of the Node the Task's Workspace belongs to, known once the
+	/// Workspace has been read through the guard.
+	fn home_address(&self) -> String;
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn snapshot(&self) -> &Snapshot;
 	fn snapshot_mut(&mut self) -> &mut Snapshot;
@@ -34,7 +37,11 @@ pub trait HomeGenerationRepository: Send + Sync {
 	/// The local principal, or `None` for a request that a peer Node
 	/// authenticated, which has no local principal.
 	fn principal(&self) -> Option<&Principal>;
+	/// The Deployment this repository serves.
 	fn node_id(&self) -> &str;
+	/// The address of the Node a peer's request arrived at, `None` for a
+	/// request a local actor made.
+	fn receiver(&self) -> Option<&str>;
 	fn credential_id(&self) -> Option<Uuid>;
 	fn now(&self) -> DateTime<Utc>;
 	async fn load(&self, id: Uuid) -> Result<Record>;
@@ -46,5 +53,6 @@ pub trait HomeGenerationRepository: Send + Sync {
 		exclusive: bool,
 	) -> Result<Box<dyn HomeGenerationScope>>;
 	/// Called after committing the Home intent, without holding a local lease.
-	async fn prepare(&self, target: &str, id: Uuid) -> Result<Prepared>;
+	/// The request is sent as `home`, the Node the Task's Workspace belongs to.
+	async fn prepare(&self, home: &str, target: &str, id: Uuid) -> Result<Prepared>;
 }

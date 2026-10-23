@@ -19,7 +19,7 @@ impl EventBus {
 			let result = async {
 				let bus = tokio::time::timeout(
 					Duration::from_secs(15),
-					Self::connect(&f.config.nats_url, &f.config.node_id),
+					Self::connect(&f.config.nats_url, f.config.deployment.as_str()),
 				)
 				.await
 				.map_err(|_| Error::External("event bus connection timed out".into()))??;

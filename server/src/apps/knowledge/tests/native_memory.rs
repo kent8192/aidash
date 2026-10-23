@@ -62,6 +62,88 @@ struct RecoveryFence {
 }
 
 #[rstest]
+#[case::read(false)]
+#[case::write(true)]
+#[tokio::test]
+async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] write: bool,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(
+			&bank,
+			Change::Add {
+				id,
+				content: content("Owned memory"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let mut spoofed = bank.clone();
+	spoofed.home = aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "sibling")
+		.to_string();
+	assert_ne!(spoofed.home, bank.home);
+	if write {
+		let result = memory::mutate(
+			&store,
+			&Actor::DeploymentAdministrator,
+			mutation(
+				&spoofed,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: content("Spoofed memory"),
+				},
+			),
+		)
+		.await;
+		assert!(
+			matches!(result, Err(aidash_server::Error::Forbidden)),
+			"{result:?}"
+		);
+	} else {
+		let result = memory::list(
+			&store,
+			&Actor::DeploymentAdministrator,
+			memory::ReadBank {
+				provider: reference("p"),
+				bank: spoofed,
+			},
+		)
+		.await;
+		assert!(
+			matches!(result, Err(aidash_server::Error::Forbidden)),
+			"{result:?}"
+		);
+	}
+	let visible = memory::list(
+		&store,
+		&Actor::DeploymentAdministrator,
+		memory::ReadBank {
+			provider: reference("p"),
+			bank,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(visible.len(), 1);
+	assert_eq!(visible[0].id, id);
+}
+
+#[rstest]
 #[tokio::test]
 async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_restore(
 	#[future] database: DatabaseFixture,
@@ -449,7 +531,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 	let mut command = recovery_deployment::deployment_command(&database.url, deployment.path());
 	command
 		.kill_on_drop(true)
-		.env("AIDASH_NODE_ID", &store.node_id)
+		.env("AIDASH_DEPLOYMENT_ID", store.deployment.as_str())
 		.env("AIDASH_MEMORY_RECOVERY_DIR", directory)
 		.args(["memory-recovery", "restore", "--directory"])
 		.arg(directory)
@@ -999,9 +1081,12 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		memory::operate(&store, &Actor::DeploymentAdministrator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
-	let mut reopened = Store::from_pool(store.pool.fixture_driver().clone(), store.node_id.clone())
-		.await
-		.unwrap();
+	let mut reopened = Store::from_pool(
+		store.pool.fixture_driver().clone(),
+		store.deployment.clone(),
+	)
+	.await
+	.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.
 	reopened.keyless = store.keyless.clone();
 	let reopened = recovery::initialize_if_missing(&reopened, directory.to_owned())
@@ -1066,7 +1151,8 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = Bank {
-		home: store.node_id.clone(),
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,
@@ -1673,7 +1759,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 	database.tenant("acme").await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://vectors".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://vectors").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -2208,7 +2294,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 		let shared = Bank {
-			home: store.node_id.clone(),
+			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+				.to_string(),
 			tenant: "acme".into(),
 			workspace,
 			participant: None,
@@ -2237,7 +2324,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.unwrap();
 		agent.id = "late-agent".into();
 		agent.binding_normalization = None;
-		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
 		registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -2252,7 +2339,11 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(&store.node_id, &agent_ref.id, &agent_ref.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent_ref.id,
+		&agent_ref.version,
+	);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -2265,7 +2356,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -2276,7 +2374,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			&reference("other-memory"),
 		] {
 			authorization
-				.set_catalog("acme", reference, 0, true, "deployment_administrator")
+				.set_catalog(
+					"acme",
+					&aidash_domain::nodes::NodeName::derived("acme"),
+					reference,
+					0,
+					true,
+					"deployment_administrator",
+				)
 				.await
 				.unwrap();
 		}
@@ -2413,7 +2518,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
-			node_id: store.node_id.clone(),
+			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:1".into(),
 			database_url: database.url.clone(),
 			nats_url: "nats://127.0.0.1:1".into(),
@@ -2422,7 +2527,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			lease_seconds: 30,
 			demo_data: false,
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		store,
 		client: runtime_controls.client,
@@ -3090,11 +3198,22 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0");
+	let owner = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		"a",
+		"1.0.0",
+	);
 	authorization.replace("acme",1,serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"learning","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(),"deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -3162,6 +3281,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					"task_id",
 					"workspace_id",
 					"home_node",
+					"node",
 					"agent_id",
 					"agent_version",
 					"phase",
@@ -3176,7 +3296,16 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 					.expr(Expr::value(id))
 					.expr(Expr::value(task.id))
 					.expr(Expr::value(workspace))
-					.expr(Expr::value(&store.node_id))
+					.expr(Expr::value(
+						aidash_domain::nodes::NodeAddress::derived(
+							store.deployment.as_str(),
+							"acme",
+						)
+						.to_string(),
+					))
+					.expr(Expr::value(
+						aidash_domain::nodes::NodeName::derived("acme").to_string(),
+					))
 					.expr(Expr::value("a"))
 					.expr(Expr::value("1.0.0"))
 					.expr(Expr::value("COMPLETED"))
@@ -3327,7 +3456,11 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		.root_subject("alice")
 		.subject_chain(vec![
 			"alice".into(),
-			aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0"),
+			aidash_domain::qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+				"a",
+				"1.0.0",
+			),
 		])
 		.finish();
 	// The authorization row holds a row-level policy; seed it in a scope.

@@ -5,6 +5,7 @@ import {
   type Binding,
   type BindingConfiguration,
 } from "./agent-bindings";
+import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -384,7 +385,7 @@ export function GenerationPage({ data }: { data: State }) {
           <fieldset className="min-w-0" disabled={busy}>
             <PolicyEditor
               entries={data.registry}
-              node={data.node.id}
+              node={registryDeployment(data)}
               policy={editing === "new" ? undefined : editing}
               save={(id, spec) =>
                 mutate(() =>

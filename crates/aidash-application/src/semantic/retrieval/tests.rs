@@ -796,6 +796,7 @@ async fn candidate_receipt_changes_with_source_or_entry_revision() {
 }
 fn run() -> aidash_domain::Run {
 	aidash_domain::Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(10),
 		task_id: Uuid::from_u128(11),
 		workspace_id: index().workspace_id,
@@ -874,7 +875,7 @@ async fn automatic_context_truncates_query_at_utf8_boundary_and_keeps_run_origin
 	configuration.max_result_tokens = 512;
 	scope.index.spec = serde_json::to_value(configuration).unwrap();
 	let agent =
-		aidash_domain::qualified_agent(&run().home_node, &run().agent_id, &run().agent_version);
+		aidash_domain::agent_subject(&run().home_node, &run().agent_id, &run().agent_version);
 	scope.rows[0].agent = Some(agent.clone());
 	let result = context(
 		&mut scope,

@@ -157,13 +157,13 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
   const [error, setError] = useState("");
   const [callback] = useState(() => readOutcome(tenant));
   useEffect(() => {
-    // A render can be retried before it commits. Keep the returning Tenant
-    // and its outcome available until this page actually mounts.
-    if (!sessionStorage.getItem("aidash-provider-authorization")) return;
+    // A suspended render may be discarded, so consume the outcome only after
+    // this page commits with its notice.
+    const value = sessionStorage.getItem("aidash-provider-authorization");
     sessionStorage.removeItem("aidash-provider-authorization");
     sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
     sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
-    sessionStorage.removeItem(tenantKey);
+    if (value) sessionStorage.removeItem(tenantKey);
   }, []);
   const outcome = callback?.outcome;
   // Revocation, deletion and a failed authorization leave a live key at

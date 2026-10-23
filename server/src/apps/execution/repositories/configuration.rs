@@ -72,7 +72,7 @@ impl ConfigurationScope for Scope<'_> {
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let snapshot = crate::apps::registry::repositories::bindings::snapshot(
 			&mut self.access.tx,
-			&self.store.node_id,
+			self.store.deployment.as_str(),
 			entry,
 			false,
 			self.store.provider_credentials.is_some(),
@@ -106,7 +106,7 @@ impl ConfigurationScope for Scope<'_> {
 		crate::registry::register_in(
 			&mut self.access.tx,
 			entry,
-			&self.store.node_id,
+			self.store.deployment.as_str(),
 			&crate::bootstrap::registry_validation_for(self.store),
 		)
 		.await

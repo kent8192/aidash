@@ -125,6 +125,7 @@ fn repository() -> Repository {
 		})),
 	}
 }
+const HOME_ADDRESS: &str = "aidash://home/brave-otter-k3m9q2xa";
 fn input() -> Input {
 	Input {
 		id: Uuid::from_u128(4),
@@ -159,6 +160,9 @@ impl HomeGenerationRepository for Repository {
 	fn node_id(&self) -> &str {
 		"aidash://home"
 	}
+	fn receiver(&self) -> Option<&str> {
+		None
+	}
 	fn now(&self) -> DateTime<Utc> {
 		self.now
 	}
@@ -185,8 +189,11 @@ impl HomeGenerationRepository for Repository {
 		assert_eq!(record.root_subject, "root");
 		Ok(self.scope(Some(record)))
 	}
-	async fn prepare(&self, target: &str, id: Uuid) -> Result<Prepared> {
-		assert_eq!((target, id), (input().node_id.as_str(), input().id));
+	async fn prepare(&self, home: &str, target: &str, id: Uuid) -> Result<Prepared> {
+		assert_eq!(
+			(home, target, id),
+			(HOME_ADDRESS, input().node_id.as_str(), input().id)
+		);
 		{
 			let w = self.world.lock().unwrap();
 			assert!(w.record.is_some());
@@ -253,6 +260,9 @@ impl ForeignGenerationGuard for Scope {
 }
 #[async_trait]
 impl HomeGenerationScope for Scope {
+	fn home_address(&self) -> String {
+		HOME_ADDRESS.into()
+	}
 	async fn set_cancelled(&mut self, id: Uuid) -> Result<()> {
 		assert_eq!(id, input().id);
 		point(&self.world, "cancel").await?;
@@ -341,8 +351,8 @@ async fn request_commits_before_rpc_then_revalidates_exclusively(repository: Rep
 	assert_eq!(prepared.request_id, Uuid::from_u128(5));
 	assert_eq!(w.leases, 0);
 	assert_eq!(w.snapshot.revision, 10);
-	let executor =
-		&w.snapshot.bundle.subjects[&qualified_agent("aidash://executor", "agent", "1.0.0")];
+	let executor = &w.snapshot.bundle.subjects
+		[&aidash_domain::agent_subject("aidash://executor", "agent", "1.0.0")];
 	assert_eq!(executor.delegated_by.as_deref(), Some("parent"));
 	assert_eq!(
 		executor.attributes,

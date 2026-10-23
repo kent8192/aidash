@@ -54,11 +54,11 @@ async fn recover(execute: bool) -> Result<Counts> {
 	let plans = unreadable_plan_connections(&pool, &lost_pins).await?;
 	let plan_repository = Arc::new(PlanRepository {
 		pool: pool.clone(),
-		node: config.node_id.clone(),
+		node: config.deployment.to_string(),
 	});
 	let repository = Arc::new(NativeRepository {
 		pool,
-		node: config.node_id,
+		node: config.deployment.to_string(),
 	});
 	let mut affected = Vec::new();
 	let mut cursor = None;

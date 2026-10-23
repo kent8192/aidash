@@ -36,13 +36,13 @@ class ChartsTest(unittest.TestCase):
     aidash = 'deploy/helm/aidash'
     environment = 'infra/gcp/helm/environment'
     # The Runner requires the application's capability object claim.
-    base = {'node': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
+    base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
     def test_protected_memory_schedules_backup_and_independent_prune(self):
         gcip = {'dashboard': {'gcip': {'project_id': 'fixture', 'web_api_key': 'public',
                                       'public_origin': 'https://fixture.aidash.run', 'tenant_bindings': {}}}}
-        values = {**self.base, 'node': {'id': 'aidash://fixture', 'endpoint': 'https://fixture.aidash.run'},
+        values = {**self.base, 'deployment': {'id': 'aidash://fixture', 'endpoint': 'https://fixture.aidash.run'},
                   'gcip': {'settings': gcip}, 'image': {'repository': 'aidash', 'digest': 'sha256:' + 'a' * 64},
                   'memoryRecovery': {'existingClaim': 'memory', 'directory': '/var/lib/aidash/memory-recovery/home',
                                      'subPath': 'home', 'protection': {
@@ -63,6 +63,8 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(container['image'], 'aidash@sha256:' + 'a' * 64)
             self.assertEqual(container['envFrom'], [{'secretRef': {'name': 'maintenance'}}])
             env = {item['name']: item.get('value') for item in container['env']}
+            self.assertEqual(env['AIDASH_DEPLOYMENT_ID'], 'aidash://fixture')
+            self.assertEqual(env['AIDASH_ENDPOINT'], 'https://fixture.aidash.run')
             self.assertEqual(env['AIDASH_GCIP_SETTINGS'], '/etc/aidash/gcip/settings.json')
             mount = next(item for item in container['volumeMounts'] if item['name'] == 'gcip')
             self.assertTrue(mount['readOnly'])
@@ -86,6 +88,25 @@ class ChartsTest(unittest.TestCase):
         values = {**self.base, 'memoryRecovery': {'protection': {'required': True}}}
         result = subprocess.run(command, input=json.dumps(values), text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0, 'a required protected Home cannot silently render a local-only profile')
+
+    def test_local_postgres_secret_store_is_mounted_without_key_material(self):
+        values = yaml.safe_load((ROOT / 'deploy/local-k8s/values.yaml').read_text())
+        values.update(self.base)
+        objects = render(self.aidash, values)
+        expected = {
+            'provider_credentials': {
+                'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'},
+                'store': {'kind': 'postgres', 'master_key': {'env': 'AIDASH_PROVIDER_STORE_MASTER_KEY'}},
+                'broker': None,
+            }
+        }
+        for role in ('server', 'worker'):
+            self.assertEqual(json.loads(self.mounted(objects, role, 'AIDASH_PROVIDER_CREDENTIAL_SETTINGS')), expected)
+        for store in ({'kind': 'postgres', 'master_key': {'value': 'plaintext'}},
+                      {'kind': 'postgres', 'master_key': {'env': 'OTHER_KEY'}}):
+            values['providerCredentials']['settings']['store'] = store
+            with self.subTest(store=store), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, values)
 
     def test_chart_installs_the_release_the_runner_image_bundles(self):
         # The installer reads only the archive bundled in its image (#394), so a
@@ -343,7 +364,7 @@ class ChartsTest(unittest.TestCase):
         descriptor = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store, 'broker': broker}
         gcip = {'project_id': 'fixture', 'web_api_key': 'public', 'public_origin': 'https://pr-1.aidash.run',
                 'tenant_bindings': {'Pool-X': 'acme'}, 'session_idle_seconds': 3600}
-        values = dict(self.base, node={'id': 'aidash://fixture', 'endpoint': 'https://pr-1.aidash.run'},
+        values = dict(self.base, deployment={'id': 'aidash://fixture', 'endpoint': 'https://pr-1.aidash.run'},
                       providerCredentials={'settings': descriptor}, gcip={'settings': {'dashboard': {'gcip': gcip}}})
         objects = render(self.aidash, values)
         for role in ('server', 'worker'):
@@ -391,14 +412,14 @@ class ChartsTest(unittest.TestCase):
             {'dashboard': {'gcip': dict(gcip, auth_helper='auth.example.test')}},
             {'dashboard': {'gcip': dict(gcip, web_api_key=' ')}},
             {'dashboard': {'gcip': gcip, 'oidc': {}}},
-            {'dashboard': {'gcip': gcip}, 'node': {'api_token': 'override'}},
+            {'dashboard': {'gcip': gcip}, 'deployment': {'api_token': 'override'}},
         ]
         for invalid in invalid_gcip:
             with self.subTest(gcip=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(values, gcip={'settings': invalid}))
-        # The public origin is the node's own endpoint, so an unset endpoint is refused.
+        # The public origin is the Deployment's own endpoint, so an unset endpoint is refused.
         with self.assertRaises(subprocess.CalledProcessError):
-            render(self.aidash, dict(values, node={'id': 'aidash://fixture'}))
+            render(self.aidash, dict(values, deployment={'id': 'aidash://fixture'}))
 
     def test_production_disk_holders_are_statefulsets_that_stateful_ha_fails_over(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,

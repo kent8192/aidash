@@ -1,7 +1,7 @@
 //! How many bytes of files Aidash stores for each Tenant: capability objects,
-//! channel attachments, Artifacts, and Research snapshots and their originals.
-//! Database rows beyond those files do not count. A build that meters usage
-//! takes a sample every day and hands it to its usage port.
+//! channel attachments, Artifacts, Research snapshots and their originals, and
+//! Research page images. Database rows beyond those files do not count. A build
+//! that meters usage takes a sample every day and hands it to its usage port.
 use crate::store::Store;
 use crate::{Error, Result};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
@@ -14,12 +14,13 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 /// Each stored file's size, per table: a SQL expression over one row.
-const SOURCES: [(&str, &str); 5] = [
+const SOURCES: [(&str, &str); 6] = [
 	("core_objects", "size"),
 	("channel_attachments", "size_bytes"),
 	("artifacts", "octet_length(content::text)"),
 	("research_snapshots", "text_bytes"),
 	("research_originals", "octet_length(bytes)"),
+	("research_page_images", "octet_length(bytes)"),
 ];
 
 #[derive(Deserialize)]

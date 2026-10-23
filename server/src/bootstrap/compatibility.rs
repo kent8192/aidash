@@ -57,7 +57,7 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 			.await
 			.map_err(|error| Error::External(error.to_string()))?)
 		.clone();
-	let probes = match settings.node.probe_listen {
+	let probes = match settings.deployment.probe_listen {
 		Some(address) => {
 			Some(ProbeServer::start(address, context.clone(), coordinator.clone()).await?)
 		}
@@ -67,7 +67,7 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	let tasks = RuntimeTasks::start(
 		federation,
 		if workers {
-			settings.node.worker_count
+			settings.deployment.worker_count
 		} else {
 			0
 		},

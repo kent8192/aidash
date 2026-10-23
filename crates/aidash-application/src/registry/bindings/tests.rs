@@ -10,7 +10,7 @@ mod plugin_tools;
 const NODE: &str = "aidash://node-a";
 fn reference(id: &str) -> QualifiedRef {
 	QualifiedRef {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		id: id.into(),
 		version: "1.0.0".into(),
 	}
@@ -427,7 +427,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 
 	let mut run = admitted_run().await;
 	run.context.binding_snapshot = None;
-	run.home_node = "aidash://home".into();
+	run.home_node = "aidash://home/brave-otter-k3m9q2xa".into();
 	run.bind(recovered).unwrap();
 	let live = Arc::new(Live::new());
 	let resolver = execution::PinnedResolver {
@@ -524,7 +524,7 @@ async fn node_identity_cannot_be_replaced_by_a_same_named_local_definition() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	let mut target = catalog.core("outbound_get");
-	target.registry_node = "aidash://other".into();
+	target.registry_deployment = "aidash://other".into();
 	config.bindings.push(Binding::tool(target));
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
@@ -627,7 +627,7 @@ async fn complete_snapshot_retains_delegation_and_cluster_dependencies_and_rejec
 	));
 	catalog.insert(entry("delegated-model", "model", json!({})));
 	let descriptor = ToolDescriptor {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		provider: "integration.agent@1".into(),
 		operation: "invoke".into(),
 		default_alias: "delegate_peer".into(),
@@ -1221,10 +1221,11 @@ async fn admitted_run() -> Run {
 async fn bound_run(config: &AgentBindings) -> Run {
 	let saved = snapshot(&mut Catalog::new(), config, false).await.unwrap();
 	let mut run = Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
-		home_node: NODE.into(),
+		home_node: format!("{NODE}/brave-otter-k3m9q2xa"),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
 		state_version: Default::default(),
@@ -1334,7 +1335,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 		.entries
 		.into_iter()
 		.map(|(mut identity, mut entry)| {
-			identity.registry_node = foreign.into();
+			identity.registry_deployment = foreign.into();
 			if entry.kind == "tool" {
 				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
 				entry.config =
@@ -1349,7 +1350,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 		&mut catalog,
 		&providers(),
 		QualifiedRef {
-			registry_node: foreign.into(),
+			registry_deployment: foreign.into(),
 			..reference("agent")
 		},
 		&agent_entry(&config),
@@ -1512,7 +1513,7 @@ async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
 		let mut catalog = Catalog::new();
 		let member = catalog.core("outbound_get");
 		let mut other = member.clone();
-		other.registry_node = node.into();
+		other.registry_deployment = node.into();
 		other.version = version.into();
 		let bundle = catalog.bundle("ambiguous", vec![member.clone(), other]);
 		let mut config = agent_config();
@@ -1561,7 +1562,7 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 		.entries
 		.into_iter()
 		.map(|(mut identity, mut entry)| {
-			identity.registry_node = node.into();
+			identity.registry_deployment = node.into();
 			if entry.kind == "tool" {
 				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
 				entry.config =
@@ -1575,7 +1576,7 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 		&mut catalog,
 		&providers(),
 		QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			..reference("agent")
 		},
 		&agent_entry(&agent_config()),
@@ -1592,7 +1593,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 	let mut catalog = Catalog::new();
 	catalog.foreign.insert(child.agent.clone(), child.clone());
 	let descriptor = ToolDescriptor {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		provider: "integration.agent@1".into(),
 		operation: "invoke".into(),
 		default_alias: "remote_child".into(),
@@ -1600,7 +1601,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 		narrow: Default::default(),
 		lifecycle: None,
 		transport: Some(aidash_domain::tool::ToolConfig::Agent {
-			node_id: child.agent.registry_node.clone(),
+			node_id: child.agent.registry_deployment.clone(),
 			agent: child.agent.local(),
 		}),
 	};
@@ -1628,7 +1629,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 		graph
 			.bindings
 			.iter()
-			.all(|binding| binding.identity.registry_node == NODE)
+			.all(|binding| binding.identity.registry_deployment == NODE)
 	);
 	assert_eq!(
 		graph
@@ -1644,7 +1645,7 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 	recovered.foreign_agents.clear();
 	assert!(recovered.validate().is_err());
 	let mut forged = graph.clone();
-	forged.foreign_agents[0].agent.registry_node = NODE.into();
+	forged.foreign_agents[0].agent.registry_deployment = NODE.into();
 	assert!(forged.validate().is_err());
 	let mut forged = graph.clone();
 	forged.foreign_agents[0].definitions[0].digest = "forged".into();
@@ -1667,7 +1668,7 @@ async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
 		changed.definitions.push(
 			ResolvedDefinition::new(
 				QualifiedRef {
-					registry_node: saved.agent.registry_node.clone(),
+					registry_deployment: saved.agent.registry_deployment.clone(),
 					..reference("private")
 				},
 				entry("private", kind, json!({})),
@@ -1685,7 +1686,7 @@ async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
 	});
 	assert!(installed.validate().is_err());
 	let mut changed = saved.clone();
-	changed.definitions[0].identity.registry_node = NODE.into();
+	changed.definitions[0].identity.registry_deployment = NODE.into();
 	assert!(changed.validate().is_err());
 	let mut local = saved.snapshot();
 	local.remote = false;
@@ -1882,7 +1883,7 @@ async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admis
 			.unwrap()
 			.pin
 			.identity
-			.registry_node,
+			.registry_deployment,
 		NODE
 	);
 }
@@ -1970,10 +1971,11 @@ impl ExecutionTool for SharedReader {
 }
 fn snapshot_run(saved: BindingSnapshot) -> Run {
 	let mut run = Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
-		home_node: NODE.into(),
+		home_node: format!("{NODE}/brave-otter-k3m9q2xa"),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
 		state_version: Default::default(),
@@ -2193,4 +2195,40 @@ async fn the_workspace_slot_degrades_only_when_every_source_feeding_it_opted_in(
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
 	assert_eq!(settings.workspace_context, !policies.is_empty());
 	assert_eq!(settings.workspace_degrades, degrades);
+}
+
+#[rstest::rstest]
+#[case::local("aidash://node-a/brave-otter-k3m9q2xa", false, true)]
+#[case::sibling("aidash://node-a/brave-lynx-k3m9q2xa", true, true)]
+#[case::foreign("aidash://elsewhere/brave-otter-k3m9q2xa", true, true)]
+#[case::false_remote("aidash://node-a/brave-otter-k3m9q2xa", true, false)]
+#[case::false_local("aidash://node-a/brave-lynx-k3m9q2xa", false, false)]
+#[tokio::test]
+async fn admitted_bindings_compare_the_home_with_the_full_executing_node(
+	#[case] home: &str,
+	#[case] remote: bool,
+	#[case] accepted: bool,
+) {
+	let config = agent_config();
+	let saved = resolve(
+		&mut Catalog::new(),
+		&CurrentProviders,
+		reference("agent"),
+		&agent_entry(&config),
+		remote,
+	)
+	.await
+	.unwrap();
+	let mut run = crate::test_support::run_of(saved.clone());
+	run.home_node = home.into();
+	run.context.binding_snapshot = None;
+	assert_eq!(run.bind(saved.clone()).is_ok(), accepted);
+	// A worker independently rejects a mismatched durable snapshot.
+	run.context.binding_snapshot = Some(Box::new(saved));
+	let resolver = execution::PinnedResolver {
+		providers: Arc::new(CurrentProviders),
+		authority: Arc::new(CurrentProviders),
+		sessions: None,
+	};
+	assert_eq!(resolver.tools(&run).await.is_ok(), accepted);
 }

@@ -8,7 +8,7 @@ replica defaults and four-task run are not approved scale or availability target
 The Helm chart deploys one stable Aidash node as separate server and worker
 Deployments. Install the same chart twice for two independent nodes. Each node
 needs its own PostgreSQL database and node ID; every replica of that node uses
-the same database, identity, API credentials and pair-specific peer secrets.
+the same database, identity, API credentials and Deployment Key.
 Pod names and replica counts never become node identities.
 
 ## Build and deploy
@@ -29,7 +29,7 @@ docker push your-registry/aidash-frontend:0.1.0
 
 Provision a namespace and an existing Secret for each node. The Secret supplies
 `DATABASE_URL`, `NATS_URL`, `AIDASH_API_TOKEN`, and each required `AIDASH_SECRET_*`
-variable. Give both ends of a peer link the same strong pair credential. Model
+variable. Mount each node's Deployment Key file where `deployment.key.file` points. Model
 and embedding credentials must exist on every server and worker that can use
 them. Keep actual secret values outside Helm values and Git. A projected
 ServiceAccount token is used by the server's optional Kubernetes observer; the
@@ -71,20 +71,20 @@ done
 
 ```sh
 helm upgrade --install node-a deploy/helm/aidash --namespace aidash \
-  --set node.id=aidash://node-a --set existingSecret=node-a-secrets \
+  --set deployment.id=aidash://node-a --set existingSecret=node-a-secrets \
   --set image.repository=your-registry/aidash --set image.tag=0.1.0 \
   --set frontend.image.repository=your-registry/aidash-frontend \
   --set frontend.image.tag=0.1.0 --wait
 helm upgrade --install node-b deploy/helm/aidash --namespace aidash \
-  --set node.id=aidash://node-b --set existingSecret=node-b-secrets \
+  --set deployment.id=aidash://node-b --set existingSecret=node-b-secrets \
   --set image.repository=your-registry/aidash --set image.tag=0.1.0 \
   --set frontend.image.repository=your-registry/aidash-frontend \
   --set frontend.image.tag=0.1.0 --wait
 ```
 
-Register reciprocal peers using `http://node-a-backend.aidash.svc:8080` and
+Register reciprocal Node Registrations using `http://node-a-backend.aidash.svc:8080` and
 `http://node-b-backend.aidash.svc:8080`. For independent clusters, configure a
-reachable TLS endpoint in `node.endpoint` and your ingress/load balancer. An
+reachable TLS endpoint in `deployment.endpoint` and your ingress/load balancer. An
 external endpoint must stay stable across Pod replacements. The `<release>-aidash`
 Service fronts the dashboard and keeps the configured `service.type`; it is
 cluster-local by default. The backend uses a separate cluster-local

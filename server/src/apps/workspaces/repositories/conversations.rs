@@ -33,9 +33,14 @@ impl<'a> NativeConversation<'a> {
 }
 #[async_trait]
 impl ConversationScope for NativeConversation<'_> {
-	async fn create_workspace(&mut self, title: &str, goal: &str) -> Result<Workspace> {
+	async fn create_workspace(
+		&mut self,
+		title: &str,
+		goal: &str,
+		node: Option<&aidash_domain::nodes::NodeName>,
+	) -> Result<Workspace> {
 		self.access
-			.create_workspace(&self.federation.store, title, goal)
+			.create_workspace(&self.federation.store, title, goal, node)
 			.await
 			.map_err(Into::into)
 	}

@@ -4,10 +4,7 @@ use futures_util::FutureExt;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
-use aidash_server::{
-	federation::{Federation, Peer},
-	registry::Registry,
-};
+use aidash_server::{federation::Federation, registry::Registry};
 use common::{bootstrap, request};
 use serde_json::{Value, json};
 
@@ -35,11 +32,12 @@ fn graph_runtime(
 	async move {
 		let mut owner = runtime.await;
 		let f = &mut owner.federation;
-		f.config.node_id = format!("aidash://graph-{suffix}");
-		f.store.node_id = f.config.node_id.clone();
+		f.config.deployment =
+			aidash_domain::nodes::DeploymentId::parse(&format!("aidash://graph-{suffix}")).unwrap();
+		f.store.deployment = f.config.deployment.clone();
 		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
 		f.config.api_token = format!("peer-graph-{suffix}");
-		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.deployment).unwrap();
 		owner
 	}
 	.boxed()
@@ -82,54 +80,25 @@ async fn graph_node(
 	}
 }
 
+/// `local` accepts and addresses `remote`'s default Node.
 async fn connect(local: &Node, remote: &Node) {
-	{
-		let query_bind_1 = &remote.f.config.node_id;
-		let query_bind_2 = &remote.f.config.endpoint;
-		let query_bind_3 =
-			if local.f.config.node_id.ends_with("-c") || remote.f.config.node_id.ends_with("-c") {
-				"AIDASH_SECRET_GRAPH_THIRD"
-			} else {
-				"AIDASH_SECRET_TEST_PEER"
-			};
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("peers"))
-				.columns(
-					[
-						"node_id",
-						"endpoint",
-						"credential_env",
-						"protocol_version",
-						"enabled",
-					]
-					.map(Alias::new),
-				)
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(Expr::value(query_bind_1.to_owned()))
-						.expr(Expr::value(query_bind_2.to_owned()))
-						.expr(Expr::value(query_bind_3.to_owned()))
-						.expr(Expr::val("0.2"))
-						.expr(Expr::val(true))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(local.f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	common::register_default_node((&local.f, &local.app, "acme"), (&remote.f, "acme")).await;
 }
 
-async fn expand(node: &Node, token: &str, cursor: Option<&str>, kinds: &[&str]) -> (u16, Value) {
+async fn expand(
+	node: &Node,
+	target: &str,
+	token: &str,
+	cursor: Option<&str>,
+	kinds: &[&str],
+) -> (u16, Value) {
 	request(
 		&node.app,
 		token,
 		"POST",
 		"/api/federation/graph",
 		json!({
-			"node_id":"aidash://graph-b","scope_workspace":null,"mode":"mesh",
+			"node_id":target,"scope_workspace":null,"mode":"mesh",
 			"kinds":kinds,"relations":["goal","contains","tool","model"],
 			"hours":0,"limit":2,"cursor":cursor,"target_tenant":null,
 		}),
@@ -160,14 +129,9 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	connect(&b, &a).await;
 	connect(&b, &c).await;
 	connect(&c, &b).await;
-	let third_secret = std::env::var("AIDASH_SECRET_GRAPH_THIRD").unwrap();
-	b.f.authenticate_peer(&c.f.config.node_id, &third_secret)
-		.await
-		.unwrap();
-	c.f.authenticate_peer(&b.f.config.node_id, &third_secret)
-		.await
-		.unwrap();
-
+	let a_node = common::default_node(&a.f.store, "acme").await;
+	let b_node = common::default_node(&b.f.store, "acme").await;
+	let target = b_node.to_string();
 	a_policy["subjects"]["bob"] = json!({"kind":"user"});
 	a_policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"source-registry-deny","effect":"deny","subjects":{"ids":["alice"]},
@@ -238,7 +202,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			"POST",
 			"/api/authorization/acme/peer-mappings",
 			json!({
-				"source_node":a.f.config.node_id,"source_tenant":"acme","source_subject":subject,
+				"node":b_node.node,"source_node":a_node,"source_subject":subject,
 				"credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0,
 			}),
 		)
@@ -265,9 +229,10 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	)
 	.await;
 	assert_eq!(peers.0, 200);
-	assert_eq!(peers.1, json!([{"node_id":"aidash://graph-b"}]));
+	assert_eq!(peers.1, json!([{"node_id":target}]));
 	let (status, alice_page) = expand(
 		&a,
+		&target,
 		&alice_a,
 		None,
 		&["workspace", "goal", "task", "agent", "tool", "model"],
@@ -282,6 +247,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	while let Some(token) = cursor {
 		let (status, page) = expand(
 			&a,
+			&target,
 			&alice_a,
 			Some(&token),
 			&["workspace", "goal", "task", "agent", "tool", "model"],
@@ -311,6 +277,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert_eq!(
 		expand(
 			&a,
+			&target,
 			&bob_a,
 			Some(stolen),
 			&["workspace", "goal", "task", "agent", "tool", "model"]
@@ -319,10 +286,16 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		.0,
 		403
 	);
-	assert_eq!(expand(&a, &alice_a, Some(stolen), &["agent"]).await.0, 403);
+	assert_eq!(
+		expand(&a, &target, &alice_a, Some(stolen), &["agent"])
+			.await
+			.0,
+		403
+	);
 	assert_eq!(
 		expand(
 			&a,
+			&target,
 			&alice_a,
 			Some(stolen),
 			&["workspace", "goal", "task", "agent", "tool", "model"]
@@ -336,6 +309,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	loop {
 		let (status, page) = expand(
 			&a,
+			&target,
 			&bob_a,
 			cursor.as_deref(),
 			&["workspace", "goal", "task", "agent", "tool", "model"],
@@ -355,6 +329,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	}
 	.set_catalog(
 		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
 		&aidash_server::registry::EntityRef {
 			id: "research".into(),
 			version: "1.0.0".into(),
@@ -368,6 +343,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert_eq!(
 		expand(
 			&a,
+			&target,
 			&alice_a,
 			Some(stolen),
 			&["workspace", "goal", "task", "agent", "tool", "model"]
@@ -382,55 +358,31 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":a.f.config.node_id,"source_tenant":"acme","source_subject":"alice",
+			"node":b_node.node,"source_node":a_node,"source_subject":"alice",
 			"credential_id":alice_b["credential"]["id"],"enabled":false,"expected_revision":1,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{denied}");
-	assert_eq!(expand(&a, &alice_a, None, &["agent"]).await.0, 403);
+	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
 	let (status, _) = request(
 		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":a.f.config.node_id,"source_tenant":"acme","source_subject":"alice",
+			"node":b_node.node,"source_node":a_node,"source_subject":"alice",
 			"credential_id":alice_b["credential"]["id"],"enabled":true,"expected_revision":2,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200);
-	let source_peer = Peer {
-		node_id: b.f.config.node_id.clone(),
-		endpoint: b.f.config.endpoint.clone(),
-		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.2".into(),
-		enabled: false,
-	};
-	a.f.register_peer(source_peer.clone()).await.unwrap();
-	assert_eq!(expand(&a, &alice_a, None, &["agent"]).await.0, 403);
-	a.f.register_peer(Peer {
-		enabled: true,
-		..source_peer
-	})
-	.await
-	.unwrap();
-	let receiver_peer = Peer {
-		node_id: a.f.config.node_id.clone(),
-		endpoint: a.f.config.endpoint.clone(),
-		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.2".into(),
-		enabled: false,
-	};
-	b.f.register_peer(receiver_peer.clone()).await.unwrap();
-	assert_eq!(expand(&a, &alice_a, None, &["agent"]).await.0, 403);
-	b.f.register_peer(Peer {
-		enabled: true,
-		..receiver_peer
-	})
-	.await
-	.unwrap();
+	common::set_node_enabled((&a.f, &a.app, "acme"), (&b.f, "acme"), false, 1).await;
+	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
+	common::set_node_enabled((&a.f, &a.app, "acme"), (&b.f, "acme"), true, 2).await;
+	common::set_node_enabled((&b.f, &b.app, "acme"), (&a.f, "acme"), false, 1).await;
+	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
+	common::set_node_enabled((&b.f, &b.app, "acme"), (&a.f, "acme"), true, 2).await;
 	let (status, _) = request(
 		&b.app,
 		&b.f.config.api_token,
@@ -443,11 +395,9 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	)
 	.await;
 	assert_eq!(status, 200);
-	assert_eq!(expand(&a, &alice_a, None, &["agent"]).await.0, 403);
+	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
 
 	a.close().await;
 	b.close().await;
 	c.close().await;
 }
-
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder as _};

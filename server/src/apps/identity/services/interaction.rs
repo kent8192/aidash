@@ -72,6 +72,7 @@ pub async fn conversation(
 	goal: &str,
 	target: &EntityRef,
 	target_kind: &str,
+	node: Option<&aidash_domain::nodes::NodeName>,
 ) -> Result<ConversationResponse> {
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = aidash_application::workspaces::conversation(
@@ -81,6 +82,7 @@ pub async fn conversation(
 			goal,
 			target,
 			target_kind,
+			node,
 		},
 	)
 	.await

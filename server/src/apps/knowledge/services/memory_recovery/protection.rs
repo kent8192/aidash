@@ -118,9 +118,10 @@ async fn inventory(store: &Store, cut: DateTime<Utc>) -> Result<Vec<BankState>> 
 					Expr::col((Alias::new("memory_bank_settings"), Alias::new("bank_id")))
 						.equals((Alias::new("b"), Alias::new("id"))),
 				)
-				.and_where(
-					Expr::col((Alias::new("b"), Alias::new("home"))).eq(store.node_id.as_str()),
-				)
+				.and_where(crate::database::scope::in_deployment(
+					"b.home",
+					store.deployment.as_str(),
+				))
 				.and_where(Expr::col((Alias::new("b"), Alias::new("id"))).gt(Expr::value(after)))
 				.and_where(
 					Expr::col((
@@ -191,8 +192,8 @@ async fn eligible(
 	now: DateTime<Utc>,
 ) -> Result<bool> {
 	if archive.format != 1
-		|| archive.home != store.node_id
-		|| archive.bank.home != store.node_id
+		|| archive.home != store.deployment
+		|| aidash_domain::nodes::deployment_of(&archive.bank.home) != store.deployment
 		|| epoch.is_some_and(|value| archive.epoch != value)
 		|| archive.epoch.is_nil()
 		|| archive.created_at > now
@@ -276,7 +277,7 @@ async fn transfer(
 	}
 	let name = format!(
 		"{}{}",
-		prefix(&store.node_id),
+		prefix(store.deployment.as_str()),
 		path.file_name()
 			.and_then(|name| name.to_str())
 			.ok_or(Error::Forbidden)?
@@ -349,7 +350,7 @@ pub async fn backup_all(
 	File::open(&spool)?.sync_all()?;
 	let mut report = BackupReport {
 		event: "memory_recovery_archive_succeeded",
-		home: store.node_id.clone(),
+		home: store.deployment.to_string(),
 		cut,
 		complete: true,
 		banks: Vec::new(),
@@ -408,7 +409,7 @@ pub async fn prune_remote(store: &Store, remote: Arc<dyn RecoveryObjects>) -> Re
 		stale: Vec::new(),
 	};
 	let mut latest = BTreeMap::<Uuid, DateTime<Utc>>::new();
-	for item in objects(remote.as_ref(), &prefix(&store.node_id)).await? {
+	for item in objects(remote.as_ref(), &prefix(store.deployment.as_str())).await? {
 		let result: Result<()> = async {
 			let Some(object) = remote.get(&item.name, Some(&item.generation)).await? else {
 				return Ok(());
@@ -421,13 +422,13 @@ pub async fn prune_remote(store: &Store, remote: Arc<dyn RecoveryObjects>) -> Re
 			if !valid {
 				remote.delete(&item.name, &item.generation).await?;
 				report.deleted += 1;
-			} else if let Ok(archive) = archive {
-				if let Some(bank) = banks.iter().find(|bank| bank.bank == archive.bank) {
-					latest
-						.entry(bank.id)
-						.and_modify(|value| *value = (*value).max(archive.created_at))
-						.or_insert(archive.created_at);
-				}
+			} else if let Ok(archive) = archive
+				&& let Some(bank) = banks.iter().find(|bank| bank.bank == archive.bank)
+			{
+				latest
+					.entry(bank.id)
+					.and_modify(|value| *value = (*value).max(archive.created_at))
+					.or_insert(archive.created_at);
 			}
 			Ok(())
 		}
@@ -496,7 +497,7 @@ pub async fn reconcile_all(
 	let mut report = HomeReport {
 		archive_unavailable: false,
 		format: 1,
-		home: store.node_id.clone(),
+		home: store.deployment.to_string(),
 		epoch: initial.epoch,
 		head: recovery.publication_head()?,
 		banks: banks.clone(),
@@ -536,7 +537,8 @@ pub async fn reconcile_all(
 				archive_attempted = true;
 				let copied: Result<Vec<Archive>> = async {
 					let mut result = Vec::new();
-					for item in objects(remote.as_ref(), &prefix(&store.node_id)).await? {
+					for item in objects(remote.as_ref(), &prefix(store.deployment.as_str())).await?
+					{
 						let Some(object) = remote.get(&item.name, Some(&item.generation)).await?
 						else {
 							continue;
@@ -635,7 +637,7 @@ pub async fn resume(
 	remote: Arc<dyn RecoveryObjects>,
 	report: &HomeReport,
 ) -> Result<()> {
-	if report.format != 1 || report.home != store.node_id {
+	if report.format != 1 || report.home != store.deployment {
 		return Err(Error::Forbidden);
 	}
 	let recovery = active_external(store, directory).await?;

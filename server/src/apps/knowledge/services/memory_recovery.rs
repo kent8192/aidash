@@ -61,7 +61,7 @@ pub async fn attach_protected(
 	directory: PathBuf,
 	objects: Arc<dyn aidash_application::ports::memory::objects::RecoveryObjects>,
 ) -> Result<Store> {
-	let ledger = FileRecovery::new(directory, store.node_id.clone())?.with_objects(objects);
+	let ledger = FileRecovery::new(directory, store.deployment.to_string())?.with_objects(objects);
 	attach_ledger(store, ledger).await
 }
 async fn attach_ledger(store: Store, ledger: FileRecovery) -> Result<Store> {
@@ -70,7 +70,7 @@ async fn attach_ledger(store: Store, ledger: FileRecovery) -> Result<Store> {
 	Ok(store.with_memory_recovery(Some(Arc::new(ledger))))
 }
 fn external(store: &Store, directory: &Path) -> Result<FileRecovery> {
-	let mut recovery = FileRecovery::from_env(directory.to_owned(), store.node_id.clone())?;
+	let mut recovery = FileRecovery::from_env(directory.to_owned(), store.deployment.to_string())?;
 	if let Some(objects) = store
 		.pool
 		.memory_recovery()
@@ -113,6 +113,27 @@ fn bypass(store: &Store) -> Store {
 	internal
 }
 
+/// The address of the Node a Workspace belongs to, which is the home of its banks.
+async fn workspace_home(store: &Store, workspace: Uuid) -> Result<String> {
+	let internal = bypass(store);
+	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
+	let result = async {
+		let node: Option<String> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **lease.tx())
+		.await?;
+		let node = node.ok_or_else(|| Error::NotFound("workspace".into()))?;
+		Ok(format!("{}/{node}", store.deployment))
+	}
+	.await;
+	lease.finish(result).await
+}
+
 /// Explicit first initialization of the new relational format, never a JSON import.
 pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let recovery = external(store, &directory)?;
@@ -121,7 +142,7 @@ pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let result = async {
 		for table in ["memory_banks","memory_participants"] {
 			if native::query(&Query::select().column(Alias::new("id")).from(Alias::new(table))
-				.and_where(Expr::col("home").eq(store.node_id.as_str())).limit(1).to_string(PostgresQueryBuilder))
+				.and_where(crate::database::scope::in_deployment("home", store.deployment.as_str())).limit(1).to_string(PostgresQueryBuilder))
 				.fetch_optional(&mut **lease.tx()).await?.is_some() {
 				return Err(Error::Conflict("a new recovery epoch requires empty new-format memory; restore the existing external ledger".into()));
 			}
@@ -223,7 +244,7 @@ async fn backup_to(
 		let now = Utc::now();
 		let archive = Archive {
 			format: 1,
-			home: store.node_id.clone(),
+			home: store.deployment.to_string(),
 			epoch: ledger.epoch,
 			bank,
 			provider: settings.provider,
@@ -235,8 +256,14 @@ async fn backup_to(
 		let archives = directory.join(if spool.is_some() { "spool" } else { "archives" });
 		std::fs::create_dir_all(&archives)?;
 		if spool.is_none()
-			&& prune(&mut lease, &archives, &store.node_id, ledger.epoch, now).await?
-				>= MAX_ARCHIVES
+			&& prune(
+				&mut lease,
+				&archives,
+				store.deployment.as_str(),
+				ledger.epoch,
+				now,
+			)
+			.await? >= MAX_ARCHIVES
 		{
 			return Err(Error::Conflict(
 				"managed memory backup capacity reached".into(),
@@ -323,8 +350,8 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 	let archive: Archive = recovery::read(path)?;
 	let ledger = recovery.load()?;
 	if archive.format != 1
-		|| archive.home != store.node_id
-		|| archive.bank.home != store.node_id
+		|| archive.home != store.deployment
+		|| aidash_domain::nodes::deployment_of(&archive.bank.home) != store.deployment
 		|| archive.epoch != ledger.epoch
 		|| archive.created_at > Utc::now()
 		|| archive.expires_at <= Utc::now()
@@ -510,7 +537,9 @@ async fn finish(
 			let ttl = policy.retention.unit_expired(unit.learned_at, Utc::now());
 			// The pass snapshot is already validated. Check only this fence so
 			// Ledger validation does not rescan every Home identity per unit.
-			let mut selected = aidash_domain::memory::recovery::Ledger::new(bank.home.clone());
+			let mut selected = aidash_domain::memory::recovery::Ledger::new(
+				aidash_domain::nodes::deployment_of(&bank.home).to_owned(),
+			);
 			if let Some(fence) = ledger.units.get(&unit.id) {
 				selected.units.insert(unit.id, fence.clone());
 			}
@@ -802,7 +831,7 @@ pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 		let result = prune(
 			&mut lease,
 			&archives,
-			&store.node_id,
+			store.deployment.as_str(),
 			ledger.epoch,
 			Utc::now(),
 		)
@@ -912,7 +941,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			let store = attach(
 				Store::from_pool(
 					database.into_postgres().ok_or(Error::Forbidden)?,
-					config.node_id.clone(),
+					config.deployment.clone(),
 				)
 				.await?
 				.with_dashboard_policy(config.dashboard_policy())
@@ -967,15 +996,16 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					println!("verified new-format memory ledger");
 				}
 				Some("backup") => {
+					let workspace = *matches
+						.get_one::<Uuid>("workspace")
+						.ok_or_else(|| Error::Invalid("backup requires --workspace".into()))?;
 					let bank = Bank {
-						home: store.node_id.clone(),
+						home: workspace_home(&store, workspace).await?,
 						tenant: matches
 							.get_one::<String>("tenant")
 							.ok_or_else(|| Error::Invalid("backup requires --tenant".into()))?
 							.clone(),
-						workspace: *matches
-							.get_one::<Uuid>("workspace")
-							.ok_or_else(|| Error::Invalid("backup requires --workspace".into()))?,
+						workspace,
 						participant: matches.get_one::<Uuid>("participant").copied(),
 					};
 					println!("{}", backup(&store, directory, bank).await?.display());
@@ -1002,7 +1032,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					if matches.get_flag("json") {
 						let _ = recovery.verify().await;
 						println!("{}", serde_json::json!({
-							"home": store.node_id, "epoch": ledger.epoch, "restoring": ledger.restoring,
+							"home": store.deployment.as_str(), "epoch": ledger.epoch, "restoring": ledger.restoring,
 							"serving": recovery.require_serving().is_ok(), "fenced_units": ledger.units.len(),
 							"protected": recovery.protection_requested()?, "head": recovery.publication_head().ok(),
 						}));

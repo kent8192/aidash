@@ -23,9 +23,18 @@ pub(crate) async fn tenant(
 	connection: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
 ) -> Result<()> {
-	crate::apps::identity::models::AuthorizationBundle::lock_snapshot(connection, tenant, false)
-		.await?;
-	Ok(())
+	let result = crate::apps::identity::models::AuthorizationBundle::lock_snapshot(
+		connection, tenant, false,
+	)
+	.await;
+	// A purge removes the policy, but retains the deleted Tenant's tombstone.
+	if matches!(&result, Err(Error::NotFound(_)))
+		&& crate::apps::identity::repositories::tenant_deletions::is_deleted(connection, tenant)
+			.await?
+	{
+		return Err(Error::TenantDeleted);
+	}
+	result.map(|_| ())
 }
 
 /// Preserve the deleted-Tenant HTTP response at public administration ports.

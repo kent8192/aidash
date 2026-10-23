@@ -367,6 +367,7 @@ async fn lineage_requires_current_live_authority(
 		job.status = status.into();
 		job.prepared = prepared;
 		job.home_node = home.into();
+		job.foreign_intent = (!home.is_empty()).then(|| serde_json::json!({}));
 		job.quota_released = released;
 		job.expires_at = DateTime::from_timestamp(expiry, 0).unwrap();
 		state.enabled.insert(Uuid::from_u128(22), enabled);
@@ -410,6 +411,7 @@ async fn prepared_lineage_does_not_grant_provider_usage(
 		let mut state = world.0.lock().unwrap();
 		state.jobs[1].status = status.into();
 		state.jobs[1].home_node = "aidash://home".into();
+		state.jobs[1].foreign_intent = Some(serde_json::json!({}));
 	}
 	let (mut authority, repository) = adapters(&world);
 	assert!(matches!(

@@ -41,7 +41,7 @@ pub struct OperationLifecycle {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolDescriptor {
-	pub registry_node: String,
+	pub registry_deployment: String,
 	pub provider: String,
 	pub operation: String,
 	pub default_alias: String,
@@ -114,7 +114,7 @@ pub fn research_descriptor(node: &str, provider: &str, operation: &str) -> Resul
 	let (research, tier) = research_operation(provider, operation)
 		.ok_or_else(|| Error::Invalid("unknown research provider operation".into()))?;
 	Ok(ToolDescriptor {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		provider: provider.into(),
 		operation: operation.into(),
 		default_alias: research_alias(research).into(),
@@ -207,7 +207,7 @@ pub fn core_descriptor(node: &str, operation: &str) -> Result<ToolDescriptor> {
 		_ => None,
 	};
 	Ok(ToolDescriptor {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		provider: provider.into(),
 		operation: operation.into(),
 		default_alias: operation.into(),
@@ -223,7 +223,7 @@ pub fn core_descriptor(node: &str, operation: &str) -> Result<ToolDescriptor> {
 
 impl ToolDescriptor {
 	pub fn validate(&self) -> Result<()> {
-		crate::configuration::validate_node_id(&self.registry_node)?;
+		crate::nodes::DeploymentId::parse(&self.registry_deployment)?;
 		validate_alias(&self.default_alias)?;
 		if self.provider.is_empty() || self.operation.is_empty() {
 			return Err(Error::Invalid(
@@ -235,8 +235,8 @@ impl ToolDescriptor {
 			lifecycle.poll.validate()?;
 			lifecycle.cancel.validate()?;
 			if lifecycle.poll == lifecycle.cancel
-				|| lifecycle.poll.registry_node != self.registry_node
-				|| lifecycle.cancel.registry_node != self.registry_node
+				|| lifecycle.poll.registry_deployment != self.registry_deployment
+				|| lifecycle.cancel.registry_deployment != self.registry_deployment
 			{
 				return Err(Error::Invalid(
 					"invalid operation lifecycle identities".into(),
@@ -248,7 +248,7 @@ impl ToolDescriptor {
 	/// Runtime provider admission additionally verifies deployment and source ownership.
 	pub fn declared_contract(&self, identity: QualifiedRef) -> Result<ToolContract> {
 		self.validate()?;
-		if identity.registry_node != self.registry_node {
+		if identity.registry_deployment != self.registry_deployment {
 			return Err(Error::Invalid(
 				"descriptor registering Node does not match its qualified identity".into(),
 			));
@@ -262,7 +262,7 @@ impl ToolDescriptor {
 					"unknown or incompatible core provider operation".into(),
 				));
 			}
-			let expected = core_descriptor(&self.registry_node, &self.operation)?;
+			let expected = core_descriptor(&self.registry_deployment, &self.operation)?;
 			// Installation assigns new descriptor IDs. The resolver verifies the
 			// referenced companions' provider and operation, rather than names.
 			if self.lifecycle.is_some() != expected.lifecycle.is_some() {

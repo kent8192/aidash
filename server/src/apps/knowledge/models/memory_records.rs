@@ -466,8 +466,9 @@ pub struct MemoryEngineJob {
 #[model(app_label = "knowledge", table_name = "memory_learning_discovery")]
 #[derive(Serialize, Deserialize)]
 pub struct MemoryLearningDiscovery {
+	/// The Deployment whose Runs the learning pass discovers.
 	#[field(primary_key = true, field_type = "text")]
-	pub home: String,
+	pub deployment: String,
 	#[field]
 	pub cursor_updated: DateTime<Utc>,
 	#[field]

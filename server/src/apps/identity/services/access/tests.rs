@@ -1,7 +1,94 @@
 use super::*;
 
+use crate::apps::execution::test_database as native_database;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_catalog_admission_does_not_cross_nodes_in_one_transaction(
+	#[from(native_database::database)] database: native_database::DatabaseFuture,
+) {
+	// Arrange: only the default Node approves this definition.
+	let database = database.await;
+	let tenancy = database.tenant("acme").await;
+	let pool = database.pool().await;
+	let deployment = aidash_domain::nodes::DeploymentId::parse("aidash://catalog-cache").unwrap();
+	let store = Store::from_pool(pool.fixture_driver().clone(), deployment.clone())
+		.await
+		.unwrap();
+	let authorization = Authorization { pool: pool.clone() };
+	let bundle = serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap();
+	authorization
+		.replace("acme", 0, bundle, "fixture")
+		.await
+		.unwrap();
+	let issued = authorization
+		.issue_credential("acme", "alice", 3600, "fixture")
+		.await
+		.unwrap();
+	let identity = SubjectIdentity {
+		http_session: None,
+		tenant: "acme".into(),
+		subject: "alice".into(),
+		credential_id: issued.credential.id,
+	};
+	let entry: crate::registry::Entry = serde_json::from_value(json!({"id":"first","version":"1.0.0","kind":"skill","name":{"en":"First"},"description":{"en":"Fixture"},"config":{"instructions":"Frozen"}})).unwrap();
+	crate::registry::Registry::new(pool.clone(), &deployment)
+		.unwrap()
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry.clone(),
+		)
+		.await
+		.unwrap();
+	let reference = crate::registry::EntityRef {
+		id: entry.id.clone(),
+		version: entry.version.clone(),
+	};
+	let default = aidash_domain::nodes::NodeName::derived("acme");
+	authorization
+		.set_catalog("acme", &default, &reference, 0, true, "fixture")
+		.await
+		.unwrap();
+	let second = pool
+		.atomic(&tenancy, async |tx| {
+			crate::apps::identity::repositories::nodes::create(
+				tx,
+				"acme",
+				"Second",
+				false,
+				crate::apps::identity::repositories::tenants::Creator::DeploymentAdministrator(
+					None,
+				),
+			)
+			.await
+		})
+		.await
+		.unwrap();
+	let mut access = Access::begin(&store, &identity).await.unwrap();
+	access.set_node(default.clone());
+	// Act: changing Nodes must reread that Node's approval on the same lease.
+	let approved = crate::authorization::catalog::entry(&mut access, &reference, "registry.read")
+		.await
+		.unwrap();
+	access.set_node(second.name);
+	let denied =
+		crate::authorization::catalog::entry(&mut access, &reference, "registry.read").await;
+	access.set_node(default);
+	let original = crate::authorization::catalog::entry(&mut access, &reference, "registry.read")
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(approved, entry);
+	assert!(
+		matches!(denied, Err(Error::Forbidden | Error::NotFound(_))),
+		"{denied:?}"
+	);
+	assert_eq!(original, entry);
+	access.finish(Ok(())).await.unwrap();
+}
+
 #[rstest::fixture]
-fn access(#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client) -> Access {
+fn access() -> Access {
 	let identity = SubjectIdentity {
 		http_session: None,
 		credential_id: Uuid::new_v4(),
@@ -24,13 +111,15 @@ fn access(#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::
 	};
 	let environment = json!({"node_id":"aidash://home", "transport":"federation", "source_node":"aidash://reader-peer", "request_id":"reader-request"});
 	Access {
+		node: None,
+		node_address: None,
 		marketplace_audit: None,
 		core_gc_complete: false,
 		remote_read_cache: Default::default(),
 		unavailable_peers: Default::default(),
 		checking_reads: Default::default(),
 		read_verdicts: Default::default(),
-		peer_client: http_client,
+		wire: None,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,
 		// Same-credential publisher checks perform no database I/O.
@@ -193,6 +282,7 @@ async fn catalog_admissions_end_with_their_transaction_or_a_savepoint_rollback()
 		.into();
 	let admission = CatalogAdmission {
 		tenant: "acme".into(),
+		node: None,
 		subject: "alice".into(),
 		revision: 1,
 		inherited_lease: false,

@@ -9,6 +9,14 @@ use rstest::rstest;
 use serde_json::json;
 use uuid::Uuid;
 
+/// The Tenant's default Node address, which a manifest names as coordinator and participant.
+async fn node(app: &EndpointFixture) -> String {
+	crate::endpoint::tenant_root(&app.runtime, "endpoint").await;
+	crate::endpoint::default_node(&app.runtime.store, "endpoint")
+		.await
+		.to_string()
+}
+
 #[rstest]
 #[tokio::test]
 async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
@@ -22,8 +30,8 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let subject = subject(&app, "alice", _credential_client_0.await).await;
 	let created = workspace(&subject, "Atomic validation").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
-		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,
+	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
+		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,
 		"mutations":[{"kind":"workspace_state","workspace_id":created["id"],"expected_revision":0,"state":{"result":"committed"}}]}]});
 	// Act / Assert
 	let session = assert_json(subject.get("/api/session").await.unwrap(), 200);
@@ -107,7 +115,7 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Atomic mutation").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
 	let path = format!("/api/transactions/{id}");
 	// Act
 	let admitted = app
@@ -178,9 +186,9 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Concurrent admission").await;
 	let id = Uuid::new_v4();
-	let first = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
+	let first = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state",
+        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state",
             "workspace_id":workspace["id"],"expected_revision":0,"state":{"literal":"'$1 $2'"}}]}]});
 	let mut second = first.clone();
 	if conflicting {
@@ -225,7 +233,7 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	assert_eq!(listed[0]["id"], json!(id));
 	assert_eq!(
 		details["participants"],
-		json!([{"node_id":app.runtime.config.node_id,"phase":"PENDING"}])
+		json!([{"node_id":node(&app).await,"phase":"PENDING"}])
 	);
 	assert_eq!(details["history"].as_array().unwrap().len(), 1);
 	assert_eq!(details["history"][0]["phase"], "PENDING");
@@ -252,9 +260,9 @@ async fn deployment_administrator_abort_is_durable_while_recovery_owns_the_lease
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Abort during recovery").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
+	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state",
+        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state",
             "workspace_id":workspace["id"],"expected_revision":0,"state":{"never": "applied"}}]}]});
 	assert_json(
 		app.deployment_administrator
@@ -309,69 +317,6 @@ async fn deployment_administrator_abort_is_durable_while_recovery_owns_the_lease
 
 #[rstest]
 #[tokio::test]
-async fn peer_trust_changes_are_persisted_once_per_node_and_audited(
-	#[future] endpoint: EndpointFixture,
-) {
-	use aidash_server::apps::federation::peer::models::Peer;
-	use aidash_server::config::PROTOCOL_VERSION;
-	// Arrange: transaction trust uses an already registered peer.
-	let app = endpoint.await;
-	let peer = Peer::build()
-		.node_id("aidash://transaction-peer")
-		.endpoint(&app.server.url)
-		.credential_env("UNUSED_TRANSACTION_PEER_FIXTURE")
-		.protocol_version(PROTOCOL_VERSION)
-		.enabled(true)
-		.finish();
-	Peer::objects()
-		.create_with_conn(&mut app.database.lease.handle(), &peer)
-		.await
-		.unwrap();
-	// Act
-	for enabled in [true, true, false] {
-		let input = json!({"node_id":peer.node_id,"enabled":enabled});
-		let saved = assert_json(
-			app.deployment_administrator
-				.post("/api/transactions/trust", &input, "json")
-				.await
-				.unwrap(),
-			200,
-		);
-		assert_eq!(
-			saved,
-			json!({"node_id":peer.node_id,"enabled":enabled,"pending_transactions":[]})
-		);
-	}
-	let peers = assert_json(
-		app.deployment_administrator
-			.get("/api/transactions/trust")
-			.await
-			.unwrap(),
-		200,
-	);
-	let history = AtomicHistory::objects()
-		.filter(AtomicHistory::field_transaction_id().eq(Uuid::nil()))
-		.order_by(&["sequence"])
-		.all_with_db(&mut app.database.lease.handle())
-		.await
-		.unwrap();
-	// Assert
-	assert_eq!(
-		peers,
-		json!([{"node_id":peer.node_id,"enabled":false,"pending_transactions":[]}])
-	);
-	assert_eq!(
-		history
-			.iter()
-			.map(|row| row.phase.as_str())
-			.collect::<Vec<_>>(),
-		["ENABLED", "ENABLED", "DISABLED"]
-	);
-	assert!(history.iter().all(|row| row.detail == peer.node_id));
-}
-
-#[rstest]
-#[tokio::test]
 async fn participant_list_reads_persisted_orm_state(#[future] endpoint: EndpointFixture) {
 	use aidash_server::apps::federation::transactions::models::{
 		AtomicParticipant, states::AtomicParticipantPhase,
@@ -379,7 +324,7 @@ async fn participant_list_reads_persisted_orm_state(#[future] endpoint: Endpoint
 	// Arrange
 	let app = endpoint.await;
 	let participant = AtomicParticipant::build()
-		.coordinator(&app.runtime.config.node_id)
+		.coordinator(node(&app).await.as_str())
 		.digest("fixture-manifest")
 		.manifest(json!({"literal":"'$1 $2'"}).into())
 		.phase(AtomicParticipantPhase::Reserved)
@@ -461,7 +406,7 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 	let mut lease = ReadLease::begin(&app.runtime.store).await.unwrap();
 	lease.suspend().await.unwrap();
 	let participant = AtomicParticipant::build()
-		.coordinator(&app.runtime.config.node_id)
+		.coordinator(node(&app).await.as_str())
 		.digest("visibility-fixture")
 		.manifest(json!({}).into())
 		.phase(AtomicParticipantPhase::Reserved)

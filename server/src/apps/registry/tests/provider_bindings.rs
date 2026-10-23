@@ -18,10 +18,13 @@ use serde_json::json;
 async fn registry(database: &DatabaseFixture) -> Registry {
 	let pool = database.connection.clone().into_postgres().unwrap();
 	tenant_roots::tenant_root_in(&pool, "acme").await;
-	let store = Store::from_pool(pool, "aidash://node".into())
-		.await
-		.unwrap();
-	Registry::new(store.pool.clone(), &store.node_id).unwrap()
+	let store = Store::from_pool(
+		pool,
+		aidash_domain::nodes::DeploymentId::parse("aidash://node").unwrap(),
+	)
+	.await
+	.unwrap();
+	Registry::new(store.pool.clone(), &store.deployment).unwrap()
 }
 
 #[rstest]
@@ -74,7 +77,7 @@ async fn database_accepts_every_host_operation_and_its_exact_lifecycle(
 							invalid.config["lifecycle"]["poll"].clone()
 					}
 					"foreign-origin" => {
-						invalid.config["lifecycle"]["poll"]["registry_node"] =
+						invalid.config["lifecycle"]["poll"]["registry_deployment"] =
 							json!("aidash://foreign")
 					}
 					_ => invalid.config["lifecycle"]["extra"] = json!(true),
@@ -211,7 +214,7 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		.await
 		.unwrap()
 		.len();
-	let invalid:Entry=serde_json::from_value(json!({"id":"unsupported","version":"1.0.0","kind":"tool","name":{"en":"Test"},"description":{"en":"Test"},"config":{"registry_node":"aidash://node","provider":"integration.http@2","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://example.invalid","replay":"unsafe"}}})).unwrap();
+	let invalid:Entry=serde_json::from_value(json!({"id":"unsupported","version":"1.0.0","kind":"tool","name":{"en":"Test"},"description":{"en":"Test"},"config":{"registry_deployment":"aidash://node","provider":"integration.http@2","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://example.invalid","replay":"unsafe"}}})).unwrap();
 	assert!(
 		registry
 			.register(
@@ -275,7 +278,7 @@ async fn bundle_members_must_exist_and_database_accepts_the_new_kind(
 ) {
 	let database = database.await;
 	let registry = registry(&database).await;
-	let mut bundle:Entry=serde_json::from_value(json!({"id":"package","version":"1.0.0","kind":"bundle","name":{"en":"Test"},"description":{"en":"Test"},"config":{"members":[{"registry_node":"aidash://node","id":"aidash.workspace_read","version":"1.0.0"}]}})).unwrap();
+	let mut bundle:Entry=serde_json::from_value(json!({"id":"package","version":"1.0.0","kind":"bundle","name":{"en":"Test"},"description":{"en":"Test"},"config":{"members":[{"registry_deployment":"aidash://node","id":"aidash.workspace_read","version":"1.0.0"}]}})).unwrap();
 	assert!(
 		registry
 			.register(
@@ -306,7 +309,7 @@ async fn bundle_members_must_exist_and_database_accepts_the_new_kind(
 		saved
 	);
 	bundle.id = "foreign-package".into();
-	bundle.config["members"][0]["registry_node"] = json!("aidash://foreign");
+	bundle.config["members"][0]["registry_deployment"] = json!("aidash://foreign");
 	assert!(
 		registry
 			.register(
@@ -332,7 +335,7 @@ async fn bundle_member_id_ambiguity_is_rejected_by_registration_and_database(
 		.enumerate()
 	{
 		let duplicate = QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			version: version.into(),
 			..member.clone()
 		};

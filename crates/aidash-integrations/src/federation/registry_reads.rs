@@ -1,37 +1,25 @@
-//! Scoped verification keeps rotating credentials, a ten-second deadline and 1 KiB body bound.
-use super::PeerHttp;
+//! Scoped verification keeps a ten-second deadline and 1 KiB body bound.
+use super::HttpTransport;
 use aidash_application::ports::federation::registry_reads::{RegistryTransport, Verification};
-use aidash_domain::federation::{Peer, registry_reads::Reference};
+use aidash_domain::federation::{registry_reads::Reference, route::Route};
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
 #[async_trait]
-impl RegistryTransport for PeerHttp {
-	async fn verify(
-		&self,
-		peer: &Peer,
-		tenant: &str,
-		subject: &str,
-		references: &[Reference],
-	) -> Verification {
-		let Ok(token) = self.credentials.resolve(&peer.credential_env) else {
-			return Verification::Rejected;
-		};
-		let response = self
-			.client
-			.post(format!(
-				"{}/federation/v0.1/scoped/registry/verify",
-				peer.endpoint.trim_end_matches('/')
-			))
-			.timeout(Duration::from_secs(10))
-			.bearer_auth(token)
-			.header("x-aidash-node", &self.node_id)
-			.header("x-aidash-protocol", &peer.protocol_version)
-			.json(&json!({"tenant":tenant,"subject":subject,"references":references}))
-			.send()
-			.await;
+impl RegistryTransport for HttpTransport {
+	async fn verify(&self, route: &Route, references: &[Reference]) -> Verification {
+		let response = tokio::time::timeout(
+			Duration::from_secs(10),
+			self.send(
+				route,
+				"POST",
+				"/scoped/registry/verify",
+				Some(&json!({"references":references})),
+			),
+		)
+		.await;
 		let response = match response {
-			Ok(response) if response.status().is_success() => response,
+			Ok(Ok(response)) if response.status().is_success() => response,
 			_ => return Verification::Unavailable,
 		};
 		if crate::response::json::<bool>(response, 1024)

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ports::federation::registry_reads::RegistryJournalRow;
-use aidash_domain::{federation::Peer, policy::Resource};
+use aidash_domain::{federation::route::Route, policy::Resource};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use serde_json::Value;
@@ -28,7 +28,6 @@ struct Scope {
 	frontier: Option<Vec<Dependency>>,
 	unavailable: BTreeSet<String>,
 	missing_peer: bool,
-	protocol: String,
 	denied: Option<&'static str>,
 	fail: Option<&'static str>,
 	entry_error: Option<&'static str>,
@@ -45,7 +44,6 @@ fn scope() -> Scope {
 		frontier: None,
 		unavailable: BTreeSet::new(),
 		missing_peer: false,
-		protocol: "0.1".into(),
 		denied: None,
 		fail: None,
 		entry_error: None,
@@ -76,9 +74,6 @@ impl Scope {
 }
 #[async_trait]
 impl RegistryReadScope for Scope {
-	fn protocol(&self) -> &str {
-		"0.1"
-	}
 	fn identity(&self) -> (&str, &str) {
 		("tenant", "reader")
 	}
@@ -123,25 +118,24 @@ impl RegistryReadScope for Scope {
 		self.touch("dependencies")?;
 		Ok(self.rows.clone())
 	}
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
+	async fn route(&mut self, node: &str) -> Result<Option<Route>> {
 		self.touch("peer")?;
 		self.calls.push(node.into());
-		Ok((!self.missing_peer).then(|| Peer {
-			node_id: node.into(),
-			endpoint: "https://fixture.invalid".into(),
-			credential_env: "FIXTURE_KEY".into(),
-			protocol_version: self.protocol.clone(),
-			enabled: true,
+		Ok((!self.missing_peer).then(|| {
+			let mut route = crate::test_support::foreign_route(node);
+			route.subject = Some("reader".into());
+			route
 		}))
 	}
 }
 #[async_trait]
 impl RegistryVerificationScope for Scope {
-	fn node(&self) -> &str {
-		"aidash://local"
-	}
-	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
-		Self::resource_for(kind, id, attributes)
+	async fn node_resource(&mut self) -> Result<Resource> {
+		Ok(Self::resource_for(
+			"node",
+			"brave-otter-k3m9q2xa",
+			json!({"label":"Default","default":true}),
+		))
 	}
 	fn catalog_resource(&self, entry: &Entry) -> Resource {
 		Self::resource_for(
@@ -182,13 +176,7 @@ struct Transport {
 type VerificationCall = (String, String, String, Vec<Reference>);
 #[async_trait]
 impl RegistryTransport for Transport {
-	async fn verify(
-		&self,
-		peer: &Peer,
-		tenant: &str,
-		subject: &str,
-		references: &[Reference],
-	) -> Verification {
+	async fn verify(&self, route: &Route, references: &[Reference]) -> Verification {
 		let mut calls = self.calls.lock().unwrap();
 		let response = self
 			.replies
@@ -196,9 +184,9 @@ impl RegistryTransport for Transport {
 			.copied()
 			.unwrap_or(Verification::Verified);
 		calls.push((
-			peer.node_id.clone(),
-			tenant.into(),
-			subject.into(),
+			route.target.deployment.to_string(),
+			route.tenant.to_string(),
+			route.subject.clone().unwrap_or_default(),
 			references.to_vec(),
 		));
 		response
@@ -354,16 +342,10 @@ async fn frontier_rechecks_local_authority_after_a_previous_success(mut scope: S
 	assert!(scope.cache.is_empty());
 }
 #[rstest]
-#[case::missing(true, "0.1")]
-#[case::protocol(false, "other")]
+#[case::missing(true)]
 #[tokio::test]
-async fn missing_or_incompatible_enabled_peer_denies_before_rpc(
-	mut scope: Scope,
-	#[case] missing: bool,
-	#[case] protocol: &str,
-) {
+async fn a_missing_route_denies_before_rpc(mut scope: Scope, #[case] missing: bool) {
 	scope.missing_peer = missing;
-	scope.protocol = protocol.into();
 	let transport = Transport::default();
 	assert!(
 		!reads_visible(&mut scope, &transport, Uuid::from_u128(1))
@@ -529,7 +511,7 @@ async fn inbound_proof_requires_discovery_then_exact_current_definition_and_exec
 	let references = references(&scope);
 	assert!(verify(&mut scope, &references).await.unwrap());
 	assert_eq!(scope.calls, vec!["require", "entry", "agent.execute"]);
-	assert_eq!(scope.decisions[0].0.id, "aidash://local");
+	assert_eq!(scope.decisions[0].0.id, "brave-otter-k3m9q2xa");
 	assert_eq!(scope.decisions[0].1, "federation.discover");
 }
 #[rstest]

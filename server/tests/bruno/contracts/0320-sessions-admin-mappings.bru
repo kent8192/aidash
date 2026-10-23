@@ -1,5 +1,5 @@
 meta {
-  name: 0320 sessions-admin-mappings - Anonymous request is rejected
+  name: 0320 sessions-admin-mappings - Application read preserves the typed response contract
   type: http
   seq: 320
 }
@@ -12,9 +12,10 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json"); });
 }

@@ -1,5 +1,5 @@
 use super::*;
-use aidash_application::{Error, Result, ports::Credentials};
+use crate::federation::tests::{Server, TestKey, route, serve, transport, verified};
 use aidash_domain::registry::EntityRef;
 use axum::{
 	Json, Router,
@@ -11,37 +11,15 @@ use axum::{
 };
 use rstest::rstest;
 use serde_json::Value;
-use std::sync::{Arc, Mutex, RwLock};
-struct Keys(RwLock<Option<String>>);
-impl Credentials for Keys {
-	fn resolve(&self, reference: &str) -> Result<String> {
-		assert_eq!(reference, "REGISTRY_FIXTURE_KEY");
-		self.0
-			.read()
-			.unwrap()
-			.clone()
-			.ok_or_else(|| Error::Invalid("fixture key unavailable".into()))
-	}
-}
-struct Server(tokio::task::JoinHandle<()>);
-impl Drop for Server {
-	fn drop(&mut self) {
-		self.0.abort();
-	}
-}
-type Calls = Arc<Mutex<Vec<(String, String, String, Value)>>>;
+use std::sync::{Arc, Mutex};
+type Calls = Arc<Mutex<Vec<(HeaderMap, Value)>>>;
 async fn receive(
 	Path(mode): Path<String>,
 	State(calls): State<Calls>,
 	headers: HeaderMap,
 	Json(input): Json<Value>,
 ) -> Response {
-	calls.lock().unwrap().push((
-		headers["authorization"].to_str().unwrap().into(),
-		headers["x-aidash-node"].to_str().unwrap().into(),
-		headers["x-aidash-protocol"].to_str().unwrap().into(),
-		input,
-	));
+	calls.lock().unwrap().push((headers, input));
 	match mode.as_str() {
 		"negative" => "false".into_response(),
 		"status" => StatusCode::FORBIDDEN.into_response(),
@@ -64,7 +42,16 @@ async fn receive(
 		_ => "true".into_response(),
 	}
 }
-async fn fixture(mode: &str) -> (Server, PeerHttp, Peer, Vec<Reference>, Arc<Keys>, Calls) {
+async fn fixture(
+	mode: &str,
+) -> (
+	Server,
+	HttpTransport,
+	Route,
+	Vec<Reference>,
+	Arc<TestKey>,
+	Calls,
+) {
 	let calls = Arc::new(Mutex::new(vec![]));
 	let app = Router::new()
 		.route(
@@ -72,24 +59,10 @@ async fn fixture(mode: &str) -> (Server, PeerHttp, Peer, Vec<Reference>, Arc<Key
 			post(receive),
 		)
 		.with_state(calls.clone());
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/scenario/{mode}/", listener.local_addr().unwrap());
-	let server = Server(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	}));
-	let keys = Arc::new(Keys(RwLock::new(Some("before-rotation".into()))));
-	let transport = PeerHttp {
-		client: reqwest::Client::new(),
-		node_id: "aidash://local".into(),
-		credentials: keys.clone(),
-	};
-	let peer = Peer {
-		node_id: "aidash://remote".into(),
-		endpoint,
-		credential_env: "REGISTRY_FIXTURE_KEY".into(),
-		protocol_version: "0.1".into(),
-		enabled: true,
-	};
+	let (server, origin) = serve(app).await;
+	let key = TestKey::new();
+	let transport = transport(&key, &origin);
+	let peer = route(&format!("{origin}/scenario/{mode}/"), Some("mapped-reader"));
 	let references = vec![Reference {
 		entry: EntityRef {
 			id: "agent".into(),
@@ -97,37 +70,33 @@ async fn fixture(mode: &str) -> (Server, PeerHttp, Peer, Vec<Reference>, Arc<Key
 		},
 		digest: format!("sha256:{}", "a".repeat(64)),
 	}];
-	(server, transport, peer, references, keys, calls)
+	(server, transport, peer, references, key, calls)
 }
 #[rstest]
 #[tokio::test]
-async fn registry_rpc_preserves_headers_mapped_identity_references_and_rotating_keys() {
-	let (_server, transport, peer, references, keys, calls) = fixture("ok").await;
-	assert_eq!(
-		transport
-			.verify(&peer, "mapped-tenant", "mapped-reader", &references)
-			.await,
-		Verification::Verified
-	);
-	*keys.0.write().unwrap() = Some("after-rotation".into());
-	assert_eq!(
-		transport
-			.verify(&peer, "mapped-tenant", "mapped-reader", &references)
-			.await,
-		Verification::Verified
-	);
+async fn registry_rpc_signs_each_call_as_the_mapped_reader() {
+	let (_server, transport, peer, references, key, calls) = fixture("ok").await;
+	for _ in 0..2 {
+		assert_eq!(
+			transport.verify(&peer, &references).await,
+			Verification::Verified
+		);
+	}
 	let calls = calls.lock().unwrap();
 	assert_eq!(calls.len(), 2);
-	assert_eq!(
-		calls[0],
-		(
-			"Bearer before-rotation".into(),
-			"aidash://local".into(),
-			"0.1".into(),
-			json!({"tenant":"mapped-tenant","subject":"mapped-reader","references":references})
-		)
-	);
-	assert_eq!(calls[1].0, "Bearer after-rotation");
+	for (headers, body) in calls.iter() {
+		assert_eq!(headers["x-aidash-protocol"], "0.4");
+		let claims = verified(
+			&key,
+			headers,
+			"POST",
+			"/scoped/registry/verify",
+			&serde_json::to_vec(body).unwrap(),
+		);
+		assert_eq!(claims.subject, "mapped-reader");
+		assert_eq!(body, &json!({"references":references}));
+	}
+	assert_ne!(calls[0].0["authorization"], calls[1].0["authorization"]);
 }
 #[rstest]
 #[case::status("status", Verification::Unavailable)]
@@ -143,24 +112,17 @@ async fn response_contract_and_body_limit_retain_the_existing_denial_category(
 	#[case] expected: Verification,
 ) {
 	let (_server, transport, peer, references, _keys, calls) = fixture(mode).await;
-	assert_eq!(
-		transport
-			.verify(&peer, "tenant", "reader", &references)
-			.await,
-		expected
-	);
+	assert_eq!(transport.verify(&peer, &references).await, expected);
 	assert_eq!(calls.lock().unwrap().len(), 1);
 }
 #[rstest]
 #[tokio::test]
-async fn absent_credentials_deny_before_any_request() {
-	let (_server, transport, peer, references, keys, calls) = fixture("ok").await;
-	*keys.0.write().unwrap() = None;
+async fn a_disabled_deployment_sends_nothing() {
+	let (_server, mut transport, peer, references, _key, calls) = fixture("ok").await;
+	transport.egress.enabled = false;
 	assert_eq!(
-		transport
-			.verify(&peer, "tenant", "reader", &references)
-			.await,
-		Verification::Rejected
+		transport.verify(&peer, &references).await,
+		Verification::Unavailable
 	);
 	assert!(calls.lock().unwrap().is_empty());
 }
@@ -174,12 +136,7 @@ async fn ten_second_deadline_covers_headers_and_body_without_changing_denial_sem
 ) {
 	let (_server, transport, peer, references, _keys, calls) = fixture(mode).await;
 	let started = std::time::Instant::now();
-	assert_eq!(
-		transport
-			.verify(&peer, "tenant", "reader", &references)
-			.await,
-		expected
-	);
+	assert_eq!(transport.verify(&peer, &references).await, expected);
 	assert!(started.elapsed() >= Duration::from_secs(9));
 	assert!(started.elapsed() < Duration::from_secs(11));
 	assert_eq!(calls.lock().unwrap().len(), 1);

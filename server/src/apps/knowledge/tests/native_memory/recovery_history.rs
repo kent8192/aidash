@@ -471,21 +471,21 @@ async fn a_failed_sql_commit_is_preserved_in_independent_history(
 		.is_err()
 	);
 	assert!(!directory.join("publication-pending.cbor").exists());
-	let remote = objects.entries.lock().unwrap();
-	let record = remote
-		.iter()
-		.find(|(name, _)| name.contains("/records/"))
-		.unwrap()
-		.1;
-	let record: aidash_domain::memory::recovery::history::Record =
-		serde_json::from_slice(&record.bytes).unwrap();
+	let record: aidash_domain::memory::recovery::history::Record = {
+		let remote = objects.entries.lock().unwrap();
+		let record = remote
+			.iter()
+			.find(|(name, _)| name.contains("/records/"))
+			.unwrap()
+			.1;
+		serde_json::from_slice(&record.bytes).unwrap()
+	};
 	let aidash_domain::memory::recovery::history::Change::Floors { units, .. } = record.change
 	else {
 		panic!("floor record");
 	};
 	assert_eq!(units[0].fence.revision, 2);
 	assert_eq!(units[0].fence.deleted, deleting);
-	drop(remote);
 	// Total local loss does not discard the attempted floor even though SQL rolled back.
 	std::fs::remove_dir_all(directory).unwrap();
 	let head = management::reconstruct(&store, directory).await.unwrap();
@@ -776,7 +776,7 @@ async fn all_bank_archives_continue_after_a_failure_and_prune_without_the_ledger
 	.unwrap();
 	let prefix = format!(
 		"homes/{}/archives/",
-		aidash_domain::semantic::indexing::content_digest(&store.node_id)
+		aidash_domain::semantic::indexing::content_digest(store.deployment.as_str())
 	);
 	remote
 		.create(&format!("{prefix}malformed.cbor"), b"truncated")
@@ -1048,7 +1048,8 @@ async fn a_killed_archive_temporary_cannot_bypass_spool_bounds_or_block_policy_e
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = Bank {
-		home: store.node_id.clone(),
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,
@@ -1160,11 +1161,19 @@ async fn scheduled_backup_revalidates_subject_authority_with_the_actual_read_onl
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0");
+	let home = aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme");
+	let owner = aidash_domain::qualified_agent(&home, "a", "1.0.0");
 	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"backup-proof","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&home.node,
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -1233,7 +1242,7 @@ async fn scheduled_backup_revalidates_subject_authority_with_the_actual_read_onl
 			"DATABASE_URL",
 			job.pool.connect_options().to_url_lossy().as_str(),
 		)
-		.env("AIDASH_NODE_ID", &job.node_id)
+		.env("AIDASH_DEPLOYMENT_ID", job.deployment.as_str())
 		.env(
 			"AIDASH_API_TOKEN",
 			"isolated-maintenance-validation-token-with-no-server-authority",
@@ -1279,7 +1288,9 @@ pub(super) async fn read_only_job(store: &Store, directory: &std::path::Path) ->
 		.connect_with(options)
 		.await
 		.unwrap();
-	let mut job = Store::from_pool(pool, store.node_id.clone()).await.unwrap();
+	let mut job = Store::from_pool(pool, store.deployment.clone())
+		.await
+		.unwrap();
 	job.keyless = store.keyless.clone();
 	management::attach(job, directory.to_owned()).await.unwrap()
 }

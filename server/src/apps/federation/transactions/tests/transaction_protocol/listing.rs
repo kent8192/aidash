@@ -9,10 +9,7 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 
 	fault_signals: FaultSignals,
 ) {
-	use aidash_server::authorization::{
-		Authorization,
-		peer::{PeerMappingInput, write},
-	};
+	use aidash_server::authorization::{Authorization, peer::write};
 	let (a, mut b, mut manifest, _, _) = pair;
 	let app_a = a.application.clone();
 	let app_b = b.application.clone();
@@ -28,20 +25,9 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 		.into_iter()
 		.find(|c| c.subject == "alice")
 		.unwrap();
-	write(
-		&b.f,
-		"acme",
-		PeerMappingInput {
-			source_node: a.f.config.node_id.clone(),
-			source_tenant: "acme".into(),
-			source_subject: "alice".into(),
-			credential_id: credential.id,
-			enabled: true,
-			expected_revision: 0,
-		},
-	)
-	.await
-	.unwrap();
+	write(&b.f, "acme", b.mapping(&a, credential.id, true, 0))
+		.await
+		.unwrap();
 	for (index, workspace) in [
 		a.f.store
 			.task(&TEST_FIXTURE, task_a)

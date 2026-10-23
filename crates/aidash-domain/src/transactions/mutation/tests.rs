@@ -10,7 +10,7 @@ fn task() -> Task {
 
 #[fixture]
 fn run() -> RunMetadata {
-	serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"home_node":"aidash://home","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
 }
 
 #[rstest]

@@ -83,6 +83,10 @@ pub(crate) async fn context(
 	journal::prepare(&f.store, tenancy, &operation, &description.semantic).await?;
 	let receipt: Receipt = super::authority_request(
 		f,
+		&aidash_domain::federation::route::Sender {
+			node: Some(run.node.clone()),
+			..super::scope_sender(tenancy)?
+		},
 		&run.home_node,
 		"/scoped/semantic/query",
 		&serde_json::to_value(&operation)?,
@@ -100,8 +104,7 @@ pub(crate) async fn context(
 		|| receipt.grant_id != description.grant_id
 		|| receipt.admission_id != run.id
 		|| receipt.binding != description.semantic
-		|| receipt.executor
-			!= crate::domain::qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version)
+		|| receipt.executor != run.executor_subject(f.config.deployment.as_str())
 		|| receipt.sources.len() != receipt.result.matches.len()
 		|| receipt
 			.sources
@@ -184,16 +187,22 @@ pub(crate) async fn context(
 
 pub(crate) async fn verify_operation(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	input: Operation,
 ) -> Result<bool> {
-	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let source = admitted.sender.to_string();
 	if input.home_node != source {
 		return Err(Error::Forbidden);
 	}
 	input.validate()?;
-	let (access, description) =
-		super::admission::leaf_lease(&f, source, input.grant_id, input.admission_id).await?;
+	let (access, description) = super::admission::leaf_lease(
+		&f,
+		&admitted.receiver.node,
+		&source,
+		input.grant_id,
+		input.admission_id,
+	)
+	.await?;
 	let result = async {
 		if description.semantic.disabled() {
 			return Err(Error::RemoteSemantic(Failure::Configuration));
@@ -236,6 +245,6 @@ pub(crate) async fn verify_in(
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;
 
 use reinhardt::query::SimpleExpr;

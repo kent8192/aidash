@@ -44,10 +44,12 @@ fn settings_defaults_and_runtime_share_the_native_database(settings_source: Valu
 		"postgresql://fixture:fixture@localhost:5432/fixture"
 	);
 	assert_eq!(runtime.lease_seconds, 30);
-	assert_eq!(settings.node.worker_count, 4);
+	assert_eq!(settings.deployment.worker_count, 4);
 	assert!(runtime.oidc.is_none());
 	assert!(settings.provider_credentials.store.is_none());
-	assert!(!format!("{:?}", settings.node).contains("test-only-deployment-administrator-secret"));
+	assert!(
+		!format!("{:?}", settings.deployment).contains("test-only-deployment-administrator-secret")
+	);
 }
 
 #[rstest]

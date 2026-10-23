@@ -21,8 +21,7 @@ export function MeshView({
       .filter((e) => e.kind === "agent")
       .map((entity) => ({ entity, node_id: data.node.id }));
   const nodeIds = [
-    data.node.id,
-    ...data.peers.filter((p) => p.enabled).map((p) => p.node_id),
+    ...new Set([data.node.id, ...agents.map((agent) => agent.node_id)]),
   ];
   const width = Math.max(600, nodeIds.length * 300);
   const height = compact

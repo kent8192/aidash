@@ -5,7 +5,6 @@ use aidash_domain::{
 	federation::Delegation,
 	generation::requests::Assignment,
 	identity::execution::{CreatedTaskOrigin, TaskOrigin},
-	qualified_agent,
 	registry::EntityRef,
 };
 use uuid::Uuid;
@@ -69,9 +68,12 @@ pub async fn delegate(
 	node: &str,
 	agent: &EntityRef,
 ) -> Result<Delegation> {
-	if node != scope.node_id() {
+	// A Run delegates on its own Node, which a Tool transport may still name by
+	// the bare Deployment id.
+	if !run.is_local(scope.node_id()) || !aidash_domain::nodes::names_home(node, &run.home_node) {
 		return Err(Error::Forbidden);
 	}
+	let node = run.home_node.as_str();
 	if scope.task_workspace(task).await? != Some(run.workspace_id) {
 		return Err(Error::Forbidden);
 	}
@@ -80,7 +82,11 @@ pub async fn delegate(
 	scope.require(&resource, "task.delegate").await?;
 	if let Some(existing) = scope.execution_grant(task).await? {
 		let mut expected = scope.subjects().to_vec();
-		expected.push(qualified_agent(node, &agent.id, &agent.version));
+		expected.push(aidash_domain::agent_subject(
+			node,
+			&agent.id,
+			&agent.version,
+		));
 		if existing.subject_chain != expected
 			|| existing.credential_id != scope.identity().credential_id
 		{

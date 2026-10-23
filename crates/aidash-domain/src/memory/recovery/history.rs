@@ -135,7 +135,7 @@ impl History {
 				for unit in units {
 					if unit.id.is_nil()
 						|| !seen.insert(unit.id)
-						|| unit.fence.bank.home != ledger.home
+						|| crate::nodes::deployment_of(&unit.fence.bank.home) != ledger.home
 						|| unit.fence.revision < 1
 						|| unit.fence.digest.is_empty()
 						|| (unit.visible && unit.fence.deleted)

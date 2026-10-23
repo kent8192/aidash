@@ -121,6 +121,7 @@ fn workspace_policy(tenant: &str) -> Value {
             "resources":{"kinds":["workspace"]},
             "condition":{"op":"eq","left":{"source":"resource","path":"/owner"},
                 "right":{"source":"literal","value":"alice"}}},
+            {"id":"node-use","effect":"allow","subjects":{"ids":["alice"]},"actions":["node.use"],"resources":{"kinds":["node"]}},
             {"id":"workspace-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
 }
 
@@ -268,9 +269,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert_eq!(status, 200);
 	assert_eq!(own_state["workspaces"].as_array().unwrap().len(), 1);
 	assert_eq!(own_state["tasks"][0]["id"], task["id"]);
-	for key in ["registry", "peers"] {
-		assert_eq!(own_state[key], json!([]));
-	}
+	assert_eq!(own_state["registry"], json!([]));
 	let (_, other_state) = scoped_request(&app, other, "GET", "/api/state", Value::Null).await;
 	for key in [
 		"workspaces",
@@ -301,7 +300,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	);
 	for path in [
 		"/api/marketplace/administration?tenant=acme",
-		"/api/mesh",
+		"/api/transactions/participants",
 		"/api/authorization/acme",
 	] {
 		assert_eq!(
@@ -1055,8 +1054,8 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	assert_eq!(decisions[0]["decision"]["allowed"], true);
 	assert!(decisions[0].get("attributes").is_none());
 	assert_eq!(
-		get(&app, "/api/authorization/unknown/decisions").await.1,
-		json!([])
+		get(&app, "/api/authorization/unknown/decisions").await,
+		(404, json!({"error": "authorization policy"}))
 	);
 }
 
@@ -1130,7 +1129,10 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 			.await
 			.is_err()
 	);
-	assert!(service.revisions("other", 0, 100).await.unwrap().is_empty());
+	assert!(matches!(
+		service.revisions("other", 0, 100).await,
+		Err(aidash_server::Error::NotFound(_))
+	));
 }
 
 fn lock_timeout_sql() -> String {

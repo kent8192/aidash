@@ -38,19 +38,17 @@ class TransactionPartitionTests(unittest.TestCase):
                         for count in (3, 16)
                         for phase, abort in (("coordinator.commit", False), ("coordinator.abort", True))
                         for repetition in (1, 2, 3))
-        expected.update((2, "coordinator.commit", "before", False, repetition, "peer-recovery")
-                        for repetition in (1, 2, 3))
 
         actual = transaction_cases([2, 3, 16])
 
-        self.assertEqual(len(expected), 105)
-        self.assertEqual(len(actual), 105)
+        self.assertEqual(len(expected), 102)
+        self.assertEqual(len(actual), 102)
         self.assertEqual(set(actual), expected)
 
     def test_ci_partitions_are_disjoint_complete_and_keep_case_order(self):
         complete = transaction_cases([2, 3, 16])
         selected = set()
-        for partition, count in (("coordinator", 42), ("participant", 30), ("lifecycle", 33)):
+        for partition, count in (("coordinator", 42), ("participant", 30), ("lifecycle", 30)):
             with self.subTest(partition=partition):
                 cases = transaction_cases([2, 3, 16], partition=partition)
                 self.assertEqual(len(cases), count)
@@ -60,16 +58,13 @@ class TransactionPartitionTests(unittest.TestCase):
                 selected.update(cases)
         self.assertEqual(selected, set(complete))
 
-    def test_individual_selectors_preserve_both_completion_outcomes_and_peer_recovery(self):
+    def test_individual_selectors_preserve_both_completion_outcomes(self):
         completion = transaction_cases([2, 3, 16], phase="coordinator.complete")
         self.assertEqual(len(completion), 36)
         self.assertEqual({case[0] for case in completion}, {2, 3, 16})
         self.assertEqual({case[2:4] for case in completion},
                          {("before", False), ("after", False), ("before", True), ("after", True)})
         self.assertTrue(all(case[5] is None for case in completion))
-        self.assertEqual(transaction_cases([2, 3, 16], lifecycle=["peer-recovery"]),
-                         [(2, "coordinator.commit", "before", False, repetition, "peer-recovery")
-                          for repetition in (1, 2, 3)])
 
     def test_unknown_partitions_and_mixed_selectors_fail_closed(self):
         for arguments in ({"partition": "missing"},
@@ -80,7 +75,7 @@ class TransactionPartitionTests(unittest.TestCase):
 
     def test_cli_rejects_empty_or_ambiguous_selection_before_creating_resources(self):
         required = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused"]
-        for arguments, message in ((["--nodes", "3", "--lifecycle", "peer-recovery"], "no transaction cases"),
+        for arguments, message in ((["--nodes", "2", "--lifecycle", "partition"], "no transaction cases"),
                                    (["--partition", "lifecycle", "--phase", "coordinator.commit"], "select a partition"),
                                    (["--partition", "participant", "--lifecycle", "rolling"], "select a partition"),
                                    (["--phase", "coordinator.commit", "--lifecycle", "rolling"], "select either phase")):
@@ -124,6 +119,54 @@ class TransactionPartitionTests(unittest.TestCase):
                     main()
             cluster.provision.assert_not_called()
             cluster.close.assert_called_once_with()
+
+
+class MemoryNodeContractTests(unittest.TestCase):
+    def test_memory_setup_keeps_the_registered_tenants_nodes_and_subjects(self):
+        for driver in (RemoteMemory, NativeMemory):
+            with self.subTest(driver=driver.__name__):
+                fixture = object.__new__(driver)
+                fixture.nodes = {
+                    0: {"tenant": "home-tenant", "node": "home-12345678", "address": "aidash://tx-00/home-12345678"},
+                    1: {"tenant": "worker-tenant", "node": "worker-abcdef12", "address": "aidash://tx-01/worker-abcdef12"},
+                }
+                fixture.tokens = []
+                fixture.register = Mock()
+                def api(node, path, body):
+                    if path == "/api/tenants":
+                        return 201, {"name": "unregistered-new-tenant"}
+                    return 200, {"token": "alice-token", "credential": {"id": "alice-credential"}}
+                fixture.api = Mock(side_effect=api)
+
+                fixture.configure()
+
+                self.assertEqual(fixture.tenants, ["home-tenant", "worker-tenant"])
+                self.assertFalse(any(call.args[1] == "/api/tenants" for call in fixture.api.call_args_list))
+                for node in range(2):
+                    policy = next(call for call in fixture.api.call_args_list
+                                  if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}"))
+                    mapping = next(call for call in fixture.api.call_args_list
+                                   if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}/peer-mappings"))
+                    subjects = policy.args[2]["bundle"]["subjects"]
+                    self.assertIn("aidash://tx-00/home-12345678/agents/research@1.0.0", subjects)
+                    self.assertIn("aidash://tx-01/worker-abcdef12/agents/research@1.0.0", subjects)
+                    self.assertEqual(mapping.args[2], {
+                        "node": fixture.nodes[node]["node"], "source_node": fixture.nodes[1 - node]["address"],
+                        "source_subject": "alice", "credential_id": "alice-credential", "enabled": True, "expected_revision": 0,
+                    })
+
+    def test_memory_registration_approves_the_receiving_node(self):
+        fixture = object.__new__(RemoteMemory)
+        fixture.nodes = {0: {"node": "home-12345678"}}
+        fixture.tenants = ["home-tenant"]
+        fixture.entries = [{}]
+        fixture.user = Mock(side_effect=[(200, {}), (200, {}), (200, {"id": "memory", "version": "1.0.0"})])
+
+        fixture.register(0, "memory", "memory", {"schema_version": 1})
+
+        approval = fixture.user.call_args_list[1]
+        self.assertEqual(approval.args[1], "/api/authorization/home-tenant/catalog")
+        self.assertEqual(approval.args[2], {"node": "home-12345678", "entry": {"id": "memory", "version": "1.0.0"}, "enabled": True, "expected_revision": 0})
 
 
 class ExtensionBootstrapTests(unittest.TestCase):

@@ -5,7 +5,8 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
-node:
+deployment:
+  # The Deployment id, aidash://<name>.
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
@@ -68,10 +69,12 @@ metadataServerEgress:
 # Managed Provider Credential descriptor {fingerprint_key, store, broker}; null
 # renders nothing. Rendered as {"provider_credentials": ...} for
 # AIDASH_PROVIDER_CREDENTIAL_SETTINGS. Never key material.
+# PostgreSQL stores use master_key: {env: AIDASH_PROVIDER_STORE_MASTER_KEY},
+# fingerprint_key: {env: AIDASH_PROVIDER_FINGERPRINT_KEY}, and broker: null.
 providerCredentials:
   settings: null
 # Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;
-# public_origin must equal node.endpoint. null renders nothing.
+# public_origin must equal deployment.endpoint. null renders nothing.
 gcip:
   settings: null
 # Deployment, or StatefulSet for the server, worker and Runner, which hold

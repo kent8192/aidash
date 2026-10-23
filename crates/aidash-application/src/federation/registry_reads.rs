@@ -8,10 +8,8 @@ use crate::{
 use aidash_domain::{
 	federation::{
 		dependencies::{LIMIT, Reference as Dependency},
-		protocol::compatible,
 		registry_reads::Reference,
 	},
-	qualified_agent,
 	registry::{EntityRef, Entry, rules::digest},
 };
 use serde_json::json;
@@ -45,7 +43,7 @@ async fn check(
 			return Ok(false);
 		}
 		let mut resource = scope.catalog_resource(&entry);
-		resource.id = qualified_agent(&node, &id, &version);
+		resource.id = aidash_domain::agent_subject(&node, &id, &version);
 		resource.attributes["remote_node"] = json!(node);
 		if !scope.decide(&resource, "registry.read").await?
 			|| !scope.decide(&resource, "agent.execute").await?
@@ -80,15 +78,11 @@ async fn check(
 		if !scope.decide(&resource, "federation.discover").await? {
 			return Ok(false);
 		}
-		let Some(peer) = scope.peer(&node).await? else {
+		let Some(route) = scope.route(&node).await? else {
 			return Ok(false);
 		};
-		if !compatible(scope.protocol(), &peer.protocol_version) {
-			return Ok(false);
-		}
 		for batch in references.chunks(128) {
-			let (tenant, subject) = scope.identity();
-			match transport.verify(&peer, tenant, subject, batch).await {
+			match transport.verify(&route, batch).await {
 				Verification::Verified => {}
 				Verification::Rejected => return Ok(false),
 				Verification::Unavailable => {
@@ -105,7 +99,7 @@ pub async fn verify(
 	references: &[Reference],
 ) -> Result<bool> {
 	aidash_domain::federation::registry_reads::validate(references)?;
-	let node = scope.resource("node", scope.node(), json!({}));
+	let node = scope.node_resource().await?;
 	scope.require(&node, "federation.discover").await?;
 	for reference in references {
 		let entry = match scope.entry(&reference.entry).await {

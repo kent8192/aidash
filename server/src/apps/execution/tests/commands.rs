@@ -196,8 +196,8 @@ async fn activation_provision_uses_composed_target_without_unrelated_runtime_set
 		temp_dir.path().join("base.toml"),
 		format!(
 			r#"
-[node]
-node_id = "aidash://file-target"
+[deployment]
+id = "aidash://file-target"
 nats_url = "{configured_url}"
 endpoint = "${{UNAVAILABLE_ENDPOINT}}"
 api_token = "${{UNAVAILABLE_API_TOKEN}}"
@@ -229,15 +229,15 @@ secret_key = "${{UNAVAILABLE_CORE_SECRET}}"
 			.kill_on_drop(true);
 		if source == "legacy" {
 			command
-				.env("AIDASH_NODE_ID", "aidash://legacy-target")
+				.env("AIDASH_DEPLOYMENT_ID", "aidash://legacy-target")
 				.env("NATS_URL", &url);
 		}
 		if source == "composed" {
 			std::fs::write(
 				temp_dir.path().join("provision.toml"),
 				format!(
-					r#"[node]
-node_id = "{node_id}"
+					r#"[deployment]
+id = "{node_id}"
 nats_url = "${{REINHARDT_ACTIVATION_TEST_NATS}}"
 "#
 				),

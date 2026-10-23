@@ -1,7 +1,7 @@
 //! Current remote provenance borrows the reader's authority and enabled peer locks.
 use crate::Result;
 use aidash_domain::{
-	federation::{Peer, dependencies::Reference as Dependency, registry_reads::Reference},
+	federation::{dependencies::Reference as Dependency, registry_reads::Reference, route::Route},
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };
@@ -17,17 +17,10 @@ pub enum Verification {
 }
 #[async_trait]
 pub trait RegistryTransport: Send + Sync {
-	async fn verify(
-		&self,
-		peer: &Peer,
-		tenant: &str,
-		subject: &str,
-		references: &[Reference],
-	) -> Verification;
+	async fn verify(&self, route: &Route, references: &[Reference]) -> Verification;
 }
 #[async_trait]
 pub trait RegistryReadScope: Send {
-	fn protocol(&self) -> &str;
 	fn identity(&self) -> (&str, &str);
 	fn cached(&self, run: Uuid) -> Option<bool>;
 	fn remember(&mut self, run: Uuid, visible: bool);
@@ -38,12 +31,12 @@ pub trait RegistryReadScope: Send {
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<RegistryJournalRow>>;
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>>;
+	async fn route(&mut self, node: &str) -> Result<Option<Route>>;
 }
 #[async_trait]
 pub trait RegistryVerificationScope: Send {
-	fn node(&self) -> &str;
-	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
+	/// The owned receiving Node, named for policy and carrying its current attributes.
+	async fn node_resource(&mut self) -> Result<Resource>;
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;

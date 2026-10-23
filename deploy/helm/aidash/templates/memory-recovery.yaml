@@ -80,8 +80,8 @@ spec:
               envFrom:
                 - secretRef: { name: {{ $p.existingSecret | quote }} }
               env:
-                - { name: AIDASH_NODE_ID, value: {{ $root.Values.node.id | quote }} }
-                - { name: AIDASH_ENDPOINT, value: {{ $root.Values.node.endpoint | default "http://127.0.0.1:8000" | quote }} }
+                - { name: AIDASH_DEPLOYMENT_ID, value: {{ $root.Values.deployment.id | quote }} }
+                - { name: AIDASH_ENDPOINT, value: {{ $root.Values.deployment.endpoint | default (printf "http://%s-backend.%s.svc:8080" $root.Release.Name $root.Release.Namespace) | quote }} }
                 {{- if $gcip }}
                 - { name: AIDASH_GCIP_SETTINGS, value: /etc/aidash/gcip/settings.json }
                 {{- end }}

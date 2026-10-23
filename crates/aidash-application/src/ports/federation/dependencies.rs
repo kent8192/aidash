@@ -3,8 +3,8 @@ use crate::Result;
 use aidash_domain::{
 	Run,
 	federation::{
-		Peer,
 		dependencies::{Checked, Input, Reference},
+		route::Route,
 	},
 	policy::Resource,
 	registry::{EntityRef, Entry},
@@ -40,7 +40,7 @@ pub trait DependencyScope: Send {
 	) -> Result<bool>;
 	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
 	/// Retain the enabled peer's shared lock until the initiating read finishes.
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>>;
+	async fn route(&mut self, node: &str) -> Result<Option<Route>>;
 }
 
 /// Each RPC resolves the current credential, preserves the node/protocol
@@ -48,5 +48,5 @@ pub trait DependencyScope: Send {
 /// Credential, transport, status, and decoding failures deny the graph proof.
 #[async_trait]
 pub trait DependencyTransport: Send + Sync {
-	async fn check(&self, peer: &Peer, input: &Input, remaining: Duration) -> Option<Checked>;
+	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Option<Checked>;
 }

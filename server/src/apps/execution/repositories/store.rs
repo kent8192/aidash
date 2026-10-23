@@ -3,7 +3,7 @@ use crate::apps::execution::models::{
 	Event as EventRecord, HumanRequest as HumanRequestRecord, InferenceUsage,
 	Invocation as InvocationRecord, Run as RunRecord, RunInput as InputRecord, event_records,
 };
-use crate::apps::execution::serializers::runs::{PeerObservation, RunDetails};
+use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::services::human_interaction;
 use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
@@ -62,7 +62,7 @@ pub struct Store {
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
-	pub node_id: String,
+	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub semantic_client: reqwest::Client,
 	/// Model and embedding clients: `semantic_client` for Provider Catalog
 	/// endpoints and permitted private origins, a public-only one for every
@@ -70,6 +70,10 @@ pub struct Store {
 	pub provider_clients: aidash_integrations::keyless::Clients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
+	/// The Deployment Key and the switch Federation requests to other
+	/// Deployments are signed and gated by, for callers that hold a Store and
+	/// no Federation runtime (ADR 0064).
+	pub egress: aidash_integrations::federation::Egress,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
 	/// The Deployment's ceilings on Tenants' Test Limits from
@@ -217,7 +221,6 @@ impl Store {
 		nonempty(content, "message")?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			&self.node_id,
 			run.workspace_id,
 			sender,
 			content,
@@ -353,6 +356,44 @@ impl Store {
 		}
 	}
 
+	/// The Node that acts for the operation `remote_tenancy` found: the Node a
+	/// remote Run executes at, the Node a remote grant was issued from, or the
+	/// Node of a local Run.
+	pub(crate) async fn remote_node(
+		&self,
+		scope: &TenancyScope,
+		admission: Uuid,
+		grant: Uuid,
+	) -> Result<aidash_domain::nodes::NodeName> {
+		let name: Option<String> = self
+			.pool
+			.scoped(scope, async |tx| {
+				for (table, column, id) in [
+					("runs", "id", admission),
+					("authorization_remote_admissions", "id", admission),
+					("authorization_remote_grants", "id", grant),
+				] {
+					let node = crate::database::native::query_scalar::<String>(
+						&Query::select()
+							.column(Alias::new("node"))
+							.from(Alias::new(table))
+							.and_where(Expr::col(Alias::new(column)).eq(Expr::value(id)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_optional(&mut **tx)
+					.await?;
+					if node.is_some() {
+						return Ok(node);
+					}
+				}
+				Ok(None)
+			})
+			.await?;
+		Ok(aidash_domain::nodes::NodeName::parse(
+			&name.ok_or_else(|| Error::NotFound("remote Run".into()))?,
+		)?)
+	}
+
 	/// Run creation re-checks the Projection Version pinned by the Binding
 	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
 	/// pinned model and, when salted, backed by this node's Cache Salt Key.
@@ -373,7 +414,10 @@ impl Store {
 		}
 	}
 
-	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
+	pub async fn from_pool(
+		pool: sqlx::PgPool,
+		deployment: aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
 		let tool_slots = aidash_application::ports::execution::ToolSlots::new(tool_parallelism(
 			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
 			pool.options().get_max_connections() as usize,
@@ -388,7 +432,7 @@ impl Store {
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::from_env(
 					directory.into(),
-					node_id.clone(),
+					deployment.to_string(),
 				)
 			})
 			.transpose()?
@@ -403,10 +447,11 @@ impl Store {
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
-			node_id,
+			deployment,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			keyless: Default::default(),
+			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
 			recovery_cursors: Default::default(),
@@ -456,6 +501,10 @@ impl Store {
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
 	) -> Self {
 		self.test_limit_ceilings = ceilings;
+		self
+	}
+	pub fn with_egress(mut self, egress: aidash_integrations::federation::Egress) -> Self {
+		self.egress = egress;
 		self
 	}
 	pub fn with_keyless_origins(
@@ -509,10 +558,11 @@ impl Store {
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
-			node_id: self.node_id.clone(),
+			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -559,10 +609,11 @@ impl Store {
 			control_pool: control_pool
 				.with_memory_recovery(self.control_pool.memory_recovery())
 				.with_dashboard_policy(self.control_pool.dashboard_policy()),
-			node_id: self.node_id.clone(),
+			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -597,7 +648,6 @@ impl Store {
 		.await?;
 		Ok({
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = &self.node_id;
 			let query_bind_3 = workspace;
 			let query_bind_4 = kind;
 			let query_bind_5 = data;
@@ -606,7 +656,7 @@ impl Store {
 					.into_table(Alias::new("events"))
 					.columns([
 						Alias::new("id"),
-						Alias::new("node_id"),
+						Alias::new("node"),
 						Alias::new("workspace_id"),
 						Alias::new("kind"),
 						Alias::new("data"),
@@ -618,10 +668,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
 							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
+							.expr(event_records::event_node(workspace))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],
@@ -644,6 +691,17 @@ impl Store {
 			.await?
 		})
 	}
+	/// An event of the Run `run`; see [`event_records::append_run`].
+	pub(crate) async fn run_event(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		run: Uuid,
+		workspace: Option<Uuid>,
+		kind: &str,
+		data: Value,
+	) -> Result<()> {
+		event_records::append_run(&mut **tx, run, workspace, kind, data).await
+	}
 	pub async fn emit(
 		&self,
 		scope: &TenancyScope,
@@ -653,11 +711,9 @@ impl Store {
 	) -> Result<Event> {
 		self.pool
 			.atomic(scope, async |tx| {
-				Ok(
-					event_records::create(tx, &self.node_id, workspace, kind, data)
-						.await?
-						.into(),
-				)
+				Ok(event_records::create(tx, workspace, kind, data)
+					.await?
+					.into())
 			})
 			.await
 	}
@@ -670,8 +726,19 @@ impl Store {
 	) -> Result<Workspace> {
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		let mut tx = self.pool.begin(scope).await?;
+		let node: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+				.and_where(Expr::col("is_default"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut *tx)
+		.await?;
+		let node = aidash_domain::nodes::NodeName::parse(&node)?;
 		let workspace = self
-			.create_workspace_in(&mut tx, Uuid::new_v4(), tenant, title, goal)
+			.create_workspace_in(&mut tx, Uuid::new_v4(), tenant, &node, title, goal)
 			.await?;
 		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
 			.await?;
@@ -709,6 +776,7 @@ impl Store {
 		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		title: &str,
 		goal: &str,
 	) -> Result<Workspace> {
@@ -723,6 +791,7 @@ impl Store {
 					.into_table(Alias::new("workspaces"))
 					.columns([
 						Alias::new("id"),
+						Alias::new("node"),
 						Alias::new("title"),
 						Alias::new("goal"),
 						Alias::new("tenant"),
@@ -733,6 +802,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
 							))
+							.expr(Expr::value(node.as_str().to_owned()))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
@@ -1118,6 +1188,22 @@ impl Store {
 		tx.commit().await?;
 		Ok(claimed)
 	}
+	/// The Node of a Workspace, read in the caller's transaction.
+	pub(crate) async fn workspace_node_in(
+		tx: &mut crate::database::native::Transaction,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeName> {
+		let name: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("node"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **tx)
+		.await?;
+		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
+	}
 	pub(crate) async fn claim_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
@@ -1136,13 +1222,15 @@ impl Store {
 			));
 		}
 		let claimed: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; aidash_server::database::query_as(&Query::update().table(Alias::new("tasks")).value_expr(Alias::new("status"), Expr::cust("'CLAIMED'")).value_expr(Alias::new("owner"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND status = 'OPEN' AND NOT EXISTS(SELECT 1 FROM delegations AS d WHERE d.task_id = tasks.id AND d.node_id || '/agents/' || d.agent_id || '@' || d.agent_version <> ?) AND NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(tasks.dependencies) AND d.status <> 'COMPLETED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
-		if owner == qualified_agent(&self.node_id, &agent.id, &agent.version) {
+		let node = Self::workspace_node_in(tx, claimed.workspace_id).await?;
+		let address = self.deployment.node(node);
+		if owner == qualified_agent(&address, &agent.id, &agent.version) {
 			let snapshot = if let Some(snapshot) = admitted {
 				snapshot.clone()
 			} else {
 				crate::apps::registry::repositories::bindings::snapshot(
 					tx,
-					&self.node_id,
+					self.deployment.as_str(),
 					agent,
 					false,
 					self.provider_credentials.is_some(),
@@ -1176,7 +1264,7 @@ impl Store {
 				let query_bind_1 = Uuid::new_v4();
 				let query_bind_2 = id;
 				let query_bind_3 = claimed.workspace_id;
-				let query_bind_4 = &self.node_id;
+				let query_bind_4 = address.to_string();
 				let query_bind_5 = &agent.id;
 				let query_bind_6 = &agent.version;
 				let query_bind_7 = serde_json::to_value(&context)?;
@@ -1188,6 +1276,7 @@ impl Store {
 							Alias::new("task_id"),
 							Alias::new("workspace_id"),
 							Alias::new("home_node"),
+							Alias::new("node"),
 							Alias::new("agent_id"),
 							Alias::new("agent_version"),
 							Alias::new("context"),
@@ -1211,6 +1300,7 @@ impl Store {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_4.to_owned()).into()],
 								))
+								.expr(Expr::value(address.node.as_str().to_owned()))
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_5.to_owned()).into()],
@@ -1238,7 +1328,7 @@ impl Store {
 				.await?
 			};
 			let executor: (String, String) = {
-				let query_bind_1 = &self.node_id;
+				let query_bind_1 = address.to_string();
 				let query_bind_2 = id;
 				crate::database::native::query_as(
 					&Query::select()
@@ -1268,7 +1358,7 @@ impl Store {
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("runs"))
-					.and_where(Expr::col("home_node").eq(Expr::value(&self.node_id)))
+					.and_where(Expr::col("home_node").eq(Expr::value(address.to_string())))
 					.and_where(Expr::col("task_id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -2271,7 +2361,7 @@ impl Store {
 			.atomic(scope, async |tx| {
 				InputRecord::admit(
 					tx,
-					&self.node_id,
+					self.deployment.as_str(),
 					run_id,
 					sender,
 					content,
@@ -2293,7 +2383,7 @@ impl Store {
 	) -> Result<()> {
 		InputRecord::admit(
 			tx,
-			&self.node_id,
+			self.deployment.as_str(),
 			run_id,
 			sender,
 			content,
@@ -2349,11 +2439,11 @@ impl Store {
 	pub async fn pending_terminal_run_message(&self) -> Result<Option<RunMetadata>> {
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
 		Ok({
-			let query_bind_1 = &self.node_id;
+			let query_bind_1 = self.deployment.as_str();
 			aidash_server::database::query_as(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))
 				.from(reinhardt::query::Alias::new("runs"))
-				.and_where(SimpleExpr::CustomWithExpr("(home_node <> ? AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = runs.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
+				.and_where(SimpleExpr::CustomWithExpr("(NOT (home_node = ? || '/' || node) AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = runs.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.order_by(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Order::Asc)
 				.limit(1)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2441,7 +2531,7 @@ impl Store {
 				InputRecord::import_history(tx, run_id, messages, max_input_tokens).await?;
 				InputRecord::admit(
 					tx,
-					&self.node_id,
+					self.deployment.as_str(),
 					run_id,
 					sender,
 					content,
@@ -2567,7 +2657,6 @@ impl Store {
 		let mut tx = self.pool.begin(scope).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			&self.node_id,
 			run.workspace_id,
 			sender,
 			content,
@@ -2868,7 +2957,7 @@ impl Store {
 			worker,
 			seconds,
 			None,
-			&self.node_id,
+			self.deployment.as_str(),
 			&mut cursor,
 		)
 		.await?;
@@ -2991,7 +3080,7 @@ impl Store {
 		let closed = if kind == "model.completed" {
 			crate::apps::execution::repositories::inference::close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				run.id,
 				Some(aidash_domain::provider::progress::ProgressOutcome::Accepted),
 			)
@@ -3000,7 +3089,7 @@ impl Store {
 		} else if saved.phase().is_terminal() {
 			crate::apps::execution::repositories::inference::close_pending(
 				tx.as_mut(),
-				&self.node_id,
+				self.deployment.as_str(),
 				run.id,
 				None,
 			)
@@ -3015,9 +3104,10 @@ impl Store {
 			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
 			data["cause"] = serde_json::to_value(degraded.cause)?;
 		}
-		self.event(
+		self.run_event(
 			tx,
-			(run.home_node == self.node_id).then_some(run.workspace_id),
+			run.id,
+			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			kind,
 			data,
 		)
@@ -3193,7 +3283,7 @@ impl Store {
 		.await?;
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
-			&self.node_id,
+			self.deployment.as_str(),
 			run.id,
 			None,
 		)
@@ -3265,7 +3355,8 @@ impl Store {
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
-		let workspace = (r.metadata.home_node == self.node_id).then_some(r.metadata.workspace_id);
+		let workspace =
+			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.workspace_id);
 		if let Some(reason) = semantic_retry {
 			// An authorized manual retry of a semantic pause opens the Run's next
 			// Retry Cycle, so its memory operations get a fresh retry ledger while
@@ -3283,16 +3374,18 @@ impl Store {
 			)
 			.scalar_one(&mut **tx)
 			.await?;
-			self.event(
+			self.run_event(
 				tx,
+				id,
 				workspace,
 				"semantic.manual_retry",
 				json!({"run_id":id,"cycle":cycle,"cause":reason,"reason":"authorized_resume"}),
 			)
 			.await?;
 		}
-		self.event(
+		self.run_event(
 			tx,
+			id,
 			workspace,
 			"run.control",
 			json!({"run_id":id,"action":action}),
@@ -3336,14 +3429,7 @@ impl Store {
 			));
 		}
 		if created {
-			event_records::append(
-				tx.as_mut(),
-				&self.node_id,
-				None,
-				"human.requested",
-				json!(request),
-			)
-			.await?;
+			event_records::append(tx.as_mut(), None, "human.requested", json!(request)).await?;
 		}
 		tx.commit().await?;
 		Ok(())
@@ -3362,10 +3448,10 @@ impl Store {
 			HumanRequestRecord::admit(tx, run.workspace_id, run.id, kind, prompt, key).await?;
 		human_interaction::validate_replay(&request, run, kind, prompt)?;
 		if created {
-			event_records::append(
+			event_records::append_run(
 				tx,
-				&self.node_id,
-				(run.home_node == self.node_id).then_some(run.workspace_id),
+				run.id,
+				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"human.requested",
 				json!(request),
 			)
@@ -3494,10 +3580,10 @@ impl Store {
 			return Ok(old);
 		};
 		let request = HumanRequestRecord::answer_locked(tx, id, response, &actor).await?;
-		event_records::append(
+		event_records::append_run(
 			tx,
-			&self.node_id,
-			(run.home_node == self.node_id).then_some(run.workspace_id),
+			run.id,
+			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			"human.answered",
 			json!(request),
 		)
@@ -3715,9 +3801,10 @@ impl Store {
 			invocation.status = "UNCERTAIN".into();
 		}
 		if created {
-			self.event(
+			self.run_event(
 				tx,
-				(run.home_node == self.node_id).then_some(run.workspace_id),
+				run.id,
+				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"tool.started",
 				json!({"run_id":run.id,"tool":tool,"idempotency_key":key,"input":input}),
 			)
@@ -3750,10 +3837,10 @@ impl Store {
 		.await?;
 		let result = expired.as_ref().unwrap_or(result);
 		if InvocationRecord::complete(tx.as_mut(), run.id, key, result).await? {
-			event_records::append(
+			event_records::append_run(
 				tx.as_mut(),
-				&self.node_id,
-				(run.home_node == self.node_id).then_some(run.workspace_id),
+				run.id,
+				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
 			)
@@ -3812,19 +3899,6 @@ impl Store {
 					i32::from(projection_version),
 				)
 				.await
-			})
-			.await
-	}
-	// The empty namespace preserves pre-federation local memory. Peer node IDs
-	// are validated nonempty, so no remote home can address this namespace.
-	pub(crate) async fn peer_observation(
-		&self,
-		scope: &TenancyScope,
-		home: &str,
-	) -> Result<PeerObservation> {
-		self.pool
-			.atomic(scope, async |tx| {
-				crate::apps::execution::models::journals::observe(tx, &self.node_id, home).await
 			})
 			.await
 	}
@@ -4679,9 +4753,10 @@ impl Store {
 		if changed == 0 {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
-		self.event(
+		self.run_event(
 			&mut tx,
-			(run.home_node == self.node_id).then_some(run.workspace_id),
+			run.id,
+			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			event_kind,
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
@@ -4689,7 +4764,7 @@ impl Store {
 		// Pausing releases the lease; the worker can no longer finish its attempt.
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
-			&self.node_id,
+			self.deployment.as_str(),
 			run.id,
 			None,
 		)
@@ -4872,9 +4947,10 @@ impl Store {
 		};
 		let h = match h {
 			Some(h) => {
-				self.event(
+				self.run_event(
 					tx,
-					(run.home_node == self.node_id).then_some(run.workspace_id),
+					run.id,
+					(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 					"human.requested",
 					json!(h),
 				)
@@ -4928,7 +5004,7 @@ fn require_projection(
 		.find(|d| {
 			d.identity.id == agent.model.id
 				&& d.identity.version == agent.model.version
-				&& d.identity.registry_node == snapshot.agent.registry_node
+				&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or_else(|| Error::Invalid("pinned model is outside the Binding snapshot".into()))?;
 	let model: aidash_domain::model::ModelConfig =

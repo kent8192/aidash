@@ -6,7 +6,7 @@ use crate::memory::{
 use uuid::Uuid;
 
 fn seed() -> History {
-	let mut ledger = Ledger::new("home".into());
+	let mut ledger = Ledger::new("aidash://history".into());
 	ledger.epoch = Uuid::from_u128(1);
 	History::new(ledger, "a".repeat(64)).unwrap()
 }
@@ -15,7 +15,7 @@ fn floor(revision: i64, deleted: bool, digest: &str) -> Floor {
 		id: Uuid::from_u128(10),
 		fence: Fence {
 			bank: Bank {
-				home: "home".into(),
+				home: "aidash://history/node-a".into(),
 				tenant: "tenant".into(),
 				workspace: Uuid::from_u128(20),
 				participant: None,

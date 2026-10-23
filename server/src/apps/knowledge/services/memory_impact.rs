@@ -86,7 +86,7 @@ async fn runs(
 		let Some(run) = repository::run(lease, id).await? else {
 			continue;
 		};
-		if run.home_node != store.node_id || !visible(lease, &run).await? {
+		if !run.is_local(store.deployment.as_str()) || !visible(lease, &run).await? {
 			continue;
 		}
 		if runs.len() == limits.runs_per_unit {

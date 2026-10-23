@@ -315,11 +315,12 @@ async fn record_url_intents(
 }
 
 /// The Research providers of this Deployment, whether each is set up, and
-/// which of the reader's Tenant's tool definitions of each operation have a
-/// Catalog Approval. Only a Tenant's subjects read it.
+/// which tool definitions of each operation have a Catalog Approval on the
+/// reader's selected Node. Only a Tenant's subjects read it.
 pub(crate) async fn research_providers(
 	f: Federation,
 	actor: Actor,
+	input: crate::apps::execution::serializers::runs::ResearchProvidersQuery,
 ) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
 	use crate::apps::execution::serializers::runs::DefinitionRef;
 	if !matches!(actor, Actor::Subject(_)) {
@@ -328,6 +329,11 @@ pub(crate) async fn research_providers(
 	let mut access = access(&f, actor).await?.into_native()?;
 	let mut providers = crate::research::providers().availability();
 	let result = async {
+		let node = match input.node {
+			Some(node) => node,
+			None => access.catalog_node().await?,
+		};
+		access.use_node(node.clone()).await?;
 		let (tx, tenant) = access.tenant_transaction();
 		// Approved tool definitions of the Tenant that name a research
 		// provider, whatever their identifiers: installed copies have their own.
@@ -352,6 +358,9 @@ pub(crate) async fn research_providers(
 			)
 			.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
 			.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(Expr::value(true)))
+			.and_where(
+				Expr::col((Alias::new("c"), Alias::new("node"))).eq(Expr::value(node.as_str())),
+			)
 			.and_where(Expr::col((Alias::new("r"), Alias::new("kind"))).eq(Expr::value("tool")))
 			.and_where(Expr::cust(
 				"r.metadata->'config'->>'provider' LIKE 'research.%'",
@@ -1292,9 +1301,22 @@ pub(crate) async fn transfer_recipients(
 	actor: Actor,
 	QueryInput(input): QueryInput<RecipientQuery>,
 ) -> Result<RecipientPage> {
-	let mut access = access(&f, actor).await?;
+	let (mut access, source) = match input.run_id {
+		Some(id) => {
+			let (access, run) = run_access(&f, actor, id).await?;
+			(access, Some(run.node))
+		}
+		None => (access(&f, actor).await?, None),
+	};
 	let result = async {
-		if input.node_id == f.config.node_id {
+		let source = match source {
+			Some(node) => node,
+			None => access.catalog_node().await?,
+		};
+		access.use_node(source).await?;
+		let target = aidash_domain::nodes::NodeAddress::parse(&input.node_id)?;
+		if target.deployment == f.config.deployment {
+			access.use_node(target.node).await?;
 			return super::transfer::recipient_list(&f, &mut access, input.cursor).await;
 		}
 		access
@@ -1303,8 +1325,14 @@ pub(crate) async fn transfer_recipients(
 				"file.transfer",
 			)
 			.await?;
+		let sender = aidash_domain::federation::route::Sender {
+			node: access.node.clone(),
+			subject: Some(access.identity.subject.clone()),
+			..crate::authorization::peer::node_sender(&access.identity.tenant)?
+		};
 		crate::authorization::peer::authority_request(
 			&f,
+			&sender,
 			&input.node_id,
 			"/scoped/files/recipients",
 			&json!(super::transfer::Requester {

@@ -1,5 +1,5 @@
 //! Participant state, visibility barriers, and rollback-only mutation validation.
-use super::{AtomicHistory, AtomicParticipant, AtomicPeerTrust};
+use super::{AtomicHistory, AtomicParticipant};
 use crate::apps::federation::transactions::serializers::contracts::Manifest;
 use crate::apps::federation::transactions::services::states::AtomicParticipantPhase;
 use crate::database::native::Pool;
@@ -109,17 +109,5 @@ impl AtomicParticipant {
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())
-	}
-}
-
-impl AtomicPeerTrust {
-	pub(crate) async fn permits(tx: &mut dyn TransactionExecutor, node: &str) -> Result<bool> {
-		Ok(!Self::objects()
-			.filter(Self::field_node_id().eq(node))
-			.filter(Self::field_enabled().eq(true))
-			.all_with_executor(tx)
-			.await
-			.map_err(FrameworkError::from)?
-			.is_empty())
 	}
 }

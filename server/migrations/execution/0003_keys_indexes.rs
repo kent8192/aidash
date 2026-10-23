@@ -544,7 +544,7 @@ pub(super) fn migration() -> Migration {
 				            unique: true,
 				            index_type: Some(IndexType::BTree),
 				            where_clause: Some(
-				                r#"((home_node <> ''::text) AND (status = ANY (ARRAY['PENDING_APPROVAL'::text, 'QUEUED'::text, 'ACTIVE'::text])))"#
+				                r#"((local_task_id IS NULL) AND (status = ANY (ARRAY['PENDING_APPROVAL'::text, 'QUEUED'::text, 'ACTIVE'::text])))"#
 				                    .to_owned(),
 				            ),
 				            concurrently: false,
@@ -555,10 +555,10 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateNamedIndex {
 			table: "generation_requests".to_owned(),
 			name: "generation_requests_local_task".to_owned(),
-			columns: vec!["task_id".to_owned()],
+			columns: vec!["local_task_id".to_owned()],
 			unique: true,
 			index_type: Some(IndexType::BTree),
-			where_clause: Some(r#"(home_node = ''::text)"#.to_owned()),
+			where_clause: None,
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

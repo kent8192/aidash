@@ -79,7 +79,7 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 ) -> Result<()> {
 	aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
-		&store.node_id,
+		store.deployment.as_str(),
 		&run.metadata(),
 	)
 	.await
@@ -135,14 +135,34 @@ pub async fn delegate(
 	node: &str,
 	agent: &EntityRef,
 ) -> Result<Delegation> {
-	if node != f.config.node_id {
+	let target = (node != f.config.deployment)
+		.then(|| aidash_domain::nodes::NodeAddress::parse(node))
+		.transpose()?;
+	if target
+		.as_ref()
+		.is_some_and(|target| target.deployment != f.config.deployment)
+	{
 		return super::remote::execution::delegate(f, identity, task, node, agent).await;
 	}
 	let mut access = Access::begin(&f.store, identity).await?;
-	let result = delegate_in(f, &mut access, task, agent).await;
+	let result = async {
+		let current = access.task_read(task).await?;
+		let home = access.workspace_node(current.workspace_id).await?;
+		if target.as_ref().is_none_or(|target| target.node == home) {
+			delegate_in(f, &mut access, task, agent).await.map(Some)
+		} else {
+			Ok(None)
+		}
+	}
+	.await;
 	let result = access.finish(result).await?;
-	f.notify.notify_waiters();
-	Ok(result)
+	match result {
+		Some(result) => {
+			f.notify.notify_waiters();
+			Ok(result)
+		}
+		None => super::remote::execution::delegate(f, identity, task, node, agent).await,
+	}
 }
 
 pub(crate) async fn delegate_in(
@@ -360,7 +380,7 @@ impl WorkerAuthority {
 			crate::apps::identity::repositories::approval_preferences::covering(
 				&mut *access.tx,
 				&access.snapshot.bundle,
-				&store.node_id,
+				store.deployment.as_str(),
 				access.subjects.first().map(String::as_str),
 				&run.metadata(),
 			)
@@ -397,7 +417,7 @@ impl WorkerAuthority {
 			crate::apps::identity::repositories::approval_preferences::covering(
 				&mut *access.tx,
 				&access.snapshot.bundle,
-				&store.node_id,
+				store.deployment.as_str(),
 				access.subjects.first().map(String::as_str),
 				&run.metadata(),
 			)
@@ -691,7 +711,9 @@ impl WorkerAuthority {
 		agent: &EntityRef,
 	) -> Result<Delegation> {
 		let mut lease = self.access.write().await;
-		if node != f.config.node_id {
+		if !run.is_local(f.config.deployment.as_str())
+			|| !aidash_domain::nodes::names_home(node, &run.home_node)
+		{
 			return Err(Error::Forbidden);
 		}
 		// Prepare the child's closure on the outer transaction: an inner shared
@@ -720,7 +742,8 @@ impl WorkerAuthority {
 	}
 	pub async fn discover(&self, f: &Federation, search: &Search) -> Result<Discovery> {
 		let mut access = self.access.write().await;
-		super::peer::discovery::discover_in(f, &mut access, search).await
+		let node = access.node.clone();
+		super::peer::discovery::discover_in(f, &mut access, node, search).await
 	}
 }
 
@@ -778,7 +801,7 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let mut access = self.access.write().await;
-		if binding.identity.registry_node != access.node_id {
+		if binding.identity.registry_deployment != access.node_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let current =
@@ -917,7 +940,7 @@ impl Guard {
 			};
 			// The Home's corpus is not observable here: its digest arrives with the
 			// describe reply that refreshed this worker's authority, and is absent
-			// from a Home whose protocol predates it or that grants no semantic access.
+			// from a Home that grants no semantic access.
 			let corpus_digest = self.access.read().await.home_corpus_digest.clone();
 			return Ok(aidash_domain::context::sources::RetrievalScope {
 				tenant: description.source_tenant,
@@ -1126,7 +1149,7 @@ impl Guard {
 		}
 		compaction::decider(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&f.store.node_id,
+			f.store.deployment.as_str(),
 			&self.generation_context(),
 		)
 		.await
@@ -1392,7 +1415,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		self.guard.remote.is_some()
 	}
 	fn node_id(&self) -> &str {
-		&self.f.config.node_id
+		self.f.config.deployment.as_str()
 	}
 	async fn refresh(&self) -> aidash_application::Result<()> {
 		self.guard.refresh_remote().await.map_err(Into::into)
@@ -1447,7 +1470,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		let mut access = self.guard.access.write().await;
 		aidash_application::generation::summary::recheck(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&self.f.store.node_id,
+			self.f.store.deployment.as_str(),
 			&self.generation_context(),
 			summarizer,
 		)
@@ -1523,9 +1546,10 @@ pub async fn details_page(
 pub async fn discover(
 	f: &Federation,
 	identity: &SubjectIdentity,
+	node: Option<aidash_domain::nodes::NodeName>,
 	search: &Search,
 ) -> Result<Discovery> {
-	super::peer::discovery::discover(f, identity, search).await
+	super::peer::discovery::discover(f, identity, node, search).await
 }
 
 pub(crate) async fn cancel_if_scoped(store: &Store, run: &Run, token: Uuid) -> Result<bool> {

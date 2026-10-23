@@ -1,7 +1,7 @@
 //! Native workspace writes keep atomic storage operations in the existing Access transaction.
 use crate::{apps::identity::services::access::Access, store::Store};
 use aidash_application::{Result, ports::workspaces::mutations::WorkspaceMutations};
-use aidash_domain::{NewTask, Task, Workspace, policy::Resource};
+use aidash_domain::{NewTask, Task, Workspace, nodes::NodeName, policy::Resource};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -29,12 +29,47 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn insert_workspace(&mut self, id: Uuid, title: &str, goal: &str) -> Result<Workspace> {
+	async fn use_node(&mut self, requested: Option<&NodeName>) -> Result<NodeName> {
+		let tenant = self.access.identity.tenant.clone();
+		let node = match requested {
+			Some(name) => {
+				crate::apps::identity::repositories::nodes::get(
+					&mut **self.access.tx,
+					&tenant,
+					name.as_str(),
+				)
+				.await?
+			}
+			None => {
+				crate::apps::identity::repositories::nodes::default_of(
+					&mut **self.access.tx,
+					&tenant,
+				)
+				.await?
+			}
+		};
+		let resource = self.access.resource(
+			"node",
+			node.name.as_str(),
+			serde_json::json!({"label": node.label, "default": node.default}),
+		);
+		self.access.require(&resource, "node.use").await?;
+		self.access.set_node(node.name.clone());
+		Ok(node.name)
+	}
+	async fn insert_workspace(
+		&mut self,
+		id: Uuid,
+		node: &NodeName,
+		title: &str,
+		goal: &str,
+	) -> Result<Workspace> {
 		self.store
 			.create_workspace_in(
 				&mut self.access.tx,
 				id,
 				&self.access.identity.tenant,
+				node,
 				title,
 				goal,
 			)

@@ -39,6 +39,9 @@ pub struct TenancySettings {
 	/// Days a purged Tenant's audit history is kept before it is deleted: 1 to 3650.
 	#[setting(default = "365")]
 	pub audit_retention_days: u32,
+	/// How many Nodes a Tenant may hold: 1 to 1000. A Tier may be stricter.
+	#[setting(default = "None")]
+	pub nodes_per_tenant: Option<u32>,
 }
 
 impl TenancySettings {
@@ -53,6 +56,7 @@ impl TenancySettings {
 			invitations: self.invitations.unwrap_or(defaults.invitations),
 			deletion_grace_days: self.deletion_grace_days,
 			audit_retention_days: self.audit_retention_days,
+			nodes_per_tenant: self.nodes_per_tenant.unwrap_or(defaults.nodes_per_tenant),
 		}
 	}
 }
@@ -70,6 +74,10 @@ impl SettingsValidation for TenancySettings {
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		aidash_domain::identity::tenancy::deletion::audit_retention_days(self.audit_retention_days)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		if let Some(limit) = self.nodes_per_tenant {
+			aidash_domain::identity::tenancy::nodes_per_tenant(limit)
+				.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		}
 		Ok(())
 	}
 }

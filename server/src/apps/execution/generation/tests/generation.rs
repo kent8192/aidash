@@ -303,7 +303,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	assert_eq!(history.as_array().unwrap().len(), 4);
 	assert_eq!(history[3]["actor"], "alice");
 	let subject = aidash_server::domain::qualified_agent(
-		&f.config.node_id,
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		job["agent_id"].as_str().unwrap(),
 		"1.0.0",
 	);
@@ -866,7 +866,7 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	spec["approval_required"] = json!(false);
 	spec["template"]["binding_normalization"] = Value::Null;
 	spec["template"]["config"]["bindings"].as_array_mut().unwrap().push(json!({
-		"kind":"tool", "target":{"registry_node":f.config.node_id,"id":assignment_tool["id"],"version":assignment_tool["version"]}
+		"kind":"tool", "target":{"registry_deployment":f.config.deployment,"id":assignment_tool["id"],"version":assignment_tool["version"]}
 	}));
 	assert_eq!(
 		request(
@@ -1519,7 +1519,7 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false})
 		)
 		.await
 		.0,
@@ -1991,10 +1991,20 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				"depth",
 				"token_limit",
 				"expires_at",
+				"node",
+				"home_node",
+				"local_task_id",
+				"local_workspace_id",
 			];
 			let mut source = Query::select();
 			for field in fields {
 				match field {
+					"local_task_id" => {
+						source.expr(Expr::value(child));
+					}
+					"local_workspace_id" => {
+						source.column(Alias::new("workspace_id"));
+					}
 					"id" => {
 						source.expr(Expr::cust("gen_random_uuid()"));
 					}

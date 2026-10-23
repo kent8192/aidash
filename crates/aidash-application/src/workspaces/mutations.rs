@@ -1,6 +1,6 @@
 //! Creation and mutations share authorization with worker and conversation callers.
 use crate::{Result, ports::workspaces::mutations::WorkspaceMutations};
-use aidash_domain::{NewTask, Task, Workspace};
+use aidash_domain::{NewTask, Task, Workspace, nodes::NodeName};
 use serde_json::{Value, json};
 use uuid::Uuid;
 pub async fn create(
@@ -8,6 +8,7 @@ pub async fn create(
 	id: Uuid,
 	title: &str,
 	goal: &str,
+	node: Option<&NodeName>,
 ) -> Result<Workspace> {
 	let resource = scope.resource(
 		"workspace",
@@ -15,7 +16,8 @@ pub async fn create(
 		json!({"owner":scope.identity().1,"workspace_id":id}),
 	);
 	scope.require(&resource, "workspace.create").await?;
-	let workspace = scope.insert_workspace(id, title, goal).await?;
+	let node = scope.use_node(node).await?;
+	let workspace = scope.insert_workspace(id, &node, title, goal).await?;
 	scope.record_owner(id).await?;
 	Ok(workspace)
 }

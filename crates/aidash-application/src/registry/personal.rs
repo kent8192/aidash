@@ -63,7 +63,7 @@ pub async fn prepare(
 		&mut catalog,
 		validation,
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			id: preview_entry.id.clone(),
 			version: entry.version.clone(),
 		},
