@@ -171,9 +171,28 @@ async fn replay_rejects_unanswered_attempts_and_changed_provider_question_contra
 	original.replay().unwrap();
 	let mut no_attempt = original.clone();
 	no_attempt.attempts.clear();
+	no_attempt.attempt_routes.clear();
 	assert!(
 		no_attempt.replay().is_err(),
 		"selection without charged answers must fail replay"
+	);
+	let mut report = original.clone();
+	report.attempts[0].provider_report = AttemptProviderReport::Reported {
+		served_model: Some("unapproved/model".into()),
+		served_host: Some("unapproved-host".into()),
+		input_tokens: None,
+		output_tokens: None,
+		cost_usd: None,
+	};
+	assert!(
+		report.replay().is_err(),
+		"reported provider facts must match the attempt's pinned route"
+	);
+	let mut forbidden = original.clone();
+	forbidden.restrictions.forbid_apply = true;
+	assert!(
+		forbidden.replay().is_err(),
+		"forbidden application cannot become a successful enforced selection"
 	);
 	let mut receipt = original.clone();
 	receipt.attempts[0].owner_receipts.clear();
