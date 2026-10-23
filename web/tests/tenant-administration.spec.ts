@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { setup } from "./collaboration-fixture";
-import { builtInApprovalDecider } from "./registry-fixture";
+import { builtInApprovalDecider, defaultNode } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 const mapping = (
@@ -892,8 +892,8 @@ test("readable mappings and item-scoped issuance support peer writes without cre
   const writes: unknown[] = [];
   const existing = {
     tenant: "acme",
-    source_node: "aidash://home",
-    source_tenant: "remote",
+    node: defaultNode.name,
+    source_node: "aidash://home/remote-node",
     source_subject: "ci",
     credential_id: mappedCredential,
     enabled: true,
@@ -962,8 +962,8 @@ test("readable mappings and item-scoped issuance support peer writes without cre
     .click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({
+    node: existing.node,
     source_node: existing.source_node,
-    source_tenant: existing.source_tenant,
     source_subject: existing.source_subject,
     credential_id: mappedCredential,
     enabled: true,
@@ -1163,8 +1163,8 @@ for (const peerEdit of [true, false]) {
         json: [
           {
             tenant: "acme",
-            source_node: "peer-node",
-            source_tenant: "private-source",
+            node: defaultNode.name,
+            source_node: "aidash://remote/private-source",
             source_subject: "private-subject",
             credential_id: "private-credential",
             enabled: true,
@@ -1185,8 +1185,11 @@ for (const peerEdit of [true, false]) {
     const dialog = page.getByRole("dialog");
     if (peerEdit) {
       await expect(
-        dialog.getByLabel("Source tenant", { exact: true }),
-      ).toHaveValue("private-source");
+        dialog.getByLabel("Source node", { exact: true }),
+      ).toHaveValue("aidash://remote/private-source");
+      await expect(
+        page.getByText("aidash://remote/private-source", { exact: true }),
+      ).toBeVisible();
     } else {
       await expect(
         dialog.getByText("private-service", { exact: true }),
@@ -1202,7 +1205,8 @@ for (const peerEdit of [true, false]) {
     await expect(dialog).toHaveCount(0);
     await expect(
       page.getByText(
-        peerEdit ? "private-source / private-subject" : "private-service",
+        peerEdit ? "aidash://remote/private-source" : "private-service",
+        { exact: true },
       ),
     ).toHaveCount(0);
     // Remaining write authority permits new work without revealing cached records.
@@ -1213,7 +1217,7 @@ for (const peerEdit of [true, false]) {
       })
       .click();
     await expect(
-      dialog.getByLabel(peerEdit ? "Source tenant" : "Subject", {
+      dialog.getByLabel(peerEdit ? "Source node" : "Subject", {
         exact: true,
       }),
     ).toHaveValue(peerEdit ? "" : "ci");
