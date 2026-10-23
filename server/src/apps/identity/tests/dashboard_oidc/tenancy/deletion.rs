@@ -778,7 +778,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 			"tasks",
 			task,
 			format!("/api/tasks/{task}/abandon"),
-			json!({"revision":0,"reason":"operator cleanup"}),
+			json!({"revision":0,"reason":"Tenant cleanup"}),
 		),
 	] {
 		if table == "tasks" {
