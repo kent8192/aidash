@@ -510,34 +510,54 @@ impl TenantAdministrator {
 			{
 				actions.push(rules::CREDENTIAL_CREATE.to_owned());
 			}
-			let mapped: BTreeSet<_> = DashboardMapping::objects()
-				.filter(DashboardMapping::field_tenant().eq(self.tenant()))
-				.all_with_db(tx)
-				.await?
-				.into_iter()
-				.map(|mapping| mapping.subject)
-				.collect();
-			let mut issuable_subjects = vec![];
-			for (id, subject) in &snapshot.bundle.subjects {
-				if aidash_domain::identity::authority::enabled(&snapshot.bundle, id)
-					&& matches!(
-						subject.kind,
-						aidash_domain::policy::SubjectKind::Service
-							| aidash_domain::policy::SubjectKind::Agent
-					) && !mapped.contains(id)
-					&& self
-						.allowed(
-							tx,
-							&snapshot,
-							rules::CREDENTIAL_ISSUE,
-							id,
-							json!({"kind": subject.kind}),
+			let candidates: Vec<_> = snapshot
+				.bundle
+				.subjects
+				.iter()
+				.filter(|(id, subject)| {
+					aidash_domain::identity::authority::enabled(&snapshot.bundle, id)
+						&& matches!(
+							subject.kind,
+							aidash_domain::policy::SubjectKind::Service
+								| aidash_domain::policy::SubjectKind::Agent
 						)
-						.await?
-				{
-					issuable_subjects.push(id.clone());
+				})
+				.collect();
+			let mut mapped = BTreeSet::<String>::new();
+			if !candidates.is_empty() {
+				let (sql, values) = Query::select()
+					.distinct()
+					.column(Alias::new("subject"))
+					.from(Alias::new(DashboardMapping::table_name()))
+					.and_where(Expr::col("tenant").eq(Expr::value(self.tenant())))
+					.and_where(
+						Expr::col("subject")
+							.is_in(candidates.iter().map(|(id, _)| Expr::value(id.as_str()))),
+					)
+					.build(PostgresQueryBuilder);
+				for row in TransactionExecutor::fetch_all(tx, &sql, convert_values(values)).await? {
+					mapped.insert(
+						row.get("subject")
+							.map_err(reinhardt::core::exception::Error::from)?,
+					);
 				}
 			}
+			let mut issuable_subjects = vec![];
+			let mut decisions = vec![];
+			for (id, subject) in candidates {
+				if mapped.contains(id) {
+					continue;
+				}
+				let evaluation =
+					self.evaluation(rules::CREDENTIAL_ISSUE, id, json!({"kind": subject.kind}));
+				let mut decision = snapshot.bundle.evaluate(&evaluation);
+				decision.revision = snapshot.revision;
+				if decision.allowed {
+					issuable_subjects.push(id.clone());
+				}
+				decisions.push((evaluation, decision));
+			}
+			AuthorizationDecision::append_many(tx, self.tenant(), &decisions).await?;
 			let label = super::Tenant::objects()
 				.filter(super::Tenant::field_name().eq(tenant))
 				.all_with_db(tx)

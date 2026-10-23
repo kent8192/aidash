@@ -991,7 +991,7 @@ test("item-scoped issuance and peer writes work without policy or credential rea
   expect(credentialReads).toBe(0);
 });
 
-test("a member can revoke an active self-issued credential after two hundred historical rows", async ({
+test("self-issued credentials poll bounded pages and keep older active credentials revocable", async ({
   page,
 }) => {
   await setup(page, { locale: "en-US", subject: true, tenantActions: [] });
@@ -1016,6 +1016,10 @@ test("a member can revoke an active self-issued credential after two hundred his
     const offset = Number(
       new URL(request.url()).searchParams.get("offset") ?? 0,
     );
+    if (new URL(request.url()).searchParams.get("active") === "true")
+      return route.fulfill({
+        json: revoked.length ? [] : [row("older-active", false)],
+      });
     offsets.push(offset);
     return route.fulfill({
       json:
@@ -1025,6 +1029,10 @@ test("a member can revoke an active self-issued credential after two hundred his
     });
   });
   await page.goto("/trust?view=authorization");
+  await expect(
+    page.getByRole("button", { name: "Revoke", exact: true }),
+  ).toBeVisible();
+  expect(offsets).not.toContain(200);
   await page.getByRole("button", { name: "Revoke", exact: true }).click();
   await page
     .getByRole("dialog")
@@ -1033,5 +1041,61 @@ test("a member can revoke an active self-issued credential after two hundred his
   await expect
     .poll(() => revoked)
     .toContain("/api/authorization/acme/credentials/older-active/revoke");
-  expect(offsets).toContain(200);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect.poll(() => offsets).toContain(200);
+});
+
+test("cached policy details disappear when policy.read is removed", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { locale: "en-US", subject: true });
+  let readable = true;
+  await page.route("**/api/tenants/acme/administration", (route) =>
+    route.fulfill({
+      json: {
+        tenant: "acme",
+        actions: readable
+          ? ["policy.read", "policy.update", "credential.read"]
+          : ["credential.read"],
+        issuable_subjects: [],
+        assignable_groups: [],
+        policy_revision: 1,
+      },
+    }),
+  );
+  await page.route("**/api/authorization/acme", (route) =>
+    route.fulfill({
+      json: {
+        revision: 1,
+        bundle: {
+          tenant: "acme",
+          subjects: { alice: { kind: "user" } },
+          policies: [],
+        },
+      },
+    }),
+  );
+  await page.goto("/trust?view=authorization");
+  await expect(page.getByText("Policy bundle", { exact: true })).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("button", { name: "Creator", exact: true })
+    .click();
+  readable = false;
+  await page.clock.fastForward(2000);
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Access and accounts", exact: true })
+    .click();
+  await expect(
+    page.getByText("Subject credentials", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Policy bundle", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Edit policy", exact: true }),
+  ).toHaveCount(0);
 });

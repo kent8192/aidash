@@ -27,6 +27,7 @@ export function TenantAccess({
     <>
       {subject && overview.data && (
         <OwnCredentials
+          key={tenant}
           tenant={tenant}
           subject={subject}
           canIssue={can("credential.create")}

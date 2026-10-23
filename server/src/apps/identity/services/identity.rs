@@ -94,12 +94,17 @@ impl Authorization {
 	}
 
 	pub async fn credentials(&self, tenant: &str) -> Result<Vec<Credential>> {
-		self.credentials_page(tenant, 0).await
+		self.credentials_page(tenant, 0, false).await
 	}
-	pub async fn credentials_page(&self, tenant: &str, offset: u64) -> Result<Vec<Credential>> {
+	pub async fn credentials_page(
+		&self,
+		tenant: &str,
+		offset: u64,
+		active: bool,
+	) -> Result<Vec<Credential>> {
 		self.pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-				AuthorizationCredential::visible_page(tx, tenant, None, offset).await
+				AuthorizationCredential::visible_page(tx, tenant, None, offset, active).await
 			})
 			.await
 	}

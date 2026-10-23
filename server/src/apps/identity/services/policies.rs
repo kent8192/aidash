@@ -165,13 +165,13 @@ impl PolicyAdministration {
 		let f = self.runtime.clone();
 		if matches!(actor, Actor::DeploymentAdministrator) {
 			return control_service(f)
-				.credentials_page(&tenant, page.offset)
+				.credentials_page(&tenant, page.offset, page.active)
 				.await;
 		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator
-					.credentials(&f.store.pool, page.offset, page.mine)
+					.credentials(&f.store.pool, page.offset, page.mine, page.active)
 					.await
 			})
 			.await
