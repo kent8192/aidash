@@ -14,6 +14,7 @@ import { MemoryRegistryFields } from "./memory-registry";
 import { replayAfterHint, replayAfterQueryChange, sameQuery } from "./mcp-hint";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
+import { ContextSourceFields } from "./context-source-fields";
 import { ExternalServiceFields } from "./external-service-fields";
 
 type Argument = {
@@ -428,6 +429,7 @@ export function EntityConfiguration({
     : [
         "native_memory",
         "workspace_retrieval",
+        "workspace_observation",
         "reference_attachments",
         "skill_attachments",
         "skill_roots",
@@ -520,6 +522,14 @@ export function EntityConfiguration({
       <input type="hidden" name="config" value={JSON.stringify(config)} />
       {(kind === "memory" || kind === "source") && (
         <>
+          {kind === "source" && (
+            <ContextSourceFields
+              key={sourceAdapter}
+              adapter={sourceAdapter}
+              entries={data.registry}
+              node={deployment}
+            />
+          )}
           <Field label="Context source">
             <NativeSelect
               name="context_adapter"
@@ -534,6 +544,7 @@ export function EntityConfiguration({
                 : [
                     "native_memory",
                     "workspace_retrieval",
+                    "workspace_observation",
                     "reference_attachments",
                     "skill_attachments",
                     "skill_roots",
