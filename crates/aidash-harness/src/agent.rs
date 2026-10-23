@@ -17,7 +17,7 @@ use aidash_domain::{
 	projection::{ProjectionVersion, PromptCache},
 	provider::estimate::{EstimateSnapshot, RequestEstimator},
 	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
-	provider::usage::{UsageDispatch, UsageOutcome},
+	provider::usage::{ShadowEstimate, UsageDispatch, UsageOutcome, UsagePurpose},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
@@ -486,7 +486,7 @@ impl<'a> Executor<'a> {
 		let max_tokens = max_tokens.min(reserved_output);
 		let provider = self
 			.environment
-			.provider(model_cfg)
+			.provider(model_cfg.clone())
 			.map_err(|_| unavailable())?;
 		let request = summary_request(&plan, fitting.pinned, max_tokens);
 		if request.ensure_fits(summary_window).is_err() {
@@ -601,6 +601,37 @@ impl<'a> Executor<'a> {
 			guard.suspend().await?;
 		}
 		visibility.suspend().await?;
+		// The compaction journal tracks adoption, while this Usage Record tracks
+		// the physical provider call even when its result is never adopted.
+		store
+			.record_usage_dispatch(
+				run,
+				token,
+				&UsageDispatch {
+					attempt: attempt.id,
+					lease: token,
+					response_epoch: response_epoch(run.revision, run.step),
+					model_id: summary.model.id.clone(),
+					model_version: summary.model.version.clone(),
+					projection_version: fitting.budget.projection.version().number(),
+					upstream_model: model_cfg.model_id.clone(),
+					purpose: UsagePurpose::Summary,
+					requested_route: model_cfg
+						.provider_route
+						.as_ref()
+						.map(|route| route.tag.clone()),
+					estimate: request.request_estimate(),
+					shadow_estimates: diagnostic_estimates(
+						&request,
+						&model_cfg,
+						fitting.budget.projection.version(),
+						run.step,
+					),
+					calibration_sample: false,
+					cache_identity: request.cache_identity(),
+				},
+			)
+			.await?;
 		// Only cancellation interrupts a summary: no input sequence is newer
 		// than `i64::MAX`, and new input does not change the summarized range.
 		let result = tokio::select! {
@@ -611,6 +642,11 @@ impl<'a> Executor<'a> {
 			},
 			result = provider.infer(request, &aidash_application::ports::NoProgress) => result,
 		};
+		// Persist provider facts before resuming authorization or validating the
+		// summary. Refusal, truncation and post-I/O revocation still incur work.
+		let recorded = store
+			.complete_usage_record(run, attempt.id, &usage_outcome(&result))
+			.await;
 		let resumed = visibility.resume().await;
 		if let Some(reservation) = reservation
 			&& let Some(response) = settled_usage(&result)
@@ -619,6 +655,7 @@ impl<'a> Executor<'a> {
 		}
 		let result = result.map_err(Error::settled);
 		resumed?;
+		recorded?;
 		if let Some(guard) = guard {
 			guard.resume().await?;
 		}
@@ -1769,6 +1806,9 @@ impl<'a> Executor<'a> {
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
 							upstream_model: model_cfg.model_id.clone(),
+							purpose: UsagePurpose::Main,
+							requested_route: model_cfg.provider_route.as_ref().map(|route| route.tag.clone()),
+							shadow_estimates: diagnostic_estimates(&request, &model_cfg, agent.projection_version, run.step),
 							estimate: request_estimate.clone(),
 							// Media tokens are an allowance, not text, so they never calibrate.
 							calibration_sample: request.content_parts.is_empty(),
@@ -1851,11 +1891,12 @@ impl<'a> Executor<'a> {
 					Inference::Response(response) => UsageOutcome::Completed(response.reported.clone()),
 					Inference::Interrupted(_, error) => match error.terminal_usage() {
 						Some(response) => UsageOutcome::Completed(response.reported.clone()),
-						None if matches!(error, Error::ProviderRejected { .. } | Error::ContextOverflow) => {
-							UsageOutcome::Rejected {
-								class: "provider_rejected".into(),
-							}
-						}
+						None if matches!(error, Error::ContextOverflow) => UsageOutcome::Rejected {
+							class: "context_overflow".into(),
+						},
+						None if matches!(error, Error::ProviderRejected { .. }) => UsageOutcome::Rejected {
+							class: "provider_rejected".into(),
+						},
 						// A plan call OpenAI refused, or one no Plan Connection could serve.
 						None if matches!(error, Error::Plan(_)) => UsageOutcome::Rejected {
 							class: "plan_rejected".into(),
@@ -3550,6 +3591,46 @@ async fn summary_dependencies_current(
 	}
 	Ok(true)
 }
+/// Observe the original request under frozen diagnostic inputs without changing execution.
+fn diagnostic_estimates(
+	request: &provider::ModelRequest,
+	model: &ModelConfig,
+	projection: ProjectionVersion,
+	step: i32,
+) -> Vec<ShadowEstimate> {
+	let mut snapshots = model.diagnostic_snapshots(projection, step);
+	if !snapshots.contains(&request.estimate) {
+		snapshots.push(request.estimate);
+	}
+	snapshots
+		.into_iter()
+		.filter_map(|snapshot| {
+			request
+				.request_estimate_with_snapshot(&snapshot)
+				.map(|estimate| ShadowEstimate { snapshot, estimate })
+		})
+		.collect()
+}
+
+fn usage_outcome(result: &Result<provider::ModelResponse>) -> UsageOutcome {
+	match result {
+		Ok(response) => UsageOutcome::Completed(response.reported.clone()),
+		Err(error) => match error.terminal_usage() {
+			Some(response) => UsageOutcome::Completed(response.reported.clone()),
+			None if matches!(error, Error::ContextOverflow) => UsageOutcome::Rejected {
+				class: "context_overflow".into(),
+			},
+			None if matches!(error, Error::ProviderRejected { .. }) => UsageOutcome::Rejected {
+				class: "provider_rejected".into(),
+			},
+			None if matches!(error, Error::Plan(_)) => UsageOutcome::Rejected {
+				class: "plan_rejected".into(),
+			},
+			None => UsageOutcome::Unknown,
+		},
+	}
+}
+
 /// Usage that settles an inference reservation: an accepted response, or a
 /// truncated or refused one whose output is never dispatched.
 fn settled_usage(result: &Result<provider::ModelResponse>) -> Option<&provider::ModelResponse> {

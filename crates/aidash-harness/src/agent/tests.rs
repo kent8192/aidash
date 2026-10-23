@@ -523,7 +523,10 @@ impl ExecutionStore for Backend {
 		assert_eq!(token, self.0.token);
 		self.record("usage.dispatch");
 		let mut usage = self.0.usage.lock().unwrap();
-		for (_, outcome) in usage.iter_mut().filter(|(_, outcome)| outcome.is_none()) {
+		for (_, outcome) in usage
+			.iter_mut()
+			.filter(|(previous, outcome)| outcome.is_none() && previous.purpose == dispatch.purpose)
+		{
 			*outcome = Some(UsageOutcome::Unknown);
 		}
 		usage.push((dispatch.clone(), None));
@@ -1322,6 +1325,15 @@ impl ModelProvider for Backend {
 				input_tokens: 100,
 				output_tokens: 50,
 				usage_complete: true,
+				reported: ReportedUsage {
+					input_tokens: Some(100),
+					output_tokens: Some(50),
+					cost: Some(aidash_domain::provider::usage::ProviderCost {
+						nanocredits: 123,
+						upstream_nanocredits: None,
+					}),
+					..Default::default()
+				},
 				..Default::default()
 			});
 		}
@@ -2454,7 +2466,7 @@ async fn provider_overflow_releases_its_reservation_before_the_reduced_retry(mut
 	assert_eq!(
 		fixture.backend.0.usage.lock().unwrap()[0].1,
 		Some(UsageOutcome::Rejected {
-			class: "provider_rejected".into()
+			class: "context_overflow".into()
 		})
 	);
 	// The reduced retry reserves once more and settles its own response.
@@ -2527,7 +2539,19 @@ async fn summary_stage_fits_history_that_pruning_cannot_and_keeps_the_journal(
 		let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 		assert_eq!(attempts.len(), 1);
 		assert_eq!(attempts[0].1, Some(Outcome::Adopted));
+		let usage = fixture.backend.0.usage.lock().unwrap();
+		assert_eq!(usage.len(), 1);
+		assert_eq!(usage[0].0.attempt, attempts[0].0.id);
+		assert_eq!(usage[0].0.purpose, UsagePurpose::Summary);
+		assert!(!usage[0].0.calibration_sample);
+		assert!(
+			matches!(&usage[0].1, Some(UsageOutcome::Completed(reported)) if reported.input_tokens == Some(100) && reported.cost.unwrap().nanocredits == 123)
+		);
 	}
+	let order = calls(&fixture);
+	let position = |name| order.iter().position(|call| *call == name).unwrap();
+	assert!(position("usage.dispatch") < position("summarizer.infer"));
+	assert!(position("summarizer.infer") < position("usage.complete"));
 	// The authoritative journal still holds every original event.
 	let journal = fixture
 		.backend
@@ -2577,6 +2601,12 @@ async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture
 	assert_eq!(
 		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
 		Some(Outcome::Invalid)
+	);
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	assert_eq!(usage.len(), 1);
+	assert_eq!(usage[0].0.purpose, UsagePurpose::Summary);
+	assert!(
+		matches!(&usage[0].1, Some(UsageOutcome::Completed(reported)) if reported.cost.unwrap().nanocredits == 123)
 	);
 }
 

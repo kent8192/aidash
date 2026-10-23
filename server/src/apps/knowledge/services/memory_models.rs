@@ -314,6 +314,9 @@ impl Models {
 				"memory request exceeds its model allowance".into(),
 			));
 		}
+		// Capture all source lineage before provider I/O, including shared
+		// derivation origins. Reports count this attempt once, not once per Run.
+		let source_run_ids = serde_json::to_value(&self.inference.lock().await.runs)?;
 		let ordinal = self.ordinal.fetch_add(1, Ordering::SeqCst);
 		if ordinal >= self.policy.bounds.max_model_calls {
 			return Err(Error::Invalid("memory call limit exhausted".into()));
@@ -532,6 +535,9 @@ impl Models {
 					[
 						"id",
 						"operation_id",
+						"source_run_ids",
+						"reserved_tokens",
+						"reserved_cost_micros",
 						"ordinal",
 						"cycle",
 						"digest",
@@ -547,6 +553,9 @@ impl Models {
 					Query::select()
 						.expr(Expr::value(id))
 						.expr(Expr::value(self.operation))
+						.expr(Expr::value(source_run_ids))
+						.expr(Expr::value(tokens as i64))
+						.expr(Expr::value(cost as i64))
 						.expr(Expr::value(ordinal as i32))
 						.expr(Expr::value(self.cycle))
 						.expr(Expr::value(digest))
@@ -739,7 +748,44 @@ impl Models {
 			provider.infer(request, &aidash_application::ports::NoProgress),
 		)
 		.await
-		.map_err(|_| Error::SemanticUnavailable)??;
+		.map_err(|_| Error::SemanticUnavailable)
+		.and_then(|response| response);
+		let observed = match &response {
+			Ok(response) => Some(response),
+			Err(error) => error.terminal_usage(),
+		};
+		let recorded = if let Some(response) = observed {
+			// Persist reported usage even when output validation or source
+			// authorization later refuses the result. Policy settlement stays as-is.
+			let usage = &response.reported;
+			let reported = json!({
+				"input_tokens": usage.input_tokens,
+				"output_tokens": usage.output_tokens,
+				"cache_read_tokens": usage.cache_read_tokens,
+				"cache_write_tokens": usage.cache_write_tokens,
+				"reasoning_tokens": usage.reasoning_tokens,
+				"cost_nanocredits": usage.cost.map(|cost| cost.nanocredits),
+				"upstream_cost_nanocredits": usage.cost.and_then(|cost| cost.upstream_nanocredits),
+				"provider_identity": usage.provider_identity,
+			});
+			native::query(
+				&Query::update()
+					.table(Alias::new("memory_model_attempts"))
+					.value_expr(Alias::new("provider_usage"), Expr::value(reported))
+					.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
+					.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
+					.and_where(Expr::col("provider_usage").is_null())
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(self.store.control_pool.in_scope(
+				&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
+			))
+			.await
+			.map(|_| ())
+		} else {
+			Ok(())
+		};
+		let response = response?;
 		if let Some(origin) = origin {
 			origin.settle(&response).await?;
 		}
@@ -752,6 +798,7 @@ impl Models {
 				)
 				.await?;
 		}
+		recorded?;
 		self.require_origins(Some(reference)).await?;
 		if !response.tool_calls.is_empty() {
 			return Err(Error::Invalid(

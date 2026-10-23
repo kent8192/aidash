@@ -4,7 +4,10 @@ use aidash_domain::projection::ProjectionVersion;
 use aidash_domain::provider::estimate::{
 	ByteEstimate, CALIBRATION_WINDOW, EstimateSnapshot, FRAMING_RESERVE, TokenEncoding,
 };
-use aidash_domain::provider::usage::{ProviderCost, ReportedUsage, UsageDispatch, UsageOutcome};
+use aidash_domain::provider::usage::{
+	ProviderCost, ProviderIdentity, ReportedUsage, ShadowEstimate, UsageDispatch, UsageOutcome,
+	UsagePurpose,
+};
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 
 /// outcome, input, output, cache read, cache write, reasoning, cost, upstream cost,
@@ -68,6 +71,9 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		model_version: "1.0.0".into(),
 		projection_version: ProjectionVersion::Legacy.number(),
 		upstream_model: "vendor/model".into(),
+		purpose: UsagePurpose::Main,
+		requested_route: None,
+		shadow_estimates: vec![],
 		estimate: EstimateSnapshot::conservative(0).request_estimate(&BYTES),
 		calibration_sample: false,
 		cache_identity: None,
@@ -307,6 +313,14 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	let (store, url, schema) = _store_fixture.parts();
 	let crashed = Uuid::new_v4();
 	let run = leased_run(&store, crashed).await;
+	let auxiliary = UsageDispatch {
+		purpose: UsagePurpose::Summary,
+		..dispatch(crashed)
+	};
+	store
+		.record_usage_dispatch(&ACME, &run, crashed, &auxiliary)
+		.await
+		.unwrap();
 	let attempt = dispatch(crashed);
 	store
 		.record_usage_dispatch(&ACME, &run, crashed, &attempt)
@@ -333,6 +347,10 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 
 	// Assert
 	assert!(recovered.recovery.lease_recovered);
+	assert_eq!(
+		usage_row(&store, auxiliary.attempt).await,
+		unreported("unknown", None, true)
+	);
 	assert_eq!(
 		usage_row(&store, attempt.attempt).await,
 		unreported("unknown", None, true)
@@ -663,5 +681,200 @@ async fn calibration_samples_keep_only_the_newest_window_per_key(
 			.len(),
 		1
 	);
+	cleanup(store, &url, &schema).await;
+}
+
+/// Auxiliary calls retain their independent terminal write, and cannot add
+/// calibration samples. Facts survive at-most-once completion and export intact.
+#[rstest::rstest]
+#[tokio::test]
+async fn summary_usage_is_independent_from_main_and_keeps_prompt_free_evidence(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let snapshot = EstimateSnapshot::calibrated(3, 250_000, 20);
+	let auxiliary = UsageDispatch {
+		purpose: UsagePurpose::Summary,
+		requested_route: Some("fixture-route".into()),
+		shadow_estimates: vec![ShadowEstimate {
+			snapshot,
+			estimate: snapshot.request_estimate(&BYTES),
+		}],
+		calibration_sample: true, // The persistence boundary enforces main-only calibration.
+		..dispatch(token)
+	};
+	let main = dispatch(token);
+	for attempt in [&auxiliary, &main] {
+		store
+			.record_usage_dispatch(&ACME, &run, token, attempt)
+			.await
+			.unwrap();
+	}
+	assert_eq!(
+		usage_row(&store, auxiliary.attempt).await,
+		unreported("dispatched", None, false)
+	);
+	let identity = ProviderIdentity {
+		reported_model: Some("upstream/served".into()),
+		reported_provider: Some("fixture-provider".into()),
+		reported_route: Some("fixture-route".into()),
+		provider_request_id: Some("provider-request-1".into()),
+	};
+	let usage = ReportedUsage {
+		input_tokens: Some(60),
+		provider_identity: Some(identity.clone()),
+		..Default::default()
+	};
+	assert!(
+		store
+			.complete_usage_record(
+				&ACME,
+				&run,
+				auxiliary.attempt,
+				&UsageOutcome::Completed(usage)
+			)
+			.await
+			.unwrap()
+	);
+	let sql = Query::select()
+		.columns(
+			[
+				"purpose",
+				"requested_route",
+				"provider_identity",
+				"shadow_estimates",
+				"calibration_sample",
+				"cost_nanocredits",
+			]
+			.map(Alias::new),
+		)
+		.from(Alias::new("inference_usage"))
+		.and_where(Expr::col("attempt_id").eq(Expr::value(auxiliary.attempt)))
+		.to_string(PostgresQueryBuilder);
+	let evidence = sqlx::query_as::<
+		_,
+		(
+			String,
+			Option<String>,
+			Option<serde_json::Value>,
+			Option<serde_json::Value>,
+			bool,
+			Option<i64>,
+		),
+	>(&sql)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		evidence,
+		(
+			"summary".into(),
+			Some("fixture-route".into()),
+			Some(serde_json::to_value(identity).unwrap()),
+			Some(serde_json::to_value(&auxiliary.shadow_estimates).unwrap()),
+			false,
+			None
+		)
+	);
+	assert!(
+		store
+			.calibration_samples("vendor/model", ProjectionVersion::Legacy.number())
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	assert_eq!(
+		usage_row(&store, main.attempt).await,
+		unreported("dispatched", None, false)
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+// Compile the production query document at its owning boundary without a
+// test-only visibility export from the operations app.
+#[path = "../../../operations/services/diagnostics/evaluation.rs"]
+mod evaluation_queries;
+
+/// Operator diagnostics execute against the migrated schema, preserve unknown
+/// costs and recovery evidence, and obey the caller's Tenant RLS scope.
+#[rstest::rstest]
+#[tokio::test]
+async fn evaluation_export_keeps_usage_and_recovery_without_private_context(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let mut run = leased_run(&store, token).await;
+	run.context.legacy_summary = "private prompt must never leave diagnostics".into();
+	run.context.compactions = 3;
+	run.context.recovery.window_permille = 750;
+	run.context.recovery.overflow_attempts = 2;
+	run.context.recovery.overflow_request_tokens = Some(7000);
+	run.context.estimate.demoted = true;
+	let context = serde_json::to_value(&run.context).unwrap();
+	let update = Query::update()
+		.table(Alias::new("runs"))
+		.value_expr(Alias::new("context"), Expr::value(context))
+		.and_where(Expr::col("id").eq(Expr::value(run.id)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let attempt = UsageDispatch {
+		cache_identity: Some("opaque-prefix-digest".into()),
+		..dispatch(token)
+	};
+	store
+		.record_usage_dispatch(&ACME, &run, token, &attempt)
+		.await
+		.unwrap();
+	store
+		.complete_usage_record(&ACME, &run, attempt.attempt, &UsageOutcome::Unknown)
+		.await
+		.unwrap();
+	let document = evaluation_queries::document();
+	let mut exported = serde_json::Map::new();
+	let mut tx = store.pool.begin(&ACME).await.unwrap();
+	for (table, query) in document.as_object().unwrap() {
+		let rows: Vec<serde_json::Value> =
+			aidash_server::database::native::query_scalar(query.as_str().unwrap())
+				.scalar_all(&mut *tx)
+				.await
+				.unwrap();
+		exported.insert(table.clone(), serde_json::json!(rows));
+	}
+	tx.rollback().await.unwrap();
+	let usage = &exported["inference_usage"][0];
+	assert_eq!(usage["attempt_id"], serde_json::json!(attempt.attempt));
+	assert_eq!(usage["outcome"], "unknown");
+	assert!(usage["cost_nanocredits"].is_null());
+	assert_eq!(usage["cache_identity"], "opaque-prefix-digest");
+	let recovery = &exported["run_recovery"][0];
+	assert_eq!(recovery["run_id"], serde_json::json!(run.id));
+	assert_eq!(recovery["compactions"], 3);
+	assert_eq!(recovery["overflow_attempts"], 2);
+	assert_eq!(recovery["window_permille"], 750);
+	assert_eq!(recovery["estimator_demoted"], true);
+	let text = serde_json::to_string(&exported).unwrap();
+	assert!(!text.contains("private prompt"));
+	assert!(!text.contains(&token.to_string()));
+	let unrelated = aidash_application::tenancy::TenancyScope::tenant("unrelated").unwrap();
+	let mut tx = store.pool.begin(&unrelated).await.unwrap();
+	for query in document.as_object().unwrap().values() {
+		let rows: Vec<serde_json::Value> =
+			aidash_server::database::native::query_scalar(query.as_str().unwrap())
+				.scalar_all(&mut *tx)
+				.await
+				.unwrap();
+		assert_eq!(rows, vec![]);
+	}
+	tx.rollback().await.unwrap();
 	cleanup(store, &url, &schema).await;
 }
