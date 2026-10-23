@@ -146,4 +146,128 @@ async fn enforce_unavailable_has_no_unscored_fallback_and_keeps_durable_uncertai
 	);
 	assert_eq!(result.evidence.attempts[0].status, AttemptStatus::Uncertain);
 	assert_eq!(fixture.saved.lock().unwrap().permits.len(), 1);
+	assert_eq!(result.evidence.replay().unwrap(), result.selected);
+	let before_dispatch = Fixture {
+		fail_prepare: true,
+		..self::fixture(Mode::Enforce)
+	};
+	let unavailable = select(&before_dispatch, Mode::Enforce, true).await.unwrap();
+	assert_eq!(
+		unavailable.evidence.failure,
+		Some(SelectionFailure::ProviderUnavailable)
+	);
+	assert!(unavailable.evidence.attempts.is_empty());
+	assert_eq!(unavailable.evidence.replay().unwrap(), unavailable.selected);
+}
+
+#[tokio::test]
+async fn replay_rejects_unanswered_attempts_and_changed_provider_question_contract() {
+	let fixture = Fixture {
+		keep: Probability::half(),
+		..fixture(Mode::Enforce)
+	};
+	let result = select(&fixture, Mode::Enforce, true).await.unwrap();
+	let original = result.evidence;
+	original.replay().unwrap();
+	let mut no_attempt = original.clone();
+	no_attempt.attempts.clear();
+	assert!(
+		no_attempt.replay().is_err(),
+		"selection without charged answers must fail replay"
+	);
+	let mut receipt = original.clone();
+	receipt.attempts[0].owner_receipts.clear();
+	assert!(
+		receipt.replay().is_err(),
+		"charged attempt must retain durable owner receipts"
+	);
+	let mut duplicate = original.clone();
+	duplicate.attempts.push(duplicate.attempts[0].clone());
+	assert!(
+		duplicate.replay().is_err(),
+		"duplicate attempt cannot supply extra answer coverage"
+	);
+	let mut uncertain = original.clone();
+	uncertain.attempts[0].status = AttemptStatus::Uncertain;
+	assert!(
+		uncertain.replay().is_err(),
+		"uncertain attempt cannot authorize selection"
+	);
+	let mut question = original.clone();
+	question.questions.values_mut().next().unwrap().description = "different question".into();
+	assert!(
+		question.replay().is_err(),
+		"changed questions cannot reuse charged answers"
+	);
+	let mut route = original.clone();
+	route.route = Some(999);
+	assert!(
+		route.replay().is_err(),
+		"selection route must belong to its pinned config"
+	);
+	let mut threshold = original;
+	threshold.threshold = Some(Probability::new(0.1).unwrap());
+	assert!(
+		threshold.replay().is_err(),
+		"effective threshold must match recorded restrictions"
+	);
+}
+#[tokio::test]
+async fn replay_cannot_turn_a_real_shadow_drop_proposal_into_enforcement() {
+	let fixture = fixture(Mode::Shadow);
+	let result = select(&fixture, Mode::Shadow, true).await.unwrap();
+	assert!(result.evidence.proposed.is_empty());
+	result.evidence.replay().unwrap();
+	let mut forged = result.evidence;
+	forged.mode = Mode::Enforce;
+	forged.selected.clear();
+	assert!(
+		forged.replay().is_err(),
+		"mode is committed by the exact approved configuration"
+	);
+}
+
+#[tokio::test]
+async fn replay_binds_charged_attempts_to_their_route_and_allows_real_unavailable_fallback() {
+	let mut fixture = Fixture {
+		keep: Probability::half(),
+		..fixture(Mode::Enforce)
+	};
+	fixture.routes.push(clef());
+	let config = DeciderConfig {
+		hook: Hook::ContextSelection,
+		builder: SOURCE_BUILDER.into(),
+		option_source: SOURCE_OPTION.into(),
+		rule: SOURCE_RULE.into(),
+		..fixture.config(Mode::Enforce)
+	};
+	fixture.configuration_digest = config.digest().unwrap();
+	let original = select(&fixture, Mode::Enforce, true)
+		.await
+		.unwrap()
+		.evidence;
+	assert_eq!(original.route, Some(0));
+	original.replay().unwrap();
+	let mut reassigned = original;
+	reassigned.route = Some(1);
+	reassigned.threshold = Some(config.routes[1].threshold);
+	reassigned.restrictions.threshold = config.routes[1].threshold;
+	for route in reassigned.attempt_routes.values_mut() {
+		*route = 1;
+	}
+	assert!(
+		reassigned.replay().is_err(),
+		"another approved route cannot reuse the first route's charged attempt identity"
+	);
+	let mut fallback = Fixture {
+		keep: Probability::half(),
+		..self::fixture(Mode::Enforce)
+	};
+	fallback.routes = config.routes.clone();
+	fallback.configuration_digest = config.digest().unwrap();
+	fallback.faults.insert(0, Fault::Transport);
+	let result = select(&fallback, Mode::Enforce, true).await.unwrap();
+	assert_eq!(result.evidence.route, Some(1));
+	assert_eq!(result.evidence.attempts.len(), 2);
+	assert_eq!(result.evidence.replay().unwrap(), result.selected);
 }

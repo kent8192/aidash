@@ -385,15 +385,10 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 			&& matches!(
 				baseline.operation.as_str(),
 				"semantic_memory" | "workspace_retrieval" | "conversation_memory"
-			) && matches!(
-			declaration.pin,
-			PinPolicy::Scored {
-				mode: crate::decision::Mode::Enforce,
-				..
-			}
-		) {
+			) && !declaration.pin.preserves_mandatory()
+		{
 			return Err(Error::Invalid(
-				"required-Home semantic contribution cannot enforce Scored selection".into(),
+				"required-Home semantic contribution must remain Always or Scored Shadow".into(),
 			));
 		}
 		if declaration.provider != baseline.provider || declaration.operation != baseline.operation
