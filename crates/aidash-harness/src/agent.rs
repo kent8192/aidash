@@ -848,7 +848,9 @@ impl<'a> Executor<'a> {
 	#[allow(clippy::too_many_arguments)]
 	async fn ordered_semantic_context(
 		&self,
-		run: &Run,
+		store: &dyn ExecutionStore,
+		run: &mut Run,
+		token: Uuid,
 		task: &Task,
 		inputs: &[(InputRead, String)],
 		budget: usize,
@@ -902,7 +904,8 @@ impl<'a> Executor<'a> {
 		}
 		let value = match &key {
 			Some(key) => {
-				self.environment
+				let read = self
+					.environment
 					.semantic_context(
 						run,
 						task,
@@ -912,7 +915,8 @@ impl<'a> Executor<'a> {
 						Some(key),
 						degrade_on_outage,
 					)
-					.await?
+					.await;
+				finish_semantic_read(store, run, token, read).await?
 			}
 			None => None,
 		};
@@ -1594,7 +1598,9 @@ impl<'a> Executor<'a> {
 					let retrieves = guard.is_some() || home.local();
 					let semantic = self
 						.ordered_semantic_context(
+							store,
 							run,
+							token,
 							&task,
 							&semantic_inputs,
 							semantic_budget,
@@ -1634,7 +1640,7 @@ impl<'a> Executor<'a> {
 							.filter(|v| !v.is_null())
 							.cloned()
 					} else if guard.is_some() || home.local() {
-						self.environment
+						let read = self.environment
 							.semantic_context(
 								run,
 								&task,
@@ -1644,7 +1650,8 @@ impl<'a> Executor<'a> {
 								None,
 								degrade_on_outage,
 							)
-							.await?
+							.await;
+						finish_semantic_read(store, run, token, read).await?
 					} else {
 						None
 					};
@@ -3435,6 +3442,23 @@ impl OrderedSemantic {
 /// degradation is saved, with `run.semantic_degraded`. A re-entry of the same
 /// step saves nothing here: the degradation is already durable, and the
 /// refreshed cause rides on the step's next save.
+/// Recovery reloads the durable Run. Save an independently recovered
+/// workspace before a later memory failure leaves this step.
+async fn finish_semantic_read(
+	store: &dyn ExecutionStore,
+	run: &mut Run,
+	token: Uuid,
+	read: SemanticContextRead,
+) -> Result<Option<Value>> {
+	if read.workspace_retrieved && run.recovery.degraded.outage {
+		run.recovery.degraded.recovered();
+		run.recovery.semantic_reason = None;
+		run.recovery.retry = None;
+		store.recover_sources(run, token).await?;
+	}
+	read.result
+}
+
 async fn degrade_context(
 	store: &dyn ExecutionStore,
 	run: &mut Run,

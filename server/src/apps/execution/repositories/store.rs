@@ -2979,6 +2979,7 @@ impl Store {
 			kind,
 			"run.sources_observed"
 				| "run.semantic_degraded"
+				| "run.semantic_recovered"
 				| "run.estimate_pinned"
 				| "context.summary_revoked"
 		);

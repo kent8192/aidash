@@ -49,6 +49,7 @@ struct State {
 	conversation_memory: bool,
 	deny_source: bool,
 	memory_value: Mutex<Value>,
+	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
 	token: Uuid,
 	task: Mutex<Task>,
@@ -1113,7 +1114,7 @@ impl ExecutionEnvironment for Backend {
 		entry: &Entry,
 		key: Option<&RetrievalKey>,
 		degrade_on_outage: bool,
-	) -> Result<Option<Value>> {
+	) -> SemanticContextRead {
 		let _ = (run, task, inputs, budget, entry);
 		self.0
 			.semantic_keys
@@ -1125,14 +1126,34 @@ impl ExecutionEnvironment for Backend {
 			.lock()
 			.unwrap()
 			.push(degrade_on_outage);
-		if self.0.conversation_memory {
-			self.record("source.memory");
-			if self.0.fill_semantic_budget {
-				return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
-			}
-			return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
+		{
+			return SemanticContextRead {
+				workspace_retrieved,
+				result: Err(Error::RemoteSemantic(reason)),
+			};
 		}
-		Ok(None)
+		let result: Result<Option<Value>> = async {
+			if self.0.conversation_memory {
+				self.record("source.memory");
+				if self.0.fill_semantic_budget {
+					return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
+				}
+				return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+			}
+			Ok(None)
+		}
+		.await;
+		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
+			value
+				.as_ref()
+				.and_then(aidash_domain::semantic::degraded::degraded)
+				.is_none()
+		});
+		SemanticContextRead {
+			workspace_retrieved,
+			result,
+		}
 	}
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let _ = run;
@@ -1416,6 +1437,7 @@ fn fixture() -> Fixture {
 		conversation_memory: false,
 		deny_source: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
+		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
 		token,
 		task: Mutex::new(Task {

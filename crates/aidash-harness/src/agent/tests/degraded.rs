@@ -23,6 +23,107 @@ fn saved(fixture: &Fixture, event: &str) -> Vec<Run> {
 		.collect()
 }
 
+#[async_trait]
+impl aidash_application::ports::ExecutionRecoveryStore for Backend {
+	async fn leased_run(&self, token: Uuid) -> Result<Option<Run>> {
+		assert_eq!(token, self.0.token);
+		Ok(self
+			.0
+			.writes
+			.lock()
+			.unwrap()
+			.last()
+			.map(|(_, run)| run.clone()))
+	}
+	async fn save(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
+		ExecutionStore::save_run(self, run, token, event).await
+	}
+	async fn pause(&self, _: &Run, _: Uuid, _: &str, _: &str) -> Result<()> {
+		unexpected("ExecutionRecoveryStore.pause")
+	}
+	async fn pause_semantic(&self, _: &Run, _: Uuid, _: SemanticFailure) -> Result<()> {
+		unexpected("ExecutionRecoveryStore.pause_semantic")
+	}
+	async fn pause_context(
+		&self,
+		_: &Run,
+		_: Uuid,
+		_: aidash_domain::context::recovery::Failure,
+	) -> Result<()> {
+		unexpected("ExecutionRecoveryStore.pause_context")
+	}
+}
+
+#[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn a_workspace_success_is_durable_before_memory_failure_reloads_the_run(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	use aidash_application::{ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	canonical
+		.run
+		.recovery
+		.degraded
+		.record(canonical.run.step - 1, OutageCause::EmbeddingProvider);
+	let backend = canonical.backend.clone();
+	backend
+		.persist(&canonical.run, "fixture.saved", None)
+		.unwrap();
+	*backend.0.semantic_failure.lock().unwrap() = Some((true, SemanticFailure::Pending));
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::RemoteSemantic(SemanticFailure::Pending))
+	));
+	// Real worker recovery reloads the stored Run, rather than trusting the
+	// executor's mutated copy. The workspace success must already be durable.
+	crate::recovery::recover(
+		&backend,
+		backend.0.token,
+		ExecutionFailure::Semantic(SemanticFailure::Pending),
+		chrono::Utc::now(),
+	)
+	.await
+	.unwrap();
+	canonical.run = backend.leased_run(backend.0.token).await.unwrap().unwrap();
+	assert!(!canonical.run.recovery.degraded.outage);
+	assert_eq!(
+		canonical.run.recovery.degraded.count, 1,
+		"past degradation evidence is retained"
+	);
+	assert!(
+		saved(&canonical, "run.sources_observed").is_empty(),
+		"partial retrieval is never cached"
+	);
+
+	*backend.0.semantic_failure.lock().unwrap() = Some((false, SemanticFailure::Unavailable));
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::RemoteSemantic(SemanticFailure::Unavailable))
+	));
+	assert_eq!(
+		*backend.0.semantic_degrade.lock().unwrap(),
+		[true, false],
+		"a fresh outage gets its bounded retry"
+	);
+	crate::recovery::recover(
+		&backend,
+		backend.0.token,
+		ExecutionFailure::Semantic(SemanticFailure::Unavailable),
+		chrono::Utc::now(),
+	)
+	.await
+	.unwrap();
+	let stored = backend.leased_run(backend.0.token).await.unwrap().unwrap();
+	assert_eq!(stored.recovery.retry.as_ref().unwrap().count, 1);
+	assert_eq!(stored.control.as_str(), "ACTIVE");
+}
+
 #[rstest]
 #[case::legacy(false)]
 #[case::ordered(true)]
