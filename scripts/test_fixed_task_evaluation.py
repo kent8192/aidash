@@ -197,19 +197,34 @@ class ProjectionCampaignTest(unittest.TestCase):
         models = {reference: {"model_id": "provider/same-model", "provider": "openrouter", "endpoint": "https://p/v1",
                               "provider_credential": "openrouter", "reasoning_effort": "medium",
                               "request_estimator": "bytes", "projection_versions": ["legacy", "ordered", "native"],
+                              "provider_route": {"tag": "groq", "source": "https://openrouter.ai/api/v1/endpoints/zdr",
+                                  "verified_at": "2000-01-01T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z"},
                               **value["models"][name]} for name, reference in mapping.items()}
         evaluation.check_matched_live_models(value, planned, mapping, models)
         changes = [("context_window", 128000, "must match frozen corpus"),
                    ("request_estimator", "calibrated", "request_estimator=bytes"),
                    ("reasoning_effort", "high", "reasoning_effort=medium"),
                    ("projection_versions", ["legacy", "ordered"], "support projection native"),
-                   ("model_id", "provider/other-model", "one matched model")]
+                   ("model_id", "provider/other-model", "one matched model"),
+                   ("provider_route", None, "provider_route"),
+                   ("provider_route", {"tag": "other", "source": "catalog", "verified_at": "2000-01-01T00:00:00Z",
+                                       "expires_at": "2099-01-01T00:00:00Z"}, "one matched model"),
+                   ("provider_route", {"tag": "groq", "source": "catalog", "verified_at": "2000-01-01T00:00:00Z",
+                                       "expires_at": "2001-01-01T00:00:00Z"}, "expired")]
         for field, changed, error in changes:
             with self.subTest(field=field):
                 altered = {key: dict(config) for key, config in models.items()}
                 altered["small@1"][field] = changed
                 with self.assertRaisesRegex(evaluation.GuardRefusal, error):
                     evaluation.check_matched_live_models(value, planned, mapping, altered)
+        exported = evaluation.requested_model_routes(models)
+        self.assertEqual(exported["standard@1"]["provider_route"], models["standard@1"]["provider_route"])
+        self.assertNotIn("provider_routing", exported["standard@1"])
+        calibrated = {key: dict(config, request_estimator="calibrated") for key, config in models.items()}
+        evaluation.check_matched_live_models(value, planned, mapping, calibrated, execution_estimator="calibrated")
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "execution_estimator"):
+            evaluation.check_execution_estimator_approval({}, "calibrated")
+        evaluation.check_execution_estimator_approval({"execution_estimator": "calibrated"}, "calibrated")
 
     def test_multi_arm_manifest_validates_pairs_and_refuses_rewritten_execution_order(self):
         value = evaluation.load_corpus()
@@ -285,7 +300,7 @@ class ProjectionCampaignTest(unittest.TestCase):
 
     def test_live_auxiliary_contract_reserves_all_permitted_calls_and_rejects_digest_drift(self):
         config = {"hook": "compaction", "mode": "enforce", "provider_credential": "openrouter",
-                  "max_calls_per_run": 5, "routes": [{"model": "decision/model", "hosts": ["one"]}]}
+                  "max_calls_per_run": 3, "routes": [{"model": "decision/model", "hosts": ["one"]}]}
         allowance = {"reference": "decider@1", "config_sha256": evaluation.canonical_sha256(config),
                      "max_calls_per_run": 3, "max_nanocredits_per_call": 900}
         approval = {"external_compaction": {"mode": "bounded", "decider": allowance, "summary": None}}
@@ -298,6 +313,13 @@ class ProjectionCampaignTest(unittest.TestCase):
         main = runner.run_worst_case(item, value, model, prices)
         self.assertEqual(runner.run_worst_case(item, value, model, prices, auxiliary), main + 2700)
         evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": config}, "openrouter")
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
+            evaluation.require_enforceable_auxiliary_bound(auxiliary)
+        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
+        larger = dict(config, max_calls_per_run=5)
+        oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
+            evaluation.verify_auxiliary_configs(oversized, {"decider@1": larger}, "openrouter")
         with self.assertRaisesRegex(evaluation.GuardRefusal, "exact digest"):
             evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": dict(config, max_calls_per_run=100)},
                                                  "openrouter")
@@ -327,17 +349,20 @@ class ProjectionCampaignTest(unittest.TestCase):
         _, code = evaluation.live_task_support({"code_oracle": contract}, value, planned, "https://fixture.test")
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "target.py").write_text("pass\n")
-            completed = subprocess.CompletedProcess([], 0, "", "Ran 1 test in 0.001s\nOK\n")
-            with mock.patch.object(evaluation.subprocess, "run", return_value=completed) as execute:
-                self.assertTrue(code(directory, "test_*.py", 99)["passed"])
-            command = execute.call_args_list[0].args[0]
+            completed = subprocess.CompletedProcess([], 0, "[42]")
+            with mock.patch.object(evaluation, "bounded_subprocess", return_value=completed) as execute, \
+                    mock.patch.object(evaluation.subprocess, "run") as cleanup:
+                self.assertTrue(code(directory, [{"args": [], "kwargs": {}, "expected": 42}], 99,
+                                     target="target.py")["passed"])
+            command = execute.call_args.args[0]
             for flag, expected in (("--network", "none"), ("--memory", "128m"), ("--pids-limit", "64"),
                                    ("--cpus", "1"), ("--user", "65534:65534"), ("--pull", "never")):
                 self.assertEqual(command[command.index(flag) + 1], expected)
             self.assertIn("--read-only", command)
             self.assertTrue(command[command.index("--mount") + 1].endswith(",dst=/work,readonly"))
-            self.assertEqual(execute.call_args_list[0].kwargs["timeout"], 20)
-            self.assertEqual(execute.call_args_list[-1].args[0][:3], ["docker", "rm", "-f"])
+            self.assertEqual(execute.call_args.args[2], 20)
+            self.assertEqual(cleanup.call_args.args[0][:3], ["docker", "rm", "-f"])
+
 
 
 class SchemaTest(unittest.TestCase):
@@ -354,6 +379,65 @@ class SchemaTest(unittest.TestCase):
 
 
 class OracleTest(unittest.TestCase):
+    def test_live_code_oracle_rejects_candidate_that_disables_unittest_assertions(self):
+        value = evaluation.load_corpus()
+        item = task(value, "code-change-verified-fix")
+        candidate = "import unittest\nunittest.TestCase.assertEqual = lambda *args, **kwargs: None\n" \
+                    "def discounted_total(prices_cents, coupon_cents=0, percent_off=0):\n    return -999\n"
+        planned = next(p for p in evaluation.plan(value, [item["id"]], ["projection"]) if p["arm"] == "native")
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        real_run = subprocess.run
+        real_popen = subprocess.Popen
+        def translate(command):
+            mount = command[command.index("--mount") + 1]
+            directory = mount.split("src=", 1)[1].split(",dst=", 1)[0]
+            image = command.index(code.image)
+            arguments = [part.replace("/work", directory) for part in command[image + 2:]]
+            return [sys.executable, *arguments], directory
+        def run(command, **kwargs):
+            if command[:3] == ["docker", "rm", "-f"]:
+                return subprocess.CompletedProcess(command, 0)
+            translated, directory = translate(command)
+            return real_run(translated, cwd=directory, **kwargs)
+        def popen(command, **kwargs):
+            if command[0] != "docker":
+                return real_popen(command, **kwargs)
+            translated, directory = translate(command)
+            return real_popen(translated, cwd=directory, **kwargs)
+        for source, expected in ((candidate, "false_completion"),
+                                 (fixture_module.PRICING_COMPLETE, "success"),
+                                 (fixture_module.PRICING_VISIBLE_ONLY, "false_completion")):
+            with self.subTest(expected=expected, malicious=source == candidate), \
+                    mock.patch.object(evaluation.subprocess, "run", side_effect=run), \
+                    mock.patch.object(evaluation.subprocess, "Popen", side_effect=popen):
+                result = evaluation.run_result(value, planned, 1, observation(final_answer="```python\n" + source +
+                                               "```\nAll tests pass."), "live", code)
+            self.assertEqual(result["outcome"], expected)
+            self.assertIs(result["oracle"]["passed"], expected == "success")
+
+    def test_candidate_output_collection_has_a_hard_host_memory_bound(self):
+        with self.assertRaisesRegex(ValueError, "65536-byte limit"):
+            evaluation.bounded_subprocess([sys.executable, "-I", "-c",
+                "import sys; sys.stdout.write('x' * 131072)"], b"", timeout=5)
+
+    def test_malformed_exclusions_fail_grading_without_losing_the_live_run(self):
+        value = evaluation.load_corpus()
+        planned = next(p for p in evaluation.plan(value, ["long-conversation-corrections"], ["projection"])
+                       if p["arm"] == "native")
+        for exclusions in (["Northwind", 1], 123, "Northwind", [None], {"Northwind": True}):
+            with self.subTest(exclusions=exclusions):
+                result = evaluation.run_result(value, planned, 1, observation(final_answer=answer_json({
+                    "budget_usd": 300, "excluded_vendors": exclusions})), "live", False)
+                self.assertEqual(result["run_id"], "run")
+                self.assertEqual(result["outcome"], "false_completion")
+                self.assertIs(result["oracle"]["passed"], False)
+        with mock.patch.object(evaluation, "grade", side_effect=TypeError("private model output")):
+            result = evaluation.run_result(value, planned, 1, observation(final_answer="Done."), "live", False)
+        self.assertEqual(result["run_id"], "run")
+        self.assertEqual(result["outcome"], "infrastructure_failure")
+        self.assertEqual(result["repeat"], 1)
+        self.assertNotIn("private model output", json.dumps(result))
+
     def test_visible_only_fix_with_a_success_claim_is_false_completion(self):
         value = corpus()
         item = task(value, "code-change-hidden-regression")
@@ -1478,7 +1562,56 @@ class LiveGuardTest(unittest.TestCase):
                 self.assertIsNone(result["experiment"]["model"]["reported_identities"])
                 self.assertIn("null", result["limitations"][0])
                 self.assertEqual(result["experiment"]["aidash"]["server_revision"], "0123abc")
+                self.assertIsNone(result["experiment"]["aidash"]["commit"])
+                self.assertIsNone(result["experiment"]["aidash"]["dirty"])
+                self.assertEqual(result["experiment"]["harness"]["source_provenance"], "remote-unverified")
                 self.assertEqual(result["experiment"]["created_at"], "2026-10-11T00:00:00.000000Z")
+
+    def test_grader_exception_keeps_every_dispatched_paid_run_in_the_manifest(self):
+        call, _ = self.live_node()
+        with mock.patch.object(evaluation, "run_result", side_effect=TypeError("private model output")):
+            status, result = self.run_live(call, ceiling="1000000")
+        self.assertEqual(status, 1)
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(result["skipped_runs"], [])
+        self.assertEqual({run["key"] for run in result["runs"]},
+                         {attempt["key"] for attempt in result["spend"]["attempts"]})
+        self.assertTrue(all(run["outcome"] == "infrastructure_failure" for run in result["runs"]))
+        self.assertNotIn("private model output", json.dumps(result))
+        evaluation.validate_result(result)
+
+    def test_live_preserves_only_approved_operator_source_attestation(self):
+        value = corpus()
+        source = {"commit": "a" * 40, "dirty": False, "dirty_diff_sha256": None,
+                  "binary_sha256": "b" * 64, "server_revision": "a" * 40}
+        approval = self.approval(value, max_spend_nanocredits=1000000,
+                                 source_attestation_sha256=evaluation.canonical_sha256(source))
+        for changed, expected in ((False, 0), (True, "refused")):
+            call, registered = self.live_node()
+            clock = Clock()
+            attested = dict(source, binary_sha256="c" * 64) if changed else source
+            with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, self.ENV):
+                args = self.args(**{"--server-revision": source["commit"], "--max-spend-nanocredits": "1000000"})
+                args.source_attestation = Path("source.json")
+                args.output = Path(directory) / "result.json"
+                read = lambda path: attested if path == args.source_attestation else approval
+                if changed:
+                    with self.assertRaisesRegex(evaluation.GuardRefusal, "source_attestation_sha256"):
+                        cli.live(args, read_json=read, transport=call, clock=clock, sleep=clock.sleep,
+                                 wall_now=lambda: self.NOW)
+                    self.assertEqual(registered, [])
+                    self.assertFalse(args.output.exists())
+                else:
+                    status = cli.live(args, read_json=read, transport=call, clock=clock, sleep=clock.sleep,
+                                      wall_now=lambda: self.NOW)
+                    self.assertEqual(status, expected)
+                    manifest = json.loads(args.output.read_text())
+                    self.assertEqual(manifest["experiment"]["aidash"], source)
+                    self.assertEqual(manifest["experiment"]["harness"]["source_provenance"], "operator-attestation")
+        for tampered in (dict(source, dirty=True), dict(source, server_revision="bad"),
+                         dict(source, commit="a" * 7)):
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "clean full commit"):
+                evaluation.validate_source_attestation(tampered, approval, source["commit"])
 
     def test_no_dropped_runs_rule_applies_when_spend_is_set(self):
         call, _ = self.live_node()
