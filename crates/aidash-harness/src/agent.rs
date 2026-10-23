@@ -833,7 +833,7 @@ impl<'a> Executor<'a> {
 			}
 			_ => None,
 		};
-		if let Some(text) = cached {
+		if let Some(text) = cached.filter(|_| !step_scored_sources(run, &["skills"])) {
 			// Semantic content has its own key; recheck only the Skill authority.
 			match self
 				.environment
@@ -900,7 +900,16 @@ impl<'a> Executor<'a> {
 			.transpose()?
 			.flatten()
 			.cloned();
-		if let Some(content) = cached {
+		if let Some(content) = cached.filter(|_| {
+			!step_scored_sources(
+				run,
+				&[
+					"semantic_memory",
+					"conversation_memory",
+					"workspace_retrieval",
+				],
+			)
+		}) {
 			match self
 				.environment
 				.recheck_source_observation(run, &content)
@@ -1237,14 +1246,18 @@ impl<'a> Executor<'a> {
                     record_source_read(store,run,token,"resident_skills",&read).await?;
                     source_skill_context=read.result?.and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default();
                 }
+                let mut source_instruction_slots=std::collections::BTreeMap::<String,[usize;2]>::new();
                 let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
 				if let Some(selection) = &exposure {
+                    source_instruction_slots.insert("resident_skills".into(),[instructions.len(),instructions.len()+source_skill_context.len()]);
 					instructions.push_str(&source_skill_context);
 					instructions.push_str(&selection.index);
 				} else {
                     let registry_read=self.environment.context_source(ContextSourceRead::RegistrySkills {run},token).await;
                     record_source_read(store,run,token,"registry_skills",&registry_read).await?;
-                    instructions.push_str(registry_read.result?.as_ref().and_then(Value::as_str).unwrap_or_default());
+                    let registry_text=registry_read.result?.and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default();
+                    source_instruction_slots.insert("registry_skills".into(),[instructions.len(),instructions.len()+registry_text.len()]);
+                    instructions.push_str(&registry_text);
 					if tools.contains_key("skill_list") && home.has_local_authority()
 					{
 						source_skill_context = if ordered {
@@ -1252,6 +1265,7 @@ impl<'a> Executor<'a> {
 							ordered_skill = skill;
 							text
 						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { read_skill_source(self.environment, run, token).await? };
+						source_instruction_slots.insert("skills".into(),[instructions.len(),instructions.len()+source_skill_context.len()]);
 						instructions.push_str(&source_skill_context);
 					}
 				}
@@ -1764,7 +1778,7 @@ impl<'a> Executor<'a> {
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
-				let source_delivery = fit_source_delivery(&context,&request,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
+				let source_delivery = fit_source_delivery(&context,&request,&source_instruction_slots,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
                 let source_request_digest=aidash_domain::registry::rules::digest(&serde_json::to_value(&request)?);
                 let request_estimate = request.request_estimate();
 				let request_tokens = request_estimate.tokens as usize;
@@ -3714,10 +3728,11 @@ fn copy_source_records(from: &Context, to: &mut Context) {
 fn fit_source_delivery(
 	context: &Context,
 	request: &aidash_domain::provider::ModelRequest,
+	instruction_slots: &std::collections::BTreeMap<String, [usize; 2]>,
 	remote: bool,
 ) -> Result<aidash_application::context::source::FittedSources> {
 	use context::source::*;
-	let rendered = serde_json::to_value(request)?;
+
 	let candidates = context
 		.source_contributions
 		.iter()
@@ -3735,57 +3750,96 @@ fn fit_source_delivery(
 		.collect();
 	aidash_application::context::source::fit_with(candidates, |items| {
 		Ok(items.iter().all(|item| {
-			source_in_request(
-				&rendered,
-				item.identity.item.split('/').next().unwrap_or_default(),
-				&item.content,
-			)
+			let Some(original) = context
+				.source_contributions
+				.iter()
+				.find(|original| original.identity == item.identity)
+			else {
+				return false;
+			};
+			let Some(placement) = &original.placement else {
+				return false;
+			};
+			if placement.slot.ends_with("skills") {
+				let Some([start, end]) = instruction_slots.get(&placement.slot).copied() else {
+					return false;
+				};
+				let Some(text) = request.instructions.get(start..end) else {
+					return false;
+				};
+				return text_placement(text, &placement.pointer) == item.content.as_str();
+			}
+			request_source_slot(request, &placement.slot)
+				.and_then(|slot| slot.pointer(&placement.pointer).cloned())
+				.as_ref() == Some(&item.content)
 		}))
 	})
 }
-fn source_in_request(value: &Value, slot: &str, expected: &Value) -> bool {
+fn text_placement<'a>(text: &'a str, pointer: &str) -> Option<&'a str> {
+	let (start, end) = pointer.strip_prefix("/@text/")?.split_once('/')?;
+	text.get(start.parse().ok()?..end.parse().ok()?)
+}
+fn request_source_slot(
+	request: &aidash_domain::provider::ModelRequest,
+	slot: &str,
+) -> Option<Value> {
+	use aidash_domain::provider::ModelContext;
 	let key = if slot == "references" {
 		"reference_documents"
 	} else {
 		slot
 	};
-	match value {
-		Value::Object(fields) => {
-			fields
-				.get(key)
-				.is_some_and(|content| contains_source_value(content, expected))
-				|| fields
-					.values()
-					.any(|value| source_in_request(value, slot, expected))
+	match &request.context {
+		ModelContext::Legacy(context) => context.get("current")?.get(key).cloned(),
+		ModelContext::Ordered(context) => {
+			serde_json::from_str::<Value>(if key == "reference_documents" {
+				&context.stable
+			} else {
+				&context.volatile
+			})
+			.ok()?
+			.get(key)
+			.cloned()
 		}
-		Value::Array(values) => values
-			.iter()
-			.any(|value| source_in_request(value, slot, expected)),
-		Value::String(text) => {
-			if slot.ends_with("skills")
-				&& expected
-					.as_str()
-					.is_some_and(|source| !source.is_empty() && text.contains(source))
-			{
-				return true;
+		ModelContext::Native(context) => {
+			if key == "reference_documents" {
+				context
+					.attachments
+					.iter()
+					.find(|envelope| {
+						envelope.source
+							== aidash_domain::projection::native::Source::ReferenceDocuments
+					})
+					.map(|envelope| envelope.content.clone())
+			} else {
+				serde_json::from_str::<Value>(&context.volatile)
+					.ok()?
+					.get(key)
+					.cloned()
 			}
-			serde_json::from_str::<Value>(text)
-				.ok()
-				.filter(|decoded| !decoded.is_string())
-				.is_some_and(|decoded| source_in_request(&decoded, slot, expected))
 		}
-		_ => false,
 	}
 }
-fn contains_source_value(value: &Value, expected: &Value) -> bool {
-	value == expected
-		|| match value {
-			Value::Object(fields) => fields
-				.values()
-				.any(|value| contains_source_value(value, expected)),
-			Value::Array(values) => values
+
+fn step_scored_sources(run: &Run, operations: &[&str]) -> bool {
+	use context::source::{PinPolicy, Volatility};
+	run.context
+		.binding_snapshot
+		.as_ref()
+		.is_some_and(|snapshot| {
+			snapshot
+				.bindings
 				.iter()
-				.any(|value| contains_source_value(value, expected)),
-			_ => false,
-		}
+				.filter(|binding| binding.excluded_reason.is_none())
+				.filter_map(|binding| binding.definition.config.get("context_source"))
+				.filter_map(|config| {
+					serde_json::from_value::<context::source::SourceDeclaration>(config.clone())
+						.ok()
+				})
+				.any(|declaration| {
+					operations.contains(&declaration.operation.as_str())
+						&& declaration.volatility == Volatility::Step
+						&& matches!(declaration.pin, PinPolicy::Scored { .. })
+				})
+		})
 }
