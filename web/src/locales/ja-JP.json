@@ -509,6 +509,7 @@
   "testProfilesHelp": "プロファイルを使うと、エージェントのテストが Tool の本番 endpoint ではなく読み取り専用のテスト用 endpoint を呼びます。read_only_verified は、endpoint を自分で確認してから設定してください。テスト用 endpoint は公開アドレスにだけ接続します。Deployment が origin を許可した場合は例外です。",
   "testProfileId": "プロファイル",
   "testProfileNew": "新しいプロファイル",
+  "testProfileRulesArray": "ルールは有効なJSON配列で入力してください。",
   "testProfileRules": "ルール (JSON)",
   "testProfileSave": "プロファイルを保存",
   "workbenchTests": "Workbench のテスト",
