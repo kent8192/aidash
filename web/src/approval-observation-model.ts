@@ -99,6 +99,10 @@ export type ObservationReport = {
       model: string | null;
       hosts: string[];
       effective_threshold: string;
+      served_models: string[];
+      served_hosts: string[];
+      includes_unknown_model: boolean;
+      includes_unknown_host: boolean;
     };
     metrics: ObservationMetrics;
   }[];

@@ -148,6 +148,10 @@ async function observationAdmin(
               model: "typesafe/jev-1.14",
               hosts: ["typesafe"],
               effective_threshold: "3fe0000000000000",
+              served_models: ["verified-served-model"],
+              served_hosts: [],
+              includes_unknown_model: false,
+              includes_unknown_host: true,
             },
             metrics: metrics(),
           })),
@@ -221,6 +225,14 @@ test("aggregate report shows five kinds, 2x2, missingness and zero-denominator N
     .click();
   await expect(report).toContainText("Missing observations");
   await expect(report).toContainText("Unavailable observations");
+  const generation = report
+    .locator("details")
+    .filter({ has: page.locator("summary", { hasText: "Generation" }) });
+  await generation.locator(":scope > summary").click();
+  await expect(generation).toContainText("Actually served models");
+  await expect(generation).toContainText("verified-served-model");
+  await expect(generation).toContainText("Actually served hosts");
+  await expect(generation).toContainText("Unknown");
   const before = state.reports();
   await report.getByLabel("Start date (UTC, inclusive)").fill("2026-01-01");
   await report.getByLabel("End date (UTC, exclusive)").fill("2026-03-01");

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Disclosure, Facts, Hint, Loading } from "./components/patterns";
+import { Badge as Tag } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -203,7 +204,9 @@ export function ApprovalObservation({
                 items={[
                   ["Route", `${route.route + 1} · ${route.provider_contract}`],
                   [
-                    ja ? "モデル・ホスト" : "Model and hosts",
+                    ja
+                      ? "要求したモデル・許可したホスト"
+                      : "Requested model and allowed hosts",
                     `${route.model} · ${route.hosts.join(", ")}`,
                   ],
                   [
@@ -681,9 +684,27 @@ export function ApprovalObservationReportPanel({ tenant }: { tenant: string }) {
                   ["Route", group.route === null ? "N/A" : group.route + 1],
                   [
                     ja
-                      ? "プロバイダー・モデル・ホスト"
-                      : "Provider, model and hosts",
+                      ? "プロバイダー・要求したモデル・許可したホスト"
+                      : "Provider, requested model and allowed hosts",
                     `${group.provider_contract ?? "N/A"} · ${group.model ?? "N/A"} · ${group.hosts.join(", ")}`,
+                  ],
+                  [
+                    ja ? "実際に応答したモデル" : "Actually served models",
+                    <span className="flex flex-wrap items-center gap-1">
+                      {(group.served_models ?? []).join(", ")}
+                      {group.includes_unknown_model !== false && (
+                        <Tag tone="warning">{ja ? "不明" : "Unknown"}</Tag>
+                      )}
+                    </span>,
+                  ],
+                  [
+                    ja ? "実際に応答したホスト" : "Actually served hosts",
+                    <span className="flex flex-wrap items-center gap-1">
+                      {(group.served_hosts ?? []).join(", ")}
+                      {group.includes_unknown_host !== false && (
+                        <Tag tone="warning">{ja ? "不明" : "Unknown"}</Tag>
+                      )}
+                    </span>,
                   ],
                   [
                     ja ? "有効なしきい値" : "Effective threshold",
