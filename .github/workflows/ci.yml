@@ -7,17 +7,61 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
+  # Every development line shares one slot. A newer push or manual run replaces
+  # both the running and pending full development CI, while PRs stay independent.
+  group: ci-${{ startsWith(github.ref, 'refs/heads/develop/') && 'develop' || github.ref }}
   cancel-in-progress: true
 env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
 jobs:
+  scope:
+    name: CI scope and release verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - name: Select full CI or exact release verification
+        id: scope
+        env:
+          CI_MODE: ${{ github.ref == 'refs/heads/main' && 'main' || (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/')) && 'release' || 'full' }}
+        run: printf 'mode=%s\n' "$CI_MODE" >> "$GITHUB_OUTPUT"
+      - name: Check out the protected verification code
+        if: steps.scope.outputs.mode != 'full'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.repository.default_branch || github.sha }}
+          persist-credentials: false
+      - name: Verify the original CI and unchanged release tree
+        if: steps.scope.outputs.mode != 'full'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_MODE: ${{ steps.scope.outputs.mode }}
+          DEVELOP_BRANCH: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').develop_branch }}
+          RELEASE_APP_BOT_LOGIN: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').release_app_bot_login }}
+        run: python3 infra/gcp/control/releases.py verify-ci
   gcp-infrastructure:
     name: GCP infrastructure
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     uses: ./.github/workflows/gcp-check.yml
+  desktop:
+    name: Development desktop validation
+    needs: scope
+    # PRs retain the path-filtered Desktop workflow. Test the exact development
+    # source here so immutable releases can also reuse native platform evidence.
+    if: needs.scope.outputs.mode == 'full' && startsWith(github.ref, 'refs/heads/develop/') && github.event.repository.private == false
+    uses: ./.github/workflows/desktop.yml
   lint:
     name: Trunk
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -40,6 +84,8 @@ jobs:
           python3 scripts/check-role-terminology.py
   rust-lint:
     name: Rust Clippy (${{ matrix.workspace }})
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -83,6 +129,8 @@ jobs:
         run: cargo clippy --locked --manifest-path '${{ matrix.directory }}/Cargo.toml' --workspace --all-targets ${{ matrix.features }} -- -D warnings
   collaboration-ui:
     name: Collaboration browser tests
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -112,6 +160,8 @@ jobs:
           if-no-files-found: ignore
   rust-tests:
     name: Rust tests (${{ matrix.partition }}, ${{ matrix.shard }}/2)
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     # The slowest of 400 successful shards took 47 min (2026-10-17). A hang that
     # no test bound catches then fails here instead of at the 6 h limit (#320).
@@ -167,7 +217,8 @@ jobs:
           if-no-files-found: error
   rust-coverage:
     name: Rust coverage upload
-    needs: rust-tests
+    needs: [scope, rust-tests]
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -210,6 +261,8 @@ jobs:
           fail_ci_if_error: true
   enterprise:
     name: Enterprise workspace
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -244,6 +297,8 @@ jobs:
           cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
   community-export:
     name: Community export
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -255,6 +310,8 @@ jobs:
         run: scripts/check-community-export.sh
   community-bundle:
     name: Community web bundle
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -277,6 +334,8 @@ jobs:
         run: python3 scripts/check-community-bundle.py web/dist
   enterprise-web:
     name: Enterprise web
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -322,6 +381,8 @@ jobs:
           if-no-files-found: ignore
   infrastructure-tests:
     name: Infrastructure contract tests
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -349,6 +410,8 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_helm_execution.py
   acceptance:
     name: Federation tests
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     # Cold builds and crash recovery precede the serial golden path scenarios.
     timeout-minutes: 360
@@ -378,6 +441,8 @@ jobs:
         run: docker compose down
   browser:
     name: Browser tests
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     # A golden path failure must not hide the browser suite, so it runs against the setup alone.
     timeout-minutes: 360
@@ -407,6 +472,8 @@ jobs:
         run: docker compose down
   bruno:
     name: Bruno API contracts
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -445,7 +512,9 @@ jobs:
     name: CI Success
     needs:
       [
+        scope,
         gcp-infrastructure,
+        desktop,
         lint,
         rust-lint,
         collaboration-ui,
@@ -462,21 +531,30 @@ jobs:
       ]
     # `always()` stays true after cancellation, so a run superseded by a newer head
     # kept this job queued. `!cancelled()` still runs after failed or skipped
-    # prerequisites, which the result check below rejects.
+    # prerequisites. Only verified releases may skip the full suite below.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 5
     steps:
-      - name: Require every prerequisite job to pass
+      - name: Require full CI or authenticated release verification
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          DEVELOP_DESKTOP_CI: ${{ startsWith(github.ref, 'refs/heads/develop/') && github.event.repository.private == false }}
         run: |
           python3 - <<'PY'
           import json
           import os
           needs = json.loads(os.environ["NEEDS_JSON"])
-          failed = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          scope = needs.pop("scope", {})
+          mode = scope.get("outputs", {}).get("mode")
+          if scope.get("result") != "success" or mode not in {"full", "release", "main"} or not needs:
+              raise SystemExit("CI scope and release verification did not succeed")
+          failed = {}
+          for name, job in needs.items():
+              required = mode == "full" and (name != "desktop" or os.environ["DEVELOP_DESKTOP_CI"] == "true")
+              if job["result"] != ("success" if required else "skipped"):
+                  failed[name] = job["result"]
           if failed:
               raise SystemExit(f"Required CI jobs did not succeed: {failed}")
-          print("All required CI jobs passed.")
+          print(f"Required CI passed ({mode}).")
           PY

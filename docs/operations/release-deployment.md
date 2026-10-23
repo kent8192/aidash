@@ -39,17 +39,30 @@ deployments before authorizing their retry; mail retries do not redeploy.
 2. After CI succeeds for S, **GCP environments** deploys S to the shared
    `develop` staging environment. Newer development commits supersede older
    candidates; a successful older run cannot publish readiness for a newer one.
+   All `develop/**` full CI runs share one concurrency group with
+   `cancel-in-progress: true`: the newest push or manual run cancels the older
+   running and pending development CI. Ordinary application PRs retain full CI
+   and their own concurrency groups. Development CI includes the reusable
+   Desktop workflow's native platform checks on the exact source S; application
+   PRs keep their existing path-filtered Desktop workflow.
 3. In parallel, **Release PR** creates a Draft PR from the immutable
    `release/<UTC timestamp>-<S prefix>` branch into `main`, using the release
    GitHub App. One current managed release PR remains open. A newer candidate
    closes only older managed PRs and never rewrites their branches.
+   Release PR CI verifies the App provenance, the exact successful development
+   CI run and equality of the source and PR merge trees. It skips the full test,
+   lint, coverage and desktop matrices; staging remains an independent required
+   check and the PR stays a draft while staging is pending.
 4. Verify staging behavior and the candidate SHA. The App publishes **Staging
    deployment** only after validating the original sanitized staging artifact,
    exact source CI and current protected development head. It then marks the
    matching Draft PR ready. Require **CI Success** and **Staging deployment**
    from their expected integrations before a human merges the release PR.
-5. Production accepts the actual current protected `main` merge SHA **M** only
-   after its exact CI succeeds. It verifies the human-merged managed release PR,
+5. Main CI checks that **M** is a human-merged managed release PR with the same
+   tree as S, the original successful development CI and the release App's
+   successful staging check. It skips the full suite. Production accepts the
+   actual current protected `main` merge SHA M only after this exact lightweight
+   CI succeeds. It independently verifies the human-merged managed release PR,
    staging evidence and `tree(M) == tree(S)`, then deploys the original tested
    eight-image digest bundle. A successful production readiness check queues
    the production notification.

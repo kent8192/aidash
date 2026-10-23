@@ -1,6 +1,7 @@
 //! Persistent agent_incident_events records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -13,8 +14,13 @@ pub struct AgentIncidentEvent {
 	pub id: i64,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub incident_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "agent_incident_events_incident_id_fkey",
+		db_index = false
+	)]
+	pub incident: ForeignKeyField<crate::apps::registry::workbench::models::AgentIncident>,
 	#[field(field_type = "text")]
 	pub actor: String,
 	#[field]

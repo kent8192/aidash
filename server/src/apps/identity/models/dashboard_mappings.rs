@@ -1,5 +1,6 @@
 //! Persistent dashboard_mappings records.
 
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -10,14 +11,23 @@ use uuid::Uuid;
 pub struct DashboardMapping {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
-	#[field]
-	pub identity_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		db_constraint = "dashboard_mappings_identity_id_fkey",
+		db_index = false
+	)]
+	pub identity: ForeignKeyField<crate::apps::identity::models::DashboardIdentity>,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field(field_type = "text")]
 	pub subject: String,
-	#[field]
-	pub credential_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "dashboard_mappings_credential_id_fkey",
+		db_index = false
+	)]
+	pub credential: ForeignKeyField<crate::apps::identity::models::AuthorizationCredential>,
 	#[field(default = true)]
 	pub enabled: bool,
 	#[field(default = 1)]

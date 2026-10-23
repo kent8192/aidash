@@ -2,6 +2,7 @@
 
 use crate::apps::workspaces::services::states::ConversationTargetKind;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -12,8 +13,13 @@ pub struct Conversation {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "conversations_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 	#[field(field_type = "text")]
 	pub target: String,
 	#[field(field_type = "text", max_length = 64)]
@@ -34,6 +40,7 @@ impl crate::database::Record for Conversation {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
+			workspace: ForeignKeyField::new(),
 			target: row.try_get("target")?,
 			target_kind,
 			created_at: row.try_get("created_at")?,

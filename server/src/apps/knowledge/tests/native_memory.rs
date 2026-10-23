@@ -3316,10 +3316,10 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	tx.commit().await.unwrap();
 	let execution = aidash_server::apps::identity::models::AuthorizationExecution::build()
 		.run_id(id)
-		.task_id(task.id)
-		.workspace_id(workspace)
+		.task(task.id)
+		.workspace(workspace)
 		.tenant("acme")
-		.credential_id(credential.credential.id)
+		.credential(credential.credential.id)
 		.root_subject("alice")
 		.subject_chain(vec![
 			"alice".into(),

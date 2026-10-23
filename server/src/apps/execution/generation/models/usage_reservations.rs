@@ -170,7 +170,7 @@ impl GenerationUsage {
 			.tenant(tenant)
 			.request_id(request)
 			.attempt_id(attempt)
-			.run_id(run)
+			.run(run)
 			.reserved_tokens(amount)
 			.reported_tokens(None)
 			.finish();
