@@ -6,7 +6,7 @@ pub(super) fn migration() -> Migration {
         .add_operation(Operation::CreateTable {
             name: "memory_learning_discovery".into(),
             columns: vec![
-                ColumnDefinition::new("home", FieldType::Text).with_primary_key(true).with_not_null(true),
+                ColumnDefinition::new("deployment", FieldType::Text).with_primary_key(true).with_not_null(true),
                 ColumnDefinition::new("cursor_updated", FieldType::TimestampTz).with_not_null(true),
                 ColumnDefinition::new("cursor_id", FieldType::Uuid).with_not_null(true),
                 ColumnDefinition::new("cycle_before", FieldType::TimestampTz).with_not_null(true),

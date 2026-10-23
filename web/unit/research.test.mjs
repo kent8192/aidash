@@ -37,12 +37,12 @@ const registry = [
     config: {
       members: [
         {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "aidash.research.fixture.find",
           version: "1.0.0",
         },
         {
-          registry_node: "aidash://home",
+          registry_deployment: "aidash://home",
           id: "aidash.research.fixture.search",
           version: "1.0.0",
         },
@@ -105,12 +105,12 @@ test("a bundle Binding exposes only its selected members, nested bundles whole",
       config: {
         members: [
           {
-            registry_node: "aidash://home",
+            registry_deployment: "aidash://home",
             id: "research-fixture",
             version: "1.0.0",
           },
           {
-            registry_node: "aidash://home",
+            registry_deployment: "aidash://home",
             id: "aidash.research.page.fetch",
             version: "1.0.0",
           },
@@ -207,7 +207,7 @@ test("a binding qualified with another Registry node never resolves a local entr
     {
       kind: "tool",
       target: {
-        registry_node: "aidash://peer",
+        registry_deployment: "aidash://peer",
         id: "aidash.research.page.fetch",
         version: "1.0.0",
       },
@@ -218,7 +218,7 @@ test("a binding qualified with another Registry node never resolves a local entr
     {
       kind: "tool",
       target: {
-        registry_node: "aidash://home",
+        registry_deployment: "aidash://home",
         id: "aidash.research.page.fetch",
         version: "1.0.0",
       },

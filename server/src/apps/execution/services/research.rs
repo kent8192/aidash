@@ -400,7 +400,8 @@ impl Tool for ResearchTool {
 						.definitions
 						.iter()
 						.find(|definition| {
-							definition.identity.registry_node == snapshot.agent.registry_node
+							definition.identity.registry_deployment
+								== snapshot.agent.registry_deployment
 								&& definition.identity.local() == agent.model
 						})
 						.ok_or(Error::Forbidden)?

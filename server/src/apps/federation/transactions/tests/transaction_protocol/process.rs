@@ -57,10 +57,6 @@ impl Server {
 				directory.path(),
 				0,
 			))
-			.env(
-				"AIDASH_SECRET_TEST_PEER",
-				"local-peer-regression-test-token-0123456789",
-			)
 			.env("RUST_LOG", "off")
 			.env("AIDASH_API_RATE_BURST", "100000")
 			.env("AIDASH_AUTH_RATE_BURST", "100000")
@@ -95,7 +91,7 @@ impl Server {
 			process: command.spawn().unwrap_or_else(|error| {
 				panic!(
 					"spawn {} on {}: {error}",
-					node.f.config.node_id, node.listen
+					node.f.config.deployment, node.listen
 				)
 			}),
 			directory,
@@ -121,7 +117,7 @@ async fn healthy(node: &Node, server: &mut Server, stage: &str) {
 			assert!(
 				exited.is_none(),
 				"server {} pid {} on {} exited {exited:?} during {stage}: {}",
-				node.f.config.node_id,
+				node.f.config.deployment,
 				server.process.id(),
 				node.listen,
 				server.log()
@@ -144,7 +140,7 @@ async fn healthy(node: &Node, server: &mut Server, stage: &str) {
 	assert!(
 		ready.is_ok(),
 		"server startup timed out at {stage} for {} on {}: {}",
-		node.f.config.node_id,
+		node.f.config.deployment,
 		node.listen,
 		server.log()
 	);

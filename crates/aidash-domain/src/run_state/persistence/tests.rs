@@ -7,7 +7,7 @@ use uuid::Uuid;
 fn run() -> Run {
 	serde_json::from_value::<RawRun>(json!({
         "id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
-        "home_node":"aidash://home","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE",
+        "node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE",
         "step":4,"revision":7,"observed_input_seq":9,"ledger_worker_ready":true,"error":"saved diagnostic",
         "lease_owner":Uuid::from_u128(5),"lease_until":"2030-01-01T00:00:00Z","updated_at":"2030-01-01T00:00:00Z",
         "context":Context::default(),"pending":{"state_version":1,"data":{},"recovery":{"retry":{"count":3,"at":"2030-01-01T00:00:00Z"},"lease_recovered":true}}

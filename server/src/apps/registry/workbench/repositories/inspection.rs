@@ -54,7 +54,7 @@ impl Scope {
 #[async_trait]
 impl InspectionRepository for Repository<'_> {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn InspectionScope + '_>> {
 		let lease = match &self.actor {

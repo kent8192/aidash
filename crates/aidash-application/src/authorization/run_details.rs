@@ -24,7 +24,7 @@ pub async fn visible(repository: &dyn RunDetailsRepository, id: Uuid) -> Result<
 pub async fn visible_in(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<RunInspection> {
 	let raw = scope.run(id).await?.ok_or(Error::Forbidden)?;
 	let run = raw.inspect();
-	if run.home_node == scope.node_id() {
+	if run.is_local(scope.node_id()) {
 		let workspace = scope.workspace(run.workspace_id).await?;
 		scope.set_context(workspace.attributes.clone());
 		scope.require(&workspace, "workspace.read").await?;

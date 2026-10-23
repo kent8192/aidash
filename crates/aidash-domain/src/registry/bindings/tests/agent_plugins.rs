@@ -22,7 +22,7 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 
 fn qualified(id: &str) -> QualifiedRef {
 	QualifiedRef {
-		registry_node: NODE.into(),
+		registry_deployment: NODE.into(),
 		id: id.into(),
 		version: "1.0.0".into(),
 	}

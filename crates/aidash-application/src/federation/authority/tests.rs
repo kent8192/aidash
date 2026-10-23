@@ -1,5 +1,5 @@
 use super::*;
-use aidash_domain::{federation::Peer, semantic::Failure};
+use aidash_domain::{federation::route::Route, semantic::Failure};
 use async_trait::async_trait;
 use rstest::rstest;
 use serde_json::json;
@@ -72,18 +72,12 @@ struct Sources {
 }
 #[async_trait]
 impl Peers for Sources {
-	async fn peer(&self, node: &str) -> Result<Peer> {
+	async fn route(&self, node: &str) -> Result<Route> {
 		self.log.lock().unwrap().push(format!("trust:{node}"));
 		if self.denied {
 			return Err(Error::Forbidden);
 		}
-		Ok(Peer {
-			node_id: node.into(),
-			endpoint: "http://peer".into(),
-			credential_env: "peer-key".into(),
-			protocol_version: "0.1".into(),
-			enabled: true,
-		})
+		Ok(crate::test_support::foreign_route(node))
 	}
 }
 struct Wire {
@@ -92,12 +86,12 @@ struct Wire {
 }
 #[async_trait]
 impl Transport for Wire {
-	async fn request(&self, peer: &Peer, path: &str, body: &Value) -> Result<Reply> {
+	async fn request(&self, route: &Route, path: &str, body: &Value) -> Result<Reply> {
 		assert_eq!(body, &json!({"grant_id":"grant"}));
 		self.log
 			.lock()
 			.unwrap()
-			.push(format!("request:{}:{path}", peer.node_id));
+			.push(format!("request:{}:{path}", route.target.deployment));
 		Ok(Reply {
 			body: Ok(self.body.clone()),
 			..reply(200)

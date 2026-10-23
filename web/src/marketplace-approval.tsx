@@ -12,6 +12,7 @@ import type {
 } from "./generated/models";
 import { Button } from "./components/ui/button";
 import { ApiError } from "./transport";
+import { useNodes } from "./nodes";
 import { Panel, useI18n } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
@@ -44,9 +45,12 @@ export function ApprovalSetReview({
   const [review, setReview] = useState<ApprovalSet>();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  // An activation is decided against the default Node's Catalog Approvals.
+  const { home } = useNodes();
   const catalog = useQuery({
-    queryKey: [...context, "review-catalog"],
-    queryFn: () => authorizationCatalog(encodeURIComponent(tenant)),
+    queryKey: [...context, "review-catalog", home?.name],
+    queryFn: () => authorizationCatalog(tenant, { node: home!.name }),
+    enabled: home !== undefined,
     retry: false,
     staleTime: 0,
     refetchOnWindowFocus: false,

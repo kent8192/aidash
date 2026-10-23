@@ -72,12 +72,11 @@ for (const context of [
         await route.fulfill({
           json: {
             access: subject,
-            node: {
+            deployment: {
               id: "aidash://test",
               endpoint: "http://localhost",
               protocol_version: "0.1",
-              capabilities: [],
-              clusters: [],
+              key: null,
             },
             registry: [
               model,
@@ -98,11 +97,8 @@ for (const context of [
             conversations: [],
             human_requests: [],
             installations: [],
-            peers: [],
           },
         });
-      } else if (path === "/api/mesh") {
-        await route.fulfill({ json: { nodes: [], errors: [] } });
       } else if (path === "/api/discover") {
         await route.fulfill({ json: { agents: [], errors: [] } });
       } else if (path === "/api/generation/fixture-tenant/policies") {
@@ -202,7 +198,7 @@ for (const context of [
               {
                 kind: context.kind,
                 target: {
-                  registry_node: "aidash://test",
+                  registry_deployment: "aidash://test",
                   id: "fixture-skill",
                   version: "1.0.0",
                 },

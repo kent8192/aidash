@@ -193,7 +193,7 @@ async fn private_digest(
 		serde_json::from_value(entry.config.clone())?;
 	for binding in config.bindings.iter().filter(|b| {
 		b.kind == aidash_domain::registry::bindings::BindingKind::Source
-			&& b.target.registry_node == node
+			&& b.target.registry_deployment == node
 	}) {
 		let source = scope
 			.definition(&binding.target.id, &binding.target.version)

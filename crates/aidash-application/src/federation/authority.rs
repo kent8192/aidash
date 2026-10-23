@@ -21,8 +21,8 @@ impl Client {
 		body: &Value,
 	) -> Result<T> {
 		let reply = async {
-			let peer = self.peers.peer(node).await?;
-			self.transport.request(&peer, path, body).await
+			let route = self.peers.route(node).await?;
+			self.transport.request(&route, path, body).await
 		}
 		.await
 		.map_err(|error| {

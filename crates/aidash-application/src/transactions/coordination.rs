@@ -42,7 +42,10 @@ impl Coordinator {
 	}
 
 	pub async fn decision(&self, manifest: &Manifest) -> Result<Status> {
-		let proof = if manifest.coordinator == self.repository.node_id() {
+		let proof = if aidash_domain::nodes::same_deployment(
+			&manifest.coordinator,
+			self.repository.node_id(),
+		) {
 			self.status(manifest.id).await?
 		} else {
 			self.transport.decision(manifest).await?

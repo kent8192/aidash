@@ -266,7 +266,7 @@ impl Authority for Gateway {
 						&& b.excluded_reason.is_none()
 				})
 				.ok_or(Error::Forbidden)?;
-			if binding.identity.registry_node != self.store.node_id {
+			if binding.identity.registry_deployment != self.store.deployment.as_str() {
 				return Err(Error::Forbidden);
 			}
 			let current = crate::authorization::catalog::entry(

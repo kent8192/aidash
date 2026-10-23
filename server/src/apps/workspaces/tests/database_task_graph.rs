@@ -25,7 +25,7 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://graph".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://graph").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -91,7 +91,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://graph".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://graph").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -167,7 +167,7 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://graph".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://graph").unwrap(),
 	)
 	.await
 	.unwrap();
@@ -247,7 +247,7 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),
-		"aidash://graph".into(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://graph").unwrap(),
 	)
 	.await
 	.unwrap();

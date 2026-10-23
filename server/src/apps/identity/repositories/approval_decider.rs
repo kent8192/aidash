@@ -122,11 +122,12 @@ pub(crate) fn is_approval_decider(entry: &Entry) -> bool {
 			.is_ok_and(|config| config.hook == Hook::Approval)
 }
 
-/// Whether the exact version holds an enabled Catalog Approval in the Tenant,
+/// Whether the exact version holds an enabled Catalog Approval on `node`,
 /// whatever any subject may do with it.
 pub(crate) async fn approved(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	reference: &EntityRef,
 ) -> crate::Result<bool> {
 	let column = |table: &str, name: &str| (Alias::new(table), Alias::new(name));
@@ -139,6 +140,7 @@ pub(crate) async fn approved(
 			Expr::cust("r.tenant = c.tenant AND r.id = c.entry_id AND r.version = c.entry_version"),
 		)
 		.and_where(Expr::col(column("c", "tenant")).eq(Expr::value(tenant.to_owned())))
+		.and_where(Expr::col(column("c", "node")).eq(Expr::value(node.as_str())))
 		.and_where(Expr::col(column("c", "entry_id")).eq(Expr::value(reference.id.clone())))
 		.and_where(
 			Expr::col(column("c", "entry_version")).eq(Expr::value(reference.version.clone())),
@@ -156,12 +158,13 @@ pub(crate) async fn approved(
 pub(crate) async fn availability(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	chosen: &Chosen,
 ) -> crate::Result<Availability> {
 	if registered(tx, &chosen.reference).await?.is_none() {
 		return Ok(Availability::Missing);
 	}
-	Ok(if approved(tx, tenant, &chosen.reference).await? {
+	Ok(if approved(tx, tenant, node, &chosen.reference).await? {
 		Availability::Usable
 	} else {
 		Availability::Unapproved

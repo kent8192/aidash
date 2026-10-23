@@ -129,7 +129,7 @@ impl ForeignRunReadScope for Scope {
 		self.source_executor_enabled = snapshot
 			.bundle
 			.subjects
-			.get("aidash://local/agents/a@1.0.0")
+			.get("aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0")
 			.map(|s| s.enabled);
 		let viewer = std::mem::replace(&mut self.snapshot, snapshot);
 		let viewer_subjects = std::mem::replace(&mut self.subjects, subjects);
@@ -185,7 +185,7 @@ impl ForeignSourceAuthority for Source<'_> {
 #[fixture]
 fn run() -> RunMetadata {
 	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
-        "home_node":"aidash://home","agent_id":"a","agent_version":"1.0.0","phase":"THINKING","control":"ACTIVE",
+        "node":"brave-otter-k3m9q2xa","home_node":"aidash://home","agent_id":"a","agent_version":"1.0.0","phase":"THINKING","control":"ACTIVE",
         "step":0,"revision":1,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2026-10-03T00:00:00Z"})).unwrap()
 }
 #[fixture]
@@ -201,7 +201,7 @@ fn scope(run: RunMetadata) -> Scope {
 	let description = Description {
 		grant_id: Uuid::from_u128(4),
 		source_node: run.home_node.clone(),
-		target_node: "aidash://local".into(),
+		target_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		source_tenant: "home-tenant".into(),
 		source_subject: "home-reader".into(),
 		task: Task {
@@ -222,7 +222,7 @@ fn scope(run: RunMetadata) -> Scope {
 			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],
-			node_id: "aidash://local".into(),
+			node_id: "aidash://local/brave-otter-k3m9q2xa".into(),
 			authority_digest: format!("sha256:{}", "a".repeat(64)),
 			agent: entry.clone(),
 			definitions: vec![Definition {
@@ -241,14 +241,17 @@ fn scope(run: RunMetadata) -> Scope {
 		semantic: Binding::Disabled { summarizer: None },
 	};
 	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"acme","subjects":{
-        "root":{"kind":"user"},"aidash://local/agents/a@1.0.0":{"kind":"agent"}}}))
+        "root":{"kind":"user"},"aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0":{"kind":"agent"}}}))
 	.unwrap();
 	Scope {
 		calls: vec![],
 		now,
 		record: Some(AdmissionEvidence {
 			credential_id: Uuid::from_u128(9),
-			subjects: vec!["root".into(), "aidash://local/agents/a@1.0.0".into()],
+			subjects: vec![
+				"root".into(),
+				"aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0".into(),
+			],
 			description,
 		}),
 		mapped: Some(Uuid::from_u128(9)),
@@ -474,13 +477,13 @@ async fn terminal_generation_reads_require_the_exact_retirement_status_fence(
 		.source_snapshot
 		.bundle
 		.subjects
-		.get_mut("aidash://local/agents/a@1.0.0")
+		.get_mut("aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0")
 		.unwrap()
 		.enabled = false;
 	assert!(visible(&mut scope, &run).await.unwrap());
 	assert_eq!(scope.terminal_statuses, statuses);
 	assert_eq!(scope.source_executor_enabled, Some(true));
-	assert!(!scope.source_snapshot.bundle.subjects["aidash://local/agents/a@1.0.0"].enabled);
+	assert!(!scope.source_snapshot.bundle.subjects["aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0"].enabled);
 	assert!(!scope.calls.iter().any(|c| c == "current-definition"));
 	restored(&scope);
 }
@@ -509,14 +512,14 @@ async fn retirement_cannot_enable_an_unrelated_subject(
 				.source_snapshot
 				.bundle
 				.subjects
-				.remove("aidash://local/agents/a@1.0.0");
+				.remove("aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0");
 		}
 		"kind" => {
 			scope
 				.source_snapshot
 				.bundle
 				.subjects
-				.get_mut("aidash://local/agents/a@1.0.0")
+				.get_mut("aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0")
 				.unwrap()
 				.kind = SubjectKind::User
 		}

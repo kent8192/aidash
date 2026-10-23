@@ -90,7 +90,7 @@ async fn descriptor_authorization_accepts_only_lowered_concurrency(
 	// Binding restriction or a Run pinned before the declaration leaves it.
 	let node = "aidash://local";
 	let identity = QualifiedRef {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		id: repository.catalog.id.clone(),
 		version: repository.catalog.version.clone(),
 	};
@@ -225,6 +225,7 @@ fn reference() -> EntityRef {
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
 		workspace_id: id(3),
@@ -1215,12 +1216,12 @@ async fn malformed_registry_skill_keeps_the_original_invalid_json_message(
 fn asset_snapshot(repository: &mut Repository, run: &RunMetadata) -> String {
 	let node = run.home_node.as_str();
 	let skill = QualifiedRef {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		id: reference().id,
 		version: reference().version,
 	};
 	let agent = QualifiedRef {
-		registry_node: node.into(),
+		registry_deployment: node.into(),
 		id: run.agent_id.clone(),
 		version: run.agent_version.clone(),
 	};

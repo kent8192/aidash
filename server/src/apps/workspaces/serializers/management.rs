@@ -14,6 +14,9 @@ pub(crate) struct WorkspaceInput {
 	#[serde(deserialize_with = "crate::apps::workspaces::services::validation::trimmed_text")]
 	#[validate(length(min = 1))]
 	pub(crate) goal: String,
+	/// The Node the Workspace belongs to. The Tenant's default Node when absent.
+	#[serde(default)]
+	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -45,4 +48,7 @@ pub(crate) struct ConversationInput {
 	pub(crate) goal: String,
 	pub(crate) target: EntityRef,
 	pub(crate) target_kind: String,
+	/// The Node the Workspace belongs to. The Tenant's default Node when absent.
+	#[serde(default)]
+	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
 }

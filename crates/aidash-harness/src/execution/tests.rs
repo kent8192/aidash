@@ -90,6 +90,7 @@ impl Scope {
 			blocked: false,
 			resume_failed: false,
 			run: Run {
+				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				id: leases.run,
 				task_id: Uuid::new_v4(),
 				workspace_id: Uuid::new_v4(),
@@ -382,6 +383,7 @@ impl TerminalRepository for Burst {
 async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) {
 	let burst = (0..24)
 		.map(|_| RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
 			workspace_id: Uuid::new_v4(),

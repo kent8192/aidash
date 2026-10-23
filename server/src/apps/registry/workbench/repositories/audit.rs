@@ -149,6 +149,7 @@ impl AuditScope for Scope {
 		.await?
 		.into_iter()
 		.map(|r| CatalogChange {
+			node: aidash_domain::nodes::NodeName::parse(&r.node).expect("stored Node name"),
 			revision: r.revision,
 			enabled: r.enabled,
 			actor: r.actor,

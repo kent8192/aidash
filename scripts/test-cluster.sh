@@ -56,7 +56,7 @@ PY
 chmod +x "$tools_dir/kind"
 created=true
 kind create cluster --name "$cluster" --kubeconfig "$KUBECONFIG" --image kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a --wait 180s
-helm lint deploy/helm/aidash --set node.id=aidash://acceptance --set existingSecret=acceptance
+helm lint deploy/helm/aidash --set deployment.id=aidash://acceptance --set existingSecret=acceptance
 export AIDASH_CLUSTER_SOURCE_MANIFEST="$PWD/private/platform/$cluster-source.json"
 python3 - <<'SOURCE_MANIFEST'
 import hashlib,json,os,pathlib,subprocess,datetime

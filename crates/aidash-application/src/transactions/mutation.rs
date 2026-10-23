@@ -1,16 +1,17 @@
 //! Apply local manifest mutations and their events in the caller's original scope.
 use crate::{Error, Result, ports::transactions::mutation::MutationScope};
-use aidash_domain::transactions::{Manifest, Mutation, mutation as rules};
+use aidash_domain::transactions::{Manifest, Mutation, Participant, mutation as rules};
 use serde_json::json;
+
+/// The participant for a Node address.
+fn participant<'a>(manifest: &'a Manifest, address: &str) -> Result<&'a Participant> {
+	manifest.local(address).map_err(|_| Error::Forbidden)
+}
 
 /// Preparation and commit invoke this same workflow; storage alone owns the
 /// rollback-only savepoint and the visibility gate around the caller's transaction.
 pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifest) -> Result<()> {
-	for mutation in &manifest
-		.local(node)
-		.map_err(|_| Error::Forbidden)?
-		.mutations
-	{
+	for mutation in &participant(manifest, node)?.mutations {
 		match mutation {
 			Mutation::WorkspaceState {
 				workspace_id,
@@ -21,12 +22,7 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 					.replace_workspace(*workspace_id, *expected_revision, state.clone())
 					.await?;
 				scope
-					.append_event(
-						node,
-						Some(*workspace_id),
-						"workspace.updated",
-						json!(workspace),
-					)
+					.append_event(Some(*workspace_id), "workspace.updated", json!(workspace))
 					.await?;
 			}
 			Mutation::CompleteTask {
@@ -41,7 +37,7 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 				}
 				if let Some(executor) = scope.delegated_node(*task_id).await? {
 					rules::validate_delegated_completion(
-						manifest.local(&executor).map_err(|_| Error::Forbidden)?,
+						participant(manifest, &executor)?,
 						*task_id,
 					)?;
 				}
@@ -54,7 +50,6 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 				}
 				scope
 					.append_event(
-						node,
 						Some(task.workspace_id),
 						"task.completed",
 						json!({"task":saved,"artifact":created}),
@@ -74,14 +69,9 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 					return Err(Error::Conflict("run still has pending tools".into()));
 				}
 				let run = &raw.metadata;
-				rules::validate_home_completion(
-					manifest
-						.local(&run.home_node)
-						.map_err(|_| Error::Forbidden)?,
-					*task_id,
-				)?;
+				rules::validate_home_completion(participant(manifest, &run.home_node)?, *task_id)?;
 				scope.complete_run(*run_id).await?;
-				scope.append_event(node, (run.home_node == node).then_some(run.workspace_id), "run.completed", json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
+				scope.append_event(run.is_local(aidash_domain::nodes::deployment_of(node)).then_some(run.workspace_id), "run.completed", json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
 			}
 		}
 	}

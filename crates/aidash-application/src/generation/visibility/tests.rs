@@ -174,6 +174,7 @@ async fn foreign_request_requires_remote_task_and_generation_read_without_local_
 	#[case] decisions: usize,
 ) {
 	job.home_node = "aidash://home".into();
+	job.foreign_intent = Some(serde_json::json!({}));
 	scope.denied.insert(denied);
 	assert!(!visible(&mut scope, &job).await.unwrap());
 	assert_eq!(scope.decisions.len(), decisions);
@@ -196,6 +197,7 @@ async fn inherited_worker_context_survives_foreign_generation_visibility(
 	mut scope: Scope,
 ) {
 	job.home_node = "aidash://home".into();
+	job.foreign_intent = Some(serde_json::json!({}));
 	scope.inherited = true;
 	scope.context = json!({"workspace_id":job.workspace_id,"team":"leased"});
 	assert!(visible(&mut scope, &job).await.unwrap());
@@ -242,6 +244,7 @@ async fn native_local_reader_keeps_local_task_authority_even_with_a_home_marker(
 	#[case] gate: &'static str,
 ) {
 	job.home_node = "aidash://peer".into();
+	job.foreign_intent = Some(serde_json::json!({}));
 	match gate {
 		"missing_task" => scope.missing_task = true,
 		"task_visibility" => scope.task_visible = false,

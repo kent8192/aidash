@@ -58,7 +58,7 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- end -}}
 {{- if and (hasKey $g "auth_helper") (not (has $g.auth_helper (list "firebase" "public_origin"))) -}}{{ fail "gcip.settings auth_helper must be firebase or public_origin" }}{{- end -}}
 {{- if or (not (kindIs "string" $g.project_id)) (not $g.project_id) (not (kindIs "string" $g.web_api_key)) (not (trim $g.web_api_key)) (not (kindIs "map" $g.tenant_bindings)) -}}{{ fail "gcip.settings needs project_id, web_api_key and tenant_bindings" }}{{- end -}}
-{{- if or (not .Values.node.endpoint) (ne (toJson $g.public_origin) (toJson .Values.node.endpoint)) -}}{{ fail "gcip.settings public_origin must equal node.endpoint" }}{{- end -}}
+{{- if or (not .Values.deployment.endpoint) (ne (toJson $g.public_origin) (toJson .Values.deployment.endpoint)) -}}{{ fail "gcip.settings public_origin must equal deployment.endpoint" }}{{- end -}}
 {{- toJson $s -}}
 {{- end -}}
 

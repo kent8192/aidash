@@ -1,17 +1,20 @@
 //! Mapping statements retain policy-before-credential locks, revision fences and control-pool revocation.
 use crate::apps::identity::models::TenantAdministrator;
+use crate::apps::identity::repositories::node_registrations as registrations;
 use crate::apps::identity::serializers::peer::PeerMapping;
 use crate::{
 	Result as NativeResult,
 	authorization::{Authorization, access::Access, identity::SubjectIdentity},
 	federation::Federation,
 };
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::authorization::peer::mappings::{MappingAccess, MappingRepository, MappingWrite},
 };
 use aidash_domain::identity::peer_mapping::{Mapping, PeerMappingInput};
+use aidash_domain::nodes::{DeploymentId, NodeAddress, NodeName};
+use aidash_domain::tenancy::TenantName;
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, LockType, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
@@ -39,8 +42,8 @@ pub(crate) struct AccessScope {
 impl MappingRepository for Repository<'_> {
 	type Write = WriteScope;
 	type Access = AccessScope;
-	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+	fn deployment(&self) -> &DeploymentId {
+		&self.runtime.config.deployment
 	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<WriteScope> {
 		let result: NativeResult<WriteScope> = async {
@@ -72,40 +75,42 @@ impl MappingRepository for Repository<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn resolved(&self, node: &str, tenant: &str, subject: &str) -> Result<Option<Mapping>> {
-		let f = self.runtime;
+	async fn resolved(
+		&self,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
+		subject: &str,
+	) -> Result<Option<Mapping>> {
 		let result: NativeResult<Option<PeerMapping>> = async {
-			Ok({
-				let query_bind_1 = node;
-				let query_bind_2 = tenant;
-				let query_bind_3 = subject;
-				crate::database::native::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("authorization_peer_mappings"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(source_node = ? AND source_tenant = ? AND source_subject = ? AND enabled)"
-						.to_owned(),
-					vec![
-						Expr::value(query_bind_1.to_owned()).into(),
-						Expr::value(query_bind_2.to_owned()).into(),
-						Expr::value(query_bind_3.to_owned()).into(),
-					],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		// The source names its own Tenant; the local Tenant is found across
-		// Tenants until #241 gives every Node a Tenant.
-		.fetch_optional(f.store.pool.in_scope(&TenancyScope::Deployment(
-			DeploymentScopeReason::FederationInbound,
-		)))
-		.await?
-			})
+			crate::database::native::query_as(
+				&Query::select()
+					.expr(SimpleExpr::from(Expr::col(reinhardt::query::ColumnRef::Asterisk)))
+					.from(Alias::new("authorization_peer_mappings"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(tenant = ? AND node = ? AND source_node = ? AND source_subject = ? AND enabled)"
+							.to_owned(),
+						vec![
+							Expr::value(tenant.as_str().to_owned()).into(),
+							Expr::value(node.as_str().to_owned()).into(),
+							Expr::value(source.to_string()).into(),
+							Expr::value(subject.to_owned()).into(),
+						],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(
+				self.runtime
+					.store
+					.pool
+					.in_scope(&TenancyScope::Tenant(tenant.clone())),
+			)
+			.await
 		}
 		.await;
-		result.map(|row| row.map(Into::into)).map_err(Into::into)
+		result
+			.and_then(|row| row.map(Mapping::try_from).transpose())
+			.map_err(Into::into)
 	}
 	async fn credential_subject(&self, mapping: &Mapping) -> Result<Option<String>> {
 		let f = self.runtime;
@@ -157,6 +162,22 @@ impl MappingRepository for Repository<'_> {
 			Access::begin(&self.runtime.store, &identity).await
 		};
 		access
+			.map(|mut access| {
+				access.set_node(mapping.node.clone());
+				AccessScope {
+					access: Box::new(access),
+				}
+			})
+			.map_err(Into::into)
+	}
+	async fn begin_subject(
+		&self,
+		tenant: &TenantName,
+		subject: &str,
+		exclusive: bool,
+	) -> Result<AccessScope> {
+		Access::begin_subject(&self.runtime.store, tenant.as_str(), subject, exclusive)
+			.await
 			.map(|access| AccessScope {
 				access: Box::new(access),
 			})
@@ -215,11 +236,8 @@ impl MappingWrite for WriteScope {
 					&mut self.tx,
 					&snapshot,
 					aidash_domain::identity::tenant_administration::PEER_MAPPING_UPDATE,
-					&format!(
-						"{}/{}/{}",
-						input.source_node, input.source_tenant, input.source_subject
-					),
-					json!({"source_node": input.source_node, "subject": subject, "tenant": tenant}),
+					&format!("{}/{}", input.source_node, input.source_subject),
+					json!({"node": input.node.as_str(), "source_node": input.source_node.to_string(), "subject": subject, "tenant": tenant}),
 				)
 				.await?;
 			if input.enabled {
@@ -235,9 +253,15 @@ impl MappingWrite for WriteScope {
 	/// A mapped peer acts with an exportable credential only: never a
 	/// Mapping's own, and never one a member issued for itself, which would
 	/// let someone outside the Deployment act as that person.
-	async fn enabled_peer(&mut self, node: &str) -> Result<()> {
-		crate::apps::federation::peer::models::Peer::enabled_in(&mut self.tx, node)
+	async fn enabled_registration(
+		&mut self,
+		tenant: &str,
+		node: &NodeName,
+		source: &NodeAddress,
+	) -> Result<()> {
+		registrations::get_locked(&mut self.tx, tenant, node.as_str(), source, true)
 			.await?
+			.filter(|registration| registration.enabled)
 			.map(|_| ())
 			.ok_or(aidash_application::Error::Unauthorized)
 	}
@@ -279,152 +303,114 @@ impl MappingWrite for WriteScope {
 	}
 	async fn insert(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>> {
 		let result: NativeResult<Option<PeerMapping>> = async {
-			Ok({
-				let query_bind_1 = &input.source_node;
-				let query_bind_2 = &input.source_tenant;
-				let query_bind_3 = &input.source_subject;
-				let query_bind_4 = tenant;
-				let query_bind_5 = input.credential_id;
-				let query_bind_6 = input.enabled;
-				crate::database::native::query_as(
-					&Query::insert()
-						.into_table(Alias::new("authorization_peer_mappings"))
-						.columns([
-							Alias::new("source_node"),
-							Alias::new("source_tenant"),
-							Alias::new("source_subject"),
-							Alias::new("tenant"),
-							Alias::new("credential_id"),
-							Alias::new("enabled"),
-							Alias::new("revision"),
-							Alias::new("actor"),
-						])
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_6.to_owned()).into()],
-								))
-								.expr(Expr::cust("1"))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(self.actor.clone()).into()],
-								))
-								.to_owned(),
+			crate::database::native::query_as(
+				&Query::insert()
+					.into_table(Alias::new("authorization_peer_mappings"))
+					.columns(
+						[
+							"tenant",
+							"node",
+							"source_node",
+							"source_subject",
+							"credential_id",
+							"enabled",
+							"revision",
+							"actor",
+						]
+						.map(Alias::new),
+					)
+					.values_panic([
+						Expr::value(tenant.to_owned()),
+						Expr::value(input.node.as_str().to_owned()),
+						Expr::value(input.source_node.to_string()),
+						Expr::value(input.source_subject.clone()),
+						Expr::value(input.credential_id),
+						Expr::value(input.enabled),
+						Expr::value(1_i64),
+						Expr::value(self.actor.clone()),
+					])
+					.on_conflict(
+						OnConflict::columns(
+							["tenant", "node", "source_node", "source_subject"].map(Alias::new),
 						)
-						.on_conflict(
-							OnConflict::columns(["source_node", "source_tenant", "source_subject"])
-								.do_nothing()
-								.to_owned(),
-						)
-						.returning_all()
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&[
-					"source_node",
-					"source_tenant",
-					"source_subject",
-					"tenant",
-					"credential_id",
-					"enabled",
-					"revision",
-					"actor",
-				])
-				.fetch_optional(&mut *self.tx)
-				.await?
-			})
+						.do_nothing()
+						.to_owned(),
+					)
+					.returning_all()
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut *self.tx)
+			.await
 		}
 		.await;
-		result.map(|row| row.map(Into::into)).map_err(Into::into)
+		result
+			.and_then(|row| row.map(Mapping::try_from).transpose())
+			.map_err(Into::into)
 	}
 	async fn update(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>> {
-		let result:NativeResult<Option<PeerMapping>>=async {Ok({ let query_bind_1 = &input.source_node; let query_bind_2 = &input.source_tenant; let query_bind_3 = &input.source_subject; let query_bind_4 = tenant; let query_bind_5 = input.credential_id; let query_bind_6 = input.enabled; let query_bind_7 = input.expected_revision; crate::database::native::query_as(&Query::update().table(Alias::new("authorization_peer_mappings")).value_expr(Alias::new("credential_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("enabled"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("actor"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(self.actor.clone()).into()])).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(source_node = ? AND source_tenant = ? AND source_subject = ? AND tenant = ? AND revision = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut *self.tx).await? })}.await;
-		result.map(|row| row.map(Into::into)).map_err(Into::into)
+		let result: NativeResult<Option<PeerMapping>> = async {
+			crate::database::native::query_as(
+				&Query::update()
+					.table(Alias::new("authorization_peer_mappings"))
+					.value_expr(Alias::new("credential_id"), Expr::value(input.credential_id))
+					.value_expr(Alias::new("enabled"), Expr::value(input.enabled))
+					.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+					.value_expr(Alias::new("actor"), Expr::value(self.actor.clone()))
+					.value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(tenant = ? AND node = ? AND source_node = ? AND source_subject = ? AND revision = ?)"
+							.to_owned(),
+						vec![
+							Expr::value(tenant.to_owned()).into(),
+							Expr::value(input.node.as_str().to_owned()).into(),
+							Expr::value(input.source_node.to_string()).into(),
+							Expr::value(input.source_subject.clone()).into(),
+							Expr::value(input.expected_revision).into(),
+						],
+					))
+					.returning_all()
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut *self.tx)
+			.await
+		}
+		.await;
+		result
+			.and_then(|row| row.map(Mapping::try_from).transpose())
+			.map_err(Into::into)
 	}
 	async fn history(&mut self, mapping: &Mapping) -> Result<()> {
 		let result: NativeResult<()> = async {
-			{
-				let query_bind_1 = &mapping.source_node;
-				let query_bind_2 = &mapping.source_tenant;
-				let query_bind_3 = &mapping.source_subject;
-				let query_bind_4 = &mapping.tenant;
-				let query_bind_5 = mapping.credential_id;
-				let query_bind_6 = mapping.enabled;
-				let query_bind_7 = mapping.revision;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("authorization_peer_mapping_history"))
-						.columns([
-							Alias::new("source_node"),
-							Alias::new("source_tenant"),
-							Alias::new("source_subject"),
-							Alias::new("tenant"),
-							Alias::new("credential_id"),
-							Alias::new("enabled"),
-							Alias::new("revision"),
-							Alias::new("actor"),
-						])
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_6.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_7.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(self.actor.clone()).into()],
-								))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut *self.tx)
-				.await?
-			};
+			crate::database::native::query(
+				&Query::insert()
+					.into_table(Alias::new("authorization_peer_mapping_history"))
+					.columns(
+						[
+							"tenant",
+							"node",
+							"source_node",
+							"source_subject",
+							"credential_id",
+							"enabled",
+							"revision",
+							"actor",
+						]
+						.map(Alias::new),
+					)
+					.values_panic([
+						Expr::value(mapping.tenant.clone()),
+						Expr::value(mapping.node.as_str().to_owned()),
+						Expr::value(mapping.source_node.to_string()),
+						Expr::value(mapping.source_subject.clone()),
+						Expr::value(mapping.credential_id),
+						Expr::value(mapping.enabled),
+						Expr::value(mapping.revision),
+						Expr::value(self.actor.clone()),
+					])
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *self.tx)
+			.await?;
 			Ok(())
 		}
 		.await;
@@ -439,63 +425,53 @@ impl MappingWrite for WriteScope {
 impl MappingAccess for AccessScope {
 	async fn current(
 		&mut self,
-		node: &str,
-		tenant: &str,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
 		subject: &str,
 	) -> Result<Option<Mapping>> {
 		let result: NativeResult<Option<PeerMapping>> = async {
-			Ok({
-				let query_bind_1 = node;
-				let query_bind_2 = tenant;
-				let query_bind_3 = subject;
-				crate::database::native::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("authorization_peer_mappings"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(source_node = ? AND source_tenant = ? AND source_subject = ? AND enabled)"
-						.to_owned(),
-					vec![
-						Expr::value(query_bind_1.to_owned()).into(),
-						Expr::value(query_bind_2.to_owned()).into(),
-						Expr::value(query_bind_3.to_owned()).into(),
-					],
-				))
-				.lock(reinhardt::query::LockType::Share)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **self.access.tx)
-		.await?
-			})
+			crate::database::native::query_as(
+				&Query::select()
+					.expr(SimpleExpr::from(Expr::col(reinhardt::query::ColumnRef::Asterisk)))
+					.from(Alias::new("authorization_peer_mappings"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(tenant = ? AND node = ? AND source_node = ? AND source_subject = ? AND enabled)"
+							.to_owned(),
+						vec![
+							Expr::value(tenant.as_str().to_owned()).into(),
+							Expr::value(node.as_str().to_owned()).into(),
+							Expr::value(source.to_string()).into(),
+							Expr::value(subject.to_owned()).into(),
+						],
+					))
+					.lock(LockType::Share)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **self.access.tx)
+			.await
 		}
 		.await;
-		result.map(|row| row.map(Into::into)).map_err(Into::into)
+		result
+			.and_then(|row| row.map(Mapping::try_from).transpose())
+			.map_err(Into::into)
 	}
-	async fn peer_enabled(&mut self, node: &str) -> Result<bool> {
-		let result: NativeResult<Option<String>> = async {
-			Ok({
-				let query_bind_1 = node;
-				crate::database::native::query_scalar(
-					&reinhardt::query::Query::select()
-						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::Alias::new("node_id")),
-						))
-						.from(reinhardt::query::Alias::new("peers"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(node_id = ? AND enabled)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.lock(reinhardt::query::LockType::Share)
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **self.access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map(|row| row.is_some()).map_err(Into::into)
+	async fn registered(
+		&mut self,
+		tenant: &TenantName,
+		node: &NodeName,
+		source: &NodeAddress,
+	) -> Result<bool> {
+		registrations::get_locked(
+			&mut *self.access.tx,
+			tenant.as_str(),
+			node.as_str(),
+			source,
+			true,
+		)
+		.await
+		.map(|registration| registration.is_some_and(|registration| registration.enabled))
+		.map_err(Into::into)
 	}
 	fn environment(&mut self) -> &mut Value {
 		self.access.environment_mut()

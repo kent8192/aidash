@@ -55,8 +55,37 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 		Ok(reserved)
 	}
 	async fn send_cancel(&self, target: &str, id: Uuid) -> Result<bool> {
+		let tenant: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("generation_remote_intents"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(id.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(self.federation.store.pool.in_scope(&reconcile()))
+		.await?;
+		let home: String = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("binding->>'home_node'"))
+				.from(Alias::new("generation_remote_intents"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(id.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(self.federation.store.pool.in_scope(&reconcile()))
+		.await?;
+		let home = aidash_domain::nodes::NodeAddress::parse(&home)?;
 		crate::authorization::peer::authority_request(
 			&self.federation,
+			&aidash_domain::federation::route::Sender {
+				node: Some(home.node),
+				..crate::authorization::peer::node_sender(&tenant)?
+			},
 			target,
 			"/scoped/generation/cancel",
 			&json!({"intent_id":id}),
@@ -102,7 +131,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 	async fn jobs(&self) -> Result<Vec<Request>> {
 		let f = &self.federation;
 		let jobs:Vec<Request>=crate::database::query_as(&Query::select().column(reinhardt::query::ColumnRef::table_asterisk("g")).from_as(Alias::new("generation_requests"),Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("r")), Expr::cust("r.id=g.admission_id AND r.home_node=g.home_node"))
-    .and_where(Expr::cust("g.home_node<>'' AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))
+    .and_where(Expr::cust("g.local_task_id IS NULL AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))
     .order_by((Alias::new("g"),Alias::new("created_at")),reinhardt::query::Order::Asc).limit(16).to_string(PostgresQueryBuilder)).fetch_all(f.store.pool.in_scope(&reconcile())).await?;
 		Ok(jobs)
 	}

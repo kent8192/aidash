@@ -109,7 +109,15 @@ impl ExecutionGrantSession for Admission<'_> {
 #[async_trait]
 impl ExecutionAdmissionSession for Admission<'_> {
 	fn node_id(&self) -> &str {
-		&self.f.config.node_id
+		self.f.config.deployment.as_str()
+	}
+	async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.access.workspace_node(workspace).await?;
+		self.access.set_node(node.clone());
+		Ok(self.f.config.deployment.node(node))
 	}
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
@@ -147,7 +155,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			let access = &mut *self.access;
 			let f = self.f;
 			let run_id: Uuid = {
-				let query_bind_1 = &f.config.node_id;
+				let query_bind_1 = f.config.deployment.as_str();
 				let query_bind_2 = task;
 				crate::database::native::query_scalar(
 					&Query::select()
@@ -155,15 +163,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 						.from(Alias::new("runs"))
 						.cond_where(
 							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"home_node",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									)),
-								)
+								.add(crate::database::scope::local_home("runs", query_bind_1))
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
 										"task_id",
@@ -352,7 +352,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			let f = self.f;
 			let delegation: Delegation = {
 				let query_bind_1 = task;
-				let query_bind_2 = &f.config.node_id;
+				let query_bind_2 = f.config.deployment.as_str();
 				let query_bind_3 = &agent.id;
 				let query_bind_4 = &agent.version;
 				crate::database::query_as(
@@ -372,9 +372,13 @@ impl ExecutionAdmissionSession for Admission<'_> {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_1.to_owned()).into()],
 								))
+								// The delegated Task runs on its Workspace's Node.
 								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
+									"(? || '/' || (SELECT node FROM workspaces WHERE id = (SELECT workspace_id FROM tasks WHERE id = ?)))".to_owned(),
+									vec![
+										Expr::value(query_bind_2.to_owned()).into(),
+										Expr::value(query_bind_1.to_owned()).into(),
+									],
 								))
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
@@ -410,9 +414,14 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		self.access.task_resource(task).await.map_err(Into::into)
 	}
 	async fn require_live_agent(&mut self, task: Uuid, agent: &EntityRef) -> Result<()> {
-		crate::generation::provision::require_live(self.access, &self.f.config.node_id, task, agent)
-			.await
-			.map_err(Into::into)
+		crate::generation::provision::require_live(
+			self.access,
+			self.f.config.deployment.as_str(),
+			task,
+			agent,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn executable_entry(&mut self, agent: &EntityRef) -> Result<Entry> {
 		catalog::entry(self.access, agent, "agent.execute")

@@ -81,12 +81,12 @@ test("typed registry references are named while unrelated configuration stays in
       bindings: [
         {
           kind: "tool",
-          target: { registry_node: "aidash://home", ...tool },
+          target: { registry_deployment: "aidash://home", ...tool },
           narrow: {},
         },
         {
           kind: "tool",
-          target: { registry_node: "aidash://peer", ...tool },
+          target: { registry_deployment: "aidash://peer", ...tool },
           narrow: {},
         },
       ],

@@ -19,11 +19,11 @@ use uuid::Uuid;
 fn manifest() -> Manifest {
 	Manifest {
 		id: Uuid::from_u128(1),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T01:00:00Z".parse().unwrap(),
 		participants: vec![Node {
-			node_id: "aidash://home".into(),
+			node_id: "aidash://home/airy-hawk-2lu4as22".into(),
 			mutations: vec![Mutation::WorkspaceState {
 				workspace_id: Uuid::from_u128(2),
 				expected_revision: 0,
@@ -135,10 +135,6 @@ impl ParticipantScope for Scope {
 		self.adapter.event("lock")?;
 		Ok(self.working.row.clone())
 	}
-	async fn trusted(&mut self, _node: &str) -> Result<bool> {
-		self.adapter.event("trusted")?;
-		Ok(true)
-	}
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>> {
 		self.adapter.event("gate")?;
 		let state = &mut *self.adapter.0.lock().unwrap();
@@ -241,7 +237,7 @@ impl Drop for Pending {
 #[async_trait]
 impl ParticipantRepository for Adapter {
 	fn node_id(&self) -> &str {
-		"aidash://home"
+		"aidash://home/airy-hawk-2lu4as22"
 	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
 		self.event("begin")?;
@@ -294,7 +290,7 @@ fn unexpected<T>() -> Result<T> {
 #[async_trait]
 impl CoordinatorRepository for Adapter {
 	fn node_id(&self) -> &str {
-		"aidash://home"
+		"aidash://home/airy-hawk-2lu4as22"
 	}
 	fn now(&self) -> DateTime<Utc> {
 		"2030-01-01T00:00:00Z".parse().unwrap()
@@ -711,7 +707,7 @@ async fn sender_must_be_the_named_coordinator_before_any_persistence(manifest: M
 	assert!(matches!(
 		adapter
 			.participant()
-			.reserve("aidash://other", &manifest)
+			.reserve("aidash://other/airy-hawk-2lu4as22", &manifest)
 			.await,
 		Err(Error::Forbidden)
 	));

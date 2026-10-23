@@ -648,7 +648,7 @@ async fn execute(
 				)
 				.fetch_one(&mut **scope.lease.tx())
 				.await?;
-				if record.home_node != store.node_id
+				if !record.is_local(store.deployment.as_str())
 					|| record.workspace_id != bank.workspace
 					|| record.revision != *revision
 					|| !matches!(

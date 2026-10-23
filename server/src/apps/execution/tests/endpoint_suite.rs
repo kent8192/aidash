@@ -4,10 +4,10 @@
 mod endpoint;
 #[path = "support/execution.rs"]
 mod execution_fixtures;
-#[path = "support/isolated.rs"]
-mod isolated;
 #[path = "support/native_database.rs"]
 mod native_database;
+#[path = "support/federation.rs"]
+mod peering;
 // Endpoint scenarios use successful inference; adapter suites cover other replies.
 #[allow(dead_code)]
 #[path = "provider_fixtures.rs"]
@@ -47,6 +47,8 @@ mod semantic;
 mod transactions;
 #[path = "../../federation/transactions/tests/execution_endpoints.rs"]
 mod transactions_execution;
+#[path = "../../federation/peer/tests/well_known.rs"]
+mod well_known;
 #[path = "../../registry/workbench/tests/endpoints.rs"]
 mod workbench;
 

@@ -98,19 +98,17 @@ pub struct Description {
 ///
 /// The digest rides beside the Description, not inside it. Admission and every
 /// refresh compare the whole Description with the pinned copy, and the corpus
-/// changes whenever a Home entry does. It is flattened into the same object so
-/// a peer that predates it still parses a reply without it.
+/// changes whenever a Home entry does. It is flattened into the same object.
 #[derive(Clone, Serialize)]
 pub struct Described {
 	#[serde(flatten)]
 	pub description: Description,
-	/// Absent when the peer's protocol predates it or the grant carries no
-	/// Home semantic access.
+	/// Absent when the grant carries no Home semantic access.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub corpus_digest: Option<String>,
 }
 impl Described {
-	/// A reply without a digest is a valid older-protocol reply.
+	/// A reply without a digest is valid: the grant carries no Home semantic access.
 	pub fn from_value(mut value: serde_json::Value) -> serde_json::Result<Self> {
 		let corpus_digest = value
 			.as_object_mut()

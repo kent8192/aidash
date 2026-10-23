@@ -20,14 +20,14 @@ struct Scope {
 }
 impl Scope {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+		let executor = aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0");
 		Self {
 			bundle: serde_json::from_value(
 				json!({"tenant":"local","subjects":{executor:{"kind":"agent","delegated_by":null}}}),
 			)
 			.unwrap(),
 			subjects: vec!["mapped".into()],
-			context: json!({}),
+			context: json!({"source_subject":"human"}),
 			calls: vec![],
 			active: true,
 			model_kind: "model".into(),
@@ -38,10 +38,23 @@ impl Scope {
 		self.calls.push((name.into(), self.subjects.clone()));
 	}
 }
+fn receiver_address() -> String {
+	aidash_domain::nodes::NodeAddress::derived("aidash://receiver", "receiver").to_string()
+}
 #[async_trait]
 impl PeerInspectionScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://receiver"
+	}
+	fn receiver_address(&self) -> String {
+		receiver_address()
+	}
+	async fn receiver_resource(&mut self) -> Result<Resource> {
+		Ok(self.resource(
+			"node",
+			aidash_domain::nodes::NodeName::derived("receiver").as_str(),
+			json!({"label":"Receiver","default":true}),
+		))
 	}
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
@@ -119,7 +132,8 @@ impl PeerInspectionScope for Scope {
 	}
 }
 fn input() -> InspectInput {
-	serde_json::from_value(json!({"tenant":"source","subject":"human","agent":{"id":"agent","version":"1.0.0"},"requirements":{}})).unwrap()
+	serde_json::from_value(json!({"agent":{"id":"agent","version":"1.0.0"},"requirements":{}}))
+		.unwrap()
 }
 
 #[rstest]
@@ -129,7 +143,7 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 	let inspection = inspect(&mut scope, "aidash://home", &input())
 		.await
 		.unwrap();
-	let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+	let executor = aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0");
 	assert_eq!(
 		scope.calls[0],
 		("federation.execute".into(), vec!["mapped".into()])
@@ -151,7 +165,7 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 	assert_eq!(
 		inspection.authority_digest,
 		digest(
-			&json!({"source_node":"aidash://home","source_tenant":"source","source_subject":"human","tenant":"local","credential_id":Uuid::from_u128(1),"subjects":["mapped",executor]})
+			&json!({"source_node":"aidash://home","source_subject":"human","tenant":"local","credential_id":Uuid::from_u128(1),"subjects":["mapped",executor]})
 		)
 	);
 }
@@ -214,7 +228,7 @@ async fn denied_bound_tool_invocation_prevents_remote_preflight() {
 		subjects,
 		&[
 			"mapped".to_owned(),
-			qualified_agent("aidash://receiver", "agent", "1.0.0")
+			aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0")
 		]
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));

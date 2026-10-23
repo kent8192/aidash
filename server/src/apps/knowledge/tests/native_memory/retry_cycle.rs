@@ -202,7 +202,11 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -215,7 +219,14 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
@@ -292,7 +303,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),
-			node_id: store.node_id.clone(),
+			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:1".into(),
 			database_url: database.url.clone(),
 			nats_url: "nats://127.0.0.1:1".into(),
@@ -301,7 +312,10 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			lease_seconds: 30,
 			demo_data: false,
 			oidc: None,
+			federation: true,
+			deployment_key: None,
 			sign_in: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		store,
 		client: runtime_controls.client,

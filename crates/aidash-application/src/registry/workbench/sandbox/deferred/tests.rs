@@ -165,7 +165,7 @@ fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
 #[test]
 fn replay_uses_only_results_the_session_evaluated() {
 	// Arrange
-	let update = |alias: &str| json!({"load":{"alias":alias,"kind":"tool","identity":{"registry":{"registry_node":"aidash://local","id":alias,"version":"1.0.0"}},"digest":"d","step":0}});
+	let update = |alias: &str| json!({"load":{"alias":alias,"kind":"tool","identity":{"registry":{"registry_deployment":"aidash://local","id":alias,"version":"1.0.0"}},"digest":"d","step":0}});
 	let conversation = [
 		json!({"role":"user","content":"start"}),
 		json!({"role":"tool","content":{"outcome":EVALUATED,"result":{"exposure_update":update("evaluated")}}}),

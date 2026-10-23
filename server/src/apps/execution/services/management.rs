@@ -74,7 +74,7 @@ impl HarnessManagement {
 		let f = self.runtime.clone();
 
 		if let Some(scope) = scoped(&f, actor) {
-			let state = scope.state(f.config.identity(vec![])).await?;
+			let state = scope.state(f.config.deployment_identity()).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
 		let records: Vec<crate::registry::Entry> = Vec::new();
@@ -197,7 +197,7 @@ impl HarnessManagement {
 		.await?;
 		let mut state = StateResponse {
 			access: AccessProfile::DeploymentAdministrator,
-			node: f.config.identity(vec![]),
+			deployment: f.config.deployment_identity(),
 			registry: records,
 			workspaces: f.store.workspaces(&listing()).await?,
 			tasks: crate::database::query_as(
@@ -251,7 +251,6 @@ impl HarnessManagement {
 			.collect(),
 			human_requests: human,
 			conversations,
-			peers: f.peers().await?,
 			events,
 			artifacts,
 		};
@@ -700,7 +699,7 @@ impl HarnessManagement {
 		)
 		.execute(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?;
-		Ok(json!({"status":"ok","node_id":f.config.node_id}))
+		Ok(json!({"status":"ok","deployment":f.config.deployment}))
 	}
 	pub(crate) async fn run_media_message(
 		&self,
@@ -736,7 +735,7 @@ impl HarnessManagement {
 					.require(&access.resource("run", id, json!({})), "run.message")
 					.await?;
 			}
-			if run.home_node != f.config.node_id {
+			if !run.is_local(f.config.deployment.as_str()) {
 				return Err(Error::Invalid(
 					"media run messages require a local run".into(),
 				));
@@ -754,7 +753,7 @@ impl HarnessManagement {
 		let result = async {
 			let (existing, record) = crate::apps::execution::models::RunInput::admit_media(
 				lease.tx(),
-				&f.config.node_id,
+				f.config.deployment.as_str(),
 				id,
 				&sender,
 				&input.content,
@@ -879,10 +878,12 @@ impl HarnessManagement {
 	pub(crate) async fn research_providers(
 		&self,
 		actor: Actor,
+		input: crate::apps::execution::serializers::runs::ResearchProvidersQuery,
 	) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
 		crate::apps::execution::capabilities::services::endpoints::research_providers(
 			self.runtime.clone(),
 			actor,
+			input,
 		)
 		.await
 	}

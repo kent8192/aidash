@@ -316,7 +316,7 @@ class OracleTest(unittest.TestCase):
 
         def load(identity, status="loaded"):
             return {"kind": "tool", "call": {"name": "capability_load", "arguments": {"alias": "a", "digest": "d"}},
-                    "result": {"status": status, "identity": {"registry": {"registry_node": "aidash://n",
+                    "result": {"status": status, "identity": {"registry": {"registry_deployment": "aidash://n",
                                                                            "id": identity, "version": "1.0.0"}}}}
         failed = {"kind": "tool", "call": {"name": "capability_load", "arguments": {}},
                   "result": {"error": "UNKNOWN_CAPABILITY"}}
@@ -576,6 +576,8 @@ class FakeNode:
         self.decisions = []
 
     def call(self, method, path, body, token, timeout=None):
+        if method == "GET" and path.startswith("/api/tenants/") and path.endswith("/nodes"):
+            return 200, [{"name": "default-12345678", "address": "aidash://live/default-12345678", "default": True}]
         if path == "/api/workspaces" and method == "POST":
             return 200, {"id": "ws-1"}
         if path.endswith("/tasks"):
@@ -613,6 +615,29 @@ class FakeNode:
                 {"kind": "model.completed", "data": {"run_id": "run-1", "step": 1,
                                                      "context_usage": {"input_tokens": 10, "output_tokens": 5}}}]}
         return 404, {"error": path}
+
+
+class ExperimentNodeContractTest(unittest.TestCase):
+    def test_policy_subjects_and_catalog_approval_use_the_assigned_node(self):
+        requests = []
+        def call(method, path, body, token, timeout=None):
+            requests.append((method, path, body))
+            if path == "/api/tenants":
+                return 201, {"name": "tenant-12345678"}
+            if path.endswith("/nodes"):
+                return 200, [{"name": "build-abcdef12", "address": "aidash://evaluation/build-abcdef12", "default": True}]
+            if path.endswith("/credentials"):
+                return 200, {"token": "subject-token"}
+            return 200, {}
+        experiment = runner.Experiment(runner.Api(call, "administrator"), "aidash://evaluation", "evaluation", "fte")
+
+        experiment.authorize(["agent"])
+        experiment.register("agent", "agent", {})
+
+        policy = next(body["bundle"] for method, path, body in requests if body and "bundle" in body)
+        self.assertIn("aidash://evaluation/build-abcdef12/agents/agent@1.0.0", policy["subjects"])
+        approval = next(body for method, path, body in requests if path.endswith("/catalog"))
+        self.assertEqual(approval["node"], "build-abcdef12")
 
 
 class Clock:

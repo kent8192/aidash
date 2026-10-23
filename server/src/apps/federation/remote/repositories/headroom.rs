@@ -13,7 +13,7 @@ pub(crate) struct Context<'a>(pub(crate) &'a Federation);
 #[async_trait]
 impl Definitions for Context<'_> {
 	fn node(&self) -> &str {
-		&self.0.config.node_id
+		self.0.config.deployment.as_str()
 	}
 	async fn snapshot(
 		&self,

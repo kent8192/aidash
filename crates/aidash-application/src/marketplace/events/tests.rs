@@ -9,7 +9,7 @@ fn event(kind: &str, data: serde_json::Value) -> Event {
 	Event {
 		sequence: 17,
 		id: Uuid::nil(),
-		node_id: "node".into(),
+		node: None,
 		workspace_id: None,
 		kind: kind.into(),
 		data,

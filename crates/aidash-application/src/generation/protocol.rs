@@ -36,8 +36,9 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				.semantic
 				.native()
 				.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
-			if usage.dispatcher_node != description.source_node
-				|| usage.provider.node_id != description.source_node
+			let home = aidash_domain::nodes::deployment_of(&description.source_node);
+			if usage.dispatcher_node != home
+				|| usage.provider.node_id != home
 				|| !native
 					.banks
 					.iter()
@@ -64,7 +65,10 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 			let Binding::RequiredHome { embedding, .. } = &description.semantic else {
 				return Err(Error::RemoteSemantic(Failure::Configuration));
 			};
-			if **embedding != usage.provider || usage.dispatcher_node != description.source_node {
+			if **embedding != usage.provider
+				|| usage.dispatcher_node
+					!= aidash_domain::nodes::deployment_of(&description.source_node)
+			{
 				return Err(Error::Forbidden);
 			}
 		}
@@ -77,7 +81,8 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				return Err(Error::RemoteSemantic(Failure::ContextBudget));
 			};
 			if provider.as_ref() != &usage.provider
-				|| usage.dispatcher_node != description.target_node
+				|| usage.dispatcher_node
+					!= aidash_domain::nodes::deployment_of(&description.target_node)
 			{
 				return Err(Error::Forbidden);
 			}
@@ -101,7 +106,10 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				.semantic
 				.summarizer()
 				.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?;
-			if provider != &usage.provider || usage.dispatcher_node != description.target_node {
+			if provider != &usage.provider
+				|| usage.dispatcher_node
+					!= aidash_domain::nodes::deployment_of(&description.target_node)
+			{
 				return Err(Error::Forbidden);
 			}
 			let definition = description
@@ -135,7 +143,8 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				.iter()
 				.find(|d| d.kind == "model" && d.entry == agent.model)
 				.ok_or(Error::Forbidden)?;
-			if usage.provider.node_id != description.target_node
+			if usage.provider.node_id
+				!= aidash_domain::nodes::deployment_of(&description.target_node)
 				|| usage.provider.entry != agent.model
 				|| usage.provider.digest != definition.digest
 				|| usage.provider.configuration_digest
@@ -204,7 +213,7 @@ pub async fn reserve(
 	input: Input,
 ) -> Result<Vec<Reserved>> {
 	input.usage.validate()?;
-	if source != input.usage.dispatcher_node {
+	if aidash_domain::nodes::deployment_of(source) != input.usage.dispatcher_node {
 		return Err(Error::Forbidden);
 	}
 	let mut lease = if matches!(input.usage.purpose, Purpose::Embedding | Purpose::Memory) {
@@ -304,7 +313,7 @@ pub async fn finalize(
 	source: &str,
 	input: FinalizeInput,
 ) -> Result<bool> {
-	if input.usage.dispatcher_node != source {
+	if input.usage.dispatcher_node != aidash_domain::nodes::deployment_of(source) {
 		return Err(Error::Forbidden);
 	}
 	match settlement::finalize(repository, &input.usage, &input.result).await {

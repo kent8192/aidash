@@ -37,6 +37,7 @@ pub trait CatalogMutation: Send {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
@@ -53,7 +54,8 @@ pub trait CatalogMutation: Send {
 #[async_trait]
 pub trait CatalogApprovalScope: CatalogMutation {
 	fn tenant(&self) -> &str;
-	fn node(&self) -> &str;
+	/// The Node the approvals apply to: an approval is made per Node.
+	fn node(&self) -> &aidash_domain::nodes::NodeAddress;
 	/// The history label of the approving subject.
 	fn actor(&self) -> &str;
 	/// Any version in the Tenant's Registry, approved or not.

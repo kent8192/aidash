@@ -246,6 +246,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 			&[
 				"workspace_id",
 				"home_node",
+				"node",
 				"agent_id",
 				"agent_version",
 				"phase",

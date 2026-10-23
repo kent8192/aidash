@@ -1,10 +1,11 @@
 //! Existing peer Generation and usage protocol endpoints.
+use crate::apps::identity::services::http_auth::InboundCall;
 use crate::generation::{
 	foreign,
 	remote::{dispatch, protocol},
 };
 use crate::{federation::Federation, http::json::Json};
-use reinhardt::{Request, Response, http::ViewResult, post};
+use reinhardt::{Response, http::ViewResult, post};
 
 #[post(
 	"/federation/v0.1/scoped/generation/cancel",
@@ -13,10 +14,10 @@ use reinhardt::{Request, Response, http::ViewResult, post};
 )]
 pub async fn cancel_generation(
 	#[inject] runtime: Federation,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<foreign::Reference>,
 ) -> ViewResult<Response> {
-	crate::http::json(foreign::cancel_at(runtime, request.headers, input).await)
+	crate::http::json(foreign::cancel_at(runtime, peer.0, input).await)
 }
 
 #[post(
@@ -26,10 +27,10 @@ pub async fn cancel_generation(
 )]
 pub async fn describe_generation(
 	#[inject] runtime: Federation,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<foreign::Reference>,
 ) -> ViewResult<Response> {
-	crate::http::json(foreign::describe(runtime, request.headers, input).await)
+	crate::http::json(foreign::describe(runtime, peer.0, input).await)
 }
 
 #[post(
@@ -39,10 +40,10 @@ pub async fn describe_generation(
 )]
 pub async fn prepare_generation(
 	#[inject] runtime: Federation,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<foreign::Reference>,
 ) -> ViewResult<Response> {
-	crate::http::json(foreign::prepare(runtime, request.headers, input).await)
+	crate::http::json(foreign::prepare(runtime, peer.0, input).await)
 }
 
 #[post(
@@ -52,10 +53,10 @@ pub async fn prepare_generation(
 )]
 pub async fn reserve_usage(
 	#[inject] runtime: Federation,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<dispatch::Input>,
 ) -> ViewResult<Response> {
-	crate::http::json(protocol::reserve(runtime, request.headers, input).await)
+	crate::http::json(protocol::reserve(runtime, peer.0, input).await)
 }
 
 #[post(
@@ -65,10 +66,10 @@ pub async fn reserve_usage(
 )]
 pub async fn verify_usage(
 	#[inject] runtime: Federation,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<dispatch::Input>,
 ) -> ViewResult<Response> {
-	crate::http::json(protocol::verify(runtime, request.headers, input).await)
+	crate::http::json(protocol::verify(runtime, peer.0, input).await)
 }
 
 #[post(
@@ -78,8 +79,8 @@ pub async fn verify_usage(
 )]
 pub async fn finalize_usage(
 	#[inject] runtime: Federation,
-	request: Request,
+	#[inject] peer: InboundCall,
 	Json(input): Json<dispatch::FinalizeInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(protocol::finalize(runtime, request.headers, input).await)
+	crate::http::json(protocol::finalize(runtime, peer.0, input).await)
 }

@@ -279,8 +279,8 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 #[rstest]
 #[case::runs(
 	"runs",
-	"id, tenant, task_id, workspace_id, home_node, agent_id, agent_version",
-	"gen_random_uuid(), $1, gen_random_uuid(), gen_random_uuid(), 'n', 'a', '1'"
+	"id, tenant, task_id, workspace_id, home_node, node, agent_id, agent_version",
+	"gen_random_uuid(), $1, gen_random_uuid(), gen_random_uuid(), 'n', 'n', 'a', '1'"
 )]
 #[case::messages(
 	"messages",
@@ -289,7 +289,7 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 )]
 #[case::events(
 	"events",
-	"id, tenant, node_id, kind, data",
+	"id, tenant, node, kind, data",
 	"gen_random_uuid(), $1, 'n', 'k', '{}'"
 )]
 #[case::memory_receipts(

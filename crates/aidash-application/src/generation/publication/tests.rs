@@ -130,8 +130,7 @@ async fn publication_assigns_only_pinned_permissions_and_exact_revision(
 	publish(&mut publication, &job, &specification)
 		.await
 		.unwrap();
-	let subject = &publication.snapshot.bundle.subjects
-		[&qualified_agent("aidash://local", &job.agent_id, &job.agent_version)];
+	let subject = &publication.snapshot.bundle.subjects[&job.executor_subject("aidash://local")];
 	assert_eq!(subject.kind, SubjectKind::Agent);
 	assert!(subject.enabled);
 	assert_eq!(subject.roles, specification.permissions.roles);
@@ -176,8 +175,7 @@ async fn a_nested_subject_is_delegated_only_by_the_last_current_ancestor(
 		.await
 		.unwrap();
 	assert_eq!(
-		publication.snapshot.bundle.subjects
-			[&qualified_agent("aidash://local", &job.agent_id, &job.agent_version)]
+		publication.snapshot.bundle.subjects[&job.executor_subject("aidash://local")]
 			.delegated_by
 			.as_deref(),
 		Some("ancestor")
@@ -190,7 +188,7 @@ async fn an_existing_generated_identity_cannot_be_overwritten(
 	specification: Spec,
 	job: Request,
 ) {
-	let key = qualified_agent("aidash://local", &job.agent_id, &job.agent_version);
+	let key = job.executor_subject("aidash://local");
 	publication.snapshot.bundle.subjects.insert(
 		key.clone(),
 		publication.snapshot.bundle.subjects["alice"].clone(),
@@ -409,7 +407,10 @@ async fn current_worker_checks_deny_each_stale_or_unbound_generation(
 		"expiry" => job.expires_at = live.now,
 		"disabled_policy" => live.enabled = false,
 		"task" => job.task_id = Uuid::from_u128(9),
-		"foreign" => job.home_node = "aidash://home".into(),
+		"foreign" => {
+			job.home_node = "aidash://home".into();
+			job.foreign_intent = Some(serde_json::json!({}));
+		}
 		_ => panic!("unknown defect"),
 	};
 	live.jobs.push(job);
@@ -426,6 +427,7 @@ async fn ancestor_task_binding_is_distinct_from_the_executing_generated_agent(mu
 	ancestor.agent_id = "ancestor".into();
 	ancestor.task_id = Uuid::from_u128(7);
 	ancestor.home_node = "aidash://home".into();
+	ancestor.foreign_intent = Some(serde_json::json!({}));
 	live.jobs = [ancestor, test_support::request(1)].into();
 	check(&mut live).await.unwrap();
 	assert_eq!(live.calls.len(), 3);

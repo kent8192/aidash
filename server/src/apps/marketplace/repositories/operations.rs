@@ -132,9 +132,22 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 		expected_revision: i64,
 		enabled: bool,
 	) -> aidash_application::Result<()> {
+		// A package is activated for the Tenant's default Node; other Nodes
+		// approve it themselves (#241).
+		let node: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+				.and_where(Expr::col("is_default"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.staging.tx)
+		.await?;
 		crate::authorization::catalog::set_in(
 			self.staging.tx,
 			tenant,
+			&aidash_domain::nodes::NodeName::parse(&node)?,
 			reference,
 			expected_revision,
 			enabled,
@@ -154,6 +167,7 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 				.column(Alias::new("revision"))
 				.from(Alias::new("authorization_catalog"))
 				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+				.and_where(Expr::col("node").eq(crate::database::scope::default_node(tenant)))
 				.and_where(Expr::col("entry_id").eq(Expr::value(&reference.id)))
 				.and_where(Expr::col("entry_version").eq(Expr::value(&reference.version)))
 				.lock(LockType::Share)

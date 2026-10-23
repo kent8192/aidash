@@ -1,17 +1,18 @@
 //! Native adapters delegate authority decisions and durable orchestration to application.
 use super::Manifest;
 use crate::{Error, Result, authorization::access::Access, federation::Federation};
+use aidash_application::federation::inbound::Admitted;
 use aidash_application::transactions::authority::control as application;
 use uuid::Uuid;
 
 pub(in crate::apps::federation::transactions) async fn preflight(
 	f: &Federation,
-	caller: &str,
+	admitted: &Admitted,
 	input: &Preflight,
 ) -> Result<()> {
 	application::preflight(
-		&crate::bootstrap::transaction_authority_repository(f),
-		caller,
+		&crate::bootstrap::transaction_authority_repository_as(f, admitted),
+		&admitted.sender.to_string(),
 		&input.into(),
 	)
 	.await
@@ -34,13 +35,13 @@ pub(in crate::apps::federation::transactions) async fn issue(
 
 pub(in crate::apps::federation::transactions) async fn ticket(
 	f: &Federation,
+	admitted: &Admitted,
 	id: Uuid,
-	node: &str,
 ) -> Result<Preflight> {
 	application::ticket(
-		&crate::bootstrap::transaction_authority_repository(f),
+		&crate::bootstrap::transaction_authority_repository_as(f, admitted),
 		id,
-		node,
+		&admitted.sender.to_string(),
 	)
 	.await
 	.map(Into::into)
@@ -49,15 +50,19 @@ pub(in crate::apps::federation::transactions) async fn ticket(
 
 pub(in crate::apps::federation::transactions) async fn admission(
 	f: &Federation,
+	admitted: Option<&Admitted>,
 	caller: &str,
 	manifest: &Manifest,
 ) -> Result<Option<Access>> {
-	let repository = crate::bootstrap::transaction_authority_repository(f);
+	let repository = match admitted {
+		Some(admitted) => crate::bootstrap::transaction_authority_repository_as(f, admitted),
+		None => crate::bootstrap::transaction_authority_repository(f),
+	};
 	let Some(bound) = application::prepare_admission(&repository, caller, manifest).await? else {
 		return Ok(None);
 	};
 	// The participant must retain this exact locked transaction for its write.
-	let mut access = persistence::mapped(f, &bound.request.clone().into()).await?;
+	let mut access = persistence::mapped(f, admitted, &bound.request.clone().into()).await?;
 	let result = application::check_admission(
 		&mut crate::bootstrap::transaction_authority_scope(&mut access),
 		&repository,
@@ -74,12 +79,12 @@ pub(in crate::apps::federation::transactions) async fn admission(
 
 pub(in crate::apps::federation::transactions) async fn read_access(
 	f: &Federation,
-	caller: &str,
+	admitted: &Admitted,
 	input: &Preflight,
 ) -> Result<()> {
 	application::read_access(
-		&crate::bootstrap::transaction_authority_repository(f),
-		caller,
+		&crate::bootstrap::transaction_authority_repository_as(f, admitted),
+		&admitted.sender.to_string(),
 		&input.into(),
 	)
 	.await

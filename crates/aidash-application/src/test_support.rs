@@ -115,7 +115,7 @@ impl BindingCatalog for Catalog {
 			.cloned())
 	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
-		if reference.registry_node != self.node {
+		if reference.registry_deployment != self.node {
 			return Err(Error::Forbidden);
 		}
 		if let Some(entry) = self
@@ -188,7 +188,7 @@ pub(crate) fn resolve_with_plugins(
 		},
 		&Providers,
 		QualifiedRef {
-			registry_node: node.into(),
+			registry_deployment: node.into(),
 			id: root.id.clone(),
 			version: root.version.clone(),
 		},
@@ -208,7 +208,7 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 	entry(
 		id,
 		"tool",
-		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":alias,"tier":"integration","transport":{"transport":"http","endpoint":"https://production.example/rpc","replay":"unsafe"}}),
+		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":alias,"tier":"integration","transport":{"transport":"http","endpoint":"https://production.example/rpc","replay":"unsafe"}}),
 	)
 }
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
@@ -223,7 +223,7 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 		.collect()
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {
-	json!({"kind":kind,"target":{"registry_node":node,"id":id,"version":"1.0.0"},"narrow":{}})
+	json!({"kind":kind,"target":{"registry_deployment":node,"id":id,"version":"1.0.0"},"narrow":{}})
 }
 
 pub(crate) fn native_memory_entries() -> Vec<Entry> {
@@ -290,10 +290,14 @@ pub(crate) fn plugin_snapshot_with(
 pub(crate) fn run_of(snapshot: BindingSnapshot) -> aidash_domain::Run {
 	use aidash_domain::{ReadyState, RecoveryState, RunControl, RunState, StateVersion};
 	aidash_domain::Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
 		workspace_id: uuid::Uuid::new_v4(),
-		home_node: snapshot.agent.registry_node.clone(),
+		home_node: format!(
+			"{}/brave-otter-k3m9q2xa",
+			snapshot.agent.registry_deployment
+		),
 		agent_id: snapshot.agent.id.clone(),
 		agent_version: snapshot.agent.version.clone(),
 		state_version: StateVersion::default(),
@@ -462,5 +466,39 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 	}
 	async fn close(&self, run: uuid::Uuid) {
 		self.closed.lock().unwrap().push(run);
+	}
+}
+
+/// A Node of another Deployment, as its sender's Node Registration pins it.
+pub(crate) fn foreign_route(target: &str) -> aidash_domain::federation::route::Route {
+	use aidash_domain::{
+		federation::route::Route,
+		nodes::{
+			DeploymentKeyId, NodeAddress,
+			registration::{Counterpart, PinnedKey},
+		},
+	};
+	let target = if target
+		.strip_prefix("aidash://")
+		.unwrap_or(target)
+		.contains('/')
+	{
+		target.to_owned()
+	} else {
+		format!("{target}/calm-heron-ab12cd34")
+	};
+	Route {
+		tenant: aidash_domain::tenancy::TenantName::new("tenant").unwrap(),
+		sender: NodeAddress::parse("aidash://home/quiet-otter-cd34ef56").unwrap(),
+		subject: None,
+		target: NodeAddress::parse(&target).unwrap(),
+		counterpart: Counterpart::OtherDeployment {
+			endpoint: "https://foreign.invalid".into(),
+			key: PinnedKey {
+				key_id: DeploymentKeyId::parse(&"a".repeat(43)).unwrap(),
+				public_key_pem: "pem".into(),
+			},
+		},
+		atomic_transactions: true,
 	}
 }

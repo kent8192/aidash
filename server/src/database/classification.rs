@@ -14,11 +14,6 @@
 pub enum Classification {
 	/// Tenant-owned, with the forced row-level policy enforced.
 	TenantOwned,
-	/// Tenant-owned, but its policy is enforced by the named Issue. #265
-	/// copies the Tenant onto the tables that reach it only through a parent,
-	/// and #241 gives Nodes and peers a Tenant. A new table with a `tenant`
-	/// column is Tenant-owned and enforced from its first migration.
-	Pending(u32),
 	/// Deployment-wide: no row-level policy.
 	DeploymentWide,
 }
@@ -131,7 +126,7 @@ const fn tombstone(app: &'static str, name: &'static str) -> Table {
 	}
 }
 
-use Classification::{DeploymentWide, Pending, TenantOwned};
+use Classification::{DeploymentWide, TenantOwned};
 
 /// Every table the Community migrations create, grouped by app.
 pub const TABLES: &[Table] = &[
@@ -199,7 +194,6 @@ pub const TABLES: &[Table] = &[
 	table("federation", "atomic_gate", DeploymentWide),
 	table("federation", "atomic_history", DeploymentWide),
 	table("federation", "atomic_participants", DeploymentWide),
-	table("federation", "atomic_peer_trust", DeploymentWide),
 	table("federation", "atomic_preflights", DeploymentWide),
 	table("federation", "atomic_subjects", DeploymentWide),
 	table("federation", "atomic_votes", DeploymentWide),
@@ -217,8 +211,10 @@ pub const TABLES: &[Table] = &[
 	),
 	table("federation", "authorization_remote_grants", TenantOwned),
 	table("federation", "delegations", TenantOwned),
-	table("federation", "peer_events", Pending(241)),
-	table("federation", "peers", Pending(241)),
+	// Node Registrations and their revisions: the receiving Node's Tenant
+	// decides whom its Node accepts (#241)
+	table("federation", "node_registration_history", TenantOwned),
+	table("federation", "node_registrations", TenantOwned),
 	table("federation", "remote_run_message_fences", TenantOwned),
 	// identity
 	table("identity", "authorization_bundles", TenantOwned),
@@ -277,6 +273,10 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
+	// Node names are never reused and name the receiving Node's Tenant before
+	// any scope opens (#241)
+	table("identity", "node_names", DeploymentWide),
+	table("identity", "nodes", TenantOwned),
 	// a person's own Approval Mode and Approval Rules (ADR 0076)
 	table("identity", "identity_approval_preferences", TenantOwned),
 	table("identity", "identity_approval_rules", TenantOwned),

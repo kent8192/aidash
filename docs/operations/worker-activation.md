@@ -13,9 +13,9 @@ namespace, retention, and replication settings as the runtime. The command creat
 missing objects and validates existing ones; it does not delete/reset consumers.
 A mismatch is a configuration error and puts runtime activation into recovery.
 
-Provisioning selects only `node.node_id` and `node.nats_url` from the same composed
+Provisioning selects only `deployment.id` and `deployment.nats_url` from the same composed
 settings as the runtime: base/profile TOML, interpolated variables and the legacy
-`AIDASH_NODE_ID` / `NATS_URL` deployment inputs. It does not require database, API
+`AIDASH_DEPLOYMENT_ID` / `NATS_URL` deployment inputs. It does not require database, API
 or provider secrets. `AIDASH_ACTIVATION_NATS_URL` overrides the selected broker
 connection in both provisioning and runtime. The `aidash` compatibility binary
 runs the same registered Reinhardt commands.

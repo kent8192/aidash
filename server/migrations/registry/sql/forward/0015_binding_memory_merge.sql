@@ -6,10 +6,10 @@ BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
  OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps']::text[] <> '{}'::jsonb
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
- OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
  IF COALESCE(value->'cluster','null'::jsonb) <> 'null'::jsonb
- AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+ AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_deployment":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
  IF jsonb_typeof(COALESCE(value->'max_steps','64'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'max_steps','64') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
  step_count := COALESCE(value->>'max_steps','64')::numeric;
  IF step_count NOT BETWEEN 1 AND 1000 THEN RETURN false; END IF;
@@ -89,8 +89,8 @@ CREATE OR REPLACE FUNCTION public.aidash_descriptor_is_valid(value jsonb) RETURN
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE expected_provider text; expected_tier text; start_operation boolean;
 BEGIN
- IF jsonb_typeof(value) <> 'object' OR value - ARRAY['registry_node','provider','operation','default_alias','tier','narrow','transport','lifecycle']::text[] <> '{}'::jsonb
- OR NOT COALESCE(value->>'registry_node' ~ '^aidash://[A-Za-z0-9-]{1,100}$', false)
+ IF jsonb_typeof(value) <> 'object' OR value - ARRAY['registry_deployment','provider','operation','default_alias','tier','narrow','transport','lifecycle']::text[] <> '{}'::jsonb
+ OR NOT COALESCE(value->>'registry_deployment' ~ '^aidash://[A-Za-z0-9-]{1,100}$', false)
  OR NOT COALESCE(value->>'default_alias' ~ '^[A-Za-z0-9_-]{1,64}$', false)
  OR jsonb_typeof(COALESCE(value->'narrow','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
  IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
@@ -118,8 +118,8 @@ BEGIN
    OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value #> '{lifecycle,poll}'),false)
    OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value #> '{lifecycle,cancel}'),false)
    OR value #> '{lifecycle,poll}' = value #> '{lifecycle,cancel}'
-   OR value #>> '{lifecycle,poll,registry_node}' IS DISTINCT FROM value->>'registry_node'
-   OR value #>> '{lifecycle,cancel,registry_node}' IS DISTINCT FROM value->>'registry_node' THEN RETURN false; END IF;
+   OR value #>> '{lifecycle,poll,registry_deployment}' IS DISTINCT FROM value->>'registry_deployment'
+   OR value #>> '{lifecycle,cancel,registry_deployment}' IS DISTINCT FROM value->>'registry_deployment' THEN RETURN false; END IF;
   ELSIF COALESCE(value->'lifecycle','null'::jsonb) <> 'null'::jsonb THEN RETURN false; END IF;
   RETURN true;
  END IF;
@@ -168,9 +168,9 @@ BEGIN
  OR entity ?| ARRAY['installation','binding_normalization']
  OR jsonb_typeof(entity->'id') IS DISTINCT FROM 'string' OR jsonb_typeof(entity->'version') IS DISTINCT FROM 'string'
  OR entity->>'id' IS DISTINCT FROM entry_id OR entity->>'version' IS DISTINCT FROM entry_version
- OR NOT COALESCE(public.aidash_qualified_ref_is_valid(jsonb_build_object('registry_node','aidash://contract','id',entry_id,'version',entry_version)),false) THEN RETURN false; END IF;
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(jsonb_build_object('registry_deployment','aidash://contract','id',entry_id,'version',entry_version)),false) THEN RETURN false; END IF;
  FOR candidate IN SELECT jsonb_array_elements(value->'dependencies') LOOP
-  IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+  IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate || '{"registry_deployment":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
  END LOOP;
  RETURN COALESCE(CASE entity->>'kind'
  WHEN 'agent' THEN public.aidash_agent_bindings_is_valid(entity->'config')

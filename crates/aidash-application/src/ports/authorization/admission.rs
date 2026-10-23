@@ -12,6 +12,11 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	fn node_id(&self) -> &str;
+	/// The address of the Node the Workspace belongs to, which executes its Tasks.
+	async fn workspace_node(
+		&mut self,
+		workspace: Uuid,
+	) -> Result<aidash_domain::nodes::NodeAddress>;
 	fn bundle(&self) -> &PolicyBundle;
 	async fn task(&mut self, id: Uuid) -> Result<Option<Task>>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;

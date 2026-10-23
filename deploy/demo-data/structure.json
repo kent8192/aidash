@@ -57,7 +57,7 @@
             "type": "object"
           },
           "config": {
-            "registry_node": "$node",
+            "registry_deployment": "$deployment",
             "provider": "integration.http@1",
             "operation": "invoke",
             "default_alias": "weather_lookup",
@@ -93,7 +93,7 @@
               {
                 "kind": "tool",
                 "target": {
-                  "registry_node": "$node",
+                  "registry_deployment": "$deployment",
                   "id": "weather-lookup",
                   "version": "1.0.0"
                 },

@@ -88,7 +88,7 @@ pub async fn run(address: Option<SocketAddr>) -> crate::Result<()> {
 	// The worker's login cannot change the schema; `migrate` runs first as its owner.
 	bootstrap::require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
-	let address = address.or(settings.node.probe_listen);
+	let address = address.or(settings.deployment.probe_listen);
 	let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let shutdown = ShutdownCoordinator::new(Duration::from_secs(30));
@@ -101,7 +101,7 @@ pub async fn run(address: Option<SocketAddr>) -> crate::Result<()> {
 	};
 	let tasks = RuntimeTasks::start(
 		federation,
-		settings.node.worker_count,
+		settings.deployment.worker_count,
 		shutdown.clone(),
 		None,
 	)
