@@ -34,6 +34,9 @@ pub(crate) struct CredentialPage {
 	pub(crate) offset: u64,
 	#[serde(default)]
 	pub(crate) mine: bool,
+	/// Return only credentials that can still authenticate.
+	#[serde(default)]
+	pub(crate) active: bool,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

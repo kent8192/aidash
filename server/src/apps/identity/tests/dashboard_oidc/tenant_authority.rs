@@ -383,6 +383,74 @@ async fn a_member_issues_credentials_for_itself_that_end_with_its_mapping(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn active_self_issued_credentials_are_bounded_independently_of_history(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::models::AuthorizationCredential;
+	use reinhardt::db::orm::Model;
+	let t = Team::new(runtime).await;
+	let active_id = Uuid::new_v4();
+	let mapping = Team::mapping(&t.bob_context).parse::<Uuid>().unwrap();
+	t.d.federation
+		.store
+		.pool
+		.atomic(&aidash_application::tenancy::TEST_FIXTURE, async |tx| {
+			let now = chrono::Utc::now();
+			for n in 0_u32..202 {
+				let entropy = Uuid::new_v4();
+				let row = AuthorizationCredential::build()
+					.id(if n == 0 { active_id } else { Uuid::new_v4() })
+					.tenant(t.tenant.clone())
+					.subject("bob")
+					.token_hash(entropy.as_bytes().repeat(2))
+					.created_at(now - chrono::Duration::hours(if n == 0 { 2 } else { 1 }))
+					.expires_at(if n > 0 && n.is_multiple_of(2) {
+						now - chrono::Duration::minutes(30)
+					} else {
+						now + chrono::Duration::hours(1)
+					})
+					.revoked_at(if n.is_multiple_of(2) {
+						None
+					} else {
+						Some(now - chrono::Duration::minutes(10))
+					})
+					.issued_by("history-fixture")
+					.mapping_id(Some(mapping))
+					.finish();
+				AuthorizationCredential::objects()
+					.create_with_conn(tx, &row)
+					.await?;
+			}
+			Ok(())
+		})
+		.await
+		.unwrap();
+	let (status, history) = t.bob("GET", "/credentials?mine=true", Value::Null).await;
+	assert_eq!(status, 200, "{history}");
+	assert_eq!(history.as_array().unwrap().len(), 200);
+	assert!(
+		history
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["id"] != json!(active_id))
+	);
+	let (status, active) = t
+		.bob("GET", "/credentials?mine=true&active=true", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{active}");
+	assert_eq!(active.as_array().unwrap().len(), 1);
+	assert_eq!(active[0]["id"], json!(active_id));
+	let (status, page) = t
+		.bob("GET", "/credentials?mine=true&offset=200", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page.as_array().unwrap().len(), 2);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn an_administrator_issues_credentials_only_for_subjects_no_person_was_mapped_to(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
