@@ -27,12 +27,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+mod journal_results;
+pub(crate) use journal_results::ResearchJournalResult;
+
 const DISPATCHED: &str = "dispatched";
 /// Advisory lock namespace of research reservations.
 const LOCK_NAMESPACE: i64 = 71_003_237;
 
 /// A transaction-scoped advisory lock serializing research writes of `key`.
 pub(crate) async fn lock(tx: &mut dyn TransactionExecutor, key: &str) -> Result<()> {
+	// All Research writers, purges and projection saves use Run row then
+	// Research advisory lock. A single order avoids a save/purge deadlock.
+	if let Some(run) = key
+		.strip_prefix("research-run:")
+		.and_then(|id| id.parse::<Uuid>().ok())
+	{
+		let (sql, values) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.lock(LockType::Update)
+			.build(PostgresQueryBuilder);
+		tx.fetch_one(&sql, convert_values(values)).await?;
+	}
 	let (sql, values) = Query::select()
 		.expr(SimpleExpr::FunctionCall(
 			"pg_advisory_xact_lock".into_iden(),
@@ -1662,7 +1679,7 @@ impl ExpiringAttempts {
 			.execute(&sql, convert_values(values))
 			.await?
 			.rows_affected;
-		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		for operation in Operation::ALL {
 			let tombstone = aidash_domain::research::expiry::tombstone(operation);
 			// The attempts themselves, and any attempt of the Run whose result
 			// was built from an expired Document snapshot.
@@ -1740,6 +1757,27 @@ impl ExpiringAttempts {
 				.build(PostgresQueryBuilder);
 			tx.execute(&sql, convert_values(values)).await?;
 		}
+		let expired = aidash_domain::research::expiry::ExpiredResults {
+			sources: if searches.is_empty() {
+				Default::default()
+			} else {
+				ResearchSource::objects()
+					.filter(ResearchSource::field_run_id().eq(self.run))
+					.filter(
+						ResearchSource::field_attempt_key()
+							.is_in(searches.iter().cloned().map(Some).collect::<Vec<_>>()),
+					)
+					.all_with_executor(tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.into_iter()
+					.map(|source| source.id)
+					.collect()
+			},
+			documents: documents.into_iter().collect(),
+			through: Some(at),
+		};
+		ResearchJournalResult::expire(tx, self.run, &all, &expired).await?;
 		Ok(purged)
 	}
 }

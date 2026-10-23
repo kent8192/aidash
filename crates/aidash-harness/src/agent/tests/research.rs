@@ -638,6 +638,7 @@ async fn a_research_result_compaction_cut_to_a_string_is_redacted_from_its_journ
 		fixture.backend.0.journal.lock().unwrap().push((
 			fixture.run.id,
 			aidash_domain::context::HistoryEntry {
+				research: None,
 				seq,
 				event: ContextEvent::tool(call(id, "renamed", json!({})), original),
 			},
@@ -683,6 +684,7 @@ async fn an_elided_research_result_loses_the_arguments_its_original_named(fixtur
 		fixture.backend.0.journal.lock().unwrap().push((
 			fixture.run.id,
 			aidash_domain::context::HistoryEntry {
+				research: None,
 				seq,
 				event: ContextEvent::tool(call(id, "renamed", arguments), original),
 			},

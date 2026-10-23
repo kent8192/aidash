@@ -28,7 +28,7 @@ use uuid::Uuid;
 pub(crate) mod account_terms;
 pub(crate) mod retention;
 mod revocation;
-pub(crate) use revocation::{Revocations, scrub_revoked_projections};
+pub(crate) use revocation::{Revocations, protect_projection, scrub_revoked_projections};
 
 /// A transaction for retention work, which reaches every Tenant's Research
 /// evidence: purging snapshots and catching up revoked Runs.
@@ -671,4 +671,62 @@ pub(crate) async fn run_research(
 		can_revoke: false,
 		can_read_revocation: false,
 	})
+}
+
+/// Freeze exact materialized variants under the caller's Run row fence.
+pub(crate) async fn freeze_context(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	context: &aidash_domain::context::Context,
+) -> crate::Result<()> {
+	if !context
+		.history
+		.iter()
+		.any(|entry| entry.research_reference().is_some())
+	{
+		return Ok(());
+	}
+	lock(tx, &run_lock(run)).await?;
+	let expired = account_terms::expired(tx, run).await?;
+	let revoked = ResearchRevocation::exists(tx, run).await?;
+	crate::apps::execution::models::research::ResearchJournalResult::freeze(
+		tx,
+		run,
+		&context.history,
+		&expired,
+		revoked,
+	)
+	.await
+}
+
+/// Materialize a projection for execution; durable serialization still writes
+/// only immutable references. The final expiry/revocation check covers a
+/// purge committed while the payloads were being read.
+pub(crate) async fn resolve_entries(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	entries: &mut [aidash_domain::context::HistoryEntry],
+) -> crate::Result<()> {
+	if !entries.iter().any(|entry| matches!(&entry.event, aidash_domain::context::ContextEvent::Tool { result, .. } if aidash_domain::context::research::ResearchReference::parse(result).is_some())) { return Ok(()); }
+	let expired = account_terms::expired(tx, run).await?;
+	let revoked = ResearchRevocation::exists(tx, run).await?;
+	crate::apps::execution::models::research::ResearchJournalResult::resolve(
+		tx, run, entries, &expired, revoked,
+	)
+	.await?;
+	let expired = account_terms::expired(tx, run).await?;
+	let revoked = ResearchRevocation::exists(tx, run).await?;
+	if revoked {
+		for entry in entries {
+			if entry.research_reference().is_some()
+				&& let aidash_domain::context::ContextEvent::Tool { call, result } =
+					&mut entry.event
+			{
+				*result = aidash_domain::context::ContextEvent::revoked_result(&call.id);
+			}
+		}
+	} else {
+		aidash_domain::research::expiry::expire(entries, &expired, &Default::default());
+	}
+	Ok(())
 }

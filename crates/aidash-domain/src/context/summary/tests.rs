@@ -35,6 +35,7 @@ fn passed() -> serde_json::Value {
 
 fn tool_with(seq: u64, arguments: serde_json::Value, result: serde_json::Value) -> HistoryEntry {
 	HistoryEntry {
+		research: None,
 		seq,
 		event: ContextEvent::tool(
 			ToolCall {

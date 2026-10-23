@@ -20,11 +20,12 @@ pub const EXPIRED_RESULT_CONTRACT: &str = "aidash.research.expired/1";
 
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, schemars::JsonSchema)]
 pub struct HistoryEntry {
 	pub seq: u64,
 	pub event: ContextEvent,
+	#[schemars(skip)]
+	pub research: Option<research::ResearchReference>,
 }
 
 /// Context Journal position. Entries up to `imported_through` were recovered
@@ -63,7 +64,7 @@ pub struct Context {
 	pub revoked_summary_dependencies: Option<summary::SummaryDependencies>,
 	/// The Run's Research evidence was revoked (ADR 0046). Its research results
 	/// are placeholders here and no Execution Summary holds them; the Context
-	/// Journal keeps the originals.
+	/// Journal keeps the immutable references.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub research_revoked: bool,
 	/// The latest purge under the Research account terms already applied
@@ -203,7 +204,7 @@ impl<'de> Deserialize<'de> for Context {
 					.into_iter()
 					.zip(1_u64..)
 					.filter_map(|(entry, seq)| match entry {
-						StoredHistory::Legacy(event) => Some(HistoryEntry { seq, event }),
+						StoredHistory::Legacy(event) => Some(HistoryEntry::new(seq, event)),
 						StoredHistory::Entry(_) => None,
 					})
 					.collect();
@@ -258,10 +259,15 @@ impl Context {
 	/// Append an event to the projection with the next Context Journal sequence.
 	pub fn push(&mut self, event: ContextEvent) {
 		self.journal.head += 1;
-		self.history.push(HistoryEntry {
-			seq: self.journal.head,
-			event,
-		});
+		self.history
+			.push(HistoryEntry::new(self.journal.head, event));
+	}
+
+	/// Append a tool result with its durable invocation identity.
+	pub fn push_invocation(&mut self, event: ContextEvent, invocation: &str) {
+		self.journal.head += 1;
+		self.history
+			.push(HistoryEntry::new(self.journal.head, event).with_invocation(invocation));
 	}
 
 	/// Append a Completion Gate repair request. Each repair reruns its Check,
@@ -882,7 +888,7 @@ impl ContextEvent {
 
 	/// A research result the Research account terms no longer keep. Later
 	/// model requests carry this instead; the Context Journal keeps the
-	/// original (ADR 0058). Unlike a revoked result, its call's arguments,
+	/// reference (ADR 0083). Unlike a revoked result, its call's arguments,
 	/// which Aidash itself sent, stay.
 	pub fn expired_result(call_id: &str) -> Value {
 		json!({
@@ -937,6 +943,7 @@ pub mod sources;
 
 pub mod policy;
 pub mod recovery;
+pub mod research;
 pub mod summary;
 
 #[cfg(test)]

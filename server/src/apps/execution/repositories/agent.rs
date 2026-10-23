@@ -31,6 +31,12 @@ use uuid::Uuid;
 
 #[async_trait]
 impl ExecutionStore for RunStore {
+	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
+		let mut tx = self.store.pool.begin(&self.scope).await?.into_executor()?;
+		super::research::resolve_entries(tx.as_mut(), run.id, &mut run.context.history).await?;
+		tx.commit().await.map_err(crate::Error::from)?;
+		Ok(())
+	}
 	async fn research_revoked(&self, run: &Run) -> Result<bool> {
 		use aidash_application::ports::research::EvidenceStore;
 		super::research::Evidence {

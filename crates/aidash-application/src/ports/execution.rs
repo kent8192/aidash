@@ -138,6 +138,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.semantic_degraded").await
 	}
+	/// Resolve immutable Research references for this execution projection.
+	/// A store without Research references keeps the supplied context.
+	async fn resolve_research(&self, _run: &mut Run) -> Result<()> {
+		Ok(())
+	}
 	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
 	/// without research evidence has nothing to revoke.
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {

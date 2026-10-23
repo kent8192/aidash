@@ -138,6 +138,7 @@ pub fn apply(
 				let head: String = text.chars().take(TRUNCATED_HEAD).collect();
 				pruned.truncated += 1;
 				pruned.history.push(HistoryEntry {
+					research: entry.research_reference(),
 					seq: entry.seq,
 					event: ContextEvent::Tool {
 						call: call.clone(),

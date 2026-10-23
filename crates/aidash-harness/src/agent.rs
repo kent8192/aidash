@@ -266,13 +266,13 @@ impl<'a> Executor<'a> {
 			let event = ContextEvent::tool(call.clone(), output.clone());
 			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 			let growth = context::tool_event_growth(&context, &event);
-			context.push(event);
+			context.push_invocation(event, &keys[offset]);
 			let progress = run.state.tool_mut()?;
 			progress.request_tokens = progress.request_tokens.saturating_add(growth);
 			home.report(
 				&format!("{}:tool", keys[offset]),
 				"remote.tool.completed",
-				json!({"run_id":run.id,"call":call,"result":output}),
+				json!({"run_id":run.id,"call":call,"result":context.history.last().expect("just appended tool result").durable_event()["result"]}),
 			)
 			.await?;
 		}
@@ -782,7 +782,7 @@ impl<'a> Executor<'a> {
 	/// restored from the Context Journal and redacted the same way. Unlike a
 	/// revoked summary source this never pauses, because revoked evidence is
 	/// never readable again and the Run continues without research. The
-	/// Context Journal keeps what the model already read.
+	/// Context Journal retains immutable references whose owned bytes are removed.
 	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
 		use aidash_application::research::revocation;
 		let store = self.environment.store();
@@ -1068,6 +1068,7 @@ impl<'a> Executor<'a> {
 			.get_for_run(&*run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent = self.environment.agent(&entry)?;
+		store.resolve_research(run).await?;
 		// Separate phase poll frames to keep typed execution within the default worker stack.
 		match run.state.clone() {
 			RunState::Ready(_) => {
@@ -2872,7 +2873,7 @@ impl<'a> Executor<'a> {
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
-				context.push(event);
+				context.push_invocation(event, &key);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);
 				run.context = context.clone();
@@ -2909,7 +2910,7 @@ impl<'a> Executor<'a> {
 				home.report(
 					&format!("{key}:tool"),
 					"remote.tool.completed",
-					json!({"run_id":run.id,"call":call,"result":output}),
+					json!({"run_id":run.id,"call":call,"result":context.history.last().expect("just appended tool result").durable_event()["result"]}),
 				)
 				.await?;
 				store.save_run(run, token, "run.tool_recorded").await?;

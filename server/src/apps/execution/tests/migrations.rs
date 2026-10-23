@@ -104,7 +104,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		44
+		45
 	);
 	let tables = migrations
 		.iter()
@@ -342,12 +342,15 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0049_policy_probe")
+		.get_migration("execution", "0052_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0048_egress_state".to_owned())]
+		vec![(
+			"execution".to_owned(),
+			"0051_research_journal_results_row_level_security".to_owned()
+		)]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -641,7 +644,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		44
+		45
 	);
 }
 

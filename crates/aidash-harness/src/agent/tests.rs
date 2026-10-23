@@ -2195,6 +2195,7 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 	};
 	// Jev keeps the leading text of an old result as a plain string.
 	let entries = [context::HistoryEntry {
+		research: None,
 		seq: 1,
 		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
 	}];

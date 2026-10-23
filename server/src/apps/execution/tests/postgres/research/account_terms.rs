@@ -447,3 +447,6 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 	assert_eq!(recorded, 1);
 	cleanup(store, &url, &schema).await;
 }
+
+#[path = "account_terms/journal_results.rs"]
+mod journal_results;
