@@ -53,6 +53,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0042_external_services"),
 	("registry", "0043_external_services_state"),
 	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_context_sources"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -2819,4 +2820,44 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		"{error}"
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![deferred]).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mismatched_operations(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts = |config: serde_json::Value| {
+		let pool = pool.clone();
+		async move {
+			contract_accepts(
+				&pool,
+				"aidash_context_is_valid",
+				vec![config, json!("source")],
+			)
+			.await
+		}
+	};
+	let declaration = json!({"provider":"aidash.native-context/1","operation":"workspace_retrieval","tools":{"read":[],"write":[],"detail":null},"pin":{"policy":"always"},"query":"accepted-inputs-first@1"});
+	let configured = json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"},"context_source":declaration});
+	assert!(
+		accepts(json!({"schema_version":1,"source":{"adapter":"workspace_observation"}})).await
+	);
+	assert!(accepts(configured.clone()).await);
+	for (field, value) in [
+		("provider", json!("unavailable.provider")),
+		("operation", json!("skills")),
+		("query", json!("unknown@1")),
+		("required_home", json!("true")),
+	] {
+		let mut invalid = configured.clone();
+		invalid["context_source"][field] = value;
+		assert!(!accepts(invalid.clone()).await, "{invalid}");
+	}
+	let mut unknown = configured;
+	unknown["context_source"]["unknown"] = json!(true);
+	assert!(!accepts(unknown).await);
 }

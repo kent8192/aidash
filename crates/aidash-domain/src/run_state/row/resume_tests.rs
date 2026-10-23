@@ -134,6 +134,34 @@ fn inspection_omits_source_text_while_storage_preserves_the_retry_cache(mut raw:
 		)
 		.unwrap(),
 	);
+
+	let contribution = crate::context::source::SourceContribution {
+		identity: crate::context::source::CandidateIdentity {
+			source: crate::registry::bindings::QualifiedRef::builtin(
+				"aidash://node",
+				"private-source-identity",
+			),
+			item: "private-item".into(),
+			revision: "r1".into(),
+			range: None,
+		},
+		content: json!("private-contribution-text"),
+		provenance: vec![],
+		dependencies: vec![],
+		completeness: crate::context::source::Completeness::Complete,
+		detail: None,
+		fetched_digest: crate::registry::rules::digest(&json!("private-contribution-text")),
+		content_digest: crate::registry::rules::digest(&json!("private-contribution-text")),
+	};
+	context.source_deliveries.push(
+		crate::context::source::accepted_delivery(
+			&contribution,
+			crate::registry::rules::digest(&json!("private-request")),
+			uuid::Uuid::from_u128(9),
+		)
+		.unwrap(),
+	);
+	context.source_contributions.push(contribution);
 	raw.context = serde_json::to_value(&context).unwrap();
 	let restored: Context = serde_json::from_value(raw.context.clone()).unwrap();
 	assert_eq!(
@@ -143,6 +171,24 @@ fn inspection_omits_source_text_while_storage_preserves_the_retry_cache(mut raw:
 	let inspection = serde_json::to_value(raw.inspect()).unwrap();
 	assert!(inspection["context"].get("source_observation").is_none());
 	assert!(!inspection.to_string().contains("private-source-text"));
+	assert_eq!(restored.source_contributions.len(), 1);
+	assert_eq!(restored.source_deliveries.len(), 1);
+	assert!(!inspection.to_string().contains("private-contribution-text"));
+	assert!(!inspection.to_string().contains("private-source-identity"));
+	for field in [
+		"source_contributions",
+		"source_deliveries",
+		"source_selections",
+	] {
+		assert!(inspection["context"].get(field).is_none());
+	}
 	let schema = serde_json::to_value(schemars::schema_for!(RunInspection)).unwrap();
 	assert!(!schema.to_string().contains("source_observation"));
+	for field in [
+		"source_contributions",
+		"source_deliveries",
+		"source_selections",
+	] {
+		assert!(!schema.to_string().contains(field));
+	}
 }

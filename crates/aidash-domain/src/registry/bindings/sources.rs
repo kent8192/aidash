@@ -441,3 +441,11 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 	}
 	Ok(())
 }
+
+/// Selection approval is checked at the hook boundary, so unavailability is a
+/// typed source pause (or an observational Shadow outcome), not Tool admission.
+pub fn is_selection_decider(entry: &crate::registry::Entry) -> bool {
+	entry.kind == "decider"
+		&& serde_json::from_value::<crate::decision::DeciderConfig>(entry.config.clone())
+			.is_ok_and(|config| config.hook == crate::decision::Hook::ContextSelection)
+}

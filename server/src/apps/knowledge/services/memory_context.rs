@@ -96,11 +96,13 @@ pub(crate) async fn retrieve(
 		}
 		declare_bank(&mut declared, bank, source.memory, source.max_tokens);
 	}
-	let mut query = format!("{}\n{}", task.title, task.description);
-	for (_, text) in inputs {
-		query.push('\n');
-		query.push_str(text);
-	}
+	let query = aidash_application::execution::semantic_context::query_material(
+		run,
+		task,
+		inputs,
+		aidash_domain::context::source::MAX_SOURCE_BYTES,
+	)?
+	.text;
 	let boundary = match key {
 		Some(key) => serde_json::to_value(key)?,
 		None => {

@@ -46,7 +46,10 @@ impl BindingResolver for PinnedResolver {
 		self.authority.refresh(run).await?;
 		let mut tools = Tools::new();
 		for binding in &snapshot.bindings {
-			if binding.excluded_reason.is_some() {
+			if binding.excluded_reason.is_some()
+				|| aidash_domain::registry::bindings::sources::is_selection_decider(
+					&binding.definition,
+				) {
 				continue;
 			}
 			self.authority.check(run, binding).await?;
