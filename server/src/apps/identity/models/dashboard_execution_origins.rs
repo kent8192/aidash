@@ -6,6 +6,7 @@ use crate::apps::execution::models::Run;
 use crate::apps::execution::services::states::RunControl;
 use crate::apps::identity::models::DashboardMapping;
 use crate::authorization::identity::SubjectIdentity;
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::{Model, OrmExecutor, QuerySet};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -18,10 +19,19 @@ pub struct DashboardExecutionOrigin {
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub identity_id: uuid::Uuid,
-	#[field]
-	pub mapping_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		db_constraint = "dashboard_execution_origins_identity_id_fkey",
+		db_index = false
+	)]
+	pub identity: ForeignKeyField<crate::apps::identity::models::DashboardIdentity>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "dashboard_execution_origins_mapping_id_fkey",
+		db_index = false
+	)]
+	pub mapping: ForeignKeyField<crate::apps::identity::models::DashboardMapping>,
 }
 
 impl DashboardExecutionOrigin {

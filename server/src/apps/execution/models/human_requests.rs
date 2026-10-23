@@ -2,6 +2,7 @@
 
 use crate::apps::execution::services::states::HumanRequestKind;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -16,8 +17,14 @@ pub struct HumanRequest {
 	pub tenant: String,
 	#[field]
 	pub workspace_id: uuid::Uuid,
-	#[field]
-	pub run_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "human_requests_run_id_fkey",
+		db_index = false,
+		on_delete = Cascade
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text", max_length = 64)]
 	pub kind: HumanRequestKind,
 	#[field(field_type = "text")]

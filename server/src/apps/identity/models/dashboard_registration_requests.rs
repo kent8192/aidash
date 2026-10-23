@@ -1,6 +1,7 @@
 //! Persistent dashboard_registration_requests records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +10,12 @@ use serde::{Deserialize, Serialize};
 pub struct DashboardRegistrationRequest {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
-	#[field]
-	pub identity_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		db_constraint = "dashboard_registration_requests_identity_id_fkey",
+		db_index = false
+	)]
+	pub identity: ForeignKeyField<crate::apps::identity::models::DashboardIdentity>,
 	#[field(field_type = "text")]
 	pub status: String,
 	#[field]
@@ -28,8 +33,13 @@ pub struct DashboardRegistrationRequest {
 	#[field(field_type = "text", null = true)]
 	pub tenant: Option<String>,
 	/// The Invitation this request was made with.
-	#[field(null = true)]
-	pub invitation_id: Option<uuid::Uuid>,
+	#[rel(
+		foreign_key,
+		db_constraint = "dashboard_registration_requests_invitation_id_fkey",
+		db_index = false,
+		null = true
+	)]
+	pub invitation: ForeignKeyField<crate::apps::identity::models::TenantInvitation>,
 }
 
 impl DashboardRegistrationRequest {}
