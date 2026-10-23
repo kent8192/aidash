@@ -49,7 +49,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	assert_eq!(status, 200, "{approved}");
 	let mut policy = c.policy.clone();
 	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.1.0")] =
-		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
+		json!({"kind":"agent", "node": name});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, workspace) = request(
 		&c.app,
@@ -1214,7 +1214,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	assert_eq!(status, 200, "{body}");
 	let mut policy = c.a.policy.clone();
 	policy["subjects"][aidash_domain::agent_subject(sibling_address, "research", "1.1.0")] =
-		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
+		json!({"kind":"agent", "node": sibling_name});
 	common::replace_policy(&c.a.f.store, "acme", policy.clone()).await;
 	let (status, workspace) = request(
 		&c.a.app,
