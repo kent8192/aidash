@@ -1334,6 +1334,7 @@ impl Guard {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &crate::registry::ModelConfig,
+		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
@@ -1341,6 +1342,7 @@ impl Guard {
 			self.run.workspace_id,
 			messages,
 			model,
+			projection,
 		)
 		.await
 		.map_err(Into::into)

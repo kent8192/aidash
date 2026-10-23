@@ -938,6 +938,7 @@ impl ExecutionAuthority for Backend {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
+		_projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let _ = model;
 		if !self.0.human_media_pending {

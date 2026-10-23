@@ -1391,7 +1391,7 @@ impl<'a> Executor<'a> {
 				}
 				let media = Box::pin(resolve_model_input_media(
 					self.environment,
-					run,
+					agent.projection_version,
 					guard,
 					if run_message_catchup {
 						&[]
@@ -2782,7 +2782,7 @@ impl<'a> Executor<'a> {
 								.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 								.await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
-							match check_model_media_headroom(headroom, parts, &model) {
+							match check_model_media_headroom(headroom, parts, &model, agent.projection_version) {
 								Ok(()) => {}
 								Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
 									return self
@@ -3210,7 +3210,7 @@ async fn prepare_tool_result(
 }
 async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
-	_run: &Run,
+	projection: ProjectionVersion,
 	guard: Option<&dyn ExecutionAuthority>,
 	selections: &[ModelMedia],
 	messages: &[(i64, Uuid, usize)],
@@ -3238,7 +3238,7 @@ async fn resolve_model_input_media(
 	} else {
 		guard
 			.ok_or(Error::Forbidden)?
-			.human_message_media(messages, model)
+			.human_message_media(messages, model, projection)
 			.await?
 	};
 	let batch_headroom = human
@@ -3256,6 +3256,7 @@ async fn resolve_model_input_media(
 		batch_headroom,
 		human.through_seq.is_some(),
 		model,
+		projection,
 	);
 	if !model.has_current_media_route_for_parts(&parts) {
 		return Err(Error::MediaRouteUnavailable(model.model_id.clone()));

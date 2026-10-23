@@ -113,6 +113,7 @@ fn human_media_takes_the_first_inference_when_selected_files_exceed_the_combined
 		128_000,
 		true,
 		&media_model(),
+		Default::default(),
 	);
 	assert!(deferred);
 	assert_eq!(parts.len(), 1);
@@ -125,8 +126,14 @@ fn human_media_takes_the_first_inference_when_selected_audio_exceeds_headroom() 
 		format: "wav".into(),
 		bytes: vec![0; 1024 * 1024],
 	};
-	let (parts, deferred) =
-		super::choose_inference_media(vec![audio()], vec![audio()], 128_000, true, &media_model());
+	let (parts, deferred) = super::choose_inference_media(
+		vec![audio()],
+		vec![audio()],
+		128_000,
+		true,
+		&media_model(),
+		Default::default(),
+	);
 	assert!(deferred);
 	assert_eq!(parts.len(), 1);
 }
@@ -138,8 +145,14 @@ fn text_only_batch_defers_selected_media_when_its_headroom_is_used() {
 		format: "wav".into(),
 		bytes: vec![0; 64 * 1024],
 	};
-	let (parts, deferred) =
-		super::choose_inference_media(vec![selected], Vec::new(), 2_048, true, &media_model());
+	let (parts, deferred) = super::choose_inference_media(
+		vec![selected],
+		Vec::new(),
+		2_048,
+		true,
+		&media_model(),
+		Default::default(),
+	);
 	assert!(deferred);
 	assert!(parts.is_empty());
 }
@@ -155,8 +168,14 @@ fn selected_media_waits_when_human_media_needs_another_route() {
 		media_type: "image/png".into(),
 		bytes: vec![2],
 	};
-	let (parts, deferred) =
-		super::choose_inference_media(vec![selected], vec![human], 128_000, true, &media_model());
+	let (parts, deferred) = super::choose_inference_media(
+		vec![selected],
+		vec![human],
+		128_000,
+		true,
+		&media_model(),
+		Default::default(),
+	);
 	assert!(deferred);
 	assert!(
 		matches!(parts.as_slice(), [aidash_domain::provider::ContentPart::Image {media_type, ..}] if media_type == "image/png")
@@ -175,10 +194,16 @@ fn selected_files_must_share_one_current_route() {
 		bytes: b"\xff\xd8\xffsecond".to_vec(),
 	};
 	let model = media_model();
-	assert!(super::check_model_media_headroom(128_000, vec![png.clone()], &model).is_ok());
-	assert!(super::check_model_media_headroom(128_000, vec![jpeg.clone()], &model).is_ok());
+	assert!(
+		super::check_model_media_headroom(128_000, vec![png.clone()], &model, Default::default())
+			.is_ok()
+	);
+	assert!(
+		super::check_model_media_headroom(128_000, vec![jpeg.clone()], &model, Default::default())
+			.is_ok()
+	);
 	assert!(matches!(
-		super::check_model_media_headroom(128_000, vec![png, jpeg], &model),
+		super::check_model_media_headroom(128_000, vec![png, jpeg], &model, Default::default()),
 		Err(Error::Invalid(message)) if message.contains("no current media route")
 	));
 }
@@ -196,8 +221,24 @@ fn encoded_message_text_consumes_media_headroom() {
 		bytes: vec![1],
 	};
 	let headroom = 4_096 + reservation / 2;
-	assert!(super::media_request_headroom(headroom, std::slice::from_ref(&image)).is_ok());
-	assert!(super::media_request_headroom(headroom - reservation, &[image]).is_err());
+	assert!(
+		super::media_request_headroom(
+			headroom,
+			std::slice::from_ref(&image),
+			&media_model(),
+			Default::default()
+		)
+		.is_ok()
+	);
+	assert!(
+		super::media_request_headroom(
+			headroom - reservation,
+			&[image],
+			&media_model(),
+			Default::default()
+		)
+		.is_err()
+	);
 }
 
 #[rstest::rstest]
@@ -239,7 +280,7 @@ fn selected_audio_must_fit_the_model_context_before_tool_completion() {
 	bytes[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
 	let part = aidash_domain::provider::ContentPart::from_media("audio/wav", bytes).unwrap();
 	assert!(matches!(
-		super::check_model_media_headroom(128_000, vec![part], &media_model()),
+		super::check_model_media_headroom(128_000, vec![part], &media_model(), Default::default()),
 		Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message.contains("context window")
 	));
 }
