@@ -272,7 +272,7 @@ export function PeerMappings({
           }}
         />
       </Panel>
-      {editing && (
+      {editing && (readable || editing === "new") && (
         <Modal
           title={t(
             editing === "new" ? "authAddPeerMapping" : "authEditPeerMapping",
