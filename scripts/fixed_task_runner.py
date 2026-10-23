@@ -12,7 +12,7 @@ import uuid
 
 import tool_call_approvals
 from fixed_task_evaluation import (DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
-                                   task_tools)
+                                   task_tools, execution_schedule)
 
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
@@ -165,7 +165,8 @@ def model_config(model, fixture_url, name):
     config = {"provider": "openrouter", "model_id": model["model_id"], "endpoint": fixture_url + "/v1",
               "credential_env": None, "context_window": model["context_window"],
               "max_output_tokens": model["max_output_tokens"], "modalities": ["text"], "cost": {},
-              "projection_versions": ["legacy", "ordered"]}
+              "projection_versions": ["legacy", "ordered", "native"], "request_estimator": "bytes",
+              "reasoning_effort": "medium"}
     if model.get("cache_mode"):
         config["cache_mode"] = model["cache_mode"]
     return config
@@ -189,6 +190,8 @@ def agent_config(corpus, task, model_ref, tool_refs, fields):
               "instructions": corpus["instructions"], "bindings": bindings,
               "remove_default": task.get("remove_default", ["file_search", "file_read"]),
               "max_steps": task.get("max_steps", corpus["max_steps"])}
+    if task.get("context_policy"):
+        config["context_policy"] = copy.deepcopy(task["context_policy"])
     config.update(json.loads(json.dumps(fields)))
     return config
 
@@ -227,13 +230,16 @@ def loaded_identity(call_name, result):
 
 def tool_calls_from(context):
     calls = []
+    turns = {identifier: event["epoch"] for event in context.get("history", [])
+             if event.get("kind") == "assistant" for identifier in event.get("calls", [])}
     for event in context.get("history", []):
         if event.get("kind") != "tool":
             continue
         result = event.get("result")
         error = result.get("error") if isinstance(result, dict) and isinstance(result.get("error"), str) else None
         # Rejected before dispatch: the tool never ran. Any other error may follow a partial effect.
-        calls.append({"name": event["call"]["name"], "arguments": event["call"].get("arguments"), "error": error,
+        calls.append({"id": event["call"].get("id"), "model_turn": turns.get(event["call"].get("id")),
+                      "name": event["call"]["name"], "arguments": event["call"].get("arguments"), "error": error,
                       "dispatch_rejected": bool(error) and (error in tool_call_approvals.REFUSALS or error.startswith(
                           "unavailable tool ") or (error.startswith("capability ") and error.endswith(
                               ("use capability_load", "call it after the next model request")))),
@@ -263,11 +269,12 @@ def approves(task, card, approve_fixture_tools, prefix):
     """Allow only the exact call a Tool call approval card asks about, and only for this experiment's own fixture tools.
 
     The deterministic tier enables this for its local fixture endpoints. The
-    live tier never does, and escalation tasks are always denied, so the
-    evaluator can never grant an external effect the scenario forbids.
+    live tier enables this only for an exactly approved synthetic fixture service.
+    Escalation tasks and the destructive purge alias are always denied.
     """
     return (approve_fixture_tools and task["kind"] != "escalation"
-            and (card.get("tool") or "").startswith(f"{prefix}-"))
+            and (card.get("tool") or "").startswith(f"{prefix}-")
+            and not (card.get("tool") or "").endswith("-records-purge"))
 
 
 def blank_observation():
@@ -325,7 +332,9 @@ def record_final_state(observation, run):
     context = run.get("context") or {}
     observation.update({"run_id": run["id"], "phase": run["phase"],
                         "error": run.get("error") or run.get("state_error"), "steps": run.get("step"),
-                        "compactions": context.get("compactions"), "tool_calls": tool_calls_from(context)})
+                        "compactions": context.get("compactions"), "tool_calls": tool_calls_from(context),
+                        "recovery_operations": ["summary_recovery"] if context.get("execution_summary") else [],
+                        "summary_recovered": bool(context.get("execution_summary"))})
 
 
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
@@ -527,6 +536,18 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
                                for ref in skills[task["id"]]]
         if remove_all_defaults:
             config["remove_default"] = minimal_defaults(config)
+        auxiliary = planned.get("auxiliary")
+        if auxiliary and auxiliary.get("decider"):
+            reference = auxiliary["decider"]["reference"]
+            identifier, _, version = reference.partition("@")
+            config["bindings"].append({"kind": "decider", "target": {
+                "registry_deployment": experiment.node, "id": identifier, "version": version},
+                "narrow": {"decision": {"max_calls_per_run": auxiliary["decider"]["max_calls_per_run"]}}})
+        if task.get("requires_summary") and auxiliary and auxiliary.get("summary"):
+            identifier, _, version = auxiliary["summary"]["reference"].partition("@")
+            config.setdefault("context_policy", {"version": "context-recovery/1"})["summary"] = {
+                "model": {"id": identifier, "version": version}, "max_tokens": 1024,
+                "call_budget": auxiliary["summary"]["max_calls_per_run"]}
         identifier = agent_id(experiment.prefix, planned)
         try:
             agent = experiment.register("agent", identifier, config)
@@ -538,6 +559,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         planned["skill_refs"] = skills[task["id"]]
         variants.append({"task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
                          "label": planned["label"], "agent": agent, "agent_fields": planned["agent_fields"],
+                         **({"route_id": planned["route_id"], "model_configuration": planned["model_configuration"]}
+                            if planned.get("route_id") else {}),
                          "model": model_ref, "tools": [ref for _, ref in tools[task["id"]]],
                          "skills": skills[task["id"]]})
     if errors:
@@ -643,7 +666,7 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
 # ------------------------------------------------------------ live tier
 
 
-def run_worst_case(task, corpus, model_config, price):
+def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     """Worst-case nanocredits for one Run.
 
     Every provider attempt of every step, including each harness retry,
@@ -654,7 +677,9 @@ def run_worst_case(task, corpus, model_config, price):
     prompt_rate = max(price["input_nanocredits_per_token"], price["cache_write_nanocredits_per_token"])
     per_attempt = (model_config["context_window"] * prompt_rate
                    + model_config["max_output_tokens"] * price["output_nanocredits_per_token"])
-    return steps * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
+    main = steps * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
+    # Every enabled auxiliary call is reserved even if pruning or Summary never becomes necessary.
+    return main + (auxiliary or {}).get("worst_case_nanocredits", 0)
 
 
 def observed_provider_work(api, token, workspace, run_id):
@@ -678,7 +703,8 @@ def observed_provider_work(api, token, workspace, run_id):
 
 
 def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout, observations,
-              clock=time.monotonic, sleep=time.sleep, binding_check=None):
+              clock=time.monotonic, sleep=time.sleep, binding_check=None, *, execution_seed=None, fixture=None,
+              usage_reader=None, auxiliary=None, approve_fixture_tools=False):
     """Dispatch live Runs only inside the ledger's spend and time ceilings.
 
     Each Run is reserved at its worst case before dispatch; a refusal stops all
@@ -693,8 +719,8 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     Admission pins the binding inside the claim and the revision only grows,
     so passing both reads proves the Run pinned the approved credential; a
     failed second read cancels the Run and stops all further dispatch. A Run
-    that applied a compaction proves a Jev compaction Decider answered, which the
-    approval attests cannot happen, and also stops all further dispatch.
+    that applies compaction without a separately approved bounded allowance also
+    stops all further dispatch.
 
     Appends each finished (planned, repeat, observation) to `observations`,
     which the caller owns so that an exception or interrupt cannot lose the
@@ -704,58 +730,60 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     from fixed_task_evaluation import GuardRefusal
     skipped = []
     refusal = None
-    for repeat in range(1, repeats + 1):
-        for planned in planned_runs:
-            if "agent_ref" not in planned:
-                continue
-            key = f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
-            if refusal is not None:
-                skipped.append((key, refusal))
-                continue
-            model = planned["live_model"]
-            if binding_check is not None:
-                binding_check(api)
-            try:
-                attempt = ledger.reserve(key, run_worst_case(planned["task"], corpus, models[model], prices[model]))
-            except GuardRefusal as error:
-                refusal = f"not dispatched after refusal: {error}"
-                skipped.append((key, refusal))
-                continue
-            observation = blank_observation()
-            stops = []
+    schedule = execution_schedule(planned_runs, repeats, execution_seed) if execution_seed is not None else [
+        (planned, repeat) for repeat in range(1, repeats + 1) for planned in planned_runs]
+    for planned, repeat in schedule:
+        if "agent_ref" not in planned:
+            continue
+        key = f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+        if refusal is not None:
+            skipped.append((key, refusal))
+            continue
+        model = planned["live_model"]
+        if binding_check is not None:
+            binding_check(api)
+        try:
+            attempt = ledger.reserve(key, run_worst_case(planned["task"], corpus, models[model], prices[model], auxiliary))
+        except GuardRefusal as error:
+            refusal = f"not dispatched after refusal: {error}"
+            skipped.append((key, refusal))
+            continue
+        observation = blank_observation()
+        stops = []
 
-            def after_claim(bounded, key=key, stops=stops):
-                try:
-                    binding_check(bounded)
-                except GuardRefusal as error:
-                    stops.append(f"Run {key} may have pinned an unapproved credential: {error}")
-                    raise
+        def after_claim(bounded, key=key, stops=stops):
             try:
-                # A Run's time limit never reaches past the wall-time deadline or the approval's expiry.
-                run_task(api, experiment, planned, repeat, planned["agent_ref"],
-                         timeout=min(timeout, ledger.remaining()), clock=clock, sleep=sleep, observation=observation,
-                         after_claim=after_claim if binding_check is not None else None)
-                if observation.get("cancellation_failed"):
-                    stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
-                                 "or the Deployment Administrator token")
-                if observation.get("compactions"):
-                    stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
-                                 "compaction Decider answered although the approval attests external compaction is disabled")
-                if observation["run_id"] and observation.get("workspace"):
-                    try:
-                        attempt["provider_work"] = observed_provider_work(api, experiment.token,
-                                                                          observation["workspace"],
-                                                                          observation["run_id"])
-                    except Exception as error:  # Informational only; the reservation stays charged.
-                        attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
-            except BaseException:  # Ctrl-C, SIGTERM and the like: the in-flight Run is counted, never dropped.
-                observation["interrupted"] = True
+                binding_check(bounded)
+            except GuardRefusal as error:
+                stops.append(f"Run {key} may have pinned an unapproved credential: {error}")
                 raise
-            finally:
-                observations.append((planned, repeat, observation))
-                ledger.settle(attempt)
-            if stops:
-                raise GuardRefusal("; ".join(stops))
+        try:
+            # A Run's time limit never reaches past the wall-time deadline or the approval's expiry.
+            run_task(api, experiment, planned, repeat, planned["agent_ref"],
+                     fixture=fixture, usage_reader=usage_reader, timeout=min(timeout, ledger.remaining()),
+                     clock=clock, sleep=sleep, observation=observation, approve_fixture_tools=approve_fixture_tools,
+                     after_claim=after_claim if binding_check is not None else None)
+            if observation.get("cancellation_failed"):
+                stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
+                             "or the Deployment Administrator token")
+            if observation.get("compactions") and not (auxiliary or {}).get("decider"):
+                stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
+                             "compaction Decider answered although the approval attests external compaction is disabled")
+            if observation["run_id"] and observation.get("workspace"):
+                try:
+                    attempt["provider_work"] = observed_provider_work(api, experiment.token,
+                                                                      observation["workspace"],
+                                                                      observation["run_id"])
+                except Exception as error:  # Informational only; the reservation stays charged.
+                    attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
+        except BaseException:  # Ctrl-C, SIGTERM and the like: the in-flight Run is counted, never dropped.
+            observation["interrupted"] = True
+            raise
+        finally:
+            observations.append((planned, repeat, observation))
+            ledger.settle(attempt)
+        if stops:
+            raise GuardRefusal("; ".join(stops))
     return skipped
 
 

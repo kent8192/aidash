@@ -18,6 +18,8 @@ import math
 import os
 from pathlib import Path
 import re
+import random
+import uuid
 import statistics
 import subprocess
 import sys
@@ -29,7 +31,7 @@ from fixed_task_fixture import FIXTURE_PATCHES
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "1.0.0"
+EVALUATOR_VERSION = "2.0.0"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
@@ -58,7 +60,7 @@ SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
 SKILL_ASSET_READ = "skill_asset_read"
 EXPOSURE_TOOLS = ("capability_search", "capability_describe", "capability_load", "capability_unload")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
-                "escalation", "answer-pattern")
+                "escalation", "answer-pattern", "multi-call", "compaction-retention")
 # The fields each oracle kind reads, checked when the corpus loads so that no Run is dispatched
 # for a task its oracle cannot grade. A `pattern` must compile as a regular expression.
 ORACLE_FIELDS = {
@@ -68,6 +70,8 @@ ORACLE_FIELDS = {
     "tool-selection": {"expected_tool": "string", "answer_pattern": "pattern"},
     "escalation": {"forbidden_tool": "string", "approval_pattern": "pattern", "answer_pattern": "pattern"},
     "answer-pattern": {"answer_pattern": "pattern"},
+    "multi-call": {"expected_tools": "strings", "answer_pattern": "pattern"},
+    "compaction-retention": {"budget_usd": "integer", "excluded_vendors": "strings", "operation": "string"},
 }
 OPTIONAL_ORACLE_FIELDS = {"python-tests": {"timeout_seconds": "positive"},
                           "answer-pattern": {"forbidden_pattern": "pattern"}}
@@ -290,7 +294,10 @@ def validate_result(result, corpus=None, memory_corpus=None):
     # Free-form objects (requests, tool calls, usage records) are not walked by the schema.
     errors += non_finite_numbers(result)
     if not errors and isinstance(result, dict):
-        errors += consistency_errors(result, corpus or load_corpus(), memory_corpus or load_memory_corpus())
+        if corpus is None:
+            legacy = result["experiment"]["corpus"]["version"] == "fixed-task-corpus-v1"
+            corpus = load_corpus(EVALUATION / "corpus-v1.toml" if legacy else None)
+        errors += consistency_errors(result, corpus, memory_corpus or load_memory_corpus())
     if errors:
         raise CorpusError("result manifest is invalid:\n" + "\n".join(errors[:50]))
     return result
@@ -360,6 +367,32 @@ def consistency_errors(result, corpus, memory_corpus):
     unplanned = sorted((set(keys) | set(skipped)) - planned)
     if unplanned:
         errors.append(f"$.runs: {unplanned[:5]} are not planned by the experiment's variants and repeats")
+    order = experiment.get("execution_order")
+    if order is not None:
+        sequence = order.get("planned") if isinstance(order, dict) else None
+        if not isinstance(sequence, list) or any(not isinstance(key, str) for key in sequence) or \
+                len(sequence) != len(set(sequence)) or not planned <= set(sequence):
+            errors.append("$.experiment.execution_order must retain every planned arm/repeat exactly once")
+        elif order.get("method") != "seeded-rotating-arm-blocks/1" or \
+                not isinstance(order.get("seed"), int) or isinstance(order.get("seed"), bool):
+            errors.append("$.experiment.execution_order needs its recorded integer seed and balancing method")
+        else:
+            try:
+                all_items = {run_key(item["task"]["id"], item["comparison"]["id"], item["arm"], repeat): item
+                             for item in plan(corpus) for repeat in range(1, experiment["repeat_count"] + 1)}
+                selected = list({(all_items[key]["task"]["id"], all_items[key]["comparison"]["id"],
+                                  all_items[key]["arm"]): all_items[key] for key in sequence}.values())
+                # The actual order starts from corpus order, independent of a manifest editor's order.
+                selected_keys = {(item["task"]["id"], item["comparison"]["id"], item["arm"]) for item in selected}
+                selected = [item for item in plan(corpus) if (item["task"]["id"], item["comparison"]["id"],
+                                                              item["arm"]) in selected_keys]
+                expected_order = [run_key(item["task"]["id"], item["comparison"]["id"], item["arm"], repeat)
+                                  for item, repeat in execution_schedule(selected, experiment["repeat_count"],
+                                                                         order["seed"])]
+                if sequence != expected_order:
+                    errors.append("$.experiment.execution_order differs from its seed and frozen arm plan")
+            except (KeyError, TypeError, CorpusError):
+                errors.append("$.experiment.execution_order contains unknown or malformed arm/repeat ids")
     # An error does not show which Runs were never dispatched, so every missing Run is listed as skipped.
     missing = sorted(planned - set(keys) - set(skipped))
     if missing:
@@ -371,7 +404,8 @@ def consistency_errors(result, corpus, memory_corpus):
     issues = {item["id"]: item["issue"] for item in corpus["comparisons"]}
     try:
         derived_aggregates = aggregate(runs)
-        expected_rows = {(row["task"], row["comparison"]): row for row in compare(issues, derived_aggregates, runs)}
+        expected_rows = {(row["task"], row["comparison"], row.get("baseline_arm", "baseline"),
+                          row.get("candidate_arm", "candidate")): row for row in compare(issues, derived_aggregates, runs)}
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         errors.append(f"derived summaries cannot be recomputed from the Runs: {type(error).__name__}: {error}")
         derived_aggregates, expected_rows = [], {}
@@ -409,7 +443,7 @@ def consistency_errors(result, corpus, memory_corpus):
     # No paired comparison may be altered, added or deleted.
     recorded_rows = {}
     for row in result["comparisons"]:
-        pair = (row["task"], row["comparison"])
+        pair = (row["task"], row["comparison"], row.get("baseline_arm", "baseline"), row.get("candidate_arm", "candidate"))
         if pair in recorded_rows:
             errors.append(f"comparison {'/'.join(pair)} is duplicated")
         recorded_rows[pair] = row
@@ -531,7 +565,9 @@ def oracle_errors(result, corpus):
             errors.append(f"$.runs: {run['key']} answers with code that is not a fixture patch; validation never "
                           "executes it")
             continue
-        observation = {"final_answer": answer, "tool_calls": run["tool_calls"], "human_answers": run["human_answers"]}
+        observation = {"final_answer": answer, "tool_calls": run["tool_calls"], "human_answers": run["human_answers"],
+                       "native_projection": variant["agent_fields"].get("projection_version") == "native",
+                       "compactions": run["compactions"], "recovery_operations": run.get("recovery_operations", [])}
         try:
             loads = [ref["id"] for ref in variant["skills"]] if selects_skill(task, variant) else []
             key = (corpus["_snapshot"]["sha256"], task["id"], canonical_sha256([observation, loads]))
@@ -636,7 +672,7 @@ def classification_errors(run):
     if run["tool_selection"] is not None and run["tool_selection"].get("correct") is not (oracle["passed"] is True):
         problems.append("has a tool_selection result that disagrees with its oracle")
     retained = [check["passed"] for check in checks if check.get("check") in ("budget", "exclusions")]
-    if oracle["kind"] == "constraint-retention":
+    if oracle["kind"] in ("constraint-retention", "compaction-retention"):
         expected = None if oracle["passed"] is None else all(retained)
         if run["constraint_retention"] is not expected:
             problems.append("has a constraint_retention result that disagrees with its oracle")
@@ -685,19 +721,30 @@ def load_corpus(path=None):
         if item.get("status") in UNRUNNABLE_STATUSES and not item.get("description"):
             errors.append(f"comparison {item['id']} needs a description that says why it has no arms")
         if item.get("status") not in UNRUNNABLE_STATUSES:
-            for arm in ("baseline", "candidate"):
-                if not isinstance(item.get(arm), dict) or "label" not in item[arm] or "agent" not in item[arm]:
+            try:
+                arms = comparison_arms(item)
+            except CorpusError as error:
+                errors.append(str(error))
+                arms = []
+            for arm, spec in arms:
+                fields = spec.get("agent")
+                if not isinstance(spec.get("label"), str) or not spec["label"] or not isinstance(fields, dict):
                     errors.append(f"comparison {item['id']} needs a {arm} label and agent fields")
                     continue
-                fields = item[arm]["agent"]
-                if not isinstance(fields, dict) or set(fields) - set(COMPARISON_AGENT_FIELDS):
+                if set(fields) - set(COMPARISON_AGENT_FIELDS):
                     errors.append(f"comparison {item['id']} {arm} may set only the Agent fields "
                                   f"{list(COMPARISON_AGENT_FIELDS)}")
+            model_map = item.get("model_by_task_model", {})
+            if not isinstance(model_map, dict) or any(not isinstance(name, str) or not isinstance(target, str) or
+                                                       name not in corpus["models"] or target not in corpus["models"]
+                                                       for name, target in model_map.items()):
+                errors.append(f"comparison {item['id']} has an invalid model_by_task_model mapping")
             if item.get("model") and item["model"] not in corpus["models"]:
                 errors.append(f"comparison {item['id']} names unknown model {item['model']}")
     tools = {tool["alias"]: tool for tool in corpus["tools"]}
     skills = {skill["id"] for skill in corpus.get("skills", [])}
-    files = [path.name]
+    corpus_name = "corpus.toml" if path.name == "corpus-v1.toml" else path.name
+    files = [corpus_name]
     ids = set()
     for task in corpus["tasks"]:
         tid = task.get("id", "?")
@@ -741,7 +788,7 @@ def load_corpus(path=None):
         raise CorpusError("; ".join(errors))
     # The approved snapshot is what every Run uses: inputs and oracle files are read
     # once here and never reread, so a later change cannot reach a Task or an oracle.
-    contents = {path.name: raw}
+    contents = {corpus_name: raw}
     corpus["_snapshot"] = snapshot(corpus["version"], base, files, contents)
     corpus["_files"] = contents
     corpus["_base"] = base
@@ -801,7 +848,47 @@ def task_description(corpus, task):
     return "\n\n".join(parts)
 
 
-def plan(corpus, selected_tasks=None, selected_comparisons=None):
+def comparison_arms(comparison):
+    """Normalize versioned arm lists and historical baseline/candidate corpora."""
+    if "arms" not in comparison:
+        return [(name, comparison.get(name, {})) for name in ("baseline", "candidate")]
+    arms = comparison["arms"]
+    if not isinstance(arms, list) or len(arms) < 2:
+        raise CorpusError(f"comparison {comparison['id']} needs at least two arms")
+    ids = [arm.get("id") if isinstance(arm, dict) else None for arm in arms]
+    if any(not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name) for name in ids) or \
+            len(ids) != len(set(ids)):
+        raise CorpusError(f"comparison {comparison['id']} arm ids must be distinct lowercase identifiers")
+    return [(arm["id"], arm) for arm in arms]
+
+
+def execution_schedule(planned, repeats, seed):
+    """Randomized task blocks with rotating arm positions, reproducible from a seed.
+
+    Each complete cycle of N repeats places every arm of a task at every
+    position once. Task-block order and the initial arm permutation are seeded.
+    Nothing changes the actual prompts or cross-Run cache condition.
+    """
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise CorpusError("execution seed must be an integer")
+    groups = {}
+    for item in planned:
+        groups.setdefault((item["task"]["id"], item["comparison"]["id"]), []).append(item)
+    rng = random.Random(seed)
+    groups = list(groups.values())
+    for arms in groups:
+        rng.shuffle(arms)
+    schedule = []
+    for repeat in range(1, repeats + 1):
+        blocks = list(groups)
+        rng.shuffle(blocks)
+        for arms in blocks:
+            rotation = (repeat - 1) % len(arms)
+            schedule += [(item, repeat) for item in arms[rotation:] + arms[:rotation]]
+    return schedule
+
+
+def plan(corpus, selected_tasks=None, selected_comparisons=None, selected_arms=None):
     """Every (task, comparison, arm) pair to run; each arm differs only in Agent fields.
 
     Every explicitly selected task and comparison must contribute at least one
@@ -821,14 +908,32 @@ def plan(corpus, selected_tasks=None, selected_comparisons=None):
             if selected_comparisons and comparison_id not in selected_comparisons:
                 continue
             comparison = comparisons[comparison_id]
-            for arm in ("baseline", "candidate"):
+            for arm, spec in comparison_arms(comparison):
+                fields = dict(spec["agent"])
+                if task.get("projection_exposure") and comparison_id in ("projection", "explicit-projection"):
+                    fields["exposure"] = {"version": task["projection_exposure"]}
                 planned.append({"task": task, "comparison": comparison, "arm": arm,
-                                "label": comparison[arm]["label"], "agent_fields": comparison[arm]["agent"],
-                                "model": comparison.get("model") or task["model"]})
+                                "label": spec["label"], "agent_fields": fields,
+                                "model": comparison.get("model_by_task_model", {}).get(task["model"]) or
+                                         comparison.get("model") or task["model"],
+                                "route_id": comparison.get("route"),
+                                "model_configuration": dict(corpus["models"][comparison.get(
+                                    "model_by_task_model", {}).get(task["model"]) or comparison.get("model") or
+                                    task["model"]])})
     uncovered = sorted(set(selected_tasks or []) - {item["task"]["id"] for item in planned}) + sorted(
         set(selected_comparisons or []) - {item["comparison"]["id"] for item in planned})
     if uncovered:
         raise CorpusError(f"selectors that match no runnable task and comparison pair: {uncovered}")
+    if selected_arms:
+        requested = set(selected_arms)
+        groups = {}
+        for item in planned:
+            groups.setdefault((item["task"]["id"], item["comparison"]["id"]), set()).add(item["arm"])
+        missing = [(task, comparison, sorted(requested - arms)) for (task, comparison), arms in groups.items()
+                   if requested - arms]
+        if missing:
+            raise CorpusError(f"requested arms are absent from selected task/comparison pairs: {missing[:5]}")
+        planned = [item for item in planned if item["arm"] in requested]
     return planned
 
 
@@ -880,6 +985,44 @@ def run_python_tests(directory, pattern, timeout):
             "detail": " | ".join(tail)[:500]}
 
 
+class ContainerCodeOracle:
+    """Execute untrusted code in a pinned, disposable, networkless Docker image."""
+    def __init__(self, image):
+        if not isinstance(image, str) or not re.fullmatch(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[0-9a-f]{64}", image):
+            raise GuardRefusal("code oracle image must be pinned by a sha256 digest")
+        self.image = image
+
+    def __call__(self, directory, pattern, timeout):
+        name = "aidash-code-oracle-" + uuid.uuid4().hex
+        command = ["docker", "run", "--rm", "--pull", "never", "--name", name, "--network", "none",
+                   "--read-only", "--pids-limit", "64", "--cpus", "1", "--memory", "128m",
+                   "--memory-swap", "128m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                   "--user", "65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--mount",
+                   f"type=bind,src={Path(directory).resolve()},dst=/work,readonly", "--workdir", "/work",
+                   "--env", "PYTHONDONTWRITEBYTECODE=1", self.image, "python", "-I", "-m", "unittest",
+                   "discover", "-s", "/work", "-p", pattern]
+        # TemporaryDirectory is private to its owner by default; container uid may only read these
+        # controlled oracle inputs, never the evaluator's environment or another host directory.
+        Path(directory).chmod(0o755)
+        for path in Path(directory).iterdir():
+            path.chmod(0o444)
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=min(timeout, 20),
+                                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+            output = result.stderr or result.stdout
+            ran = re.findall(r"(?m)^Ran (\d+) tests? in ", output)
+            return {"pattern": pattern, "passed": result.returncode == 0, "tests": int(ran[-1]) if ran else None,
+                    "detail": " | ".join(output.strip().splitlines()[-3:])[:500]}
+        except subprocess.TimeoutExpired:
+            return {"pattern": pattern, "passed": False, "tests": None, "detail": "container oracle timed out"}
+        finally:
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=20)
+
+
+def container_code_execution(image):
+    return ContainerCodeOracle(image)
+
+
 def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
     blocks = fenced_blocks(answer, "python")
     if not blocks:
@@ -902,7 +1045,8 @@ def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
                 name = prefix + Path(relative).name
                 (work / name).write_bytes(files[relative])
                 written[name] = files[relative]
-            result = run_python_tests(work, pattern, timeout)
+            result = (allow_code_execution(work, pattern, timeout) if callable(allow_code_execution)
+                      else run_python_tests(work, pattern, timeout))
             changed = sorted(name for name, data in written.items()
                              if not (work / name).is_file() or (work / name).read_bytes() != data)
         if changed:
@@ -1016,8 +1160,29 @@ def grade(corpus, task, observation, allow_code_execution, required_loads=()):
         passed, checks, detail = oracle_python_tests(corpus, oracle, answer, allow_code_execution)
     elif kind == "json-overdue-totals":
         passed, checks, detail = oracle_overdue(corpus, oracle, answer)
-    elif kind == "constraint-retention":
+    elif kind in ("constraint-retention", "compaction-retention"):
         passed, checks, detail = oracle_constraints(oracle, answer)
+        if kind == "compaction-retention":
+            adopted = observation.get("recovery_operations", [])
+            operation = oracle["operation"]
+            observed = ((observation.get("compactions") or 0) > 0 if operation == "pruning"
+                        else operation in adopted)
+            checks.append({"check": "actual-" + operation, "passed": observed})
+            passed = passed and observed
+            if not observed:
+                detail = "no adopted " + operation + " operation was observed"
+    elif kind == "multi-call":
+        calls = [call for call in observation.get("tool_calls", []) if not call.get("dispatch_rejected")]
+        checks = [{"check": "delivered-tools", "passed": sorted(call["name"] for call in calls) ==
+                   sorted(oracle["expected_tools"]) and all(not call.get("error") for call in calls)},
+                  {"check": "answer", "passed": bool(re.search(oracle["answer_pattern"], answer or ""))}]
+        if observation.get("native_projection"):
+            ids = [call.get("id") for call in calls]
+            turns = [call.get("model_turn") for call in calls]
+            checks.append({"check": "native-multi-call-turn", "passed": len(ids) == len(set(ids)) and
+                           all(ids) and bool(turns) and None not in turns and len(set(turns)) == 1})
+        passed = all(check["passed"] for check in checks)
+        detail = None if passed else "the independent tools or same-turn results were not delivered"
     elif kind == "tool-selection":
         passed, checks, detail = oracle_tool_selection(oracle, answer, observation.get("tool_calls", []),
                                                        task.get("expected_arguments"))
@@ -1159,6 +1324,8 @@ def recorded_live_call(call, known):
     the Node's error, which echoes it. Known tool identifiers stay readable.
     """
     call = restricted(call, "arguments")
+    if call.get("id") is not None:
+        call = restricted(call, "id")
     if call["name"] in known:
         return call
     call = restricted(call, "name")
@@ -1174,8 +1341,11 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
     task = planned["task"]
     required_loads = [ref["id"] for ref in planned["skill_refs"]] if selects_skill(task, planned) else []
     live = tier == "live"
-    # Model-written code never runs on the evaluator host in the live tier, whatever the caller allows.
-    oracle = grade(corpus, task, observation, allow_code_execution and not live, required_loads)
+    # Live code is executable only by the resource-bounded container oracle.
+    execution = allow_code_execution if not live or isinstance(allow_code_execution, ContainerCodeOracle) else False
+    grading_observation = dict(observation, native_projection=planned.get("agent_fields", {}).get(
+        "projection_version") == "native")
+    oracle = grade(corpus, task, grading_observation, execution, required_loads)
     outcome = classify(task, observation, oracle)
     answer = observation.get("final_answer")
     tool_calls = observation.get("tool_calls", [])
@@ -1204,7 +1374,7 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
                      "load_calls": sum(name in ("capability_load", "skill_load") for name, _ in calls),
                      "correct": oracle["passed"] if oracle["passed"] is not None else False}
     retention = None
-    if task["oracle"]["kind"] == "constraint-retention":
+    if task["oracle"]["kind"] in ("constraint-retention", "compaction-retention"):
         retention = None if oracle["passed"] is None else all(
             check["passed"] for check in oracle["checks"] if check["check"] in ("budget", "exclusions"))
     return {
@@ -1219,6 +1389,7 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
         "long_context": long_context(observation, outcome), "constraint_retention": retention,
         "tool_selection": selection, "wall_ms": float(observation.get("wall_ms", 0.0)),
         "steps": observation.get("steps"), "compactions": observation.get("compactions"),
+        "recovery_operations": observation.get("recovery_operations", []),
         "requests": observation.get("requests"), "usage": summarize_usage(observation.get("usage_records")),
         "tool_calls": recorded_calls,
         "human_answers": recorded_human_answers(observation.get("human_answers", []), live),
@@ -1299,23 +1470,32 @@ def aggregate(runs):
 
 
 def compare(issues, aggregates, runs):
-    """Paired baseline/candidate rows; `issues` maps each comparison id to its issue."""
+    """Reference-versus-arm rows plus matched off/explicit rows; historical pairs remain readable."""
     by_key = {(item["task"], item["comparison"], item["arm"]): item for item in aggregates}
     rows = []
-    for (task, comparison, arm), baseline in by_key.items():
-        if arm != "baseline" or (task, comparison, "candidate") not in by_key:
-            continue
-        candidate = by_key[(task, comparison, "candidate")]
+    pairs = []
+    for task, comparison in dict.fromkeys((task, comparison) for task, comparison, _ in by_key):
+        arms = [arm for t, c, arm in by_key if (t, c) == (task, comparison)]
+        if "baseline" in arms and "candidate" in arms:
+            pairs.append((task, comparison, "baseline", "candidate"))
+        elif len(arms) >= 2:
+            reference = "legacy" if "legacy" in arms else arms[0]
+            pairs += [(task, comparison, reference, arm) for arm in arms if arm != reference]
+            pairs += [(task, comparison, arm, arm + "-explicit") for arm in ("ordered", "native")
+                      if arm in arms and arm + "-explicit" in arms]
+    for task, comparison, base_arm, candidate_arm in pairs:
+        baseline = by_key[(task, comparison, base_arm)]
+        candidate = by_key[(task, comparison, candidate_arm)]
         changes = []
         base_runs = {run["repeat"]: run for run in runs if (run["task"], run["comparison"], run["arm"]) ==
-                     (task, comparison, "baseline")}
+                     (task, comparison, base_arm)}
         for run in runs:
-            if (run["task"], run["comparison"], run["arm"]) == (task, comparison, "candidate") and \
+            if (run["task"], run["comparison"], run["arm"]) == (task, comparison, candidate_arm) and \
                     run["repeat"] in base_runs and base_runs[run["repeat"]]["outcome"] != run["outcome"]:
                 changes.append({"repeat": run["repeat"], "baseline": base_runs[run["repeat"]]["outcome"],
                                 "candidate": run["outcome"]})
         candidate_repeats = {run["repeat"] for run in runs
-                             if (run["task"], run["comparison"], run["arm"]) == (task, comparison, "candidate")}
+                             if (run["task"], run["comparison"], run["arm"]) == (task, comparison, candidate_arm)}
         # Paired only when both arms recorded exactly the same repeats; otherwise medians describe
         # unrelated samples, so no delta is reported.
         comparable = bool(base_runs) and set(base_runs) == candidate_repeats
@@ -1326,7 +1506,9 @@ def compare(issues, aggregates, runs):
                 else other["median"] - value["median"]
         rows.append({"task": task, "comparison": comparison, "issue": issues.get(comparison),
                      "baseline": baseline["label"], "candidate": candidate["label"],
-                     "comparable": comparable, "outcome_changes": changes, "median_deltas": deltas})
+                     "comparable": comparable, "outcome_changes": changes, "median_deltas": deltas,
+                     **({"baseline_arm": base_arm, "candidate_arm": candidate_arm}
+                        if base_arm != "baseline" else {})})
     return rows
 
 
@@ -1369,6 +1551,110 @@ def positive_int(value):
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def auxiliary_allowance(approval):
+    """Validate the exact bounded auxiliary-work contract; never infer a free call.
+
+    Every allowance is an upper bound enforced by the pinned Registry configuration,
+    not a price estimate from an unbounded provider. Callers verify each config digest
+    and binding before dispatch. A Decider reservation uses an approved per-physical-
+    request upper price, because token-only pricing cannot price arbitrary questions.
+    """
+    value = approval.get("external_compaction")
+    if value == "disabled":
+        return {"decider": None, "summary": None, "worst_case_nanocredits": 0}
+    prefix = "disclosure approval external_compaction"
+    if not isinstance(value, dict) or set(value) != {"mode", "decider", "summary"} or value.get("mode") != "bounded":
+        raise GuardRefusal(prefix + ' must be "disabled" or an exact bounded decider/summary contract')
+    total = 0
+    for kind in ("decider", "summary"):
+        item = value[kind]
+        if item is None:
+            continue
+        if not isinstance(item, dict) or set(item) != {"reference", "config_sha256", "max_calls_per_run",
+                                                       "max_nanocredits_per_call"}:
+            raise GuardRefusal(prefix + f" {kind} needs reference, config_sha256, max_calls_per_run and "
+                               "max_nanocredits_per_call; unpriced auxiliary work is refused")
+        if not isinstance(item["reference"], str) or not re.fullmatch(r"[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+",
+                                                                    item["reference"]):
+            raise GuardRefusal(prefix + f" {kind} reference must pin a Registry id@version")
+        if not isinstance(item["config_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["config_sha256"]):
+            raise GuardRefusal(prefix + f" {kind} needs an exact configuration digest")
+        for field in ("max_calls_per_run", "max_nanocredits_per_call"):
+            if not positive_int(item[field]):
+                raise GuardRefusal(prefix + f" {kind} {field} must be a positive integer")
+        total += item["max_calls_per_run"] * item["max_nanocredits_per_call"]
+    if value["decider"] is None:
+        raise GuardRefusal(prefix + " bounded mode requires an approved compaction Decider")
+    return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total}
+
+
+def verify_auxiliary_configs(auxiliary, entries, provider):
+    """Verify independently fetched Registry configs before binding approved work."""
+    for kind in ("decider", "summary"):
+        allowance = auxiliary.get(kind)
+        if allowance is None:
+            continue
+        config = entries.get(allowance["reference"])
+        if not isinstance(config, dict) or canonical_sha256(config) != allowance["config_sha256"]:
+            raise GuardRefusal(f"{kind} Registry configuration differs from its approved exact digest")
+        if config.get("credential_env") or config.get("provider_credential") != provider:
+            raise GuardRefusal(f"{kind} must use the connected Tenant Provider Credential, without an environment key")
+        if kind == "decider":
+            if config.get("hook") != "compaction" or config.get("mode") != "enforce" or \
+                    not positive_int(config.get("max_calls_per_run")) or \
+                    config["max_calls_per_run"] < allowance["max_calls_per_run"]:
+                raise GuardRefusal("approved Decider must enforce compaction with the bounded Run call allowance")
+            if not isinstance(config.get("routes"), list) or len(config["routes"]) != 1:
+                raise GuardRefusal("approved Decider must pin one exact route; implicit fallback is refused")
+        else:
+            check_live_models({allowance["reference"]: config})
+            if allowance["max_calls_per_run"] > 64:
+                raise GuardRefusal("Summary call allowance exceeds the Context Policy maximum of 64")
+
+
+def live_task_support(approval, corpus, planned, fixture_endpoint):
+    """Return approved tool/code support; existing default refusals stay in force."""
+    tool_tasks = [item["task"] for item in planned if item["task"]["kind"] != "escalation"
+                  and task_tools(corpus, item["task"])]
+    endpoint = None
+    if tool_tasks:
+        contract = approval.get("fixture_service")
+        expected = {task["id"]: sorted(tool["alias"] for tool in task_tools(corpus, task)) for task in tool_tasks}
+        required = {"endpoint": fixture_endpoint.rstrip("/"), "corpus_sha256": corpus["_snapshot"]["sha256"],
+                    "tasks": expected, "synthetic_only": True}
+        if not isinstance(contract, dict) or not json_equal(contract, required):
+            raise GuardRefusal(f"tasks {sorted(expected)} need fixture tool results; approval fixture_service must "
+                               "exactly pin the endpoint, corpus_sha256, task/alias allowlist and synthetic_only=true")
+        from urllib.parse import urlsplit
+        parsed = urlsplit(contract["endpoint"])
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password \
+                or parsed.query or parsed.fragment:
+            raise GuardRefusal("approved fixture service needs an absolute HTTP endpoint without credentials or query")
+        endpoint = contract["endpoint"]
+    code = None
+    if any(item["task"]["oracle"]["kind"] == "python-tests" for item in planned):
+        contract = approval.get("code_oracle")
+        if not isinstance(contract, dict) or set(contract) != {"image", "network", "memory_mb", "cpus", "pids_limit",
+                                                              "timeout_seconds"} or \
+                any(contract.get(key) != value for key, value in {"network": "none", "memory_mb": 128,
+                    "cpus": 1, "pids_limit": 64, "timeout_seconds": 20}.items()):
+            raise GuardRefusal("python-tests oracles run model-written code; an explicit code_oracle approval for a "
+                               "pinned disposable Docker image, network none, 128 MiB, 1 CPU, 64 pids and 20s is required")
+        code = ContainerCodeOracle(contract["image"])
+    return endpoint, code
+
+
+def check_model_config_digests(approval, models, required=False):
+    """Bind paid execution to independently fetched immutable Registry configurations."""
+    declared = approval.get("model_config_digests") if isinstance(approval, dict) else None
+    if declared is None and not required:
+        return
+    actual = {reference: canonical_sha256(config) for reference, config in models.items()}
+    if not isinstance(declared, dict) or not json_equal(declared, actual):
+        raise GuardRefusal("disclosure approval model_config_digests must exactly match every fetched model "
+                           "Registry configuration; refresh and approve the actual immutable configs before dispatch")
+
+
 def check_approval(approval, corpus_sha256, models, ceiling, now):
     """Type-check and time-check the evaluator's disclosure approval; every failure is a GuardRefusal."""
     if not isinstance(approval, dict) or not approval:
@@ -1377,14 +1663,10 @@ def check_approval(approval, corpus_sha256, models, ceiling, now):
                   "disclosure", "external_compaction"):
         if field not in approval:
             raise GuardRefusal(f"disclosure approval is missing {field}")
-    # Only a Run bound to an approved compaction Decider calls Jev, on the Tenant's own OpenRouter
-    # credential (ADR 0041, ADR 0042). Nothing here bounds or prices those calls and the Node does
-    # not expose its approvals, so the evaluator must attest that the evaluated Tenant approves no
-    # compaction Decider.
-    if approval["external_compaction"] != "disabled":
-        raise GuardRefusal("disclosure approval external_compaction must be \"disabled\": the live tier cannot "
-                           "reserve or price Jev compaction calls, so the evaluated Tenant must approve no "
-                           "compaction Decider")
+    check_model_config_digests(approval, models)
+    # Auxiliary work stays disabled unless its exact pins, enforceable call allowances and
+    # conservative physical-request cost caps are approved separately from main inference.
+    auxiliary_allowance(approval)
     for field in ("approver", "corpus_sha256", "disclosure"):
         if not isinstance(approval[field], str) or not approval[field].strip():
             raise GuardRefusal(f"disclosure approval {field} must be a non-empty string")
@@ -1471,6 +1753,41 @@ def require_live_authorization(credential, binding, approval, corpus_sha256, mod
     return check_approval(approval, corpus_sha256, models, ceiling, now)
 
 
+def check_matched_live_models(corpus, planned, mapping, models):
+    """Preflight the frozen v2 primary routes before registrations or paid work."""
+    if not corpus.get("execution_estimator"):
+        return  # Historical experiments did not declare this comparison contract.
+    routes = {}
+    for item in planned:
+        name = item["model"]
+        reference = mapping[name]
+        config = models[reference]
+        for field in ("context_window", "max_output_tokens"):
+            if config[field] != corpus["models"][name][field]:
+                raise GuardRefusal(f"model {reference} {field} must match frozen corpus model {name} "
+                                   f"({corpus['models'][name][field]})")
+        if config.get("request_estimator") != corpus["execution_estimator"]:
+            raise GuardRefusal(f"primary model {reference} must explicitly select request_estimator=bytes")
+        route = item.get("route_id")
+        if route is None:
+            continue
+        if config.get("reasoning_effort") != "medium":
+            raise GuardRefusal(f"primary route {route} model {reference} must pin reasoning_effort=medium")
+        version = item["agent_fields"].get("projection_version", "legacy")
+        supported = config.get("projection_versions") or ["legacy"]
+        if version not in supported:
+            raise GuardRefusal(f"model {reference} does not explicitly support projection {version}")
+        if item["agent_fields"].get("prompt_cache") == "explicit" and config.get("cache_mode") != "explicit":
+            raise GuardRefusal(f"explicit route model {reference} must declare cache_mode=explicit")
+        identity = {key: config.get(key) for key in ("provider", "model_id", "endpoint", "provider_credential",
+                    "plan_connection", "reasoning_effort", "request_estimator", "provider_routing", "routing",
+                    "streaming", "cache_mode")}
+        previous = routes.setdefault(route, identity)
+        if not json_equal(previous, identity):
+            raise GuardRefusal(f"route {route} does not use one matched model, endpoint, reasoning and routing "
+                               "configuration across every task and arm")
+
+
 def check_live_models(models):
     """Validate every field the live tier reads from a model configuration, before any Registry write."""
     for model_ref, config in models.items():
@@ -1525,8 +1842,8 @@ class SpendLedger:
         if self.approval_deadline is not None and now >= self.approval_deadline:
             self.refusal = "disclosure approval expired before this Run"
             raise GuardRefusal(self.refusal)
-        if worst_case <= 0:
-            raise GuardRefusal("a reservation needs a positive worst-case cost")
+        if not positive_int(worst_case):
+            raise GuardRefusal("a reservation needs a positive integer worst-case cost")
         if self.committed + worst_case > self.ceiling:
             self.refusal = f"reserving {worst_case} for {key} would exceed the ceiling {self.ceiling}"
             raise GuardRefusal(self.refusal)

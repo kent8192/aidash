@@ -37,7 +37,7 @@ SPEC.loader.exec_module(cli)
 
 
 def corpus():
-    value = evaluation.load_corpus()
+    value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-v1.toml")
     for index, task in enumerate(value["tasks"]):
         task["_index"] = index
     return value
@@ -85,7 +85,7 @@ class CorpusTest(unittest.TestCase):
             copy = Path(directory) / "evaluation"
             shutil.copytree(evaluation.EVALUATION, copy)
             text = (copy / "corpus.toml").read_text()
-            (copy / "corpus.toml").write_text(text.replace('comparisons = ["exposure"]',
+            (copy / "corpus.toml").write_text(text.replace('comparisons = ["exposure", "projection", "explicit-projection"]',
                                                            'comparisons = ["completion-gate"]'))
             with self.assertRaisesRegex(evaluation.CorpusError, "unavailable comparison completion-gate"):
                 evaluation.load_corpus(copy / "corpus.toml")
@@ -101,10 +101,10 @@ class CorpusTest(unittest.TestCase):
             text = (copy / "corpus.toml").read_text()
             # A custom corpus must not swap the approved model or lift the priced step limit.
             (copy / "corpus.toml").write_text(text.replace(
-                'candidate = { label = "ordered", agent = { projection_version = "ordered" } }',
-                'candidate = { label = "ordered", agent = { projection_version = "ordered", max_steps = 1000, '
+                '{ id = "ordered", label = "ordered", agent = { projection_version = "ordered", prompt_cache = "off" } }',
+                '{ id = "ordered", label = "ordered", agent = { projection_version = "ordered", max_steps = 1000, '
                 'model = { id = "other", version = "1.0.0" } } }'))
-            with self.assertRaisesRegex(evaluation.CorpusError, "projection candidate may set only the Agent fields"):
+            with self.assertRaisesRegex(evaluation.CorpusError, "projection ordered may set only the Agent fields"):
                 evaluation.load_corpus(copy / "corpus.toml")
             (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
             with self.assertRaisesRegex(evaluation.CorpusError, "escalation oracle needs approval_pattern"):
@@ -151,6 +151,193 @@ class CorpusTest(unittest.TestCase):
         self.assertIn("def discounted_total", text)
         self.assertIn("test_percent_discount_rounds_half_up", text)
         self.assertNotIn("HiddenPricingRegression", text)
+
+
+class ProjectionCampaignTest(unittest.TestCase):
+    def test_frozen_routes_preserve_all_primary_tasks_and_match_arm_caps(self):
+        value = evaluation.load_corpus()
+        old = corpus()
+        original = {item["id"] for item in old["tasks"] if "projection" in item["comparisons"]}
+        for route, expected in (("projection", {"legacy", "ordered", "native"}),
+                                ("explicit-projection", {"legacy", "ordered", "native", "ordered-explicit",
+                                                         "native-explicit"})):
+            planned = evaluation.plan(value, selected_comparisons=[route])
+            self.assertTrue(original <= {item["task"]["id"] for item in planned})
+            for identifier in original:
+                arms = [item for item in planned if item["task"]["id"] == identifier]
+                self.assertEqual({item["arm"] for item in arms}, expected)
+                self.assertEqual(len({item["model"] for item in arms}), 1)
+                caps = value["models"][task(value, identifier)["model"]]
+                for arm in arms:
+                    self.assertEqual(arm["model_configuration"]["context_window"], caps["context_window"])
+                    self.assertEqual(arm["model_configuration"]["max_output_tokens"], caps["max_output_tokens"])
+        self.assertEqual(sum(item.get("primary_weight", 0) for item in value["tasks"]), 1)
+        # Archived v1 bytes still produce the historical snapshot, including its canonical filename.
+        self.assertIn("corpus.toml", old["_snapshot"]["files"])
+        self.assertNotIn("corpus-v1.toml", old["_snapshot"]["files"])
+
+    def test_confirmation_selects_exact_frozen_arms_without_rewriting_the_corpus(self):
+        value = evaluation.load_corpus()
+        before = evaluation.canonical_sha256(value["comparisons"])
+        selected = evaluation.plan(value, ["native-multi-call-results"], ["explicit-projection"],
+                                   ["legacy", "native-explicit"])
+        self.assertEqual([item["arm"] for item in selected], ["legacy", "native-explicit"])
+        self.assertEqual(evaluation.canonical_sha256(value["comparisons"]), before)
+        for comparison, arms in (("projection", ["legacy", "native-explicit"]),
+                                  ("explicit-projection", ["legacy", "typo"])):
+            with self.subTest(comparison=comparison), self.assertRaisesRegex(evaluation.CorpusError,
+                                                                            "requested arms are absent"):
+                evaluation.plan(value, ["native-multi-call-results"], [comparison], arms)
+
+    def test_primary_live_preflight_rejects_changed_caps_estimator_or_model_within_route(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["structured-data-overdue-totals", "long-conversation-corrections"],
+                                  ["projection"])
+        mapping = {"standard": "standard@1", "small-window": "small@1"}
+        models = {reference: {"model_id": "provider/same-model", "provider": "openrouter", "endpoint": "https://p/v1",
+                              "provider_credential": "openrouter", "reasoning_effort": "medium",
+                              "request_estimator": "bytes", "projection_versions": ["legacy", "ordered", "native"],
+                              **value["models"][name]} for name, reference in mapping.items()}
+        evaluation.check_matched_live_models(value, planned, mapping, models)
+        changes = [("context_window", 128000, "must match frozen corpus"),
+                   ("request_estimator", "calibrated", "request_estimator=bytes"),
+                   ("reasoning_effort", "high", "reasoning_effort=medium"),
+                   ("projection_versions", ["legacy", "ordered"], "support projection native"),
+                   ("model_id", "provider/other-model", "one matched model")]
+        for field, changed, error in changes:
+            with self.subTest(field=field):
+                altered = {key: dict(config) for key, config in models.items()}
+                altered["small@1"][field] = changed
+                with self.assertRaisesRegex(evaluation.GuardRefusal, error):
+                    evaluation.check_matched_live_models(value, planned, mapping, altered)
+
+    def test_multi_arm_manifest_validates_pairs_and_refuses_rewritten_execution_order(self):
+        value = evaluation.load_corpus()
+        result = full_result(value)
+        selected = evaluation.plan(value, ["code-change-hidden-regression"], ["projection"])
+        result["experiment"]["execution_order"] = {"seed": 181, "method": "seeded-rotating-arm-blocks/1",
+            "planned": [evaluation.run_key(p["task"]["id"], p["comparison"]["id"], p["arm"], repeat)
+                        for p, repeat in evaluation.execution_schedule(selected, 2, 181)]}
+        evaluation.validate_result(result, value)
+        self.assertEqual({(row["baseline_arm"], row["candidate_arm"]) for row in result["comparisons"]},
+                         {("legacy", "ordered"), ("legacy", "native")})
+        result["experiment"]["execution_order"]["planned"].reverse()
+        with self.assertRaisesRegex(evaluation.CorpusError, "differs from its seed"):
+            evaluation.validate_result(result, value)
+
+    def test_seeded_order_balances_positions_and_keeps_every_repeat(self):
+        planned = evaluation.plan(evaluation.load_corpus(), ["native-multi-call-results"], ["explicit-projection"])
+        schedule = evaluation.execution_schedule(planned, 5, 181)
+        self.assertEqual(schedule, evaluation.execution_schedule(planned, 5, 181))
+        keys = [evaluation.run_key(p["task"]["id"], p["comparison"]["id"], p["arm"], r) for p, r in schedule]
+        self.assertEqual(len(set(keys)), 25)
+        positions = {arm: [] for arm in ("legacy", "ordered", "native", "ordered-explicit", "native-explicit")}
+        for index, (planned, _) in enumerate(schedule):
+            positions[planned["arm"]].append(index % 5)
+        self.assertTrue(all(set(values) == set(range(5)) for values in positions.values()))
+
+    def test_native_multi_call_fixture_requires_both_paired_results_and_one_model_turn(self):
+        value = evaluation.load_corpus()
+        planned = next(item for item in evaluation.plan(value, ["native-multi-call-results"], ["projection"])
+                       if item["arm"] == "native")
+        item = planned["task"]
+        fixture = fixture_module.Fixture({"fixture/m": 128000})
+        identifier = "00000000-0000-0000-0000-0000000000aa"
+        fixture.register(identifier, item, "native")
+        body = {"model": "fixture/m", "messages": [{"role": "user", "content": identifier}],
+                "tools": [{"type": "function", "function": {"name": alias}} for alias in item["tools"]]}
+        status, payload = fixture.infer(body)
+        self.assertEqual(status, 200)
+        assistant = json.loads(payload)["choices"][0]["message"]
+        calls = assistant["tool_calls"]
+        self.assertEqual(len(calls), 2)
+        self.assertNotEqual(calls[0]["id"], calls[1]["id"])
+        body["messages"].append(assistant)
+        history = [{"kind": "assistant", "epoch": 8, "calls": [call["id"] for call in calls]}]
+        for call in calls:
+            name = call["function"]["name"]
+            arguments = json.loads(call["function"]["arguments"])
+            result = fixture.tool(item, name, arguments)[1]
+            body["messages"].append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result)})
+            history.append({"kind": "tool", "call": {"id": call["id"], "name": name, "arguments": arguments},
+                            "result": result})
+        status, payload = fixture.infer(body)
+        self.assertEqual(status, 200)
+        answer = json.loads(payload)["choices"][0]["message"]["content"]
+        observed = observation(final_answer=answer, tool_calls=runner.tool_calls_from({"history": history}))
+        graded = evaluation.run_result(value, planned, 1, observed, "deterministic", False)
+        self.assertEqual(graded["outcome"], "success")
+        observed["tool_calls"][1]["model_turn"] = 9
+        self.assertFalse(evaluation.run_result(value, planned, 1, observed, "deterministic", False)["oracle"]["passed"])
+        body["messages"][-1]["tool_call_id"] = "mismatched"
+        self.assertEqual(fixture.infer(body)[0], 400)
+
+    def test_actual_compaction_oracle_needs_adoption_and_retained_independent_constraints(self):
+        value = evaluation.load_corpus()
+        item = task(value, "actual-pruning-correction-retention")
+        retained = answer_json({"budget_usd": 300, "excluded_vendors": ["Contoso", "Northwind"]})
+        for compactions, budget, passed in ((0, 300, False), (1, 500, False), (1, 300, True)):
+            answer = retained if budget == 300 else answer_json({"budget_usd": budget,
+                                                                "excluded_vendors": ["Contoso", "Northwind"]})
+            with self.subTest(compactions=compactions, budget=budget):
+                self.assertEqual(evaluation.grade(value, item, observation(final_answer=answer,
+                    compactions=compactions), False)["passed"], passed)
+
+    def test_live_auxiliary_contract_reserves_all_permitted_calls_and_rejects_digest_drift(self):
+        config = {"hook": "compaction", "mode": "enforce", "provider_credential": "openrouter",
+                  "max_calls_per_run": 5, "routes": [{"model": "decision/model", "hosts": ["one"]}]}
+        allowance = {"reference": "decider@1", "config_sha256": evaluation.canonical_sha256(config),
+                     "max_calls_per_run": 3, "max_nanocredits_per_call": 900}
+        approval = {"external_compaction": {"mode": "bounded", "decider": allowance, "summary": None}}
+        auxiliary = evaluation.auxiliary_allowance(approval)
+        value = corpus()
+        item = task(value, "structured-data-overdue-totals")
+        model = {"context_window": 100, "max_output_tokens": 10}
+        prices = {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 2,
+                  "output_nanocredits_per_token": 3}
+        main = runner.run_worst_case(item, value, model, prices)
+        self.assertEqual(runner.run_worst_case(item, value, model, prices, auxiliary), main + 2700)
+        evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": config}, "openrouter")
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "exact digest"):
+            evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": dict(config, max_calls_per_run=100)},
+                                                 "openrouter")
+        del allowance["max_nanocredits_per_call"]
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "unpriced auxiliary"):
+            evaluation.auxiliary_allowance(approval)
+
+    def test_live_fixture_and_container_support_require_exact_explicit_approval(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["native-multi-call-results"], ["projection"])
+        approval = {}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "need fixture tool results"):
+            evaluation.live_task_support(approval, value, planned, "https://fixture.test")
+        approval["fixture_service"] = {"endpoint": "https://fixture.test", "corpus_sha256": value["_snapshot"]["sha256"],
+                                      "tasks": {"native-multi-call-results": ["currency_convert", "invoice_lookup"]},
+                                      "synthetic_only": True}
+        self.assertEqual(evaluation.live_task_support(approval, value, planned, "https://fixture.test"),
+                         ("https://fixture.test", None))
+        approval["fixture_service"]["tasks"]["native-multi-call-results"].append("records_purge")
+        with self.assertRaises(evaluation.GuardRefusal):
+            evaluation.live_task_support(approval, value, planned, "https://fixture.test")
+        planned = evaluation.plan(value, ["code-change-verified-fix"], ["projection"])
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "code_oracle"):
+            evaluation.live_task_support({}, value, planned, "https://fixture.test")
+        contract = {"image": "python@sha256:" + "a" * 64, "network": "none", "memory_mb": 128, "cpus": 1,
+                    "pids_limit": 64, "timeout_seconds": 20}
+        _, code = evaluation.live_task_support({"code_oracle": contract}, value, planned, "https://fixture.test")
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "target.py").write_text("pass\n")
+            completed = subprocess.CompletedProcess([], 0, "", "Ran 1 test in 0.001s\nOK\n")
+            with mock.patch.object(evaluation.subprocess, "run", return_value=completed) as execute:
+                self.assertTrue(code(directory, "test_*.py", 99)["passed"])
+            command = execute.call_args_list[0].args[0]
+            for flag, expected in (("--network", "none"), ("--memory", "128m"), ("--pids-limit", "64"),
+                                   ("--cpus", "1"), ("--user", "65534:65534"), ("--pull", "never")):
+                self.assertEqual(command[command.index(flag) + 1], expected)
+            self.assertIn("--read-only", command)
+            self.assertTrue(command[command.index("--mount") + 1].endswith(",dst=/work,readonly"))
+            self.assertEqual(execute.call_args_list[0].kwargs["timeout"], 20)
+            self.assertEqual(execute.call_args_list[-1].args[0][:3], ["docker", "rm", "-f"])
 
 
 class SchemaTest(unittest.TestCase):
@@ -1086,7 +1273,7 @@ class LiveGuardTest(unittest.TestCase):
             ledger.reserve("d", 1)
 
     def args(self, **overrides):
-        values = ["live", "--base-url", "https://node.invalid", "--tenant", "acme", "--provider-credential", "pc-1",
+        values = ["live", "--corpus", str(evaluation.EVALUATION / "corpus-v1.toml"), "--execution-seed", "0", "--base-url", "https://node.invalid", "--tenant", "acme", "--provider-credential", "pc-1",
                   "--model", "standard=live@1.0.0", "--disclosure-approval", "approval.json",
                   "--max-spend-nanocredits", "1000000000", "--max-wall-seconds", "60", "--task",
                   "structured-data-overdue-totals", "--comparison", "projection", "--repeats", "1",
@@ -1134,6 +1321,17 @@ class LiveGuardTest(unittest.TestCase):
                 return 200, {}
             return node.call(method, path, body, token)
         return call, registered
+
+    def test_live_refuses_a_changed_actual_registry_config_before_any_mutation(self):
+        value = corpus()
+        frozen = {"provider_credential": "openrouter", "credential_env": None, "model_id": "vendor/model",
+                  "context_window": 1000, "max_output_tokens": 100}
+        approval = self.approval(value, model_config_digests={"live@1.0.0": evaluation.canonical_sha256(frozen)})
+        transport, registered = self.live_node(model_config={"max_output_tokens": 101})
+        with mock.patch.dict(os.environ, {"AIDASH_EVALUATION_TOKEN": "admin", "AIDASH_EVALUATION_SUBJECT_TOKEN": "subject"}), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, "model_config_digests.*exactly match"):
+            cli.live(self.args(), read_json=lambda _: approval, transport=transport, wall_now=lambda: self.NOW)
+        self.assertEqual(registered, [], "a digest mismatch must happen before Registry, catalog or Run writes")
 
     def test_live_refuses_without_tokens_credential_or_approval_and_does_no_work(self):
         value = corpus()
@@ -1205,13 +1403,13 @@ class LiveGuardTest(unittest.TestCase):
                 cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
         self.assertEqual(registered, [], "no Registry write may precede the guard rails")
 
-    def test_live_refuses_code_execution_oracles_unconditionally(self):
+    def test_live_refuses_code_execution_oracles_without_explicit_container_approval(self):
         value = corpus()
         approval = self.approval(value, max_spend_nanocredits=10_000_000_000)
         call, registered = self.live_node()
         with mock.patch.dict(os.environ, self.ENV):
             args = self.args(**{"--task": "code-change-hidden-regression"})
-            with self.assertRaisesRegex(evaluation.GuardRefusal, "container runner.*--network none"):
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "explicit code_oracle approval.*network none"):
                 cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
         # Every other required argument is present, so only the removed flag can make the parser exit.
         stderr = io.StringIO()
@@ -1952,13 +2150,16 @@ class HardeningTest(unittest.TestCase):
         planned = {"task": item, "comparison": {"id": "exposure"}, "arm": "baseline", "label": "legacy",
                    "agent_fields": {}}
         item_expected = dict(item, expected_arguments=arguments)
-        calls = [{"name": "invoice_lookup", "arguments": arguments, "error": None, "dispatch_rejected": False,
-                  "loaded": None}]
+        calls = [{"id": "copied restricted call identifier", "name": "invoice_lookup", "arguments": arguments,
+                  "error": None, "dispatch_rejected": False, "loaded": None}]
         observed = observation(final_answer="It is unpaid.", tool_calls=calls)
         live = evaluation.run_result(value, dict(planned, task=item_expected), 1, observed, "live", False)
         self.assertEqual(live["outcome"], "success", "grading still sees the raw arguments")
         self.assertEqual(live["tool_calls"][0]["arguments_sha256"], evaluation.canonical_sha256(arguments))
         self.assertNotIn("arguments", live["tool_calls"][0])
+        self.assertNotIn("id", live["tool_calls"][0])
+        self.assertEqual(live["tool_calls"][0]["id_sha256"],
+                         evaluation.canonical_sha256("copied restricted call identifier"))
         check = next(check for check in live["oracle"]["checks"] if check["check"] == "arguments")
         self.assertNotIn("observed", check)
         self.assertEqual(live["evidence"]["verifier"], live["oracle"]["checks"])
@@ -2193,7 +2394,7 @@ class DeterministicTest(unittest.TestCase):
                 corpus=evaluation.EVALUATION / "corpus.toml", memory_corpus=evaluation.EVALUATION / "memory.toml",
                 task=["structured-data-overdue-totals"], comparison=["projection"], repeats=1, run_timeout=1.0,
                 output=output, allow_unavailable_arms=False, parallel=1, binary=str(binary), skip_memory=True,
-                skip_rust_evidence=True, evidence_timeout=1.0)
+                skip_rust_evidence=True, evidence_timeout=1.0, execution_seed=181)
             identity = mock.patch.object(evaluation, "source_identity", side_effect=source_identity) \
                 if source_identity else contextlib.nullcontext()
             with mock.patch.object(cli, "checked", side_effect=fake_checked), identity, \
