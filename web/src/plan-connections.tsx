@@ -65,8 +65,8 @@ function guidance(status: PlanConnectionStatus, ja: boolean) {
       : "Plan usage is disabled on this deployment.";
   if (status.connection?.state === "ineligible")
     return ja
-      ? "お使いの ChatGPT プランまたはワークスペースは Aidash で利用できません。"
-      : "Your ChatGPT plan or workspace is not eligible for Aidash.";
+      ? "ChatGPT のプラン・ワークスペース、または現在の Aidash ID / Mapping が利用条件を満たしていません。プランと現在の ID / Mapping を確認してください。"
+      : "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.";
   if (status.connection?.state === "needs_reconnection")
     return ja
       ? "ChatGPT Plan の再接続が必要です。個人設定で再接続してください。"
@@ -358,8 +358,8 @@ export function PlanConnectionsPage({
                       ? "接続を解除しました。"
                       : "Connection disconnected."
                     : ja
-                      ? "ローカルの接続を削除しました。プロバイダ側での取り消しは確認できませんでした。"
-                      : "Local connection deleted. Provider revocation could not be confirmed.",
+                      ? "ローカルの接続を削除しました。プロバイダ側での取り消しは確認できませんでした。ChatGPT の設定でも接続を削除してください。"
+                      : "Local connection deleted. Provider revocation could not be confirmed. Remove the connection in ChatGPT settings as well.",
                 );
                 await status.refetch();
               } catch {

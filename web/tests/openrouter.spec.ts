@@ -392,7 +392,7 @@ test("switching to a Keyless endpoint discards a provider catalog selection", as
   expect(config).not.toHaveProperty("plan_connection");
 });
 
-test("Plan configuration disablement retires a previously selected personal model", async ({
+test("Plan configuration disablement retires discovery and permits manual metadata", async ({
   page,
 }) => {
   let enabled = true;
@@ -421,8 +421,70 @@ test("Plan configuration disablement retires a previously selected personal mode
       await page.evaluate(() =>
         window.dispatchEvent(new Event("visibilitychange")),
       );
-      return model.isDisabled();
+      return model.evaluate((element) => element.tagName);
     })
-    .toBe(true);
+    .toBe("INPUT");
   await expect(model).toHaveValue("");
+});
+
+test("registers a manually entered Plan slug without a connection using disclosed code defaults", async ({
+  page,
+}) => {
+  let discoveries = 0;
+  await page.route("**/api/tenants/acme/plan-connections/chatgpt", (route) =>
+    route.fulfill({ json: { enabled: true, connection: null } }),
+  );
+  await page.route(
+    "**/api/tenants/acme/plan-connections/chatgpt/models",
+    (route) => {
+      discoveries++;
+      return route.fulfill({
+        status: 403,
+        json: { error: "No personal connection" },
+      });
+    },
+  );
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("model");
+  await dialog
+    .getByLabel("プロバイダー", { exact: true })
+    .selectOption("chatgpt");
+  await dialog
+    .getByLabel("プロバイダーのモデルID", { exact: true })
+    .fill("gpt-manual-fixture");
+  await expect(
+    dialog.getByText(
+      "コードで定義した既定値です。プロバイダが返した値・確認した値ではありません。登録前にモデルの上限を確認してください。",
+    ),
+  ).toBeVisible();
+  await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("128000");
+  await expect(dialog.getByLabel("最大出力トークン数")).toHaveValue("16384");
+  await expect(dialog.getByText("未接続", { exact: true })).toBeVisible();
+  await dialog
+    .getByLabel("説明")
+    .fill(
+      "Metadata only; execution still requires an eligible personal connection",
+    );
+  const submitted = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/registry" &&
+      request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const config = (await submitted).postDataJSON().config;
+  expect(config).toMatchObject({
+    provider: "chatgpt",
+    plan_connection: "chatgpt",
+    model_id: "gpt-manual-fixture",
+    context_window: 128000,
+    max_output_tokens: 16384,
+  });
+  expect(config).not.toHaveProperty("provider_credential");
+  expect(discoveries).toBe(0);
 });

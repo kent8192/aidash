@@ -36,7 +36,30 @@ test("hosted bundles omit personal Plan entrypoints and never call Plan endpoint
             protocol_version: "0.1",
             key: null,
           },
-          registry: [],
+          registry: [
+            {
+              id: "tenant-model",
+              config: {
+                provider: "openrouter",
+                provider_credential: "openrouter",
+              },
+            },
+            {
+              id: "plan-model",
+              config: { provider: "chatgpt", plan_connection: "chatgpt" },
+            },
+          ].map((entry) => ({
+            ...entry,
+            kind: "model",
+            version: "1.0.0",
+            name: { en: entry.id },
+            description: { en: entry.id },
+            capabilities: [],
+            languages: [],
+            tags: [],
+            skills: [],
+            schema: {},
+          })),
           workspaces: [],
           tasks: [],
           artifacts: [],
@@ -71,6 +94,16 @@ test("hosted bundles omit personal Plan entrypoints and never call Plan endpoint
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
+  await expect(
+    dialog
+      .getByLabel("Provider", { exact: true })
+      .locator('option[value="plan_connection:chatgpt"]'),
+  ).toHaveCount(0);
+  await expect(
+    dialog
+      .getByLabel("Provider", { exact: true })
+      .locator('option[value="provider_credential:openrouter"]'),
+  ).toHaveCount(1);
   await dialog.getByLabel("Entity type", { exact: true }).selectOption("model");
   await expect(
     dialog

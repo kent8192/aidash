@@ -211,6 +211,11 @@ test("personal connect pastes a single-use callback, clears it and disconnects b
       "Local connection deleted. Provider revocation could not be confirmed.",
     ),
   ).toBeVisible();
+  await expect(
+    page.getByText("Remove the connection in ChatGPT settings as well.", {
+      exact: false,
+    }),
+  ).toBeVisible();
   expect(
     requests.find((r) => r.path.endsWith("/chatgpt") && r.body)?.body,
   ).toEqual({ expected_revision: 4 });
@@ -238,7 +243,9 @@ test("reconnection and ineligibility have distinct persistent guidance", async (
   await setup(page, { connected: true, state: "ineligible" });
   await expect(
     page
-      .getByText("Your ChatGPT plan or workspace is not eligible for Aidash.")
+      .getByText(
+        "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
+      )
       .first(),
   ).toBeVisible();
   await expect(
@@ -250,7 +257,7 @@ test("reconnection and ineligibility have distinct persistent guidance", async (
   await page.goto("/collaboration");
   await expect(
     page.getByText(
-      "Your ChatGPT plan or workspace is not eligible for Aidash.",
+      "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
     ),
   ).toBeVisible();
   await expect(

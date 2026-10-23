@@ -34,6 +34,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { EntityConfiguration } from "./entity-configuration";
 import { useNodes } from "./nodes";
+import { RegistryModelPicker } from "./registry-model-picker";
 import { PlanModelPicker } from "./plan-model-picker";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
@@ -621,19 +622,7 @@ export function EntityForm({
         {kind === "agent" ? (
           <>
             <Hint>{t("agentHelp")}</Hint>
-            <Field label={t("model")}>
-              <NativeSelect name="model" required defaultValue="">
-                <option value="">{t("choose")}</option>
-                {models.map((e) => (
-                  <option
-                    key={`${e.id}@${e.version}`}
-                    value={`${e.id}@${e.version}`}
-                  >
-                    {entityLabel(e)}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
+            <RegistryModelPicker entries={models} access={data.access} />
             {models.length === 0 && (
               <Notice tone="warning">{t("noModel")}</Notice>
             )}
