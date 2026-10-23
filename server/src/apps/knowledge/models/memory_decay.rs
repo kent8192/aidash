@@ -1,6 +1,7 @@
 //! Usage and recall state are independent of canonical Unit revisions.
 use aidash_domain::registry::EntityRef;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -12,8 +13,15 @@ pub struct MemoryUnitRetention {
 	pub unit_id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub bank_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "retention_bank",
+		db_index = false,
+		on_delete = Restrict,
+		on_update = Restrict
+	)]
+	pub bank: ForeignKeyField<crate::apps::knowledge::models::memory_units::MemoryBank>,
 	#[field]
 	pub deliveries: i64,
 	#[field(null = true)]

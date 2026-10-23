@@ -2,6 +2,7 @@
 
 use crate::apps::workspaces::services::states::ArtifactKind;
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -14,10 +15,20 @@ pub struct Artifact {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub workspace_id: uuid::Uuid,
-	#[field]
-	pub task_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "artifacts_workspace_id_fkey",
+		db_index = false
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "artifacts_task_id_fkey",
+		db_index = false
+	)]
+	pub task: ForeignKeyField<crate::apps::workspaces::models::Task>,
 	#[field(field_type = "text", max_length = 64)]
 	pub kind: ArtifactKind,
 	#[field(field_type = "text")]

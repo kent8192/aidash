@@ -128,7 +128,7 @@ async fn waiting_requests_enforce_identity_ownership_and_reverse_references(
 			.tenant("acme")
 			.id(Uuid::new_v4())
 			.workspace_id(owner.workspace_id)
-			.run_id(owner.id)
+			.run(owner.id)
 			.kind(HumanRequestKind::Question)
 			.prompt("Continue?")
 			.response(None)
