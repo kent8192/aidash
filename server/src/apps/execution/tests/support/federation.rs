@@ -208,6 +208,7 @@ pub async fn token(
 		method: method.into(),
 		path: path.into(),
 		body: body_digest(body),
+		transition: None,
 	};
 	claims
 		.mint(&Signing(key))

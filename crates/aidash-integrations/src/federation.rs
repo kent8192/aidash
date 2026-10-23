@@ -135,6 +135,7 @@ impl HttpTransport {
 			method: method.into(),
 			path: path.into(),
 			body: body_digest(&bytes),
+			transition: None,
 		};
 		let token = claims
 			.mint(&Signing(key.as_ref()))

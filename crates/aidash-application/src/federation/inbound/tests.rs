@@ -217,6 +217,7 @@ async fn token(
 		method: "POST".into(),
 		path: "/scoped/discover".into(),
 		body: body_digest(b"{}"),
+		transition: None,
 	};
 	change(&mut claims);
 	let signing = InMemorySigner::new(key_id(signer).as_str().into(), seed_of(signer));
@@ -586,6 +587,7 @@ async fn viewer_token(
 		method: "POST".into(),
 		path: "/scoped/discover".into(),
 		body: body_digest(b"{}"),
+		transition: None,
 	};
 	change(&mut claims);
 	let signing = InMemorySigner::new(key_id(signer).as_str().into(), seed_of(signer));
