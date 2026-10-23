@@ -163,9 +163,15 @@ impl<'a> Executor<'a> {
 					let result = outcome.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?;
-					let result = store
-						.invocation_finish(run, token, &keys[offset], &result)
-						.await?;
+					let result = if aidash_domain::research::revocation::result_operation(&result)
+						.is_some()
+					{
+						store
+							.invocation_finish(run, token, &keys[offset], &result)
+							.await?
+					} else {
+						result
+					};
 					outputs[offset] =
 						Some(denial.map_or(result, |message| json!({"error":message})));
 					continue;
@@ -2816,7 +2822,10 @@ impl<'a> Executor<'a> {
 				}
 				// The stored result replaces a research result whose account
 				// terms ended meanwhile (ADR 0058).
-				let output = store.invocation_finish(run, token, &key, &output).await?;
+				let output = if invocation.status != "COMPLETED"
+					|| aidash_domain::research::revocation::result_operation(&output).is_some() {
+					store.invocation_finish(run, token, &key, &output).await?
+				} else { output };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() {
