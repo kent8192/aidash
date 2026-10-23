@@ -1554,6 +1554,7 @@ mod journey;
 /// Interrupts the caller at the real Store commit boundary, without returning
 /// an error to the service (which would exercise its graceful cleanup instead).
 struct InterruptedStore {
+	after_destroy: bool,
 	inner: Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore>,
 	after_commit: bool,
 	reached: tokio::sync::Notify,
@@ -1594,7 +1595,12 @@ impl Store for InterruptedStore {
 		self.inner.disable(tenant, version).await
 	}
 	async fn destroy(&self, tenant: &str, version: &str) -> Result<()> {
-		self.inner.destroy(tenant, version).await
+		self.inner.destroy(tenant, version).await?;
+		if self.after_destroy {
+			self.reached.notify_one();
+			std::future::pending::<()>().await;
+		}
+		Ok(())
 	}
 	async fn delete(&self, tenant: &str, resource: &str) -> Result<()> {
 		self.inner.delete(tenant, resource).await
@@ -1631,8 +1637,19 @@ async fn connect_durable(
 		tenant: "alpha".into(),
 		subject: "alice".into(),
 	};
-	let request =
-		plans::begin("urn:uuid:0d5c0e5e-5d5a-4c4b-9a8e-1b2c3d4e5f60", 1457, None).unwrap();
+	let mut scope = service.repository.begin(&owner).await.unwrap();
+	let saved_client = scope
+		.owned(Provider::Chatgpt)
+		.await
+		.unwrap()
+		.map(|row| row.client_id);
+	scope.commit().await.unwrap();
+	let request = plans::begin(
+		"urn:uuid:0d5c0e5e-5d5a-4c4b-9a8e-1b2c3d4e5f60",
+		1457,
+		saved_client.as_deref(),
+	)
+	.unwrap();
 	let (code, state, client) = fixture.openai.consent(&request.url);
 	let callback = aidash_domain::plan_connections::parse_callback(
 		&format!(
@@ -1651,7 +1668,7 @@ async fn connect_durable(
 				verifier: &request.verifier,
 				nonce: request.nonce.expose_secret(),
 				redirect_uri: &request.redirect_uri,
-				saved_client: None,
+				saved_client: saved_client.as_deref(),
 			},
 			&callback,
 			"fixture",
@@ -1700,6 +1717,7 @@ async fn interrupted_refresh_recovers_only_a_durable_replacement(
 		.unwrap(),
 	);
 	let interrupted = Arc::new(InterruptedStore {
+		after_destroy: false,
 		inner: encrypted.clone(),
 		after_commit,
 		reached: Default::default(),
@@ -1822,3 +1840,6 @@ async fn interrupted_refresh_recovers_only_a_durable_replacement(
 	);
 	fixture.cleanup().await;
 }
+
+#[path = "plan_connections/recovery.rs"]
+mod recovery;

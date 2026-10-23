@@ -274,7 +274,14 @@ struct Replacement {
 #[serde(untagged)]
 enum StoredVersion {
 	Tokens(Stored),
-	Intent { refresh_intent: RefreshIntent },
+	Intent {
+		refresh_intent: RefreshIntent,
+	},
+	/// A lost-key version may contain an unknown live grant. This token-free
+	/// record survives ordinary cleanup under an available encryption key.
+	Unconfirmed {
+		revocation_unconfirmed: Uuid,
+	},
 }
 impl StoredVersion {
 	fn seal(&self) -> SecretString {
@@ -711,6 +718,7 @@ impl Service {
 			.filter_map(|(version, entry)| {
 				let disposable = match entry {
 					StoredVersion::Intent { .. } => resolved.contains(&version),
+					StoredVersion::Unconfirmed { .. } => false,
 					StoredVersion::Tokens(Stored {
 						rotation: Some(receipt),
 						..
@@ -820,23 +828,53 @@ impl Service {
 			.map_err(Error::Plan)
 	}
 
-	/// Records that a connection's pinned Plan Tokens became unreadable with a
-	/// lost Master Key. They cannot be revoked at OpenAI any more, so the
-	/// owner must connect again; the Store removes the versions itself. The
-	/// pin is kept although nothing can read it: a later disconnection then
-	/// fails to read the refresh token and reports the grant as not revoked,
-	/// where no pin would claim it had nothing left to revoke.
-	pub async fn mark_unreadable(&self, id: Uuid, actor: &str) -> Result<()> {
+	/// Records lost-key Plan versions before offline recovery removes them.
+	/// A surviving current pin can still serve calls, but a token-free marker
+	/// retains uncertainty about older unpinned grants through reconnection.
+	pub async fn mark_unreadable(&self, id: Uuid, pinned_lost: bool, actor: &str) -> Result<()> {
 		let Some(owner) = self.repository.owner_of(id).await? else {
 			return Ok(());
 		};
 		let mut scope = self.repository.begin(&owner).await?;
-		let Some(row) = scope.owned(Provider::Chatgpt).await?.filter(|row| {
-			row.id == id && row.pinned_version.is_some() && row.state != State::NeedsReconnection
-		}) else {
+		let Some(row) = scope
+			.owned(Provider::Chatgpt)
+			.await?
+			.filter(|row| row.id == id)
+		else {
 			return scope.commit().await;
 		};
-		Self::strand(scope, row, actor).await
+		let mut recorded = false;
+		for version in self
+			.store
+			.versions(&row.tenant, &row.secret_resource)
+			.await?
+		{
+			if let Ok(value) = self
+				.reader
+				.read(&row.tenant, &row.secret_resource, &version)
+				.await && matches!(StoredVersion::open(&value), Ok(StoredVersion::Unconfirmed { revocation_unconfirmed }) if revocation_unconfirmed == id)
+			{
+				recorded = true;
+				break;
+			}
+		}
+		if !recorded {
+			self.store
+				.add_version(
+					&row.tenant,
+					&row.secret_resource,
+					&StoredVersion::Unconfirmed {
+						revocation_unconfirmed: id,
+					}
+					.seal(),
+				)
+				.await?;
+		}
+		if pinned_lost && row.state != State::NeedsReconnection {
+			Self::strand(scope, row, actor).await
+		} else {
+			scope.commit().await
+		}
 	}
 
 	/// Asks for reconnection while keeping a pin nothing can read, as
@@ -940,11 +978,15 @@ impl Service {
 		let base = RefreshIntent::for_row(row);
 		let mut intents = Vec::new();
 		let mut replacements = Vec::new();
-		for version in self
+		let versions = self
 			.store
 			.versions(&row.tenant, &row.secret_resource)
-			.await?
-		{
+			.await?;
+		let pinned_exists = row
+			.pinned_version
+			.as_ref()
+			.is_some_and(|pin| versions.contains(pin));
+		for version in versions {
 			if row.pinned_version.as_ref() == Some(&version) {
 				continue;
 			}
@@ -963,7 +1005,7 @@ impl Service {
 				_ => {}
 			}
 		}
-		if intents.is_empty() && replacements.is_empty() {
+		if intents.is_empty() && replacements.is_empty() && pinned_exists {
 			return Ok(false);
 		}
 		if intents.len() == 1
@@ -1253,7 +1295,7 @@ impl Service {
 		let mut confirmed = row
 			.pinned_version
 			.as_ref()
-			.is_none_or(|pin| versions.contains(pin));
+			.is_some_and(|pin| versions.contains(pin));
 		let mut intents = Vec::new();
 		let mut replacements = Vec::new();
 		for version in versions {
@@ -1282,6 +1324,7 @@ impl Service {
 				Ok(StoredVersion::Intent { refresh_intent }) => {
 					intents.push((version, refresh_intent))
 				}
+				Ok(StoredVersion::Unconfirmed { .. }) => confirmed = false,
 				Err(_) => confirmed = false,
 			}
 		}
@@ -1304,10 +1347,14 @@ impl Service {
 	/// Deletes every Plan Token version and the resource. A resource that is
 	/// already gone counts as deleted, so a retried cleanup completes.
 	async fn delete_tokens(&self, row: &PlanConnection) -> Result<()> {
-		let versions = match self.store.versions(&row.tenant, &row.secret_resource).await {
+		let mut versions = match self.store.versions(&row.tenant, &row.secret_resource).await {
 			Err(Error::NotFound(_)) => Vec::new(),
 			versions => versions?,
 		};
+		// Once any uncertainty evidence is deleted, a failed metadata deletion
+		// must still be unconfirmed on retry. Remove the committed pin first;
+		// a row without a pin is never proof of upstream revocation either.
+		versions.sort_by_key(|version| Some(version) != row.pinned_version.as_ref());
 		for version in versions {
 			gone(self.store.destroy(&row.tenant, &version).await)?;
 		}
