@@ -3,8 +3,8 @@
 // journal contains references; these nullable bytes follow Research purges.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0049_research_journal_results", "execution")
-        .add_dependency("execution", "0048_egress_state")
+	Migration::new("0050_research_journal_results", "execution")
+        .add_dependency("execution", "0049_foreign_key_relations_state")
         .database_only(true)
         .atomic(true)
         .add_operation(Operation::CreateTable {

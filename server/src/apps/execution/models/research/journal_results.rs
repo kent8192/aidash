@@ -10,8 +10,15 @@ pub struct ResearchJournalResult {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "research_journal_results_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub invocation_key: String,
 	#[field(field_type = "text")]

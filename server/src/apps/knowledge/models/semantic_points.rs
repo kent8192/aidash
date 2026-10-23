@@ -1,6 +1,7 @@
 //! Persistent semantic_points records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +12,13 @@ pub struct SemanticPoint {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub entry_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "semantic_points_entry_id_fkey",
+		db_index = false
+	)]
+	pub entry: ForeignKeyField<crate::apps::knowledge::models::SemanticEntry>,
 	#[field(field_type = "text", null = true)]
 	pub content_digest: Option<String>,
 	#[field(field_type = "text")]

@@ -1,19 +1,26 @@
 //! Persistent channel_attachments records.
 
-use reinhardt::macros::Model;
+use reinhardt::db::associations::ForeignKeyField;
+use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[model_config(app_label = "workspaces", table_name = "channel_attachments")]
+#[model(app_label = "workspaces", table_name = "channel_attachments")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelAttachment {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 
-	#[field(db_column = "workspace_id")]
-	pub workspace_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "channel_attachments_workspace_id_fkey",
+		db_index = false,
+		on_delete = Cascade
+	)]
+	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
 	#[field(field_type = "text")]
 	pub uploaded_by: String,
 	#[field]
@@ -140,6 +147,7 @@ impl crate::database::Record for ChannelAttachment {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
+			workspace: ForeignKeyField::new(),
 			uploaded_by: row.try_get("uploaded_by")?,
 			idempotency_key: row.try_get("idempotency_key")?,
 			filename: row.try_get("filename")?,

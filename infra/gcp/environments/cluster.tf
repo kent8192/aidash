@@ -85,9 +85,11 @@ resource "google_service_account_iam_member" "nodes_deploy" {
 }
 
 resource "google_container_cluster" "aidash" {
-  name                     = "aidash"
-  location                 = local.cluster_location
-  node_locations           = [local.zone]
+  name     = "aidash"
+  location = local.cluster_location
+  // Zonal clusters include their primary zone implicitly; only regional
+  // production needs an explicit initial node location.
+  node_locations           = var.deployment_tier == "production" ? [local.zone] : null
   network                  = google_compute_network.aidash.id
   subnetwork               = google_compute_subnetwork.aidash.id
   min_master_version       = "1.34"
