@@ -19,11 +19,11 @@ variable "billing_account" { type = string }
 variable "folder_id" { type = string }
 variable "region" { type = string }
 variable "backup_plan" { type = string }
-variable "operator_cidr" {
+variable "client_cidr" {
   type = string
   validation {
-    condition     = can(cidrhost(var.operator_cidr, 0)) && endswith(var.operator_cidr, "/32")
-    error_message = "Supply the operator's single IPv4 address as a /32."
+    condition     = can(cidrhost(var.client_cidr, 0)) && endswith(var.client_cidr, "/32")
+    error_message = "Supply one client IPv4 address as a /32."
   }
 }
 variable "namespace" { type = string }
@@ -137,8 +137,8 @@ resource "google_container_cluster" "drill" {
   }
   master_authorized_networks_config {
     cidr_blocks {
-      cidr_block   = var.operator_cidr
-      display_name = "drill operator"
+      cidr_block   = var.client_cidr
+      display_name = "drill client"
     }
   }
   addons_config {

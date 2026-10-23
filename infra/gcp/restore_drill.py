@@ -109,14 +109,14 @@ def same_filter(observed, expected):
 def prepare(directory, entry, settings):
     require(not directory.exists(), "Choose a new drill directory; never reuse another drill's state")
     require(directory.resolve().is_relative_to((ROOT / "private").resolve()), "Keep drill state and evidence in this checkout's private/ directory")
-    required = {"billing_account", "folder_id", "region", "operator_cidr", "namespace", "ledger_claim", "source_cluster"}
+    required = {"billing_account", "folder_id", "region", "client_cidr", "namespace", "ledger_claim", "source_cluster"}
     require(set(settings) == required and all(isinstance(v, str) and v for v in settings.values()), "Supply exactly the documented drill settings")
     backup = entry.get("pre_update_backup", "")
     require(BACKUP.fullmatch(backup), "Invalid Pre-update Backup name")
     observed = call("GET", backup)
     claims = validate_baseline(entry, settings, observed, volume_inventory(backup))
     identifier = uuid.uuid4().hex[:12]
-    variables = {k: settings[k] for k in ["billing_account", "folder_id", "region", "operator_cidr", "namespace"]}
+    variables = {k: settings[k] for k in ["billing_account", "folder_id", "region", "client_cidr", "namespace"]}
     variables.update(project_id="aidash-drill-" + identifier, backup_plan=backup.rsplit("/backups/", 1)[0])
     directory.mkdir(parents=True, mode=0o700)
     for name in ["main.tf", ".terraform.lock.hcl"]:
@@ -181,9 +181,9 @@ def restore(directory, receipt):
 
 def record(directory, receipt, evidence):
     require(receipt["phase"] == "resources_restored", "Complete the isolated data restore first")
-    require(set(evidence) == {"operator", "revision", "image_digests", "fault_at", "verified_at", "checks", "report"}, "Use the documented human evidence fields")
+    require(set(evidence) == {"performed_by", "revision", "image_digests", "fault_at", "verified_at", "checks", "report"}, "Use the documented human evidence fields")
     require(set(evidence["checks"]) == CHECKS and all(type(v) is bool for v in evidence["checks"].values()), "Record every acceptance check as true or false")
-    require(all(evidence[k] for k in ["operator", "revision", "image_digests", "report"]), "Name the operator, revision/images and raw report")
+    require(all(evidence[k] for k in ["performed_by", "revision", "image_digests", "report"]), "Name the person running the drill, revision/images and raw report")
     start, end = [dt.datetime.fromisoformat(evidence[k]) for k in ["fault_at", "verified_at"]]
     require(start.tzinfo and end.tzinfo and end >= start, "Use ordered timestamps with time zones")
     seconds = (end - start).total_seconds()

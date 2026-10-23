@@ -21,7 +21,7 @@ variables {
   folder_id       = "123456789"
   region          = "us-central1"
   backup_plan     = "projects/aidash-production/locations/us/backupPlans/aidash-production-pre-update"
-  operator_cidr   = "192.0.2.1/32"
+  client_cidr   = "192.0.2.1/32"
   namespace       = "aidash-production"
 }
 run "isolated_cross_project_restore" {

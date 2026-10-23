@@ -9,7 +9,7 @@ SPEC = importlib.util.spec_from_file_location("restore_drill", pathlib.Path(__fi
 drill = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(drill)
 NAME = "projects/aidash-production/locations/us-central1/backupPlans/aidash-production-pre-update/backups/pre-update-g3-012345abcdef"
-SETTINGS = {"billing_account": "000000-000000-000000", "folder_id": "123", "region": "us-central1", "operator_cidr": "192.0.2.1/32", "namespace": "aidash-production", "ledger_claim": "memory-recovery", "source_cluster": "projects/aidash-production/locations/us-central1/clusters/production"}
+SETTINGS = {"billing_account": "000000-000000-000000", "folder_id": "123", "region": "us-central1", "client_cidr": "192.0.2.1/32", "namespace": "aidash-production", "ledger_claim": "memory-recovery", "source_cluster": "projects/aidash-production/locations/us-central1/clusters/production"}
 BACKUP = {"name": NAME, "state": "SUCCEEDED", "containsVolumeData": True, "volumeCount": 1, "resourceCount": 4, "selectedApplications": {"namespacedNames": [{"namespace": "aidash-production", "name": "aidash"}]}, "clusterMetadata": {"cluster": SETTINGS["source_cluster"]}}
 VOLUMES = [{"sourcePvc": {"namespace": "aidash-production", "name": "postgres"}, "state": "SUCCEEDED"}]
 
@@ -86,7 +86,7 @@ class RestoreDrillTests(unittest.TestCase):
         for seconds, accepted in [(3600, True), (7201, False)]:
             with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as root:
                 receipt = {"phase": "resources_restored"}
-                evidence = {"operator": "operator", "revision": "012345abcdef", "image_digests": ["sha256:fixture"], "fault_at": "2026-10-23T00:00:00+00:00", "verified_at": "2026-10-23T01:00:00+00:00" if seconds == 3600 else "2026-10-23T02:00:01+00:00", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
+                evidence = {"performed_by": "drill runner", "revision": "012345abcdef", "image_digests": ["sha256:fixture"], "fault_at": "2026-10-23T00:00:00+00:00", "verified_at": "2026-10-23T01:00:00+00:00" if seconds == 3600 else "2026-10-23T02:00:01+00:00", "checks": dict.fromkeys(drill.CHECKS, True), "report": "private/raw-report.json"}
                 drill.record(pathlib.Path(root), receipt, evidence)
                 self.assertEqual(receipt["application_verified"], accepted)
                 self.assertEqual(receipt["measured_rto_seconds"], seconds)

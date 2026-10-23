@@ -24,7 +24,7 @@ and [Restore filters](https://docs.cloud.google.com/kubernetes-engine/docs/add-o
 The Restore Channel belongs to the backup's project and region. A successful
 Restore operation is a data restoration milestone; application acceptance follows.
 
-1. Identify the operator, release SHA and image digests. Export the current update
+1. Identify who is running the drill, release SHA and image digests. Export the current update
    entry to `private/drill-entry.json`; it must name `pre_update_backup` and have
    no `writers_started`. Record the seal time, last acknowledged writes and exact
    fixture contents/high-water marks for every Node database, outbox, JetStream,
@@ -35,19 +35,19 @@ Restore operation is a data restoration milestone; application acceptance follow
    resources and excludes the ledger claim/volume. The script checks every page
    of the completed Backup's volume inventory, its source cluster, application
    scope and successful volume data; an absent or incomplete inventory fails.
-3. Obtain operator access to create a project under the drill folder, attach its
+3. Obtain cloud access to create a project under the drill folder, attach its
    billing account, enable the listed APIs, create GKE, and manage Backup for GKE
    and the one source-project IAM member/Restore Channel. Use Application Default
-   Credentials for Terraform and the same operator's `gcloud` account for the
+   Credentials for Terraform and that person's `gcloud` account for the
    Backup API. No deploy service account is granted restore permission. Supply
-   IDs and the operator's public IPv4 `/32` in `private/drill-settings.json`:
+   IDs and the client's public IPv4 `/32` in `private/drill-settings.json`:
 
    ```json
    {
      "billing_account": "<billing-account-id>",
      "folder_id": "<drill-folder-id>",
      "region": "us-central1",
-     "operator_cidr": "<operator-ip>/32",
+     "client_cidr": "<client-ip>/32",
      "namespace": "aidash-production",
      "ledger_claim": "<exact-memory-recovery-pvc-name>",
      "source_cluster": "projects/<source-project>/locations/us-central1/clusters/<cluster>"
@@ -77,7 +77,7 @@ Restore operation is a data restoration milestone; application acceptance follow
    Artifact Registry repository, preserving and verifying their content digests.
    Install the release's pinned upstream gVisor and compatible storage/runtime
    prerequisites on the Ubuntu nodes. Re-provision Secrets from Secret Manager
-   into the target using operator access; never restore backed-up Secrets or
+   into the target using cloud access; never restore backed-up Secrets or
    grant the target nodes production Secret Manager access. Replace production
    peer/provider destinations with owned, isolated fixtures before starting any
    workload. Keep admission closed and the server/worker stopped while inspecting
@@ -103,7 +103,7 @@ Restore operation is a data restoration milestone; application acceptance follow
 
    ```json
    {
-     "operator": "<name>",
+     "performed_by": "<name>",
      "revision": "<release-sha>",
      "image_digests": ["sha256:<digest>"],
      "fault_at": "2026-10-23T00:00:00+00:00",
