@@ -2869,3 +2869,85 @@ fn an_approval_covers_only_the_charge_its_approver_was_shown() {
 	assert_eq!(disclosure(5_000).digest(run), disclosure(5_000).digest(run));
 	assert_ne!(disclosure(5_000).digest(run), disclosure(9_000).digest(run));
 }
+
+#[tokio::test]
+async fn a_page_that_exceeds_model_headroom_takes_no_view_or_fragment() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let document = read_scan(&research, run, 1024).await;
+	let input = json!({"document_id":document,"page":2});
+	let renderer = pixel();
+	let model = serde_json::from_value(json!({
+		"provider":"openrouter","model_id":"vision","endpoint":"https://example.com",
+		"context_window":128000,"max_output_tokens":4096,"modalities":["text","image"],"cost":{},
+		"media_routes":[{"tag":"fixture/png","formats":["image/png"],"source":"test",
+			"verified_at":chrono::Utc::now()-chrono::Duration::hours(1),
+			"expires_at":chrono::Utc::now()+chrono::Duration::hours(1)}]
+	}))
+	.unwrap();
+	let mut fitting = page_image::FittingRenderer {
+		renderer: &renderer,
+		model: &model,
+		headroom: 1024,
+		selected_parts: vec![],
+	};
+	let fragments_before = store.fragments.lock().unwrap().len();
+	let refused = research
+		.view(&call(run, "view", "research.page@1"), &fitting, &input)
+		.await
+		.unwrap();
+	assert_eq!(refused["error"]["code"], "response_too_large", "{refused}");
+	assert_eq!(store.usage(run).await.unwrap().page_views, 0);
+	assert_eq!(store.fragments.lock().unwrap().len(), fragments_before);
+	assert!(store.page_images.lock().unwrap().is_empty());
+	fitting.headroom = 128000;
+	fitting.selected_parts =
+		vec![
+			aidash_domain::provider::ContentPart::from_media("image/png", PIXEL.to_vec()).unwrap();
+			8
+		];
+	let refused = research
+		.view(
+			&call(run, "full-selection", "research.page@1"),
+			&fitting,
+			&input,
+		)
+		.await
+		.unwrap();
+	assert_eq!(refused["error"]["code"], "response_too_large", "{refused}");
+	assert_eq!(store.usage(run).await.unwrap().page_views, 0);
+	assert_eq!(store.fragments.lock().unwrap().len(), fragments_before);
+	fitting.selected_parts.clear();
+	let delivered = research
+		.view(&call(run, "view", "research.page@1"), &fitting, &input)
+		.await
+		.unwrap();
+	assert_eq!(delivered["status"], "ok", "{delivered}");
+	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
+	// Reusing an already-rendered page adds no fragment, view or selection.
+	// The fresh-render admission bound must not reject this replay.
+	fitting.selected_parts =
+		vec![
+			aidash_domain::provider::ContentPart::from_media("image/png", PIXEL.to_vec()).unwrap();
+			8
+		];
+	let replay = research
+		.view(
+			&call(run, "cached-view", "research.page@1"),
+			&fitting,
+			&input,
+		)
+		.await
+		.unwrap();
+	assert_eq!(replay["status"], "ok", "{replay}");
+	assert_eq!(
+		replay["data"]["evidence_ref"],
+		delivered["data"]["evidence_ref"]
+	);
+	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
+}
