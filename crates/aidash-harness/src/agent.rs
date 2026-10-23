@@ -1702,12 +1702,14 @@ impl<'a> Executor<'a> {
                 // Pruning may release authority for Jev I/O, and a local Run's
                 // sources may change during it too; a source revoked meanwhile
                 // must reach neither the summarizer nor the model.
-                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 match plan {
-                    None => {}
+                    None => self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?,
                     Some(mut plan) => {
                         let staged = plan.staged.take();
-                        let summarized = Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await;
+                        let summarized = async {
+                            self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await
+                        }.await;
                         // A pruning no summary completed changes nothing (ADR 0056).
                         if summarized.is_err() && let (Some(staged), Some(ports)) = (&staged, &decider) {
                             let gate = aidash_application::decision::DecisionGate { authority: ports.authority.as_ref(), journal: ports.journal.as_ref(), provider: ports.provider.as_ref() };
