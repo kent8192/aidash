@@ -528,12 +528,14 @@ impl HarnessManagement {
 		}
 		let scope = f.store.run_tenancy(id).await?;
 		let existing = f.store.inspect_run(&scope, id).await?;
+		let mut tx = f.store.pool.begin(&scope).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut f.store.pool.begin(&scope).await?,
+			&mut tx,
 			existing.workspace_id,
 		)
 		.await?;
-		let r = f.store.control(&scope, id, input.action).await?;
+		let r = f.store.control_in(&mut tx, id, input.action).await?;
+		tx.commit().await?;
 		f.notify.notify_waiters();
 		Ok(r)
 	}

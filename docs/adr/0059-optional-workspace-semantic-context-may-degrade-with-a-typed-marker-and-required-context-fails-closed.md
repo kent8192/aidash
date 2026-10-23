@@ -14,6 +14,7 @@ Decided on 2026-10-12 (#154) and refined on 2026-10-17 (#234). When retrieval of
 ## Consequences
 
 - The workspace and memory slots are retrieved independently. An unavailable workspace slot no longer stops memory retrieval, and a memory failure still pauses the Run.
+- A successful workspace retrieval ends the previous outage even when native memory subsequently fails (#366). The execution port reports that progress separately; the executor persists the cleared outage and retry state under its current lease before passing the memory error to recovery, which reloads the stored Run. This applies to Legacy and Ordered Runs, including scoped authority.
 - The marker is never stored as a Source observation, either across steps under a Retrieval Key (ADR 0020) or for recovery of the same inference boundary. The next attempt retrieves again.
 - The model sees only the marker, as data, with no added explanatory text.
 - Run inspection lists the degraded steps with their cause, and the dashboard marks a local Run that ran with Degraded context. Completion Gate and Completion Review are not affected.

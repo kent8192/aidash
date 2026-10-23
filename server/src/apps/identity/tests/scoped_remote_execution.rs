@@ -4380,6 +4380,20 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
+	// Required-Home content stays protected, while installation administration
+	// may still configure the live Tenant's index without reading its contents.
+	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
+	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
+	assert_eq!(status, 200, "{index}");
+	let (status, configured) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{configured}");
 	p.close().await;
 }
 
