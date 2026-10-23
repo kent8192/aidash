@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use rstest::rstest;
 use serde_json::{Value, json};
 
-const NODE: &str = "aidash://node-a";
+const NODE: &str = "aidash://node-a/brave-otter-k3m9q2xa";
 
 struct Fixture {
 	definitions: BTreeMap<(String, String), Entry>,
@@ -17,6 +17,7 @@ struct Fixture {
 	policy: PolicyBundle,
 	writes: Vec<String>,
 	saved: usize,
+	node: aidash_domain::nodes::NodeAddress,
 }
 
 fn entry(value: Value) -> Entry {
@@ -26,7 +27,7 @@ fn agent(model: &str, tools: &[&str]) -> Entry {
 	let bindings: Vec<_> = tools
 		.iter()
 		.map(
-			|tool| json!({"kind":"tool","target":{"registry_node":NODE,"id":tool,"version":"1.0.0"}}),
+			|tool| json!({"kind":"tool","target":{"registry_deployment":"aidash://node-a","id":tool,"version":"1.0.0"}}),
 		)
 		.collect();
 	entry(
@@ -56,7 +57,7 @@ fn approval(id: &str, enabled: bool) -> Approval {
 	}
 }
 fn subject() -> String {
-	aidash_domain::qualified_agent(NODE, "agent", "1.0.0")
+	aidash_domain::qualified_agent(&node(), "agent", "1.0.0")
 }
 
 impl Fixture {
@@ -71,6 +72,7 @@ impl Fixture {
 			policy: initial_policy("acme", true).unwrap(),
 			writes: vec![],
 			saved: 0,
+			node: node(),
 		}
 	}
 }
@@ -85,6 +87,7 @@ impl CatalogMutation for Fixture {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
@@ -93,6 +96,7 @@ impl CatalogMutation for Fixture {
 			.push(format!("approve:{}:{enabled}", reference.id));
 		Ok(Some(Binding {
 			tenant: tenant.into(),
+			node: node.clone(),
 			entry_id: reference.id.clone(),
 			entry_version: reference.version.clone(),
 			enabled,
@@ -111,8 +115,8 @@ impl CatalogApprovalScope for Fixture {
 	fn tenant(&self) -> &str {
 		"acme"
 	}
-	fn node(&self) -> &str {
-		NODE
+	fn node(&self) -> &aidash_domain::nodes::NodeAddress {
+		&self.node
 	}
 	fn actor(&self) -> &str {
 		"owner"
@@ -333,4 +337,8 @@ async fn an_agent_whose_subject_has_another_kind_is_refused() {
 	);
 	assert_eq!(fixture.policy.subjects[&subject()].kind, SubjectKind::User);
 	assert_eq!(fixture.saved, 0);
+}
+
+fn node() -> aidash_domain::nodes::NodeAddress {
+	NODE.parse().unwrap()
 }

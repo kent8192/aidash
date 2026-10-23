@@ -62,7 +62,7 @@ impl Ledger {
 			|| self.epoch.is_nil()
 			|| self.units.iter().any(|(id, fence)| {
 				id.is_nil()
-					|| fence.bank.home != home
+					|| crate::nodes::deployment_of(&fence.bank.home) != home
 					|| fence.bank.validate().is_err()
 					|| fence.revision < 1
 					|| fence.digest.is_empty()
@@ -76,7 +76,10 @@ impl Ledger {
 	/// Persist before the database write. Uncertain or rolled-back writes may
 	/// conservatively withhold a restore; a snapshot may never lower this floor.
 	pub fn observe(&mut self, unit: &Unit) -> Result<()> {
-		if unit.bank.home != self.home || unit.id.is_nil() || unit.revision < 1 {
+		if crate::nodes::deployment_of(&unit.bank.home) != self.home
+			|| unit.id.is_nil()
+			|| unit.revision < 1
+		{
 			return Err(Error::Invalid(
 				"invalid memory recovery identity or revision".into(),
 			));
@@ -112,7 +115,7 @@ impl Ledger {
 	}
 	/// Negative identities are checked too, without making them readable facts.
 	pub fn matches(&self, unit: &Unit) -> Result<bool> {
-		self.validate(&unit.bank.home)?;
+		self.validate(crate::nodes::deployment_of(&unit.bank.home))?;
 		Ok(self.units.get(&unit.id).is_some_and(|fence| {
 			fence.bank == unit.bank
 				&& fence.revision == unit.revision

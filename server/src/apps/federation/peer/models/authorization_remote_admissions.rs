@@ -14,6 +14,9 @@ use serde_json::Value;
 pub struct AuthorizationRemoteAdmission {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
+	/// The receiving Node.
+	#[field(field_type = "text")]
+	pub node: String,
 	#[field(field_type = "text")]
 	pub source_node: String,
 	#[field]

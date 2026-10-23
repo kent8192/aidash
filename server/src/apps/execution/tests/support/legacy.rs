@@ -80,6 +80,8 @@ pub use application::{
 };
 #[path = "peer.rs"]
 mod peer;
+#[path = "federation.rs"]
+pub mod peering;
 #[path = "upstream.rs"]
 pub mod upstream_fixtures;
 #[allow(unused_imports)] // Worker-process fixtures share this settings module.
@@ -91,8 +93,9 @@ pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, nat
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	admitted_run, approve_agent, local_run, remote_run, remote_run_in, replace_policy, tenant_root,
-	tenant_root_in, tenant_scope, tenant_token,
+	admitted_run, approve_agent, approve_agent_on, default_node, local_run, remote_run,
+	remote_run_in, replace_policy, second_node_in, subject_claim, tenant_root, tenant_root_in,
+	tenant_scope, tenant_token,
 };
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
@@ -132,6 +135,325 @@ pub async fn request(
 	json_response(method, path, response.status_code(), response.body())
 }
 
+/// Registers `other`'s default Node of `other_tenant` at `local`'s default Node
+/// of `tenant`, through the registration route with the Deployment
+/// Administrator's token. `other` must be serving, because the route fetches
+/// its `/.well-known/aidash`.
+#[allow(dead_code)]
+pub async fn register_default_node(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	peering::permit(f, &other.config.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		peering::registration(
+			&other_node.to_string(),
+			Some((&other.config.endpoint, &peering::key_id(other))),
+		),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
+/// Registers the default Node of `source_tenant`, another Tenant of this
+/// Deployment, at `tenant`'s default Node, and returns the registered address.
+#[allow(dead_code)]
+pub async fn register_local_node(
+	f: &Federation,
+	app: &TestApplication,
+	tenant: &str,
+	source_tenant: &str,
+) -> aidash_domain::nodes::NodeAddress {
+	tenant_root(f, source_tenant).await;
+	let node = default_node(&f.store, tenant).await;
+	let source = default_node(&f.store, source_tenant).await;
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		peering::registration(&source.to_string(), None),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	source
+}
+
+/// Registers `other`'s default Node at `local`'s although `other` serves
+/// nothing, so the registration only lets `local` accept it: its endpoint is
+/// a stand-in that answers the identity request and nothing else.
+#[allow(dead_code)]
+pub async fn register_sender_only(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let stand_in =
+		peering::Remote::standing_in(other.config.deployment.as_str(), peering::key_of(other))
+			.await;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	peering::permit(f, &stand_in.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		stand_in.registration(other_node.node.as_str()),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
+/// Replaces the registration at `local`'s default Node of `tenant` for `other`'s
+/// default Node, which currently holds `revision`, with one that is `enabled`.
+/// A disabling request keeps what the registration pinned; an enabling one
+/// pins what `other` publishes now.
+#[allow(dead_code)]
+pub async fn set_node_enabled(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+	enabled: bool,
+	revision: i64,
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	let mut body = peering::registration(
+		&other_node.to_string(),
+		Some((&other.config.endpoint, &peering::key_id(other))),
+	);
+	body["enabled"] = json!(enabled);
+	body["expected_revision"] = json!(revision);
+	let (status, response) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		body,
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+}
+
+/// Replaces the registration at `local`'s default Node of `tenant` for `other`'s
+/// default Node, which currently holds `revision`, so it addresses `endpoint`.
+/// The Deployment at `endpoint` must publish `other`'s key.
+#[allow(dead_code)]
+pub async fn repoint_node(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+	endpoint: &str,
+	revision: i64,
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let node = default_node(&f.store, tenant).await;
+	let other_node = default_node(&other.store, other_tenant).await;
+	peering::permit(f, endpoint);
+	let mut body = peering::registration(
+		&other_node.to_string(),
+		Some((endpoint, &peering::key_id(other))),
+	);
+	body["expected_revision"] = json!(revision);
+	let (status, response) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, node.node.as_str()),
+		body,
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+}
+
+/// A stand-in Deployment that `tenant`'s default Node of the receiving
+/// Deployment accepts, and the Node of it that sends.
+#[allow(dead_code)]
+pub struct Source {
+	pub remote: peering::Remote,
+	pub node: String,
+	pub receiver: aidash_domain::nodes::NodeAddress,
+}
+
+#[allow(dead_code)]
+impl Source {
+	/// The address of the sending Node.
+	pub fn address(&self) -> String {
+		self.remote.node(&self.node)
+	}
+}
+
+/// Registers a Node of the stand-in Deployment `deployment` at `tenant`'s
+/// default Node, through the registration route.
+#[allow(dead_code)]
+pub async fn register_source(
+	f: &Federation,
+	app: &TestApplication,
+	deployment: &str,
+	tenant: &str,
+) -> Source {
+	let remote = peering::Remote::start(deployment).await;
+	let node = aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender")).to_string();
+	let receiver = default_node(&f.store, tenant).await;
+	peering::permit(f, &remote.endpoint);
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&peering::registration_path(tenant, receiver.node.as_str()),
+		remote.registration(&node),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	Source {
+		remote,
+		node,
+		receiver,
+	}
+}
+
+/// POSTs a Peer Graph View request. A subject viewer is a Node's request as
+/// that subject; a Deployment Administrator viewer has no Node, names the
+/// receiving Deployment and acts under a Peer Graph Grant.
+#[allow(dead_code)]
+pub async fn post_graph(
+	app: &TestApplication,
+	source: &Source,
+	viewer: &Value,
+	payload: &Value,
+) -> (u16, Value) {
+	use peering::Bearer;
+	let (receiver, bearer, subject) = if viewer["kind"] == "deployment_administrator" {
+		let identity = viewer["id"].as_str().unwrap().parse().unwrap();
+		(
+			source.receiver.deployment.to_string(),
+			Bearer::Viewer(&source.remote, identity),
+			String::new(),
+		)
+	} else {
+		(
+			source.receiver.to_string(),
+			Bearer::Signed(&source.remote, source.node.clone()),
+			viewer["subject"].as_str().unwrap().to_owned(),
+		)
+	};
+	let response = peering::post_as(
+		&app.client(),
+		&receiver,
+		bearer,
+		&subject,
+		"/federation/v0.1/scoped/graph",
+		payload,
+	)
+	.await;
+	(
+		response.status_code(),
+		response.json_value().unwrap_or(Value::Null),
+	)
+}
+
+/// `local`'s Tenant maps `subject` of the Node `source` (a Tenant of `other`'s
+/// Deployment) to a new credential of its own `subject`.
+#[allow(dead_code)]
+pub async fn map_subject(
+	local: (&Federation, &TestApplication, &str),
+	other: (&Federation, &str),
+	subject: &str,
+) {
+	let (f, app, tenant) = local;
+	let (other, other_tenant) = other;
+	let (status, issued) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/authorization/{tenant}/credentials"),
+		json!({"subject":subject}),
+	)
+	.await;
+	assert_eq!(status, 200, "{issued}");
+	let (status, mapping) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/authorization/{tenant}/peer-mappings"),
+		json!({
+			"node":default_node(&f.store, tenant).await.node,
+			"source_node":default_node(&other.store, other_tenant).await,
+			"source_subject":subject,"credential_id":issued["credential"]["id"],
+			"enabled":true,"expected_revision":0,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+}
+
+/// Both fixture Deployments register the other's default Node, so each accepts
+/// and addresses the other. Both serve their routes.
+#[allow(dead_code)]
+pub async fn register_pair(
+	a: (&Federation, &TestApplication, &str),
+	b: (&Federation, &TestApplication, &str),
+) {
+	register_default_node(a, (b.0, b.2)).await;
+	register_default_node(b, (a.0, a.2)).await;
+}
+
+/// A request to `receiver`'s routes from `from`'s default Node of
+/// `from_tenant`, as `subject`, signed with `from`'s Deployment Key. `path` is
+/// the full path of the route, which starts with `/federation/v0.1`.
+#[allow(dead_code)]
+pub async fn peer_request(
+	app: &TestApplication,
+	from: (&Federation, &str),
+	receiver: &aidash_domain::nodes::NodeAddress,
+	subject: &str,
+	path: &str,
+	input: Value,
+) -> (u16, Value) {
+	let (f, tenant) = from;
+	let node = default_node(&f.store, tenant).await;
+	let body = input.to_string();
+	let target = path
+		.strip_prefix("/federation/v0.1")
+		.expect("a federation route");
+	let token = peering::token(
+		f.config
+			.deployment_key
+			.as_deref()
+			.expect("the fixture Deployment holds a key"),
+		f.config.deployment.as_str(),
+		&node.to_string(),
+		&receiver.to_string(),
+		subject,
+		("POST", target, body.as_bytes()),
+	)
+	.await;
+	let client = app.client();
+	let mut request = client
+		.request(http::Method::POST, path)
+		.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
+		.header(http::header::CONTENT_TYPE, "application/json");
+	for (name, value) in peering::peer_headers(&token) {
+		request = request.header(name, value);
+	}
+	let response = request.send().await.unwrap();
+	(
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+	)
+}
+
 fn json_response(method: &str, path: &str, status: u16, body: &[u8]) -> (u16, Value) {
 	if method == "HEAD" || matches!(status, 204 | 205 | 304) {
 		assert!(body.is_empty(), "bodyless response for {method} {path}");
@@ -167,9 +489,15 @@ pub async fn cleanup_database(_url: &str, database: &str) {
 }
 
 #[allow(dead_code)]
-pub fn policy(node: &str) -> Value {
-	let agent = qualified_agent(node, "research", "1.0.0");
-	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
+pub fn policy(deployment: &str) -> Value {
+	let agent = qualified_agent(
+		&tenant_roots::fixture_node(deployment, "acme"),
+		"research",
+		"1.0.0",
+	);
+	// Peer flows still name the executing Node by its Deployment id (#241).
+	let peer_agent = aidash_domain::agent_subject(deployment, "research", "1.0.0");
+	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"},peer_agent:{"kind":"agent"}},
         "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
             // A wildcard never grants calling a Tenant's tool without approval.
             {"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})
@@ -214,7 +542,7 @@ async fn bootstrap_with_resources(
 		semantic,
 		files,
 		false,
-		policy(&f.config.node_id),
+		policy(f.config.deployment.as_str()),
 	)
 	.await
 }
@@ -226,7 +554,7 @@ pub async fn bootstrap_requiring_tool_call_approval(
 	app: &TestApplication,
 	endpoint: &str,
 ) -> (Value, String, Uuid) {
-	let mut policy = policy(&f.config.node_id);
+	let mut policy = policy(f.config.deployment.as_str());
 	require_tool_call_approval(&mut policy);
 	bootstrap_with_policy(f, app, endpoint, false, false, false, policy).await
 }
@@ -239,7 +567,7 @@ pub async fn bootstrap_with_read_only_tool(
 	app: &TestApplication,
 	endpoint: &str,
 ) -> (Value, String, Uuid) {
-	let mut policy = policy(&f.config.node_id);
+	let mut policy = policy(f.config.deployment.as_str());
 	require_tool_call_approval(&mut policy);
 	bootstrap_with_policy(f, app, endpoint, false, false, true, policy).await
 }
@@ -327,20 +655,28 @@ async fn bootstrap_with_policy(
 ) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
 	tenant_root(f, "acme").await;
+	// A fixture that already wrote the Tenant's policy, such as a federated
+	// pair, is replaced at the revision it holds.
+	let revision: i64 =
+		sqlx::query_scalar("SELECT revision FROM authorization_bundles WHERE tenant = 'acme'")
+			.fetch_optional(f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+			.unwrap_or(0);
 	let (status, snapshot) = request(
 		app,
 		deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
-		json!({"expected_revision":0,"bundle":policy}),
+		json!({"expected_revision":revision,"bundle":policy}),
 	)
 	.await;
 	assert_eq!(status, 200, "initial policy: {snapshot}");
 	let mut agent_bindings = vec![
-		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
+		json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
 	if read_only_tool {
-		agent_bindings.push(json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
+		agent_bindings.push(json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
 	}
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
@@ -350,6 +686,7 @@ async fn bootstrap_with_policy(
 		authorization
 			.set_catalog(
 				"acme",
+				&tenant_roots::fixture_node_name("acme"),
 				&EntityRef {
 					id: id.into(),
 					version: "1.0.0".into(),
@@ -368,7 +705,7 @@ async fn bootstrap_with_policy(
 			.await
 			.unwrap();
 		approve("semantic-memory").await;
-		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
+		agent_bindings.push(json!({"kind":"memory","target":{"registry_deployment":f.config.deployment,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
@@ -382,7 +719,7 @@ async fn bootstrap_with_policy(
 		(
 			"tool",
 			"http",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
+			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 		),
 		(
 			"agent",
@@ -396,7 +733,7 @@ async fn bootstrap_with_policy(
 			(
 				"tool",
 				"http-read",
-				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
+				json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
 			),
 		);
 	}
@@ -467,16 +804,17 @@ pub fn native_process_environment(
 				.query_pairs()
 				.map(|(key, value)| (key.to_string(), value.to_string())),
 		);
-	settings.node.node_id = f.config.node_id.clone();
-	settings.node.endpoint = f.config.endpoint.clone();
-	settings.node.api_token = f.config.api_token.clone();
-	settings.node.nats_url = f.config.nats_url.clone();
-	settings.node.web_dir = f.config.web_dir.clone();
-	settings.node.background_enabled = true;
-	settings.node.worker_count = worker_count;
+	settings.deployment.id = f.config.deployment.to_string();
+	settings.deployment.endpoint = f.config.endpoint.clone();
+	settings.deployment.api_token = f.config.api_token.clone();
+	settings.deployment.nats_url = f.config.nats_url.clone();
+	settings.deployment.web_dir = f.config.web_dir.clone();
+	settings.deployment.background_enabled = true;
+	settings.deployment.worker_count = worker_count;
 	settings.dashboard.oidc = f.config.oidc.clone();
 	// A child process must reach the same Keyless fixtures (ADR 0036).
 	settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
+	peering::configure_process(&mut settings, f);
 	let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 	std::fs::create_dir_all(&destination).unwrap();
 	std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();
@@ -527,7 +865,12 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 	postgres::apply_migrations(connection, &migrations).await;
 	owner.close().await;
 	let pool = sqlx::PgPool::connect(database_url).await.unwrap();
-	Store::from_pool(pool, node.to_owned()).await.unwrap()
+	Store::from_pool(
+		pool,
+		aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
+	)
+	.await
+	.unwrap()
 }
 
 #[path = "state.rs"]
@@ -669,16 +1012,24 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			.environment
 			.bounded_setup(
 				format!("open the Store on {}", database.schema),
-				Store::from_pool(database.pool.clone(), "aidash://execution-test".into()),
+				Store::from_pool(
+					database.pool.clone(),
+					aidash_domain::nodes::DeploymentId::parse("aidash://execution-test").unwrap(),
+				),
 			)
 			.await
 			.unwrap();
-		let federation = Federation {
+		let mut federation = Federation {
 			sandbox: Default::default(),
 			store,
-			registry: Registry::new(database.pool.clone(), "aidash://execution-test").unwrap(),
+			registry: Registry::new(
+				database.pool.clone(),
+				&aidash_domain::nodes::DeploymentId::parse("aidash://execution-test").unwrap(),
+			)
+			.unwrap(),
 			config: Config {
-				node_id: "aidash://execution-test".into(),
+				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")
+					.unwrap(),
 				endpoint: "http://localhost:8080".into(),
 				database_url: database.url.clone(),
 				nats_url: database.environment.nats_url.clone(),
@@ -691,10 +1042,15 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				demo_data: false,
 				oidc: None,
 				sign_in: None,
+				federation: true,
+				deployment_key: None,
+				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
 		};
+		// Every fixture Deployment holds its own Deployment Key (#241).
+		peering::give_key(&mut federation);
 		RuntimeFixture {
 			federation,
 			url: database.url.clone(),

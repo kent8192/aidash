@@ -1,5 +1,5 @@
 meta {
-  name: 0514 file_transfer_reconcile - Anonymous request is rejected
+  name: 0514 file_transfer_reconcile - Unrecognized bearer cannot mutate state
   type: http
   seq: 514
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

@@ -69,7 +69,7 @@ fn at(n: i64) -> DateTime<Utc> {
 	Utc.timestamp_opt(n, 0).unwrap()
 }
 fn run(n: u128, workspace: u128, phase: &str) -> RunMetadata {
-	serde_json::from_value(json!({"id":Uuid::from_u128(n),"task_id":Uuid::from_u128(99),"workspace_id":Uuid::from_u128(workspace),"home_node":"node","agent_id":"agent","agent_version":"1","phase":phase,"control":"ACTIVE","step":0,"revision":1,"observed_input_seq":0,"ledger_worker_ready":true,"error":null,"lease_owner":null,"lease_until":null,"updated_at":at(2000-n as i64)})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(n),"task_id":Uuid::from_u128(99),"workspace_id":Uuid::from_u128(workspace),"node":"brave-otter-k3m9q2xa","home_node":"node","agent_id":"agent","agent_version":"1","phase":phase,"control":"ACTIVE","step":0,"revision":1,"observed_input_seq":0,"ledger_worker_ready":true,"error":null,"lease_owner":null,"lease_until":null,"updated_at":at(2000-n as i64)})).unwrap()
 }
 #[async_trait]
 impl InspectionRepository for Repository {

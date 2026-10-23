@@ -3,10 +3,7 @@ use super::coordination::plumbing;
 use crate::apps::{
 	execution::repositories::inference,
 	federation::transactions::{
-		models::{
-			AtomicGate, AtomicHistory, AtomicParticipant, AtomicPeerTrust,
-			states::AtomicParticipantPhase,
-		},
+		models::{AtomicGate, AtomicHistory, AtomicParticipant, states::AtomicParticipantPhase},
 		serializers::contracts as native,
 		services::{authority, fault},
 	},
@@ -32,6 +29,20 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
+
+/// The Node of this Deployment that `manifest` names. A transaction names at
+/// most one, and an inbound request was checked to be for exactly that Node.
+fn local_node(runtime: &Federation, manifest: &Manifest) -> String {
+	manifest
+		.participants
+		.iter()
+		.map(|participant| participant.node_id.as_str())
+		.find(|node| {
+			aidash_domain::nodes::same_deployment(node, runtime.config.deployment.as_str())
+		})
+		.unwrap_or_default()
+		.to_owned()
+}
 
 enum Transaction {
 	Standalone(Box<dyn TransactionExecutor>),
@@ -104,11 +115,6 @@ impl ParticipantScope for Scope {
 			.map(|row| row.map(status))
 			.map_err(Into::into)
 	}
-	async fn trusted(&mut self, node: &str) -> Result<bool> {
-		AtomicPeerTrust::permits(self.transaction.executor(), node)
-			.await
-			.map_err(Into::into)
-	}
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>> {
 		AtomicGate::lock_exclusive(self.transaction.executor())
 			.await
@@ -125,7 +131,24 @@ impl ParticipantScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn insert(&mut self, manifest: &Manifest, next: ParticipantPhase) -> Result<LocalStatus> {
-		AtomicParticipant::insert(self.transaction.executor(), manifest, phase(next))
+		let node = local_node(&self.runtime, manifest);
+		let participant = manifest
+			.local(&node)
+			.map_err(|_| aidash_application::Error::Forbidden)?;
+		let tx = self.transaction.executor();
+		for mutation in &participant.mutations {
+			let (kind, id) = match mutation {
+				aidash_domain::transactions::Mutation::WorkspaceState { workspace_id, .. } => {
+					("workspace", *workspace_id)
+				}
+				aidash_domain::transactions::Mutation::CompleteTask { task_id, .. } => {
+					("task", *task_id)
+				}
+				aidash_domain::transactions::Mutation::FinishRun { run_id, .. } => ("run", *run_id),
+			};
+			super::mutation::require_target_node(tx, &node, kind, id).await?;
+		}
+		AtomicParticipant::insert(tx, manifest, phase(next))
 			.await
 			.map(status)
 			.map_err(Into::into)
@@ -148,14 +171,15 @@ impl ParticipantScope for Scope {
 		.map_err(Into::into)
 	}
 	async fn validate_mutations(&mut self, manifest: &Manifest) -> Result<()> {
+		let node = local_node(&self.runtime, manifest);
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
 		tx.savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
-			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			&self.runtime.store.node_id,
+			&mut crate::bootstrap::transaction_mutation_scope(tx, &node),
+			&node,
 			manifest,
 		)
 		.await?;
@@ -171,15 +195,12 @@ impl ParticipantScope for Scope {
 		Ok(())
 	}
 	async fn apply_mutations(&mut self, manifest: &Manifest) -> Result<()> {
+		let node = local_node(&self.runtime, manifest);
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
-		let mut scope = crate::bootstrap::transaction_mutation_scope(tx);
-		let applied = aidash_application::transactions::mutation::apply(
-			&mut scope,
-			&self.runtime.store.node_id,
-			manifest,
-		)
-		.await;
+		let mut scope = crate::bootstrap::transaction_mutation_scope(tx, &node);
+		let applied =
+			aidash_application::transactions::mutation::apply(&mut scope, &node, manifest).await;
 		self.interruptions.extend(scope.1);
 		applied
 	}
@@ -221,12 +242,19 @@ impl PendingParticipants for Pending {
 
 pub(crate) struct Repository {
 	pub runtime: Federation,
+	/// The Node that called, when this serves an inbound request.
+	pub(crate) admitted: Option<aidash_application::federation::inbound::Admitted>,
+	/// `admitted`'s receiving Node, as text.
+	pub(crate) receiver: Option<String>,
 }
 
 #[async_trait]
 impl ParticipantRepository for Repository {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
+	}
+	fn receiver(&self) -> Option<&str> {
+		self.receiver.as_deref()
 	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
 		let tx = AtomicParticipant::begin(&self.runtime.store.control_pool).await?;
@@ -241,7 +269,9 @@ impl ParticipantRepository for Repository {
 		caller: &str,
 		manifest: &Manifest,
 	) -> Result<Option<Box<dyn ParticipantScope>>> {
-		let Some(access) = authority::admission(&self.runtime, caller, manifest).await? else {
+		let Some(access) =
+			authority::admission(&self.runtime, self.admitted.as_ref(), caller, manifest).await?
+		else {
 			return Ok(None);
 		};
 		Ok(Some(Box::new(Scope {

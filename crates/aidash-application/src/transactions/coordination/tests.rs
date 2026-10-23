@@ -12,11 +12,11 @@ use tokio::sync::Notify;
 fn manifest() -> Manifest {
 	Manifest {
 		id: Uuid::from_u128(1),
-		coordinator: "aidash://home".into(),
+		coordinator: "aidash://home/airy-hawk-2lu4as22".into(),
 		isolation: Isolation::Serializable,
 		deadline: "2030-01-01T01:00:00Z".parse().unwrap(),
 		participants: vec![Participant {
-			node_id: "aidash://home".into(),
+			node_id: "aidash://home/airy-hawk-2lu4as22".into(),
 			mutations: vec![Mutation::WorkspaceState {
 				workspace_id: Uuid::from_u128(2),
 				expected_revision: 0,
@@ -86,7 +86,7 @@ impl Adapter {
 					created_at: "2030-01-01T00:00:00Z".parse().unwrap(),
 				},
 				votes: vec![Vote {
-					node_id: "aidash://home".into(),
+					node_id: "aidash://home/airy-hawk-2lu4as22".into(),
 					phase: "PENDING".into(),
 				}],
 				log: vec![],
@@ -194,7 +194,7 @@ impl Drop for Batch {
 #[async_trait]
 impl CoordinatorRepository for Adapter {
 	fn node_id(&self) -> &str {
-		"aidash://home"
+		"aidash://home/airy-hawk-2lu4as22"
 	}
 	fn now(&self) -> DateTime<Utc> {
 		"2030-01-01T00:00:00Z".parse().unwrap()
@@ -348,20 +348,20 @@ async fn committed_protocol_uses_one_ordered_step_per_advance(manifest: Manifest
 	let reserve = state
 		.log
 		.iter()
-		.position(|event| event == "send:reserve:aidash://home")
+		.position(|event| event == "send:reserve:aidash://home/airy-hawk-2lu4as22")
 		.unwrap();
 	assert_eq!(state.log[reserve - 1], "issue");
 	let acknowledgement = state
 		.log
 		.iter()
-		.position(|event| event == "ack:aidash://home:RESERVED")
+		.position(|event| event == "ack:aidash://home/airy-hawk-2lu4as22:RESERVED")
 		.unwrap();
 	assert_eq!(
 		&state.log[acknowledgement - 2..acknowledgement + 2],
 		&[
 			"coordinator.vote.before",
 			"settle:RESERVED",
-			"ack:aidash://home:RESERVED",
+			"ack:aidash://home/airy-hawk-2lu4as22:RESERVED",
 			"coordinator.vote.after",
 		]
 	);
@@ -618,7 +618,7 @@ async fn decision_lookup_validates_the_same_manifest_for_local_and_remote_source
 	#[case] remote: bool,
 ) {
 	if remote {
-		manifest.coordinator = "aidash://peer".into();
+		manifest.coordinator = "aidash://peer/airy-hawk-2lu4as22".into();
 	}
 	let adapter = Adapter::new(&manifest);
 	adapter.coordinator().decision(&manifest).await.unwrap();

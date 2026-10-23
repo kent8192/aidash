@@ -7,6 +7,7 @@ use serde_json::json;
 fn snapshot() -> WorkspaceSnapshot {
 	WorkspaceSnapshot {
 		workspace: Workspace {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			title: "workspace".into(),
 			goal: "goal".into(),
@@ -56,7 +57,7 @@ fn event(kind: &str, data: Value) -> Event {
 	Event {
 		sequence: 1,
 		id: Uuid::from_u128(99),
-		node_id: "aidash://local".into(),
+		node: None,
 		workspace_id: Some(Uuid::from_u128(1)),
 		kind: kind.into(),
 		data,

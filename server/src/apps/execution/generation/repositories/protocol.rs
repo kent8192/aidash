@@ -77,6 +77,8 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 
 pub(crate) struct NativeProtocolAuthority {
 	pub federation: Federation,
+	/// The Node an inbound request arrived at; `None` for this Node's own work.
+	pub receiver: Option<aidash_domain::nodes::NodeName>,
 }
 struct ReservationLease {
 	access: Access,
@@ -192,7 +194,7 @@ impl GenerationProtocolLease for Lease {
 #[async_trait]
 impl GenerationProtocolAuthority for NativeProtocolAuthority {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	async fn leaf(
 		&self,
@@ -200,8 +202,13 @@ impl GenerationProtocolAuthority for NativeProtocolAuthority {
 		grant: Uuid,
 		admission: Uuid,
 	) -> Result<Box<dyn GenerationProtocolLease>> {
+		let receiver = self
+			.receiver
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
 		let (access, description) = crate::authorization::peer::admission::leaf_lease(
 			&self.federation,
+			receiver,
 			source,
 			grant,
 			admission,
@@ -251,8 +258,15 @@ impl GenerationProtocolAuthority for NativeProtocolAuthority {
 			.map_err(Into::into)
 	}
 	async fn verify_peer(&self, source: &str, input: &Input) -> Result<bool> {
+		let sender = crate::authorization::peer::usage_sender(
+			&self.federation,
+			input.usage.admission_id,
+			input.usage.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			&self.federation,
+			&sender,
 			source,
 			"/scoped/usage/verify",
 			&json!(input),
@@ -261,8 +275,15 @@ impl GenerationProtocolAuthority for NativeProtocolAuthority {
 		.map_err(Into::into)
 	}
 	async fn reserve_peer(&self, home: &str, input: &Input) -> Result<Vec<Reserved>> {
+		let sender = crate::authorization::peer::usage_sender(
+			&self.federation,
+			input.usage.admission_id,
+			input.usage.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			&self.federation,
+			&sender,
 			home,
 			"/scoped/usage/reserve",
 			&json!(input),

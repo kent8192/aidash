@@ -7,7 +7,7 @@ mod fixtures;
 #[path = "support/native_database.rs"]
 mod native_database;
 
-use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_application::tenancy::TenancyScope;
 use aidash_server::apps::execution::models::{Event, Inbox};
 use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use endpoint::assert_json;
@@ -17,6 +17,12 @@ use rstest::rstest;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+/// The scope of a Tenant whose root record exists, since every event names its Tenant.
+async fn acme(fixture: &BusFixture) -> TenancyScope {
+	endpoint::tenant_root_in(fixture.app.runtime.store.pool.fixture_driver(), "acme").await;
+	TenancyScope::tenant("acme").unwrap()
+}
+
 #[rstest]
 #[tokio::test]
 async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_events(
@@ -25,17 +31,13 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 	// Arrange
 	let fixture = event_bus.await;
 	let store = &fixture.app.runtime.store;
+	let scope = acme(&fixture).await;
 	let large = store
-		.emit(
-			&TEST_FIXTURE,
-			None,
-			"large",
-			json!({"text":"x".repeat(2_000_000)}),
-		)
+		.emit(&scope, None, "large", json!({"text":"x".repeat(2_000_000)}))
 		.await
 		.unwrap();
 	let small = store
-		.emit(&TEST_FIXTURE, None, "small", json!({"ok":true}))
+		.emit(&scope, None, "small", json!({"ok":true}))
 		.await
 		.unwrap();
 	// Act
@@ -116,11 +118,12 @@ async fn consumer_commits_one_receipt_per_event_and_acknowledges_duplicates_and_
 ) {
 	// Arrange
 	let fixture = event_bus.await;
+	let scope = acme(&fixture).await;
 	let event = fixture
 		.app
 		.runtime
 		.store
-		.emit(&TEST_FIXTURE, None, "wake", json!({"step":1}))
+		.emit(&scope, None, "wake", json!({"step":1}))
 		.await
 		.unwrap();
 	let wake = fixture.app.runtime.notify.notified();
@@ -140,8 +143,8 @@ async fn consumer_commits_one_receipt_per_event_and_acknowledges_duplicates_and_
 		.await
 		.expect("durable receipt wakes workers");
 	for payload in [
-		event.cloud_event().to_string(),
-		event.cloud_event().to_string(),
+		event.cloud_event("aidash://fixture").to_string(),
+		event.cloud_event("aidash://fixture").to_string(),
 		"not JSON".into(),
 	] {
 		fixture

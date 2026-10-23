@@ -22,6 +22,9 @@ import urllib.request
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Where a Pod keeps its Deployment Key, and the settings overlay that names it.
+KEY_DIRECTORY = "/keys"
+SETTINGS_OVERLAY = "/app/server/settings/local.toml"
 PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
           ("coordinator.commit", False), ("coordinator.abort", True),
           ("coordinator.visible", False), ("coordinator.complete", False),
@@ -46,8 +49,6 @@ def transaction_cases(nodes, repetitions=3, phase=None, lifecycle=None, partitio
                      ("coordinator.abort", "before", True, "partition")]
         if not phase:
             cases += [("coordinator.commit", "before", False, name) for name in ["scale", "rolling"]]
-            if count == 2:
-                cases.append(("coordinator.commit", "before", False, "peer-recovery"))
         if lifecycle:
             cases = [case for case in cases if case[3] in lifecycle]
         if partition == "lifecycle":
@@ -87,7 +88,7 @@ class Cluster:
         # migrations run as the owner, servers and workers as the server role.
         self.owner_password = uuid.uuid4().hex
         self.server_password = uuid.uuid4().hex
-        self.peer_tokens = [uuid.uuid4().hex for _ in range(16)]
+        self.nodes = {}
         self.forwards = {}
         self.forward_lock = threading.RLock()
         self.queries = json.loads(pathlib.Path(args.queries).read_text())
@@ -139,6 +140,24 @@ class Cluster:
             "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server;\n"
             "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT USAGE, SELECT ON SEQUENCES TO aidash_server;\n"))
 
+    def provision_deployment_key(self, node):
+        """Give a Deployment its own Deployment Key (ADR 0064): the Secret holds the
+        key file, and a settings overlay names where the Pod puts it."""
+        pem = subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519"], capture_output=True, text=True, check=True).stdout
+        self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}-key"},
+            "stringData": {"deployment-key.pem": pem}})
+        self.apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": f"tx-{node}-settings"},
+            "data": {"local.toml": f'[deployment.key]\nfile = "{KEY_DIRECTORY}/deployment-key.pem"\n'}})
+
+    def key_volumes(self, node):
+        """The Pod's key file, copied for the server user: the key is refused unless only its owner may read it."""
+        return {"initContainers": [{"name": "deployment-key", "image": self.args.image, "imagePullPolicy": "IfNotPresent",
+                    "command": ["sh", "-c", f"cp /secret/deployment-key.pem {KEY_DIRECTORY}/ && chown 10001:10001 {KEY_DIRECTORY}/deployment-key.pem && chmod 600 {KEY_DIRECTORY}/deployment-key.pem"],
+                    "securityContext": {"runAsUser": 0},
+                    "volumeMounts": [{"name": "secret", "mountPath": "/secret", "readOnly": True}, {"name": "key", "mountPath": KEY_DIRECTORY}]}],
+                "volumes": [{"name": "secret", "secret": {"secretName": f"tx-{node}-key"}}, {"name": "key", "emptyDir": {}},
+                    {"name": "settings", "configMap": {"name": f"tx-{node}-settings"}}]}
+
     def start_migration(self, node):
         """Apply the native history as the owner; servers refuse pending migrations."""
         name = f"tx-{node}-migrate"
@@ -148,7 +167,7 @@ class Cluster:
             "imagePullPolicy": "IfNotPresent", "args": ["migrate"],
             "envFrom": [{"secretRef": {"name": f"tx-{node}"}}],
             "env": [{"name": "DATABASE_URL", "value": self.login_url("owner", node)},
-                    {"name": "AIDASH_NODE_ID", "value": f"aidash://tx-{node:02}"}]}]}}}})
+                    {"name": "AIDASH_DEPLOYMENT_ID", "value": f"aidash://tx-{node:02}"}]}]}}}})
 
     def await_migration(self, node):
         name = f"tx-{node}-migrate"
@@ -316,7 +335,8 @@ class Cluster:
             self.provision_database(node)
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
                 "stringData": {"DATABASE_URL": self.login_url("server", node),
-                "AIDASH_API_TOKEN": self.token, **{f"AIDASH_SECRET_TRANSACTION_{peer:02}": self.peer_tokens[peer] for peer in (range(1, count) if node == 0 else [node])}}})
+                "AIDASH_API_TOKEN": self.token}})
+            self.provision_deployment_key(node)
             self.start_migration(node)
         # Servers and workers start only once every migration is applied.
         for node in range(count):
@@ -328,15 +348,19 @@ class Cluster:
                 self.apply({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name},
                     "spec": {"replicas": replicas, "selector": {"matchLabels": labels}, "template": {
                     "metadata": {"labels": labels}, "spec": {"automountServiceAccountToken": False,
+                    **self.key_volumes(node),
                     "terminationGracePeriodSeconds": 25, "containers": [{"name": "aidash", "image": self.args.image,
                     "imagePullPolicy": "IfNotPresent", "args": [role], "ports": [{"containerPort": 8080}],
+                    "volumeMounts": [{"name": "key", "mountPath": KEY_DIRECTORY, "readOnly": True},
+                                     {"name": "settings", "mountPath": SETTINGS_OVERLAY, "subPath": "local.toml"}],
                     "envFrom": [{"secretRef": {"name": f"tx-{node}"}}], "env": [
-                    {"name": "AIDASH_NODE_ID", "value": f"aidash://tx-{node:02}"},
+                    {"name": "AIDASH_DEPLOYMENT_ID", "value": f"aidash://tx-{node:02}"},
                     {"name": "AIDASH_ENDPOINT", "value": f"http://tx-{node}:8080"},
                     {"name": "NATS_URL", "value": "nats://nats:4222"}, {"name": "RUST_LOG", "value": "aidash=warn"},
                     {"name": "AIDASH_API_RATE_BURST", "value": "100000"}, {"name": "AIDASH_AUTH_RATE_BURST", "value": "100000"},
                     # The memory suites' Keyless model and embedding fixture is an in-cluster Service.
-                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": "http://provider:8080"}],
+                    # Registering another Deployment's Node at its Service needs that origin permitted.
+                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": ",".join(["http://provider:8080", *(f"http://tx-{peer}:8080" for peer in range(count))])}],
                     "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}},
                     **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})}]}}}})
             self.service(f"tx-{node}", 8080, {"app": f"tx-{node}", "role": "server"})
@@ -345,18 +369,27 @@ class Cluster:
             self.ready(node)
         images = [(pod["metadata"]["name"], [c.get("imageID") for c in pod.get("status", {}).get("containerStatuses", [])]) for pod in self.pods("role")]
         (self.directory / "images.json").write_text(json.dumps(images, indent=2))
+        # Each Deployment has one Tenant, and its default Node is what a transaction names.
+        for node in range(count):
+            tenant = self.api(node, "/api/tenants", {"label": f"tx-{node}"})[1]["name"]
+            default = next(item for item in self.api(node, f"/api/tenants/{tenant}/nodes")[1] if item["default"])
+            self.nodes[node] = {"tenant": tenant, "node": default["name"], "address": default["address"]}
         for node in range(1, count):
             for local, remote in [(0, node), (node, 0)]:
-                # Pod readiness precedes Service endpoint/DNS propagation. Peer
-                # registration performs an HTTP identity check from this Pod.
+                # Pod readiness precedes Service endpoint/DNS propagation. Registering
+                # a Node fetches the other Deployment's identity from this Pod.
                 self.until(lambda local=local, remote=remote: self.kube("exec", f"deployment/tx-{local}-server", "--", "curl",
                     "--fail", "--silent", "--max-time", "5", "--output", "/dev/null",
                     f"http://tx-{remote}:8080/.well-known/aidash", check=False).returncode == 0,
                     "peer Service identity readiness")
-                status, response = self.api(local, "/api/peers", {"node_id": f"aidash://tx-{remote:02}", "endpoint": f"http://tx-{remote}:8080",
-                    "credential_env": f"AIDASH_SECRET_TRANSACTION_{max(local, remote):02}", "protocol_version": "0.2", "enabled": True})
+                key_id = self.kube("exec", f"deployment/tx-{local}-server", "--", "curl", "--fail", "--silent", "--max-time", "5",
+                    f"http://tx-{remote}:8080/.well-known/aidash").stdout
+                key_id = json.loads(key_id)["key"]["id"]
+                owner = self.nodes[local]
+                status, response = self.api(local, f"/api/tenants/{owner['tenant']}/nodes/{owner['node']}/registrations",
+                    {"source_node": self.nodes[remote]["address"], "endpoint": f"http://tx-{remote}:8080", "key_id": key_id,
+                     "atomic_transactions": True, "enabled": True, "expected_revision": 0})
                 assert status == 200, (local, remote, status, response)
-                assert self.api(local, "/api/transactions/trust", {"node_id": f"aidash://tx-{remote:02}", "enabled": True})[0] == 200
 
     def inspect(self, node, transaction, workspace, key):
         result = self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
@@ -404,9 +437,9 @@ class Cluster:
                 status, body = self.api(node, "/api/workspaces", {"title": "Transaction acceptance", "goal": "Fixed atomic state"})
                 assert status == 200, status
                 workspaces.append(body["id"])
-            manifest = {"id": transaction, "coordinator": "aidash://tx-00", "isolation": "serializable",
+            manifest = {"id": transaction, "coordinator": self.nodes[0]["address"], "isolation": "serializable",
                 "deadline": (datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=10)).isoformat(),
-                "participants": [{"node_id": f"aidash://tx-{node:02}", "mutations": [{"kind": "workspace_state", "workspace_id": workspaces[node],
+                "participants": [{"node_id": self.nodes[node]["address"], "mutations": [{"kind": "workspace_state", "workspace_id": workspaces[node],
                 "expected_revision": 99 if abort and node == count - 1 else 0, "state": {"committed": True}}]} for node in range(count)]}
             self.kube("set", "env", f"deployment/{name}", f"AIDASH_TRANSACTION_FAULT={transaction}:{point}", "AIDASH_TRANSACTION_FAULT_DIR=/tmp")
             self.rollout(name)
@@ -438,16 +471,6 @@ class Cluster:
                     self.kube("wait", "--for=delete", "pod", "-l", f"app=tx-{node},role=worker", "--timeout=90s")
                 record["workers_at_zero"] = all(not self.pods(f"app=tx-{node},role=worker") for node in range(count))
                 assert record["workers_at_zero"]
-            elif lifecycle == "peer-recovery":
-                for local, remote in [(0, 1), (1, 0)]:
-                    assert self.api(local, "/api/transactions/trust", {"node_id": f"aidash://tx-{remote:02}", "enabled": False})[0] == 200
-                # Fault injection uses generated SeaQuery DML and the same narrow
-                # authority control used by the Deployment Administrator recovery route.
-                self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", "tx_0",
-                    "-qAt", "-v", "ON_ERROR_STOP=1", "-f", "-", value="BEGIN;\n" +
-                    self.queries["tx_authority_control"] + ";\n" + self.queries["tx_disable_peer"] + ";\nCOMMIT;\n")
-                assert not self.inspect(0, transaction, workspaces[0], "tx_peer")[0]["enabled"]
-                record["peer_transport_disabled_at"] = now()
             elif lifecycle == "rolling":
                 for node in range(1, count):
                     self.kube("rollout", "restart", f"deployment/tx-{node}-server")
@@ -466,29 +489,6 @@ class Cluster:
                 self.kube("scale", "deployment/tx-1-server", "--replicas=1")
                 self.rollout("tx-1-server")
                 self.ready(1)
-            if lifecycle == "peer-recovery":
-                def blocked_by_peer():
-                    self.observe(count, transaction, workspaces, trace)
-                    status, detail = self.api(0, f"/api/transactions/{transaction}")
-                    assert status == 200, (status, detail)
-                    state = detail["transaction"]
-                    assert not state["complete"], "disabled peer must prevent convergence"
-                    return state["decision"] == "COMMIT" and state["last_error"] is not None
-
-                # The process fault is gone. Require an actual failed recovery
-                # attempt before restoring transport; a held fault is not proof.
-                self.until(blocked_by_peer, "recovery blocked by disabled peer", timeout=30)
-                for node in range(count):
-                    assert self.api(node, f"/api/workspaces/{workspaces[node]}")[0] == 503
-                record["peer_recovery_blocked_at"] = now()
-                status, peer = self.api(0, "/api/transactions/peer-recovery", {"node_id": "aidash://tx-01", "credential_env": "AIDASH_SECRET_TRANSACTION_01"})
-                assert status == 200, (status, peer)
-                assert peer["node_id"] == "aidash://tx-01" and peer["enabled"]
-                assert peer["endpoint"] == "http://tx-1:8080"
-                assert self.inspect(0, transaction, workspaces[0], "tx_peer")[0]["enabled"]
-                _, grants = self.api(0, "/api/transactions/trust")
-                assert not next(grant for grant in grants if grant["node_id"] == "aidash://tx-01")["enabled"]
-                record["peer_restored_without_admission_trust"] = True
             record["services_restored_at"] = now()
             restored = time.monotonic()
             if not self.inspect(0, transaction, workspaces[0], "tx_coordinator"):
@@ -515,9 +515,6 @@ class Cluster:
                 assert len(row["tx_events"]) == int(not abort)
                 durable.append(row)
             record["durable"] = durable
-            if lifecycle == "peer-recovery":
-                for local, remote in [(0, 1), (1, 0)]:
-                    assert self.api(local, "/api/transactions/trust", {"node_id": f"aidash://tx-{remote:02}", "enabled": True})[0] == 200
             record["result"] = "passed"
             # Lost HTTP replies are expected at submission cuts. They never
             # replace the reconciled durable outcome above.
@@ -555,7 +552,7 @@ def main():
     parser.add_argument("--nodes", nargs="+", type=int, choices=[2, 3, 16], default=[2, 3, 16])
     parser.add_argument("--repetitions", type=int, choices=[3], default=3)
     parser.add_argument("--phase", choices=[phase for phase, _ in PHASES])
-    parser.add_argument("--lifecycle", nargs="+", choices=["scale", "rolling", "partition", "peer-recovery"])
+    parser.add_argument("--lifecycle", nargs="+", choices=["scale", "rolling", "partition"])
     parser.add_argument("--partition", choices=PARTITIONS)
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()

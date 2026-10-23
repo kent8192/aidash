@@ -68,7 +68,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         return value
 
     def target(identifier):
-        return {"registry_node": node, "id": identifier, "version": "1.0.0"}
+        return {"registry_deployment": node, "id": identifier, "version": "1.0.0"}
 
     def entry(kind, identifier, name, description, schema, config, languages=("en",)):
         return {"id": identifier, "version": "1.0.0", "kind": kind, "name": {"en": name},
@@ -79,7 +79,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         tool = tools[alias]
         identifier = f"{prefix}-{case_id}-{alias}".replace("_", "-")
         api("/api/registry", entry("tool", identifier, alias, tool["description"], json.loads(tool["schema"]), {
-            "registry_node": node, "provider": "integration.http@1", "operation": "invoke",
+            "registry_deployment": node, "provider": "integration.http@1", "operation": "invoke",
             "default_alias": alias, "tier": "integration", "narrow": {},
             "transport": {"transport": "http", "endpoint": endpoint, "replay": "idempotent"}}))
         return identifier

@@ -1,6 +1,8 @@
 //! The Enterprise build's server. It composes the Community server library
 //! and runs only the Cloud and Dedicated Offerings.
+use aidash_application::federation::key::DeploymentKey;
 use aidash_domain::offering::Offering;
+use aidash_gcp::capability::{MetadataTokenSource, deployment_key::KmsDeploymentKey};
 use aidash_server::authorization::sign_in::SignInProvider;
 use aidash_server::bootstrap::build::{Build, Extension, ProvidedStore};
 use aidash_server::database::classification::Table;
@@ -25,6 +27,7 @@ pub const BUILD: Build = Build {
 #[derive(Debug)]
 pub struct Adapters;
 
+#[async_trait::async_trait]
 impl Extension for Adapters {
 	fn settings(
 		&self,
@@ -74,6 +77,13 @@ impl Extension for Adapters {
 		billing::install(store, aidash_server::bootstrap::build::offering())
 	}
 
+	fn tier_limits(
+		&self,
+		store: &aidash_server::store::Store,
+	) -> aidash_server::Result<Arc<dyn aidash_application::ports::nodes::TierLimits>> {
+		billing::tier_limits(store, aidash_server::bootstrap::build::offering())
+	}
+
 	fn services(
 		&self,
 		federation: &aidash_server::federation::Federation,
@@ -98,5 +108,21 @@ impl Extension for Adapters {
 		broker: Option<&serde_json::Value>,
 	) -> aidash_server::Result<ProvidedStore> {
 		provider_credentials::store(store, broker)
+	}
+
+	/// `[deployment.key] kms`: an Ed25519 key version in Cloud KMS, whose
+	/// public key is fetched here, once, at startup.
+	async fn deployment_key(&self, kms: &str) -> aidash_server::Result<Arc<dyn DeploymentKey>> {
+		let unavailable = || {
+			aidash_server::Error::Invalid(
+				"the Deployment Key in Cloud KMS is unavailable; check its key version, that its algorithm is EC_SIGN_ED25519, and the server's service account"
+					.into(),
+			)
+		};
+		let tokens = Arc::new(MetadataTokenSource::new().map_err(|_| unavailable())?);
+		let key = KmsDeploymentKey::new(kms.to_owned(), tokens)
+			.await
+			.map_err(|_| unavailable())?;
+		Ok(Arc::new(key))
 	}
 }

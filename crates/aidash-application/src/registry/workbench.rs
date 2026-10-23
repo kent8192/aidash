@@ -179,7 +179,7 @@ pub async fn validate_content(
 			&mut catalog,
 			validation,
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},
@@ -196,7 +196,7 @@ pub async fn validate_content(
 			&mut catalog,
 			validation,
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: node.into(),
+				registry_deployment: node.into(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},
@@ -210,14 +210,14 @@ pub async fn validate_content(
 		for dependency in &snapshot.definitions {
 			if dependency.identity == snapshot.agent
 				|| source.as_ref().is_some_and(|s| {
-					dependency.identity.registry_node == node
+					dependency.identity.registry_deployment == node
 						&& s.id == dependency.identity.id
 						&& s.version == dependency.identity.version
 				}) {
 				continue;
 			}
 			let reference = dependency.identity.local();
-			let decision = scope.evaluate(&draft.tenant, &Evaluation { subject: subject.clone(), action: "agent_dependency.read".into(), resource: Resource { tenant: draft.tenant.clone(), kind: "registry_entry".into(), id: ref_key(&reference), attributes: json!({"id":reference.id,"version":reference.version,"registry_node":dependency.identity.registry_node}) }, environment: json!({}) }).await?;
+			let decision = scope.evaluate(&draft.tenant, &Evaluation { subject: subject.clone(), action: "agent_dependency.read".into(), resource: Resource { tenant: draft.tenant.clone(), kind: "registry_entry".into(), id: ref_key(&reference), attributes: json!({"id":reference.id,"version":reference.version,"registry_deployment":dependency.identity.registry_deployment}) }, environment: json!({}) }).await?;
 			if !decision.allowed {
 				return Err(Error::Forbidden);
 			}

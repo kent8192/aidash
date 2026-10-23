@@ -28,7 +28,7 @@ impl StreamAuthorityStore for Authority<'_> {
 		&self.workspaces.identity.subject
 	}
 	fn node_id(&self) -> &str {
-		&self.workspaces.store.node_id
+		self.workspaces.store.deployment.as_str()
 	}
 	fn reports_status(&self, issuer: &str) -> bool {
 		crate::authorization::identity::reports_status(issuer)

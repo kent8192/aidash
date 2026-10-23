@@ -73,6 +73,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("node", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("revision", FieldType::BigInteger)
 					.with_not_null(true)
 					.with_unique(false)
@@ -131,6 +139,14 @@ pub(super) fn migration() -> Migration {
 					.with_generated(None)
 					.with_domain_option(None),
 				ColumnDefinition::new("entry_version", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("node", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
@@ -414,7 +430,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
-				ColumnDefinition::new("source_node", FieldType::Text)
+				ColumnDefinition::new("source_deployment", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
@@ -426,6 +442,22 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("source_key_id", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("source_public_key_pem", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
 					.with_auto_increment(false)
 					.with_default(None)
 					.with_generated(None)
@@ -1655,6 +1687,104 @@ pub(super) fn migration() -> Migration {
 		.add_dependency("workspaces", "0006_triggers")
 		.atomic(true)
 		.with_initial(None)
+		.add_operation(Operation::CreateTable {
+			name: "node_names".to_string(),
+			columns: vec![
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("name", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "nodes".to_string(),
+			columns: vec![
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("created_by_identity", FieldType::Uuid)
+					.with_not_null(false)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("created_by_kind", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("is_default", FieldType::Boolean)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("label", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("name", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+				ColumnDefinition::new("tenant", FieldType::Text)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(true)
+					.with_auto_increment(false)
+					.with_default(None)
+					.with_generated(None)
+					.with_domain_option(None),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
 		.state_only(true)
 		.database_only(false)
 }

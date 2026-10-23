@@ -61,10 +61,12 @@ async fn interruption_store(
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 		pool: pool.clone().into(),
 		control_pool: pool.into(),
-		node_id: "interruption-poll-test".into(),
+		deployment: aidash_domain::nodes::DeploymentId::parse("aidash://interruption-poll-test")
+			.unwrap(),
 		semantic_client: http_client.clone(),
 		provider_clients: crate::semantic::backend::clients().unwrap(),
 		keyless: Default::default(),
+		egress: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 		test_limit_ceilings: Default::default(),
 		recovery_cursors: Default::default(),

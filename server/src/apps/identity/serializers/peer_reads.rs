@@ -9,7 +9,5 @@ pub(crate) use aidash_domain::federation::registry_reads::Reference;
 #[schemars(rename = "AuthorizationPeerReadsVerifyInput")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct VerifyInput {
-	pub(crate) tenant: String,
-	pub(crate) subject: String,
 	pub(crate) references: Vec<Reference>,
 }

@@ -8,8 +8,6 @@ mod atomic_history;
 pub use atomic_history::AtomicHistory;
 mod atomic_participants;
 pub use atomic_participants::AtomicParticipant;
-mod atomic_peer_trust;
-pub use atomic_peer_trust::AtomicPeerTrust;
 mod atomic_votes;
 pub use atomic_votes::AtomicVote;
 

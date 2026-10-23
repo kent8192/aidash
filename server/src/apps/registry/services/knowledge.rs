@@ -60,7 +60,7 @@ async fn register(
 		&mut scope,
 		&validation,
 		draft,
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 	)
 	.await?;
 	Ok(aidash_application::registry::personal::register(
@@ -68,7 +68,7 @@ async fn register(
 		&validation,
 		registration,
 		key,
-		&f.config.node_id,
+		f.config.deployment.as_str(),
 	)
 	.await?)
 }

@@ -66,7 +66,7 @@ async fn admit(
 ) -> Result<Value> {
 	settings(scope, run).await?;
 	let binding = scope.binding_snapshot()?.operation(name)?.clone();
-	if binding.identity.registry_node != scope.local_node() {
+	if binding.identity.registry_deployment != scope.local_node() {
 		return Err(Error::Forbidden);
 	}
 	let current = scope

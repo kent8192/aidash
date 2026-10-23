@@ -5,7 +5,6 @@ use crate::{
 	ports::generation::lifecycle::{GenerationControls, GenerationLifecycleScope},
 };
 use aidash_domain::{
-	entities::qualified_agent,
 	generation::requests::{Action, Control, Request},
 	identity::Principal,
 };
@@ -105,7 +104,7 @@ pub async fn transition(
 	}
 	if terminal {
 		let mut snapshot = scope.authority(&job.tenant).await?;
-		let subject = qualified_agent(scope.node_id(), &job.agent_id, &job.agent_version);
+		let subject = job.executor_subject(scope.node_id());
 		if let Some(subject) = snapshot.bundle.subjects.get_mut(&subject)
 			&& subject.enabled
 		{
@@ -124,7 +123,7 @@ pub async fn transition(
 	}
 	let updated = scope.update_status(job, status).await?;
 	scope.history(job, status, actor, reason).await?;
-	if job.home_node.is_empty() {
+	if job.is_local() {
 		scope
 			.event(
 				job.workspace_id,

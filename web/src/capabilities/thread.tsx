@@ -27,6 +27,7 @@ import {
 import { apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
 import type { State } from "../types";
+import { discoveryQuery, useNodes } from "../nodes";
 import {
   post,
   saveFile,
@@ -207,6 +208,24 @@ function FileOperations({
     revision: number;
     preconditions: Record<string, string | null>;
   }>();
+  const { selected: currentNode, nodes } = useNodes();
+  const sourceNode = data.runs.find((item) => item.id === run)?.node;
+  const sendingNode =
+    nodes.find((node) => node.name === sourceNode) ?? currentNode;
+  const discovery = useQuery({
+    ...discoveryQuery(sendingNode),
+    enabled: !!sendingNode && selected.length > 0,
+  });
+  const sourceAddress = sourceNode
+    ? `${data.deployment.id}/${sourceNode}`
+    : data.node.id;
+  const shareNodes = [
+    ...new Set([
+      data.node.id,
+      ...nodes.map((node) => node.address),
+      ...(discovery.data?.agents.map((agent) => agent.node_id) ?? []),
+    ]),
+  ];
   const [shareNode, setShareNode] = useState(data.node.id);
   const [recipient, setRecipient] = useState("");
   const [transfer, setTransfer] = useState<Operation>();
@@ -248,14 +267,14 @@ function FileOperations({
     retry: false,
   });
   const recipients = useInfiniteQuery({
-    queryKey: ["core-recipients", shareNode],
+    queryKey: ["core-recipients", run, shareNode],
     initialPageParam: "",
     queryFn: ({ pageParam, signal }) =>
       apiFetch<{
         items: (Recipient & { workspace_id?: string })[];
         next_cursor: string | null;
       }>(
-        `/api/file-recipients?node_id=${encodeURIComponent(shareNode)}${pageParam ? `&cursor=${pageParam}` : ""}`,
+        `/api/file-recipients?node_id=${encodeURIComponent(shareNode)}&run_id=${encodeURIComponent(run)}${pageParam ? `&cursor=${pageParam}` : ""}`,
         { signal },
       ),
     getNextPageParam: (page) => page.next_cursor ?? undefined,
@@ -266,7 +285,7 @@ function FileOperations({
     queryKey: ["core-transfer", transfer?.operation_id],
     queryFn: () =>
       apiFetch<Operation>(`/api/file-transfers/${transfer!.operation_id}`),
-    enabled: !!transfer && !transfer.receipt && shareNode !== data.node.id,
+    enabled: !!transfer && !transfer.receipt && shareNode !== sourceAddress,
     refetchInterval: (q) =>
       ["pending", "transferring", "committing"].includes(
         q.state.data?.status ?? transfer?.status ?? "",
@@ -501,16 +520,15 @@ function FileOperations({
                   setRecipient("");
                 }}
               >
-                <option value={data.node.id}>
-                  {ja ? "このノード" : "This node"}
-                </option>
-                {data.peers
-                  .filter((p) => p.enabled)
-                  .map((p) => (
-                    <option key={p.node_id} value={p.node_id}>
-                      {p.node_id}
-                    </option>
-                  ))}
+                {shareNodes.map((node) => (
+                  <option key={node} value={node}>
+                    {node === data.node.id
+                      ? ja
+                        ? "このノード"
+                        : "This node"
+                      : node}
+                  </option>
+                ))}
               </NativeSelect>
             </Field>
             {recipients.isError && <Alert>{recipients.error.message}</Alert>}
@@ -532,7 +550,7 @@ function FileOperations({
                   .flatMap((p) => p.items)
                   .filter(
                     (r) =>
-                      shareNode !== data.node.id ||
+                      shareNode !== sourceAddress ||
                       (r.workspace_id === area.workspace_id &&
                         (r.agent_id !== area.agent_id ||
                           r.thread_id !== area.thread_id)),
@@ -606,7 +624,7 @@ function FileOperations({
             {transferQuery.isError && (
               <Alert>{transferQuery.error.message}</Alert>
             )}
-            {!transfer.receipt && shareNode !== data.node.id && (
+            {!transfer.receipt && shareNode !== sourceAddress && (
               <Button
                 variant="outline"
                 type="button"

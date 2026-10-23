@@ -198,7 +198,7 @@ args = [
   "--namespace",
   "aidash-local",
   "--set-string",
-  "node.id=aidash://node-a",
+  "deployment.id=aidash://node-a",
   "--set-string",
   "existingSecret=aidash-local-app",
   "--set-string",

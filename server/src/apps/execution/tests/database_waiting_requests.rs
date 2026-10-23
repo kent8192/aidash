@@ -18,7 +18,7 @@ async fn remote_waiting_requests_keep_home_identity_without_a_local_request(
 	database.tenant("acme").await;
 	let mut db = database.lease.handle();
 	let request = Uuid::new_v4();
-	run.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	run.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
 	run.phase = RunPhase::Waiting;
 	run.pending = human_pending(request).into();
 	Run::objects()
@@ -57,7 +57,7 @@ async fn remote_approval_waits_keep_home_identity_and_capability_waits_name_no_r
 	let mut db = database.lease.handle();
 	let approval = Uuid::new_v4();
 	let mut remote = run.clone();
-	remote.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	remote.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
 	remote.phase = RunPhase::Waiting;
 	remote.pending = approval_pending(approval, true).into();
 	let local = Run {

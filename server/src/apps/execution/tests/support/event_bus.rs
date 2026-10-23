@@ -22,7 +22,7 @@ pub fn event_bus(
 	async move {
 		let (broker, _port, url) = nats_container.await;
 		let app = endpoint.await;
-		let bus = EventBus::connect(&url, &app.runtime.config.node_id)
+		let bus = EventBus::connect(&url, app.runtime.config.deployment.as_str())
 			.await
 			.unwrap();
 		BusFixture {

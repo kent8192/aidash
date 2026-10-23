@@ -23,6 +23,7 @@ use uuid::Uuid;
 pub(crate) struct Scope<'a>(
 	pub(crate) &'a mut dyn TransactionExecutor,
 	pub(crate) Vec<ProgressOutcome>,
+	pub(crate) String,
 );
 
 #[async_trait]
@@ -33,11 +34,13 @@ impl MutationScope for Scope<'_> {
 		revision: i64,
 		state: Value,
 	) -> Result<WorkspaceContract> {
+		require_target_node(self.0, &self.2, "workspace", id).await?;
 		Workspace::replace_state(self.0, id, revision, state)
 			.await
 			.map_err(Into::into)
 	}
 	async fn lock_task(&mut self, id: Uuid) -> Result<Task> {
+		require_target_node(self.0, &self.2, "task", id).await?;
 		TaskRecord::lock(self.0, id)
 			.await
 			.map(Into::into)
@@ -80,6 +83,7 @@ impl MutationScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn lock_run(&mut self, id: Uuid) -> Result<(RawRun, bool)> {
+		require_target_node(self.0, &self.2, "run", id).await?;
 		let (record, leased) = Run::lock_with_lease(self.0, id).await?;
 		// RawRun preserves JSON context and pending without decoding execution state.
 		Ok((
@@ -91,20 +95,90 @@ impl MutationScope for Scope<'_> {
 		Run::complete(self.0, id).await?;
 		// Completion is validated as Home-local, so the Home node records markers.
 		let run = inference::target(&mut *self.0, id).await?;
-		let closed = inference::close_pending(self.0, &run.home_node, id, None).await?;
+		let closed = inference::close_pending(
+			self.0,
+			aidash_domain::nodes::deployment_of(&run.home_node),
+			id,
+			None,
+		)
+		.await?;
 		self.1.extend(closed);
 		Ok(())
 	}
 	async fn append_event(
 		&mut self,
-		node: &str,
 		workspace: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
-		event_records::append(self.0, node, workspace, kind, data)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+		// An event with no Workspace is a Run's end on a Node that is not its Home,
+		// and belongs to the Run's Tenant.
+		match (
+			workspace,
+			data.get("run_id").and_then(Value::as_str).map(str::parse),
+		) {
+			(None, Some(Ok(run))) => event_records::append_for_run(self.0, run, kind, data).await,
+			_ => event_records::append(self.0, workspace, kind, data).await,
+		}
+		.map_err(Into::into)
 	}
+}
+
+/// A participant may mutate only records stored on its exact Node. Hold SHARE
+/// locks through preflight/validation so ownership cannot change beneath it.
+pub(super) async fn require_target_node(
+	tx: &mut dyn TransactionExecutor,
+	node: &str,
+	kind: &str,
+	id: Uuid,
+) -> Result<()> {
+	use reinhardt::db::orm::execution::convert_values;
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, JoinType, LockType, PostgresQueryBuilder, Query,
+		QueryStatementBuilder, TableRef,
+	};
+	let node = aidash_domain::nodes::NodeAddress::parse(node)?;
+	let table = match kind {
+		"workspace" => "workspaces",
+		"task" => "tasks",
+		"run" => "runs",
+		_ => {
+			return Err(aidash_application::Error::Invalid(
+				"unsupported transaction target".into(),
+			));
+		}
+	};
+	let mut query = Query::select();
+	query
+		.expr(Expr::value(true))
+		.from_as(Alias::new(table), Alias::new("target"))
+		.and_where(Expr::col((Alias::new("target"), Alias::new("id"))).eq(Expr::value(id)));
+	let owner = if kind == "task" {
+		query.join(
+			JoinType::InnerJoin,
+			TableRef::table_alias(Alias::new("workspaces"), Alias::new("owner")),
+			Expr::col((Alias::new("owner"), Alias::new("id"))).eq(Expr::col((
+				Alias::new("target"),
+				Alias::new("workspace_id"),
+			))),
+		);
+		"owner"
+	} else {
+		"target"
+	};
+	query
+		.and_where(
+			Expr::col((Alias::new(owner), Alias::new("node"))).eq(Expr::value(node.node.as_str())),
+		)
+		.lock(LockType::Share);
+	let (sql, values) = query.build(PostgresQueryBuilder);
+	if tx
+		.fetch_optional(&sql, convert_values(values))
+		.await
+		.map_err(crate::Error::from)?
+		.is_none()
+	{
+		return Err(aidash_application::Error::Forbidden);
+	}
+	Ok(())
 }

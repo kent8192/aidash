@@ -43,7 +43,7 @@ impl BindingSnapshot {
 			.get(&self.agent)
 			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
 			.definition
-			.normalized_bindings(&self.agent.registry_node)?;
+			.normalized_bindings(&self.agent.registry_deployment)?;
 		let overrides = NormalizedBinding::member_overrides(&normalized);
 		let mut pending = normalized
 			.into_iter()
@@ -178,7 +178,7 @@ impl BindingSnapshot {
 					serde_json::from_value(entry.config.clone())?;
 				config.validate()?;
 				binding.validate()?;
-				if binding.target.registry_node != self.agent.registry_node
+				if binding.target.registry_deployment != self.agent.registry_deployment
 					|| !decision_hooks.insert(config.hook)
 				{
 					return Err(Error::Invalid(
@@ -237,7 +237,10 @@ impl BindingSnapshot {
 			};
 			for operation in support {
 				let binding = expected
-					.get_mut(&QualifiedRef::builtin(&self.agent.registry_node, operation))
+					.get_mut(&QualifiedRef::builtin(
+						&self.agent.registry_deployment,
+						operation,
+					))
 					.ok_or_else(|| Error::Invalid("snapshot lacks native Skill support".into()))?;
 				if binding.binding.alias.as_deref() != Some(operation) {
 					return Err(Error::Invalid(

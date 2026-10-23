@@ -85,6 +85,8 @@ pub trait SemanticSearchScope: Send {
 pub trait SemanticSearchRepository: Send + Sync {
 	type Scope: SemanticSearchScope;
 	fn home_node_id(&self) -> &str;
+	/// The address of the Home Node the search arrived at.
+	fn home_address(&self) -> &str;
 	fn journal(&self) -> &dyn JournalRepository;
 	fn dispatch(&self) -> &dyn GenerationDispatchRepository;
 	fn settlement(&self) -> &dyn GenerationDispatchSettlement;

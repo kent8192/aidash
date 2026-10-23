@@ -43,6 +43,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				"task_id",
 				"workspace_id",
 				"home_node",
+				"node",
 				"agent_id",
 				"agent_version",
 				"phase",
@@ -54,7 +55,11 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				Expr::value(id),
 				Expr::value(task.id),
 				Expr::value(bank.workspace),
-				Expr::value(&store.node_id),
+				Expr::value(
+					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+						.to_string(),
+				),
+				Expr::value(aidash_domain::nodes::NodeName::derived("acme").to_string()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),
@@ -596,6 +601,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 		authorization
 			.set_catalog(
 				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
 				&reference(role),
 				0,
 				true,
@@ -864,7 +870,8 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 	)
 	.await;
 	let bank = Bank {
-		home: store.node_id.clone(),
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
 		tenant: "acme".into(),
 		workspace,
 		participant: None,

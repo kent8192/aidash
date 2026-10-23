@@ -17,7 +17,21 @@ struct Deployment {
 
 impl Deployment {
 	async fn new(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
-		Self::with_demo_data(runtime, rules, false).await
+		Self::with_tier_limits(runtime, rules, None).await
+	}
+
+	/// A Deployment that holds no Deployment Key, so it cannot federate with
+	/// another Deployment.
+	async fn without_key(runtime: common::RuntimeFuture, rules: TenancyRules) -> Self {
+		Self::build(runtime, rules, None, false, false).await
+	}
+
+	async fn with_tier_limits(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
+	) -> Self {
+		Self::build(runtime, rules, tier_limits, true, false).await
 	}
 
 	/// Like [`Self::new`], with `[demo_data] enabled` as given.
@@ -26,8 +40,22 @@ impl Deployment {
 		rules: TenancyRules,
 		demo_data: bool,
 	) -> Self {
+		Self::build(runtime, rules, None, true, demo_data).await
+	}
+
+	async fn build(
+		runtime: common::RuntimeFuture,
+		rules: TenancyRules,
+		tier_limits: Option<Arc<dyn aidash_application::ports::nodes::TierLimits>>,
+		keyed: bool,
+		demo_data: bool,
+	) -> Self {
 		let runtime = runtime.await;
 		let (mut federation, url, database) = runtime.parts();
+		if !keyed {
+			federation.config.deployment_key = None;
+			federation.store.egress = Default::default();
+		}
 		federation.config.oidc = Some(OidcConfig {
 			issuer: "https://accounts.google.com".into(),
 			client_id: "aidash".into(),
@@ -37,6 +65,9 @@ impl Deployment {
 			session_idle_seconds: 1_800,
 		});
 		federation.config.tenancy = rules;
+		if let Some(tier_limits) = tier_limits {
+			federation.config.tier_limits = tier_limits;
+		}
 		federation.config.demo_data = demo_data;
 		let app = common::application(federation.clone()).await;
 		Self {
@@ -885,10 +916,13 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		.await;
 	assert_eq!(status, 200, "{overview}");
 	let actions = overview["actions"].as_array().unwrap();
-	// Every Tenant Administrator and Registry action, including Tenant Secrets,
-	// `tenant.update`, `tenant.delete` and `credential.create` for its own subject.
-	assert_eq!(actions.len(), 28, "{overview}");
+	// Every Tenant Administrator and Registry action, including Tenant Secrets, `node.create`,
+	// `node.update`, `tenant.update`, `tenant.delete` and `credential.create`
+	// for its own subject.
+	assert_eq!(actions.len(), 32, "{overview}");
 	for action in [
+		"node.create",
+		"node.update",
 		"approval.read",
 		"secret.manage",
 		"secret.use",
@@ -1312,7 +1346,14 @@ async fn display_retention_follows_the_request_that_ended_last(
 
 #[path = "tenancy/deletion.rs"]
 mod deletion;
+
 #[path = "tenancy/demo_data.rs"]
 mod demo_data;
+#[path = "tenancy/exchange.rs"]
+mod exchange;
+#[path = "tenancy/nodes.rs"]
+mod nodes;
+#[path = "tenancy/registrations.rs"]
+mod registrations;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;

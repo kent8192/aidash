@@ -340,21 +340,33 @@ fn reason(body: &Value, mode: &str) -> Value {
 
 /// Gives the Tenant's Catalog Approval to version 1.0.0 of `id`.
 async fn approve(f: &Federation, id: &str) {
+	let node = common::default_node(&f.store, TENANT).await.node;
+	set_approval(f, &node, id, 0, true).await;
+}
+
+async fn set_approval(
+	f: &Federation,
+	node: &aidash_domain::nodes::NodeName,
+	id: &str,
+	revision: i64,
+	enabled: bool,
+) {
 	Policies {
 		pool: f.store.pool.clone(),
 	}
 	.set_catalog(
 		TENANT,
+		node,
 		&aidash_domain::registry::EntityRef {
 			id: id.into(),
 			version: "1.0.0".into(),
 		},
-		0,
-		true,
+		revision,
+		enabled,
 		"deployment_administrator",
 	)
 	.await
-	.expect("the Decider is approved");
+	.expect("the Node's Decider approval is updated");
 }
 
 /// Registers an entry of the Tenant's Registry: a copy of the built-in approval
@@ -1424,6 +1436,87 @@ async fn auto_is_offered_only_while_the_tenants_approval_decider_has_a_catalog_a
 	let body = read().await;
 	assert!(allowed(&body, "bypass"));
 	assert_eq!(reason(&body, "bypass"), "not_accepted");
+	fixture.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn auto_availability_uses_the_selected_node_and_ignores_sibling_approvals(
+	#[future(awt)]
+	#[from(approval_application)]
+	application: common::ApplicationFixture,
+) {
+	let fixture = Fixture::new(application);
+	let people = people(&fixture).await;
+	let own = common::default_node(&fixture.f.store, TENANT).await.node;
+	let sibling = common::second_node_in(fixture.f.store.pool.fixture_driver(), TENANT).await;
+	set_approval(&fixture.f, &sibling, BUILT_IN, 0, true).await;
+	let check = async |node: &aidash_domain::nodes::NodeName, expected: bool| {
+		let preferences = send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"GET",
+			&format!("{PREFERENCES}?node={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(preferences.status(), 200, "{:?}", json_body(&preferences));
+		assert_eq!(allowed(&json_body(&preferences), "auto"), expected);
+		let decider = send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"GET",
+			&format!("{DECIDER}?node={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(decider.status(), 200, "{:?}", json_body(&decider));
+		assert_eq!(json_body(&decider)["approved"], expected);
+	};
+	check(&own, false).await;
+	check(&sibling, true).await;
+	set_approval(&fixture.f, &own, BUILT_IN, 0, true).await;
+	check(&own, true).await;
+	set_approval(&fixture.f, &own, BUILT_IN, 1, false).await;
+	check(&own, false).await;
+	check(&sibling, true).await;
+
+	common::tenant_root(&fixture.f, "beta").await;
+	let foreign = common::default_node(&fixture.f.store, "beta").await.node;
+	for path in [PREFERENCES, DECIDER] {
+		let hidden = send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"GET",
+			&format!("{path}?node={foreign}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(hidden.status(), 404, "{:?}", json_body(&hidden));
+	}
+	amend(&fixture.f, |bundle| {
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":"refuse-selected-node", "effect":"deny", "subjects":{"any":true},
+			"actions":["node.use"], "resources":{"kinds":["node"], "ids":[own.to_string()]}
+		}));
+	})
+	.await;
+	for path in [PREFERENCES, DECIDER] {
+		let denied = send(
+			&fixture,
+			Person::Member,
+			&people.member,
+			"GET",
+			&format!("{path}?node={own}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(denied.status(), 403, "{:?}", json_body(&denied));
+	}
+	check(&sibling, true).await;
 	fixture.cleanup().await;
 }
 

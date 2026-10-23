@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { setup } from "./collaboration-fixture";
+import { setup, fixture } from "./collaboration-fixture";
+import { defaultNode } from "./registry-fixture";
 import type { ChannelMessagePage } from "../src/generated/models";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
@@ -914,6 +915,7 @@ test("new request preserves the Japanese conversation creation contract", async 
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(/channel=workspace-two/);
   expect(payload).toEqual({
+    node: defaultNode.name,
     title: "競合調査",
     goal: "Rustフレームワークを比較して",
     target: { id: "researcher", version: "1.0.0" },
@@ -1024,7 +1026,11 @@ test("graph renders with Cytoscape and offers current related channel first", as
 test("graph focus survives contextual selection, reload, and history", async ({
   page,
 }) => {
-  const { errors } = await setup(page, { extraGraphAgent: true });
+  const { errors } = await setup(page, {
+    extraGraphAgent: true,
+    subject: true,
+  });
+  const node = `aidash://home/${defaultNode.name}`;
   await page.goto("/collaboration?channel=workspace-one");
   await page.getByRole("button", { name: "Tasks and results" }).click();
   await page
@@ -1036,14 +1042,14 @@ test("graph focus survives contextual selection, reload, and history", async ({
   const selector = page.getByLabel("Focus agent");
   const original = JSON.stringify([
     "entity",
-    "aidash://home",
+    node,
     "agent",
     "researcher",
     "1.0.0",
   ]);
   const focused = JSON.stringify([
     "entity",
-    "aidash://home",
+    node,
     "agent",
     'review/"[special]:/agent',
     "1.0.0",
@@ -1065,7 +1071,7 @@ test("graph focus survives contextual selection, reload, and history", async ({
 
   const unavailable = JSON.stringify([
     "entity",
-    "aidash://home",
+    node,
     "agent",
     "unavailable",
     "1.0.0",
@@ -1319,43 +1325,8 @@ test("older message pages are prepended without losing the latest messages", asy
   expect(errors).toEqual([]);
 });
 
-test("remote channel participants are displayed without linking to the local graph", async ({
-  page,
-}) => {
-  const { errors } = await setup(page, { remoteParticipant: true });
-  await page.goto("/collaboration?channel=workspace-one");
-  await page
-    .getByRole("button", { name: "Tasks and results", exact: true })
-    .click();
-  const participants = page
-    .getByRole("dialog")
-    .getByRole("list", { name: "Agents working here" });
-  const local = participants.getByRole("listitem").filter({
-    hasText: "Researcher · 1.0.0",
-  });
-  const remote = participants.getByRole("listitem").filter({
-    hasText: "Unavailable item · 1.0.0",
-  });
-  await expect(participants.getByRole("listitem")).toHaveCount(2);
-  await expect(local.getByRole("button")).toHaveCount(1);
-  await expect(remote).toHaveCount(1);
-  await expect(remote.getByRole("button")).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
-
-test("partial mesh responses tell Deployment Administrators which peer was omitted", async ({
-  page,
-}) => {
-  const { errors } = await setup(page, { meshErrors: true });
-  await page.goto("/graph");
-  await expect(
-    page.getByRole("status").filter({ hasText: "Unavailable item" }),
-  ).toContainText("connection refused");
-  expect(errors).toEqual([]);
-});
-
 test("local run details retain execution memory", async ({ page }) => {
-  const { errors } = await setup(page, { runMemory: true });
+  const { errors } = await setup(page, { subject: true, runMemory: true });
   await page.goto("/collaboration?channel=workspace-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
@@ -1375,7 +1346,7 @@ test("local run details retain execution memory", async ({ page }) => {
 test("run message attachments stay fixed while an upload is pending", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page);
+  const { submissions, errors } = await setup(page, { subject: true });
   let uploadStarted!: () => void;
   let finishUpload!: () => void;
   const started = new Promise<void>((resolve) => (uploadStarted = resolve));
@@ -1432,6 +1403,7 @@ test("run media picker follows the effective model route before uploads", async 
   page,
 }) => {
   const { submissions, errors, setRunMediaRoutes } = await setup(page, {
+    subject: true,
     runMediaRoutes: [],
   });
   await page.goto("/collaboration?channel=workspace-one");
@@ -1601,7 +1573,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
   }) => {
     const ja = locale === "ja-JP";
     if (ja) await page.setViewportSize({ width: 390, height: 1000 });
-    const { errors } = await setup(page, { locale });
+    const { errors } = await setup(page, { subject: true, locale });
     await page.goto("/collaboration?channel=workspace-one");
     const open = page.getByRole("button", {
       name: ja ? "状況を表示" : "Show channel status",
@@ -1801,7 +1773,10 @@ test("upload failures retain their key and file limits apply before network use"
 test("channel controls scope run changes and persist approval responses", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page, { approval: true });
+  const { submissions, errors } = await setup(page, {
+    subject: true,
+    approval: true,
+  });
   await page.goto("/");
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
@@ -1971,6 +1946,7 @@ test("workspace reference renders light, dark and thread layouts", async ({
 }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const { errors } = await setup(page, {
+    subject: true,
     referenceLayout: true,
     locale: "ja-JP",
   });
@@ -2236,8 +2212,8 @@ for (const pause of [
     const { submissions, errors } = await setup(
       page,
       pause === "invalid_context"
-        ? { invalidRun: true }
-        : { semanticPause: pause },
+        ? { subject: true, invalidRun: true }
+        : { subject: true, semanticPause: pause },
     );
     await page.goto("/collaboration?channel=workspace-one");
     await page
@@ -2286,6 +2262,7 @@ test("paused failure delivery can resume while retaining its invalid Context dia
   page,
 }) => {
   const { submissions, errors } = await setup(page, {
+    subject: true,
     failureDeliveryRun: true,
   });
   await page.goto("/collaboration?channel=workspace-one");
@@ -2320,6 +2297,7 @@ test("channel controls resume a validated failure delivery with an invalid Conte
   page,
 }) => {
   const { submissions, errors } = await setup(page, {
+    subject: true,
     failureDeliveryRun: true,
   });
   await page.goto("/collaboration?channel=workspace-one");
@@ -2423,3 +2401,44 @@ for (const collision of [false, true]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("topology renders each discovered Node once with its agents and cross-Node communication", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  const data = fixture();
+  const local = data.deployment.id;
+  const remote = "aidash://remote/remote-node";
+  const entity = data.registry.find((entry) => entry.kind === "agent")!;
+  data.tasks[0].created_by = `${local}/agents/${entity.id}@${entity.version}`;
+  data.tasks[0].owner = `${remote}/agents/${entity.id}@${entity.version}`;
+  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/discover**", (route) =>
+    route.fulfill({
+      json: {
+        agents: [
+          { node_id: local, entity },
+          { node_id: remote, entity },
+        ],
+        failures: [],
+      },
+    }),
+  );
+  await page.goto("/graph?channel=workspace-one");
+  await page.getByLabel("Graph perspective").selectOption("neighborhood");
+  await page
+    .getByRole("button", {
+      name: "Node topology and communication",
+      exact: true,
+    })
+    .click();
+  const topology = page.getByRole("img", {
+    name: "Mesh topology",
+  });
+  await expect(topology).toBeVisible();
+  await expect(
+    topology.locator("text").filter({ hasText: "1 Agents" }),
+  ).toHaveCount(2);
+  await expect(topology.locator("path[marker-end]")).toHaveCount(1);
+  expect(errors).toEqual([]);
+});

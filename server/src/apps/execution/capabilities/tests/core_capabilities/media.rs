@@ -53,9 +53,11 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	agent.version = "1.1.1".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.1.0");
-	c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.1.1")] =
-		json!({"kind":"agent"});
+	c.policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.1.1",
+	)] = json!({"kind":"agent"});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	for entry in [model, agent] {
 		let (status, body) =
@@ -66,7 +68,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -76,7 +78,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 		&c.token,
 		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
-		json!({"node_id":c.f.config.node_id,"agent":{"id":"research","version":"1.1.1"}}),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.1"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");

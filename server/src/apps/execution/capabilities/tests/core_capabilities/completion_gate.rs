@@ -101,13 +101,15 @@ async fn gate_fixture(
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
-		json!({"kind":"agent"});
+	c.policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
+		"research",
+		VERSION,
+	)] = json!({"kind":"agent"});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	Gate {
 		c,
@@ -123,7 +125,7 @@ impl Gate {
 			&self.c.token,
 			"POST",
 			&format!("/api/tasks/{}/delegate", self.c.task),
-			json!({"node_id":self.c.f.config.node_id,"agent":{"id":"research","version":VERSION}}),
+			json!({"node_id":self.c.f.config.deployment,"agent":{"id":"research","version":VERSION}}),
 		)
 		.await;
 		assert_eq!(status, 200, "{result}");

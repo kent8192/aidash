@@ -63,22 +63,20 @@ async function setup(
     if (path === "/api/events/stream") return route.abort();
     const json =
       path === "/api/session"
-        ? { access: data.access, node_id: data.node.id }
+        ? { access: data.access, node_id: data.deployment.id }
         : path === "/api/state"
           ? data
           : path === "/api/discover"
             ? scene.discovery
-            : path === "/api/mesh"
-              ? { nodes: [], errors: [] }
-              : path === "/api/workspaces/product-lab"
-                ? {
-                    workspace: data.workspaces[0],
-                    tasks: data.tasks,
-                    artifacts: data.artifacts,
-                    events: data.events,
-                    messages: [],
-                  }
-                : [];
+            : path === "/api/workspaces/product-lab"
+              ? {
+                  workspace: data.workspaces[0],
+                  tasks: data.tasks,
+                  artifacts: data.artifacts,
+                  events: data.events,
+                  messages: [],
+                }
+              : [];
     return route.fulfill({ json });
   });
   await page.goto("/graph?channel=product-lab");
@@ -99,7 +97,6 @@ async function setup(
         artifacts: [],
         conversations: [],
         events: [],
-        peers: [],
       };
     },
   };
@@ -353,18 +350,15 @@ test("zoom and node positions survive snapshot refresh and revoked details disap
   page,
 }) => {
   const { errors, revoke } = await setup(page);
-  const before = await page.locator(".mesh-label-layer").getAttribute("style");
+  const canvas = page.locator(".mesh-canvas");
+  const before = await cytoscapeCamera(canvas);
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-  await expect(page.locator(".mesh-label-layer")).not.toHaveAttribute(
-    "style",
-    before!,
-  );
-  const camera = await page.locator(".mesh-label-layer").getAttribute("style");
+  await expect
+    .poll(async () => (await cytoscapeCamera(canvas)).zoom)
+    .toBeGreaterThan(before.zoom);
+  const camera = await cytoscapeCamera(canvas);
   await page.waitForResponse((r) => r.url().includes("/api/state"));
-  await expect(page.locator(".mesh-label-layer")).toHaveAttribute(
-    "style",
-    camera!,
-  );
+  await expect.poll(() => cytoscapeCamera(canvas)).toEqual(camera);
   revoke();
   await expect(page.locator(".mesh-inspector")).toHaveCount(0, {
     timeout: 8000,

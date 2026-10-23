@@ -72,11 +72,11 @@ fn repository() -> Repository {
 	};
 	let intent = Intent {
 		id: Uuid::from_u128(4),
-		home_node: "aidash://home".into(),
+		home_node: "aidash://home/brave-otter-k3m9q2xa".into(),
 		source_tenant: "source".into(),
 		source_subject: "root".into(),
 		task,
-		target_node: "aidash://executor".into(),
+		target_node: "aidash://executor/brave-otter-k3m9q2xa".into(),
 		policy_id: "policy".into(),
 		policy_revision: 7,
 		lineage: vec![],
@@ -87,6 +87,7 @@ fn repository() -> Repository {
 	let mut job = test_support::request(9);
 	job.task_id = intent.task.id;
 	job.home_node = intent.home_node.clone();
+	job.foreign_intent = Some(serde_json::json!({}));
 	job.status = "QUEUED".into();
 	job.prepared = false;
 	job.foreign_intent = Some(json!(intent));
@@ -127,25 +128,27 @@ fn repository() -> Repository {
 #[async_trait]
 impl ForeignGenerationReceiver for Repository {
 	fn node_id(&self) -> &str {
-		"aidash://executor"
+		"aidash://executor/brave-otter-k3m9q2xa"
 	}
 	fn now(&self) -> DateTime<Utc> {
 		DateTime::from_timestamp(1000, 0).unwrap()
 	}
 	async fn describe(&self, source: &str, id: Uuid) -> Result<Intent> {
-		assert_eq!((source, id), ("aidash://home", Uuid::from_u128(4)));
+		assert_eq!(
+			(source, id),
+			("aidash://home/brave-otter-k3m9q2xa", Uuid::from_u128(4))
+		);
 		point(&self.0, "describe").await?;
 		Ok(self.0.lock().unwrap().intent.clone())
 	}
 	async fn begin(
 		&self,
 		source: &str,
-		tenant: &str,
 		subject: &str,
 	) -> Result<Box<dyn ForeignGenerationReceiverScope>> {
 		assert_eq!(
-			(source, tenant, subject),
-			("aidash://home", "source", "root")
+			(source, subject),
+			("aidash://home/brave-otter-k3m9q2xa", "root")
 		);
 		point(&self.0, "begin").await?;
 		self.0.lock().unwrap().leases += 1;
@@ -154,6 +157,13 @@ impl ForeignGenerationReceiver for Repository {
 }
 #[async_trait]
 impl ForeignGenerationReceiverScope for Scope {
+	async fn node_resource(&mut self) -> Result<Resource> {
+		Ok(self.resource(
+			"node",
+			"brave-otter-k3m9q2xa",
+			json!({"label":"Default","default":true}),
+		))
+	}
 	fn authority(&self) -> Authority {
 		self.0.lock().unwrap().authority.clone()
 	}
@@ -169,10 +179,13 @@ impl ForeignGenerationReceiverScope for Scope {
 		let mut w = self.0.lock().unwrap();
 		w.events.push(action.into());
 		match action {
-			"federation.execute" => assert_eq!(resource.id, "aidash://executor"),
+			"federation.execute" => assert_eq!(resource.id, "brave-otter-k3m9q2xa"),
 			"task.read" => assert_eq!(
 				resource.id,
-				format!("aidash://home/tasks/{}", w.intent.task.id)
+				format!(
+					"aidash://home/brave-otter-k3m9q2xa/tasks/{}",
+					w.intent.task.id
+				)
 			),
 			_ => assert_eq!(resource.id, "policy"),
 		};
@@ -188,12 +201,18 @@ impl ForeignGenerationReceiverScope for Scope {
 		Ok(self.0.lock().unwrap().policy.clone())
 	}
 	async fn existing(&mut self, source: &str, task: Uuid) -> Result<Option<Request>> {
-		assert_eq!((source, task), ("aidash://home", Uuid::from_u128(1)));
+		assert_eq!(
+			(source, task),
+			("aidash://home/brave-otter-k3m9q2xa", Uuid::from_u128(1))
+		);
 		point(&self.0, "existing").await?;
 		Ok(self.0.lock().unwrap().existing.clone())
 	}
 	async fn replayed(&mut self, source: &str, id: Uuid) -> Result<bool> {
-		assert_eq!((source, id), ("aidash://home", Uuid::from_u128(4)));
+		assert_eq!(
+			(source, id),
+			("aidash://home/brave-otter-k3m9q2xa", Uuid::from_u128(4))
+		);
 		point(&self.0, "replayed").await?;
 		Ok(self.0.lock().unwrap().replayed)
 	}
@@ -206,7 +225,7 @@ impl ForeignGenerationReceiverScope for Scope {
 			Ok(Assignment::Existing {
 				delegation: aidash_domain::federation::Delegation {
 					task_id: intent.task.id,
-					node_id: "aidash://executor".into(),
+					node_id: "aidash://executor/brave-otter-k3m9q2xa".into(),
 					agent_id: "existing".into(),
 					agent_version: "1.0.0".into(),
 					delivered: false,
@@ -244,9 +263,13 @@ impl ForeignGenerationReceiverScope for Scope {
 #[rstest]
 #[tokio::test]
 async fn prepared_foreign_executor_is_published_once_inside_its_scope(repository: Repository) {
-	let prepared = prepare(&repository, "aidash://home", Uuid::from_u128(4))
-		.await
-		.unwrap();
+	let prepared = prepare(
+		&repository,
+		"aidash://home/brave-otter-k3m9q2xa",
+		Uuid::from_u128(4),
+	)
+	.await
+	.unwrap();
 	assert!(prepared.prepared);
 	assert_eq!(prepared.request_id, Uuid::from_u128(9));
 	assert_eq!(prepared.status, "QUEUED");
@@ -290,7 +313,12 @@ async fn invalid_home_description_is_rejected_before_mapped_authority(
 		w.intent = serde_json::from_value(intent).unwrap();
 	}
 	assert!(matches!(
-		prepare(&repository, "aidash://home", Uuid::from_u128(4)).await,
+		prepare(
+			&repository,
+			"aidash://home/brave-otter-k3m9q2xa",
+			Uuid::from_u128(4)
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(repository.0.lock().unwrap().events, vec!["describe"]);
@@ -307,7 +335,12 @@ async fn current_receiver_denial_prevents_request_and_publication(
 ) {
 	repository.0.lock().unwrap().denied = Some(action);
 	assert!(matches!(
-		prepare(&repository, "aidash://home", Uuid::from_u128(4)).await,
+		prepare(
+			&repository,
+			"aidash://home/brave-otter-k3m9q2xa",
+			Uuid::from_u128(4)
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	let w = repository.0.lock().unwrap();
@@ -331,7 +364,7 @@ async fn policy_must_remain_enabled_at_the_exact_revision(
 		w.policy.revision = revision;
 	}
 	assert!(
-		matches!(prepare(&repository,"aidash://home",Uuid::from_u128(4)).await,Err(Error::Conflict(message)) if message=="generation policy revision changed")
+		matches!(prepare(&repository,"aidash://home/brave-otter-k3m9q2xa",Uuid::from_u128(4)).await,Err(Error::Conflict(message)) if message=="generation policy revision changed")
 	);
 	let w = repository.0.lock().unwrap();
 	assert!(!w.events.contains(&"existing".into()));
@@ -360,7 +393,7 @@ async fn existing_request_requires_the_exact_mapped_binding(
 		w.existing = Some(job);
 	}
 	assert!(
-		matches!(prepare(&repository,"aidash://home",Uuid::from_u128(4)).await,Err(Error::Conflict(message)) if message=="foreign generation already has a different binding")
+		matches!(prepare(&repository,"aidash://home/brave-otter-k3m9q2xa",Uuid::from_u128(4)).await,Err(Error::Conflict(message)) if message=="foreign generation already has a different binding")
 	);
 	let w = repository.0.lock().unwrap();
 	assert_eq!(w.committed, 0);
@@ -383,9 +416,13 @@ async fn idempotent_pending_and_prepared_replies_skip_publication(
 		job.prepared = prepared;
 		w.existing = Some(job);
 	}
-	let reply = prepare(&repository, "aidash://home", Uuid::from_u128(4))
-		.await
-		.unwrap();
+	let reply = prepare(
+		&repository,
+		"aidash://home/brave-otter-k3m9q2xa",
+		Uuid::from_u128(4),
+	)
+	.await
+	.unwrap();
 	assert_eq!(reply.status, status);
 	assert_eq!(reply.prepared, prepared);
 	let w = repository.0.lock().unwrap();
@@ -399,7 +436,7 @@ async fn idempotent_pending_and_prepared_replies_skip_publication(
 async fn terminal_intent_cannot_create_a_second_executor(repository: Repository) {
 	repository.0.lock().unwrap().replayed = true;
 	assert!(
-		matches!(prepare(&repository,"aidash://home",Uuid::from_u128(4)).await,Err(Error::Conflict(message)) if message=="foreign generation intent already finished")
+		matches!(prepare(&repository,"aidash://home/brave-otter-k3m9q2xa",Uuid::from_u128(4)).await,Err(Error::Conflict(message)) if message=="foreign generation intent already finished")
 	);
 	assert!(
 		!repository
@@ -415,7 +452,12 @@ async fn terminal_intent_cannot_create_a_second_executor(repository: Repository)
 async fn preparation_requires_a_generated_assignment(repository: Repository) {
 	repository.0.lock().unwrap().wrong_assignment = true;
 	assert!(matches!(
-		prepare(&repository, "aidash://home", Uuid::from_u128(4)).await,
+		prepare(
+			&repository,
+			"aidash://home/brave-otter-k3m9q2xa",
+			Uuid::from_u128(4)
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	let w = repository.0.lock().unwrap();
@@ -437,7 +479,7 @@ async fn preparation_failure_preserves_error_and_does_not_commit(
 ) {
 	repository.0.lock().unwrap().failure = Some(operation);
 	assert!(
-		matches!(prepare(&repository,"aidash://home",Uuid::from_u128(4)).await,Err(Error::External(message)) if message==format!("{operation} failed"))
+		matches!(prepare(&repository,"aidash://home/brave-otter-k3m9q2xa",Uuid::from_u128(4)).await,Err(Error::External(message)) if message==format!("{operation} failed"))
 	);
 	let w = repository.0.lock().unwrap();
 	assert_eq!(w.committed, 0);
@@ -456,7 +498,11 @@ async fn cancelled_preparation_releases_its_uncommitted_scope(
 	assert!(
 		tokio::time::timeout(
 			std::time::Duration::from_millis(20),
-			prepare(&repository, "aidash://home", Uuid::from_u128(4))
+			prepare(
+				&repository,
+				"aidash://home/brave-otter-k3m9q2xa",
+				Uuid::from_u128(4)
+			)
 		)
 		.await
 		.is_err()

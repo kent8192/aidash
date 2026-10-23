@@ -1,4 +1,4 @@
-//! Transaction inspection and peer trust facts, independent of persistence or HTTP.
+//! Transaction inspection facts, independent of persistence or HTTP.
 use super::{authority::Status, coordination::Vote};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -18,16 +18,4 @@ pub struct Details {
 	pub transaction: Status,
 	pub participants: Vec<Vote>,
 	pub history: Vec<History>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Trust {
-	pub node_id: String,
-	pub enabled: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TrustChange {
-	pub trust: Trust,
-	pub pending_transactions: Vec<Uuid>,
 }

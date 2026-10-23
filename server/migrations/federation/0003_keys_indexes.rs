@@ -47,13 +47,6 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "atomic_peer_trust".to_owned(),
-			constraint: Constraint::PrimaryKey {
-				name: "atomic_peer_trust_pkey".to_owned(),
-				columns: vec!["node_id".to_owned()],
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
 			table: "atomic_preflights".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "atomic_preflights_pkey".to_owned(),
@@ -86,8 +79,9 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "authorization_peer_mappings_pkey".to_owned(),
 				columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
 					"source_node".to_owned(),
-					"source_tenant".to_owned(),
 					"source_subject".to_owned(),
 				],
 			},
@@ -102,15 +96,25 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_remote_admissions".to_owned(),
 			constraint: Constraint::Unique {
-				name: "authorization_remote_admissions_source_node_grant_id_key".to_owned(),
-				columns: vec!["source_node".to_owned(), "grant_id".to_owned()],
+				name: "authorization_remote_admissions_node_source_node_grant_id_key".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
+					"source_node".to_owned(),
+					"grant_id".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_remote_admissions".to_owned(),
 			constraint: Constraint::Unique {
-				name: "authorization_remote_admissions_source_node_task_id_key".to_owned(),
-				columns: vec!["source_node".to_owned(), "task_id".to_owned()],
+				name: "authorization_remote_admissions_node_source_node_task_id_key".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
+					"source_node".to_owned(),
+					"task_id".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -147,17 +151,21 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "peer_events".to_owned(),
+			table: "node_registration_history".to_owned(),
 			constraint: Constraint::PrimaryKey {
-				name: "peer_events_pkey".to_owned(),
-				columns: vec!["node_id".to_owned(), "event_id".to_owned()],
+				name: "node_registration_history_pkey".to_owned(),
+				columns: vec!["sequence".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "peers".to_owned(),
+			table: "node_registrations".to_owned(),
 			constraint: Constraint::PrimaryKey {
-				name: "peers_pkey".to_owned(),
-				columns: vec!["node_id".to_owned()],
+				name: "node_registrations_pkey".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
+					"source_node".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -210,6 +218,18 @@ pub(super) fn migration() -> Migration {
 			unique: false,
 			index_type: Some(IndexType::BTree),
 			where_clause: Some(r#"(NOT delivered)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "node_registration_history".to_owned(),
+			name: "node_registration_history_tenant_sequence".to_owned(),
+			columns: vec!["tenant".to_owned(), "sequence".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

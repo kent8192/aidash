@@ -81,9 +81,9 @@ pub async fn resolve(
 	}
 	let mut agent_definition = agent_definition.clone();
 	if agent_definition.binding_normalization.is_none() {
-		agent_definition.normalize_agent(&agent.registry_node)?;
+		agent_definition.normalize_agent(&agent.registry_deployment)?;
 	}
-	let normalized = agent_definition.normalized_bindings(&agent.registry_node)?;
+	let normalized = agent_definition.normalized_bindings(&agent.registry_deployment)?;
 	let overrides = NormalizedBinding::member_overrides(&normalized);
 	let mut pending: Vec<_> = normalized
 		.into_iter()
@@ -104,7 +104,7 @@ pub async fn resolve(
 		.chain(config.cluster.iter().map(|r| (r, "cluster")))
 	{
 		let qualified = QualifiedRef {
-			registry_node: agent.registry_node.clone(),
+			registry_deployment: agent.registry_deployment.clone(),
 			id: reference.id.clone(),
 			version: reference.version.clone(),
 		};
@@ -282,7 +282,7 @@ pub async fn resolve(
 			}
 		} else if kind == BindingKind::Decider {
 			if entry.kind != "decider"
-				|| target.registry_node != agent.registry_node
+				|| target.registry_deployment != agent.registry_deployment
 				|| origin != BindingOrigin::Explicit
 			{
 				return Err(Error::Invalid(
@@ -397,7 +397,7 @@ pub async fn resolve(
 			SKILL_TOOLS.to_vec()
 		};
 		for operation in support {
-			let identity = QualifiedRef::builtin(&agent.registry_node, operation);
+			let identity = QualifiedRef::builtin(&agent.registry_deployment, operation);
 			let support = resolved.get_mut(&identity).ok_or_else(|| {
 				Error::Invalid("native Skills require all Skill support tools".into())
 			})?;
@@ -447,7 +447,7 @@ pub async fn resolve(
 			continue;
 		}
 		for (reference, kind) in definition_references(&identity, &entry)? {
-			if reference.registry_node != identity.registry_node
+			if reference.registry_deployment != identity.registry_deployment
 				&& kind == "agent"
 				&& !foreign_agents.contains_key(&reference)
 			{
@@ -510,14 +510,14 @@ pub async fn resolve(
 			let cluster: aidash_domain::registry::ClusterConfig =
 				serde_json::from_value(definition.config.clone())?;
 			let coordinator = QualifiedRef {
-				registry_node: identity.registry_node.clone(),
+				registry_deployment: identity.registry_deployment.clone(),
 				id: cluster.coordinator.id,
 				version: cluster.coordinator.version,
 			};
 			let entry = &definitions[&coordinator];
 			let configured: AgentBindings = serde_json::from_value(entry.config.clone())?;
 			let mut pending = configured
-				.normalize(&coordinator.registry_node)?
+				.normalize(&coordinator.registry_deployment)?
 				.into_iter()
 				.map(|n| n.binding)
 				.collect::<Vec<_>>();
@@ -680,7 +680,7 @@ fn validate_memory_sources(
 			.definitions
 			.iter()
 			.find(|d| {
-				d.identity.registry_node == snapshot.agent.registry_node
+				d.identity.registry_deployment == snapshot.agent.registry_deployment
 					&& d.identity.local() == *reference
 			})
 			.map(|d| &d.definition)

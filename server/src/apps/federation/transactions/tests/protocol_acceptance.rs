@@ -10,7 +10,7 @@ use aidash_server::{
 		models::{coordinator_records, states::AtomicCoordinatorDecision},
 		services::decisions::CoordinatorTransition,
 	},
-	federation::{Federation, Peer},
+	federation::Federation,
 	registry::Registry,
 	transactions::{Manifest, coordinator, participant},
 };
@@ -47,10 +47,12 @@ fn atomic_runtime(
 	async move {
 		let mut runtime = runtime.await;
 		let f = &mut runtime.federation;
-		f.config.node_id = format!("aidash://atomic-{suffix}");
-		f.store.node_id = f.config.node_id.clone();
+		f.config.deployment =
+			aidash_domain::nodes::DeploymentId::parse(&format!("aidash://atomic-{suffix}"))
+				.unwrap();
+		f.store.deployment = f.config.deployment.clone();
 		f.config.api_token = "atomic-deployment-administrator-fixture-token".into();
-		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.deployment).unwrap();
 		runtime
 	}
 	.boxed()
@@ -111,6 +113,7 @@ fn node(
 		Node {
 			f,
 			listen,
+			address: String::new(),
 			reservation,
 			server: Some(peer.server),
 			client: peer.client,
@@ -142,52 +145,46 @@ fn pair(
 	second: BoxFuture<'static, Node>,
 ) -> PairFuture {
 	let capacity = Box::pin(pair_capacity);
-	async move {let capacity=capacity.await; let mut a=first.await; a._capacity=Some(capacity); let b=second.await;
-	for (local, remote) in [(&a, &b), (&b, &a)] {
-		local
+	async move {
+		let capacity = capacity.await;
+		let mut a = first.await;
+		a._capacity = Some(capacity);
+		let mut b = second.await;
+		for node in [&mut a, &mut b] {
+			node.join().await;
+		}
+		// Each Deployment accepts and addresses the other's Node.
+		common::register_pair(
+			(&a.f, &a.application, "acme"),
+			(&b.f, &b.application, "acme"),
+		)
+		.await;
+		let scope = common::tenant_scope(&a.f.store, "acme").await;
+		let wa = a
 			.f
-			.register_peer(Peer {
-				node_id: remote.f.config.node_id.clone(),
-				endpoint: remote.f.config.endpoint.clone(),
-				credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-				protocol_version: "0.2".into(),
-				enabled: true,
-			})
-			.await
-			.unwrap();
-		assert_eq!(
-			local
-				.request(
-					reqwest::Method::POST,
-					"/api/transactions/trust",
-					Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))
-				)
-				.await
-				.0,
-			200
-		);
-	}
-	let scope = common::tenant_scope(&a.f.store, "atomic").await;
-	let wa =
-		a.f.store
+			.store
 			.create_workspace(&scope, "alice", "A", "Atomic state")
 			.await
 			.unwrap();
-	let scope = common::tenant_scope(&b.f.store, "atomic").await;
-	let wb =
-		b.f.store
+		let scope = common::tenant_scope(&b.f.store, "acme").await;
+		let wb = b
+			.f
+			.store
 			.create_workspace(&scope, "alice", "B", "Atomic state")
 			.await
 			.unwrap();
-	let manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
-	(a, b, manifest, wa.id, wb.id)
- }.boxed()
+		let manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.address,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.address,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.address,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
+		(a, b, manifest, wa.id, wb.id)
+	}
+	.boxed()
 }
 struct Node {
 	f: Federation,
 	server: Option<Arc<common::PeerServerGuard>>,
 	client: Arc<reinhardt::test::APIClient>,
 	listen: std::net::SocketAddr,
+	/// The Tenant's default Node, once `pair` has written it.
+	address: String,
 	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
 	reservation: Reservation,
 	application: common::TestApplication,
@@ -215,7 +212,7 @@ impl Node {
 	fn stage(&self, action: &str, step: &str) -> String {
 		format!(
 			"{action} {} (database {}): {step}",
-			self.f.config.node_id, self.runtime.schema
+			self.f.config.deployment, self.runtime.schema
 		)
 	}
 	/// Stop serving and close both pools. Each step is bounded because a pool
@@ -245,15 +242,21 @@ impl Node {
 		let store = environment
 			.bounded(
 				self.stage("restart", "reconnect the store"),
-				common::native_store(&self.f.config.database_url, &self.f.config.node_id),
+				common::native_store(
+					&self.f.config.database_url,
+					self.f.config.deployment.as_str(),
+				),
 			)
 			.await;
+		let original = self.f.clone();
 		self.f = Federation {
-			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
+			registry: Registry::new(store.pool.clone(), &store.deployment).unwrap(),
 			store,
 			notify: Arc::new(tokio::sync::Notify::new()),
-			..self.f.clone()
+			..original.clone()
 		};
+		// A restarted Node keeps its Deployment's egress and permitted origins.
+		common::peering::carry_over(&mut self.f, &original);
 		self.application = environment
 			.bounded(
 				self.stage("restart", "rebuild the application"),
@@ -285,7 +288,7 @@ impl Node {
 				.unwrap_or_else(|error| {
 					panic!(
 						"fixture {} bind {}: {error}",
-						self.f.config.node_id, self.listen
+						self.f.config.deployment, self.listen
 					)
 				}),
 		}
@@ -321,6 +324,62 @@ impl Node {
 	}
 	async fn get(&self, path: &str) -> (u16, Value) {
 		self.request(reqwest::Method::GET, path, None).await
+	}
+	/// Creates the Deployment's Tenant and records its default Node's address.
+	async fn join(&mut self) {
+		common::tenant_scope(&self.f.store, "acme").await;
+		self.address = common::default_node(&self.f.store, "acme")
+			.await
+			.to_string();
+	}
+	fn node_address(&self) -> aidash_domain::nodes::NodeAddress {
+		aidash_domain::nodes::NodeAddress::parse(&self.address).unwrap()
+	}
+	/// The Tenant's mapping from `source`'s default Node, as `subject`.
+	fn mapping(
+		&self,
+		source: &Node,
+		credential_id: Uuid,
+		enabled: bool,
+		expected_revision: i64,
+	) -> aidash_server::authorization::peer::PeerMappingInput {
+		aidash_server::authorization::peer::PeerMappingInput {
+			node: self.node_address().node,
+			source_node: source.node_address(),
+			source_subject: "alice".into(),
+			credential_id,
+			enabled,
+			expected_revision,
+		}
+	}
+	/// The Sender for work the Tenant's default Node does as itself.
+	fn sender(&self) -> aidash_domain::federation::route::Sender {
+		aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			node: None,
+			subject: None,
+		}
+	}
+	/// Allows or refuses atomic transactions with `remote`'s Node, replacing the
+	/// registration that holds `revision`. Returns the route's status.
+	async fn set_trust(&self, remote: &Node, enabled: bool, revision: i64) -> u16 {
+		let owner = self.address.rsplit('/').next().unwrap();
+		let mut body = common::peering::registration(
+			&remote.address,
+			Some((
+				&remote.f.config.endpoint,
+				&common::peering::key_id(&remote.f),
+			)),
+		);
+		body["atomic_transactions"] = json!(enabled);
+		body["expected_revision"] = json!(revision);
+		self.request(
+			reqwest::Method::POST,
+			&common::peering::registration_path("acme", owner),
+			Some(body),
+		)
+		.await
+		.0
 	}
 	async fn cleanup(mut self) {
 		self.close("clean up").await;
@@ -400,7 +459,7 @@ async fn seed_existing_scoped_transaction(
 	for node in participants {
 		let local = fixture_origin(node).await;
 		let binding = json!({
-			"request":fixture_preflight(manifest, &origin, &node.f.config.node_id),
+			"request":fixture_preflight(manifest, &origin, &node.address),
 			"local":local,"subjects":[local["subject"]]
 		});
 		let lease =
@@ -436,7 +495,7 @@ async fn assert_no_transaction_state(nodes: &[&Node], id: Uuid) {
 						.is_empty(),
 					"rejected transaction {id} persisted {} on {}",
 					stringify!($model),
-					node.f.config.node_id
+					node.f.config.deployment
 				);
 			};
 		}
@@ -454,27 +513,20 @@ async fn assert_no_transaction_state(nodes: &[&Node], id: Uuid) {
 }
 
 async fn peer_preflight(source: &Node, target: &Node, manifest: &Manifest) -> (u16, Value) {
-	let peer = source.f.peer(&target.f.config.node_id).await.unwrap();
-	let credential = std::env::var(&peer.credential_env).unwrap();
 	let origin = fixture_origin(source).await;
-	let response = source
-		.f
-		.client
-		.post(format!(
-			"{}/federation/v0.1/transactions/preflight",
-			target.f.config.endpoint
-		))
-		.bearer_auth(credential)
-		.header("x-aidash-node", &source.f.config.node_id)
-		.header("x-aidash-protocol", "0.2")
-		.json(&fixture_preflight(
-			manifest,
-			&origin,
-			&target.f.config.node_id,
-		))
-		.send()
-		.await
-		.unwrap();
+	let response = common::peering::signed(
+		&source.f.client,
+		&target.f.config.endpoint,
+		"/transactions/preflight",
+		(&source.f, &source.node_address()),
+		&target.node_address(),
+		"alice",
+		&fixture_preflight(manifest, &origin, &target.address),
+	)
+	.await
+	.send()
+	.await
+	.unwrap();
 	let status = response.status().as_u16();
 	let body = response.json().await.unwrap();
 	(status, body)
@@ -619,7 +671,8 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	unavailable(&b, wb).await;
 	assert!(matches!(
 		a.f.request::<Value>(
-			&b.f.config.node_id,
+			&a.sender(),
+			b.address.as_str(),
 			reqwest::Method::POST,
 			"/scoped/discover",
 			Some(&json!({}))
@@ -704,7 +757,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 			200
 		);
 		assert_eq!(
-			participant::finish(&node.f, &a.f.config.node_id, &manifest)
+			participant::finish(&node.f, None, a.address.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
@@ -763,14 +816,14 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 			200
 		);
 		assert_eq!(
-			participant::reserve(&node.f, &a.f.config.node_id, &manifest)
+			participant::reserve(&node.f, None, a.address.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
 			"ABORTED"
 		);
 		assert_eq!(
-			participant::finish(&node.f, &a.f.config.node_id, &manifest)
+			participant::finish(&node.f, None, a.address.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
@@ -830,7 +883,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 	let (a, b, first, wa, wb) = pair;
 	let mut second = first.clone();
 	second.id = Uuid::new_v4();
-	second.coordinator = b.f.config.node_id.clone();
+	second.coordinator = b.address.clone();
 	coordinator::submit(&a.f, &first).await.unwrap();
 	coordinator::submit(&b.f, &second).await.unwrap();
 	steps(&a, first.id, 1).await;
@@ -878,20 +931,20 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
 	b.f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("atomic").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 			model,
 		)
 		.await
 		.unwrap();
 	b.f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("atomic").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 			agent.clone(),
 		)
 		.await
 		.unwrap();
 
-	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(&b.node_address(), &agent.id, &agent.version);
 	let task =
 		a.f.store
 			.create_task(
@@ -926,7 +979,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 			.unwrap();
 	{
 		let query_bind_1 = task.id;
-		let query_bind_2 = &b.f.config.node_id;
+		let query_bind_2 = b.address.as_str();
 		let query_bind_3 = &agent.id;
 		let query_bind_4 = &agent.version;
 		sqlx::query(
@@ -959,7 +1012,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 							vec![reinhardt::query::Expr::value(query_bind_4.to_owned()).into()],
 						))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
-						.expr(reinhardt::query::Expr::value("atomic"))
+						.expr(reinhardt::query::Expr::value("acme"))
 						.to_owned(),
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -970,9 +1023,9 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 	.unwrap();
 	let run = common::remote_run_in(
 		&b.f.store,
-		"atomic",
+		"acme",
 		&task,
-		&a.f.config.node_id,
+		a.address.as_str(),
 		&agent.id,
 		&agent.version,
 	)
@@ -1059,10 +1112,10 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 		"{committed:?}"
 	);
 	for _ in 0..2 {
-		participant::finish(&a.f, &a.f.config.node_id, &manifest)
+		participant::finish(&a.f, None, a.address.as_str(), &manifest)
 			.await
 			.unwrap();
-		participant::finish(&b.f, &a.f.config.node_id, &manifest)
+		participant::finish(&b.f, None, a.address.as_str(), &manifest)
 			.await
 			.unwrap();
 	}
@@ -1197,17 +1250,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	#[future(awt)] pair: Pair,
 ) {
 	let (a, b, manifest, wa, wb) = pair;
-	let set_trust = |enabled| json!({"node_id":a.f.config.node_id,"enabled":enabled});
-	assert_eq!(
-		b.request(
-			reqwest::Method::POST,
-			"/api/transactions/trust",
-			Some(set_trust(false))
-		)
-		.await
-		.0,
-		200
-	);
+	assert_eq!(b.set_trust(&a, false, 1).await, 200);
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 2).await;
 	// A terminal peer rejection must abort immediately, without waiting for the deadline.
@@ -1237,48 +1280,42 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		0
 	);
 
-	assert_eq!(
-		b.request(
-			reqwest::Method::POST,
-			"/api/transactions/trust",
-			Some(set_trust(true))
-		)
-		.await
-		.0,
-		200
-	);
+	assert_eq!(b.set_trust(&a, true, 2).await, 200);
 	let mut admitted = manifest.clone();
 	admitted.id = Uuid::new_v4();
 	// An authenticated peer cannot claim that a different node coordinates its manifest.
 	let mut forged = admitted.clone();
-	forged.coordinator = b.f.config.node_id.clone();
-	let response =
+	forged.coordinator = b.address.clone();
+	let body = serde_json::to_vec(&forged).unwrap();
+	let token = common::peering::token(
+		a.f.config.deployment_key.as_deref().unwrap(),
+		a.f.config.deployment.as_str(),
+		&a.address,
+		&b.address,
+		"",
+		("POST", "/transactions/reserve", &body),
+	)
+	.await;
+	let mut request =
 		a.f.client
 			.post(format!(
 				"{}/federation/v0.1/transactions/reserve",
 				b.f.config.endpoint
 			))
-			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-			.header("x-aidash-node", &a.f.config.node_id)
-			.header("x-aidash-protocol", "0.2")
-			.json(&forged)
-			.send()
-			.await
-			.unwrap();
+			.header("content-type", "application/json")
+			.body(body);
+	for (name, value) in common::peering::peer_headers(&token) {
+		request = request.header(name, value);
+	}
+	let response = request.send().await.unwrap();
 	assert_eq!(response.status(), 403);
 	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 200);
 	coordinator::submit(&a.f, &admitted).await.unwrap();
 	steps(&a, admitted.id, 2).await;
-	assert_eq!(
-		b.request(
-			reqwest::Method::POST,
-			"/api/transactions/trust",
-			Some(set_trust(false))
-		)
-		.await
-		.0,
-		200
-	);
+	// The registration is guarded like any other Tenant data: while `b` holds
+	// the transaction's barrier it cannot be revoked, so the admitted
+	// transaction recovers and commits.
+	assert_eq!(b.set_trust(&a, false, 3).await, 503);
 	assert_eq!(
 		complete(&a, admitted.id).await.decision.as_deref(),
 		Some("COMMIT")
@@ -1330,7 +1367,7 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future
 					.bounded(
 						format!(
 							"transition {transitions}: read {} workspace",
-							node.f.config.node_id
+							node.f.config.deployment
 						),
 						node.get(&format!("/api/workspaces/{workspace}")),
 					)
@@ -1595,10 +1632,7 @@ async fn mapped_transaction_admission_and_revocation(
 	fault_signals: FaultSignals,
 	http_client: reqwest::Client,
 ) {
-	use aidash_server::authorization::{
-		Authorization,
-		peer::{PeerMappingInput, write},
-	};
+	use aidash_server::authorization::{Authorization, peer::write};
 	let (mut a, mut b, mut manifest, _, _) = nodes.0;
 	let app_a = a.application.clone();
 	let app_b = b.application.clone();
@@ -1636,20 +1670,9 @@ async fn mapped_transaction_admission_and_revocation(
 		.into_iter()
 		.find(|c| c.subject == "alice")
 		.unwrap();
-	write(
-		&b.f,
-		"acme",
-		PeerMappingInput {
-			source_node: a.f.config.node_id.clone(),
-			source_tenant: "acme".into(),
-			source_subject: "alice".into(),
-			credential_id: credential_b.id,
-			enabled: true,
-			expected_revision: 0,
-		},
-	)
-	.await
-	.unwrap();
+	write(&b.f, "acme", b.mapping(&a, credential_b.id, true, 0))
+		.await
+		.unwrap();
 	for (index, workspace) in [wa, wb].into_iter().enumerate() {
 		manifest.participants[index].mutations =
 			vec![aidash_server::transactions::Mutation::WorkspaceState {
@@ -1661,31 +1684,13 @@ async fn mapped_transaction_admission_and_revocation(
 	let mut third = None;
 	let mut initial_third = nodes.1;
 	if count == 3 {
-		let c = initial_third.take().unwrap();
-		for (local, remote) in [(&a, &c), (&c, &a)] {
-			local
-				.f
-				.register_peer(Peer {
-					node_id: remote.f.config.node_id.clone(),
-					endpoint: remote.f.config.endpoint.clone(),
-					credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
-					protocol_version: "0.2".into(),
-					enabled: true,
-				})
-				.await
-				.unwrap();
-			assert_eq!(
-				local
-					.request(
-						reqwest::Method::POST,
-						"/api/transactions/trust",
-						Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))
-					)
-					.await
-					.0,
-				200
-			);
-		}
+		let mut c = initial_third.take().unwrap();
+		c.join().await;
+		common::register_pair(
+			(&a.f, &a.application, "acme"),
+			(&c.f, &c.application, "acme"),
+		)
+		.await;
 		let app_c = c.application.clone();
 		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
 		let workspace =
@@ -1704,24 +1709,13 @@ async fn mapped_transaction_admission_and_revocation(
 			.into_iter()
 			.find(|r| r.subject == "alice")
 			.unwrap();
-		write(
-			&c.f,
-			"acme",
-			PeerMappingInput {
-				source_node: a.f.config.node_id.clone(),
-				source_tenant: "acme".into(),
-				source_subject: "alice".into(),
-				credential_id: credential.id,
-				enabled: true,
-				expected_revision: 0,
-			},
-		)
-		.await
-		.unwrap();
+		write(&c.f, "acme", c.mapping(&a, credential.id, true, 0))
+			.await
+			.unwrap();
 		manifest
 			.participants
 			.push(aidash_server::transactions::Participant {
-				node_id: c.f.config.node_id.clone(),
+				node_id: c.address.clone(),
 				mutations: vec![aidash_server::transactions::Mutation::WorkspaceState {
 					workspace_id: workspace,
 					expected_revision: 0,
@@ -1899,21 +1893,24 @@ async fn mapped_transaction_admission_and_revocation(
 					.unwrap()
 					.into();
 			let ticket_app = common::application(limited.clone()).await;
-			let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
 			// Act: rebuild after constraining the durable control pool to one slot.
 			for _ in 0..2 {
+				let target = format!("/transactions/{}/authority", manifest.id);
+				let token = common::peering::token(
+					b.f.config.deployment_key.as_deref().unwrap(),
+					b.f.config.deployment.as_str(),
+					&b.address,
+					&a.address,
+					"",
+					("GET", &target, b""),
+				)
+				.await;
 				let response = async {
 					let client = &(ticket_app.client());
-					let mut request = client.request(
-						http::Method::GET,
-						&format!("/federation/v0.1/transactions/{}/authority", manifest.id),
-					);
-					for (name, value) in &[
-						("authorization", format!("Bearer {peer_token}").as_str()),
-						("x-aidash-node", b.f.config.node_id.as_str()),
-						("x-aidash-protocol", "0.2"),
-					] {
-						request = request.header(*name, *value);
+					let mut request =
+						client.request(http::Method::GET, &format!("/federation/v0.1{target}"));
+					for (name, value) in &common::peering::peer_headers(&token) {
+						request = request.header(*name, value.as_str());
 					}
 					request.send().await
 				}
@@ -1945,23 +1942,9 @@ async fn mapped_transaction_admission_and_revocation(
 				"an unknown durable admission cannot acknowledge complete revocation: {body}"
 			);
 			assert_eq!(body["pending_transactions"], json!([manifest.id]));
-			let (status, trust) = a
-				.request(
-					reqwest::Method::POST,
-					"/api/transactions/trust",
-					Some(json!({"node_id":b.f.config.node_id,"enabled":false})),
-				)
-				.await;
-			assert_eq!(status, 202, "{trust}");
-			assert_eq!(trust["pending_transactions"], json!([manifest.id]));
-			let (_, trusts) = a.get("/api/transactions/trust").await;
-			let pending_trust = trusts
-				.as_array()
-				.unwrap()
-				.iter()
-				.find(|r| r["node_id"] == b.f.config.node_id)
-				.unwrap();
-			assert_eq!(pending_trust["pending_transactions"], json!([manifest.id]));
+			// Registrations are guarded like any Tenant data: while the barrier is
+			// held, no one can withdraw the other Node's trust.
+			assert_eq!(a.set_trust(&b, false, 1).await, 503);
 
 			assert_eq!(
 				common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null)
@@ -1990,30 +1973,15 @@ async fn mapped_transaction_admission_and_revocation(
 				.unwrap();
 		}
 		"mapping" => {
-			write(
-				&b.f,
-				"acme",
-				PeerMappingInput {
-					source_node: a.f.config.node_id.clone(),
-					source_tenant: "acme".into(),
-					source_subject: "alice".into(),
-					credential_id: credential_b.id,
-					enabled: false,
-					expected_revision: 1,
-				},
-			)
-			.await
-			.unwrap();
+			write(&b.f, "acme", b.mapping(&a, credential_b.id, false, 1))
+				.await
+				.unwrap();
 		}
 		"trust" => {
-			let (status, body) = b
-				.request(
-					reqwest::Method::POST,
-					"/api/transactions/trust",
-					Some(json!({"node_id":a.f.config.node_id,"enabled":false})),
-				)
-				.await;
-			assert_eq!(status, 200, "{body}");
+			// Before admission the registration changes at once; afterwards the
+			// barrier guards it, like any other Tenant data.
+			let status = b.set_trust(&a, false, 1).await;
+			assert_eq!(status, if expected == "ABORT" { 200 } else { 503 });
 		}
 		_ => unreachable!(),
 	}
@@ -2042,14 +2010,6 @@ async fn mapped_transaction_admission_and_revocation(
 			common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["pending_transactions"], json!([]));
-		let (_, trusts) = a.get("/api/transactions/trust").await;
-		let trust = trusts
-			.as_array()
-			.unwrap()
-			.iter()
-			.find(|r| r["node_id"] == b.f.config.node_id)
-			.unwrap();
-		assert_eq!(trust["pending_transactions"], json!([]));
 	}
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
@@ -2087,135 +2047,6 @@ mod process;
 
 #[path = "transaction_protocol/tiers.rs"]
 mod tiers;
-
-#[rstest::rstest]
-#[tokio::test]
-async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_trust(
-	#[future(awt)] pair: Pair,
-) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (a, b, manifest, wa, wb) = pair;
-	coordinator::submit(&a.f, &manifest).await.unwrap();
-	steps(&a, manifest.id, 5).await;
-	assert_eq!(
-		coordinator::status(&a.f, manifest.id)
-			.await
-			.unwrap()
-			.decision
-			.as_deref(),
-		Some("COMMIT")
-	);
-	// Simulate loss of the existing communication credential after admission.
-	// The Deployment Administrator recovery route must restore that exact Node, not grant trust.
-	let mut tx =
-		a.f.store
-			.control_pool
-			.fixture_driver()
-			.begin()
-			.await
-			.unwrap();
-	sqlx::query(
-		&Query::select()
-			.expr(Expr::cust(
-				"set_config('aidash.transaction_control','authority',true)",
-			))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await
-	.unwrap();
-	{
-		let query_bind_1 = &b.f.config.node_id;
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("peers"))
-				.value(Alias::new("enabled"), false)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id=?)".into(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await
-	}
-	.unwrap();
-	tx.commit().await.unwrap();
-	assert_eq!(
-		a.request(
-			reqwest::Method::POST,
-			"/api/transactions/trust",
-			Some(json!({"node_id":b.f.config.node_id,"enabled":false}))
-		)
-		.await
-		.0,
-		200
-	);
-	assert_eq!(
-		b.request(
-			reqwest::Method::POST,
-			"/api/transactions/trust",
-			Some(json!({"node_id":a.f.config.node_id,"enabled":false}))
-		)
-		.await
-		.0,
-		200
-	);
-	steps(&a, manifest.id, 2).await;
-	assert!(
-		!coordinator::status(&a.f, manifest.id)
-			.await
-			.unwrap()
-			.complete
-	);
-	assert_eq!(a.get(&format!("/api/workspaces/{wa}")).await.0, 503);
-	let (status, peer) = a
-		.request(
-			reqwest::Method::POST,
-			"/api/transactions/peer-recovery",
-			Some(json!({"node_id":b.f.config.node_id,"credential_env":"AIDASH_SECRET_TEST_PEER"})),
-		)
-		.await;
-	assert_eq!(status, 200, "{peer}");
-	assert_eq!(peer["endpoint"], b.f.config.endpoint);
-	assert_eq!(
-		a.get("/api/transactions/trust").await.1[0]["enabled"],
-		false
-	);
-	assert_eq!(
-		complete(&a, manifest.id).await.decision.as_deref(),
-		Some("COMMIT")
-	);
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
-		assert_eq!(
-			node.f
-				.store
-				.workspace(&TEST_FIXTURE, workspace)
-				.await
-				.unwrap()
-				.revision,
-			1
-		);
-	}
-	let mut next = manifest.clone();
-	next.id = Uuid::new_v4();
-	for p in &mut next.participants {
-		for mutation in &mut p.mutations {
-			if let aidash_server::transactions::Mutation::WorkspaceState {
-				expected_revision, ..
-			} = mutation
-			{
-				*expected_revision = 1;
-			}
-		}
-	}
-	assert!(matches!(
-		coordinator::submit(&a.f, &next).await,
-		Err(Error::Forbidden)
-	));
-	a.cleanup().await;
-	b.cleanup().await;
-}
 
 #[path = "transaction_protocol/listing.rs"]
 mod listing;

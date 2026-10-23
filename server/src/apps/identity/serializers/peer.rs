@@ -11,8 +11,10 @@ use schemars::JsonSchema;
 
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct PeerMapping {
+	/// The receiving Node.
+	pub node: String,
+	/// The registered sending Node's address.
 	pub source_node: String,
-	pub source_tenant: String,
 	pub source_subject: String,
 	pub tenant: String,
 	pub credential_id: Uuid,
@@ -22,8 +24,8 @@ pub struct PeerMapping {
 	pub updated_at: DateTime<Utc>,
 }
 crate::native_record!(PeerMapping {
+	node,
 	source_node,
-	source_tenant,
 	source_subject,
 	tenant,
 	credential_id,
@@ -68,8 +70,6 @@ pub(crate) struct MappingPage {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DiscoveryInput {
-	pub(crate) tenant: String,
-	pub(crate) subject: String,
 	pub(crate) search: Search,
 }
 
@@ -82,8 +82,8 @@ impl From<AuthorizationPeerMapping> for PeerMapping {
 		let tenant = row.tenant_record_id();
 		let credential_id = row.credential_id();
 		Self {
+			node: row.node,
 			source_node: row.source_node,
-			source_tenant: row.source_tenant,
 			source_subject: row.source_subject,
 			tenant,
 			credential_id,
@@ -102,8 +102,8 @@ impl From<AuthorizationPeerMappingHistory> for MappingRevision {
 		Self {
 			sequence: row.sequence,
 			mapping: PeerMapping {
+				node: row.node,
 				source_node: row.source_node,
-				source_tenant: row.source_tenant,
 				source_subject: row.source_subject,
 				tenant,
 				credential_id,
@@ -118,11 +118,12 @@ impl From<AuthorizationPeerMappingHistory> for MappingRevision {
 
 use uuid::Uuid;
 
-impl From<PeerMapping> for aidash_domain::identity::peer_mapping::Mapping {
-	fn from(row: PeerMapping) -> Self {
-		Self {
-			source_node: row.source_node,
-			source_tenant: row.source_tenant,
+impl TryFrom<PeerMapping> for aidash_domain::identity::peer_mapping::Mapping {
+	type Error = crate::Error;
+	fn try_from(row: PeerMapping) -> crate::Result<Self> {
+		Ok(Self {
+			node: aidash_domain::nodes::NodeName::parse(&row.node)?,
+			source_node: aidash_domain::nodes::NodeAddress::parse(&row.source_node)?,
 			source_subject: row.source_subject,
 			tenant: row.tenant,
 			credential_id: row.credential_id,
@@ -130,14 +131,14 @@ impl From<PeerMapping> for aidash_domain::identity::peer_mapping::Mapping {
 			revision: row.revision,
 			actor: row.actor,
 			updated_at: row.updated_at,
-		}
+		})
 	}
 }
 impl From<aidash_domain::identity::peer_mapping::Mapping> for PeerMapping {
 	fn from(row: aidash_domain::identity::peer_mapping::Mapping) -> Self {
 		Self {
-			source_node: row.source_node,
-			source_tenant: row.source_tenant,
+			node: row.node.into_string(),
+			source_node: row.source_node.to_string(),
 			source_subject: row.source_subject,
 			tenant: row.tenant,
 			credential_id: row.credential_id,

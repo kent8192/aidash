@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic native-memory provider for real two-Node cluster acceptance."""
 import json
-from http.server import ThreadingHTTPServer
-
-from remote_memory_fixture import Handler, LOCK, STATE
+from remote_memory_fixture import Handler, LOCK, STATE, serve
 
 
 class NativeHandler(Handler):
@@ -54,7 +52,8 @@ class NativeHandler(Handler):
                 STATE["requests"].append({"kind": "parent" if parent else "inference", "task": task["id"], "body": body})
                 semantic = current["semantic_memory"]
                 if not parent:
-                    assert semantic["home_node"] == "aidash://tx-00", semantic
+                    assert semantic["home_node"] == self.server.home_node, semantic
+                    assert semantic["executor"].startswith(self.server.executor_node + "/agents/"), semantic
                     assert not semantic["result"]["matches"], "native retrieval unioned generic memory"
                 banks = semantic["memory"]["banks"]
                 assert len(banks) == 2 and banks[1]["bank"]["participant"] is None, banks
@@ -83,4 +82,4 @@ class NativeHandler(Handler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", 8080), NativeHandler).serve_forever()
+    serve(NativeHandler)

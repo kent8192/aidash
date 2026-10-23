@@ -38,7 +38,7 @@ async fn bearer_authentication_is_request_scoped_and_deployment_administrator_ro
 		.await
 		.unwrap();
 	let user = alice.get("/api/session").await.unwrap();
-	let denied = alice.get("/api/transactions/trust").await.unwrap();
+	let denied = alice.get("/api/transactions/participants").await.unwrap();
 	let transactions = alice.get("/api/transactions").await.unwrap();
 	let missing = app.anonymous.get("/api/session").await.unwrap();
 	let invalid = invalid.get("/api/session").await.unwrap();

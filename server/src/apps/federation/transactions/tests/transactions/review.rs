@@ -1,6 +1,6 @@
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use reinhardt::query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query};
 
 fn manifest(node: &str, workspace: Uuid) -> Value {
 	json!({"id":Uuid::new_v4(),"coordinator":node,"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
@@ -26,7 +26,7 @@ async fn abort_honors_manifest_attribute_denies(
 		.await
 		.unwrap()
 		.workspace_id;
-	let manifest = manifest(&f.config.node_id, workspace);
+	let manifest = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", manifest.clone())
 			.await
@@ -34,9 +34,9 @@ async fn abort_honors_manifest_attribute_denies(
 		202
 	);
 	let expected = if attribute == "coordinator" {
-		json!(f.config.node_id)
+		json!(node(&f).await)
 	} else {
-		json!([f.config.node_id])
+		json!([node(&f).await])
 	};
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-abort","effect":"deny","subjects":{"any":true},"actions":["transaction.abort"],"resources":{"kinds":["transaction"]},
@@ -113,11 +113,16 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		} else {
 			&f.config.api_token
 		};
+		let query = if path == "catalog" {
+			format!("?node={}", aidash_domain::nodes::NodeName::derived("acme"))
+		} else {
+			String::new()
+		};
 		let (status, body) = request(
 			&app,
 			reader,
 			"GET",
-			&format!("/api/authorization/acme/{path}"),
+			&format!("/api/authorization/acme/{path}{query}"),
 			Value::Null,
 		)
 		.await;
@@ -135,7 +140,7 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		.0,
 		200
 	);
-	let manifest = manifest(&f.config.node_id, workspace);
+	let manifest = manifest(node(&f).await.as_str(), workspace);
 	for _ in 0..2 {
 		let (status, body) =
 			request(&app, &token, "POST", "/api/transactions", manifest.clone()).await;
@@ -198,7 +203,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 		.await
 		.unwrap()
 		.workspace_id;
-	let oldest = manifest(&f.config.node_id, workspace);
+	let oldest = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", oldest.clone())
 			.await
@@ -207,7 +212,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	);
 	let mut hidden = Vec::new();
 	for _ in 0..201 {
-		let next = manifest(&f.config.node_id, workspace);
+		let next = manifest(node(&f).await.as_str(), workspace);
 		hidden.push(next["id"].clone());
 		let (status, body) = request(&app, &token, "POST", "/api/transactions", next).await;
 		assert_eq!(status, 202, "{body}");
@@ -259,31 +264,8 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	)
 	.await;
 	assert_eq!(status, 200);
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("peers"))
-			.columns(
-				[
-					"node_id",
-					"endpoint",
-					"credential_env",
-					"protocol_version",
-					"enabled",
-				]
-				.map(Alias::new),
-			)
-			.values_panic::<_, reinhardt::query::Value>([
-				"aidash://source".into(),
-				"http://localhost:1".into(),
-				"AIDASH_SECRET_TEST_PEER".into(),
-				"0.2".into(),
-				true.into(),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	let source = common::register_local_node(&f, &app, "acme", "remote").await;
+	let node = common::default_node(&f.store, "acme").await.node;
 	let old_pool = f.store.control_pool.clone();
 	f.store.control_pool = old_pool
 		.options()
@@ -299,7 +281,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	let app = common::application(f.clone()).await;
 	for (revision, enabled) in [(0, true), (1, true), (2, false)] {
 		let (status, body) = request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-mappings",
-            json!({"source_node":"aidash://source","source_tenant":"remote","source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
+            json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
 		assert_eq!(
 			status, 200,
 			"mapping change must not acquire a second control slot: {body}"
@@ -325,14 +307,14 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 		.await
 		.unwrap()
 		.workspace_id;
-	let own = manifest(&f.config.node_id, workspace);
+	let own = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", own.clone())
 			.await
 			.0,
 		202
 	);
-	let deployment_administrator = manifest(&f.config.node_id, workspace);
+	let deployment_administrator = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(
 			&app,
@@ -347,7 +329,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	);
 	// The foreign subject's binding is immutable fixture state. Its transaction
 	// exists and is visible to the Deployment Administrator, but must look absent to Alice.
-	let foreign = manifest(&f.config.node_id, workspace);
+	let foreign = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(
 			&app,
@@ -421,3 +403,93 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 use reinhardt::query::QueryStatementBuilder as _;
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::rstest]
+#[case::workspace("workspace_state")]
+#[case::task("complete_task")]
+#[case::run("finish_run")]
+#[tokio::test]
+async fn transaction_targets_must_belong_to_the_exact_participant_node(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] kind: &str,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task_id)
+		.await
+		.unwrap()
+		.workspace_id;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let (status, sibling) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Participant"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let mutation = match kind {
+		"workspace_state" => {
+			json!({"kind":kind,"workspace_id":workspace,"expected_revision":0,"state":{"intrusion":true}})
+		}
+		"complete_task" => {
+			json!({"kind":kind,"task_id":task_id,"expected_revision":1,"artifact":{"kind":"text","name":"Answer","content":"Must not write"}})
+		}
+		_ => {
+			json!({"kind":kind,"run_id":run.id,"task_id":task_id,"expected_revision":run.revision})
+		}
+	};
+	let input = json!({"id":Uuid::new_v4(),"coordinator":sibling["address"],"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":sibling["address"],"mutations":[mutation]}]});
+	// The subject preflight must refuse before reserving the visibility gate.
+	let (status, body) = request(&app, &token, "POST", "/api/transactions", input.clone()).await;
+	assert_eq!(
+		status, 403,
+		"a target on the default Node cannot be submitted for its sibling: {body}"
+	);
+	let manifest: aidash_server::transactions::Manifest = serde_json::from_value(input).unwrap();
+	assert!(
+		aidash_server::transactions::coordinator::status(&f, manifest.id)
+			.await
+			.is_err()
+	);
+	// Deployment Administrator participation bypasses subject preflight, but must
+	// independently enforce the same stored ownership before any mutation.
+	let result = aidash_server::transactions::participant::reserve(
+		&f,
+		None,
+		&manifest.coordinator,
+		&manifest,
+	)
+	.await;
+	assert!(
+		matches!(result, Err(aidash_server::Error::Forbidden)),
+		"{result:?}"
+	);
+	let state: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(state, json!({}));
+	cleanup(f, &url, &schema).await;
+}

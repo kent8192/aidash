@@ -36,7 +36,7 @@ class ChartsTest(unittest.TestCase):
     aidash = 'deploy/helm/aidash'
     environment = 'infra/gcp/helm/environment'
     # The Runner requires the application's capability object claim.
-    base = {'node': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
+    base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
     def test_local_postgres_secret_store_is_mounted_without_key_material(self):
@@ -314,7 +314,7 @@ class ChartsTest(unittest.TestCase):
         descriptor = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store, 'broker': broker}
         gcip = {'project_id': 'fixture', 'web_api_key': 'public', 'public_origin': 'https://pr-1.aidash.run',
                 'tenant_bindings': {'Pool-X': 'acme'}, 'session_idle_seconds': 3600}
-        values = dict(self.base, node={'id': 'aidash://fixture', 'endpoint': 'https://pr-1.aidash.run'},
+        values = dict(self.base, deployment={'id': 'aidash://fixture', 'endpoint': 'https://pr-1.aidash.run'},
                       providerCredentials={'settings': descriptor}, gcip={'settings': {'dashboard': {'gcip': gcip}}})
         objects = render(self.aidash, values)
         for role in ('server', 'worker'):
@@ -362,14 +362,14 @@ class ChartsTest(unittest.TestCase):
             {'dashboard': {'gcip': dict(gcip, auth_helper='auth.example.test')}},
             {'dashboard': {'gcip': dict(gcip, web_api_key=' ')}},
             {'dashboard': {'gcip': gcip, 'oidc': {}}},
-            {'dashboard': {'gcip': gcip}, 'node': {'api_token': 'override'}},
+            {'dashboard': {'gcip': gcip}, 'deployment': {'api_token': 'override'}},
         ]
         for invalid in invalid_gcip:
             with self.subTest(gcip=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(values, gcip={'settings': invalid}))
-        # The public origin is the node's own endpoint, so an unset endpoint is refused.
+        # The public origin is the Deployment's own endpoint, so an unset endpoint is refused.
         with self.assertRaises(subprocess.CalledProcessError):
-            render(self.aidash, dict(values, node={'id': 'aidash://fixture'}))
+            render(self.aidash, dict(values, deployment={'id': 'aidash://fixture'}))
 
     def test_production_disk_holders_are_statefulsets_that_stateful_ha_fails_over(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,

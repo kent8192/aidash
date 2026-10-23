@@ -5,6 +5,7 @@
 //! command, so that every settings load refuses another build's Offering
 //! before it connects to anything.
 use crate::database::classification::{self, Table};
+use aidash_application::federation::key::DeploymentKey;
 use aidash_domain::offering::Offering;
 use reinhardt::conf::settings::builder::BuildError;
 use reinhardt::conf::settings::scoped::ScopedSettings;
@@ -52,6 +53,7 @@ pub struct Build {
 /// What a build adds to the Community server. Community defines each hook and
 /// adds nothing; an Enterprise build implements them with its own crates, so
 /// Community never names them (ADR 0032).
+#[async_trait::async_trait]
 pub trait Extension: Sync + std::fmt::Debug {
 	/// Settings sources the build adds, such as managed settings files.
 	fn settings(
@@ -73,6 +75,14 @@ pub trait Extension: Sync + std::fmt::Debug {
 	/// unrestricted.
 	fn owns_issuer(&self, _issuer: &str) -> bool {
 		false
+	}
+	/// The Tier's limits on a Tenant (#242), installed once the Store's pools
+	/// exist. Community sets none.
+	fn tier_limits(
+		&self,
+		_store: &crate::store::Store,
+	) -> crate::Result<Arc<dyn aidash_application::ports::nodes::TierLimits>> {
+		Ok(Arc::new(aidash_application::ports::nodes::NoTierLimits))
 	}
 	/// Endpoints the build adds to Community's for `offering`.
 	fn routes(&self, _offering: Offering) -> Option<reinhardt::UnifiedRouter> {
@@ -105,6 +115,9 @@ pub trait Extension: Sync + std::fmt::Debug {
 		store: &serde_json::Map<String, serde_json::Value>,
 		broker: Option<&serde_json::Value>,
 	) -> crate::Result<ProvidedStore>;
+	/// The Deployment Key in the Cloud KMS key version `[deployment.key] kms`
+	/// names, with its public key already fetched.
+	async fn deployment_key(&self, kms: &str) -> crate::Result<Arc<dyn DeploymentKey>>;
 }
 
 /// One background service of a build.
@@ -118,7 +131,15 @@ pub struct ProvidedStore {
 #[derive(Debug)]
 struct Community;
 
+#[async_trait::async_trait]
 impl Extension for Community {
+	async fn deployment_key(&self, _: &str) -> crate::Result<Arc<dyn DeploymentKey>> {
+		Err(crate::Error::Invalid(
+			"the Community build has no Cloud KMS Deployment Key; name a file in [deployment.key], or use the Enterprise build"
+				.into(),
+		))
+	}
+
 	fn provider_credential_store(
 		&self,
 		store: &serde_json::Map<String, serde_json::Value>,
@@ -274,9 +295,16 @@ mod tests {
 	#[derive(Debug)]
 	struct Extra;
 
+	#[async_trait::async_trait]
 	impl Extension for Extra {
 		fn tables(&self) -> &'static [Table] {
 			EXTRA
+		}
+		async fn deployment_key(
+			&self,
+			_: &str,
+		) -> crate::Result<std::sync::Arc<dyn super::DeploymentKey>> {
+			unreachable!("no Deployment Key in this test")
 		}
 		fn provider_credential_store(
 			&self,

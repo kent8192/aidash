@@ -26,6 +26,40 @@ pub struct Gate {
 }
 
 #[async_trait]
+impl aidash_application::ports::nodes::TierLimits for Gate {
+	async fn nodes(
+		&self,
+		tenant: &aidash_domain::tenancy::TenantName,
+	) -> aidash_application::Result<Option<u32>> {
+		if self.offering != Offering::Cloud {
+			return Ok(None);
+		}
+		let facts = store::tenant_facts(&self.pool, tenant.as_str())
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let subscription = match facts.account {
+			Some(account) => self.payments.subscription(account).await?,
+			None => None,
+		};
+		let free_eligible = facts.personal
+			&& facts
+				.mappings
+				.iter()
+				.all(|mapping| Some(*mapping) == facts.creator);
+		let cover = rules::cover(
+			&self.settings,
+			subscription.as_ref(),
+			free_eligible,
+			Utc::now(),
+		)
+		.map_err(|denied| aidash_application::Error::Conflict(denied.code().into()))?;
+		Ok(Some(match cover {
+			Cover::Free(tier) | Cover::Paid(tier) => tier.nodes,
+		}))
+	}
+}
+
+#[async_trait]
 impl Admission for Gate {
 	async fn admit(&self, tenant: &str, work: Work) -> aidash_application::Result<Verdict> {
 		// Dedicated meters and reports usage but charges through its contract.

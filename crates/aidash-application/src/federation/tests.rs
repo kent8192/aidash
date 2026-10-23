@@ -1,19 +1,19 @@
 use super::*;
 use crate::ports::federation::PeerReply;
-use aidash_domain::federation::Peer;
+use aidash_domain::federation::route::Route;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::{collections::BTreeMap, sync::Mutex};
 
 struct Repository {
-	peers: Vec<Peer>,
+	routes: Vec<Route>,
 }
 #[async_trait]
 impl FederationRepository for Repository {
-	async fn peers(&self) -> Result<Vec<Peer>> {
-		Ok(self.peers.clone())
+	async fn routes(&self) -> Result<Vec<Route>> {
+		Ok(self.routes.clone())
 	}
-	async fn peer(&self, node: &str) -> Result<Peer> {
+	async fn route(&self, node: &str) -> Result<Route> {
 		Ok(peer(node))
 	}
 }
@@ -28,7 +28,7 @@ struct Transport {
 impl PeerTransport for Transport {
 	async fn request(
 		&self,
-		peer: &Peer,
+		peer: &Route,
 		_method: &str,
 		path: &str,
 		_body: Option<&Value>,
@@ -36,8 +36,8 @@ impl PeerTransport for Transport {
 		self.calls
 			.lock()
 			.unwrap()
-			.push((peer.node_id.clone(), path.into()));
-		if peer.node_id == "aidash://offline" {
+			.push((peer.target.deployment.to_string(), path.into()));
+		if peer.target.deployment.as_str() == "aidash://offline" {
 			return Err(Error::External("peer unavailable".into()));
 		}
 		Ok(PeerReply {
@@ -47,24 +47,18 @@ impl PeerTransport for Transport {
 			run_message_pending: self.run_message_pending,
 			body: self
 				.pages
-				.get(&(peer.node_id.clone(), path.into()))
+				.get(&(peer.target.deployment.to_string(), path.into()))
 				.cloned()
 				.unwrap_or(Value::Null),
 		})
 	}
 }
-fn peer(node: &str) -> Peer {
-	Peer {
-		node_id: node.into(),
-		endpoint: "http://127.0.0.1:1".into(),
-		credential_env: "FIXTURE".into(),
-		protocol_version: "0.1".into(),
-		enabled: true,
-	}
+fn peer(node: &str) -> Route {
+	crate::test_support::foreign_route(node)
 }
 #[fixture]
 fn repository() -> Repository {
-	Repository { peers: vec![] }
+	Repository { routes: vec![] }
 }
 #[fixture]
 fn transport() -> Transport {

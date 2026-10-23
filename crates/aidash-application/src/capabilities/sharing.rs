@@ -68,7 +68,10 @@ pub async fn share(
 	if scope.current_run(area).await? != Some(run.id) {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
-	if input.recipient.node_id != scope.node_id() {
+	let own = aidash_domain::nodes::DeploymentId::parse(scope.node_id())?
+		.node(run.node.clone())
+		.to_string();
+	if input.recipient.node_id != own {
 		return scope.remote_prepare(run, area, input, &digest).await;
 	}
 	if input.expected_revision != area.revision {
@@ -96,8 +99,8 @@ pub async fn share(
 	let subjects = scope.subjects().to_vec();
 	scope.set_subjects(vec![
 		recipient.owner.clone(),
-		aidash_domain::qualified_agent(
-			scope.node_id(),
+		aidash_domain::agent_subject(
+			&recipient.home_node,
 			&input.recipient.agent_id,
 			&input.recipient.agent_version,
 		),
@@ -165,7 +168,7 @@ pub async fn share(
 			size: file.size,
 			media_type: file.media_type.clone(),
 			scope: FileScope::Received,
-			provenance: json!({"kind":"received","transfer_id":id,"sender":{"node_id":scope.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"source_digest":file.digest}),
+			provenance: json!({"kind":"received","transfer_id":id,"sender":{"node_id":own,"agent_id":run.agent_id,"agent_version":run.agent_version},"source_digest":file.digest}),
 		};
 		delivered.push(received.clone());
 		entries.push(received);
@@ -184,8 +187,8 @@ pub async fn share(
 		"kind":"received_scope",
 		"transfer_id":id,
 		"owner":recipient.owner,
-		"agent":aidash_domain::qualified_agent(
-			scope.node_id(),
+		"agent":aidash_domain::agent_subject(
+			&recipient.home_node,
 			&input.recipient.agent_id,
 			&input.recipient.agent_version,
 		),

@@ -179,7 +179,7 @@ impl Tenants {
 					tenancy::check_creation(&f.config.tenancy, now, &recent, total)
 						.map_err(Error::TenantCreation)?;
 				}
-				tenants::create(tx, &f.config.node_id, &label, false, creator).await
+				tenants::create(tx, f.config.deployment.as_str(), &label, false, creator).await
 			})
 			.await?;
 		Ok(created.into())
@@ -244,11 +244,14 @@ impl Tenants {
 		{
 			return Err(Error::Forbidden);
 		}
-		Ok(
-			personal_tenant::recreate(&f.store.pool, &f.config.node_id, identity, &origin.session)
-				.await?
-				.into(),
+		Ok(personal_tenant::recreate(
+			&f.store.pool,
+			f.config.deployment.as_str(),
+			identity,
+			&origin.session,
 		)
+		.await?
+		.into())
 	}
 
 	/// Changes the label of the caller's Tenant under `tenant.update`, through

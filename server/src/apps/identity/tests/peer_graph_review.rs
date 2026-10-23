@@ -12,7 +12,12 @@ use uuid::Uuid;
 
 const SOURCE: &str = "aidash://source";
 
-async fn project(app: &common::TestApplication, viewer: Value, options: Value) -> (u16, Value) {
+async fn project(
+	app: &common::TestApplication,
+	source: &common::Source,
+	viewer: Value,
+	options: Value,
+) -> (u16, Value) {
 	let mut input = json!({
 		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
 		"kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,
@@ -22,28 +27,15 @@ async fn project(app: &common::TestApplication, viewer: Value, options: Value) -
 		.as_object_mut()
 		.unwrap()
 		.extend(options.as_object().unwrap().clone());
-	let token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
-	let authorization = format!("Bearer {token}");
-	let response = async {
-		let client = &(app.client());
-		let mut request = client
-			.request(http::Method::POST, "/federation/v0.1/scoped/graph")
-			.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &[
-			("authorization", authorization.as_str()),
-			("x-aidash-node", SOURCE),
-			("x-aidash-protocol", "0.2"),
-		] {
-			request = request.header(*name, *value);
-		}
-		request.send().await
-	}
-	.await
-	.unwrap();
-	let status = response.status().as_u16();
-	let body = response.body();
-	(status, serde_json::from_slice(body).unwrap())
+	common::post_graph(app, source, &viewer, &input).await
+}
+
+/// The address of the Node of `deployment` that a stand-in sends from.
+fn home(deployment: &str) -> String {
+	format!(
+		"{deployment}/{}",
+		aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender"))
+	)
 }
 
 async fn credential(f: &Federation, app: &common::TestApplication, tenant: &str) -> Uuid {
@@ -63,40 +55,8 @@ async fn credential(f: &Federation, app: &common::TestApplication, tenant: &str)
 		.unwrap()
 }
 
-async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid) {
-	{
-		let query_bind_1 = SOURCE;
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("peers"))
-				.columns(
-					[
-						"node_id",
-						"endpoint",
-						"credential_env",
-						"protocol_version",
-						"enabled",
-					]
-					.map(Alias::new),
-				)
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(Expr::cust("'http://localhost:1'"))
-						.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(Expr::cust("'0.2'"))
-						.expr(Expr::cust("TRUE"))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid, common::Source) {
+	let source = common::register_source(f, app, SOURCE, "acme").await;
 	let id = credential(f, app, "acme").await;
 	let (status, mapping) = request(
 		app,
@@ -104,15 +64,16 @@ async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid) 
 		"POST",
 		"/api/authorization/acme/peer-mappings",
 		json!({
-			"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"source-subject",
+			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":id,"enabled":true,"expected_revision":0,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
 	(
-		json!({"kind":"subject","tenant":"source-tenant","subject":"source-subject"}),
+		json!({"kind":"subject","subject":"source-subject"}),
 		id,
+		source,
 	)
 }
 
@@ -164,11 +125,11 @@ async fn admitted_run(
 	let snapshot = aidash_application::registry::bindings::resolve(
 		&mut aidash_application::registry::bindings::catalog::LookupCatalog {
 			definitions: &mut FixtureDefinitions(f),
-			node: &f.config.node_id,
+			node: f.config.deployment.as_str(),
 		},
 		&aidash_server::bootstrap::registry_validation(),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.config.node_id.clone(),
+			registry_deployment: f.config.deployment.to_string(),
 			id: agent_entry.id.clone(),
 			version: agent_entry.version.clone(),
 		},
@@ -182,10 +143,11 @@ async fn admitted_run(
 		..Default::default()
 	};
 	let grant = Uuid::new_v4();
+	let receiver = common::default_node(&f.store, tenant).await;
 	let description = json!({
-		"grant_id":grant,"source_node":source,"target_node":f.config.node_id,
+		"grant_id":grant,"source_node":source,"target_node":receiver.to_string(),
 		"source_tenant":"source-tenant","source_subject":"source-subject","task":task,
-		"inspection":{"node_id":f.config.node_id,"authority_digest":format!("sha256:{}", "0".repeat(64)),
+		"inspection":{"node_id":receiver.to_string(),"authority_digest":format!("sha256:{}", "0".repeat(64)),
 			"agent":agent,"definitions":[],"binding_snapshot":snapshot},
 		"expires_at":chrono::Utc::now() + chrono::Duration::hours(1),
 	});
@@ -202,10 +164,11 @@ async fn admitted_run(
 					"credential_id",
 					"subject_chain",
 					"description",
+					"node",
 				]
 				.map(Alias::new),
 			)
-			.from_subquery(((1..=8).map(|index| Expr::cust(format!("${index}")))).fold(
+			.from_subquery(((1..=9).map(|index| Expr::cust(format!("${index}")))).fold(
 				reinhardt::query::Query::select(),
 				|mut select, expr| {
 					select.expr(expr);
@@ -222,9 +185,14 @@ async fn admitted_run(
 	.bind(credential)
 	.bind(vec![
 		"alice".to_owned(),
-		aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.0"),
+		aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+			"research",
+			"1.0.0",
+		),
 	])
 	.bind(description)
+	.bind(receiver.node.as_str())
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -241,10 +209,11 @@ async fn admitted_run(
 					"agent_version",
 					"context",
 					"tenant",
+					"node",
 				]
 				.map(Alias::new),
 			)
-			.from_subquery(((1..=8).map(|index| Expr::cust(format!("${index}")))).fold(
+			.from_subquery(((1..=9).map(|index| Expr::cust(format!("${index}")))).fold(
 				reinhardt::query::Query::select(),
 				|mut select, expr| {
 					select.expr(expr);
@@ -260,7 +229,8 @@ async fn admitted_run(
 	.bind("research")
 	.bind("1.0.0")
 	.bind(serde_json::to_value(context).unwrap())
-	.bind("acme")
+	.bind(tenant)
+	.bind(receiver.node.as_str())
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -274,7 +244,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 			.columns(
 				[
 					"id",
-					"node_id",
+					"node",
 					"workspace_id",
 					"kind",
 					"data",
@@ -293,7 +263,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(Uuid::new_v4())
-	.bind(&f.config.node_id)
+	.bind(common::default_node(&f.store, "acme").await.node.as_str())
 	.bind(workspace)
 	.bind(kind)
 	.bind(data)
@@ -343,7 +313,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
-	let (subject, credential) = viewer(&f, &app).await;
+	let (subject, credential, source) = viewer(&f, &app).await;
 	let task: Task = {
 		let query_bind_1 = task_id;
 		aidash_server::database::query_as(
@@ -363,11 +333,28 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	let workspace = Uuid::new_v4();
 	let mut expected = vec![];
 	for _ in 0..3 {
-		expected.push(admitted_run(&f, &task, credential, "acme", SOURCE, workspace).await);
+		expected
+			.push(admitted_run(&f, &task, credential, "acme", &source.address(), workspace).await);
 	}
-	let third = admitted_run(&f, &task, credential, "acme", "aidash://third", workspace).await;
-	let other_scope = admitted_run(&f, &task, credential, "acme", SOURCE, Uuid::new_v4()).await;
-	let mut other_policy = common::policy(&f.config.node_id);
+	let third = admitted_run(
+		&f,
+		&task,
+		credential,
+		"acme",
+		&home("aidash://third"),
+		workspace,
+	)
+	.await;
+	let other_scope = admitted_run(
+		&f,
+		&task,
+		credential,
+		"acme",
+		&source.address(),
+		Uuid::new_v4(),
+	)
+	.await;
+	let mut other_policy = common::policy(f.config.deployment.as_str());
 	other_policy["tenant"] = json!("other");
 	common::tenant_root(&f, "other").await;
 	let (status, value) = request(
@@ -380,7 +367,15 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	.await;
 	assert_eq!(status, 200, "{value}");
 	let other_credential = self::credential(&f, &app, "other").await;
-	let other_tenant = admitted_run(&f, &task, other_credential, "other", SOURCE, workspace).await;
+	let other_tenant = admitted_run(
+		&f,
+		&task,
+		other_credential,
+		"other",
+		&source.address(),
+		workspace,
+	)
+	.await;
 	for index in 0..6 {
 		event(
 			&f,
@@ -401,7 +396,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	.await;
 	let options =
 		json!({"scope_workspace":workspace,"kinds":["run","agent"],"relations":["executes"]});
-	let (status, page) = project(&app, subject.clone(), options.clone()).await;
+	let (status, page) = project(&app, &source, subject.clone(), options.clone()).await;
 	assert_eq!(status, 200, "{page}");
 	let mut actual = run_ids(&page);
 	actual.sort();
@@ -441,13 +436,14 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		"POST",
 		"/api/authorization/acme/peer-graph-grants",
 		json!({
-			"source_node":SOURCE,"source_identity":deployment_administrator,"enabled":true,"expected_revision":0,
+			"source_deployment":SOURCE,"source_identity":deployment_administrator,"endpoint":source.remote.endpoint,"key_id":source.remote.key_id(),"enabled":true,"expected_revision":0,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{grant}");
 	let (status, deployment_administrator_page) = project(
 		&app,
+		&source,
 		json!({"kind":"deployment_administrator","id":deployment_administrator}),
 		options.clone(),
 	)
@@ -458,7 +454,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	assert_eq!(actual, expected);
 	let mut paged = options.clone();
 	paged["limit"] = json!(2);
-	let (status, first) = project(&app, subject.clone(), paged.clone()).await;
+	let (status, first) = project(&app, &source, subject.clone(), paged.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["next_cursor"].is_string(), "{first}");
 	paged["cursor"] = first["next_cursor"].clone();
@@ -482,10 +478,10 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		1,
 	)
 	.await;
-	let (status, continued) = project(&app, subject.clone(), paged.clone()).await;
+	let (status, continued) = project(&app, &source, subject.clone(), paged.clone()).await;
 	assert_eq!(status, 200, "{continued}");
 	bump_run(&f, expected[0]).await;
-	assert_eq!(project(&app, subject.clone(), paged).await.0, 409);
+	assert_eq!(project(&app, &source, subject.clone(), paged).await.0, 409);
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-remote-run","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["run.read"],"resources":{"kinds":["run"]},
@@ -501,7 +497,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	let (status, denied) = project(&app, subject, options).await;
+	let (status, denied) = project(&app, &source, subject, options).await;
 	assert_eq!(status, 200, "{denied}");
 	assert!(run_ids(&denied).is_empty());
 	assert!(denied["activity"].as_array().unwrap().is_empty());
@@ -531,7 +527,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, _, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
-	let (subject, _) = viewer(&f, &app).await;
+	let (subject, _, source) = viewer(&f, &app).await;
 	let workspace: Uuid = {
 		let query_bind_1 = task_id;
 		sqlx::query_scalar(
@@ -559,7 +555,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 		.await;
 	}
 	let before = event_decisions(&f).await;
-	let (status, page) = project(&app, subject.clone(), json!({})).await;
+	let (status, page) = project(&app, &source, subject.clone(), json!({})).await;
 	assert_eq!(status, 200, "{page}");
 	assert_eq!(event_decisions(&f).await - before, 1);
 	let activity = page["activity"].as_array().unwrap();
@@ -587,7 +583,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	let (status, page) = project(&app, subject, json!({})).await;
+	let (status, page) = project(&app, &source, subject, json!({})).await;
 	assert_eq!(status, 200, "{page}");
 	assert!(!page["nodes"].as_array().unwrap().is_empty());
 	assert!(page["activity"].as_array().unwrap().is_empty());

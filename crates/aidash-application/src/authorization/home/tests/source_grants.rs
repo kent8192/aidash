@@ -7,10 +7,7 @@ use crate::{
 		grants::{GrantRepository, GrantScope},
 	},
 };
-use aidash_domain::{
-	federation::Peer,
-	policy::{PolicyBundle, SubjectKind},
-};
+use aidash_domain::policy::{PolicyBundle, SubjectKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 struct SourceRepository {
 	repository: Repository,
@@ -40,7 +37,7 @@ impl Drop for SourceSession {
 }
 impl SourceRepository {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
+		let executor = aidash_domain::agent_subject(&receiver(), "agent", "1.0.0");
 		let mut current = grant(false);
 		current.subject_chain.push(executor.clone());
 		Self {
@@ -81,9 +78,6 @@ impl GrantRepository for SourceRepository {
 	fn source_identity(&self) -> Option<ExecutionPrincipal> {
 		HomeRepository::identity(&self.repository)
 	}
-	fn protocol_version(&self) -> &str {
-		"current"
-	}
 	fn validation(&self) -> crate::registry::DefinitionValidation {
 		panic!("early authority regressions must not reach inspection validation")
 	}
@@ -107,7 +101,9 @@ impl GrantRepository for SourceRepository {
 		&self,
 		_: &str,
 		_: &str,
+		_: &str,
 		_: &Value,
+		_: &ExecutionPrincipal,
 	) -> Result<T> {
 		self.repository.call("source_rpc");
 		Err(Error::External("receiver unavailable".into()))
@@ -300,18 +296,18 @@ impl SourceAuthorityScope for SourceSession {
 }
 #[async_trait]
 impl SourcePeerScope for SourceSession {
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
-		Ok(Some(Peer {
-			node_id: node.into(),
-			endpoint: "https://receiver.invalid".into(),
-			credential_env: "CREDENTIAL".into(),
-			protocol_version: "current".into(),
-			enabled: true,
-		}))
+	async fn route(
+		&mut self,
+		node: &str,
+	) -> Result<Option<aidash_domain::federation::route::Route>> {
+		Ok(Some(crate::test_support::foreign_route(node)))
 	}
 }
 #[async_trait]
 impl GrantScope for SourceSession {
+	fn home_address(&self) -> String {
+		aidash_domain::nodes::NodeAddress::derived("aidash://home", "home").to_string()
+	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) {
 		self.subjects = subjects;
 	}
@@ -379,10 +375,14 @@ impl GrantScope for SourceSession {
 		Ok(())
 	}
 }
+/// The receiving Node's address.
+fn receiver() -> String {
+	aidash_domain::nodes::NodeAddress::derived("aidash://receiver", "receiver").to_string()
+}
 fn input() -> PrepareInput {
 	PrepareInput {
 		id: Uuid::from_u128(4),
-		node_id: "aidash://receiver".into(),
+		node_id: receiver(),
 		agent: EntityRef {
 			id: "agent".into(),
 			version: "1.0.0".into(),
@@ -393,7 +393,6 @@ fn input() -> PrepareInput {
 }
 #[rstest]
 #[case("nil")]
-#[case("local")]
 #[case("short")]
 #[case("long")]
 #[tokio::test]
@@ -402,7 +401,6 @@ async fn invalid_preparation_never_opens_authority_or_persists(#[case] invalid: 
 	let mut input = input();
 	match invalid {
 		"nil" => input.id = Uuid::nil(),
-		"local" => input.node_id = "aidash://home".into(),
 		"short" => input.ttl_seconds = 0,
 		"long" => input.ttl_seconds = 3601,
 		_ => panic!("unknown invalid input"),
@@ -498,7 +496,7 @@ async fn revoked_live_authority_is_not_retried_as_a_revision_race() {
 	let mut repository = SourceRepository::new();
 	repository.live = false;
 	assert!(matches!(
-		use_case::description(&repository, "aidash://receiver", Uuid::from_u128(4)).await,
+		use_case::description(&repository, &receiver(), Uuid::from_u128(4)).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -520,7 +518,7 @@ async fn read_only_revision_race_is_retried_at_most_three_times() {
 	repository.races.store(3, Ordering::SeqCst);
 	let start = tokio::time::Instant::now();
 	assert!(matches!(
-		use_case::description(&repository, "aidash://receiver", Uuid::from_u128(4)).await,
+		use_case::description(&repository, &receiver(), Uuid::from_u128(4)).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -544,7 +542,7 @@ async fn command_lock_precedes_grant_and_task_row_locks_without_automatic_retry(
 	assert!(matches!(
 		use_case::description_mode(
 			&repository,
-			"aidash://receiver",
+			&receiver(),
 			Uuid::from_u128(4),
 			true,
 			&mut race
@@ -569,7 +567,7 @@ async fn unavailable_saved_credentials_are_forbidden_without_retries() {
 	let mut repository = SourceRepository::new();
 	repository.saved_unauthorized = true;
 	assert!(matches!(
-		use_case::description(&repository, "aidash://receiver", Uuid::from_u128(4)).await,
+		use_case::description(&repository, &receiver(), Uuid::from_u128(4)).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -583,7 +581,7 @@ async fn hidden_source_reads_are_rejected_before_receiver_callback() {
 	let mut repository = SourceRepository::new();
 	repository.hidden_reads = true;
 	assert!(matches!(
-		use_case::description(&repository, "aidash://receiver", Uuid::from_u128(4)).await,
+		use_case::description(&repository, &receiver(), Uuid::from_u128(4)).await,
 		Err(Error::Forbidden)
 	));
 	assert!(

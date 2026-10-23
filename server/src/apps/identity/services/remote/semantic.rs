@@ -41,17 +41,17 @@ pub(crate) fn failure(error: &Error) -> Failure {
 
 pub(crate) async fn search(
 	f: Federation,
-	headers: HeaderMap,
+	admitted: Admitted,
 	operation: Operation,
 ) -> Result<Receipt> {
-	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	let node = &admitted.sender.to_string();
 	// The remote grant this Home issued names the Tenant of the search.
 	let scope = f
 		.store
 		.remote_tenancy(operation.admission_id, operation.grant_id)
 		.await?;
 	aidash_application::authorization::source::search::search(
-		&crate::bootstrap::source_semantic_search_repository(&f, scope),
+		&crate::bootstrap::source_semantic_search_repository(&f, &admitted.receiver, scope),
 		node,
 		operation,
 	)
@@ -70,4 +70,4 @@ impl Access {
 		.map_err(Into::into)
 	}
 }
-use http::HeaderMap;
+use aidash_application::federation::inbound::Admitted;

@@ -21,6 +21,8 @@ fn rejects_multihop_graph_requests() {
 fn source_rejects_cross_node_and_dangling_projection() {
 	let input = GraphExpandInput {
 		node_id: "aidash://b".into(),
+		sending_node: None,
+		endpoint: None,
 		options: GraphOptions {
 			scope_workspace: None,
 			depth: 1,
