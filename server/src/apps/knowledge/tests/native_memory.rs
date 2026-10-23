@@ -2219,6 +2219,9 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 #[case(false, false, "later_bank")]
 #[case(false, false, "reflection")]
 #[case(false, false, "commit_failure")]
+#[case(false, false, "accepted_save_failure")]
+#[case(false, false, "accepted_lease_lost")]
+#[case(false, false, "shared_read_revoked")]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
@@ -2238,6 +2241,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let id = fixture.state.id;
 	let reflect = fixture.state.reflect;
 	let captured = fixture.state.captured;
+	let invalidate = fixture.state.invalidate;
 	let provider = fixture.server;
 
 	if journal_bound {
@@ -2261,7 +2265,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		(learning_enabled, false, false),
 	)
 	.await;
-	let agent_ref = if delivery == "later_bank" {
+	let agent_ref = if matches!(delivery, "later_bank" | "shared_read_revoked") {
 		registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -2301,7 +2305,11 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			&Actor::DeploymentAdministrator,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
-				provider: reference("other-memory"),
+				provider: reference(if delivery == "later_bank" {
+					"other-memory"
+				} else {
+					"p"
+				}),
 				bank: shared,
 				action: memory::Action::ConfigureBank {
 					expected_revision: 0,
@@ -2345,7 +2353,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.replace(
 			"acme",
 			1,
-			serde_json::from_value(policy).unwrap(),
+			serde_json::from_value(policy.clone()).unwrap(),
 			"deployment_administrator",
 		)
 		.await
@@ -2363,7 +2371,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 	}
-	if delivery == "later_bank" {
+	if matches!(delivery, "later_bank" | "shared_read_revoked") {
 		for reference in [
 			&agent_ref,
 			&reference("shared-source"),
@@ -2434,6 +2442,28 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		);
 	}
 
+	if delivery == "shared_read_revoked" {
+		let shared = Bank {
+			participant: None,
+			..participant.bank.clone()
+		};
+		memory::mutate(
+			&store,
+			&actor,
+			mutation(
+				&shared,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: content("Shared Tokyo subway source"),
+				},
+			),
+		)
+		.await
+		.unwrap();
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+	}
 	if reflect {
 		memory::mutate(
 			&store,
@@ -2452,7 +2482,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 	}
-	if delivery == "commit_failure" {
+	if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 		// DDL exception: SeaQuery cannot express PostgreSQL deferred constraint
 		// triggers. Reject the enclosing task-snapshot commit after reads are
 		// staged, before inference, rather than failing the read insert. Only
@@ -2462,12 +2492,17 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.await
 				.into();
 		let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();
+		let table = if delivery == "accepted_save_failure" {
+			"memory_run_reads"
+		} else {
+			"run_task_snapshots"
+		};
 		let ddl = [
-			"CREATE FUNCTION reject_context_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture context commit failure'; END $$",
-			"CREATE CONSTRAINT TRIGGER reject_context_commit AFTER INSERT ON run_task_snapshots DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_context_commit()",
+			"CREATE FUNCTION reject_context_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture context commit failure'; END $$".to_owned(),
+			format!("CREATE CONSTRAINT TRIGGER reject_context_commit AFTER INSERT ON {table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_context_commit()"),
 		];
 		for ddl in ddl {
-			aidash_server::database::native::query(ddl)
+			aidash_server::database::native::query(&ddl)
 				.execute(&mut *tx)
 				.await
 				.unwrap();
@@ -2542,17 +2577,33 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	.await
 	.unwrap();
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	if delivery == "accepted_lease_lost" {
+		*invalidate.lock().unwrap() = Some((f.store.clone(), run.id, None));
+	}
+	if delivery == "shared_read_revoked" {
+		let mut revoked = policy;
+		revoked["policies"].as_array_mut().unwrap().push(json!({"id":"shared-only-revocation","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["memory"]},"condition":{"op":"eq","left":{"source":"resource","path":"/shared"},"right":{"source":"literal","value":true}}}));
+		*invalidate.lock().unwrap() = Some((f.store.clone(), run.id, Some(revoked)));
+	}
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
-	for _ in 0..4 {
+	let accepted_save_rejected = matches!(
+		delivery,
+		"accepted_save_failure" | "accepted_lease_lost" | "shared_read_revoked"
+	);
+	for _ in 0..if accepted_save_rejected { 1 } else { 4 } {
 		let attempt =
 			tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
 				.await
 				.expect("native inference and explicit recall must not deadlock");
-		if !matches!(delivery, "later_bank" | "commit_failure") {
+		if !matches!(
+			delivery,
+			"later_bank" | "commit_failure" | "accepted_lease_lost"
+		) {
 			attempt.unwrap();
 		}
+
 		if (reflect && captured.lock().unwrap().len() > 1)
 			|| (!reflect
 				&& !captured.lock().unwrap().is_empty()
@@ -2566,10 +2617,11 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			break;
 		}
 	}
-	if matches!(delivery, "later_bank" | "commit_failure") {
-		assert!(
-			captured.lock().unwrap().is_empty(),
-			"failed Bank or enclosing commit must prevent context delivery"
+	if matches!(delivery, "later_bank" | "commit_failure") || accepted_save_rejected {
+		assert_eq!(
+			captured.lock().unwrap().len(),
+			usize::from(accepted_save_rejected),
+			"only accepted-save failure reaches the provider; pre-read failure never does"
 		);
 		let count: i64 = aidash_server::database::native::query_scalar(
 			&Query::select()
@@ -2587,7 +2639,20 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			count, 0,
 			"earlier successful Bank must leave no phantom read"
 		);
-		if delivery != "later_bank" {
+		let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert!(
+			stored.context.source_deliveries.is_empty(),
+			"rejected save cannot adopt delivery evidence"
+		);
+		if delivery == "shared_read_revoked" {
+			assert_eq!(stored.phase().as_str(), "PAUSED", "{:?}", stored.error);
+			assert_eq!(
+				captured.lock().unwrap()[0]["current"]["semantic_memory"]["memory"]["banks"][1]["recall"]
+					["units"][0]["content"]["text"],
+				json!("Shared Tokyo subway source")
+			);
+		}
+		if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 			let error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
 			assert!(
 				error
@@ -4366,6 +4431,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider
 #[derive(Clone)]
 struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 	id: Uuid,
+	invalidate: Arc<Mutex<Option<(Store, Uuid, Option<serde_json::Value>)>>>,
 	reflect: bool,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
@@ -4375,6 +4441,7 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 ) -> HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 	HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 		id: Uuid::now_v7(),
+		invalidate: Arc::new(Mutex::new(None)),
 		reflect,
 		captured: Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new())),
 	}
@@ -4390,11 +4457,42 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 	let reflect = state.reflect;
 	let captured = state.captured.clone();
 	let received = captured.clone();
+	let invalidate = state.invalidate.clone();
 	std::sync::Arc::new({
 		let model = reply(move |request: reinhardt::Request| {
 			let input = request.json::<serde_json::Value>().unwrap();
 			let received = received.clone();
+			let invalidation = invalidate.lock().unwrap().take();
 			async move {
+				if let Some((store, run, policy)) = invalidation {
+					if let Some(policy) = policy {
+						aidash_server::authorization::Authorization {
+							pool: store.pool.clone(),
+						}
+						.replace(
+							"acme",
+							2,
+							serde_json::from_value(policy).unwrap(),
+							"deployment_administrator",
+						)
+						.await
+						.unwrap();
+					} else {
+						aidash_server::database::native::query(
+							&Query::update()
+								.table(Alias::new("runs"))
+								.value(
+									Alias::new("lease_until"),
+									chrono::Utc::now() - chrono::Duration::seconds(1),
+								)
+								.and_where(Expr::col("id").eq(Expr::value(run)))
+								.to_string(PostgresQueryBuilder),
+						)
+						.execute(store.pool.in_scope(&TEST_FIXTURE))
+						.await
+						.unwrap();
+					}
+				}
 				let context: serde_json::Value =
 					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
 						.unwrap();
