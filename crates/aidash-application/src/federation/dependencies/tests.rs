@@ -1,7 +1,7 @@
 use super::*;
 use aidash_domain::{
 	RecoveryState, Run, RunControl, RunState, StateVersion, ThinkingState, context::Context,
-	federation::Peer, policy::Resource, registry::Entry,
+	federation::route::Route, policy::Resource, registry::Entry,
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -43,7 +43,7 @@ struct Scope {
 	frontier: Vec<Reference>,
 	edges: BTreeMap<Uuid, Vec<Reference>>,
 	decision: bool,
-	peer: Option<Peer>,
+	peer: Option<Route>,
 	fault: Option<Fault>,
 	admission: Option<Run>,
 	bound: Option<Uuid>,
@@ -130,7 +130,7 @@ impl DependencyScope for Scope {
 			None => Ok(self.entry.clone()),
 		}
 	}
-	async fn peer(&mut self, node: &str) -> Result<Option<Peer>> {
+	async fn route(&mut self, node: &str) -> Result<Option<Route>> {
 		self.calls.push(format!("peer:{node}"));
 		Ok(self.peer.clone())
 	}
@@ -141,9 +141,9 @@ struct Transport {
 }
 #[async_trait]
 impl DependencyTransport for Transport {
-	async fn check(&self, peer: &Peer, input: &Input, remaining: Duration) -> Option<Checked> {
+	async fn check(&self, peer: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
 		self.calls.lock().unwrap().push((
-			peer.node_id.clone(),
+			peer.target.deployment.to_string(),
 			serde_json::to_value(input).unwrap(),
 			remaining,
 		));
@@ -162,7 +162,7 @@ fn grant(node: &str, id: u128) -> Reference {
 fn scope() -> Scope {
 	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(Peer {node_id:"aidash://foreign".into(),endpoint:"https://foreign.invalid".into(),credential_env:"FIXTURE".into(),protocol_version:"0.1".into(),enabled:true}),
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),
     }
 }
 #[fixture]
@@ -191,7 +191,7 @@ async fn cycles_are_checked_once_but_each_nodes_authority_is_checked(
 	}));
 	// Act
 	assert!(
-		verify_all(&mut scope, &transport, "0.1", vec![local])
+		verify_all(&mut scope, &transport, vec![local])
 			.await
 			.unwrap()
 	);
@@ -206,41 +206,29 @@ async fn cycles_are_checked_once_but_each_nodes_authority_is_checked(
 	);
 	let calls = transport.calls.lock().unwrap();
 	assert_eq!(calls.len(), 1);
-	assert_eq!(
-		calls[0].1,
-		json!({"tenant":"mapped-tenant","subject":"mapped-reader","reference":foreign})
-	);
+	assert_eq!(calls[0].1, json!({"reference":foreign}));
 	assert_eq!(calls[0].2, Duration::from_secs(20));
 }
 
 #[rstest]
-#[case(false, true, "0.1", 1)]
-#[case(true, false, "0.1", 2)]
-#[case(true, true, "unsupported", 2)]
+#[case(false, true, 1)]
+#[case(true, false, 2)]
 #[tokio::test]
-async fn remote_policy_peer_and_protocol_gate_precede_transport(
+async fn remote_policy_and_route_gate_precede_transport(
 	mut scope: Scope,
 	transport: Transport,
 	#[case] allowed: bool,
 	#[case] enabled: bool,
-	#[case] protocol: &str,
 	#[case] calls: usize,
 ) {
 	scope.decision = allowed;
-	if enabled {
-		scope.peer.as_mut().unwrap().protocol_version = protocol.into();
-	} else {
+	if !enabled {
 		scope.peer = None;
 	}
 	assert!(
-		!verify_all(
-			&mut scope,
-			&transport,
-			"0.1",
-			vec![grant("aidash://foreign", 1)]
-		)
-		.await
-		.unwrap()
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
 	);
 	assert_eq!(scope.calls.len(), calls);
 	assert!(transport.calls.lock().unwrap().is_empty());
@@ -257,14 +245,9 @@ async fn deadline_expiration_prevents_the_next_authority_call(
 		.edges
 		.insert(Uuid::from_u128(1), vec![grant("aidash://foreign", 2)]);
 	assert!(
-		!verify_all(
-			&mut scope,
-			&transport,
-			"0.1",
-			vec![grant("aidash://local", 1)]
-		)
-		.await
-		.unwrap()
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
 	);
 	assert_eq!(scope.calls, vec![format!("grant:{}", Uuid::from_u128(1))]);
 	assert!(transport.calls.lock().unwrap().is_empty());
@@ -286,9 +269,7 @@ async fn unique_graph_size_and_pending_bounds_are_retained(
 		.map(|id| grant("aidash://local", id as u128))
 		.collect();
 	assert_eq!(
-		verify_all(&mut scope, &transport, "0.1", edges)
-			.await
-			.unwrap(),
+		verify_all(&mut scope, &transport, edges).await.unwrap(),
 		visible
 	);
 	assert_eq!(scope.calls.len(), calls);
@@ -309,14 +290,9 @@ async fn rejected_or_oversized_peer_frontiers_prevent_followup_calls(
 		pending: vec![grant("aidash://local", 1); count],
 	}));
 	assert!(
-		!verify_all(
-			&mut scope,
-			&transport,
-			"0.1",
-			vec![grant("aidash://foreign", 1)]
-		)
-		.await
-		.unwrap()
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
 	);
 	assert_eq!(scope.calls.len(), 2);
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
@@ -326,14 +302,9 @@ async fn rejected_or_oversized_peer_frontiers_prevent_followup_calls(
 #[tokio::test]
 async fn unavailable_peer_transport_denies_visibility(mut scope: Scope, transport: Transport) {
 	assert!(
-		!verify_all(
-			&mut scope,
-			&transport,
-			"0.1",
-			vec![grant("aidash://foreign", 1)]
-		)
-		.await
-		.unwrap()
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
 	);
 	assert_eq!(scope.calls.len(), 2);
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
@@ -448,6 +419,7 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 	let id = Uuid::from_u128(10000);
 	if present {
 		scope.admission = Some(Run {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			task_id: Uuid::from_u128(10),
 			workspace_id: Uuid::from_u128(11),

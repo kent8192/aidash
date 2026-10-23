@@ -11,6 +11,10 @@ impl CoreToolCatalog for CoreContracts {
 		BTreeMap::new()
 	}
 }
+/// The receiving Node's address; its registry belongs to `aidash://receiver`.
+fn receiver() -> String {
+	aidash_domain::nodes::NodeAddress::derived("aidash://receiver", "receiver").to_string()
+}
 #[fixture]
 fn validation() -> DefinitionValidation {
 	DefinitionValidation::new(Arc::new(CoreContracts))
@@ -39,7 +43,7 @@ fn inspection() -> Inspection {
 		binding_snapshot: snapshot.clone(),
 		generation: None,
 		lineage: vec![],
-		node_id: "aidash://receiver".into(),
+		node_id: receiver(),
 		authority_digest: format!("sha256:{}", "a".repeat(64)),
 		agent: agent.clone(),
 		definitions: snapshot
@@ -74,7 +78,7 @@ fn exact_receiver_dependencies_do_not_resolve_remote_credentials(
 	validate_inspection(
 		&validation,
 		&inspection,
-		"aidash://receiver",
+		&receiver(),
 		&expected(),
 		&Search::default(),
 	)
@@ -96,7 +100,7 @@ fn rebound_or_incomplete_receiver_definitions_are_rejected(
 	#[case] mutation: &str,
 ) {
 	match mutation {
-		"node" => inspection.node_id = "aidash://other".into(),
+		"node" => inspection.node_id = "aidash://other/some-node".into(),
 		"authority_digest" => inspection.authority_digest = "sha256:short".into(),
 		"agent" => inspection.agent.id = "other".into(),
 		"metadata_id" => inspection.definitions[1].metadata.id = "other".into(),
@@ -125,7 +129,7 @@ fn rebound_or_incomplete_receiver_definitions_are_rejected(
 		validate_inspection(
 			&validation,
 			&inspection,
-			"aidash://receiver",
+			&receiver(),
 			&expected(),
 			&Search::default()
 		),
@@ -145,7 +149,7 @@ fn receiver_agent_must_match_the_requested_capability(
 		validate_inspection(
 			&validation,
 			&inspection,
-			"aidash://receiver",
+			&receiver(),
 			&expected(),
 			&requirements
 		),

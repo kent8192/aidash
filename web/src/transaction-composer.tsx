@@ -10,6 +10,7 @@ import type {
 } from "./generated/models";
 import { DisplayState, ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
+import { parseNodeAddress, registryDeployment } from "./node-selection";
 import { Field, useI18n } from "./ui";
 import { Group, Hint } from "./components/patterns";
 
@@ -34,20 +35,33 @@ export function TransactionComposer({
   change: (value: TransactionManifest) => void;
 }) {
   const data = useContext(DisplayState);
+  // A manifest names one exact Node per Deployment. An administrator chooses
+  // a local Node; a subject uses the Node selected in the dashboard.
+  const local = value.coordinator;
+  const localNode = parseNodeAddress(local)?.node;
+  const workspaces =
+    data?.workspaces.filter((workspace) => workspace.node === localNode) ?? [];
+  const workspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+  const tasks =
+    data?.tasks.filter((task) => workspaceIds.has(task.workspace_id)) ?? [];
+  const runs =
+    data?.runs.filter(
+      (run) => workspaceIds.has(run.workspace_id) && run.home_node === local,
+    ) ?? [];
   const { t } = useI18n();
   const workspaceLabels = disambiguateLabels(
-    data?.workspaces ?? [],
+    workspaces,
     (workspace) => workspace.id,
     (workspace) => workspace.title,
   );
   const taskLabels = disambiguateLabels(
-    data?.tasks ?? [],
+    tasks,
     (task) => task.id,
     (task) =>
       `${workspaceLabels.get(task.workspace_id) ?? t("unavailableEntity")} / ${task.title}`,
   );
   const runLabels = disambiguateLabels(
-    data?.runs ?? [],
+    runs,
     (run) => run.id,
     (run) =>
       `${taskLabels.get(run.task_id) ?? t("unavailableEntity")} · ${t(run.phase)}`,
@@ -59,14 +73,15 @@ export function TransactionComposer({
         i === index ? participant : old,
       ),
     });
-  const nodes = [
-    ...new Set([
-      value.coordinator,
-      ...(data?.peers
-        .filter((peer) => peer.enabled)
-        .map((peer) => peer.node_id) ?? []),
-    ]),
-  ];
+  const nodes = deploymentAdministrator
+    ? [
+        ...new Set(
+          data?.workspaces.map(
+            (workspace) => `${registryDeployment(data)}/${workspace.node}`,
+          ),
+        ),
+      ]
+    : [local];
   return (
     <>
       <Field label={t("transactionDeadline")}>
@@ -98,7 +113,7 @@ export function TransactionComposer({
             {!deploymentAdministrator && index > 0 ? (
               <Input
                 required
-                placeholder="aidash://remote-node"
+                placeholder="aidash://remote-deployment/node"
                 value={participant.node_id}
                 onChange={(event) =>
                   update(index, {
@@ -111,15 +126,25 @@ export function TransactionComposer({
             ) : (
               <NativeSelect
                 required
-                disabled={participant.node_id === value.coordinator}
+                disabled={
+                  !deploymentAdministrator &&
+                  participant.node_id === value.coordinator
+                }
                 value={participant.node_id}
-                onChange={(event) =>
-                  update(index, {
+                onChange={(event) => {
+                  const next = {
                     ...participant,
                     node_id: event.target.value,
                     mutations: participant.mutations.map(clearResource),
-                  })
-                }
+                  };
+                  if (deploymentAdministrator)
+                    change({
+                      ...value,
+                      coordinator: next.node_id,
+                      participants: [next],
+                    });
+                  else update(index, next);
+                }}
               >
                 <option value="">{t("choose")}</option>
                 {nodes
@@ -132,13 +157,17 @@ export function TransactionComposer({
                   )
                   .map((node) => (
                     <option key={node} value={node}>
-                      <ReferenceName id={node} />
+                      {deploymentAdministrator ? (
+                        parseNodeAddress(node)?.node
+                      ) : (
+                        <ReferenceName id={node} />
+                      )}
                     </option>
                   ))}
               </NativeSelect>
             )}
           </Field>
-          {participant.node_id !== data?.node.id && (
+          {participant.node_id !== local && (
             <Hint>{t("transactionRemoteReferenceHelp")}</Hint>
           )}
           {participant.mutations.map((mutation, mutationIndex) => {
@@ -195,7 +224,7 @@ export function TransactionComposer({
                 {mutation.kind === "workspace_state" && (
                   <>
                     <Field label={t("workspace")}>
-                      {participant.node_id === data?.node.id ? (
+                      {participant.node_id === local ? (
                         <NativeSelect
                           required
                           value={mutation.workspace_id}
@@ -204,7 +233,7 @@ export function TransactionComposer({
                               ...mutation,
                               workspace_id: event.target.value,
                               expected_revision:
-                                data?.workspaces.find(
+                                workspaces.find(
                                   (workspace) =>
                                     workspace.id === event.target.value,
                                 )?.revision ?? 0,
@@ -212,7 +241,7 @@ export function TransactionComposer({
                           }
                         >
                           <option value="">{t("choose")}</option>
-                          {data?.workspaces.map((workspace) => (
+                          {workspaces.map((workspace) => (
                             <option key={workspace.id} value={workspace.id}>
                               {workspaceLabels.get(workspace.id)}
                             </option>
@@ -243,7 +272,7 @@ export function TransactionComposer({
                 {mutation.kind === "complete_task" && (
                   <>
                     <Field label={t("task")}>
-                      {participant.node_id === data?.node.id ? (
+                      {participant.node_id === local ? (
                         <NativeSelect
                           required
                           value={mutation.task_id}
@@ -252,14 +281,14 @@ export function TransactionComposer({
                               ...mutation,
                               task_id: event.target.value,
                               expected_revision:
-                                data?.tasks.find(
+                                tasks.find(
                                   (task) => task.id === event.target.value,
                                 )?.revision ?? 0,
                             })
                           }
                         >
                           <option value="">{t("choose")}</option>
-                          {data?.tasks.map((task) => (
+                          {tasks.map((task) => (
                             <option key={task.id} value={task.id}>
                               {taskLabels.get(task.id)}
                             </option>
@@ -324,12 +353,12 @@ export function TransactionComposer({
                 {mutation.kind === "finish_run" && (
                   <>
                     <Field label={t("execution")}>
-                      {participant.node_id === data?.node.id ? (
+                      {participant.node_id === local ? (
                         <NativeSelect
                           required
                           value={mutation.run_id}
                           onChange={(event) => {
-                            const run = data?.runs.find(
+                            const run = runs.find(
                               (run) => run.id === event.target.value,
                             );
                             if (run)
@@ -342,7 +371,7 @@ export function TransactionComposer({
                           }}
                         >
                           <option value="">{t("choose")}</option>
-                          {data?.runs.map((run) => (
+                          {runs.map((run) => (
                             <option key={run.id} value={run.id}>
                               {runLabels.get(run.id)}
                             </option>
@@ -362,7 +391,7 @@ export function TransactionComposer({
                         />
                       )}
                     </Field>
-                    {participant.node_id !== data?.node.id && (
+                    {participant.node_id !== local && (
                       <Field label={t("task")}>
                         <Input
                           required
@@ -462,10 +491,7 @@ export function TransactionComposer({
         size="sm"
         className="justify-self-start"
         type="button"
-        disabled={
-          value.participants.length >=
-          (deploymentAdministrator ? Math.min(nodes.length, 16) : 16)
-        }
+        disabled={deploymentAdministrator || value.participants.length >= 16}
         onClick={() =>
           change({
             ...value,

@@ -21,7 +21,8 @@ use std::collections::BTreeSet;
 
 pub(crate) struct TenantCatalog<'a> {
 	pub(crate) access: &'a mut Access,
-	pub(crate) node: &'a str,
+	/// The Node the approvals apply to.
+	pub(crate) node: aidash_domain::nodes::NodeAddress,
 }
 
 #[async_trait]
@@ -34,12 +35,13 @@ impl CatalogMutation for TenantCatalog<'_> {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
 	) -> Result<Option<Binding>> {
 		NativeMutation(&mut self.access.tx)
-			.compare_and_set(tenant, reference, expected_revision, enabled)
+			.compare_and_set(tenant, node, reference, expected_revision, enabled)
 			.await
 	}
 	async fn history(&mut self, binding: &Binding, actor: &str) -> Result<()> {
@@ -57,14 +59,16 @@ pub(crate) async fn definition(
 	Ok(Definition::read_in(&mut **tx, &reference.id, &reference.version).await?)
 }
 
-/// Whether the Tenant currently approves this exact version.
+/// Whether this Node of the Tenant currently approves this exact version.
 pub(crate) async fn approved(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	reference: &EntityRef,
 ) -> Result<bool> {
 	Ok(!AuthorizationCatalog::objects()
 		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+		.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
 		.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
 		.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
 		.filter(AuthorizationCatalog::field_enabled().eq(true))
@@ -80,8 +84,8 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 	fn tenant(&self) -> &str {
 		&self.access.identity.tenant
 	}
-	fn node(&self) -> &str {
-		self.node
+	fn node(&self) -> &aidash_domain::nodes::NodeAddress {
+		&self.node
 	}
 	fn actor(&self) -> &str {
 		&self.access.identity.subject
@@ -91,7 +95,7 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 	}
 	async fn approved(&mut self, reference: &EntityRef) -> Result<bool> {
 		let tenant = self.access.identity.tenant.clone();
-		approved(&mut self.access.tx, &tenant, reference).await
+		approved(&mut self.access.tx, &tenant, &self.node.node, reference).await
 	}
 	async fn require(&mut self, entry: &Entry, action: &str) -> Result<()> {
 		let resource = self.access.resource(
@@ -140,7 +144,11 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 
 /// Agent versions approved through a Marketplace activation become subjects of
 /// the Tenant's policy too, in the default groups (ADR 0062).
-pub(crate) async fn admit_agents(access: &mut Access, node: &str, entries: &[Entry]) -> Result<()> {
+pub(crate) async fn admit_agents(
+	access: &mut Access,
+	node: &aidash_domain::nodes::NodeAddress,
+	entries: &[Entry],
+) -> Result<()> {
 	use aidash_domain::identity::tenant_administration as rules;
 	let mut changed = false;
 	for entry in entries.iter().filter(|entry| entry.kind == "agent") {
@@ -153,7 +161,12 @@ pub(crate) async fn admit_agents(access: &mut Access, node: &str, entries: &[Ent
 		changed = true;
 	}
 	if changed {
-		TenantCatalog { access, node }.save_policy().await?;
+		TenantCatalog {
+			access,
+			node: node.clone(),
+		}
+		.save_policy()
+		.await?;
 	}
 	Ok(())
 }

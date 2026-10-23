@@ -1,8 +1,6 @@
 //! Foreign Run disclosure rechecks viewer, mapped source and exact definitions.
 use crate::{Error, Result, ports::federation::foreign_reads::ForeignRunReadScope};
-use aidash_domain::{
-	RunControl, RunMetadata, policy::SubjectKind, qualified_agent, registry::rules::digest,
-};
+use aidash_domain::{RunControl, RunMetadata, policy::SubjectKind, registry::rules::digest};
 use serde_json::json;
 
 pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> Result<bool> {
@@ -11,7 +9,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 	};
 	let d = record.description;
 	if d.source_node != run.home_node
-		|| d.target_node != scope.node()
+		|| d.target_node != format!("{}/{}", scope.node(), run.node)
 		|| d.task.id != run.task_id
 		|| d.task.workspace_id != run.workspace_id
 		|| d.inspection.agent.id != run.agent_id
@@ -47,7 +45,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 		"memory",
 		&run.agent_id,
 		with_source(json!({
-			"created_by":qualified_agent(scope.node(),&run.agent_id,&run.agent_version),
+			"created_by":run.executor_subject(scope.node()),
 			"version":run.agent_version,
 		})),
 	);
@@ -89,7 +87,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 		None
 	};
 	if historical.is_some() {
-		let executor = qualified_agent(scope.node(), &run.agent_id, &run.agent_version);
+		let executor = run.executor_subject(scope.node());
 		let Some(subject) = snapshot.bundle.subjects.get_mut(&executor) else {
 			return Ok(false);
 		};

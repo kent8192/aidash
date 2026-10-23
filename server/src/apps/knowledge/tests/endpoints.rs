@@ -685,7 +685,7 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(bank))
-					.expr(Expr::value(store.node_id.as_str()))
+					.expr(Expr::value(store.deployment.as_str()))
 					.expr(Expr::cust(format!(
 						"(SELECT tenant FROM workspaces WHERE id = '{workspace}')"
 					)))

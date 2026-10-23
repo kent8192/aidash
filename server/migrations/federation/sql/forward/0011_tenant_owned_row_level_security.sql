@@ -13,3 +13,13 @@ ALTER TABLE public.remote_run_message_fences FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.remote_run_message_fences AS PERMISSIVE FOR ALL TO PUBLIC
     USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
     WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+ALTER TABLE public.node_registration_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.node_registration_history FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.node_registration_history AS PERMISSIVE FOR ALL TO PUBLIC
+    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+ALTER TABLE public.node_registrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.node_registrations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.node_registrations AS PERMISSIVE FOR ALL TO PUBLIC
+    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));

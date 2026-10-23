@@ -1276,9 +1276,9 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		);
 	} else if boundary == "install" {
 		let mut settings = common::settings_for(&url);
-		settings.node.node_id = f.config.node_id.clone();
-		settings.node.endpoint = f.config.endpoint.clone();
-		settings.node.api_token = f.config.api_token.clone();
+		settings.deployment.id = f.config.deployment.to_string();
+		settings.deployment.endpoint = f.config.endpoint.clone();
+		settings.deployment.api_token = f.config.api_token.clone();
 		// Only the Enterprise build's own settings source carries the GCIP
 		// settings, as the managed file of a Cloud Environment does.
 		let managed = tempfile::NamedTempFile::new().unwrap();
@@ -2275,7 +2275,8 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
 			"resources": {"kinds": [
 				"registration", "mapping", "subject", "invitation", "policy", "decision",
-				"credential", "peer_mapping", "test_limits", "test_profile", "secret"
+				"credential", "peer_mapping", "test_limits", "test_profile", "node",
+				"node_registration", "tenant", "secret"
 			]},
 			"condition": null
 		}, {
@@ -3132,9 +3133,10 @@ async fn removing_the_gcip_sign_in_refuses_its_identities_durable_credentials(
 		.unwrap()
 		.to_owned();
 	// A Tenant boundary, which locks the credential's Mapping and its holder.
+	let node = common::default_node(&f.store, "acme").await.node;
 	let session = |app: &common::TestApplication| {
 		browser()
-			.get(app.url("/api/registry/versions"))
+			.get(app.url(format!("/api/registry/versions?node={node}")))
 			.bearer_auth(&token)
 			.send()
 	};
@@ -3396,9 +3398,9 @@ async fn start(
 	gcip: &GcipConfig,
 ) -> aidash_server::Result<aidash_server::federation::Federation> {
 	let mut settings = common::settings_for(url);
-	settings.node.node_id = f.config.node_id.clone();
-	settings.node.endpoint = f.config.endpoint.clone();
-	settings.node.api_token = f.config.api_token.clone();
+	settings.deployment.id = f.config.deployment.to_string();
+	settings.deployment.endpoint = f.config.endpoint.clone();
+	settings.deployment.api_token = f.config.api_token.clone();
 	let managed = tempfile::NamedTempFile::new().unwrap();
 	std::fs::write(
 		managed.path(),

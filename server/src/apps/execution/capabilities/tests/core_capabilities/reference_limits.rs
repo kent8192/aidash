@@ -284,9 +284,9 @@ pub(super) async fn register_reference_source(
 		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	json!({"kind":"source","target":{"registry_node":c.f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}})
+	json!({"kind":"source","target":{"registry_deployment":c.f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}})
 }

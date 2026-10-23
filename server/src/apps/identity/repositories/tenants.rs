@@ -28,13 +28,13 @@ pub(crate) enum Creator {
 }
 
 impl Creator {
-	fn kind(self) -> &'static str {
+	pub(crate) fn kind(self) -> &'static str {
 		match self {
 			Self::Identity(_) => "identity",
 			Self::DeploymentAdministrator(_) => "deployment_administrator",
 		}
 	}
-	fn identity(self) -> Option<Uuid> {
+	pub(crate) fn identity(self) -> Option<Uuid> {
 		match self {
 			Self::Identity(identity) | Self::DeploymentAdministrator(Some(identity)) => {
 				Some(identity)
@@ -194,6 +194,7 @@ pub(crate) async fn create(
 ) -> Result<Created> {
 	let label = tenancy::label(label)?;
 	let (name, created_at) = insert_root(tx, &label, personal, creator).await?;
+	super::nodes::create_default(tx, &name, creator).await?;
 	let bundle = tenancy::initial_policy(&name, matches!(creator, Creator::Identity(_)))?;
 	AuthorizationBundle::replace(
 		tx,

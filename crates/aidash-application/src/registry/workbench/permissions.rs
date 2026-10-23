@@ -33,7 +33,7 @@ pub async fn inspect(
 	let components = snapshot
 		.definitions
 		.iter()
-		.filter(|d| d.identity.registry_node == repository.node_id())
+		.filter(|d| d.identity.registry_deployment == repository.node_id())
 		.map(|d| {
 			(
 				d.identity.local(),
@@ -53,7 +53,7 @@ pub async fn inspect(
 				kind: dependency.kind.clone(),
 				id: if dependency.kind == "tool" {
 					aidash_domain::registry::bindings::QualifiedRef {
-						registry_node: repository.node_id().into(),
+						registry_deployment: repository.node_id().into(),
 						id: reference.id.clone(),
 						version: reference.version.clone(),
 					}

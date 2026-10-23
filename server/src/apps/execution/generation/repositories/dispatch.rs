@@ -140,7 +140,7 @@ impl DispatchPreparation for Preparation {
 #[async_trait]
 impl GenerationDispatchRepository for NativeDispatch {
 	fn node_id(&self) -> &str {
-		&self.store.node_id
+		self.store.deployment.as_str()
 	}
 	async fn begin_preparation(&self) -> Result<Box<dyn DispatchPreparation>> {
 		Ok(Box::new(Preparation {
@@ -333,8 +333,15 @@ impl GenerationDispatchSettlement for NativeSettlement {
 			.map_err(Into::into)
 	}
 	async fn peer(&self, node: &str, input: &FinalizeInput) -> Result<bool> {
+		let sender = crate::authorization::peer::usage_sender(
+			&self.runtime,
+			input.usage.admission_id,
+			input.usage.grant_id,
+		)
+		.await?;
 		crate::authorization::peer::authority_request(
 			&self.runtime,
+			&sender,
 			node,
 			"/scoped/usage/finalize",
 			&json!(input),

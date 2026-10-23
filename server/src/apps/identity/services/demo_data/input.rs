@@ -33,11 +33,11 @@ pub struct StructureTenant {
 	#[serde(default)]
 	pub subjects: Vec<StructureSubject>,
 	/// The Tenant's Registry entries, dependencies first. A string in an
-	/// entry's `config` that is exactly `$node` stands for the Deployment's
-	/// node id, which Tool descriptors and binding targets must name.
+	/// entry's `config` that is exactly `$deployment` stands for the Deployment
+	/// id, which Tool descriptors and binding targets must name.
 	#[serde(default)]
 	pub registry: Vec<Entry>,
-	/// Catalog Approvals to grant on the Deployment's Node.
+	/// Catalog Approvals to grant on the Tenant's default Node.
 	#[serde(default)]
 	pub approvals: Vec<StructureApproval>,
 }

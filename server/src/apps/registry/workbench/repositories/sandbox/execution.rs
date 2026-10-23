@@ -113,7 +113,7 @@ impl ExecutionScope for Scope {
 			},
 			&crate::bootstrap::registry_validation(),
 			aidash_domain::registry::bindings::QualifiedRef {
-				registry_node: self.node_id.clone(),
+				registry_deployment: self.node_id.clone(),
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			},

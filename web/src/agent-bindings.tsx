@@ -10,7 +10,7 @@ import { hasPluginSkills, type AgentPluginRef } from "./agent-plugins";
 import { groupByKind } from "./registry-kinds";
 export type Binding = {
   kind: "tool" | "bundle" | "skill" | "memory" | "source" | "external_service";
-  target: { registry_node: string; id: string; version: string };
+  target: { registry_deployment: string; id: string; version: string };
   alias?: string;
   narrow: {
     allowed_hosts?: string[];
@@ -36,7 +36,7 @@ export function hasInstructionalBinding(
 ): boolean {
   if (hasPluginSkills(plugins)) return true;
   return bindings.some((binding) => {
-    if (binding.target.registry_node !== node) return false;
+    if (binding.target.registry_deployment !== node) return false;
     const entry = entries.find(
       (entry) =>
         entry.id === binding.target.id &&
@@ -150,7 +150,7 @@ export function AgentBindings({
     (entry) => entityLabel({ ...entry, name: entry.name ?? {} }),
   );
   const label = (binding: Binding) =>
-    (binding.target.registry_node === node
+    (binding.target.registry_deployment === node
       ? labels.get(
           `${binding.kind}:${binding.target.id}@${binding.target.version}`,
         )
@@ -232,7 +232,7 @@ export function AgentBindings({
             !entry ||
             bindings.some(
               (b) =>
-                b.target.registry_node === origin &&
+                b.target.registry_deployment === origin &&
                 b.target.id === entry.id &&
                 b.target.version === entry.version,
             )
@@ -245,7 +245,7 @@ export function AgentBindings({
               {
                 kind: entry.kind as Binding["kind"],
                 target: {
-                  registry_node: origin,
+                  registry_deployment: origin,
                   id: entry.id,
                   version: entry.version,
                 },
@@ -262,7 +262,7 @@ export function AgentBindings({
         <ul className="grid min-w-0 gap-3">
           {bindings.map((binding, i) => (
             <li
-              key={`${binding.target.registry_node}:${binding.target.id}@${binding.target.version}`}
+              key={`${binding.target.registry_deployment}:${binding.target.id}@${binding.target.version}`}
               className="grid min-w-0 gap-3 border-l-2 border-brand-line pl-3"
             >
               <div className="flex min-w-0 items-start gap-2">
@@ -271,7 +271,7 @@ export function AgentBindings({
                   <span className="font-normal text-muted-foreground">
                     · {t(binding.kind)} ·{" "}
                     <span className="font-mono text-xs">
-                      {binding.target.registry_node}
+                      {binding.target.registry_deployment}
                     </span>
                   </span>
                 </p>

@@ -307,7 +307,7 @@ fn evidence_replays_its_verdict_from_the_answers_and_the_effective_threshold() {
 			e.route_models[0] = "typesafe/jev-1.13".into()
 		}),
 		("a Decider from another Node", |e| {
-			e.decider.identity.registry_node = "aidash://other".into()
+			e.decider.identity.registry_deployment = "aidash://other".into()
 		}),
 		("answers no attempt covers", |e| e.attempts.clear()),
 	];

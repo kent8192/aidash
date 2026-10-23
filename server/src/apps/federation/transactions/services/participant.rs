@@ -1,23 +1,49 @@
 //! Participant adapters share the application workflow and native persistence scope.
 use super::{LocalStatus, Manifest};
 use crate::{Result, federation::Federation};
+use aidash_application::federation::inbound::Admitted;
 
-pub async fn reserve(f: &Federation, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
-	crate::bootstrap::transaction_participant(f)
+fn participant(
+	f: &Federation,
+	admitted: Option<&Admitted>,
+) -> aidash_application::transactions::participation::Participant {
+	match admitted {
+		Some(admitted) => crate::bootstrap::transaction_participant_as(f, admitted),
+		None => crate::bootstrap::transaction_participant(f),
+	}
+}
+
+pub async fn reserve(
+	f: &Federation,
+	admitted: Option<&Admitted>,
+	caller: &str,
+	manifest: &Manifest,
+) -> Result<LocalStatus> {
+	participant(f, admitted)
 		.reserve(caller, manifest)
 		.await
 		.map(Into::into)
 		.map_err(Into::into)
 }
-pub async fn prepare(f: &Federation, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
-	crate::bootstrap::transaction_participant(f)
+pub async fn prepare(
+	f: &Federation,
+	admitted: Option<&Admitted>,
+	caller: &str,
+	manifest: &Manifest,
+) -> Result<LocalStatus> {
+	participant(f, admitted)
 		.prepare(caller, manifest)
 		.await
 		.map(Into::into)
 		.map_err(Into::into)
 }
-pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
-	crate::bootstrap::transaction_participant(f)
+pub async fn finish(
+	f: &Federation,
+	admitted: Option<&Admitted>,
+	caller: &str,
+	manifest: &Manifest,
+) -> Result<LocalStatus> {
+	participant(f, admitted)
 		.finish(caller, manifest)
 		.await
 		.map(Into::into)

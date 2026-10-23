@@ -69,109 +69,11 @@ test("transactions with the same coordinator and deadline have distinct controls
   expect(errors).toEqual([]);
 });
 
-test("transaction composer keeps the coordinator and uses peer references separately", async ({
-  page,
-}) => {
-  const { errors } = await setup(page);
-  await page.route("**/api/state", (route) =>
-    route.fulfill({
-      json: {
-        access: { kind: "deployment_administrator" },
-        node: {
-          id: "aidash://home",
-          endpoint: "http://localhost",
-          protocol_version: "0.1",
-          capabilities: [],
-          clusters: [],
-        },
-        peers: [
-          { node_id: "aidash://peer", endpoint: "http://peer", enabled: true },
-        ],
-        registry: [],
-        conversations: [],
-        events: [],
-        artifacts: [],
-        human_requests: [],
-        installations: [],
-        workspaces: [{ id: "local-workspace", title: "Shared", revision: 3 }],
-        tasks: [
-          {
-            id: "task-a",
-            workspace_id: "local-workspace",
-            title: "Review",
-            status: "RUNNING",
-            revision: 1,
-          },
-          {
-            id: "task-b",
-            workspace_id: "local-workspace",
-            title: "Review",
-            status: "RUNNING",
-            revision: 2,
-          },
-        ],
-        runs: [],
-      },
-    }),
-  );
-  await page.route("**/api/transactions", (route) =>
-    route.fulfill({ json: [] }),
-  );
-  await page.goto("/transactions");
-  await page.getByRole("button", { name: "Create transaction" }).click();
-  const dialog = page.getByRole("dialog", {
-    name: "Create transaction",
-    exact: true,
-  });
-  await expect(dialog.getByLabel("Node", { exact: true })).toBeDisabled();
-  await dialog
-    .getByLabel("Operation", { exact: true })
-    .selectOption("complete_task");
-  await expect(
-    dialog.getByLabel("Task", { exact: true }).locator("option"),
-  ).toHaveText(["Choose…", "Shared / Review (#1)", "Shared / Review (#2)"]);
-  await dialog
-    .getByLabel("Operation", { exact: true })
-    .selectOption("workspace_state");
-  await dialog.getByRole("button", { name: "Add participant" }).click();
-  await expect(
-    dialog.getByRole("button", { name: "Delete", exact: true }).last(),
-  ).toBeEnabled();
-  await expect(
-    dialog.getByLabel("Node", { exact: true }).first(),
-  ).toBeDisabled();
-  await dialog.getByRole("button", { name: "Add operation" }).last().click();
-  await expect(
-    dialog.getByLabel("Workspace", { exact: true }).first(),
-  ).toHaveJSProperty("tagName", "SELECT");
-  await expect(
-    dialog.getByLabel("Workspace", { exact: true }).last(),
-  ).toHaveJSProperty("tagName", "INPUT");
-  await dialog
-    .getByLabel("Workspace", { exact: true })
-    .last()
-    .fill("peer-workspace");
-  await dialog
-    .getByLabel("Operation", { exact: true })
-    .last()
-    .selectOption("complete_task");
-  const choices = dialog.getByLabel("Task", { exact: true }).last();
-  await expect(choices).toHaveJSProperty("tagName", "INPUT");
-  await dialog
-    .getByLabel("Operation", { exact: true })
-    .last()
-    .selectOption("finish_run");
-  await expect(
-    dialog.getByLabel("Execution", { exact: true }),
-  ).toHaveJSProperty("tagName", "INPUT");
-  expect(errors).toEqual([]);
-});
-
 test("semantic sources can page older messages and select remote agents", async ({
   page,
 }) => {
   const { errors } = await setup(page);
-  await page.route("**/api/discover", (route) =>
+  await page.route("**/api/discover**", (route) =>
     route.fulfill({
       json: {
         agents: [

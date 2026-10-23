@@ -62,7 +62,7 @@ Cluster coordinators require all three coordination tools.
     {
       "kind": "memory",
       "target": {
-        "registry_node": "aidash://example",
+        "registry_deployment": "aidash://example",
         "id": "conversation-memory",
         "version": "1.0.0"
       },
@@ -215,7 +215,7 @@ Skill <alias> (<identity>; digest <digest>; origin <registry|attachment|root>):
 <SKILL.md body>
 ```
 
-`<identity>` is `<registry_node>/<id>@<version>` for a Registry Skill and
+`<identity>` is `<registry_deployment>/<id>@<version>` for a Registry Skill and
 `<origin>#<skill_id>` for a direct Skill. The legacy Registry Skill instructions
 and `Pinned Skills` listing are not emitted. A Registry Skill with packaged
 files ends its body with `Skill files are available through <tool> with alias
@@ -237,7 +237,7 @@ Legacy requests omit it.
 
 These tools are `core.exposure@1` Built-ins. They read only the Run's own catalog
 and change only the Run's Exposure set. Identities serialize as
-`{"registry": {"registry_node", "id", "version"}}` or
+`{"registry": {"registry_deployment", "id", "version"}}` or
 `{"direct_skill": {"skill_id", "origin"}}`.
 
 | Tool                  | Arguments                                | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |

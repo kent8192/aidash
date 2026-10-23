@@ -1,5 +1,5 @@
 //! Durable execution bindings retain the admitted subject chain and credential fence.
-use crate::{RunMetadata, qualified_agent};
+use crate::{RunMetadata, entities::agent_subject};
 use uuid::Uuid;
 
 /// Authenticated authority metadata, never constructed by request deserialization.
@@ -24,14 +24,14 @@ impl ExecutionGrant {
 	fn agent_matches(&self, node: &str, run: &RunMetadata) -> bool {
 		self.subject_chain.first() == Some(&self.root_subject)
 			&& self.subject_chain.last()
-				== Some(&qualified_agent(node, &run.agent_id, &run.agent_version))
+				== Some(&agent_subject(node, &run.agent_id, &run.agent_version))
 	}
-	pub fn matches_worker(&self, node: &str, run: &RunMetadata) -> bool {
-		run.home_node == node
+	pub fn matches_worker(&self, deployment: &str, run: &RunMetadata) -> bool {
+		run.is_local(deployment)
 			&& self.run_id == run.id
 			&& self.task_id == run.task_id
 			&& self.workspace_id == run.workspace_id
-			&& self.agent_matches(node, run)
+			&& self.agent_matches(&run.home_node, run)
 	}
 	pub fn matches_inherited(&self, identity: &ExecutionPrincipal, run: &RunMetadata) -> bool {
 		self.tenant == identity.tenant
@@ -42,7 +42,7 @@ impl ExecutionGrant {
 	}
 	pub fn matches_refreshed(
 		&self,
-		node: &str,
+		deployment: &str,
 		identity: &ExecutionPrincipal,
 		run: &RunMetadata,
 	) -> bool {
@@ -52,7 +52,7 @@ impl ExecutionGrant {
 			&& self.tenant == identity.tenant
 			&& self.root_subject == identity.subject
 			&& self.credential_id == identity.credential_id
-			&& self.agent_matches(node, run)
+			&& self.agent_matches(&format!("{deployment}/{}", run.node), run)
 	}
 	/// Credential rotation and chain changes force a retry at the authority boundary.
 	pub fn same_source(&self, initial: &Self) -> bool {

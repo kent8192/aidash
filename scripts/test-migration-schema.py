@@ -209,7 +209,7 @@ def main():
             + "/"
             + target,
             AIDASH_API_TOKEN=secrets.token_urlsafe(32),
-            AIDASH_NODE_ID="aidash://schema-parity",
+            AIDASH_DEPLOYMENT_ID="aidash://schema-parity",
         )
         try:
             for name, arguments in [

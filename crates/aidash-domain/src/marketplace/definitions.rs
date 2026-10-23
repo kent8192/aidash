@@ -45,7 +45,7 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 			for bound in &mut c.bindings {
 				let mut local = bound.target.local();
 				if bind(&mut local, bindings) {
-					bound.target.registry_node = node.into();
+					bound.target.registry_deployment = node.into();
 					bound.target.id = local.id;
 					bound.target.version = local.version;
 				}
@@ -60,10 +60,10 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 			entry.config = serde_json::to_value(config)?;
 		}
 		"tool" => {
-			crate::configuration::validate_node_id(node)?;
+			crate::nodes::DeploymentId::parse(node)?;
 			let mut c: crate::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config.clone())?;
-			c.registry_node = node.into();
+			c.registry_deployment = node.into();
 			if let Some(ToolConfig::Agent { agent, .. }) = &mut c.transport {
 				bind(agent, bindings);
 			}
@@ -71,7 +71,7 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 				for reference in [&mut lifecycle.poll, &mut lifecycle.cancel] {
 					let mut local = reference.local();
 					if bind(&mut local, bindings) {
-						reference.registry_node = node.into();
+						reference.registry_deployment = node.into();
 						reference.id = local.id;
 						reference.version = local.version;
 					}
@@ -80,13 +80,13 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 			entry.config = serde_json::to_value(c)?;
 		}
 		"bundle" => {
-			crate::configuration::validate_node_id(node)?;
+			crate::nodes::DeploymentId::parse(node)?;
 			let mut c: crate::registry::bindings::BundleConfig =
 				serde_json::from_value(entry.config.clone())?;
 			for reference in &mut c.members {
 				let mut local = reference.local();
 				if bind(&mut local, bindings) {
-					reference.registry_node = node.into();
+					reference.registry_deployment = node.into();
 					reference.id = local.id;
 					reference.version = local.version;
 				}

@@ -39,6 +39,8 @@ pub mod tenant_secrets;
 
 pub mod tenant_administration;
 
+pub mod node_registrations;
+pub mod nodes;
 pub mod tenants;
 
 pub mod invitations;

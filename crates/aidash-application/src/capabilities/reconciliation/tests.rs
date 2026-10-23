@@ -63,6 +63,7 @@ fn repository() -> Repository {
 			manifest: json!([]),
 		},
 		run: RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(3),
 			task_id: Uuid::from_u128(9),
 			workspace_id: Uuid::from_u128(10),

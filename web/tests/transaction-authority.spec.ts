@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
+import { defaultNode } from "./registry-fixture";
+import type { TransactionManifest } from "../src/generated/models";
 
 // UI contract evidence; the Rust suites exercise the same authority boundaries
 // against independent PostgreSQL databases and authenticated peer HTTP.
@@ -167,65 +169,169 @@ test("subjects visiting authorization see their own API tokens without Deploymen
   expect(deploymentAdministratorRequests).toEqual([]);
 });
 
-test("peer trust retains pending revocations across refresh and supports checking completion", async ({
+test("subject transaction creation waits for its selected Node", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  let releaseNodes!: () => void;
+  const nodesReady = new Promise<void>((resolve) => {
+    releaseNodes = resolve;
+  });
+  await page.route("**/api/tenants/acme/nodes", async (route) => {
+    await nodesReady;
+    await route.fallback();
+  });
+  await page.goto("/transactions");
+  const create = page.getByRole("button", {
+    name: "Create transaction",
+    exact: true,
+  });
+  try {
+    await expect(create).toBeDisabled();
+  } finally {
+    releaseNodes();
+  }
+  await expect(create).toBeEnabled();
+  await create.click();
+  const node = page.getByRole("dialog").getByLabel("Node", { exact: true });
+  await expect(node).toBeDisabled();
+  await expect(node).toHaveValue(`aidash://home/${defaultNode.name}`);
+});
+
+test("administrators compose transactions in one local Node", async ({
   page,
 }) => {
   await setup(page);
-  let enabled = true;
-  let pending: string[] = [];
-  let attempts = 0;
-  const changes: boolean[] = [];
-  await page.route("**/api/transactions**", (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/trust")) {
-      if (route.request().method() === "POST") {
-        const input = route.request().postDataJSON();
-        changes.push(input.enabled);
-        enabled = input.enabled;
-        pending = ++attempts === 1 ? ["pending-trust-transaction"] : [];
-        return route.fulfill({
-          status: pending.length ? 202 : 200,
-          json: {
-            node_id: "aidash://peer",
-            enabled,
-            pending_transactions: pending,
-          },
-        });
-      }
-      return route.fulfill({
-        json: [
-          { node_id: "aidash://peer", enabled, pending_transactions: pending },
+  const workspaces = ["first", "second"].map((node, index) => ({
+    id: `workspace-${index + 1}`,
+    node,
+    title: `${node} workspace`,
+    goal: "Keep changes in one Node",
+    state: {},
+    revision: index + 1,
+    created_at: "2026-10-22T00:00:00Z",
+  }));
+  const tasks = workspaces.map((workspace, index) => ({
+    id: `task-${index + 1}`,
+    workspace_id: workspace.id,
+    title: `${workspace.node} task`,
+    description: "Stay in the selected Node",
+    status: "RUNNING",
+    owner: null,
+    created_by: "human",
+    requirements: {},
+    dependencies: [],
+    parent_id: null,
+    revision: index + 2,
+    created_at: workspace.created_at,
+  }));
+  const runs = tasks.map((task, index) => ({
+    id: `run-${index + 1}`,
+    node: workspaces[index].node,
+    workspace_id: task.workspace_id,
+    task_id: task.id,
+    home_node: `aidash://home/${workspaces[index].node}`,
+    agent_id: "researcher",
+    agent_version: "1.0.0",
+    phase: "THINKING",
+    control: "ACTIVE",
+    state: {},
+    recovery: { retry: null, lease_recovered: false },
+    step: 1,
+    revision: index + 3,
+    error: null,
+    updated_at: workspaces[index].created_at,
+  }));
+  await page.route("**/api/state", (route) =>
+    route.fulfill({
+      json: {
+        access: { kind: "deployment_administrator" },
+        deployment: {
+          id: "aidash://home",
+          endpoint: "http://localhost",
+          protocol_version: "0.4",
+          key: null,
+        },
+        workspaces,
+        tasks,
+        runs: [
+          ...runs,
+          { ...runs[1], id: "remote-run", home_node: "aidash://remote/lab" },
         ],
-      });
+        registry: [],
+        conversations: [],
+        human_requests: [],
+        events: [],
+        artifacts: [],
+      },
+    }),
+  );
+  let submitted: TransactionManifest | undefined;
+  await page.route("**/api/transactions**", (route) => {
+    if (route.request().method() === "POST") {
+      submitted = route.request().postDataJSON();
+      return route.fulfill({ status: 403, json: { error: "forbidden" } });
     }
     return route.fulfill({ json: [] });
   });
   await page.goto("/transactions");
-  await page.getByRole("button", { name: "Revoke trust", exact: true }).click();
-  const notice = page
-    .getByRole("status")
-    .filter({ hasText: "pending-trust-transaction" });
-  await expect(notice).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Check revocation", exact: true }),
-  ).toBeVisible();
-  await page.reload();
-  await expect(notice).toBeVisible();
   await page
-    .getByRole("button", { name: "Check revocation", exact: true })
+    .getByRole("button", { name: "Create transaction", exact: true })
     .click();
-  await expect(notice).toHaveCount(0);
+  const dialog = page.getByRole("dialog");
+  const node = dialog.getByLabel("Node", { exact: true });
+  await expect(node).toBeEnabled();
+  await node.selectOption("aidash://home/second");
+  const workspace = dialog.getByLabel("Workspace", { exact: true });
+  await expect(workspace.locator('option[value="workspace-1"]')).toHaveCount(0);
+  await workspace.selectOption("workspace-2");
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("2");
   await expect(
-    page.getByRole("button", { name: "Check revocation", exact: true }),
-  ).toHaveCount(0);
-  expect(changes).toEqual([false, false]);
+    dialog.getByRole("button", { name: "Add participant", exact: true }),
+  ).toBeDisabled();
+  const operation = dialog.getByLabel("Operation", { exact: true });
+  await operation.selectOption("complete_task");
+  const task = dialog.getByLabel("Task", { exact: true });
+  await expect(task.locator('option[value="task-1"]')).toHaveCount(0);
+  await task.selectOption("task-2");
+  await operation.selectOption("finish_run");
+  const run = dialog.getByLabel("Execution", { exact: true });
+  await expect(run.locator('option[value="run-1"]')).toHaveCount(0);
+  await expect(run.locator('option[value="remote-run"]')).toHaveCount(0);
+  await run.selectOption("run-2");
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("4");
+  await node.selectOption("aidash://home/first");
+  await expect(run).toHaveValue("");
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("0");
+  await run.selectOption("run-1");
+  await dialog
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: "Submit transaction", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(submitted?.coordinator).toBe("aidash://home/first");
+  expect(submitted?.participants).toEqual([
+    {
+      node_id: "aidash://home/first",
+      mutations: [
+        {
+          kind: "finish_run",
+          run_id: "run-1",
+          task_id: "task-1",
+          expected_revision: 3,
+        },
+      ],
+    },
+  ]);
 });
 
-test("subjects submit explicit remote participant IDs without peer inventory", async ({
+test("subjects submit from their selected Node with explicit remote participant IDs", async ({
   page,
 }) => {
   await setup(page, { subject: true });
-  let submitted: { participants: { node_id: string }[] } | undefined;
+  let submitted: TransactionManifest | undefined;
   await page.route("**/api/transactions**", (route) => {
     if (route.request().method() === "POST") {
       submitted = route.request().postDataJSON();
@@ -247,16 +353,17 @@ test("subjects submit explicit remote participant IDs without peer inventory", a
   await dialog
     .getByLabel("Node", { exact: true })
     .nth(1)
-    .fill("aidash://remote");
+    .fill("aidash://remote/lab");
   await dialog
     .getByRole("button", { name: "Review changes", exact: true })
     .click();
-  await expect(dialog).toContainText("aidash://remote");
+  await expect(dialog).toContainText("aidash://remote/lab");
   await dialog
     .getByRole("button", { name: "Submit transaction", exact: true })
     .click();
   await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(submitted?.coordinator).toBe(`aidash://home/${defaultNode.name}`);
   expect(
     submitted?.participants.map((participant) => participant.node_id),
-  ).toEqual(["aidash://home", "aidash://remote"]);
+  ).toEqual([`aidash://home/${defaultNode.name}`, "aidash://remote/lab"]);
 });

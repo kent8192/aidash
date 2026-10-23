@@ -41,11 +41,7 @@ async fn mapped<'a>(
 	description: &Description,
 ) -> Result<(Box<dyn ReceiverScope + 'a>, Area)> {
 	let mut scope = repository
-		.begin_peer(
-			source,
-			&description.source_tenant,
-			&description.source_subject,
-		)
+		.begin_peer(source, &description.source_subject)
 		.await?;
 	let result = async {
 		if description.protocol != "file-transfer/1"
@@ -54,30 +50,21 @@ async fn mapped<'a>(
 		{
 			return Err(Error::Forbidden);
 		}
-		scope
-			.require(
-				&scope.resource("node", repository.node_id(), json!({})),
-				"file.transfer",
-			)
-			.await?;
+		let node = scope.node_resource().await?;
+		scope.require(&node, "file.transfer").await?;
 		let mut subjects = scope.subjects().to_vec();
-		subjects.push(aidash_domain::qualified_agent(
-			repository.node_id(),
+		subjects.push(aidash_domain::agent_subject(
+			&description.target.node_id,
 			&description.target.agent_id,
 			&description.target.agent_version,
 		));
 		scope.set_subjects(subjects);
 		let area: Area = scope
-			.recipient(description, repository.node_id())
+			.recipient(description, &description.target.node_id)
 			.await?
 			.ok_or_else(|| Error::NotFound("recipient unavailable".into()))?;
 		scope.authorize(&area, "file.receive").await?;
-		scope
-			.require(
-				&scope.resource("node", repository.node_id(), json!({})),
-				"file.transfer",
-			)
-			.await?;
+		scope.require(&node, "file.transfer").await?;
 		let entry = scope
 			.entry(
 				&EntityRef {
@@ -127,15 +114,12 @@ pub async fn negotiate(
 	node: &str,
 	input: Requester,
 ) -> Result<Value> {
-	let mut scope = repository
-		.begin_peer(node, &input.tenant, &input.subject)
-		.await?;
-	let result = scope
-		.require(
-			&scope.resource("node", repository.node_id(), json!({})),
-			"file.transfer",
-		)
-		.await;
+	let mut scope = repository.begin_peer(node, &input.subject).await?;
+	let result = async {
+		let node = scope.node_resource().await?;
+		scope.require(&node, "file.transfer").await
+	}
+	.await;
 	finish(scope, result).await?;
 	if !repository.limits().admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
@@ -155,7 +139,7 @@ pub async fn prepare(
 	// No receiver policy locks are held across the callback to source authority.
 	let description: Description = serde_json::from_value(
 		repository
-			.request(source, "/scoped/files/describe", &json!(input))
+			.callback(source, "/scoped/files/describe", &json!(input))
 			.await?,
 	)?;
 	if description.transfer_id != input.transfer_id
@@ -259,7 +243,7 @@ pub async fn commit(
 	// of the transport credential. Never hold receiver locks for this callback.
 	let fresh: Description = serde_json::from_value(
 		repository
-			.request(source, "/scoped/files/describe", &json!(input))
+			.callback(source, "/scoped/files/describe", &json!(input))
 			.await?,
 	)?;
 	let (mut scope, mut area, mut record, description) =
@@ -293,10 +277,10 @@ pub async fn commit(
             aidash_domain::registry::rules::validate_path(&received.path)?;delivered.push(received.clone());entries.push(received);
         }
         area.manifest=json!(entries);
-        area.constraints.as_array_mut().ok_or(Error::Forbidden)?.push(json!({"kind":"received_scope","transfer_id":record.id,"owner":area.owner,"agent":aidash_domain::qualified_agent(repository.node_id(),&description.target.agent_id,&description.target.agent_version)}));
+        area.constraints.as_array_mut().ok_or(Error::Forbidden)?.push(json!({"kind":"received_scope","transfer_id":record.id,"owner":area.owner,"agent":aidash_domain::agent_subject(&description.target.node_id,&description.target.agent_id,&description.target.agent_version)}));
         scope.publish(&mut area).await?;
         record.state="committed".into();record.expires_at=None;
-        record.data["receipt"]=json!({"id":record.id,"node_id":repository.node_id(),"area_id":area.id,"revision":area.revision,"manifest_digest":description.manifest_digest,"files":delivered});
+        record.data["receipt"]=json!({"id":record.id,"node_id":description.target.node_id,"area_id":area.id,"revision":area.revision,"manifest_digest":description.manifest_digest,"files":delivered});
         scope.update(&mut record).await?;
         scope.event(area.workspace_id,"capability.files_received",json!({"transfer_id":record.id,"area_id":area.id,"source_node":source})).await?;
         Ok(view(&record))
@@ -317,11 +301,7 @@ pub async fn status(
 	// sharing permission. Its metadata is still scoped to the original mapped
 	// subject; status never returns original bytes or creates a new binding.
 	let scope = repository
-		.begin_peer(
-			source,
-			&description.source_tenant,
-			&description.source_subject,
-		)
+		.begin_peer(source, &description.source_subject)
 		.await?;
 	if record.tenant != scope.tenant()
 		|| record.owner != scope.principal()
@@ -336,9 +316,7 @@ pub async fn recipients(
 	source: &str,
 	input: Requester,
 ) -> Result<Value> {
-	let mut scope = repository
-		.begin_peer(source, &input.tenant, &input.subject)
-		.await?;
+	let mut scope = repository.begin_peer(source, &input.subject).await?;
 	let result = recipient_list(&mut *scope, repository.node_id(), input.cursor).await;
 	finish(scope, result).await
 }
@@ -347,9 +325,8 @@ pub async fn recipient_list(
 	node: &str,
 	cursor: Option<Uuid>,
 ) -> Result<Value> {
-	scope
-		.require(&scope.resource("node", node, json!({})), "file.transfer")
-		.await?;
+	let resource = scope.node_resource().await?;
+	scope.require(&resource, "file.transfer").await?;
 	let rows: Vec<Area> = scope.recipient_rows(cursor).await?;
 	let next_cursor = if rows.len() == 51 {
 		Some(rows[49].id)
@@ -369,11 +346,7 @@ pub async fn recipient_list(
 		for version in versions {
 			let subjects = scope.subjects().to_vec();
 			let mut delegated = scope.subjects().to_vec();
-			delegated.push(aidash_domain::qualified_agent(
-				node,
-				&area.agent_id,
-				&version,
-			));
+			delegated.push(aidash_domain::agent_subject(node, &area.agent_id, &version));
 			scope.set_subjects(delegated);
 			let allowed = async {
 				scope.authorize(&area, "file.receive").await?;

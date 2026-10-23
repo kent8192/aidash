@@ -120,7 +120,7 @@ impl GenerationPolicies for NativePolicies {
 		Ok(Box::new(Session {
 			configured: self.store.provider_credentials.is_some(),
 			mode,
-			node: self.store.node_id.clone(),
+			node: self.store.deployment.to_string(),
 		}))
 	}
 }
@@ -218,12 +218,11 @@ impl PolicySession for Session {
 			return Ok(Some(serde_json::to_value(entry)?));
 		}
 		let tx = self.tx();
-		let metadata: Option<Value> =
-			{
-				let query_bind_1 = tenant;
-				let query_bind_2 = &reference.id;
-				let query_bind_3 = &reference.version;
-				crate::database::native::query_scalar(
+		let metadata: Option<Value> = {
+			let query_bind_1 = tenant;
+			let query_bind_2 = &reference.id;
+			let query_bind_3 = &reference.version;
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col((
 						Alias::new("r"),
@@ -236,7 +235,7 @@ impl PolicySession for Session {
 						Expr::cust("r.tenant = c.tenant AND r.id = c.entry_id AND r.version = c.entry_version"),
 					)
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(c.tenant = ? AND c.entry_id = ? AND c.entry_version = ? AND c.enabled)"
+						"(c.tenant = ? AND c.entry_id = ? AND c.entry_version = ? AND c.enabled AND c.node = (SELECT n.name FROM nodes n WHERE n.tenant = c.tenant AND n.is_default))"
 							.to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
@@ -250,7 +249,7 @@ impl PolicySession for Session {
 			)
 			.scalar_optional(&mut **tx)
 			.await?
-			};
+		};
 
 		Ok(metadata)
 	}

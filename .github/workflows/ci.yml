@@ -292,8 +292,6 @@ jobs:
           printf '{"admission":true,"storage":"%s/storage","outbound_origins":["https://example.com"]}' "$profile" > "$profile/profile.json"
           export AIDASH_CAPABILITY_PROFILE="$profile/profile.json"
           export RUST_TEST_THREADS=2 RUST_MIN_STACK=8388608
-          export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
-          export AIDASH_SECRET_GRAPH_THIRD=local-third-graph-peer-token-9876543210
           cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
   community-export:
     name: Community export
@@ -393,6 +391,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
+      - run: python3 -m unittest discover -s scripts -p test_local_k8s_credentials.py
       - run: python3 -m unittest discover -s scripts -p test_ci_success_aggregate.py
       # Fixed-task evaluator (#122): deterministic corpus, oracles and guard rails; no Docker or credentials.
       - run: python3 -m unittest discover -s scripts -p test_fixed_task_evaluation.py

@@ -51,7 +51,7 @@ async function editableDrafts(
               {
                 kind: "tool",
                 target: {
-                  registry_node: "aidash://home",
+                  registry_deployment: "aidash://home",
                   id: "http",
                   version: "1.0.0",
                 },
@@ -1175,7 +1175,7 @@ for (const [width, locale] of [
                   {
                     kind: "tool",
                     target: {
-                      registry_node: "aidash://home",
+                      registry_deployment: "aidash://home",
                       id: "source-reader",
                       version: "2.0.0",
                     },
@@ -1188,7 +1188,7 @@ for (const [width, locale] of [
               : ["1.0.0", "2.0.0"].map((version) => ({
                   kind: "skill",
                   target: {
-                    registry_node: "aidash://home",
+                    registry_deployment: "aidash://home",
                     id: "registered-research-skill",
                     version,
                   },

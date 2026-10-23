@@ -47,13 +47,12 @@ managers = []
 url = "/static/"
 root = "staticfiles"
 
-# The Offering this Deployment runs. The Community build runs only
-# "self-hosted", the default; the Enterprise build runs "cloud" or "dedicated".
+# The Deployment: its Offering, identity and runtime. The Community build
+# runs only the "self-hosted" Offering, the default; the Enterprise build runs
+# "cloud" or "dedicated".
 [deployment]
 offering = "self-hosted"
-
-[node]
-node_id = "aidash://local"
+id = "aidash://local"
 endpoint = "http://127.0.0.1:8000"
 # api_token = "set-a-random-deployment-administrator-token-at-least-16-characters"
 nats_url = "nats://127.0.0.1:4222"
@@ -64,6 +63,20 @@ worker_count = 4
 # Worker probe listeners are disabled unless this address is configured.
 # probe_listen = "127.0.0.1:8081"
 background_enabled = true
+# Federation with other Deployments. Off, this Deployment refuses and sends no
+# token-bearing request. Exchange between Nodes of this Deployment is not
+# affected.
+federation = true
+
+# The Deployment Key signs Federation tokens, and /.well-known/aidash publishes
+# its public key. Without it this Deployment cannot federate with others. Name
+# one of `file` and `kms`. Create the file with `manage deployment-key generate`
+# and show its key ID with `manage deployment-key show`. A relative path starts
+# at core.base_dir.
+# [deployment.key]
+# file = "/var/lib/aidash/deployment-key.pem"
+# Enterprise build only: a Cloud KMS Ed25519 key version.
+# kms = "projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1"
 
 # Tenancy Rules: how Tenants come to exist and how people join them. The
 # Offering supplies each rule left out; these are the Self-hosted Offering's.
@@ -77,6 +90,8 @@ personal_tenants = false
 tenant_creation = false
 creation_per_hour = 5
 creation_total = 20
+# How many Nodes a Tenant may hold (1 to 1000). A Tier may be stricter.
+# nodes_per_tenant = 10
 # Let Tenant Administrators and Deployment Administrators issue Invitations.
 invitations = true
 # Days a deleted Tenant stays restorable before its data is purged (1 to 90).

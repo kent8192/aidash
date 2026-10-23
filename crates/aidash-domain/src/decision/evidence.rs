@@ -23,7 +23,7 @@ pub struct Boundary {
 }
 impl Boundary {
 	pub fn validate(&self) -> Result<()> {
-		crate::configuration::validate_node_id(&self.node)?;
+		crate::nodes::validate_node_ref(&self.node)?;
 		validate_digest(&self.input_digest)?;
 		if self.step < 0
 			|| self.run_revision < 0
@@ -414,7 +414,7 @@ impl Evidence {
 	fn validate_identity(&self) -> Result<()> {
 		self.boundary.validate()?;
 		self.decider.validate()?;
-		if self.decider.identity.registry_node != self.boundary.node {
+		if self.decider.identity.registry_deployment != self.boundary.node {
 			return Err(Error::Invalid(
 				"historical Decider differs from the execution Node".into(),
 			));

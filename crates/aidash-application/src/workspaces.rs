@@ -2,6 +2,7 @@
 use crate::{Result, ports::workspaces::ConversationScope};
 use aidash_domain::{
 	NewTask,
+	nodes::NodeName,
 	registry::EntityRef,
 	workspaces::{ConversationResponse, conversation_agent, validate_conversation_target},
 };
@@ -12,13 +13,17 @@ pub struct ConversationRequest<'a> {
 	pub goal: &'a str,
 	pub target: &'a EntityRef,
 	pub target_kind: &'a str,
+	/// The Node the Workspace goes to; the Tenant's default Node when absent.
+	pub node: Option<&'a NodeName>,
 }
 
 pub async fn conversation(
 	scope: &mut dyn ConversationScope,
 	input: ConversationRequest<'_>,
 ) -> Result<ConversationResponse> {
-	let workspace = scope.create_workspace(input.title, input.goal).await?;
+	let workspace = scope
+		.create_workspace(input.title, input.goal, input.node)
+		.await?;
 	scope.workspace_context(workspace.id).await?;
 	scope.require_workspace("workspace.read").await?;
 	let entry = scope.registry_entry(input.target, "registry.read").await?;

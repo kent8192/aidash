@@ -440,11 +440,12 @@ pub(crate) async fn approved(
 				.column(Alias::new("enabled"))
 				.from(Alias::new("authorization_catalog"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(tenant=? AND entry_id=? AND entry_version=?)".to_owned(),
+					"(tenant=? AND entry_id=? AND entry_version=? AND node=(SELECT name FROM nodes WHERE tenant=? AND is_default))".to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),
 						Expr::value(query_bind_3.to_owned()).into(),
+						Expr::value(query_bind_1.to_owned()).into(),
 					],
 				))
 				.lock(LockType::Share)

@@ -1,8 +1,6 @@
 //! Source policy independently authorizes every actor and exact receiver dependency.
 use crate::{Error, Result, ports::authorization::source::SourceAuthorityScope};
-use aidash_domain::{
-	Task, federation::execution::Inspection, policy::SubjectKind, qualified_agent,
-};
+use aidash_domain::{Task, federation::execution::Inspection, policy::SubjectKind};
 use serde_json::json;
 pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 	access: &mut S,
@@ -13,7 +11,8 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 	access
 		.generation_home(task, node, inspection.generation.as_ref())
 		.await?;
-	let executor = qualified_agent(node, &inspection.agent.id, &inspection.agent.version);
+	let executor =
+		aidash_domain::agent_subject(node, &inspection.agent.id, &inspection.agent.version);
 	if access.source_subjects().last() != Some(&executor)
 		|| access
 			.source_bundle()

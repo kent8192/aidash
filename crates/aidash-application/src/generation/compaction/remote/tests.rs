@@ -49,6 +49,7 @@ fn reference() -> EntityRef {
 fn world() -> World {
 	let now = DateTime::<Utc>::from_timestamp(1000, 0).unwrap();
 	let run = Run {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
 		workspace_id: Uuid::from_u128(3),

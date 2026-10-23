@@ -62,7 +62,7 @@ that Environment), renders `{"provider_credentials": ...}` into a ConfigMap and
 points `AIDASH_PROVIDER_CREDENTIAL_SETTINGS` at it. Pass the all-null descriptor
 to override file settings with "no managed Store"; `null` renders nothing.
 `gcip.settings` takes `{dashboard: {gcip: {...}}}` with only the managed public
-GCIP keys; its `public_origin` must equal `node.endpoint`. It is rendered the same
+GCIP keys; its `public_origin` must equal `deployment.endpoint`. It is rendered the same
 way for `AIDASH_GCIP_SETTINGS`. Changing either restarts server and worker.
 
 ## Metadata server egress

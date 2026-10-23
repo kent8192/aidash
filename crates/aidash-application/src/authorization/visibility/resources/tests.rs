@@ -205,7 +205,7 @@ fn event(kind: &str, data: Value) -> Event {
 	Event {
 		sequence: 1,
 		id: Uuid::from_u128(10),
-		node_id: "aidash://node".into(),
+		node: None,
 		workspace_id: Some(Uuid::from_u128(2)),
 		kind: kind.into(),
 		data,

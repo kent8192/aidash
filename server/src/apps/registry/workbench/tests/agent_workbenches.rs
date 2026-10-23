@@ -64,7 +64,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		(
 			"fixture-tool",
 			"tool",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
+			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":config});
@@ -100,7 +100,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	.await;
 	let token = credential["token"].as_str().unwrap();
 	let mut entry = agent();
-	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
+	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	let (status, draft) = request(
 		&app,
 		token,
@@ -406,7 +406,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let catalog = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.catalog("acme")
+	.catalog("acme", &aidash_domain::nodes::NodeName::derived("acme"))
 	.await
 	.unwrap();
 	assert!(catalog.is_empty(), "{catalog:?}");

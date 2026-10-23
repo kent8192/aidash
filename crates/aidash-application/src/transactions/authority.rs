@@ -75,6 +75,7 @@ pub async fn inherit_run(
 pub async fn checks(
 	scope: &mut dyn TransactionAuthorityScope,
 	input: &Preflight,
+	node: &str,
 	action: &str,
 ) -> Result<()> {
 	let transaction = scope.resource(
@@ -85,6 +86,7 @@ pub async fn checks(
 	scope.require(&transaction, action).await?;
 	// Establish every stored origin before evaluating any mutation.
 	for target in &input.targets {
+		scope.require_target_node(node, target).await?;
 		match target.kind.as_str() {
 			"task" => scope.inherit_task(target.id).await?,
 			"run" => {
@@ -158,6 +160,7 @@ pub async fn source_checks(
 	checks(
 		scope,
 		&request(manifest, origin, &manifest.coordinator)?,
+		&manifest.coordinator,
 		action,
 	)
 	.await?;

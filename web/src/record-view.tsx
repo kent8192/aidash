@@ -1,21 +1,30 @@
 import { createContext, useContext, type ReactNode } from "react";
-import { NativeSelect } from "./components/ui/native-select";
+import { NodeSelectionContext, useNodes, type NodeSelection } from "./nodes";
+import { registryDeployment } from "./node-selection";
 import type { State } from "./types";
 import { JsonView, useEntityLabel, useEntityName, useI18n } from "./ui";
 import { presentRecord } from "./record-presentation";
 
 export const DisplayState = createContext<State | undefined>(undefined);
+/** What the dashboard shows: State narrowed to one Node, and the Tenant's Nodes. */
 export function DisplayProvider({
   data,
+  nodes,
   children,
 }: {
   data?: State;
+  nodes: NodeSelection;
   children: ReactNode;
 }) {
-  return <DisplayState.Provider value={data}>{children}</DisplayState.Provider>;
+  return (
+    <DisplayState.Provider value={data}>
+      <NodeSelectionContext value={nodes}>{children}</NodeSelectionContext>
+    </DisplayState.Provider>
+  );
 }
 export function useRecordLabels() {
   const data = useContext(DisplayState);
+  const { nodes } = useNodes();
   const { t } = useI18n();
   const entityName = useEntityName(data?.registry ?? []);
   const entityLabel = useEntityLabel(data?.registry ?? []);
@@ -24,7 +33,7 @@ export function useRecordLabels() {
     labels.set(entry.id, entityName(entry));
     labels.set(`${entry.id}@${entry.version}`, entityLabel(entry));
     labels.set(
-      `${data!.node.id}/${entry.id}@${entry.version}`,
+      `${registryDeployment(data!)}/${entry.id}@${entry.version}`,
       entityLabel(entry),
     );
     if (entry.kind === "agent")
@@ -52,9 +61,13 @@ export function useRecordLabels() {
       return t("unavailableEntity");
     }
   };
-  if (data) labels.set(data.node.id, endpointLabel(data.node.endpoint));
-  for (const peer of data?.peers ?? [])
-    labels.set(peer.node_id, endpointLabel(peer.endpoint));
+  if (data) {
+    // `node.id` is a Node's address once a Tenant's Node is selected, and the
+    // Deployment names itself in a transaction.
+    labels.set(data.node.id, endpointLabel(data.node.endpoint));
+    labels.set(registryDeployment(data), endpointLabel(data.node.endpoint));
+  }
+  for (const node of nodes) labels.set(node.address, node.label);
   return labels;
 }
 export function useNodeLabel() {
@@ -81,38 +94,4 @@ export function ReferenceName({ id }: { id: string }) {
   const labels = useRecordLabels();
   const { t } = useI18n();
   return <>{labels.get(id) ?? t("unavailableEntity")}</>;
-}
-
-export function PeerSelect({
-  id,
-  name,
-  initial = "",
-  disabled = false,
-}: {
-  id?: string;
-  name: string;
-  initial?: string;
-  disabled?: boolean;
-}) {
-  const data = useContext(DisplayState);
-  const { t } = useI18n();
-  return (
-    <NativeSelect
-      id={id}
-      name={name}
-      required
-      defaultValue={initial}
-      disabled={disabled}
-    >
-      <option value="">{t("choose")}</option>
-      {data?.peers.map((peer) => (
-        <option key={peer.node_id} value={peer.node_id}>
-          <ReferenceName id={peer.node_id} />
-        </option>
-      ))}
-      {initial && !data?.peers.some((peer) => peer.node_id === initial) && (
-        <option value={initial}>{t("unavailableEntity")}</option>
-      )}
-    </NativeSelect>
-  );
 }

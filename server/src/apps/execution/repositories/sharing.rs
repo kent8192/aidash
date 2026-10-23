@@ -97,7 +97,7 @@ impl SharingScope for Scope<'_> {
 	}
 
 	fn node_id(&self) -> &str {
-		self.store.map_or("", |store| store.node_id.as_str())
+		self.store.map_or("", |store| store.deployment.as_str())
 	}
 	fn sharing_limits(&self) -> Result<Limits> {
 		let p = &self.store.ok_or_else(missing)?.capabilities.0;
@@ -124,7 +124,7 @@ impl SharingScope for Scope<'_> {
 				let query_bind_2 = area.workspace_id;
 				let query_bind_3 = target.thread_id;
 				let query_bind_4 = &target.agent_id;
-				let query_bind_5 = &store.node_id;
+				let query_bind_5 = store.deployment.as_str();
 				let query_bind_6 = &access.identity.subject;
 				crate::database::native::query_as(
 					&sessions::select("core_areas")
@@ -159,13 +159,10 @@ impl SharingScope for Scope<'_> {
 									vec![Expr::value(query_bind_4.to_owned()).into()],
 								)),
 						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("home_node")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								)),
-						)
+						.and_where(crate::database::scope::in_deployment(
+							"home_node",
+							query_bind_5,
+						))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("owner"))).eq(
 								SimpleExpr::CustomWithExpr(

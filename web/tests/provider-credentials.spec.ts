@@ -88,12 +88,11 @@ async function setup(
       return route.fulfill({
         json: {
           access,
-          node: {
+          deployment: {
             id: "aidash://test",
             endpoint: "http://localhost",
             protocol_version: "0.1",
-            capabilities: [],
-            clusters: [],
+            key: null,
           },
           registry: [],
           workspaces: [],
@@ -104,11 +103,8 @@ async function setup(
           conversations: [],
           human_requests: [],
           installations: [],
-          peers: [],
         },
       });
-    if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/tenants/alpha/provider-credentials") {
       expect(request.method()).toBe("GET");
       if (options.disabled)
@@ -400,6 +396,15 @@ test("the callback outcome is reported once and removed from the address", async
   expect(new URL(page.url()).searchParams.get("provider_authorization")).toBe(
     null,
   );
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Connect OpenRouter", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "OpenRouter authorization failed" }),
+  ).toHaveCount(0);
 });
 test("a connection left unbound is not reported as connected", async ({
   page,

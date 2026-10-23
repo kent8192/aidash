@@ -1,5 +1,5 @@
 meta {
-  name: 0129 remote-semantic-home-provenance - Anonymous request is rejected
+  name: 0129 remote-semantic-home-provenance - Missing scoped authority cannot disclose application data
   type: http
   seq: 129
 }
@@ -12,9 +12,10 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

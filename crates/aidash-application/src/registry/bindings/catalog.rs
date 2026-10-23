@@ -22,7 +22,7 @@ impl BindingCatalog for LookupCatalog<'_> {
 		self.definitions.foreign_agent(self.node, reference).await
 	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
-		if reference.registry_node != self.node {
+		if reference.registry_deployment != self.node {
 			return Err(Error::Invalid(
 				"Binding origin is unavailable on this Node".into(),
 			));

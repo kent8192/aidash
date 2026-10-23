@@ -15,7 +15,7 @@ pub struct Frontend {
 pub async fn provide_frontend(#[inject] settings: ProjectSettings) -> Frontend {
 	Frontend {
 		storage: Arc::new(LocalStorage::new(
-			settings.core.base_dir.join(&settings.node.web_dir),
+			settings.core.base_dir.join(&settings.deployment.web_dir),
 			"/",
 		)),
 	}

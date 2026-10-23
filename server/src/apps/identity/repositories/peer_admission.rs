@@ -33,6 +33,7 @@ use std::{borrow::Borrow, ops::DerefMut};
 use uuid::Uuid;
 struct Record {
 	id: Uuid,
+	node: String,
 	source_node: String,
 	grant_id: Uuid,
 	task_id: Uuid,
@@ -43,6 +44,7 @@ struct Record {
 }
 crate::native_record!(Record {
 	id,
+	node,
 	source_node,
 	grant_id,
 	task_id,
@@ -52,10 +54,17 @@ crate::native_record!(Record {
 	description
 });
 
+/// The receiving Node of a stored admission. The column references `nodes`,
+/// which validated the name when the Node was created.
+fn stored_node(node: &str) -> aidash_domain::nodes::NodeName {
+	aidash_domain::nodes::NodeName::parse(node).expect("a stored Node name is valid")
+}
+
 impl From<Record> for State {
 	fn from(r: Record) -> Self {
 		Self {
 			id: r.id,
+			node: stored_node(&r.node),
 			source_node: r.source_node,
 			grant_id: r.grant_id,
 			task_id: r.task_id,
@@ -70,6 +79,7 @@ impl From<crate::apps::federation::peer::models::AuthorizationRemoteAdmission> f
 	fn from(r: crate::apps::federation::peer::models::AuthorizationRemoteAdmission) -> Self {
 		Self {
 			id: r.id,
+			node: stored_node(&r.node),
 			source_node: r.source_node,
 			grant_id: r.grant_id,
 			task_id: r.task_id,
@@ -81,6 +91,8 @@ impl From<crate::apps::federation::peer::models::AuthorizationRemoteAdmission> f
 	}
 }
 pub(crate) struct Scope<A, F> {
+	/// The receiving Node an admission is written for.
+	pub(crate) receiver: aidash_domain::nodes::NodeName,
 	pub(crate) access: A,
 	pub(crate) runtime: F,
 }
@@ -100,7 +112,21 @@ where
 	F: Borrow<Federation> + Send + Sync,
 {
 	fn node_id(&self) -> &str {
-		&self.runtime.borrow().config.node_id
+		self.runtime.borrow().config.deployment.as_str()
+	}
+	fn receiver_address(&self) -> String {
+		self.runtime
+			.borrow()
+			.config
+			.deployment
+			.node(self.receiver.clone())
+			.to_string()
+	}
+	async fn receiver_resource(&mut self) -> Result<Resource> {
+		self.access
+			.node_resource(&self.receiver)
+			.await
+			.map_err(Into::into)
 	}
 	fn identity(&self) -> ExecutionPrincipal {
 		let id = &self.access.identity;
@@ -167,7 +193,7 @@ where
 
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>> {
 		let f = self.runtime.borrow();
-		crate::generation::remote::lineage(&mut self.access, &f.config.node_id)
+		crate::generation::remote::lineage(&mut self.access, f.config.deployment.as_str())
 			.await
 			.map_err(Into::into)
 	}
@@ -178,7 +204,7 @@ impl PeerAdmissionScope for Owned {
 		let result: NativeResult<()> = async {
 			let access = &mut *self.access;
 			{
-				let query_bind_1 = format!("{source}:{}", description.task.id);
+				let query_bind_1 = format!("{}:{source}:{}", self.receiver, description.task.id);
 				crate::database::native::query(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
@@ -216,15 +242,17 @@ impl PeerAdmissionScope for Owned {
 			Ok({
 				let query_bind_1 = source;
 				let query_bind_2 = input.grant_id;
+				let query_bind_3 = self.receiver.as_str();
 				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("authorization_remote_admissions"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(source_node=? AND grant_id=?)".to_owned(),
+							"(source_node=? AND grant_id=? AND node=?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
+								Expr::value(query_bind_3.to_owned()).into(),
 							],
 						))
 						.to_string(PostgresQueryBuilder),
@@ -256,6 +284,7 @@ impl PeerAdmissionScope for Owned {
 				let query_bind_6 = access.identity.credential_id;
 				let query_bind_7 = &access.subjects;
 				let query_bind_8 = serde_json::to_value(description)?;
+				let query_bind_9 = self.receiver.as_str();
 				crate::database::native::query(&format!(
 					"{} ON CONFLICT DO NOTHING",
 					reinhardt::query::Query::insert()
@@ -271,6 +300,7 @@ impl PeerAdmissionScope for Owned {
 							reinhardt::query::Alias::new("credential_id"),
 							reinhardt::query::Alias::new("subject_chain"),
 							reinhardt::query::Alias::new("description"),
+							reinhardt::query::Alias::new("node"),
 						])
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -306,6 +336,10 @@ impl PeerAdmissionScope for Owned {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_8.to_owned()).into()]
 								))
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_9.to_owned()).into()]
+								))
 								.to_owned()
 						)
 						.to_owned()
@@ -327,6 +361,7 @@ impl PeerAdmissionScope for Owned {
 			let row: Option<Record> = {
 				let query_bind_1 = source;
 				let query_bind_2 = input.grant_id;
+				let query_bind_3 = self.receiver.as_str();
 				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
@@ -336,10 +371,11 @@ impl PeerAdmissionScope for Owned {
 							"authorization_remote_admissions",
 						))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(source_node = ? AND grant_id = ?)".to_owned(),
+							"(source_node = ? AND grant_id = ? AND node = ?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
+								Expr::value(query_bind_3.to_owned()).into(),
 							],
 						))
 						.lock(reinhardt::query::LockType::Share)
@@ -476,7 +512,7 @@ impl PeerAdmissionScope for Owned {
 			let access = &mut *self.access;
 			let d = description;
 			{
-				let query_bind_1 = format!("{source}:{}", d.task.id);
+				let query_bind_1 = format!("{}:{source}:{}", self.receiver, d.task.id);
 				crate::database::native::query(
 					&Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
@@ -505,7 +541,7 @@ impl PeerAdmissionScope for Owned {
 			let node = access.node_id.clone();
 			let snapshot = d.inspection.binding_snapshot.clone();
 			snapshot.validate()?;
-			if snapshot.agent.registry_node != node || !snapshot.remote {
+			if snapshot.agent.registry_deployment != node || !snapshot.remote {
 				return Err(crate::Error::Forbidden);
 			}
 			// The receiver executes the Run, so its own Cache Salt Key decides;
@@ -531,6 +567,7 @@ impl PeerAdmissionScope for Owned {
 							"task_id",
 							"workspace_id",
 							"home_node",
+							"node",
 							"agent_id",
 							"agent_version",
 							"context",
@@ -544,6 +581,7 @@ impl PeerAdmissionScope for Owned {
 							.expr(Expr::cust("$2"))
 							.expr(Expr::cust("$3"))
 							.expr(Expr::cust("$4"))
+							.expr(Expr::cust("$9"))
 							.expr(Expr::cust("$5"))
 							.expr(Expr::cust("$6"))
 							.expr(Expr::cust("$7"))
@@ -561,6 +599,7 @@ impl PeerAdmissionScope for Owned {
 			.bind(&d.inspection.agent.version)
 			.bind(serde_json::to_value(context)?)
 			.bind(&access.identity.tenant)
+			.bind(self.receiver.as_str())
 			.execute(&mut **access.tx)
 			.await?;
 			super::provider_credentials::admit(
@@ -710,19 +749,37 @@ impl PeerAdmissionRecords for Repository<'_> {
 impl PeerAdmissionRepository for Repository<'_> {
 	type Scope = Owned;
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
-	async fn request(&self, source: &str, path: &str, input: &Value) -> Result<Value> {
-		crate::authorization::peer::authority_request(self.runtime, source, path, input)
+	async fn request(
+		&self,
+		receiver: &aidash_domain::nodes::NodeName,
+		source: &str,
+		path: &str,
+		input: &Value,
+	) -> Result<Value> {
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: self.runtime.node_tenant_of(receiver).await?,
+			node: Some(receiver.clone()),
+			subject: None,
+		};
+		crate::authorization::peer::authority_request(self.runtime, &sender, source, path, input)
 			.await
 			.map_err(Into::into)
 	}
-	async fn mapped(&self, source: &str, tenant: &str, subject: &str) -> Result<Owned> {
+	async fn mapped(
+		&self,
+		receiver: &aidash_domain::nodes::NodeName,
+		source: &str,
+		subject: &str,
+	) -> Result<Owned> {
 		let access =
-			crate::authorization::peer::access(self.runtime, source, tenant, subject).await?;
+			crate::authorization::peer::mapped_access(self.runtime, receiver, source, subject)
+				.await?;
 		Ok(Scope {
 			runtime: self.runtime.clone(),
 			access: Box::new(access),
+			receiver: receiver.clone(),
 		})
 	}
 	async fn verify_record(&self, id: Uuid, source: &str) -> Result<Option<State>> {

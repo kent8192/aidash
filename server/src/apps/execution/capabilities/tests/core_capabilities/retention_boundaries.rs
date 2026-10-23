@@ -437,13 +437,15 @@ fn sharing_generation_fixture(
 			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true}),
 		)
 		.await;
 		assert_eq!(status, 200, "{saved}");
-		f.c.policy["subjects"]
-			[aidash_server::domain::qualified_agent(&f.c.f.config.node_id, "research", "1.2.0")] =
-			json!({"kind":"agent"});
+		f.c.policy["subjects"][aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
+			"research",
+			"1.2.0",
+		)] = json!({"kind":"agent"});
 		crate::common::replace_policy(&f.c.f.store, "acme", f.c.policy.clone()).await;
 		let (status, area) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.2.0","title":"New generation","description":"Current receiver version"})).await;
 		assert_eq!(status, 200, "{area}");
@@ -460,7 +462,7 @@ fn sharing_generation_fixture(
 		)
 		.await;
 		let file = &source["manifest"][0];
-		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":source["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":f.c.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":f.new_thread["id"]}});
+		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":source["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),"agent_id":"research","agent_version":"1.1.0","thread_id":f.new_thread["id"]}});
 		let path = format!("/api/runs/{}/files/share", sender.id);
 		let (_, session) = request(
 			&f.c.app,

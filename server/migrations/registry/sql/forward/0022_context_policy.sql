@@ -12,10 +12,10 @@ BEGIN
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
  OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
- OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
  IF COALESCE(value->'cluster','null'::jsonb) <> 'null'::jsonb
- AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+ AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_deployment":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
  IF jsonb_typeof(COALESCE(value->'max_steps','64'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'max_steps','64') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
  step_count := COALESCE(value->>'max_steps','64')::numeric;
  IF step_count NOT BETWEEN 1 AND 1000 THEN RETURN false; END IF;
@@ -41,7 +41,7 @@ BEGIN
   summary := COALESCE(context_policy->'summary','null'::jsonb);
   IF summary <> 'null'::jsonb THEN
    IF jsonb_typeof(summary) <> 'object' OR summary - ARRAY['model','max_tokens','call_budget']::text[] <> '{}'::jsonb
-   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(summary->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
+   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(summary->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)
    OR jsonb_typeof(COALESCE(summary->'max_tokens','4096'::jsonb)) <> 'number' OR NOT COALESCE(summary->>'max_tokens','4096') ~ '^[0-9]+$'
    OR jsonb_typeof(COALESCE(summary->'call_budget','8'::jsonb)) <> 'number' OR NOT COALESCE(summary->>'call_budget','8') ~ '^[0-9]+$' THEN RETURN false; END IF;
    IF COALESCE(summary->>'max_tokens','4096')::numeric NOT BETWEEN 256 AND 4096

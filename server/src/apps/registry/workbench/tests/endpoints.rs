@@ -168,7 +168,7 @@ async fn tenants_set_their_own_test_limits_at_the_revision_they_read(
 		"id":"no-test-limits","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["workbench.test_limits.update"],"resources":{"kinds":["*"]},
 		"condition":{"op":"eq","left":{"source":"environment","path":"/node_id"},
-			"right":{"source":"literal","value":app.runtime.config.node_id}}
+			"right":{"source":"literal","value":app.runtime.config.deployment}}
 	}));
 	assert_json(
 		app.deployment_administrator

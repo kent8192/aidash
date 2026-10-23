@@ -433,7 +433,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.into_table(Alias::new("events"))
 			.columns([
 				Alias::new("id"),
-				Alias::new("node_id"),
+				Alias::new("node"),
 				Alias::new("workspace_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
@@ -442,9 +442,11 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(Uuid::new_v4()))
-					.expr(Expr::value(node))
 					.expr(Expr::value(
-						(node == owned.home_node).then_some(owned.workspace_id),
+						owned.is_local(node).then(|| owned.node.to_string()),
+					))
+					.expr(Expr::value(
+						owned.is_local(node).then_some(owned.workspace_id),
 					))
 					.expr(Expr::value("run.invalid_state"))
 					.expr(Expr::value(

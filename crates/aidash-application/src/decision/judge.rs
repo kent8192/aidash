@@ -143,7 +143,7 @@ impl DecisionGate<'_> {
 				"bound Decider is not the admitted approval Decider".into(),
 			));
 		}
-		if judged.decider.pin.identity.registry_node != judged.boundary.node
+		if judged.decider.pin.identity.registry_deployment != judged.boundary.node
 			|| self.provider.implementation_id() != judged.decider.pin.provider_implementation
 			|| self.provider.configuration_digest()? != judged.decider.pin.configuration_digest
 		{

@@ -497,13 +497,13 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
 	let t = Team::new(runtime).await;
-	sqlx::query(
-		"INSERT INTO peers (node_id, endpoint, credential_env, protocol_version, enabled) \
-		 VALUES ('aidash://node-remote', 'https://remote.example', 'AIDASH_SECRET_TEST_PEER', '0.1', true)",
-	)
-	.execute(t.d.federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	// A Node of another Tenant, registered at this Tenant's default Node.
+	let (_, _, _, remote) = t.d.nodes_tenant("Remote").await;
+	let receiving =
+		t.d.default_node(&t.alice, &t.alice_context, &t.tenant)
+			.await;
+	t.d.accepts(&t.alice, &t.alice_context, &t.tenant, &remote)
+		.await;
 	let (status, body) = t
 		.replace(|bundle| {
 			bundle["subjects"]["ci"] = json!({"kind":"service","groups":["members"]});
@@ -517,7 +517,7 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		.bob("POST", "/credentials", json!({"subject":"bob"}))
 		.await;
 	let mapping = |credential: &Value, revision: i64, enabled: bool| {
-		json!({"source_node":"aidash://node-remote","source_tenant":"remote","source_subject":"agent",
+		json!({"node":receiving,"source_node":remote,"source_subject":"agent",
 			"credential_id":credential["credential"]["id"],"enabled":enabled,
 			"expected_revision":revision})
 	};
@@ -565,7 +565,7 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		t.d.as_deployment_administrator(
 			"POST",
 			&t.path("/peer-mappings"),
-			json!({"source_node":"aidash://node-remote","source_tenant":"remote","source_subject":"other",
+			json!({"node":receiving,"source_node":remote,"source_subject":"other",
 				"credential_id":mapping_credential,"enabled":true,"expected_revision":0}),
 		)
 		.await;

@@ -150,7 +150,7 @@ impl GenerationControlScope for Scope {
 #[async_trait]
 impl GenerationLifecycleScope for Scope {
 	fn node_id(&self) -> &str {
-		&self.runtime.config.node_id
+		self.runtime.config.deployment.as_str()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()

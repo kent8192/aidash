@@ -5,6 +5,8 @@ use serde::Serialize;
 #[schemars(rename = "Binding")]
 pub struct Binding {
 	pub tenant: String,
+	/// The Node the approval applies to.
+	pub node: crate::nodes::NodeName,
 	pub entry_id: String,
 	pub entry_version: String,
 	pub enabled: bool,

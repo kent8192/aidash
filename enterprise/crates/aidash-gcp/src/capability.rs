@@ -1,4 +1,5 @@
 //! Google Cloud REST adapters. Signing and Key Material reads use separate identities.
+pub mod deployment_key;
 pub mod issuer;
 use aidash_capability::{KeyMaterialError, KeyMaterialSource, SignError, TokenSigner};
 use async_trait::async_trait;

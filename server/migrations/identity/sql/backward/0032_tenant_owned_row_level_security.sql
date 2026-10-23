@@ -1,3 +1,6 @@
+DROP POLICY tenant_isolation ON public.nodes;
+ALTER TABLE public.nodes NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.nodes DISABLE ROW LEVEL SECURITY;
 DROP POLICY tenant_isolation ON public.dashboard_execution_origins;
 ALTER TABLE public.dashboard_execution_origins NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.dashboard_execution_origins DISABLE ROW LEVEL SECURITY;

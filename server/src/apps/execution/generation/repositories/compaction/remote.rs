@@ -24,7 +24,7 @@ pub(crate) struct NativeRemoteCompaction<'a> {
 #[async_trait]
 impl RemoteCompactionAuthority for NativeRemoteCompaction<'_> {
 	fn node_id(&self) -> &str {
-		&self.federation.config.node_id
+		self.federation.config.deployment.as_str()
 	}
 	fn catalog(&mut self) -> &mut dyn CatalogScope {
 		&mut self.catalog

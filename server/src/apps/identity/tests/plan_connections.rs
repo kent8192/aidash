@@ -391,7 +391,7 @@ fn plan_runtime(
 		f.store.plan_connections = Some(Arc::new(Service {
 			repository: Arc::new(NativeRepository {
 				pool: f.store.control_pool.clone(),
-				node: f.store.node_id.clone(),
+				node: f.store.deployment.to_string(),
 			}),
 			store: parts.store.clone(),
 			reader: parts.store.clone(),
@@ -1260,12 +1260,12 @@ async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingS
 		&mut aidash_application::registry::bindings::catalog::LocalCatalog(
 			aidash_application::registry::bindings::catalog::LookupCatalog {
 				definitions: &mut Lookup(&f.registry),
-				node: &f.config.node_id,
+				node: f.config.deployment.as_str(),
 			},
 		),
 		&aidash_server::bootstrap::registry_validation().with_plan_connections(true),
 		aidash_domain::registry::bindings::QualifiedRef {
-			registry_node: f.config.node_id.clone(),
+			registry_deployment: f.config.deployment.to_string(),
 			id: agent.id.clone(),
 			version: agent.version.clone(),
 		},

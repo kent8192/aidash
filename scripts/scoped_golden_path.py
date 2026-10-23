@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from golden_path import tool_descriptor, tool_binding, PEER_TOKEN, api_request, entity, tenant_subject, wait_for
+from golden_path import tool_descriptor, tool_binding, api_request, entity, tenant_subject, default_node, register_node, wait_for
 
 # Budget for a scoped Run to reach its crash boundary, and again to complete
 # after the SIGKILL. Each durable phase performs bounded Home RPCs before its
@@ -35,10 +35,23 @@ def denied(base, path, body=None, codes=(403, 404), **kwargs):
         raise AssertionError(f"Unauthorized request succeeded: {path}")
 
 
+def serve(handler, listener=None):
+    """A threaded HTTP server for `handler`, on a socket the caller bound earlier when it passes one (keeping its port)."""
+    if listener is None:
+        return http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = http.server.ThreadingHTTPServer(listener.getsockname(), handler, bind_and_activate=False)
+    server.socket.close()
+    server.socket = listener
+    server.server_address = listener.getsockname()
+    server.server_name, server.server_port = server.server_address[:2]
+    server.server_activate()
+    return server
+
+
 class PeerProxy:
     """Forward actual peer replies, optionally withholding a committed Home reply."""
 
-    def __init__(self, upstream, forbidden_tokens):
+    def __init__(self, upstream, forbidden_tokens, listener=None):
         self.upstream = upstream
         self.forbidden_tokens = forbidden_tokens
         self.errors = []
@@ -57,8 +70,8 @@ class PeerProxy:
                 pass
 
             def do_GET(self):
-                # Peer registration resolves the real Node identity before it
-                # stores an endpoint. Do not synthesize that handshake.
+                # Registering a Node pins the key its Deployment publishes. Do
+                # not synthesize that handshake.
                 with urllib.request.urlopen(proxy.upstream + self.path, timeout=10) as response:
                     payload = response.read()
                     self.send_response(response.status)
@@ -71,7 +84,8 @@ class PeerProxy:
                 raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 try:
                     text = raw.decode()
-                    assert self.headers.get("Authorization") == f"Bearer {PEER_TOKEN}", "Peer transport must use its own credential"
+                    assert self.headers.get("Authorization", "").startswith("Bearer "), "Peer transport must send a Federation token"
+                    assert self.headers.get("x-aidash-protocol") == "0.4", "Peer transport must speak the current protocol"
                     assert not any(token in text or token in str(self.headers) for token in proxy.forbidden_tokens), "Subject credential forwarded to a peer"
                     body = json.loads(raw)
                     started = time.monotonic()
@@ -112,7 +126,7 @@ class PeerProxy:
                     proxy.errors.append(type(error).__name__ + ": " + str(error))
                     self.send_error(502)
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = serve(Handler, listener)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -183,16 +197,7 @@ class Providers:
                     fixture.errors.append(type(error).__name__ + ": " + str(error))
                     self.send_error(502)
 
-        if listener is None:
-            self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        else:
-            # Take over a socket the caller bound earlier, keeping its port.
-            self.server = http.server.ThreadingHTTPServer(listener.getsockname(), Handler, bind_and_activate=False)
-            self.server.socket.close()
-            self.server.socket = listener
-            self.server.server_address = listener.getsockname()
-            self.server.server_name, self.server.server_port = self.server.server_address[:2]
-            self.server.server_activate()
+        self.server = serve(Handler, listener)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -201,7 +206,7 @@ class Providers:
         self.server.server_close()
 
 
-def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worker, counts):
+def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worker, counts, proxy_sockets):
     """Required Golden Path branch; any missing assertion fails the parent run.
 
     The model provider listens on the already bound `provider_socket`, whose
@@ -209,12 +214,13 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
     """
     source_tenant, receiver_tenant = "golden-source", "golden-receiver"
     agent = {"id": "scoped-researcher", "version": "1.0.0"}
-    executor = f"{node_b}/agents/{agent['id']}@{agent['version']}"
-    tokens = [PEER_TOKEN]
+    agent_ref = f"{agent['id']}@{agent['version']}"
+    tokens = []
     subject_tokens = []
     fixture = Providers(tokens, provider_socket)
-    home = PeerProxy(base_a, subject_tokens)
-    receiver = PeerProxy(base_b, subject_tokens)
+    # Each Node reaches the other through a proxy on a port its Deployment permits.
+    home = PeerProxy(base_a, subject_tokens, proxy_sockets[0])
+    receiver = PeerProxy(base_b, subject_tokens, proxy_sockets[1])
     initial_counts = counts()
     scenarios = []
 
@@ -235,27 +241,31 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 except Exception as error:
                     fixture.errors.append(str(error))
 
-    def peer(base, other, endpoint):
-        api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
-
-    def policy(base, label, subject):
+    def policy(base, label, subject, agents):
         # Aidash assigns Tenant names; the fixture's names become labels.
-        tenant, credential = tenant_subject(base, label, subject, agents=(executor,))
+        tenant, credential = tenant_subject(base, label, subject, agents=agents)
         subject_tokens.append(credential["token"])
         tokens.append(credential["token"])
         return tenant, credential
 
     def catalog(entry, enabled, revision):
-        return api_request(base_b, f"/api/authorization/{receiver_tenant}/catalog", {"entry": entry, "enabled": enabled, "expected_revision": revision}, token=mapped["token"])
+        return api_request(base_b, f"/api/authorization/{receiver_tenant}/catalog", {"node": receiver_node, "entry": entry, "enabled": enabled, "expected_revision": revision}, token=mapped["token"])
 
+    registered = False
     try:
-        peer(base_a, node_b, receiver.url)
-        peer(base_b, node_a, home.url)
-        source_tenant, source = policy(base_a, source_tenant, "alice")
-        receiver_tenant, mapped = policy(base_b, receiver_tenant, "remote-alice")
-        _, outsider = policy(base_a, "golden-outsider", "alice")
+        # The receiver's Agent executes on its Tenant's default Node, which the
+        # source Tenant's policy names as a subject too.
+        receiver_tenant, mapped = policy(base_b, receiver_tenant, "remote-alice", agents=(agent_ref,))
+        receiver_node, address_b = default_node(base_b, receiver_tenant)
+        source_tenant, source = policy(base_a, source_tenant, "alice", agents=(f"{address_b}/agents/{agent_ref}",))
+        _, outsider = policy(base_a, "golden-outsider", "alice", agents=())
+        source_node, address_a = default_node(base_a, source_tenant)
         token = source["token"]
-        api_request(base_b, f"/api/authorization/{receiver_tenant}/peer-mappings", {"source_node": node_a, "source_tenant": source_tenant, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
+        # Each Tenant's default Node accepts the other's, reaching it through the observing proxies.
+        register_node(base_a, source_tenant, address_b, receiver.url)
+        register_node(base_b, receiver_tenant, address_a, home.url)
+        registered = True
+        api_request(base_b, f"/api/authorization/{receiver_tenant}/peer-mappings", {"node": receiver_node, "source_node": address_a, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
         entries = [
             entity("model", "scoped-model", {"provider": "openrouter", "model_id": "fixture", "endpoint": fixture.url + "/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
             entity("tool", "scoped-effect", tool_descriptor(node_b, {"transport": "http", "endpoint": fixture.url + "/effect", "replay": "unsafe"}, "scoped_effect")),
@@ -277,7 +287,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         _, rejected_task = create_task("receiver-denies-dependency")
         for reference in ({"id": "scoped-model", "version": "1.0.0"}, {"id": "scoped-effect", "version": "1.0.0"}, agent):
             catalog(reference, False, 1)
-            denied(base_a, f"/api/tasks/{rejected_task['id']}/delegate", {"node_id": node_b, "agent": agent}, token=token)
+            denied(base_a, f"/api/tasks/{rejected_task['id']}/delegate", {"node_id": address_b, "agent": agent}, token=token)
             catalog(reference, True, 2)
         assert counts() == initial_counts, "Denied execution created a binding/admission"
 
@@ -286,7 +296,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             path = f"/api/tasks/{task['id']}/remote-grants"
             grant = str(uuid.uuid4())
             # The grant must outlive both recovery waits and the setup between them.
-            preparation = {"id": grant, "node_id": node_b, "agent": agent, "ttl_seconds": 2 * RECOVERY_BUDGET_SECONDS + 120}
+            preparation = {"id": grant, "node_id": address_b, "agent": agent, "ttl_seconds": 2 * RECOVERY_BUDGET_SECONDS + 120}
             prepared = api_request(base_a, path, preparation, token=token)
             assert api_request(base_a, path, preparation, token=token) == prepared
             denied(base_a, path, {**preparation, "id": str(uuid.uuid4())}, token=outsider["token"])
@@ -297,12 +307,13 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             assert activated["admission_id"] == run_id
             assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
 
-            # The legacy path must reject even an authenticated peer. #371
-            # removed its route, so the dashboard's GET-only asset route
-            # answers the POST with 405.
-            peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.2"}
-            denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(403, 404, 405), token=PEER_TOKEN, headers=peer_headers)
-            denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
+            # The legacy path is not served, and a request without a Federation
+            # token that a registered Node signed is refused. #371 removed the
+            # legacy route, so the dashboard's GET-only asset route answers the
+            # POST with 405.
+            peer_headers = {"x-aidash-protocol": "0.4"}
+            denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(401, 403, 404, 405), token="not-a-federation-token", headers=peer_headers)
+            denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, codes=(401, 403, 404), token="not-a-federation-token", headers=peer_headers)
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}", token=mapped["token"])["run"]
 
@@ -318,7 +329,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
 
             before = run()
             assert before["agent_id"] == agent["id"] and before["agent_version"] == agent["version"]
-            assert before["task_id"] == task["id"] and before["home_node"] == node_a
+            assert before["task_id"] == task["id"] and before["home_node"] == address_a
             old_pid = worker.pid
             worker.kill()
             assert worker.wait(timeout=10) == -signal.SIGKILL
@@ -370,7 +381,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             # The receiver holds no row for the source-owned workspace, so a
             # receiver subject's state never lists this Run. Count Node B's
             # Runs from the Deployment Administrator's Node-wide view.
-            matching = [item for item in api_request(base_b, "/api/state")["runs"] if item["task_id"] == task["id"] and item["home_node"] == node_a]
+            matching = [item for item in api_request(base_b, "/api/state")["runs"] if item["task_id"] == task["id"] and item["home_node"] == address_a]
             assert len(matching) == 1 and matching[0]["id"] == run_id
             statuses = api_request(base_a, f"/api/tasks/{task['id']}/remote-executions", token=token)
             assert len(statuses) == 1 and statuses[0]["execution"]["run_id"] == run_id
@@ -392,8 +403,10 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         approval_stop.set()
         home.release.set()
         home.unavailable.clear()
-        peer(base_a, node_b, base_b)
-        peer(base_b, node_a, base_a)
+        if registered:
+            # Leave the Nodes reaching one another directly, as other branches expect.
+            register_node(base_a, source_tenant, address_b, base_b)
+            register_node(base_b, receiver_tenant, address_a, base_a)
         home.close()
         receiver.close()
         fixture.close()

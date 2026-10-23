@@ -16,6 +16,7 @@ use reinhardt::query::{
 
 struct BindingRow {
 	tenant: String,
+	node: String,
 	entry_id: String,
 	entry_version: String,
 	enabled: bool,
@@ -23,6 +24,7 @@ struct BindingRow {
 }
 crate::native_record!(BindingRow {
 	tenant,
+	node,
 	entry_id,
 	entry_version,
 	enabled,
@@ -33,6 +35,7 @@ impl From<BindingRow> for Binding {
 	fn from(row: BindingRow) -> Self {
 		Self {
 			tenant: row.tenant,
+			node: aidash_domain::nodes::NodeName::parse(&row.node).expect("stored Node name"),
 			entry_id: row.entry_id,
 			entry_version: row.entry_version,
 			enabled: row.enabled,
@@ -92,6 +95,7 @@ async fn registered(
 async fn compare_and_set(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
 	entry: &EntityRef,
 	expected_revision: i64,
 	enabled: bool,
@@ -107,6 +111,7 @@ async fn compare_and_set(
 					.into_table(Alias::new("authorization_catalog"))
 					.columns([
 						Alias::new("tenant"),
+						Alias::new("node"),
 						Alias::new("entry_id"),
 						Alias::new("entry_version"),
 						Alias::new("enabled"),
@@ -118,6 +123,7 @@ async fn compare_and_set(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
 							))
+							.expr(Expr::value(node.as_str()))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
@@ -134,14 +140,21 @@ async fn compare_and_set(
 							.to_owned(),
 					)
 					.on_conflict(
-						OnConflict::columns(["tenant", "entry_id", "entry_version"])
+						OnConflict::columns(["tenant", "node", "entry_id", "entry_version"])
 							.do_nothing()
 							.to_owned(),
 					)
 					.returning_all()
 					.to_string(PostgresQueryBuilder),
 			)
-			.columns(&["tenant", "entry_id", "entry_version", "enabled", "revision"])
+			.columns(&[
+				"tenant",
+				"node",
+				"entry_id",
+				"entry_version",
+				"enabled",
+				"revision",
+			])
 			.fetch_optional(&mut **tx)
 			.await?
 		}
@@ -171,6 +184,10 @@ async fn compare_and_set(
 										"(?)".to_owned(),
 										vec![Expr::value(query_bind_1.to_owned()).into()],
 									)),
+							)
+							.add(
+								reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("node")))
+									.eq(Expr::value(node.as_str())),
 							)
 							.add(
 								reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
@@ -234,6 +251,7 @@ async fn history(
 				.into_table(Alias::new("authorization_catalog_history"))
 				.columns([
 					Alias::new("tenant"),
+					Alias::new("node"),
 					Alias::new("entry_id"),
 					Alias::new("entry_version"),
 					Alias::new("revision"),
@@ -246,6 +264,7 @@ async fn history(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
+						.expr(Expr::value(binding.node.as_str()))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
@@ -275,7 +294,11 @@ async fn history(
 	};
 	Ok(())
 }
-pub(crate) async fn bindings(pool: &Pool, tenant: &str) -> Result<Vec<Binding>> {
+pub(crate) async fn bindings(
+	pool: &Pool,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+) -> Result<Vec<Binding>> {
 	let rows: Vec<BindingRow> = {
 		let query_bind_1 = tenant;
 		crate::database::native::query_as(
@@ -290,6 +313,7 @@ pub(crate) async fn bindings(pool: &Pool, tenant: &str) -> Result<Vec<Binding>> 
 						),
 					),
 				)
+				.and_where(Expr::col("node").eq(Expr::value(node.as_str())))
 				.order_by(Alias::new("entry_id"), Order::Asc)
 				.order_by(Alias::new("entry_version"), Order::Asc)
 				.to_string(PostgresQueryBuilder),
@@ -308,11 +332,12 @@ impl CatalogMutation for NativeMutation<'_> {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
 	) -> aidash_application::Result<Option<Binding>> {
-		compare_and_set(self.0, tenant, reference, expected_revision, enabled)
+		compare_and_set(self.0, tenant, node, reference, expected_revision, enabled)
 			.await
 			.map_err(Into::into)
 	}
@@ -332,12 +357,13 @@ impl CatalogMutation for NativeAdministrator<'_> {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		node: &aidash_domain::nodes::NodeName,
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
 	) -> aidash_application::Result<Option<Binding>> {
 		self.mutation
-			.compare_and_set(tenant, reference, expected_revision, enabled)
+			.compare_and_set(tenant, node, reference, expected_revision, enabled)
 			.await
 	}
 	async fn history(&mut self, binding: &Binding, actor: &str) -> aidash_application::Result<()> {

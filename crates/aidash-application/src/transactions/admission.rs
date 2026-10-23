@@ -33,8 +33,18 @@ pub async fn submit_in(
 	origin: Option<&Origin>,
 ) -> Result<Status> {
 	super::validate(manifest)?;
-	if manifest.coordinator != scope.node_id() {
+	if aidash_domain::nodes::deployment_of(&manifest.coordinator)
+		!= aidash_domain::nodes::deployment_of(scope.node_id())
+	{
 		return Err(Error::Invalid("submit to the named coordinator".into()));
+	}
+	// The coordinator is a Node of this Deployment, and of the submitter's
+	// Tenant whatever the participants are.
+	let holder = scope.node_tenant(&manifest.coordinator).await?;
+	match (holder, origin) {
+		(None, _) => return Err(Error::Invalid("submit to the named coordinator".into())),
+		(Some(holder), Some(origin)) if holder != origin.tenant => return Err(Error::Forbidden),
+		_ => {}
 	}
 	match scope.status(manifest.id).await {
 		Ok(existing) => {
@@ -59,11 +69,13 @@ pub async fn submit_in(
 		));
 	}
 	for node in &manifest.participants {
-		if node.node_id != scope.node_id() {
-			scope.resolve_peer(&node.node_id).await?;
-			if !scope.trusted(&node.node_id).await? {
-				return Err(Error::Forbidden);
-			}
+		// The coordinator is this transaction's own Node.
+		if node.node_id != manifest.coordinator
+			&& !scope
+				.trusted(&manifest.coordinator, &node.node_id, origin)
+				.await?
+		{
+			return Err(Error::Forbidden);
 		}
 	}
 	let stored = scope.admit(manifest).await?;

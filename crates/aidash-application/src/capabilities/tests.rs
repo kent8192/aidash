@@ -222,6 +222,7 @@ fn input() -> ShellRequest {
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
+		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(2),
 		task_id: Uuid::from_u128(3),
 		workspace_id: Uuid::from_u128(4),

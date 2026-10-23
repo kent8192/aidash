@@ -7,6 +7,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// The Node whose Catalog Approval determines availability. Omitting it selects
+/// the Tenant's default Node; the stored preferences and Decider stay Tenant-wide.
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ApprovalNodeQuery")]
+pub struct NodeQuery {
+	pub node: Option<aidash_domain::nodes::NodeName>,
+}
+
 /// What stands in the way of an Approval Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -13,6 +13,9 @@ pub fn validate_inspection(
 	agent: &EntityRef,
 	requirements: &Search,
 ) -> Result<()> {
+	// `node` names the receiving Node; its registry is its Deployment's.
+	let deployment = aidash_domain::nodes::NodeAddress::parse(node)?.deployment;
+	let deployment = deployment.as_str();
 	if inspection.authority_digest.len() != 71
 		|| !inspection.authority_digest.starts_with("sha256:")
 		|| !inspection.authority_digest.as_bytes()[7..]
@@ -31,7 +34,9 @@ pub fn validate_inspection(
 	validation.validate_in(&inspection.agent, true)?;
 	let snapshot = &inspection.binding_snapshot;
 	snapshot.validate()?;
-	if !snapshot.remote || snapshot.agent.registry_node != node || snapshot.agent.local() != *agent
+	if !snapshot.remote
+		|| snapshot.agent.registry_deployment != deployment
+		|| snapshot.agent.local() != *agent
 	{
 		return Err(Error::External(
 			"receiver Binding placement mismatch".into(),
@@ -39,7 +44,7 @@ pub fn validate_inspection(
 	}
 	let mut expected = BTreeMap::new();
 	for pinned in &snapshot.definitions {
-		if pinned.identity.registry_node != node {
+		if pinned.identity.registry_deployment != deployment {
 			return Err(Error::External(
 				"unsupported foreign receiver dependency".into(),
 			));

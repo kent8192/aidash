@@ -317,7 +317,7 @@ impl ApprovalScope for Scope<'_> {
 			&mut *access.tx,
 			&access.snapshot.bundle,
 			&access.identity.tenant,
-			&store.node_id,
+			store.deployment.as_str(),
 			access.subjects.first().map(String::as_str),
 			run,
 		)

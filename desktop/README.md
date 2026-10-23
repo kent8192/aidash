@@ -141,7 +141,6 @@ bash scripts/test-desktop-browser.sh
 RUSTC_WRAPPER= cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
 # Uses the existing disposable Testcontainers PostgreSQL/NATS fixture:
 RUSTC_WRAPPER= RUST_MIN_STACK=8388608 \
-  AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789 \
   cargo test --locked --test desktop_auth --test dashboard_oidc
 # Real packaged Tauri + WebKitGTK + Secret Service, in a disposable Linux container:
 bash desktop/tests/linux.sh

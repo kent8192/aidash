@@ -7,3 +7,9 @@ pub mod management;
 pub mod runtime;
 
 pub(crate) mod input_fences;
+
+pub(crate) mod inbound;
+
+pub(crate) mod local;
+
+pub(crate) mod wire;

@@ -26,9 +26,12 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 	let database = database.await;
 	database.tenant("acme").await;
 	let pool = database.connection.into_postgres().unwrap();
-	let store = Store::from_pool(pool, "aidash://local-delivery".into())
-		.await
-		.unwrap();
+	let store = Store::from_pool(
+		pool,
+		aidash_domain::nodes::DeploymentId::parse("aidash://local-delivery").unwrap(),
+	)
+	.await
+	.unwrap();
 	let mut db = database.lease.handle();
 	let mut records = Vec::new();
 	// Arrange earlier ineligible rows before two eligible terminal deliveries.
@@ -89,7 +92,7 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 		let run = Run {
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			home_node: home.into(),
+			home_node: format!("{home}/{}", terminal_run.node),
 			phase,
 			updated_at: Utc::now() + Duration::seconds(index as i64),
 			..terminal_run.clone()

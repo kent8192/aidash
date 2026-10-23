@@ -29,30 +29,17 @@ use crate::domain::RunMetadata;
 use aidash_domain::federation::graph::*;
 use reinhardt::Query as QueryParams;
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
+/// Holds the sender's registration of `node` until the transaction ends.
 pub(crate) async fn source_peer_lease(
 	tx: &mut crate::database::native::Transaction,
+	own: &aidash_domain::nodes::DeploymentId,
+	sender: &aidash_domain::federation::route::Sender,
 	node: &str,
 ) -> Result<()> {
-	let enabled: Option<String> = {
-		let query_bind_1 = node;
-		crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("node_id"))
-				.from(Alias::new("peers"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ? AND enabled)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut **tx)
+	crate::apps::federation::remote::repositories::routes::route_to(tx, own, sender, node, true)
 		.await?
-	};
-	if enabled.is_none() {
-		return Err(Error::Forbidden);
-	}
-	Ok(())
+		.map(|_| ())
+		.ok_or(Error::Forbidden)
 }
 
 pub(crate) enum GraphAuthority<'a> {
@@ -282,6 +269,9 @@ pub(crate) async fn linked_registry(
 				),
 		)
 		.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
+		.and_where(Expr::cust(
+			"c.node = (SELECT n.name FROM nodes n WHERE n.tenant = c.tenant AND n.is_default)",
+		))
 		.and_where(
 			Expr::col((Alias::new("c"), Alias::new("enabled")))
 				.eq(reinhardt::query::Expr::value(true)),
@@ -375,7 +365,6 @@ fn tenant_resources(
 }
 
 pub(crate) async fn graph_generation(
-	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	authority_revision: &str,
 	options: &GraphOptions,
@@ -399,14 +388,7 @@ pub(crate) async fn graph_generation(
 	.fetch_one(authority.connection())
 	.await?;
 	if let Some(workspace) = options.scope_workspace {
-		let scope = scoped::revision(
-			authority,
-			options,
-			workspace,
-			source_node,
-			&f.config.node_id,
-		)
-		.await?;
+		let scope = scoped::revision(authority, options, workspace, source_node).await?;
 		return Ok(crate::registry::digest(&json!({
 			"authority":authority_revision,"catalog":catalog,"scope":scope,
 		})));
@@ -458,20 +440,28 @@ pub(crate) async fn graph_generation(
 	})))
 }
 
+/// `nodes` is the Node a request comes from and the one the page names as its own.
 pub(crate) async fn project_activity(
-	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	options: &GraphOptions,
 	nodes: &[GraphNode],
 	window_end: i64,
-	source_node: &str,
+	(source_node, node): (&str, &str),
 ) -> Result<Vec<GraphActivity>> {
 	if nodes.is_empty() {
 		return Ok(vec![]);
 	}
 	if let Some(workspace) = options.scope_workspace {
 		let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
-		return scoped::activity(f, authority, options, nodes, end, source_node, workspace).await;
+		return scoped::activity(
+			authority,
+			options,
+			nodes,
+			end,
+			(source_node, node),
+			workspace,
+		)
+		.await;
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
 	let workspaces: Vec<Uuid> = nodes
@@ -526,10 +516,6 @@ pub(crate) async fn project_activity(
 		.and_where(
 			Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::value(tenant.clone())),
 		)
-		.and_where(
-			Expr::col((Alias::new("e"), Alias::new("node_id")))
-				.eq(Expr::value(f.config.node_id.clone())),
-		)
 		.and_where(Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(end)))
 		.and_where(
 			Expr::col((Alias::new("e"), Alias::new("workspace_id")))
@@ -571,7 +557,7 @@ pub(crate) async fn project_activity(
 		let exhausted = events.len() < 512;
 		before = events.last().map(|event| event.sequence);
 		for event in events {
-			let Some(reference) = event_reference(&event, &f.config.node_id) else {
+			let Some(reference) = event_reference(&event, node) else {
 				continue;
 			};
 			if !visible.contains(reference.as_str()) || !authority.event_visible(&event).await? {
@@ -609,7 +595,7 @@ pub(crate) async fn list_grants(
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("authorization_peer_graph_grants"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())))
-				.order_by(Alias::new("source_node"), Order::Asc)
+				.order_by(Alias::new("source_deployment"), Order::Asc)
 				.order_by(Alias::new("source_identity"), Order::Asc)
 				.limit(page.limit)
 				.offset(page.offset)
@@ -627,20 +613,41 @@ pub(crate) async fn set_grant(
 	input: PeerGraphGrantInput,
 ) -> Result<PeerGraphGrant> {
 	identifier(&tenant)?;
-	crate::config::validate_node_id(&input.source_node)?;
-	if input.source_node == f.config.node_id || !(0..i64::MAX).contains(&input.expected_revision) {
+	let viewer = aidash_domain::nodes::DeploymentId::parse(&input.source_deployment)?;
+	if viewer == f.config.deployment || !(0..i64::MAX).contains(&input.expected_revision) {
 		return Err(Error::Invalid(
 			"invalid Peer Graph Grant or revision".into(),
 		));
 	}
-	if input.enabled {
-		f.peer(&input.source_node).await?;
-	} else if input.expected_revision == 0 {
+	if !input.enabled && input.expected_revision == 0 {
 		return Err(Error::Invalid(
 			"revocation requires an existing grant".into(),
 		));
 	}
 	let scope = TenancyScope::tenant(&tenant)?;
+	// The viewer's key is pinned like a Node Registration's, fetched outside any
+	// transaction. Disabling keeps what the grant pinned.
+	let pinned = if input.enabled {
+		let (Some(endpoint), Some(key_id)) = (&input.endpoint, &input.key_id) else {
+			return Err(Error::Invalid(
+				"a Peer Graph Grant needs the viewer Deployment's endpoint and key ID".into(),
+			));
+		};
+		aidash_domain::configuration::validate_endpoint(endpoint)?;
+		let key_id = aidash_domain::nodes::DeploymentKeyId::parse(key_id)?;
+		let key = aidash_application::federation::registrations::pin(
+			&aidash_integrations::federation::directory::HttpDirectory::new(
+				f.store.keyless.clone(),
+			)?,
+			&viewer,
+			endpoint.trim_end_matches('/'),
+			&key_id,
+		)
+		.await?;
+		Some((key.key_id.to_string(), key.public_key_pem))
+	} else {
+		None
+	};
 	let mut tx = if input.enabled {
 		f.store.pool.begin(&scope).await?
 	} else {
@@ -651,140 +658,141 @@ pub(crate) async fn set_grant(
 	}
 	Authorization::load(&mut tx, &tenant).await?;
 	let row: Option<PeerGraphGrant> = if input.expected_revision == 0 {
-		{
-			let query_bind_1 = &input.source_node;
-			let query_bind_2 = input.source_identity;
-			let query_bind_3 = &tenant;
-			let query_bind_4 = input.enabled;
-			crate::database::native::query_as(
-				&Query::insert()
-					.into_table(Alias::new("authorization_peer_graph_grants"))
-					.columns([
-						Alias::new("source_node"),
-						Alias::new("source_identity"),
-						Alias::new("tenant"),
-						Alias::new("enabled"),
-						Alias::new("revision"),
-					])
-					.from_subquery(
-						reinhardt::query::Query::select()
-							.expr(Expr::value(query_bind_1.to_owned()))
-							.expr(Expr::value(query_bind_2.to_owned()))
-							.expr(Expr::value(query_bind_3.to_owned()))
-							.expr(Expr::value(query_bind_4.to_owned()))
-							.expr(Expr::value(1_i64))
-							.to_owned(),
+		let (key_id, pem) = pinned
+			.clone()
+			.ok_or_else(|| Error::Invalid("revocation requires an existing grant".into()))?;
+		crate::database::native::query_as(
+			&Query::insert()
+				.into_table(Alias::new("authorization_peer_graph_grants"))
+				.columns(
+					[
+						"tenant",
+						"source_deployment",
+						"source_identity",
+						"source_key_id",
+						"source_public_key_pem",
+						"enabled",
+						"revision",
+					]
+					.map(Alias::new),
+				)
+				.values_panic([
+					Expr::value(tenant.clone()),
+					Expr::value(viewer.to_string()),
+					Expr::value(input.source_identity),
+					Expr::value(key_id),
+					Expr::value(pem),
+					Expr::value(input.enabled),
+					Expr::value(1_i64),
+				])
+				.on_conflict(
+					OnConflict::columns(
+						["tenant", "source_deployment", "source_identity"].map(Alias::new),
 					)
-					.on_conflict(
-						OnConflict::columns(["source_node", "source_identity", "tenant"])
-							.do_nothing()
-							.to_owned(),
-					)
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&[
-				"source_node",
-				"source_identity",
-				"tenant",
-				"enabled",
-				"revision",
-			])
-			.fetch_optional(&mut *tx)
-			.await?
-		}
+					.do_nothing()
+					.to_owned(),
+				)
+				.returning_all()
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?
 	} else {
-		{
-			let query_bind_1 = &input.source_node;
-			let query_bind_2 = input.source_identity;
-			let query_bind_3 = &tenant;
-			let query_bind_4 = input.enabled;
-			let query_bind_5 = input.expected_revision;
-			crate::database::native::query_as(
-				&Query::update()
-					.table(Alias::new("authorization_peer_graph_grants"))
-					.value_expr(
-						Alias::new("enabled"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_4.to_owned()).into()],
-						),
-					)
-					.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
-					.value_expr(Alias::new("updated_at"), Expr::cust("clock_timestamp()"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(source_node = ? AND source_identity = ? AND tenant = ? AND revision = ?)"
-							.to_owned(),
-						vec![
-							Expr::value(query_bind_1.to_owned()).into(),
-							Expr::value(query_bind_2.to_owned()).into(),
-							Expr::value(query_bind_3.to_owned()).into(),
-							Expr::value(query_bind_5.to_owned()).into(),
-						],
-					))
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut *tx)
-			.await?
+		let mut update = Query::update();
+		update
+			.table(Alias::new("authorization_peer_graph_grants"))
+			.value_expr(Alias::new("enabled"), Expr::value(input.enabled))
+			.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+			.value_expr(Alias::new("updated_at"), Expr::cust("clock_timestamp()"));
+		if let Some((key_id, pem)) = pinned {
+			update
+				.value_expr(Alias::new("source_key_id"), Expr::value(key_id))
+				.value_expr(Alias::new("source_public_key_pem"), Expr::value(pem));
 		}
+		crate::database::native::query_as(
+			&update
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(tenant = ? AND source_deployment = ? AND source_identity = ? AND revision = ?)"
+						.to_owned(),
+					vec![
+						Expr::value(tenant.clone()).into(),
+						Expr::value(viewer.to_string()).into(),
+						Expr::value(input.source_identity).into(),
+						Expr::value(input.expected_revision).into(),
+					],
+				))
+				.returning_all()
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?
 	};
 	let grant = row.ok_or_else(|| Error::Conflict("Peer Graph Grant revision changed".into()))?;
 	tx.commit().await?;
 	Ok(grant)
 }
 
+/// The enabled grant of `identity` of `viewer` at `tenant`, with the viewer's
+/// pinned key and its revision.
+pub(crate) async fn viewer_grant(
+	f: &Federation,
+	tenant: &str,
+	viewer: &str,
+	identity: Uuid,
+) -> Result<Option<(String, String, i64)>> {
+	let row: Option<PeerGraphGrant> = crate::database::native::query_as(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("authorization_peer_graph_grants"))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(tenant = ? AND source_deployment = ? AND source_identity = ? AND enabled)"
+					.to_owned(),
+				vec![
+					Expr::value(tenant.to_owned()).into(),
+					Expr::value(viewer.to_owned()).into(),
+					Expr::value(identity).into(),
+				],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(f.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
+	.await?;
+	Ok(row.map(|grant| {
+		(
+			grant.source_key_id,
+			grant.source_public_key_pem,
+			grant.revision,
+		)
+	}))
+}
+
 pub(crate) async fn deployment_administrator_grant(
 	f: &Federation,
-	node: &str,
+	viewer: &str,
 	deployment_administrator: Uuid,
 	tenant: &str,
 ) -> Result<(crate::database::native::Transaction, PeerGraphGrant)> {
 	let mut tx = f.store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 	Authorization::load(&mut tx, tenant).await?;
-	let grant: PeerGraphGrant = {
-		let query_bind_1 = node;
-		let query_bind_2 = deployment_administrator;
-		let query_bind_3 = tenant;
-		crate::database::native::query_as(
-			&Query::select()
-				.column(ColumnRef::Asterisk)
-				.from(Alias::new("authorization_peer_graph_grants"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(source_node = ? AND source_identity = ? AND tenant = ? AND enabled)"
-						.to_owned(),
-					vec![
-						Expr::value(query_bind_1.to_owned()).into(),
-						Expr::value(query_bind_2.to_owned()).into(),
-						Expr::value(query_bind_3.to_owned()).into(),
-					],
-				))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut *tx)
-		.await?
-	}
+	let grant: PeerGraphGrant = crate::database::native::query_as(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("authorization_peer_graph_grants"))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(tenant = ? AND source_deployment = ? AND source_identity = ? AND enabled)"
+					.to_owned(),
+				vec![
+					Expr::value(tenant.to_owned()).into(),
+					Expr::value(viewer.to_owned()).into(),
+					Expr::value(deployment_administrator).into(),
+				],
+			))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut *tx)
+	.await?
 	.ok_or(Error::Forbidden)?;
-	let enabled: Option<String> = {
-		let query_bind_1 = node;
-		crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("node_id"))
-				.from(Alias::new("peers"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ? AND enabled)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut *tx)
-		.await?
-	};
-	if enabled.is_none() {
-		return Err(Error::Forbidden);
-	}
 	Ok((tx, grant))
 }
 
@@ -802,8 +810,7 @@ pub(crate) async fn candidate_visible(
 
 pub(crate) async fn mapping_revision(
 	access: &mut Access,
-	node: &str,
-	tenant: &str,
+	admitted: &aidash_application::federation::inbound::Admitted,
 	subject: &str,
 ) -> Result<i64> {
 	crate::database::native::query_scalar(
@@ -811,11 +818,12 @@ pub(crate) async fn mapping_revision(
 			.column(Alias::new("revision"))
 			.from(Alias::new("authorization_peer_mappings"))
 			.and_where(SimpleExpr::CustomWithExpr(
-				"(source_node = ? AND source_tenant = ? AND source_subject = ? AND enabled)"
+				"(tenant = ? AND node = ? AND source_node = ? AND source_subject = ? AND enabled)"
 					.to_owned(),
 				vec![
-					Expr::value(node).into(),
-					Expr::value(tenant).into(),
+					Expr::value(admitted.tenant.to_string()).into(),
+					Expr::value(admitted.receiver.node.to_string()).into(),
+					Expr::value(admitted.sender.to_string()).into(),
 					Expr::value(subject).into(),
 				],
 			))

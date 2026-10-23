@@ -6,6 +6,8 @@ use serde::Deserialize;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogInput {
+	/// The Node the approval applies to.
+	pub(crate) node: aidash_domain::nodes::NodeName,
 	pub(crate) entry: EntityRef,
 	pub(crate) expected_revision: i64,
 	pub(crate) enabled: bool,
@@ -13,10 +15,18 @@ pub(crate) struct CatalogInput {
 	#[serde(default)]
 	pub(crate) groups: Option<std::collections::BTreeSet<String>>,
 }
+/// The Node whose Catalog Approvals are read.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogQuery {
+	pub(crate) node: aidash_domain::nodes::NodeName,
+}
 /// Approvals of one dependency closure, decided together.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogApprovals {
+	/// The Node the approvals apply to.
+	pub(crate) node: aidash_domain::nodes::NodeName,
 	pub(crate) approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
 }
 #[derive(Deserialize, JsonSchema)]

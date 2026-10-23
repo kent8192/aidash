@@ -213,7 +213,8 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	unavailable(&b, wb).await;
 	assert!(matches!(
 		a.f.request::<Value>(
-			&b.f.config.node_id,
+			&a.sender(),
+			b.address.as_str(),
 			reqwest::Method::POST,
 			"/scoped/discover",
 			Some(&json!({}))
@@ -267,7 +268,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 			200
 		);
 		assert_eq!(
-			participant::finish(&node.f, &a.f.config.node_id, &manifest)
+			participant::finish(&node.f, None, a.address.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
@@ -302,14 +303,14 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 			200
 		);
 		assert_eq!(
-			participant::reserve(&node.f, &a.f.config.node_id, &manifest)
+			participant::reserve(&node.f, None, a.address.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
 			"ABORTED"
 		);
 		assert_eq!(
-			participant::finish(&node.f, &a.f.config.node_id, &manifest)
+			participant::finish(&node.f, None, a.address.as_str(), &manifest)
 				.await
 				.unwrap()
 				.phase,
@@ -355,7 +356,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 	};
 	let mut second = first.clone();
 	second.id = Uuid::new_v4();
-	second.coordinator = b.f.config.node_id.clone();
+	second.coordinator = b.address.clone();
 	a.submit(&first).await;
 	b.submit(&second).await;
 	steps(&a, first.id, 1).await;
@@ -402,7 +403,11 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		.await
 		.unwrap();
 
-	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(b.f.config.deployment.as_str(), "acme"),
+		&agent.id,
+		&agent.version,
+	);
 	let task =
 		a.f.store
 			.create_task(
@@ -438,7 +443,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 	let delegation = Delegation::build()
 		.tenant("acme")
 		.task_id(task.id)
-		.node_id(&b.f.config.node_id)
+		.node_id(b.address.as_str())
 		.agent_id(&agent.id)
 		.agent_version(&agent.version)
 		.delivered(true)
@@ -458,7 +463,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 	let run = crate::fixtures::tenant_roots::remote_run(
 		&b.f.store,
 		&task,
-		&a.f.config.node_id,
+		a.address.as_str(),
 		&agent.id,
 		&agent.version,
 	)
@@ -503,10 +508,10 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		Some("COMMIT")
 	);
 	for _ in 0..2 {
-		participant::finish(&a.f, &a.f.config.node_id, &manifest)
+		participant::finish(&a.f, None, a.address.as_str(), &manifest)
 			.await
 			.unwrap();
-		participant::finish(&b.f, &a.f.config.node_id, &manifest)
+		participant::finish(&b.f, None, a.address.as_str(), &manifest)
 			.await
 			.unwrap();
 	}
@@ -606,11 +611,8 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	let Some((a, b, manifest, wa, wb)) = Box::pin(pair).await else {
 		return;
 	};
-	let set_trust = |enabled| json!({"node_id":a.f.config.node_id,"enabled":enabled});
-	assert_eq!(
-		b.post("/api/transactions/trust", &set_trust(false)).await.0,
-		200
-	);
+	// `b` refuses atomic transactions with `a`'s Node, then allows them again.
+	assert_eq!(b.set_trust(&a, false, 1).await, 200);
 	a.submit(&manifest).await;
 	steps(&a, manifest.id, 2).await;
 	// A terminal peer rejection must abort immediately, without waiting for the deadline.
@@ -622,24 +624,24 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	assert_eq!(workspace(&a, wa).await.revision, 0);
 	assert_eq!(workspace(&b, wb).await.revision, 0);
 
-	assert_eq!(
-		b.post("/api/transactions/trust", &set_trust(true)).await.0,
-		200
-	);
+	assert_eq!(b.set_trust(&a, true, 2).await, 200);
 	let mut admitted = manifest.clone();
 	admitted.id = Uuid::new_v4();
 	// An authenticated peer cannot claim that a different node coordinates its manifest.
 	let mut forged = admitted.clone();
-	forged.coordinator = b.f.config.node_id.clone();
+	forged.coordinator = b.address.clone();
 	let client = &b.peer_client;
-	let peer_headers = [
-		(
-			"authorization",
-			format!("Bearer {}", crate::fixtures::PEER_SECRET),
-		),
-		("x-aidash-node", a.f.config.node_id.clone()),
-		("x-aidash-protocol", "0.2".into()),
-	];
+	let body = serde_json::to_vec(&forged).unwrap();
+	let token = crate::fixtures::peering::token(
+		a.f.config.deployment_key.as_deref().unwrap(),
+		a.f.config.deployment.as_str(),
+		&a.address,
+		&b.address,
+		"",
+		("POST", "/transactions/reserve", &body),
+	)
+	.await;
+	let peer_headers = crate::fixtures::peering::peer_headers(&token);
 	let peer_headers: Vec<_> = peer_headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 	let response = async {
 		let client = &(client);
@@ -660,16 +662,17 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 200);
 	a.submit(&admitted).await;
 	steps(&a, admitted.id, 2).await;
-	assert_eq!(
-		b.post("/api/transactions/trust", &set_trust(false)).await.0,
-		200
-	);
+	// The registration is guarded like any other Tenant data: while `b` holds
+	// the transaction's barrier it cannot be revoked, so the admitted
+	// transaction recovers and commits.
+	assert_eq!(b.set_trust(&a, false, 3).await, 503);
 	assert_eq!(
 		complete(&a, admitted.id).await.decision.as_deref(),
 		Some("COMMIT")
 	);
 	assert_eq!(workspace(&a, wa).await.revision, 1);
 	assert_eq!(workspace(&b, wb).await.revision, 1);
+	assert_eq!(b.set_trust(&a, false, 3).await, 200);
 }
 
 #[rstest]

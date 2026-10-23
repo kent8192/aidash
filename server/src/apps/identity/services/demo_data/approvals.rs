@@ -1,4 +1,4 @@
-//! Step 4 of a Demo data load: Catalog Approvals on the Deployment's Node.
+//! Step 4 of a Demo data load: Catalog Approvals on each Tenant's default Node.
 use super::input::StructureApproval;
 use crate::apps::identity::models::{AuthorizationBundle, AuthorizationCatalog};
 use crate::apps::identity::repositories::catalog_approvals::{approved, definition};
@@ -11,6 +11,7 @@ use aidash_application::ports::catalog::{CatalogApprovalScope, CatalogMutation};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::{
 	identity::catalog::Binding,
+	nodes::{NodeAddress, NodeName},
 	policy::PolicyBundle,
 	registry::{EntityRef, Entry},
 };
@@ -28,7 +29,7 @@ const ACTOR: &str = "demo-data";
 /// version the Tenant has ever approved is left alone, enabled or not.
 pub(super) async fn approve(
 	pool: &Pool,
-	node: &str,
+	node: &NodeAddress,
 	key: &str,
 	tenant: &str,
 	wanted: &[StructureApproval],
@@ -46,6 +47,7 @@ pub(super) async fn approve(
 			};
 			let existing = AuthorizationCatalog::objects()
 				.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+				.filter(AuthorizationCatalog::field_node().eq(node.node.as_str().to_owned()))
 				.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
 				.filter(AuthorizationCatalog::field_entry_version().eq(entry.version.clone()))
 				.all_with_executor(&mut **tx)
@@ -94,7 +96,7 @@ pub(super) async fn approve(
 struct DemoCatalog<'a> {
 	tx: &'a mut Transaction,
 	tenant: &'a str,
-	node: &'a str,
+	node: &'a NodeAddress,
 	snapshot: Snapshot,
 }
 
@@ -106,12 +108,13 @@ impl CatalogMutation for DemoCatalog<'_> {
 	async fn compare_and_set(
 		&mut self,
 		tenant: &str,
+		node: &NodeName,
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
 	) -> aidash_application::Result<Option<Binding>> {
 		NativeMutation(self.tx)
-			.compare_and_set(tenant, reference, expected_revision, enabled)
+			.compare_and_set(tenant, node, reference, expected_revision, enabled)
 			.await
 	}
 	async fn history(&mut self, binding: &Binding, actor: &str) -> aidash_application::Result<()> {
@@ -124,7 +127,7 @@ impl CatalogApprovalScope for DemoCatalog<'_> {
 	fn tenant(&self) -> &str {
 		self.tenant
 	}
-	fn node(&self) -> &str {
+	fn node(&self) -> &NodeAddress {
 		self.node
 	}
 	fn actor(&self) -> &str {
@@ -134,7 +137,7 @@ impl CatalogApprovalScope for DemoCatalog<'_> {
 		definition(self.tx, reference).await
 	}
 	async fn approved(&mut self, reference: &EntityRef) -> aidash_application::Result<bool> {
-		approved(self.tx, self.tenant, reference).await
+		approved(self.tx, self.tenant, &self.node.node, reference).await
 	}
 	// The command acts with Deployment authority, as a Deployment
 	// Administrator's `set_catalog` does, and the setting that enables it is

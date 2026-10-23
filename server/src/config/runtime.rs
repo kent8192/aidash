@@ -4,7 +4,7 @@ use std::env;
 
 #[derive(Clone)]
 pub struct Config {
-	pub node_id: String,
+	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub endpoint: String,
 	pub database_url: String,
 	pub nats_url: String,
@@ -12,6 +12,14 @@ pub struct Config {
 	pub web_dir: String,
 	pub lease_seconds: i32,
 	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
+	/// `[deployment] federation`: whether this Deployment federates with other
+	/// Deployments. Exchange between Nodes of this Deployment never depends on it.
+	pub federation: bool,
+	/// The Deployment Key `[deployment.key]` names. `bootstrap::initialize`
+	/// loads it, not `from_settings`, because a Cloud KMS key is fetched over the
+	/// network. Without one this Deployment cannot federate with others.
+	pub deployment_key:
+		Option<std::sync::Arc<dyn aidash_application::federation::key::DeploymentKey>>,
 	/// `[demo_data] enabled`: this Deployment may load Demo data and fulfil its
 	/// Demo Reservations at sign-in.
 	pub demo_data: bool,
@@ -19,6 +27,8 @@ pub struct Config {
 	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
 		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
+	/// The Tier's limits on a Tenant, which the Enterprise build supplies.
+	pub tier_limits: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
 }
 
 pub use crate::apps::identity::serializers::settings::{OidcConfig, SessionConfig};
@@ -54,7 +64,7 @@ impl Config {
 
 	pub fn from_settings(settings: &super::settings::ProjectSettings) -> Result<Self> {
 		settings
-			.node
+			.deployment
 			.validate(&Profile::parse("local"))
 			.map_err(|error| Error::Invalid(error.to_string()))?;
 		settings
@@ -76,16 +86,17 @@ impl Config {
 		) {
 			return Err(Error::Invalid("Aidash requires PostgreSQL".into()));
 		}
-		let sign_in = crate::bootstrap::build::current().extension.sign_in()?;
+		let extension = crate::bootstrap::build::current().extension;
+		let sign_in = extension.sign_in()?;
 		if sign_in.is_some() && settings.dashboard.oidc.is_some() {
 			return Err(Error::Invalid(
 				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
 			));
 		}
-		let node = &settings.node;
+		let node = &settings.deployment;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
-			node_id: node.node_id.clone(),
+			deployment: aidash_domain::nodes::DeploymentId::parse(&node.id)?,
 			endpoint: node.endpoint.clone(),
 			database_url: database.to_url(),
 			nats_url: node.nats_url.clone(),
@@ -93,8 +104,11 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
+			federation: node.federation,
+			deployment_key: None,
 			demo_data: settings.demo_data.enabled,
 			sign_in,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			oidc: settings
 				.dashboard
 				.oidc
@@ -103,23 +117,22 @@ impl Config {
 				.transpose()?,
 		})
 	}
-	pub fn identity(&self, clusters: Vec<String>) -> NodeIdentity {
-		NodeIdentity {
-			id: self.node_id.clone(),
+	/// What `/.well-known/aidash` publishes: this Deployment and its public key,
+	/// never its Nodes.
+	pub fn deployment_identity(&self) -> DeploymentIdentity {
+		DeploymentIdentity {
+			id: self.deployment.to_string(),
 			endpoint: self.endpoint.clone(),
-			capabilities: vec![
-				"agent.discovery".into(),
-				"task.execute".into(),
-				"workspace.share".into(),
-			],
-			clusters,
 			protocol_version: PROTOCOL_VERSION.into(),
+			key: self
+				.deployment_key
+				.as_ref()
+				.map(|key| DeploymentKeyIdentity {
+					id: key.key_id().to_string(),
+					public_key_pem: key.public_key_pem().to_owned(),
+				}),
 		}
 	}
-}
-
-pub fn validate_node_id(value: &str) -> Result<()> {
-	aidash_domain::configuration::validate_node_id(value).map_err(Into::into)
 }
 
 pub fn validate_endpoint(value: &str) -> Result<()> {
@@ -135,19 +148,11 @@ pub fn secret(name: &str) -> Result<String> {
 		.map_err(|_| Error::Invalid(format!("credential reference {name} is not configured")))
 }
 
-/// Peer bearer tokens must remain strong after environment-based rotation too.
-pub fn peer_secret(name: &str) -> Result<String> {
-	let value = secret(name)?;
-	validate_peer_credential(&value)?;
-	Ok(value)
-}
-pub fn validate_peer_credential(value: &str) -> Result<()> {
-	aidash_domain::configuration::validate_peer_credential(value).map_err(Into::into)
-}
-
 pub(crate) use aidash_domain::configuration::same_secret;
 
-pub use crate::apps::federation::peer::serializers::identity::NodeIdentity;
+pub use crate::apps::federation::peer::serializers::identity::{
+	DeploymentIdentity, DeploymentKeyIdentity,
+};
 
 #[cfg(test)]
 #[path = "../apps/execution/tests/config_runtime.rs"]

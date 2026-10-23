@@ -7,12 +7,18 @@ use crate::apps::registry::serializers::contracts::{
 };
 use crate::authorization::access::Access;
 use crate::{Error, Result};
+use aidash_domain::nodes::NodeName;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::Model;
 
 const PAGE: usize = 100;
 
-pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result<RegistryVersions> {
+pub(crate) async fn page(
+	access: &mut Access,
+	deployment: &str,
+	node_name: NodeName,
+	offset: u64,
+) -> Result<RegistryVersions> {
 	let resource = access.resource(
 		"registry",
 		aidash_domain::identity::tenant_administration::COLLECTION,
@@ -20,6 +26,14 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 	);
 	access.require(&resource, "registry.read").await?;
 	let tenant = access.identity.tenant.clone();
+	// Approvals and agent subjects belong to an owned Node of this Tenant.
+	crate::apps::identity::repositories::nodes::get(&mut *access.tx, &tenant, node_name.as_str())
+		.await?;
+	access.set_node(node_name.clone());
+	let address = aidash_domain::nodes::NodeAddress {
+		deployment: aidash_domain::nodes::DeploymentId::parse(deployment)?,
+		node: node_name.clone(),
+	};
 	let rows = Definition::objects()
 		.filter(Definition::field_tenant().eq(tenant.clone()))
 		.order_by(&["id", "version"])
@@ -38,6 +52,7 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 		}
 		let approval = AuthorizationCatalog::objects()
 			.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+			.filter(AuthorizationCatalog::field_node().eq(node_name.as_str().to_owned()))
 			.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
 			.filter(AuthorizationCatalog::field_entry_version().eq(entry.version.clone()))
 			.all_with_executor(&mut **access.tx)
@@ -50,6 +65,7 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 			});
 		let history = AuthorizationCatalogHistory::objects()
 			.filter(AuthorizationCatalogHistory::field_tenant().eq(tenant.clone()))
+			.filter(AuthorizationCatalogHistory::field_node().eq(node_name.as_str().to_owned()))
 			.filter(AuthorizationCatalogHistory::field_entry_key().eq(entry.id.clone()))
 			.filter(AuthorizationCatalogHistory::field_entry_version().eq(entry.version.clone()))
 			.order_by(&["revision"])
@@ -73,7 +89,7 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 			access.decide(&approval, "catalog.approve").await?
 		};
 		let subject = approver
-			.then(|| aidash_domain::qualified_agent(node, &entry.id, &entry.version))
+			.then(|| aidash_domain::qualified_agent(&address, &entry.id, &entry.version))
 			.and_then(|id| {
 				access
 					.snapshot

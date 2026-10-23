@@ -24,18 +24,6 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "atomic_peer_trust".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "atomic_peer_trust_node_id_fkey".to_owned(),
-				columns: vec!["node_id".to_owned()],
-				referenced_table: "peers".to_owned(),
-				referenced_columns: vec!["node_id".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
 			table: "atomic_votes".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "atomic_votes_transaction_id_fkey".to_owned(),
@@ -210,6 +198,98 @@ pub(super) fn migration() -> Migration {
 				columns: vec!["tenant".to_owned()],
 				referenced_table: "tenants".to_owned(),
 				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registration_history".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_registration_history_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registrations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_registrations_tenant_root_fkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+				referenced_table: "tenants".to_owned(),
+				referenced_columns: vec!["name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_registrations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "node_registrations_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_peer_mappings".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_peer_mappings_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_peer_mappings".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_peer_mappings_registration_fkey".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
+					"source_node".to_owned(),
+				],
+				referenced_table: "node_registrations".to_owned(),
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"node".to_owned(),
+					"source_node".to_owned(),
+				],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_remote_admissions".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_remote_admissions_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_remote_grants".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "authorization_remote_grants_node_fkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "node".to_owned()],
+				referenced_table: "nodes".to_owned(),
+				referenced_columns: vec!["tenant".to_owned(), "name".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
