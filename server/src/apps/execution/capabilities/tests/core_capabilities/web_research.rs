@@ -111,7 +111,7 @@ async fn research_fixture(
 			.get(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 				"aidash.bundle.research_fixture",
-				"1.0.0",
+				"1.1.0",
 			)
 			.await
 			.unwrap();
