@@ -1407,10 +1407,9 @@ impl ExecutionEnvironment for Environment<'_> {
 						.map(serde_json::to_value)
 						.transpose()?,
 				};
-				workspace_retrieved = semantic
-					.as_ref()
-					.and_then(aidash_domain::semantic::degraded::degraded)
-					.is_none();
+				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
+					aidash_domain::semantic::degraded::degraded(value).is_none()
+				});
 				let reserved =
 					serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?
 						.len();

@@ -1619,9 +1619,6 @@ impl<'a> Executor<'a> {
 						run.context = context.clone();
 						degrade_context(store, run, token, cause).await?;
 					} else {
-						if semantic.retrieved {
-							run.recovery.degraded.recovered();
-						}
 						if let Some(observation) = semantic.observation(
 							&pinned,
 							&binding_digest,
@@ -1665,7 +1662,6 @@ impl<'a> Executor<'a> {
 						run.context = context.clone();
 						degrade_context(store, run, token, cause).await?;
 					} else if cached_sources.is_none() {
-						run.recovery.degraded.recovered();
 						context.source_observation =
 							Some(aidash_domain::context::sources::SourceObservation::new(
 								source_boundary,

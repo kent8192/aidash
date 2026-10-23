@@ -945,8 +945,7 @@ impl Guard {
 			.map_err(Error::from)?;
 			workspace_retrieved = semantic
 				.as_ref()
-				.and_then(aidash_domain::semantic::degraded::degraded)
-				.is_none();
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none());
 			if self.remote.is_some() {
 				return Ok(semantic);
 			}

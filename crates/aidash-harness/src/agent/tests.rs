@@ -1147,8 +1147,7 @@ impl ExecutionEnvironment for Backend {
 		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
 			value
 				.as_ref()
-				.and_then(aidash_domain::semantic::degraded::degraded)
-				.is_none()
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
 		});
 		SemanticContextRead {
 			workspace_retrieved,
