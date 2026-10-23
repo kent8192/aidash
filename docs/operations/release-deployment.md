@@ -425,6 +425,13 @@ revert release's `main_sha` and `retry_failed=true`. That update takes its own
 Pre-update Backup of the restored state before it deploys. Confirm health and
 admission as for a normal update.
 
+Before production activation and quarterly thereafter, run the
+[Pre-update Backup cross-project restore drill](pre-update-restore-drill.md).
+It creates and destroys a dedicated project, excludes Secrets and the ledger,
+and records human acceptance separately from Backup for GKE resource restoration.
+The agreed recovery targets and pending evidence are in
+[nonfunctional release requirements](nonfunctional-release.md).
+
 ## Daily backup: last resort
 
 A daily backup is up to 24 hours old. Restoring it rewinds PostgreSQL, NATS,
