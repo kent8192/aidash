@@ -87,6 +87,8 @@ class EvidenceImportTest(unittest.TestCase):
         cases = {
             "wrong experiment": change("experiment_id", "fte-ffffffffffff"),
             "wrong source": change("source", {**self.export["source"], "commit": "f" * 40}),
+            "numeric source boolean": change("source", {**self.export["source"], "dirty": 0}),
+            "empty Tenant": change("tenant_id", ""),
             "wrong digest": change("manifest_sha256", "f" * 64),
             "missing planned Run": lambda e: e["planned_run_keys"].pop(),
             "duplicate planned Run": lambda e: e["planned_run_keys"].append(e["planned_run_keys"][0]),
@@ -100,6 +102,7 @@ class EvidenceImportTest(unittest.TestCase):
             "negative count": lambda e: e["inference_usage"][0].__setitem__("input_tokens", -1),
             "boolean money": lambda e: e["inference_usage"][0].__setitem__("cost_nanocredits", True),
             "wrong pinned projection": lambda e: e["inference_usage"][0].__setitem__("projection_version", 99),
+            "boolean projection": lambda e: e["inference_usage"][0].__setitem__("projection_version", True),
             "private shadow": lambda e: e["inference_usage"][0]["shadow_estimates"][0]["estimate"].__setitem__("prompt", "private"),
             "missing recovery": lambda e: e["run_recovery"].pop(),
             "unknown purpose": lambda e: e["inference_usage"][0].__setitem__("purpose", "free-work"),
