@@ -17,3 +17,7 @@ Every reuse is rechecked against current authority first. A `Forbidden` recheck 
 - The cache lives in the Run's Context, so it is never shared across Runs or Tenants.
 - A fixed budget can make compaction start earlier on long Runs; near-limit tests guard that compaction stays no more frequent than with Legacy.
 - Memory reads are journaled when retrieved, not on every reuse; the Run-wide journal recheck still covers every reused unit.
+
+## Indexing while a Run is active
+
+Decided on 2026-10-23 (#342): a new retrieval whose authorized candidates include a pending entry, an old index revision or changed source bytes waits for the complete index. Local and required-Home Runs use the existing bounded semantic retry policy and pause with `retries_exhausted` if indexing does not finish. No partial READY subset is returned, and an indexing wait never becomes Degraded context. An Ordered required-Home Run may first receive `stale` for its old observation; that recovery discards the cache before the fresh read waits for indexing. An explicit search outside a Run retains its incomplete-index conflict so a person can inspect and reindex it.
