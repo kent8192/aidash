@@ -2,6 +2,7 @@ mock_provider "google" {
 
   mock_resource "google_service_account" {
     defaults = {
+      name = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
       email  = "drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
       member = "serviceAccount:drill-nodes@aidash-drill-012345abcdef.iam.gserviceaccount.com"
     }
@@ -13,6 +14,22 @@ mock_provider "google" {
 mock_provider "google-beta" {
   mock_resource "google_project_service_identity" {
     defaults = { member = "serviceAccount:service-123456789012@gcp-sa-gkebackup.iam.gserviceaccount.com" }
+  }
+}
+override_resource {
+  target = google_service_account.workload["server"]
+  values = {
+    name = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    email = "drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    member = "serviceAccount:drill-server@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+  }
+}
+override_resource {
+  target = google_service_account.workload["worker"]
+  values = {
+    name = "projects/aidash-drill-012345abcdef/serviceAccounts/drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    email = "drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
+    member = "serviceAccount:drill-worker@aidash-drill-012345abcdef.iam.gserviceaccount.com"
   }
 }
 variables {
@@ -46,6 +63,20 @@ run "isolated_cross_project_restore" {
       google_gke_backup_restore_plan.drill.restore_config[0].volume_data_restore_policy == "RESTORE_VOLUME_DATA_FROM_BACKUP"
     )
     error_message = "The disposable target must support the script's per-Restore exclusions without restoring cluster authority."
+  }
+  assert {
+    condition = (
+      google_container_cluster.drill.node_config[0].labels["aidash.run/environment"] == "production" &&
+      contains(keys(google_project_iam_member.nodes), "roles/container.defaultNodeServiceAccount") &&
+      google_container_cluster.drill.workload_identity_config[0].workload_pool == "${var.project_id}.svc.id.goog" &&
+      google_container_cluster.drill.node_config[0].workload_metadata_config[0].mode == "GKE_METADATA" &&
+      google_container_cluster.drill.addons_config[0].stateful_ha_config[0].enabled &&
+      google_service_account_iam_member.workload_identity["server"].member == "serviceAccount:${var.project_id}.svc.id.goog[${var.namespace}/app-aidash-server]" &&
+      google_service_account_iam_member.workload_identity["worker"].member == "serviceAccount:${var.project_id}.svc.id.goog[${var.namespace}/app-aidash-worker]" &&
+      google_project_iam_member.account_status.project == var.project_id &&
+      google_project_iam_custom_role.account_status.permissions == toset(["firebaseauth.users.get"])
+    )
+    error_message = "The sealed release needs production placement, supported HA resources and isolated workload identity for account-status checks."
   }
   assert {
     condition = (

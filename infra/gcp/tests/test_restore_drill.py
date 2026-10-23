@@ -135,6 +135,21 @@ class RestoreDrillTests(unittest.TestCase):
             self.assertEqual(calls, [("DELETE", receipt["restore"] + "?force=true"), ("GET", receipt["restore"])])
             self.assertEqual(terraform.call_count, 2)
 
+    def test_copied_release_images_use_target_repository_and_preserve_exact_digests(self):
+        receipt = {"project_id": "aidash-drill-012345abcdef", "settings": SETTINGS}
+        release = {"trusted_sha": "a" * 40, "images": {"app": "us-central1-docker.pkg.dev/aidash-production/aidash/app@sha256:" + "1" * 64, "control": "us-central1-docker.pkg.dev/aidash-production/aidash/control@sha256:" + "2" * 64}}
+        with tempfile.TemporaryDirectory() as root:
+            directory = pathlib.Path(root)
+            drill.image_references(directory, receipt, release)
+            copied = drill.read(directory / "release.json")
+            self.assertEqual(copied["trusted_sha"], release["trusted_sha"])
+            self.assertEqual(copied["images"]["app"], "us-central1-docker.pkg.dev/aidash-drill-012345abcdef/restore-drill/app@sha256:" + "1" * 64)
+            self.assertEqual(copied["images"]["control"], "us-central1-docker.pkg.dev/aidash-drill-012345abcdef/restore-drill/control@sha256:" + "2" * 64)
+            self.assertEqual(drill.read(directory / "image-map.json")["app"]["source"], release["images"]["app"])
+            for invalid in ["app:latest", "app@sha256:short"]:
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "SHA-256"):
+                    drill.image_references(directory, receipt, {"images": {"app": invalid}})
+
     def test_cleanup_refuses_a_source_project_restore(self):
         receipt = {"project_id": "aidash-drill-012345abcdef", "restore": "projects/aidash-production/locations/us-central1/restorePlans/production/restores/real"}
         with patch.object(drill, "call") as cloud, patch.object(drill, "terraform") as terraform:

@@ -200,6 +200,19 @@ def restore(directory, receipt):
     raise ValueError("Restore exceeded 30 minutes; inspect before retry or cleanup")
 
 
+def image_references(directory, receipt, release):
+    """Keep sealed content digests while naming only the target project's copies."""
+    images = release.get("images")
+    require(isinstance(images, dict) and images, "Supply the sealed release receipt's images")
+    copied = {}
+    for kind, source in images.items():
+        require(isinstance(kind, str) and re.fullmatch(r"[a-z][a-z0-9_-]*", kind), "Invalid release image kind")
+        require(isinstance(source, str) and re.fullmatch(r"[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", source), "Every release image must be pinned by a SHA-256 digest")
+        copied[kind] = f"{receipt['settings']['region']}-docker.pkg.dev/{receipt['project_id']}/restore-drill/{kind}@{source.split('@')[1]}"
+    write(directory / "image-map.json", {kind: {"source": images[kind], "target": target} for kind, target in copied.items()})
+    write(directory / "release.json", {**release, "images": copied})
+
+
 def record(directory, receipt, evidence):
     require(receipt["phase"] == "resources_restored", "Complete the isolated data restore first")
     require(set(evidence) == {"performed_by", "revision", "image_digests", "fault_at", "verified_at", "checks", "report"}, "Use the documented human evidence fields")
@@ -247,12 +260,13 @@ def destroy(directory, receipt):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "apply", "restore", "record", "destroy"])
+    parser.add_argument("action", choices=["prepare", "apply", "restore", "images", "record", "destroy"])
     parser.add_argument("--directory", type=pathlib.Path, required=True)
     parser.add_argument("--entry", type=pathlib.Path)
     parser.add_argument("--settings", type=pathlib.Path)
     parser.add_argument("--state-bucket")
     parser.add_argument("--evidence", type=pathlib.Path)
+    parser.add_argument("--release", type=pathlib.Path)
     args = parser.parse_args()
     directory = args.directory.resolve()
     if args.action == "prepare":
@@ -267,6 +281,9 @@ def main():
         terraform(directory, "apply", "-input=false", "drill.tfplan")
     elif args.action == "restore":
         restore(directory, receipt)
+    elif args.action == "images":
+        require(args.release, "images needs --release")
+        image_references(directory, receipt, read(args.release))
     elif args.action == "record":
         require(args.evidence, "record needs --evidence")
         record(directory, receipt, read(args.evidence))

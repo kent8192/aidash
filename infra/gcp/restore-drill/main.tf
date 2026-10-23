@@ -47,7 +47,7 @@ resource "google_project" "drill" {
   }
 }
 resource "google_project_service" "drill" {
-  for_each           = toset(["compute.googleapis.com", "container.googleapis.com", "gkebackup.googleapis.com", "artifactregistry.googleapis.com"])
+  for_each           = toset(["compute.googleapis.com", "container.googleapis.com", "gkebackup.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "identitytoolkit.googleapis.com"])
   project            = google_project.drill.project_id
   service            = each.value
   disable_on_destroy = false
@@ -99,11 +99,45 @@ resource "google_service_account" "nodes" {
   display_name = "Isolated restore drill nodes"
 }
 resource "google_project_iam_member" "nodes" {
-  for_each = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter", "roles/artifactregistry.reader"])
+  for_each = toset(["roles/container.defaultNodeServiceAccount", "roles/artifactregistry.reader"])
   project  = google_project.drill.project_id
   role     = each.value
   member   = google_service_account.nodes.member
 }
+// Runtime identities are local to the drill and never receive source-project
+// permissions. Only the server can check isolated GCIP fixture account status.
+resource "google_service_account" "workload" {
+  for_each   = toset(["server", "worker"])
+  project    = google_project.drill.project_id
+  account_id = "drill-${each.key}"
+}
+resource "google_service_account_iam_member" "workload_identity" {
+  for_each           = google_service_account.workload
+  service_account_id = each.value.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${google_project.drill.project_id}.svc.id.goog[${var.namespace}/app-aidash-${each.key}]"
+}
+resource "google_project_iam_custom_role" "account_status" {
+  project     = google_project.drill.project_id
+  role_id     = "drillAccountStatus"
+  title       = "Drill account status"
+  permissions = ["firebaseauth.users.get"]
+}
+resource "google_project_iam_member" "account_status" {
+  project = google_project.drill.project_id
+  role    = google_project_iam_custom_role.account_status.name
+  member  = google_service_account.workload["server"].member
+}
+resource "google_identity_platform_config" "drill" {
+  project = google_project.drill.project_id
+  multi_tenant { allow_tenants = true }
+  client {}
+  depends_on = [google_project_service.drill]
+}
+output "workload_accounts" {
+  value = { for role, account in google_service_account.workload : role => account.email }
+}
+
 resource "google_artifact_registry_repository" "drill" {
   project       = google_project.drill.project_id
   location      = var.region
@@ -119,7 +153,10 @@ resource "google_container_cluster" "drill" {
   deletion_protection = false
   network             = google_compute_network.drill.id
   subnetwork          = google_compute_subnetwork.drill.id
+  workload_identity_config { workload_pool = "${var.project_id}.svc.id.goog" }
   node_config {
+    labels = { "aidash.run/environment" = "production" }
+    workload_metadata_config { mode = "GKE_METADATA" }
     machine_type    = "e2-standard-4"
     image_type      = "UBUNTU_CONTAINERD"
     disk_size_gb    = 50
@@ -143,6 +180,7 @@ resource "google_container_cluster" "drill" {
   }
   addons_config {
     gke_backup_agent_config { enabled = true }
+    stateful_ha_config { enabled = true }
   }
   depends_on = [google_project_iam_member.backup, google_project_iam_member.nodes]
 }

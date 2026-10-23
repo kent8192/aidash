@@ -82,13 +82,46 @@ Restore operation is a data restoration milestone; application acceptance follow
    metadata, target PVC inventory and these observations as raw evidence.
 6. Copy the pinned release images into the target project's `restore-drill`
    Artifact Registry repository, preserving and verifying their content digests.
+   Generate target references from the sealed release receipt first:
+
+   ```sh
+   python3 infra/gcp/restore_drill.py images --directory private/drill-2026-10 \
+     --release private/sealed-release.json
+   ```
+
+   `image-map.json` records each source/target pair; copy each with `gcrane cp`,
+   then compare `gcrane digest <target-reference>` with its recorded SHA-256.
+   Use only the generated `release.json` when rendering release values, including
+   app, control, frontend and installer images. Preserve the sealed release SHA;
+   never feed the source receipt back into `app_values` or other chart values.
+   Retain the copy/digest evidence and rendered workload image inventory.
    Install the release's pinned upstream gVisor and compatible storage/runtime
    prerequisites on the Ubuntu nodes. Re-provision Secrets from Secret Manager
    into the target using cloud access; never restore backed-up Secrets or
    grant the target nodes production Secret Manager access. Replace production
    peer/provider destinations with owned, isolated fixtures before starting any
-   workload. Keep admission closed and the server/worker stopped while inspecting
+   workload. The drill nodes carry the production placement label and enable
+   Stateful HA, so the production selectors and HA custom resources are supported.
+   Terraform also enables Workload Identity and creates target-only server/worker
+   accounts. Read `terraform output -json workload_accounts` and override the
+   chart's server/worker KSA annotations with those accounts before rendering.
+   Their only KSA members are `app-aidash-server` and `app-aidash-worker` in the
+   configured namespace; preserve the `app` Helm release name or review matching
+   IAM changes. Never reuse a production GSA annotation.
+
+   Create an isolated GCIP tenant in the drill project's Identity Platform,
+   configure only owned test users/providers and the isolated callback origin,
+   and replace `dashboard.gcip` project/tenant/API-key/callback settings before
+   starting the server. The drill server's custom role permits only
+   `firebaseauth.users.get` in the drill project; it has no production GCIP or
+   Secret Manager access. Through the existing administrative restore/bootstrap
+   procedure, bind the isolated identities to the retained fixture Subjects and
+   policy without granting test credentials access to production. Verify ADC as
+   the server KSA, account-status lookup for an enabled and then disabled/revoked
+   test user, and refusal from the worker KSA before application acceptance.
+   Keep admission closed and the server/worker stopped while inspecting
    restored configuration and transaction state.
+
 7. Attach an independently protected **current** copy of each Home ledger to its
    matching restored Home. Verify the recorded identity, epochs and revisions;
    never run ledger `init` against restored nonempty data. Do not substitute an
