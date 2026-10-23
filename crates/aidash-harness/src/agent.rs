@@ -825,6 +825,7 @@ impl<'a> Executor<'a> {
 		run: &mut Run,
 		token: Uuid,
 		bindings: &str,
+		query_frame: SourceQueryFrame<'_>,
 	) -> Result<(String, OrderedSkill)> {
 		let revision = self.environment.skill_revision(run).await?;
 		let cached = match (revision, &run.context.source_observation) {
@@ -846,7 +847,7 @@ impl<'a> Executor<'a> {
 				Err(error) => return Err(error),
 			}
 		}
-		let text = read_skill_source(self.environment, run, token).await?;
+		let text = read_skill_source(self.environment, run, token, query_frame).await?;
 		let observation = revision
 			.map(|revision| context::sources::SkillObservation::new(revision, text.clone()))
 			.transpose()?;
@@ -868,6 +869,12 @@ impl<'a> Executor<'a> {
 		retrieves: bool,
 		degrade_on_outage: bool,
 	) -> Result<OrderedSemantic> {
+		let query_frame = SourceQueryFrame {
+			task,
+			input_cutoff: inputs
+				.last()
+				.map_or(run.observed_input_seq, |(read, _)| read.sequence),
+		};
 		let key = if retrieves {
 			let scope = self.environment.retrieval_scope(run).await?;
 			Some(
@@ -945,6 +952,7 @@ impl<'a> Executor<'a> {
 							degrade_on_outage,
 						},
 						token,
+						query_frame,
 					)
 					.await;
 				finish_semantic_read(store, run, token, read).await?
@@ -1220,6 +1228,7 @@ impl<'a> Executor<'a> {
 				let ordered = !projection.version().is_legacy();
 				let turn_paragraphs = matches!(projection, context::RequestProjection::Ordered(_));
 				let source_input_seq = inputs.last().map_or(run.observed_input_seq, |input| input.seq);
+                let query_frame=SourceQueryFrame{task:&task,input_cutoff:source_input_seq};
 				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
 				// Ordered Runs key their sources by Retrieval Key and Skill revision below.
@@ -1237,7 +1246,7 @@ impl<'a> Executor<'a> {
 						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
 						// Resident Skill blocks replace the Registry Skill loop and the
 						// pinned Skill context; recovery reuses them at the same boundary.
-						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { {let read=resident_skills(self.environment,run,token,snapshot,&catalog,&selection).await?;let text=read.result.as_ref().ok().and_then(|value|value.as_ref()).and_then(Value::as_str).unwrap_or_default().to_owned();resident_source_read=Some(read);text} };
+						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { {let read=resident_skills(self.environment,run,token,query_frame,snapshot,&catalog,&selection).await?;let text=read.result.as_ref().ok().and_then(|value|value.as_ref()).and_then(Value::as_str).unwrap_or_default().to_owned();resident_source_read=Some(read);text} };
 						Some(selection)
 					}
 					None => None,
@@ -1253,7 +1262,7 @@ impl<'a> Executor<'a> {
 					instructions.push_str(&source_skill_context);
 					instructions.push_str(&selection.index);
 				} else {
-                    let registry_read=self.environment.context_source(ContextSourceRead::RegistrySkills {run},token).await;
+                    let registry_read=self.environment.context_source(ContextSourceRead::RegistrySkills {run},token, query_frame).await;
                     record_source_read(store,run,token,"registry_skills",&registry_read).await?;
                     let registry_text=registry_read.result?.and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default();
                     source_instruction_slots.insert("registry_skills".into(),[instructions.len(),instructions.len()+registry_text.len()]);
@@ -1261,10 +1270,10 @@ impl<'a> Executor<'a> {
 					if tools.contains_key("skill_list") && home.has_local_authority()
 					{
 						source_skill_context = if ordered {
-							let (text, skill) = self.ordered_skill_context(run, token, &binding_digest).await?;
+							let (text, skill) = self.ordered_skill_context(run, token, &binding_digest,query_frame).await?;
 							ordered_skill = skill;
 							text
-						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { read_skill_source(self.environment, run, token).await? };
+						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { read_skill_source(self.environment, run, token,query_frame).await? };
 						source_instruction_slots.insert("skills".into(),[instructions.len(),instructions.len()+source_skill_context.len()]);
 						instructions.push_str(&source_skill_context);
 					}
@@ -1272,10 +1281,10 @@ impl<'a> Executor<'a> {
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
 				let documents =
-					source_documents(self.environment, run, &entry, token).await?;
+					source_documents(self.environment, run, &entry, token,query_frame).await?;
 				let mut context = run.context.clone();
 				capture_declared_coverage(&mut context, &tools, false);
-				let source_read = self.environment.context_source(ContextSourceRead::WorkspaceObservation { run, offset:0, limit:context::observation::DEFAULT_LIMIT },token).await;
+				let source_read = self.environment.context_source(ContextSourceRead::WorkspaceObservation { run, offset:0, limit:context::observation::DEFAULT_LIMIT },token, query_frame).await;
                 record_source_read(store,run,token,"workspace",&source_read).await?;
                 let observation=source_read.result?.unwrap_or(Value::Null);
                 copy_source_records(&run.context,&mut context);
@@ -1676,7 +1685,7 @@ impl<'a> Executor<'a> {
 							.cloned()
 					} else if guard.is_some() || home.local() {
 						let read = self.environment
-							.context_source(ContextSourceRead::Semantic { run, task: &task, inputs: &semantic_inputs, budget: semantic_budget, entry: &entry, key: None, degrade_on_outage }, token)
+							.context_source(ContextSourceRead::Semantic { run, task: &task, inputs: &semantic_inputs, budget: semantic_budget, entry: &entry, key: None, degrade_on_outage }, token, query_frame)
 							.await;
 						finish_semantic_read(store, run, token, read).await?
 					} else {
@@ -3392,6 +3401,7 @@ async fn resident_skills(
 	environment: &dyn ExecutionEnvironment,
 	run: &Run,
 	token: Uuid,
+	query_frame: SourceQueryFrame<'_>,
 	snapshot: &BindingSnapshot,
 	catalog: &[exposure::Capability],
 	selection: &exposure::Selection,
@@ -3431,6 +3441,7 @@ async fn resident_skills(
 				blocks: &blocks,
 			},
 			token,
+			query_frame,
 		)
 		.await)
 }
@@ -3668,9 +3679,10 @@ async fn read_skill_source(
 	environment: &dyn ExecutionEnvironment,
 	run: &mut Run,
 	token: Uuid,
+	query_frame: SourceQueryFrame<'_>,
 ) -> Result<String> {
 	let read = environment
-		.context_source(ContextSourceRead::Skills { run }, token)
+		.context_source(ContextSourceRead::Skills { run }, token, query_frame)
 		.await;
 	record_source_read(environment.store(), run, token, "skills", &read).await?;
 	Ok(read
@@ -3683,9 +3695,14 @@ async fn source_documents(
 	run: &mut Run,
 	entry: &aidash_domain::registry::Entry,
 	token: Uuid,
+	query_frame: SourceQueryFrame<'_>,
 ) -> Result<Value> {
 	let read = environment
-		.context_source(ContextSourceRead::References { run, entry }, token)
+		.context_source(
+			ContextSourceRead::References { run, entry },
+			token,
+			query_frame,
+		)
 		.await;
 	record_source_read(environment.store(), run, token, "references", &read).await?;
 	Ok(read.result?.unwrap_or_else(|| json!([])))
@@ -3748,7 +3765,7 @@ fn fit_source_delivery(
 				&& contribution.identity.item.split('/').next() == Some("semantic_memory"),
 		})
 		.collect();
-	aidash_application::context::source::fit_with(candidates, |items| {
+	let mut fitted = aidash_application::context::source::fit_with(candidates, |items| {
 		Ok(items.iter().all(|item| {
 			let Some(original) = context
 				.source_contributions
@@ -3773,7 +3790,18 @@ fn fit_source_delivery(
 				.and_then(|slot| slot.pointer(&placement.pointer).cloned())
 				.as_ref() == Some(&item.content)
 		}))
-	})
+	})?;
+	for contribution in &mut fitted.contributions {
+		if let Some(original) = context
+			.source_contributions
+			.iter()
+			.find(|original| original.identity == contribution.identity)
+		{
+			contribution.placement = original.placement.clone();
+			contribution.fetched_digest = original.fetched_digest.clone();
+		}
+	}
+	Ok(fitted)
 }
 fn text_placement<'a>(text: &'a str, pointer: &str) -> Option<&'a str> {
 	let (start, end) = pointer.strip_prefix("/@text/")?.split_once('/')?;

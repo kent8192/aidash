@@ -78,6 +78,18 @@ impl ContextSourceProvider for NativeContribution<'_> {
 				binding.excluded_reason.is_none() && binding.identity == request.route.tool
 			})
 			.ok_or(aidash_application::Error::Forbidden)?;
+		let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+			serde_json::from_value(binding.definition.config.clone())?;
+		let expected = if request.route.arguments.get("skill_id").is_some() {
+			"skill_read"
+		} else if request.route.arguments.get("kind").is_some() {
+			"workspace_read"
+		} else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		if descriptor.operation != expected {
+			return Err(aidash_application::Error::Forbidden);
+		}
 		let alias = binding
 			.alias
 			.as_ref()
@@ -227,7 +239,21 @@ impl Environment<'_> {
 		&self,
 		read: ContextSourceRead<'_>,
 		worker: Uuid,
+		frame: SourceQueryFrame<'_>,
 	) -> SemanticContextRead {
+		let semantic_query = match &read {
+			ContextSourceRead::Semantic {
+				run, task, inputs, ..
+			} => Some(
+				aidash_application::execution::semantic_context::query_material(
+					run,
+					task,
+					inputs,
+					MAX_SOURCE_BYTES,
+				),
+			),
+			_ => None,
+		};
 		let resident_blocks = if let ContextSourceRead::ResidentSkills { blocks, .. } = &read {
 			Some(*blocks)
 		} else {
@@ -267,6 +293,13 @@ impl Environment<'_> {
 					)
 					.ok()
 					.and_then(|source| source.context_source)
+					.or_else(|| {
+						serde_json::from_value::<aidash_domain::memory::ProviderConfig>(
+							binding.definition.config.clone(),
+						)
+						.ok()
+						.and_then(|provider| provider.context_source)
+					})
 					.unwrap_or(SourceDeclaration {
 						provider: "aidash.native-context/1".into(),
 						operation: if matches!(slot, Slot::RegistrySkills | Slot::ResidentSkills) {
@@ -443,7 +476,15 @@ impl Environment<'_> {
 			for (source, declaration, _) in declarations {
 				let (query, query_failure) = if matches!(declaration.pin, PinPolicy::Scored { .. })
 				{
-					match self.source_query(run, declaration.query).await {
+					match if let Some(query) = &semantic_query {
+						query.as_ref().map(Clone::clone).map_err(|_| {
+							aidash_application::Error::Invalid(
+								"source retrieval query is unavailable".into(),
+							)
+						})
+					} else {
+						self.source_query(run, declaration.query, frame).await
+					} {
 						Ok(query) => (query, None),
 						Err(
 							aidash_application::Error::Forbidden
@@ -477,7 +518,7 @@ impl Environment<'_> {
 					.filter(|fragment| fragment.candidate.identity.source == request.source)
 					.cloned()
 					.collect::<Vec<_>>();
-				for fragments in source_fragments.chunks(MAX_CANDIDATES) {
+				for fragments in fragment_batches(&source_fragments, request.max_bytes)? {
 					let batch_provider = NativeContribution {
 						environment: self,
 						run,
@@ -562,12 +603,20 @@ impl Environment<'_> {
 		result
 	}
 
-	async fn source_query(&self, run: &Run, policy: QueryPolicy) -> Result<QueryMaterial> {
+	async fn source_query(
+		&self,
+		run: &Run,
+		policy: QueryPolicy,
+		frame: SourceQueryFrame<'_>,
+	) -> Result<QueryMaterial> {
 		let home = self.home(run);
-		let task = home.task().await?;
+		let task = frame.task;
 		let inputs = self.run_store.run_inputs(run.id).await?;
 		let mut accepted = vec![];
-		for input in inputs {
+		for input in inputs
+			.into_iter()
+			.filter(|input| input.seq <= frame.input_cutoff)
+		{
 			let Some(id) = input.message_id else {
 				continue;
 			};
@@ -593,6 +642,8 @@ impl Environment<'_> {
 }
 
 struct SourceAuthority<'a> {
+	source: QualifiedRef,
+	query_policy: QueryPolicy,
 	environment: &'a Environment<'a>,
 	run: &'a Run,
 	allowed: Vec<SourcePin>,
@@ -618,9 +669,13 @@ impl aidash_application::ports::decision::DecisionAuthority for SourceAuthority<
 		super::super::decisions::require_approved(authority.guard, decider).await?;
 		authority
 			.guard
-			.local_authority()
-			.ok_or(aidash_application::Error::Forbidden)?
-			.context_source_disclosure(decider, &self.config, sources)
+			.context_source_disclosure(
+				decider,
+				&self.config,
+				sources,
+				&self.source,
+				self.query_policy,
+			)
 			.await?;
 		self.environment
 			.recheck_source_observation(self.run, &self.content)
@@ -749,6 +804,8 @@ impl Environment<'_> {
 			.await?;
 		let pins = source_selection_pins(candidates, &request.query);
 		let source_authority = SourceAuthority {
+			source: request.source.clone(),
+			query_policy: request.query.policy,
 			environment: self,
 			run,
 			allowed: pins.clone(),
@@ -1274,4 +1331,35 @@ fn remap_pointer(pointer: &str, removed: &[String]) -> String {
 		.filter(|(other, at)| *other == parent && at.parse::<usize>().is_ok_and(|at| at < index))
 		.count();
 	format!("{parent}/{}", index.saturating_sub(prior))
+}
+
+fn fragment_batches(fragments: &[Fragment], max_bytes: usize) -> Result<Vec<Vec<Fragment>>> {
+	let mut batches = vec![];
+	let mut current = vec![];
+	for fragment in fragments {
+		let mut proposed = current.clone();
+		proposed.push(fragment.clone());
+		let batch = SourceBatch {
+			candidates: proposed
+				.iter()
+				.map(|fragment| fragment.candidate.clone())
+				.collect(),
+			outcome: SourceOutcome::Fetched,
+		};
+		if proposed.len() > MAX_CANDIDATES || serde_json::to_vec(&batch)?.len() > max_bytes {
+			if current.is_empty() {
+				return Err(aidash_application::Error::Context(
+					aidash_domain::context::recovery::Failure::ContextUnreducible,
+				));
+			}
+			batches.push(std::mem::take(&mut current));
+			current.push(fragment.clone());
+		} else {
+			current = proposed;
+		}
+	}
+	if !current.is_empty() {
+		batches.push(current);
+	}
+	Ok(batches)
 }

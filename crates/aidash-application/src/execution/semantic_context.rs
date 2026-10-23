@@ -61,56 +61,22 @@ pub async fn retrieve_with_query(
 #[cfg(test)]
 mod tests;
 
-/// One explicitly selected policy governs the native combined semantic envelope.
-/// Implicit defaults inherit it; contradictory explicit declarations fail admission
-/// of the read rather than silently querying two sources with different corrections.
+/// Native combined retrieval has one query. Admission requires every effective
+/// source policy to agree, including declarations that keep the default.
 pub fn query_material(
 	run: &aidash_domain::Run,
 	task: &Task,
 	inputs: &[(InputRead, String)],
 	max_bytes: usize,
 ) -> Result<aidash_domain::context::source::QueryMaterial> {
-	use aidash_domain::{
-		context::source::{self, AcceptedQueryInput, QueryPolicy},
-		registry::bindings::sources::{NativeContext, NativeSource},
-	};
-	let mut policy = None;
-	if let Some(snapshot) = &run.context.binding_snapshot {
-		for binding in snapshot.bindings.iter().filter(|binding| {
-			binding.excluded_reason.is_none()
-				&& matches!(binding.definition.kind.as_str(), "memory" | "source")
-		}) {
-			let explicit = if let Ok(native) =
-				serde_json::from_value::<NativeContext>(binding.definition.config.clone())
-			{
-				if matches!(
-					native.source,
-					NativeSource::ConversationMemory { .. }
-						| NativeSource::SemanticMemory { .. }
-						| NativeSource::WorkspaceRetrieval { .. }
-				) {
-					native.context_source.map(|declaration| declaration.query)
-				} else {
-					None
-				}
-			} else {
-				serde_json::from_value::<aidash_domain::memory::SourceConfig>(
-					binding.definition.config.clone(),
-				)
-				.ok()
-				.and_then(|source| source.context_source.map(|declaration| declaration.query))
-			};
-			if let Some(explicit) = explicit {
-				if policy.is_some_and(|prior| prior != explicit) {
-					return Err(crate::Error::Invalid(
-						"native semantic Sources declare conflicting query policies".into(),
-					));
-				}
-				policy = Some(explicit);
-			}
-		}
-	}
-	let policy = policy.unwrap_or(QueryPolicy::TaskInputsV1);
+	use aidash_domain::context::source::{self, AcceptedQueryInput, QueryPolicy};
+	let policy = run
+		.context
+		.binding_snapshot
+		.as_deref()
+		.map(aidash_domain::registry::bindings::sources::semantic_query_policy)
+		.transpose()?
+		.unwrap_or(QueryPolicy::TaskInputsV1);
 	let accepted = inputs
 		.iter()
 		.map(|(read, text)| AcceptedQueryInput {

@@ -3114,6 +3114,9 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if kind == "model.completed" {
+			super::source_delivery::accept(self, tx, &saved, worker).await?;
+		}
 		super::context_journal::append(tx, run.id, &safe_context).await?;
 		// The accepted response and its attempt's outcome commit together. A Run
 		// that ends here cannot be claimed again, so its orphaned attempt closes now.
