@@ -469,6 +469,7 @@ mod pruning_rules {
 
 	fn assistant(seq: u64, text: &str, calls: &[&str]) -> HistoryEntry {
 		HistoryEntry {
+			research: None,
 			seq,
 			event: ContextEvent::Assistant {
 				epoch: 1,
@@ -479,6 +480,7 @@ mod pruning_rules {
 	}
 	fn tool(seq: u64, id: &str, result: &str) -> HistoryEntry {
 		HistoryEntry {
+			research: None,
 			seq,
 			event: ContextEvent::Tool {
 				call: ToolCall {

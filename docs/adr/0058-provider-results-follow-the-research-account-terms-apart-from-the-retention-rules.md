@@ -8,7 +8,7 @@ The sweeper on the existing retention loop replaces Provider results without a b
 
 As with an Evidence Revocation (ADR 0046), the Context Journal is not edited. After the basis ends, later model requests carry an expired placeholder, distinct from the revoked one, instead of the research result. An Execution Summary that absorbed an expired result is discarded, and its range is restored from the Context Journal with the placeholder in place of that result. The Run continues without pausing. Answers already published and the model's own Model Turns stay.
 
-The known limit is that the Context Journal keeps its copy of Provider results for as long as the Run exists, beyond what the account terms allow. A journal that holds research results only by reference is a separate design, filed as a follow-up.
+The original inline Context Journal exception is superseded by [ADR 0083](0083-research-journals-retain-content-addressed-references-and-purges-remove-the-owned-bytes.md) (#331). Journal and serialized projection entries retain immutable references; account-terms expiry removes their Research-owned exact payloads and all fitted variants without changing journal/range commitments. Replays receive placeholders after purge. Development databases containing the earlier inline format must be recreated.
 
 ## Considered Options
 

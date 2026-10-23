@@ -18,6 +18,7 @@ fn expired() -> ExpiredResults {
 
 fn tool(seq: u64, id: &str, result: Value) -> HistoryEntry {
 	HistoryEntry {
+		research: None,
 		seq,
 		event: ContextEvent::Tool {
 			call: crate::provider::ToolCall {

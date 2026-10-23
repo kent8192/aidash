@@ -2828,10 +2828,15 @@ impl Store {
 
 impl Store {
 	pub async fn run(&self, scope: &TenancyScope, id: Uuid) -> Result<Run> {
-		self.pool
+		let mut run: Run = self
+			.pool
 			.atomic(scope, async |tx| RunRecord::read(tx, id).await)
 			.await?
-			.try_into()
+			.try_into()?;
+		let mut tx = self.pool.begin(scope).await?.into_executor()?;
+		super::research::resolve_entries(tx.as_mut(), id, &mut run.context.history).await?;
+		tx.commit().await?;
+		Ok(run)
 	}
 	/// List validated executable records. Inspection uses inspect_runs and retains invalid rows.
 	pub async fn runs(&self, scope: &TenancyScope) -> Result<Vec<Run>> {
@@ -2982,7 +2987,16 @@ impl Store {
 				| "run.estimate_pinned"
 				| "context.summary_revoked"
 		);
-		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
+		let mut safe_context = run.context.clone();
+		super::research::protect_projection(tx.as_mut(), run.id, &mut safe_context).await?;
+		if kind == "context.compacted"
+			&& safe_context.execution_summary != run.context.execution_summary
+		{
+			return Err(Error::Conflict(
+				"Research changed during summary adoption; retry the projection".into(),
+			));
+		}
+		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &safe_context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
 				.returning_all()
@@ -2990,7 +3004,7 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
-		super::context_journal::append(tx, run.id, &run.context).await?;
+		super::context_journal::append(tx, run.id, &safe_context).await?;
 		// The accepted response and its attempt's outcome commit together. A Run
 		// that ends here cannot be claimed again, so its orphaned attempt closes now.
 		let closed = if kind == "model.completed" {

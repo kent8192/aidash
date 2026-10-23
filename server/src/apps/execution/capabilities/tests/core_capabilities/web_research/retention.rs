@@ -173,6 +173,28 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	// Arrange: a completed Run cited the page it read.
 	let mut r = research_fixture.await;
 	let (run, reference) = r.cited().await;
+	use aidash_application::ports::execution::ExecutionStore;
+	let executor = r.c.f.store.for_run(TEST_FIXTURE);
+	let head =
+		r.c.f
+			.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.context
+			.journal
+			.head;
+	assert!(head > 0);
+	let before_journal = executor.context_journal(run.id, 1, head).await.unwrap();
+	let before_digest = aidash_domain::context::summary::entries_digest(&before_journal);
+	let retained: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM research_journal_results WHERE run_id=$1 AND bytes IS NOT NULL",
+	)
+	.bind(run.id)
+	.fetch_one(r.c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(retained > 0);
 	let evidence = format!("/api/runs/{}/evidence/{reference}", run.id);
 	let (status, _) = request(&r.c.app, &r.c.token, "GET", &evidence, json!(null)).await;
 	assert_eq!(status, 200);
@@ -311,8 +333,22 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 		assert_eq!(result["error"]["code"], "evidence_revoked", "{result}");
 		assert!(result.get("data").is_none(), "{result}");
 	}
-	// The stored projection carries the placeholder; the journal keeps the
-	// original until the Run is deleted.
+	// The stored projection and journal resolve to placeholders. The journal
+	// still verifies the same immutable references after their bytes are gone.
+	let retained: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM research_journal_results WHERE run_id=$1 AND bytes IS NOT NULL",
+	)
+	.bind(run.id)
+	.fetch_one(r.c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(retained, 0);
+	let after_journal = executor.context_journal(run.id, 1, head).await.unwrap();
+	assert_eq!(
+		aidash_domain::context::summary::entries_digest(&after_journal),
+		before_digest
+	);
+	assert!(after_journal.iter().any(|entry| matches!(&entry.event, aidash_domain::context::ContextEvent::Tool { result, .. } if aidash_domain::context::ContextEvent::is_revoked_result(result))));
 	let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(stored.context.research_revoked);
 	assert!(stored.context.events().any(|event| matches!(
