@@ -47,6 +47,9 @@ impl Catalog {
 			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
+		result.insert(
+			aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap(),
+		);
 		for operation in crate::registry::system::operations() {
 			result.core(operation);
 		}
@@ -230,7 +233,7 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 	assert_eq!(serde_json::to_value(&saved).unwrap(), encoded);
 	assert_eq!(
 		saved.bindings.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len()
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 1
 	);
 	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();

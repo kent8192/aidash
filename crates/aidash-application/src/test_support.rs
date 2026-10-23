@@ -125,6 +125,15 @@ impl BindingCatalog for Catalog {
 		{
 			return Ok(entry.clone());
 		}
+		if reference.id
+			== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
+			&& reference.version
+				== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_VERSION
+		{
+			return Ok(
+				aidash_domain::registry::bindings::source_defaults::workspace_observation()?,
+			);
+		}
 		if let Some(operation) = reference.id.strip_prefix("aidash.") {
 			return Ok(entry(
 				&reference.id,

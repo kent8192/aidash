@@ -154,6 +154,7 @@ pub async fn seed(
 		.into_iter()
 		.chain(offered)
 		.chain(deciders)
+		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.chain(external_services())
 	{
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;
