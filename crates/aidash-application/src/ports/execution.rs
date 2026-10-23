@@ -535,6 +535,11 @@ pub struct SemanticContextRead {
 
 /// In-memory execution frame used by native providers; private Task/input data
 /// does not become part of a Registry declaration.
+#[derive(Clone, Copy)]
+pub struct SourceQueryFrame<'a> {
+	pub task: &'a Task,
+	pub input_cutoff: i64,
+}
 pub struct PreparedSkillSource {
 	pub identity: aidash_domain::exposure::CapabilityIdentity,
 	pub digest: String,
@@ -630,8 +635,10 @@ pub trait ExecutionEnvironment: Send + Sync {
 		&self,
 		request: ContextSourceRead<'_>,
 		worker: Uuid,
+		frame: SourceQueryFrame<'_>,
 	) -> SemanticContextRead;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
+
 	/// Direct Skills pinned for this Run, as deferred-exposure catalog input. Empty
 	/// when Skills are off, nothing is pinned, or the Home has no local authority.
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>>;

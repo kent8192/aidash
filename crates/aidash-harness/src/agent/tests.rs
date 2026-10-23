@@ -1035,6 +1035,7 @@ impl ExecutionEnvironment for Backend {
 		&self,
 		request: ContextSourceRead<'_>,
 		_worker: Uuid,
+		_frame: SourceQueryFrame<'_>,
 	) -> SemanticContextRead {
 		let result = match request {
 			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(
@@ -5525,4 +5526,54 @@ async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
 	let usage = canonical.backend.0.usage.lock().unwrap();
 	assert_eq!(receipt.accepted_inference, usage.last().unwrap().0.attempt);
 	assert_ne!(receipt.accepted_inference, usage.first().unwrap().0.attempt);
+}
+
+#[rstest]
+#[tokio::test]
+async fn dropped_skill_bytes_repeated_in_unrelated_history_cannot_gain_delivery(
+	mut canonical: Fixture,
+) {
+	let text = "A source-only Skill block that the current request does not inject";
+	Arc::get_mut(&mut canonical.backend.0)
+		.unwrap()
+		.provider_status = None;
+	let mut contribution =
+		context::source::SourceContribution::from(context::source::SourceCandidate {
+			identity: context::source::CandidateIdentity {
+				source: QualifiedRef::builtin("aidash://node", "private-skill"),
+				item: "skills/private-skill".into(),
+				revision: "r1".into(),
+				range: None,
+			},
+			content: json!(text),
+			preview: text.into(),
+			provenance: vec![],
+			dependencies: vec![],
+			completeness: context::source::Completeness::Complete,
+			detail: None,
+			mandatory: false,
+		});
+	contribution.placement = Some(context::source::SourcePlacement {
+		slot: "skills".into(),
+		pointer: format!("/@text/0/{}", text.len()),
+	});
+	canonical
+		.run
+		.context
+		.source_contributions
+		.push(contribution);
+	canonical.run.context.push(ContextEvent::Human {
+		request: "Unrelated earlier question".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: json!(text),
+	});
+	advance_sources(&mut canonical).await.unwrap();
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(
+		serde_json::to_string(&requests[0].context)
+			.unwrap()
+			.contains(text)
+	);
+	assert!(!requests[0].instructions.contains(text));
+	assert!(canonical.run.context.source_deliveries.is_empty());
 }

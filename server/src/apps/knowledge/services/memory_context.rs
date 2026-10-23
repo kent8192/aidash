@@ -38,14 +38,10 @@ pub(crate) fn workspace_budget(budget: usize) -> Result<usize> {
 
 pub(crate) struct Context {
 	value: Option<Value>,
-	delivered: Vec<Unit>,
 }
 impl Context {
 	fn status(value: Option<Value>) -> Self {
-		Self {
-			value,
-			delivered: Vec::new(),
-		}
+		Self { value }
 	}
 }
 
@@ -202,26 +198,19 @@ pub(crate) async fn retrieve(
 	}
 	Ok(Context {
 		value: Some(envelope),
-		delivered,
 	})
 }
 
 /// Journal once after every Bank and the combined delivery envelope have succeeded.
 pub(crate) async fn complete(
-	lease: &mut Lease<'_>,
-	run: &Run,
+	_lease: &mut Lease<'_>,
+	_run: &Run,
 	semantic: Option<Value>,
 	memory: Context,
 	budget: usize,
 ) -> Result<Option<Value>> {
 	let output = combine(semantic, memory.value, budget)?;
-	if output
-		.as_ref()
-		.is_some_and(|value| value["memory"]["banks"].is_array())
-		&& !memory.delivered.is_empty()
-	{
-		super::super::repositories::memory_reads::record(lease, run.id, &memory.delivered).await?;
-	}
+
 	Ok(output)
 }
 
@@ -438,6 +427,13 @@ pub(crate) async fn recheck(
 		.await?;
 	}
 	if observed["memory"]["banks"].is_array() {
+		for bank in observed["memory"]["banks"].as_array().into_iter().flatten() {
+			for item in bank["recall"]["units"].as_array().into_iter().flatten() {
+				let unit: Unit = serde_json::from_value(item.clone())?;
+				current_unit(store, lease, &unit).await?;
+			}
+		}
+
 		// Lost authority keeps the generic authority pause (ADR 0013); any other
 		// cause pauses with its exact semantic reason, never a re-retrieval.
 		match super::super::repositories::memory_reads::invalidity(lease, run.id).await? {
@@ -445,6 +441,33 @@ pub(crate) async fn recheck(
 			Some(crate::semantic::remote::Failure::Authority) => return Err(Error::Forbidden),
 			Some(failure) => return Err(Error::RemoteSemantic(failure)),
 		}
+	}
+	Ok(())
+}
+
+async fn current_unit(store: &Store, lease: &mut Lease<'_>, unit: &Unit) -> Result<()> {
+	super::native_memory::scope(store, lease, &unit.bank, "memory.read").await?;
+	let current = super::super::repositories::units::load(lease, unit.id, false).await?;
+	if current.as_ref() != Some(unit) || !unit.visible() {
+		return Err(Error::RemoteSemantic(
+			crate::semantic::remote::Failure::Invalidated,
+		));
+	}
+	Ok(())
+}
+/// Automatic retrieval stages Units, but does not attest they reached a model.
+/// Only exact final candidates at accepted inference enter #125's read journal.
+pub(crate) async fn accept(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	units: &[Unit],
+) -> Result<()> {
+	for unit in units {
+		current_unit(store, lease, unit).await?;
+	}
+	if !units.is_empty() {
+		super::super::repositories::memory_reads::record(lease, run.id, units).await?;
 	}
 	Ok(())
 }
