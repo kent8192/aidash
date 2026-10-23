@@ -2261,3 +2261,43 @@ async fn admitted_bindings_compare_the_home_with_the_full_executing_node(
 	};
 	assert_eq!(resolver.tools(&run).await.is_ok(), accepted);
 }
+
+#[tokio::test]
+async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declaration_flag() {
+	use aidash_domain::{
+		context::source::PinPolicy,
+		registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable},
+	};
+	let mut catalog = Catalog::new();
+	let identity = reference("mandatory-home-source");
+	let mut native = NativeContext {
+		schema_version: 1,
+		source: NativeSource::WorkspaceRetrieval {
+			on_unavailable: OnUnavailable::Pause,
+		},
+		context_source: None,
+	};
+	let mut declaration = native.declaration(&identity);
+	declaration.required_home = false;
+	declaration.pin = PinPolicy::OnDemand;
+	native.context_source = Some(declaration);
+	catalog.insert(entry(
+		&identity.id,
+		"source",
+		serde_json::to_value(native).unwrap(),
+	));
+	let mut config = agent_config();
+	config.bindings.push(
+		serde_json::from_value(json!({"kind":"source","target":identity,"narrow":{}})).unwrap(),
+	);
+	let local = snapshot(&mut catalog, &config, false).await.unwrap();
+	local.validate().unwrap();
+	let remote = snapshot(&mut catalog, &config, true).await;
+	let error = remote.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("required-Home semantic contribution"),
+		"{error}"
+	);
+}
