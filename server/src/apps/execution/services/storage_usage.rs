@@ -29,10 +29,22 @@ struct Total {
 	bytes: i64,
 }
 
-/// One sample per Tenant that stores any file, taken at `now`.
+/// One sample per registered Tenant, including zero stored bytes, at `now`.
+/// The usage adapter owns the exemption for deleted Tenants.
 pub async fn samples(store: &Store, now: DateTime<Utc>) -> Result<Vec<StorageSample>> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::UsageSampling);
-	let mut totals = BTreeMap::<String, u64>::new();
+	// A physical purge removes the last source row, but the active Tenant still
+	// needs a zero sample to replace its previous nonzero usage.
+	let tenants = store
+		.pool
+		.atomic(&scope, async |tx| {
+			crate::apps::identity::models::Tenant::names(tx).await
+		})
+		.await?;
+	let mut totals: BTreeMap<String, u64> = tenants
+		.into_iter()
+		.map(|tenant| (tenant.into_inner(), 0))
+		.collect();
 	for (table, size) in SOURCES {
 		let (sql, values) = Query::select()
 			.column(Alias::new("tenant"))
@@ -58,7 +70,6 @@ pub async fn samples(store: &Store, now: DateTime<Utc>) -> Result<Vec<StorageSam
 	}
 	Ok(totals
 		.into_iter()
-		.filter(|(_, bytes)| *bytes > 0)
 		.map(|(tenant, bytes)| StorageSample {
 			tenant,
 			sampled_at: now,

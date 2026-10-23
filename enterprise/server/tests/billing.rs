@@ -504,7 +504,7 @@ async fn pod_time_is_metered_once_and_stops_when_a_tenant_deletion_is_recorded(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
+async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_deleted_tenants(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
 	let d = Cloud::new(runtime).await;
@@ -618,15 +618,108 @@ async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
 		)
 		.await
 		.unwrap();
-	let stored: Vec<(String, i64)> =
-		sqlx::query_as("SELECT tenant, bytes FROM billing_storage_samples")
-			.fetch_all(d.federation.store.pool.fixture_driver())
+	let stored: Vec<(String, i64)> = sqlx::query_as(
+		"SELECT tenant, bytes FROM billing_storage_samples WHERE tenant IN ($1, $2)",
+	)
+	.bind(&kept)
+	.bind(&deleted)
+	.fetch_all(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		stored,
+		vec![(kept.clone(), 1234 + 4000)],
+		"the deleted Tenant is not metered"
+	);
+	// Removing one source must leave the other physically retained bytes metered.
+	sqlx::query("DELETE FROM core_objects WHERE tenant = $1")
+		.bind(&kept)
+		.execute(pool)
+		.await
+		.unwrap();
+	let tomorrow = now + Duration::days(1);
+	meter
+		.storage_sampled(
+			aidash_server::apps::execution::services::storage_usage::samples(
+				&d.federation.store,
+				tomorrow,
+			)
+			.await
+			.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		store::latest_storage_bytes(d.control(), &kept)
+			.await
+			.unwrap(),
+		4000
+	);
+
+	// Once the last physical file is purged, a later daily sample replaces the
+	// nonzero latest usage with an explicit zero for the still-active Tenant.
+	// Source deletion cascades through snapshots, fragments and page images,
+	// leaving no source row from which the sampler could infer this Tenant.
+	sqlx::query("DELETE FROM research_sources WHERE tenant = $1")
+		.bind(&kept)
+		.execute(pool)
+		.await
+		.unwrap();
+	let after_purge = tomorrow + Duration::days(1);
+	// A whole-Tenant purge keeps its root tombstone, but must not resume billing.
+	sqlx::query("DELETE FROM core_objects WHERE tenant = $1")
+		.bind(&deleted)
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE tenant_deletions SET purged_at = $1 WHERE tenant = $2")
+		.bind(after_purge)
+		.bind(&deleted)
+		.execute(pool)
+		.await
+		.unwrap();
+	meter
+		.storage_sampled(
+			aidash_server::apps::execution::services::storage_usage::samples(
+				&d.federation.store,
+				after_purge,
+			)
+			.await
+			.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		store::latest_storage_bytes(d.control(), &kept)
+			.await
+			.unwrap(),
+		0,
+		"physical purge must not leave the previous nonzero sample as latest usage"
+	);
+	let days: Vec<(chrono::NaiveDate, i64)> = sqlx::query_as(
+		"SELECT sampled_on, bytes FROM billing_storage_samples WHERE tenant = $1 ORDER BY sampled_on",
+	)
+	.bind(&kept)
+	.fetch_all(pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		days,
+		vec![
+			(now.date_naive(), 5234),
+			(tomorrow.date_naive(), 4000),
+			(after_purge.date_naive(), 0)
+		]
+	);
+	let deleted_samples: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM billing_storage_samples WHERE tenant = $1")
+			.bind(&deleted)
+			.fetch_one(pool)
 			.await
 			.unwrap();
 	assert_eq!(
-		stored,
-		vec![(kept, 1234 + 4000)],
-		"the deleted Tenant is not metered"
+		deleted_samples, 0,
+		"Tenant deletion remains exempt after physical purge leaves only its root"
 	);
 	d.finish().await;
 }
