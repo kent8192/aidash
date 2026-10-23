@@ -356,6 +356,7 @@ impl BindingSnapshot {
 			})
 			.collect::<std::result::Result<Vec<_>, _>>()?;
 		sources::validate_mounts(contexts)?;
+		sources::validate_dependencies(self)?;
 		Ok(())
 	}
 }

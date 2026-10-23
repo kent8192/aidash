@@ -14,6 +14,7 @@ pub const BINDING_SCHEMA: u8 = 1;
 pub mod defaults;
 pub use defaults::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION, COMPACTION_DEFAULT};
 mod snapshot;
+pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
@@ -129,7 +130,11 @@ pub fn definition_references(
 			}
 		}
 		"memory" | "source" if entry.config.get("schema_version").is_some() => {
-			sources::validate_definition(entry)?;
+			if let Some(native) = sources::validate_definition(entry)?
+				&& let Some(declaration) = native.context_source
+			{
+				result.extend(declaration.references());
+			}
 		}
 		"memory" => {
 			let provider: crate::memory::ProviderConfig =
@@ -150,6 +155,9 @@ pub fn definition_references(
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
 			result.push((local(&source.memory), "memory".into()));
+			if let Some(declaration) = source.context_source {
+				result.extend(declaration.references());
+			}
 		}
 		"reranker" => {
 			if let crate::memory::RerankerConfig::Model { model } =
@@ -393,6 +401,7 @@ impl AgentBindings {
 				});
 			}
 		}
+		source_defaults::add_workspace_observation(node, &mut result)?;
 		defaults::add_compaction(self, node, compaction_override, &mut result)?;
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
@@ -906,9 +915,11 @@ impl ForeignAgentSnapshot {
 				|| matches!(
 					definition.definition.kind.as_str(),
 					"memory" | "source" | "skill"
-				) || definition.definition.kind == "agent"
-				&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
-					.is_ok_and(|agent| !agent.agent_plugins.is_empty())
+				) && !source_defaults::workspace_observation()
+					.is_ok_and(|source| source == definition.definition)
+				|| definition.definition.kind == "agent"
+					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
+						.is_ok_and(|agent| !agent.agent_plugins.is_empty())
 		}) {
 			return Err(Error::Invalid(
 				"foreign Agent has an unsupported private or cross-Node dependency".into(),

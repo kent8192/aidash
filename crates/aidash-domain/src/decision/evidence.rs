@@ -74,6 +74,8 @@ pub enum AttemptStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttemptEvidence {
+	#[serde(default)]
+	pub provider_report: AttemptProviderReport,
 	pub id: Uuid,
 	pub request_digest: String,
 	pub questions: Vec<String>,
@@ -425,6 +427,9 @@ impl Evidence {
 			_ => validate_decision_model(&self.model)?,
 		}
 		validate_digest(&self.configuration_parameters_digest)?;
+		for attempt in &self.attempts {
+			attempt.provider_report.validate_model(&self.model)?;
+		}
 		let route = usize::try_from(self.route).unwrap_or(usize::MAX);
 		if self.route_models.get(route) != Some(&self.model)
 			|| self.route_models.len() > MAX_ROUTES
@@ -531,7 +536,7 @@ impl Evidence {
 
 /// Each attempt is well formed and asks questions of the decision that no other
 /// attempt asks; returns how many questions an answered attempt covers.
-pub(super) fn validate_attempt_set(
+pub(crate) fn validate_attempt_set(
 	attempts: &[AttemptEvidence],
 	questions: &Questions,
 ) -> Result<usize> {
@@ -539,6 +544,14 @@ pub(super) fn validate_attempt_set(
 	let mut attempted_questions = std::collections::BTreeSet::new();
 	let mut ids = std::collections::BTreeSet::new();
 	for attempt in attempts {
+		attempt.provider_report.validate()?;
+		if attempt.status == AttemptStatus::NotDispatched
+			&& attempt.provider_report != AttemptProviderReport::Unknown
+		{
+			return Err(Error::Invalid(
+				"undispatched attempt cannot report provider facts".into(),
+			));
+		}
 		validate_digest(&attempt.request_digest)?;
 		validate_digest(&attempt.question_digest)?;
 		if attempt.id.is_nil()
@@ -615,4 +628,31 @@ pub struct OutcomeLink {
 	pub decision: Uuid,
 	pub next_inference: Option<String>,
 	pub observed_status: String,
+}
+
+fn charged_stable_id(value: &serde_json::Value) -> Uuid {
+	Uuid::parse_str(&digest(value)[7..39]).expect("canonical SHA256 contains 32 UUID hex digits")
+}
+pub fn charged_decision_identity(
+	boundary: &crate::decision::Boundary,
+	decider: &crate::decision::DeciderPin,
+	binding_restrictions: &crate::decision::Restrictions,
+	state: &str,
+	sources: &[crate::decision::SourcePin],
+	window: usize,
+	route: u32,
+) -> Uuid {
+	charged_stable_id(
+		&serde_json::json!({"contract":"aidash.decision/2","node":boundary.node,"run":boundary.run,"step":boundary.step,"cycle":boundary.cycle,"retry":boundary.retry,"input_revision":boundary.input_revision,"input_digest":boundary.input_digest,"decider":decider,"route":route,"binding_restrictions":binding_restrictions,"state":state,"sources":sources,"window":window}),
+	)
+}
+
+pub fn charged_attempt_identity(
+	decision: Uuid,
+	request_digest: &str,
+	questions: &[String],
+) -> Uuid {
+	charged_stable_id(
+		&serde_json::json!({"decision":decision,"request":request_digest,"questions":questions}),
+	)
 }

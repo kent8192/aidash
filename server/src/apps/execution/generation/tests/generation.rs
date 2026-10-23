@@ -198,6 +198,53 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	)
 	.await;
 	let job = &assignment["generation"];
+	let observation = format!(
+		"/api/tenants/acme/approval-observations/generation/{}",
+		job["id"].as_str().unwrap()
+	);
+	assert_eq!(
+		request(&app, &token, "GET", &observation, Value::Null).await,
+		(200, Value::Null),
+		"an existing authorized viewer sees an explicit missing observation"
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"GET",
+			&observation.replace("/acme/", "/other/"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let report = "/api/tenants/acme/approval-observations/report?start=2026-10-01T00:00:00Z&end=2026-10-02T00:00:00Z";
+	assert_eq!(
+		request(&app, &token, "GET", report, Value::Null).await.0,
+		403,
+		"a Subject Credential is not Tenant administrative report authority"
+	);
+	assert_eq!(
+		request(&app, &f.config.api_token, "GET", report, Value::Null)
+			.await
+			.0,
+		403,
+		"Deployment authority never gains a private Tenant aggregate"
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"PUT",
+			"/api/tenants/acme/approval-observer",
+			json!({"expected_revision":0,"decider":null})
+		)
+		.await
+		.0,
+		403
+	);
+
 	let path = format!(
 		"/api/generation/acme/requests/{}/control",
 		job["id"].as_str().unwrap()
@@ -258,6 +305,43 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	.await;
 	assert_eq!(status, 200, "{stopped}");
 	assert_eq!(stopped["status"], "STOPPED");
+	let settlement: String = sqlx::query_scalar(
+		&Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![
+					Expr::value(uuid::Uuid::parse_str(job["id"].as_str().unwrap()).unwrap()).into(),
+				],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		settlement, "human_allow",
+		"Stop must not turn the earlier explicit approval into a denial"
+	);
+	let attempts: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_attempts",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		attempts, 0,
+		"the disabled default never dispatches an observer"
+	);
+
 	assert_eq!(
 		request(
 			&app,
@@ -563,6 +647,32 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 		)
 		.await,
 		denied
+	);
+
+	let settlement: String = sqlx::query_scalar(
+		&Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![
+					Expr::value(
+						uuid::Uuid::parse_str(accepted["generation"]["id"].as_str().unwrap())
+							.unwrap(),
+					)
+					.into(),
+				],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		settlement, "human_deny",
+		"explicit Deny and its duplicate delivery keep one typed label"
 	);
 	assert_eq!(request(&app, &token, "POST", &retry, body).await.0, 200);
 	let (_, policies) = request(

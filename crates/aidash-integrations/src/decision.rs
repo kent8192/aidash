@@ -5,7 +5,9 @@
 //! stay within the byte budget of the Route they travel on.
 use crate::{Error, Result};
 use aidash_application::{
-	ports::decision::{DecisionProvider, DispatchError, PreparedDispatch, PreparedRequest},
+	ports::decision::{
+		DecisionProvider, DispatchError, PreparedDispatch, PreparedRequest, ReportedDispatch,
+	},
 	provider_access::{Context, Inference, Operation, ProviderAccess, Source},
 };
 use aidash_domain::{decision::*, provider_credentials::Provider};
@@ -68,11 +70,15 @@ impl RouteDecisionProvider {
 	) -> Result<Self> {
 		config.validate()?;
 		if context.tenant.is_empty()
-			|| context.run.is_none_or(|run| run.is_nil())
-			|| context.maintenance.is_some()
+			|| match config.hook {
+				Hook::ApprovalObservation => {
+					context.run.is_some() || context.observation.is_none_or(|id| id.is_nil())
+				}
+				_ => context.run.is_none_or(|run| run.is_nil()) || context.observation.is_some(),
+			} || context.maintenance.is_some()
 		{
 			return Err(Error::Invalid(
-				"Decider calls are provider calls of one Run in its Tenant".into(),
+				"Decider calls require one matching Run or approval observation scope in their Tenant".into(),
 			));
 		}
 		if implementation.trim().is_empty() {
@@ -262,71 +268,98 @@ impl PreparedDispatch for RouteDispatch {
 	async fn dispatch(
 		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
-		// The call credential is obtained immediately before I/O: a broker
-		// Capability Token lives 60 s, and reserving the attempt may wait on
-		// remote owners. A failure here, after the check, leaves the reserved
-		// attempt charged, as for compaction.
-		let access = self
-			.access
-			.resolve(&self.scope, Provider::Openrouter.base_url(), &self.source)
-			.await
-			.map_err(|_| Error::External("decision provider credential unavailable".into()))?;
-		let mut request = self
-			.client
-			.post(route_url(&access.endpoint, &self.route.provider_contract)?)
-			.header(reqwest::header::CONTENT_TYPE, "application/json")
-			.body(self.body);
-		if !access.bearer.expose_secret().is_empty() {
-			request = request.bearer_auth(access.bearer.expose_secret());
-		}
-		let mut response = request
-			.send()
-			.await
-			.map_err(|_| Error::External("decision provider transport failed".into()))?;
-		let status = response.status().as_u16();
-		// A refusal would be the same on every Route (ADR 0066); anything else
-		// that is not a success makes this Route unavailable.
-		if matches!(status, 400 | 401 | 402 | 403 | 413) {
-			return Err(DispatchError::Refused(status));
-		}
-		if !response.status().is_success() {
-			return Err(
-				Error::External(format!("decision provider returned HTTP {status}")).into(),
-			);
-		}
-		// Bound the Node's transport buffer, including ignored provider metadata.
-		// Current large valid responses still fit; the limit is checked before
-		// appending each chunk and no response body is retained in evidence.
-		const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-		if response
-			.content_length()
-			.is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES as u64)
-		{
-			return Err(DispatchError::InvalidAnswers);
-		}
-		let mut body = Vec::new();
-		while let Some(chunk) = response
-			.chunk()
-			.await
-			.map_err(|_| Error::External("decision response unavailable".into()))?
-		{
-			if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-				return Err(DispatchError::InvalidAnswers);
+		self.reported().await.result
+	}
+	async fn dispatch_reported(self: Box<Self>) -> ReportedDispatch {
+		self.reported().await
+	}
+}
+impl RouteDispatch {
+	async fn reported(self: Box<Self>) -> ReportedDispatch {
+		let mut provider_report = AttemptProviderReport::Unknown;
+		let result = async {
+			// The call credential is obtained immediately before I/O: a broker
+			// Capability Token lives 60 s, and reserving the attempt may wait on
+			// remote owners. A failure here, after the check, leaves the reserved
+			// attempt charged, as for compaction.
+			let access = self
+				.access
+				.resolve(&self.scope, Provider::Openrouter.base_url(), &self.source)
+				.await
+				.map_err(|_| Error::External("decision provider credential unavailable".into()))?;
+			let mut request = self
+				.client
+				.post(route_url(&access.endpoint, &self.route.provider_contract)?)
+				.header(reqwest::header::CONTENT_TYPE, "application/json")
+				.body(self.body);
+			if !access.bearer.expose_secret().is_empty() {
+				request = request.bearer_auth(access.bearer.expose_secret());
 			}
-			body.extend_from_slice(&chunk);
+			let mut response = request
+				.send()
+				.await
+				.map_err(|_| Error::External("decision provider transport failed".into()))?;
+			let status = response.status().as_u16();
+			// Read bounded, safe metadata on unsuccessful responses too. The original
+			// HTTP failure class still wins over a malformed/oversized error body.
+			let mut response_failure = if matches!(status, 400 | 401 | 402 | 403 | 413) {
+				Some(DispatchError::Refused(status))
+			} else if !response.status().is_success() {
+				Some(DispatchError::ProviderFailure(Error::External(format!(
+					"decision provider returned HTTP {status}"
+				))))
+			} else {
+				None
+			};
+			// Bound the Node's transport buffer, including ignored provider metadata.
+			// Current large valid responses still fit; the limit is checked before
+			// appending each chunk and no response body is retained in evidence.
+			const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+			if response
+				.content_length()
+				.is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES as u64)
+			{
+				return Err(response_failure
+					.take()
+					.unwrap_or(DispatchError::InvalidAnswers));
+			}
+			let mut body = Vec::new();
+			while let Some(chunk) = response.chunk().await.map_err(|_| {
+				response_failure.take().unwrap_or_else(|| {
+					DispatchError::ProviderFailure(Error::External(
+						"decision response unavailable".into(),
+					))
+				})
+			})? {
+				if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+					return Err(response_failure
+						.take()
+						.unwrap_or(DispatchError::InvalidAnswers));
+				}
+				body.extend_from_slice(&chunk);
+			}
+			provider_report = reported_facts(&self.route, &body);
+			if let Some(failure) = response_failure {
+				return Err(failure);
+			}
+			let answered = validate_response(&self.route, &self.questions, &body)
+				.map_err(|_| DispatchError::InvalidAnswers)?;
+			// Safe telemetry remains useful; the same provider facts now reach durable evidence.
+			tracing::info!(
+				decision_attempt = %self.attempt,
+				served_model = answered.served.as_str(),
+				served_host = answered.host.as_deref().unwrap_or_default(),
+				input_tokens = answered.input_tokens,
+				cost_usd = answered.cost_usd,
+				"Decision Attempt answered"
+			);
+			Ok(answered.answers)
 		}
-		let answered = validate_response(&self.route, &self.questions, &body)
-			.map_err(|_| DispatchError::InvalidAnswers)?;
-		// Until Decision Evidence keeps it (#108), cost is observable only here.
-		tracing::info!(
-			decision_attempt = %self.attempt,
-			served_model = answered.served.as_str(),
-			served_host = answered.host.as_deref().unwrap_or_default(),
-			input_tokens = answered.input_tokens,
-			cost_usd = answered.cost_usd,
-			"Decision Attempt answered"
-		);
-		Ok(answered.answers)
+		.await;
+		ReportedDispatch {
+			result,
+			provider_report,
+		}
 	}
 }
 
@@ -357,6 +390,82 @@ fn named_host(hosts: &[String], reported: &str) -> bool {
 	!reported.is_empty() && hosts.iter().any(|host| normalize(host) == reported)
 }
 
+/// The actual host is a verified configured slug, never an unchecked display string.
+fn reported_host(route: &DeciderRoute, reported: &str) -> Option<String> {
+	if route.provider_contract == DECISIONS {
+		route
+			.hosts
+			.iter()
+			.find(|host| named_host(std::slice::from_ref(host), reported))
+			.cloned()
+	} else if named_host(&["typesafe".to_owned()], reported) {
+		Some("typesafe".into())
+	} else {
+		None
+	}
+}
+fn reported_usage(
+	raw: Option<&serde_json::value::RawValue>,
+) -> (Option<u64>, Option<u64>, Option<ProviderCost>) {
+	#[derive(serde::Deserialize)]
+	struct Usage {
+		input_tokens: Option<Box<serde_json::value::RawValue>>,
+		output_tokens: Option<Box<serde_json::value::RawValue>>,
+		cost: Option<Box<serde_json::value::RawValue>>,
+	}
+	let Some(usage) = raw.and_then(|raw| serde_json::from_str::<Usage>(raw.get()).ok()) else {
+		return (None, None, None);
+	};
+	let tokens = |value: Option<Box<serde_json::value::RawValue>>| {
+		value.and_then(|raw| serde_json::from_str::<u64>(raw.get()).ok())
+	};
+	let cost = usage
+		.cost
+		.and_then(|raw| raw.get().parse::<f64>().ok())
+		.and_then(|value| ProviderCost::new(value).ok());
+	(
+		tokens(usage.input_tokens),
+		tokens(usage.output_tokens),
+		cost,
+	)
+}
+fn reported_facts(route: &DeciderRoute, body: &[u8]) -> AttemptProviderReport {
+	#[derive(serde::Deserialize)]
+	struct Report {
+		model: Option<Box<serde_json::value::RawValue>>,
+		provider: Option<Box<serde_json::value::RawValue>>,
+		usage: Option<Box<serde_json::value::RawValue>>,
+	}
+	let Ok(value) = serde_json::from_slice::<Report>(body) else {
+		return AttemptProviderReport::Unknown;
+	};
+	let served_model = value
+		.model
+		.and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+		.filter(|model| served_by(&route.model, model));
+	let served_host = value
+		.provider
+		.and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+		.and_then(|host| reported_host(route, &host));
+	let (input_tokens, output_tokens, cost_usd) = reported_usage(value.usage.as_deref());
+	if served_model.is_none()
+		&& served_host.is_none()
+		&& input_tokens.is_none()
+		&& output_tokens.is_none()
+		&& cost_usd.is_none()
+	{
+		AttemptProviderReport::Unknown
+	} else {
+		AttemptProviderReport::Reported {
+			served_model,
+			served_host,
+			input_tokens,
+			output_tokens,
+			cost_usd,
+		}
+	}
+}
+
 /// Validated answers and the numeric usage the provider reported with them.
 #[derive(Debug)]
 struct Answered {
@@ -374,7 +483,7 @@ fn validate_response(route: &DeciderRoute, questions: &Questions, body: &[u8]) -
 		provider: Option<String>,
 		answers: Option<AnswerMap>,
 		// Read leniently: malformed usage never rejects valid answers.
-		usage: Option<Value>,
+		usage: Option<Box<serde_json::value::RawValue>>,
 	}
 	#[derive(serde::Deserialize)]
 	struct Answer {
@@ -458,15 +567,19 @@ fn validate_response(route: &DeciderRoute, questions: &Questions, body: &[u8]) -
 		);
 	}
 	validate_answers(questions, &validated)?;
-	let usage = response.usage.unwrap_or_default();
+	let (input_tokens, _, cost_usd) = reported_usage(response.usage.as_deref());
 	Ok(Answered {
 		answers: validated,
 		served,
 		host: response.provider,
-		input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
-		cost_usd: usage.get("cost").and_then(Value::as_f64),
+		input_tokens,
+		cost_usd: cost_usd.map(ProviderCost::value),
 	})
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "decision/observation_scope_tests.rs"]
+mod observation_scope_tests;

@@ -822,7 +822,8 @@ impl<'a> Executor<'a> {
 	/// unchanged and its authority still holds.
 	async fn ordered_skill_context(
 		&self,
-		run: &Run,
+		run: &mut Run,
+		token: Uuid,
 		bindings: &str,
 	) -> Result<(String, OrderedSkill)> {
 		let revision = self.environment.skill_revision(run).await?;
@@ -845,7 +846,7 @@ impl<'a> Executor<'a> {
 				Err(error) => return Err(error),
 			}
 		}
-		let text = self.environment.skill_context(run).await?;
+		let text = read_skill_source(self.environment, run, token).await?;
 		let observation = revision
 			.map(|revision| context::sources::SkillObservation::new(revision, text.clone()))
 			.transpose()?;
@@ -869,14 +870,24 @@ impl<'a> Executor<'a> {
 	) -> Result<OrderedSemantic> {
 		let key = if retrieves {
 			let scope = self.environment.retrieval_scope(run).await?;
-			Some(context::sources::RetrievalKey::new(
-				run.id,
-				task,
-				inputs.iter().map(|(read, _)| read.clone()).collect(),
-				budget,
-				bindings.to_owned(),
-				scope,
-			))
+			Some(
+				context::sources::RetrievalKey::new(
+					run.id,
+					task,
+					inputs.iter().map(|(read, _)| read.clone()).collect(),
+					budget,
+					bindings.to_owned(),
+					scope,
+				)
+				.with_query_material(
+					&aidash_application::execution::semantic_context::query_material(
+						run,
+						task,
+						inputs,
+						context::source::MAX_SOURCE_BYTES,
+					)?,
+				),
+			)
 		} else {
 			None
 		};
@@ -914,14 +925,17 @@ impl<'a> Executor<'a> {
 			Some(key) => {
 				let read = self
 					.environment
-					.semantic_context(
-						run,
-						task,
-						inputs,
-						budget,
-						entry,
-						Some(key),
-						degrade_on_outage,
+					.context_source(
+						ContextSourceRead::Semantic {
+							run,
+							task,
+							inputs,
+							budget,
+							entry,
+							key: Some(key),
+							degrade_on_outage,
+						},
+						token,
 					)
 					.await;
 				finish_semantic_read(store, run, token, read).await?
@@ -1204,6 +1218,7 @@ impl<'a> Executor<'a> {
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
 				let mut source_skill_context = String::new();
 				let mut ordered_skill = OrderedSkill::Absent;
+                let mut resident_source_read=None;
 				// Load/Unload results of the previous response take effect with this
 				// request; activation is idempotent across retries of this boundary.
 				run.context.exposure.activate();
@@ -1213,44 +1228,43 @@ impl<'a> Executor<'a> {
 						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
 						// Resident Skill blocks replace the Registry Skill loop and the
 						// pinned Skill context; recovery reuses them at the same boundary.
-						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { resident_skills(self.environment, run, snapshot, &catalog, &selection).await? };
+						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { {let read=resident_skills(self.environment,run,token,snapshot,&catalog,&selection).await?;let text=read.result.as_ref().ok().and_then(|value|value.as_ref()).and_then(Value::as_str).unwrap_or_default().to_owned();resident_source_read=Some(read);text} };
 						Some(selection)
 					}
 					None => None,
 				};
-				let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
+				if let Some(read)=resident_source_read {
+                    record_source_read(store,run,token,"resident_skills",&read).await?;
+                    source_skill_context=read.result?.and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default();
+                }
+                let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
 				if let Some(selection) = &exposure {
 					instructions.push_str(&source_skill_context);
 					instructions.push_str(&selection.index);
 				} else {
-					for skill in &agent.skills {
-						let entry = self
-							.environment
-							.catalog().get_for_run(&*run, &skill.id, &skill.version)
-							.await?;
-						instructions.push('\n');
-						instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
-						instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
-					}
+                    let registry_read=self.environment.context_source(ContextSourceRead::RegistrySkills {run},token).await;
+                    record_source_read(store,run,token,"registry_skills",&registry_read).await?;
+                    instructions.push_str(registry_read.result?.as_ref().and_then(Value::as_str).unwrap_or_default());
 					if tools.contains_key("skill_list") && home.has_local_authority()
 					{
 						source_skill_context = if ordered {
-							let (text, skill) = self.ordered_skill_context(run, &binding_digest).await?;
+							let (text, skill) = self.ordered_skill_context(run, token, &binding_digest).await?;
 							ordered_skill = skill;
 							text
-						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { read_skill_source(self.environment, run, token).await? };
 						instructions.push_str(&source_skill_context);
 					}
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
 				let documents =
-					self.environment.documents(&entry).await?;
+					source_documents(self.environment, run, &entry, token).await?;
 				let mut context = run.context.clone();
 				capture_declared_coverage(&mut context, &tools, false);
-				let observation = home
-					.observation(0, context::observation::DEFAULT_LIMIT)
-					.await?;
+				let source_read = self.environment.context_source(ContextSourceRead::WorkspaceObservation { run, offset:0, limit:context::observation::DEFAULT_LIMIT },token).await;
+                record_source_read(store,run,token,"workspace",&source_read).await?;
+                let observation=source_read.result?.unwrap_or(Value::Null);
+                copy_source_records(&run.context,&mut context);
 				let input_seq = inputs
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
@@ -1619,6 +1633,7 @@ impl<'a> Executor<'a> {
 							degrade_on_outage,
 						)
 						.await?;
+					copy_source_records(&run.context,&mut context);
 					if let Some(value) = &semantic.value {
 						pinned["semantic_memory"] = value.clone();
 					}
@@ -1647,20 +1662,13 @@ impl<'a> Executor<'a> {
 							.cloned()
 					} else if guard.is_some() || home.local() {
 						let read = self.environment
-							.semantic_context(
-								run,
-								&task,
-								&semantic_inputs,
-								semantic_budget,
-								&entry,
-								None,
-								degrade_on_outage,
-							)
+							.context_source(ContextSourceRead::Semantic { run, task: &task, inputs: &semantic_inputs, budget: semantic_budget, entry: &entry, key: None, degrade_on_outage }, token)
 							.await;
 						finish_semantic_read(store, run, token, read).await?
 					} else {
 						None
 					};
+					copy_source_records(&run.context,&mut context);
 					if let Some(semantic) = &semantic {
 						pinned["semantic_memory"] = semantic.clone();
 					}
@@ -1756,7 +1764,9 @@ impl<'a> Executor<'a> {
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
-				let request_estimate = request.request_estimate();
+				let source_delivery = fit_source_delivery(&context,&request,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
+                let source_request_digest=aidash_domain::registry::rules::digest(&serde_json::to_value(&request)?);
+                let request_estimate = request.request_estimate();
 				let request_tokens = request_estimate.tokens as usize;
 				let request_bytes = request.byte_estimate().total();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
@@ -1990,6 +2000,11 @@ impl<'a> Executor<'a> {
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_declared_coverage(&mut context, &tools, true);
+                for contribution in &source_delivery.contributions {
+                    let receipt=context::source::accepted_delivery(contribution,source_request_digest.clone(),attempt.0)?;
+                    context.source_deliveries.retain(|prior|prior.identity!=receipt.identity);
+                    context.source_deliveries.push(receipt);
+                }
 				// Everything in this request reached an accepted inference, so the
 				// Summary Stage may later absorb it without hiding unread content.
 				context.journal.inferred_through = context.journal.head;
@@ -3362,11 +3377,12 @@ async fn exposure_catalog(
 async fn resident_skills(
 	environment: &dyn ExecutionEnvironment,
 	run: &Run,
+	token: Uuid,
 	snapshot: &BindingSnapshot,
 	catalog: &[exposure::Capability],
 	selection: &exposure::Selection,
-) -> Result<String> {
-	let mut text = String::new();
+) -> Result<SemanticContextRead> {
+	let mut blocks = vec![];
 	for alias in &selection.skills {
 		let capability = catalog
 			.iter()
@@ -3387,9 +3403,22 @@ async fn resident_skills(
 				return Err(Error::Invalid(format!("selected {alias} is not a Skill")));
 			}
 		};
-		text.push_str(&exposure::resident_block(capability, &body));
+		blocks.push(PreparedSkillSource {
+			identity: capability.identity.clone(),
+			digest: capability.digest.clone(),
+			text: exposure::resident_block(capability, &body),
+			preview: capability.description.clone(),
+		});
 	}
-	Ok(text)
+	Ok(environment
+		.context_source(
+			ContextSourceRead::ResidentSkills {
+				run,
+				blocks: &blocks,
+			},
+			token,
+		)
+		.await)
 }
 /// How this step obtained an Ordered Run's Skill context.
 enum OrderedSkill {
@@ -3463,6 +3492,7 @@ async fn finish_semantic_read(
 	token: Uuid,
 	read: SemanticContextRead,
 ) -> Result<Option<Value>> {
+	record_source_read(store, run, token, "semantic_memory", &read).await?;
 	if read.workspace_retrieved && run.recovery.degraded.outage {
 		run.recovery.degraded.recovered();
 		run.recovery.semantic_reason = None;
@@ -3617,3 +3647,145 @@ mod completion;
 mod progress;
 #[cfg(test)]
 mod tests;
+
+/// The current projection renders a provider contribution with its established
+/// bytes; the declaration never supplies a new system instruction.
+async fn read_skill_source(
+	environment: &dyn ExecutionEnvironment,
+	run: &mut Run,
+	token: Uuid,
+) -> Result<String> {
+	let read = environment
+		.context_source(ContextSourceRead::Skills { run }, token)
+		.await;
+	record_source_read(environment.store(), run, token, "skills", &read).await?;
+	Ok(read
+		.result?
+		.and_then(|value| value.as_str().map(str::to_owned))
+		.unwrap_or_default())
+}
+async fn source_documents(
+	environment: &dyn ExecutionEnvironment,
+	run: &mut Run,
+	entry: &aidash_domain::registry::Entry,
+	token: Uuid,
+) -> Result<Value> {
+	let read = environment
+		.context_source(ContextSourceRead::References { run, entry }, token)
+		.await;
+	record_source_read(environment.store(), run, token, "references", &read).await?;
+	Ok(read.result?.unwrap_or_else(|| json!([])))
+}
+/// Persist proposals before a typed failure can pause execution. A retrieved
+/// contribution earns delivery only after the actual inference is accepted.
+async fn record_source_read(
+	store: &dyn ExecutionStore,
+	run: &mut Run,
+	token: Uuid,
+	slot: &str,
+	read: &SemanticContextRead,
+) -> Result<()> {
+	run.context.source_contributions.retain(|contribution| {
+		contribution.identity.item != slot
+			&& !contribution.identity.item.starts_with(&format!("{slot}/"))
+	});
+	run.context
+		.source_contributions
+		.extend(read.contributions.clone());
+	for selection in &read.selections {
+		run.context.source_selections.retain(|prior| {
+			!(prior.boundary.input_digest == selection.boundary.input_digest
+				&& prior.decider == selection.decider)
+		});
+		run.context.source_selections.push(selection.clone());
+	}
+	if !read.selections.is_empty() {
+		store.observe_sources(run, token).await?;
+	}
+	Ok(())
+}
+fn copy_source_records(from: &Context, to: &mut Context) {
+	to.source_contributions = from.source_contributions.clone();
+	to.source_selections = from.source_selections.clone();
+}
+
+/// Fit source envelopes against the final rendered request, after projection
+/// clipping and compaction. Fetched/selected bytes absent here earn no receipt.
+fn fit_source_delivery(
+	context: &Context,
+	request: &aidash_domain::provider::ModelRequest,
+	remote: bool,
+) -> Result<aidash_application::context::source::FittedSources> {
+	use context::source::*;
+	let rendered = serde_json::to_value(request)?;
+	let candidates = context
+		.source_contributions
+		.iter()
+		.map(|contribution| SourceCandidate {
+			identity: contribution.identity.clone(),
+			content: contribution.content.clone(),
+			preview: String::new(),
+			provenance: contribution.provenance.clone(),
+			dependencies: contribution.dependencies.clone(),
+			completeness: contribution.completeness,
+			detail: contribution.detail.clone(),
+			mandatory: remote
+				&& contribution.identity.item.split('/').next() == Some("semantic_memory"),
+		})
+		.collect();
+	aidash_application::context::source::fit_with(candidates, |items| {
+		Ok(items.iter().all(|item| {
+			source_in_request(
+				&rendered,
+				item.identity.item.split('/').next().unwrap_or_default(),
+				&item.content,
+			)
+		}))
+	})
+}
+fn source_in_request(value: &Value, slot: &str, expected: &Value) -> bool {
+	let key = if slot == "references" {
+		"reference_documents"
+	} else {
+		slot
+	};
+	match value {
+		Value::Object(fields) => {
+			fields
+				.get(key)
+				.is_some_and(|content| contains_source_value(content, expected))
+				|| fields
+					.values()
+					.any(|value| source_in_request(value, slot, expected))
+		}
+		Value::Array(values) => values
+			.iter()
+			.any(|value| source_in_request(value, slot, expected)),
+		Value::String(text) => {
+			if slot.ends_with("skills")
+				&& expected
+					.as_str()
+					.is_some_and(|source| !source.is_empty() && text.contains(source))
+			{
+				return true;
+			}
+			serde_json::from_str::<Value>(text)
+				.ok()
+				.filter(|decoded| !decoded.is_string())
+				.is_some_and(|decoded| source_in_request(&decoded, slot, expected))
+		}
+		_ => false,
+	}
+}
+fn contains_source_value(value: &Value, expected: &Value) -> bool {
+	value == expected
+		|| match value {
+			Value::Object(fields) => fields
+				.values()
+				.any(|value| contains_source_value(value, expected)),
+			Value::Array(values) => values
+				.iter()
+				.any(|value| contains_source_value(value, expected)),
+			_ => false,
+		}
+}

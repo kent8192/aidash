@@ -295,6 +295,7 @@ impl WorkerAuthority {
 					};
 					let mut scope =
 						crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					scope.run = Some(Box::new(run.clone()));
 					aidash_application::capabilities::approvals::disclose(
 						&mut scope,
 						&run.metadata(),
@@ -332,6 +333,7 @@ impl WorkerAuthority {
 			let request =
 				aidash_application::capabilities::approvals::ToolCallRequest { area, ..request };
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			scope.run = Some(Box::new(run.clone()));
 			aidash_application::capabilities::approvals::tool_call(
 				&mut scope,
 				&run.metadata(),
@@ -631,6 +633,19 @@ impl WorkerAuthority {
 	pub async fn skill_context(&self, store: &Store, run: &Run) -> Result<String> {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::context(store, &mut access, run).await
+	}
+	pub async fn skill_context_items(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Vec<aidash_application::capabilities::skills::ContextItem>> {
+		let mut access = self.access.write().await;
+		aidash_application::capabilities::skills::context_items(
+			&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+			&run.metadata(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn direct_skills(
 		&self,
@@ -966,7 +981,13 @@ impl Guard {
 			} else {
 				crate::semantic::services::memory_context::workspace_budget(budget)?
 			};
-			let semantic = aidash_application::execution::semantic_context::retrieve(
+			let query = aidash_application::execution::semantic_context::query_material(
+				&self.run,
+				task,
+				inputs,
+				aidash_domain::context::source::MAX_SOURCE_BYTES,
+			)?;
+			let semantic = aidash_application::execution::semantic_context::retrieve_with_query(
 				&crate::bootstrap::run_semantic_repository(
 					store,
 					self.remote.as_ref(),
@@ -976,6 +997,7 @@ impl Guard {
 				),
 				task,
 				inputs,
+				&query.text,
 				workspace_budget,
 				// Required-Home semantic context never degrades (ADR 0059).
 				degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
@@ -1014,6 +1036,8 @@ impl Guard {
 		}
 		.await;
 		aidash_application::ports::execution::SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
 			workspace_retrieved,
 			result: result.map_err(Into::into),
 		}

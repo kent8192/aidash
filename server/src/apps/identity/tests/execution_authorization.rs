@@ -1364,6 +1364,26 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	assert_eq!(call.id, "effect");
 	let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
 	assert_eq!(status, 200, "{decided}");
+	let label: String = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![reinhardt::query::Expr::value(approval).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		label, "human_allow",
+		"the explicit capability decision records its typed label atomically"
+	);
+
 	harness.worker_once().await.unwrap();
 	assert!(matches!(
 		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().state,

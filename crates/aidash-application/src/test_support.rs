@@ -125,6 +125,15 @@ impl BindingCatalog for Catalog {
 		{
 			return Ok(entry.clone());
 		}
+		if reference.id
+			== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
+			&& reference.version
+				== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_VERSION
+		{
+			return Ok(
+				aidash_domain::registry::bindings::source_defaults::workspace_observation()?,
+			);
+		}
 		if reference.id == crate::registry::system::COMPACTION_DECIDER_ID {
 			return crate::registry::system::compaction_decider();
 		}
@@ -222,7 +231,7 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 	)
 }
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
-	crate::registry::system::operations()
+	let mut entries: Vec<Entry> = crate::registry::system::operations()
 		.map(|name| {
 			entry(
 				&format!("aidash.{name}"),
@@ -230,8 +239,11 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 				json!(core_descriptor(node, name).unwrap()),
 			)
 		})
-		.chain([crate::registry::system::compaction_decider().unwrap()])
-		.collect()
+		.collect();
+	entries
+		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
+	entries.push(crate::registry::system::compaction_decider().unwrap());
+	entries
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {
 	json!({"kind":kind,"target":{"registry_deployment":node,"id":id,"version":"1.0.0"},"narrow":{}})

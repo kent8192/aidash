@@ -43,7 +43,7 @@ The identity of one exact capability declaration within its registering Node. Th
 _Avoid_: Unqualified tool name, model alias
 
 **Core capability**:
-A capability whose implementation and governing authority belong to the Node. A Core capability is declared through the Registry as a Built-in tool or a Host-distributed tool.
+A capability whose implementation and governing authority belong to the Node. A Core capability is declared through a Tenant's Registry as a Built-in tool, with Sandboxed tools requiring the Tenant's Catalog Approval.
 _Avoid_: Capability outside the Registry
 
 **Registry integration**:
@@ -54,9 +54,9 @@ _Avoid_: All Registry tools, Core capability
 A system-origin Tool required by Aidash's own features and declared as an immutable capability of its Node. Its availability is distinct from authority to read or change resources.
 _Avoid_: Marketplace package, ungoverned operation
 
-**Host-distributed tool**:
-A Node capability distributed as a Marketplace package for explicit tenant installation and approval. Installing it does not confer authority over its target resources.
-_Avoid_: Third-party integration, automatically authorized builtin
+**Sandboxed tool**:
+A Built-in tool whose execution uses the Node's isolated runtime and requires its exact version to have the Tenant's Catalog Approval. Approval is distinct from authority over the tool's target resources.
+_Avoid_: Host-distributed tool, third-party integration, automatically authorized builtin
 
 **Binding**:
 An Agent definition's reference to a declared capability, with its chosen name and additional applicable restrictions. A Binding expresses availability independently of permission to use the capability.

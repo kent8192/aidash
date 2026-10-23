@@ -9,12 +9,15 @@ use std::collections::BTreeMap;
 
 pub mod approval;
 pub mod evidence;
+pub mod observation;
 pub mod policy;
 pub mod probability;
+pub mod provider_report;
 pub mod pruning;
 pub use approval::*;
 pub use evidence::*;
 pub use probability::Probability;
+pub use provider_report::{AttemptProviderReport, ProviderCost};
 
 /// Jev through OpenRouter's System One API.
 pub const PROVIDER: &str = "typesafe.jev/1";
@@ -27,6 +30,9 @@ pub const RULE: &str = "compaction.keep/1";
 pub const APPROVAL_BUILDER: &str = "aidash.approval/1";
 pub const APPROVAL_OPTION_SOURCE: &str = "approval_call/1";
 pub const APPROVAL_RULE: &str = "approval.block/1";
+pub const SOURCE_BUILDER: &str = "aidash.context-selection/1";
+pub const SOURCE_OPTION: &str = "source_candidate/1";
+pub const SOURCE_RULE: &str = "context-source.keep/1";
 pub const EVIDENCE_VERSION: u8 = 4;
 /// Versions `ApprovalEvidence`, which is a record of its own beside `Evidence`.
 pub const APPROVAL_EVIDENCE_VERSION: u8 = 1;
@@ -43,20 +49,33 @@ pub const STATE_READ: &str = "decision.state.read";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Hook {
+	ContextSelection,
 	Compaction,
 	/// Whether a pending Tool call may run without a person approving it
 	/// (the Auto Approval Mode, ADR 0077).
 	Approval,
+	/// Independent typed human-approval observer (ADR 0085).
+	ApprovalObservation,
 }
 impl Hook {
 	/// The builder, option source and rule a Decider of this hook must name,
 	/// which fix the questions it asks and how its answers are read.
 	pub const fn contract(self) -> HookContract {
 		match self {
+			Self::ContextSelection => HookContract {
+				builder: SOURCE_BUILDER,
+				option_source: SOURCE_OPTION,
+				rule: SOURCE_RULE,
+			},
 			Self::Compaction => HookContract {
 				builder: BUILDER,
 				option_source: OPTION_SOURCE,
 				rule: RULE,
+			},
+			Self::ApprovalObservation => HookContract {
+				builder: observation::BUILDER,
+				option_source: observation::OPTION_SOURCE,
+				rule: observation::RULE,
 			},
 			Self::Approval => HookContract {
 				builder: APPROVAL_BUILDER,
@@ -296,7 +315,9 @@ impl DeciderConfig {
 		}
 		// Its state holds what people wrote to the Run, so an approval Decider
 		// retains none of it.
-		if self.hook == Hook::Approval && self.state_retention.enabled {
+		if matches!(self.hook, Hook::Approval | Hook::ApprovalObservation)
+			&& self.state_retention.enabled
+		{
 			return Err(Error::Invalid(
 				"an approval Decider does not retain its state".into(),
 			));

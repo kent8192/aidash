@@ -112,9 +112,13 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	let declared = declarations(&validation, NODE).unwrap();
 
-	assert_eq!(declared.len(), builtins.len() + 2);
+	assert_eq!(declared.len(), builtins.len() + 3);
 	assert_eq!(declared[..builtins.len()], builtins);
 	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
+	assert_eq!(
+		declared[builtins.len() + 1],
+		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap()
+	);
 	assert_eq!(declared.last(), Some(&compaction_decider().unwrap()));
 	assert!(
 		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
@@ -193,6 +197,15 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 		.await
 		.unwrap();
 	assert_eq!(decider, approval_decider().unwrap());
+	let source =
+		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap();
+	assert_eq!(
+		writer
+			.definition(&source.id, &source.version)
+			.await
+			.unwrap(),
+		source
+	);
 	assert_eq!(
 		writer
 			.definition(COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION)

@@ -286,3 +286,65 @@ fn a_public_key_pem_yields_its_raw_bytes_and_nothing_else_does() {
 		public_key_bytes("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n").is_err()
 	);
 }
+
+#[tokio::test]
+async fn observation_tokens_are_tenant_bound_decision_attempts_without_a_run() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let observation = Uuid::from_u128(42);
+	let call = Uuid::from_u128(43);
+	let mut wire = serde_json::to_value(claims()).unwrap();
+	wire["sub"] = serde_json::json!({
+		"observation": observation, "tenant": "tenant-a", "call": call,
+	});
+	wire["ops"] = serde_json::json!(["decision"]);
+	wire["model"] = "typesafe/jev-1.14".into();
+	wire["max_output_tokens"] = 0.into();
+	for change in 0..8 {
+		let mut value = wire.clone();
+		let expected = match change {
+			0 => None,
+			1 => {
+				value["sub"]["tenant"] = "tenant-b".into();
+				Some(Failure::Tenant)
+			}
+			2 => {
+				value["sub"]["observation"] = serde_json::json!(Uuid::nil());
+				Some(Failure::ClaimViolation)
+			}
+			3 => {
+				value["sub"]["call"] = serde_json::json!(Uuid::nil());
+				Some(Failure::ClaimViolation)
+			}
+			4 => {
+				value["ops"] = serde_json::json!(["chat"]);
+				value["max_output_tokens"] = 100.into();
+				Some(Failure::ClaimViolation)
+			}
+			5 => {
+				value["ops"] = serde_json::json!(["decision", "chat"]);
+				Some(Failure::ClaimViolation)
+			}
+			6 => {
+				value["max_output_tokens"] = 1.into();
+				Some(Failure::ClaimViolation)
+			}
+			7 => {
+				value["cache_breakpoints"] = true.into();
+				Some(Failure::ClaimViolation)
+			}
+			_ => unreachable!(),
+		};
+		let claims: Claims = serde_json::from_value(value).unwrap();
+		let token = mint(&claims, &signer).await.unwrap();
+		let result = keys.verify(token.expose_secret(), "worker", "environment", 100);
+		if let Some(expected) = expected {
+			assert_eq!(result.unwrap_err(), expected, "change {change}");
+		} else {
+			let verified = result.unwrap();
+			assert_eq!(serde_json::to_value(verified.sub).unwrap(), wire["sub"]);
+			assert_eq!(verified.ops, vec![Operation::Decision]);
+		}
+	}
+}
