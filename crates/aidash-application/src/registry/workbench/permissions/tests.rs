@@ -127,7 +127,11 @@ impl PermissionScope for Scope<'_> {
 		let kind = if entry.id == "agent" {
 			self.0.agent_kind
 		} else {
-			if entry.id.starts_with("aidash.") {
+			if entry.id
+				== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
+			{
+				"source"
+			} else if entry.id.starts_with("aidash.") {
 				"tool"
 			} else {
 				entry.id.as_str()
@@ -342,7 +346,19 @@ async fn catalog_action_and_required_registry_read_each_gate_effective_permissio
 		result.rows[0].effective_for_component,
 		catalog == Some(true) && action
 	);
-	assert!(result.rows[1..].iter().all(|r| !r.effective_for_component));
+	for row in &result.rows[1..] {
+		if row.kind == "source" {
+			assert_eq!(row.action, "registry.read");
+			assert_eq!(row.policy_allowed, registry);
+			assert_eq!(row.registry_read_allowed, Some(registry));
+			assert_eq!(
+				row.effective_for_component,
+				catalog == Some(true) && registry
+			);
+		} else {
+			assert!(!row.effective_for_component, "{}", row.reference.id);
+		}
+	}
 	assert_eq!(result.policy_revision, 3);
 }
 
