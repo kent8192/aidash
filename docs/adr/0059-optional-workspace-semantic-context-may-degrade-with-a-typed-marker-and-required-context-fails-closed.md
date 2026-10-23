@@ -14,8 +14,13 @@ Decided on 2026-10-12 (#154) and refined on 2026-10-17 (#234). When retrieval of
 ## Consequences
 
 - The workspace and memory slots are retrieved independently. An unavailable workspace slot no longer stops memory retrieval, and a memory failure still pauses the Run.
+- A successful workspace retrieval ends the previous outage even when native memory subsequently fails (#366). The execution port reports that progress separately; the executor persists the cleared outage and retry state under its current lease before passing the memory error to recovery, which reloads the stored Run. This applies to Legacy and Ordered Runs, including scoped authority.
 - The marker is never stored as a Source observation, either across steps under a Retrieval Key (ADR 0020) or for recovery of the same inference boundary. The next attempt retrieves again.
 - The model sees only the marker, as data, with no added explanatory text.
 - Run inspection lists the degraded steps with their cause, and the dashboard marks a local Run that ran with Degraded context. Completion Gate and Completion Review are not affected.
 - A required-Home Run pauses even if its Agent's source opts in. Admission accepts such a Binding without a warning, because the same Agent also runs locally. The Registry form offers `pause | degrade` as an explicit choice for `workspace_retrieval` sources and says that it applies only to local Runs.
 - Degradation applies to local Runs with and without a scoped authority guard, on the Legacy and Ordered Projection Versions alike. A degraded step on the scoped path begins no dependency journal for the workspace slot.
+
+## Incomplete indexing
+
+The #342 decision (2026-10-23, ADR 0020) treats incomplete indexing during a Run as a typed, bounded wait. It is outside the embedding/vector transport outage cases that may degrade: even an opted-in source waits for the complete index and then pauses with `retries_exhausted` if necessary. A healthy embedding provider does not make an entry READY until indexing completes.

@@ -1,5 +1,6 @@
 //! Immutable task versions observed while preparing native memory inference.
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,8 +12,15 @@ pub struct RunTaskSnapshot {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub run_id: Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "run_task_snapshot_run",
+		db_index = false,
+		on_delete = Cascade,
+		on_update = Restrict
+	)]
+	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field]
 	pub task_revision: i64,
 	#[field]

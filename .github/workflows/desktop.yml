@@ -1,5 +1,6 @@
 name: Desktop
 on:
+  workflow_call:
   pull_request:
     paths:
       - "desktop/**"
@@ -29,7 +30,12 @@ jobs:
     name: Shared desktop assets and transport
     # Standard hosted runners are free for public repositories. Do not silently
     # incur compute charges if this repository's visibility changes.
-    if: github.event.repository.private == false
+    # Release PRs reuse the tested source under the required CI verification and
+    # staging gates. Their complete diff from main must not repeat native builds.
+    if: >-
+      github.event.repository.private == false &&
+      !(github.event_name == 'pull_request' && github.base_ref == 'main' &&
+        startsWith(github.head_ref, 'release/'))
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:

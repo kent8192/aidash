@@ -2063,6 +2063,13 @@ impl Store {
 	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<WorkspaceSnapshot> {
 		self.pool
 			.atomic(scope, async |db| {
+				if let Some(tenant) = scope.tenant_name() {
+					crate::authorization::remote::deployment_administrator::tenant(
+						db,
+						tenant.as_str(),
+					)
+					.await?;
+				}
 				Ok(WorkspaceSnapshot {
 					workspace: WorkspaceRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
@@ -2984,6 +2991,7 @@ impl Store {
 			kind,
 			"run.sources_observed"
 				| "run.semantic_degraded"
+				| "run.semantic_recovered"
 				| "run.estimate_pinned"
 				| "context.summary_revoked"
 		);
@@ -3914,6 +3922,13 @@ impl Store {
 	) -> Result<RunDetails> {
 		self.pool
 			.atomic(scope, async |tx| {
+				if let Some(tenant) = scope.tenant_name() {
+					crate::authorization::remote::deployment_administrator::tenant(
+						tx,
+						tenant.as_str(),
+					)
+					.await?;
+				}
 				let run = RunRecord::objects()
 					.filter(RunRecord::field_id().eq(id))
 					.all_with_executor(tx)

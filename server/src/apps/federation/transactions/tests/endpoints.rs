@@ -506,7 +506,7 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 		.await
 		.unwrap();
 	assert_eq!(gate.commit_epoch(), 1);
-	assert_eq!(gate.transaction_id(), &None);
+	assert_eq!(gate.transaction_id(), None);
 	let visible = assert_json(app.deployment_administrator.get(&path).await.unwrap(), 200);
 	assert_eq!(visible["workspace"]["id"], created["id"]);
 }

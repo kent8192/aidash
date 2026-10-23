@@ -1,6 +1,7 @@
 //! Persistent generation_history records.
 
 use chrono::{DateTime, Utc};
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +12,13 @@ pub struct GenerationHistory {
 	pub sequence: i64,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[field]
-	pub request_id: uuid::Uuid,
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "generation_history_request_id_fkey",
+		db_index = false
+	)]
+	pub request: ForeignKeyField<crate::apps::execution::generation::models::GenerationRequest>,
 	#[field(field_type = "text")]
 	pub status: String,
 	#[field(field_type = "text")]
