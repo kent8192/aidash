@@ -10,8 +10,9 @@ Use Python 3.12+, Terraform 1.14.8, OpenSSL 3, kubectl and gcloud. The operator 
 explicit parent (`none`, folder or organization), billing account, project-creation quota, project shutdown
 and billing permissions, plus the bootstrap roles described in the parent
 README. The broker image must come from a reviewed source SHA; record the build
-provenance and reviewed digest together before preparing. No approved digest is
-currently supplied by the production lock. Never copy sandbox inputs to the
+provenance and reviewed digest together before preparing the environments root.
+Project creation and bootstrap preparation may precede the private image build.
+No approved digest is currently supplied by the production lock. Never copy sandbox inputs to the
 production checkout or change its null lock to make this procedure run.
 
 ## Prepare and provision
@@ -22,24 +23,26 @@ Set these non-secret values explicitly. `RUN` must be a new directory below
 ```sh
 RUN="$PWD/private/credential-sandbox-20261023"
 SOURCE_SHA='<reviewed full 40-character SHA>'
-BROKER_DIGEST='sha256:<reviewed 64-character digest>'
 APP_PROJECT='aidash-sbx-<unique-app-id>'
 BYOK_PROJECT='aidash-sbx-<unique-byok-id>'
 BILLING_ACCOUNT='<six>-<six>-<six>'
 PARENT='none' # Explicit personal/no-organization project; or folders/<number>
 python3 infra/gcp/sandbox/runner.py prepare --directory "$RUN" \
-  --source-sha "$SOURCE_SHA" --broker-digest "$BROKER_DIGEST" \
+  --source-sha "$SOURCE_SHA" \
   --app-project "$APP_PROJECT" --byok-project "$BYOK_PROJECT" \
   --billing-account "$BILLING_ACCOUNT" --parent "$PARENT"
 ```
 
-`prepare` writes a private manifest without cloud calls. Review its source,
-billing scope, parent, two IDs and random ownership label. The following is a
+`prepare` writes a private manifest without cloud calls. Omitting `--broker-digest`
+records null rather than inventing an image. If a reviewed image already exists,
+`--broker-digest "$BROKER_DIGEST"` remains supported and locks that image at
+preparation. Review its source, billing scope, parent, two IDs and random
+ownership label. The following is a
 **separate cloud-write step**, to execute only after that scope is authorized:
 
 ```sh
 python3 infra/gcp/sandbox/runner.py create --manifest "$RUN/manifest.json"
-python3 infra/gcp/sandbox/runner.py plan --manifest "$RUN/manifest.json" \
+python3 infra/gcp/sandbox/runner.py plan --phase bootstrap --manifest "$RUN/manifest.json" \
   --alert-email '<approved-test-sink@example.com>'
 ```
 
@@ -51,30 +54,61 @@ with the operator and choose fresh IDs. Do not manually mark a project owned.
 The manifest is a local ownership journal, not a signature or security boundary
 against an operator who can edit local files; protect it with the run directory.
 
-`plan` is local-only: it archives `infra/gcp` from the recorded Git SHA into
-`$RUN/source`, changes the broker lock **in that isolated copy only**, and writes
-Terraform inputs and `plan-commands.json`. It provisions one running unpublished
-`test` Environment with no DNS records, `sandbox.invalid` as a non-routable domain,
-two GCIP pools, and the real bootstrap/environment modules. The source checkout,
+`plan --phase bootstrap` is local-only: it archives `infra/gcp` from the recorded
+Git SHA into `$RUN/source`, records that SHA and archive hash in
+`source-manifest.json`, and writes only bootstrap inputs and
+`bootstrap-plan-commands.json`. The archived environment image lock remains
+byte-for-byte unchanged; no environment inputs or commands are generated. This
+allows the new project's Artifact Registry to exist before a private image build.
+
+1. Review and execute the commands in `bootstrap-plan-commands.json`, then review
+   the saved bootstrap plan. An authorized operator applies that exact plan
+   separately. Keep its local state and saved plan in place.
+2. Build the broker privately from the **same recorded SHA** and publish it to
+   `us-central1-docker.pkg.dev/$APP_PROJECT/aidash/broker` in the newly owned
+   project. Record the actual build provenance and reviewed `sha256:` digest as
+   `BROKER_DIGEST`. Bootstrap creates Artifact Registry; using Cloud Build also
+   requires separately scoped API enablement and a build service account with
+   the necessary sandbox registry/logging access. This tool does not implicitly
+   authorize or run a build, select a public service, or supply a placeholder.
+3. Register the actual digest once, then prepare environments from the retained
+   source archive:
+
+```sh
+python3 infra/gcp/sandbox/runner.py set-broker-image --manifest "$RUN/manifest.json" \
+  --source-sha "$SOURCE_SHA" --digest "$BROKER_DIGEST"
+python3 infra/gcp/sandbox/runner.py plan --phase environments --manifest "$RUN/manifest.json"
+```
+
+`set-broker-image` is local-only, requires the exact manifest/source-receipt SHA,
+and refuses to replace an already registered image or change a prepared
+environment. It does not verify remote image provenance; the operator must
+review the private build receipt and registry digest before registration.
+`plan --phase environments` requires that registered digest and prior bootstrap
+preparation. It reuses the same isolated archive and changes the broker lock
+**in that isolated copy only**. It writes environment inputs and
+`environments-plan-commands.json`; neither bootstrap inputs/state nor its saved
+plan is overwritten. Missing digest blocks environment preparation before any
+write. Every phase refuses existing generated inputs/commands/saved plans;
+resolve an interrupted local preparation explicitly instead of overwriting a
+reviewed plan.
+
+Review and execute the environment commands against the new app project's state
+bucket and sandbox run prefix, then review/apply the saved environment plan
+separately. Obtain any required Cloudflare provider authentication without
+performing DNS writes. The inputs create one running unpublished `test`
+Environment with no DNS records, `sandbox.invalid`, two GCIP pools and the real
+modules. Preserve bootstrap state until project shutdown is verified. Install
+the reviewed app/Runner workload and NetworkPolicies before Pod/session probes;
+missing actual workloads fail acceptance.
+
+For a digest already known at `prepare`, the original `plan --manifest
+"$RUN/manifest.json" --alert-email ...` (default `--phase all`) remains available
+and writes `plan-commands.json` for both roots in one operation. Use either that
+combined path or the staged path. The source checkout, production null lock,
 WIF anchors, IAM protections and every `prevent_destroy` remain unchanged.
-The sandbox lock is exactly the reviewed digest in the manifest; this is not a
-production bypass and must never be passed through the production controller.
-
-Inspect the command array and inputs before executing each command directly:
-
-1. Initialize and plan the copied bootstrap root (local state). Review its saved
-   plan; an authorized operator applies `bootstrap/sandbox.tfplan` separately.
-2. Build/publish the reviewed broker image to the **new app project's** registry
-   and verify its manifest digest equals `BROKER_DIGEST`. Obtain any required
-   Cloudflare provider authentication without granting or performing DNS writes.
-3. Initialize the copied environments root against the **new app project's**
-   state bucket and sandbox run prefix, then review its saved plan. An authorized
-   operator applies `environments/sandbox.tfplan` separately. Preserve the local
-   bootstrap state until project shutdown is verified.
-4. Install the reviewed app/Runner workload and NetworkPolicies in this sandbox
-   before Pod/session probes. The environment must remain unpublished. These
-   probes use existing actual workloads and fail if any required workload is
-   absent; no look-alike pod is substituted for the application.
+Never copy sandbox inputs into the production controller. Digest-free project
+cleanup remains available if build/provisioning cannot proceed.
 
 ## Executable controls and evidence
 

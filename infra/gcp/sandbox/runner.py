@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Disposable #152 sandbox lifecycle. All output is allowlisted metadata.
 
-prepare/plan are local-only. create, probe and cleanup require separate operator
+prepare/plan/set-broker-image are local-only. create, probe and cleanup require separate operator
 invocations; this tool never runs Terraform apply or changes gcloud defaults.
 """
 import argparse
@@ -66,11 +66,13 @@ def cloud(project, *args):
         raise Refused('invalid cloud response') from None
 
 
-def validate(m):
+def validate(m, require_image=True):
     require(m.get('schema') == 1, 'unsupported manifest')
     require(re.fullmatch('[a-f0-9]{32}', m.get('run_id', '')), 'invalid run id')
     require(re.fullmatch('[a-f0-9]{40}', m.get('source_sha', '')), 'invalid source SHA')
-    require(re.fullmatch('sha256:[a-f0-9]{64}', m.get('broker_digest', '')), 'reviewed broker digest required')
+    digest = m.get('broker_digest')
+    require((digest is None and not require_image) or isinstance(digest, str) and re.fullmatch('sha256:[a-f0-9]{64}', digest), 'reviewed broker digest required')
+    require(m.get('broker_image_source_sha', m['source_sha']) == m['source_sha'], 'broker image source mismatch')
     require(re.fullmatch('[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}', m.get('billing_account', '')), 'explicit billing account required')
     require(m.get('environment') == 'test', 'only unpublished test environment allowed')
     require(set(m.get('projects', {})) == {'app', 'byok'}, 'exactly two projects required')
@@ -98,7 +100,7 @@ def prepare(args):
              broker_digest=args.broker_digest, billing_account=args.billing_account,
              parent=args.parent, environment='test', status='prepared', created_at=stamp(),
              projects={key: dict(id=value, number=None, status='new') for key, value in [('app', args.app_project), ('byok', args.byok_project)]})
-    validate(m)
+    validate(m, require_image=False)
     directory.mkdir(mode=0o700, parents=True)
     save(directory / 'manifest.json', m)
     return {'status': 'prepared', 'run_id': m['run_id']}
@@ -160,44 +162,84 @@ def cleanup(m, path):
     return {'status': 'shutdown_verified', 'permanent_deletion': 'pending_google_recovery_period', 'credential_cleanup': 'project_credentials_disabled; local_operator_credentials_not_managed'}
 
 
+def source_receipt(m, path):
+    receipt = json.loads((path.parent / 'source-manifest.json').read_text())
+    require(receipt['source_sha'] == m['source_sha'] and receipt['run_id'] == m['run_id'], 'source archive identity mismatch')
+    return receipt
+
+
+def set_broker_image(m, path, args):
+    require(m['status'] in ('prepared', 'created'), 'image registration not permitted in this lifecycle')
+    require(args.source_sha == m['source_sha'], 'image must come from the recorded reviewed source')
+    require(re.fullmatch('sha256:[a-f0-9]{64}', args.digest), 'actual reviewed image digest required')
+    require(m.get('broker_digest') is None, 'registered broker image is immutable')
+    source = path.parent / 'source'
+    if source.exists():
+        source_receipt(m, path)
+        require(not (source / 'infra/gcp/environments/sandbox.auto.tfvars.json').exists(), 'environment already prepared')
+    require(not any((path.parent / name).exists() for name in ('plan-commands.json', 'environments-plan-commands.json')), 'environment plan already prepared')
+    m.update(broker_digest=args.digest, broker_image_source_sha=args.source_sha, broker_image_registered_at=stamp())
+    save(path, m)
+    return {'status': 'broker_image_registered', 'source_sha': m['source_sha']}
+
+
 def plan(m, path, args):
+    phase = args.plan_phase
+    require(phase in ('all', 'bootstrap', 'environments'), 'unknown plan phase')
+    validate(m, require_image=phase != 'bootstrap')
     require(m['status'] == 'created', 'create both new projects before materializing plans')
     require(all(p.get('number', '').isdigit() for p in m['projects'].values()), 'project numbers required')
+    phases = ['bootstrap', 'environments'] if phase == 'all' else [phase]
+    if 'bootstrap' in phases:
+        require(args.alert_email, 'explicit alert email required for bootstrap')
     target = path.parent / 'source'
-    require(not target.exists(), 'source plan directory already exists')
-    repo = Path(__file__).resolve().parents[3]
-    archive = command(['git', '-C', str(repo), 'archive', m['source_sha'], 'infra/gcp'])
-    import io
-    target.mkdir(mode=0o700)
-    with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
-        bundle.extractall(target, filter='data')
     root = target / 'infra/gcp'
-    # This lock is confined to an isolated copy of the reviewed source. The
-    # production checkout and the controller's digest guard remain unchanged.
-    save(root / 'environments/broker-image.json', {'digest': m['broker_digest']})
+    command_file = path.parent / ('plan-commands.json' if phase == 'all' else phase + '-plan-commands.json')
+    require(not command_file.exists(), 'reviewed plan commands already exist')
+    for name in phases:
+        require(not (root / name / 'sandbox.auto.tfvars.json').exists() and not (root / name / 'sandbox.tfplan').exists(), 'reviewed plan inputs or plan already exist')
+    if phase == 'environments':
+        require((root / 'bootstrap/sandbox.auto.tfvars.json').exists(), 'prepare bootstrap from this source first')
+    if target.exists():
+        source_receipt(m, path)
+    else:
+        require(not (path.parent / 'source-manifest.json').exists(), 'previous source archive missing')
+        repo = Path(__file__).resolve().parents[3]
+        archive = command(['git', '-C', str(repo), 'archive', m['source_sha'], 'infra/gcp'])
+        import io
+        target.mkdir(mode=0o700)
+        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+            bundle.extractall(target, filter='data')
+        save(path.parent / 'source-manifest.json', dict(source_sha=m['source_sha'], run_id=m['run_id'], archive_sha256=hashlib.sha256(archive).hexdigest()))
     app, byok = (m['projects'][key]['id'] for key in ('app', 'byok'))
-    bootstrap = dict(project_id=app, byok_project_id=byok, state_bucket_name=app + '-state',
-                     release_bucket_name=app + '-release', notification_bucket_name=app + '-notify',
-                     byok_broker_environments=['test'], security_alert_emails=[args.alert_email],
-                     gcip_enabled=True, environment_domains=['sandbox.invalid'])
-    env = dict(project_id=app, byok_project_id=byok, state_bucket=app + '-state',
-               cloudflare_zone_id='unused-unpublished', deploy_service_account='aidash-deploy@' + app + '.iam.gserviceaccount.com',
-               domain='sandbox.invalid', environments={'test': dict(kind='test', generation=1,
-               incarnation=m['run_id'][:12], running=True, published=False, spot=True, release_sha=m['source_sha'])},
-               gcip_tenants={'own': {'tenant': 'sandbox-own'}, 'other': {'tenant': 'sandbox-other'}},
-               credential_brokers={'test': dict(enabled=True, byok_project_id=byok, secret_prefix='aidash-test-cred-',
-               broker_service_account_email='aidash-test-broker@' + app + '.iam.gserviceaccount.com',
-               signing_key_id=f'projects/{app}/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability')})
-    save(root / 'bootstrap/sandbox.auto.tfvars.json', bootstrap)
-    save(root / 'environments/sandbox.auto.tfvars.json', env)
-    # Explicit local bootstrap state; environment state in the new app project.
-    commands = [
-        ['terraform', '-chdir=' + str(root / 'bootstrap'), 'init', '-input=false'],
-        ['terraform', '-chdir=' + str(root / 'bootstrap'), 'plan', '-input=false', '-out=sandbox.tfplan'],
-        ['terraform', '-chdir=' + str(root / 'environments'), 'init', '-input=false', '-backend-config=bucket=' + app + '-state', '-backend-config=prefix=sandbox/' + m['run_id']],
-        ['terraform', '-chdir=' + str(root / 'environments'), 'plan', '-input=false', '-out=sandbox.tfplan']]
-    save(path.parent / 'plan-commands.json', commands)
-    return {'status': 'plans_prepared_not_executed', 'run_id': m['run_id']}
+    commands = []
+    if 'bootstrap' in phases:
+        bootstrap = dict(project_id=app, byok_project_id=byok, state_bucket_name=app + '-state',
+                         release_bucket_name=app + '-release', notification_bucket_name=app + '-notify',
+                         byok_broker_environments=['test'], security_alert_emails=[args.alert_email],
+                         gcip_enabled=True, environment_domains=['sandbox.invalid'])
+        save(root / 'bootstrap/sandbox.auto.tfvars.json', bootstrap)
+        commands += [
+            ['terraform', '-chdir=' + str(root / 'bootstrap'), 'init', '-input=false'],
+            ['terraform', '-chdir=' + str(root / 'bootstrap'), 'plan', '-input=false', '-out=sandbox.tfplan']]
+    if 'environments' in phases:
+        env = dict(project_id=app, byok_project_id=byok, state_bucket=app + '-state',
+                   cloudflare_zone_id='unused-unpublished', deploy_service_account='aidash-deploy@' + app + '.iam.gserviceaccount.com',
+                   domain='sandbox.invalid', environments={'test': dict(kind='test', generation=1,
+                   incarnation=m['run_id'][:12], running=True, published=False, spot=True, release_sha=m['source_sha'])},
+                   gcip_tenants={'own': {'tenant': 'sandbox-own'}, 'other': {'tenant': 'sandbox-other'}},
+                   credential_brokers={'test': dict(enabled=True, byok_project_id=byok, secret_prefix='aidash-test-cred-',
+                   broker_service_account_email='aidash-test-broker@' + app + '.iam.gserviceaccount.com',
+                   signing_key_id=f'projects/{app}/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability')})
+        save(root / 'environments/sandbox.auto.tfvars.json', env)
+        # Only the environment stage materializes a reviewed image. Bootstrap
+        # preserves the archived lock byte-for-byte, including its null guard.
+        save(root / 'environments/broker-image.json', {'digest': m['broker_digest']})
+        commands += [
+            ['terraform', '-chdir=' + str(root / 'environments'), 'init', '-input=false', '-backend-config=bucket=' + app + '-state', '-backend-config=prefix=sandbox/' + m['run_id']],
+            ['terraform', '-chdir=' + str(root / 'environments'), 'plan', '-input=false', '-out=sandbox.tfplan']]
+    save(command_file, commands)
+    return {'status': 'plans_prepared_not_executed', 'phases': phases, 'run_id': m['run_id']}
 
 
 HOSTS = {'secretmanager.googleapis.com', 'cloudkms.googleapis.com', 'identitytoolkit.googleapis.com',
@@ -340,13 +382,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='phase', required=True)
     prepare_parser = sub.add_parser('prepare')
-    for key in ('directory', 'source-sha', 'broker-digest', 'billing-account', 'parent', 'app-project', 'byok-project'):
+    for key in ('directory', 'source-sha', 'billing-account', 'parent', 'app-project', 'byok-project'):
         prepare_parser.add_argument('--' + key, required=True)
-    for phase in ('create', 'plan', 'probe', 'cleanup'):
+    prepare_parser.add_argument('--broker-digest')
+    for phase in ('create', 'plan', 'probe', 'cleanup', 'set-broker-image'):
         child = sub.add_parser(phase)
         child.add_argument('--manifest', required=True)
         if phase == 'plan':
-            child.add_argument('--alert-email', required=True)
+            child.add_argument('--alert-email')
+            child.add_argument('--phase', dest='plan_phase', choices=('all', 'bootstrap', 'environments'), default='all')
+        if phase == 'set-broker-image':
+            child.add_argument('--source-sha', required=True)
+            child.add_argument('--digest', required=True)
         if phase == 'probe':
             child.add_argument('--requests', required=True)
     args = parser.parse_args()
@@ -358,8 +405,8 @@ def main():
             with open(path.with_suffix('.lock'), 'w') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 m = json.loads(path.read_text())
-                validate(m)
-                result = {'create': create, 'cleanup': cleanup}.get(args.phase, lambda m, p: globals()[args.phase](m, p, args))(m, path)
+                validate(m, require_image=args.phase == 'probe')
+                result = {'create': create, 'cleanup': cleanup}.get(args.phase, lambda m, p: globals()[args.phase.replace('-', '_')](m, p, args))(m, path)
         print(json.dumps(result))
         if args.phase == 'probe' and not result['all_passed']:
             return 1

@@ -105,6 +105,7 @@ class LifecycleTests(unittest.TestCase):
     def test_explicit_no_organization_project_lifecycle(self):
         m = json.loads(self.manifest.read_text())
         m['parent'] = 'none'
+        m['broker_digest'] = None
         self.manifest.write_text(json.dumps(m))
         self.call('create')
         self.call('cleanup')
@@ -233,6 +234,50 @@ class LifecycleTests(unittest.TestCase):
         commands = json.loads((self.directory / 'plan-commands.json').read_text())
         self.assertFalse(any('apply' in command for command in commands))
         self.assertTrue(all(str(self.directory / 'source') in command[1] for command in commands))
+
+    def test_staged_bootstrap_precedes_image_and_environment_plans_are_immutable(self):
+        sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=RUNNER.parent).decode().strip()
+        self.directory = self.root / 'staged'
+        self.manifest = self.directory / 'manifest.json'
+        self.call('prepare', '--directory', str(self.directory), '--source-sha', sha,
+                  '--billing-account', 'ABCDEF-ABCDEF-ABCDEF', '--parent', 'none',
+                  '--app-project', 'aidash-sbx-staged-app', '--byok-project', 'aidash-sbx-staged-byok')
+        self.assertIsNone(json.loads(self.manifest.read_text())['broker_digest'])
+        self.call('create')
+        self.call('plan', '--phase', 'environments', ok=False)
+        self.call('plan', '--alert-email', 'sandbox@example.com', ok=False)
+        self.assertFalse((self.directory / 'source').exists())
+        self.call('plan', '--phase', 'bootstrap', '--alert-email', 'sandbox@example.com')
+        source = self.directory / 'source/infra/gcp'
+        receipt = json.loads((self.directory / 'source-manifest.json').read_text())
+        self.assertEqual(receipt['source_sha'], sha)
+        for relative in ('bootstrap/main.tf', 'environments/broker-image.json'):
+            expected = subprocess.check_output(['git', 'show', sha + ':infra/gcp/' + relative], cwd=RUNNER.parent)
+            self.assertEqual((source / relative).read_bytes(), expected)
+        self.assertFalse((source / 'environments/sandbox.auto.tfvars.json').exists())
+        commands = json.loads((self.directory / 'bootstrap-plan-commands.json').read_text())
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all(command[1].endswith('/bootstrap') for command in commands))
+        bootstrap_vars = (source / 'bootstrap/sandbox.auto.tfvars.json').read_bytes()
+        saved_plan = source / 'bootstrap/sandbox.tfplan'
+        saved_plan.write_bytes(b'LOCAL_TEST_REVIEWED_PLAN')
+        self.call('set-broker-image', '--source-sha', 'f' * 40, '--digest', 'sha256:' + 'd' * 64, ok=False)
+        self.call('set-broker-image', '--source-sha', sha, '--digest', 'sha256:placeholder', ok=False)
+        self.assertIsNone(json.loads(self.manifest.read_text())['broker_digest'])
+        self.call('set-broker-image', '--source-sha', sha, '--digest', 'sha256:' + 'd' * 64)
+        self.call('plan', '--phase', 'environments')
+        self.assertEqual(json.loads((source / 'environments/broker-image.json').read_text()), {'digest': 'sha256:' + 'd' * 64})
+        self.assertEqual(json.loads(self.manifest.read_text())['broker_image_source_sha'], sha)
+        self.assertEqual((source / 'bootstrap/sandbox.auto.tfvars.json').read_bytes(), bootstrap_vars)
+        self.assertEqual(saved_plan.read_bytes(), b'LOCAL_TEST_REVIEWED_PLAN')
+        self.call('set-broker-image', '--source-sha', sha, '--digest', 'sha256:' + 'e' * 64, ok=False)
+        env_vars = (source / 'environments/sandbox.auto.tfvars.json').read_bytes()
+        self.call('plan', '--phase', 'environments', ok=False)
+        self.call('plan', '--phase', 'bootstrap', '--alert-email', 'different@example.com', ok=False)
+        self.assertEqual((source / 'environments/sandbox.auto.tfvars.json').read_bytes(), env_vars)
+        self.assertEqual((source / 'bootstrap/sandbox.auto.tfvars.json').read_bytes(), bootstrap_vars)
+        self.assertEqual(saved_plan.read_bytes(), b'LOCAL_TEST_REVIEWED_PLAN')
+        self.call('cleanup')
 
     def test_wildcard_iam_project_requires_owned_account(self):
         self.call('create')
