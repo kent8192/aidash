@@ -96,9 +96,24 @@ pub trait DecisionProvider: Send + Sync {
 	) -> Result<Box<dyn PreparedDispatch + '_>>;
 }
 
+/// A response's validated answers or safe failure, alongside independently known provider facts.
+/// Even an invalid answer can have a known reported charge. Never invent metadata on an outage.
+pub struct ReportedDispatch {
+	pub result: std::result::Result<BTreeMap<String, Probability>, DispatchError>,
+	pub provider_report: AttemptProviderReport,
+}
+
 /// A fully constructed transport consumed by one reserved physical attempt.
 #[async_trait]
 pub trait PreparedDispatch: Send {
+	/// The portable engine uses this method. Legacy/custom transports explicitly report
+	/// Unknown; concrete production providers override it to retain actual provider facts.
+	async fn dispatch_reported(self: Box<Self>) -> ReportedDispatch {
+		ReportedDispatch {
+			result: self.dispatch().await,
+			provider_report: AttemptProviderReport::Unknown,
+		}
+	}
 	/// One physical HTTP attempt, with strict model/type/coverage/finite-probability checks.
 	async fn dispatch(
 		self: Box<Self>,
@@ -130,6 +145,7 @@ pub struct DispatchPermit {
 /// Durable recovery data; pending reservations are returned as Uncertain.
 #[derive(Debug, Clone)]
 pub struct RecoveredAttempt {
+	pub provider_report: AttemptProviderReport,
 	pub permit: DispatchPermit,
 	pub status: AttemptStatus,
 	pub answers: Option<BTreeMap<String, Probability>>,
@@ -184,6 +200,24 @@ pub trait DecisionJournal: Send + Sync {
 		answers: Option<&BTreeMap<String, Probability>>,
 		status: AttemptStatus,
 	) -> Result<()>;
+	/// Atomically stores answers/status and actual provider facts. A journal that only
+	/// implements the legacy finish method may accept Unknown, never silently discard
+	/// a known report. Physical charges remain spent on any persistence failure.
+	async fn finish_reported_attempt(
+		&self,
+		permit: &DispatchPermit,
+		answers: Option<&BTreeMap<String, Probability>>,
+		status: AttemptStatus,
+		provider_report: &AttemptProviderReport,
+	) -> Result<()> {
+		provider_report.validate()?;
+		if *provider_report != AttemptProviderReport::Unknown {
+			return Err(crate::Error::Invalid(
+				"decision journal cannot retain provider reports".into(),
+			));
+		}
+		self.finish_attempt(permit, answers, status).await
+	}
 	/// Rechecks lease, input/run revisions and exact pins (including the Node Provider
 	/// implementation) inside the commit boundary.
 	/// Applying context or retaining state also requires current source/invocation
