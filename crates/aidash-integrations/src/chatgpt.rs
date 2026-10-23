@@ -273,6 +273,11 @@ impl Authorization for ChatgptAuthorization {
 		client_id: &str,
 		refresh_token: &SecretString,
 	) -> std::result::Result<Issued, RefreshFailure> {
+		// Discovery fails before the refresh request is dispatched. Once the
+		// request starts, a lost or malformed reply may hide a rotated grant.
+		self.discovery()
+			.await
+			.map_err(RefreshFailure::Unavailable)?;
 		// Omitting `scope` keeps the grant.
 		let reply = self
 			.token_request(&[
@@ -282,7 +287,7 @@ impl Authorization for ChatgptAuthorization {
 				("resource", domain::RESOURCE),
 			])
 			.await
-			.map_err(RefreshFailure::Unavailable)?;
+			.map_err(RefreshFailure::Ambiguous)?;
 		match reply {
 			TokenReply::Issued(issued) => Ok(issued),
 			TokenReply::Rejected { code, .. } if domain::refresh_is_terminal(code.as_deref()) => {
@@ -294,7 +299,12 @@ impl Authorization for ChatgptAuthorization {
 					domain::Failure::Misconfigured,
 				)))
 			}
-			TokenReply::Rejected { .. } => Err(RefreshFailure::Unavailable(unavailable())),
+			TokenReply::Rejected { code: Some(_), .. } => {
+				Err(RefreshFailure::Unavailable(unavailable()))
+			}
+			// A proxy/server failure without an OAuth rejection cannot establish
+			// whether the upstream consumed the refresh token before failing.
+			TokenReply::Rejected { .. } => Err(RefreshFailure::Ambiguous(unavailable())),
 		}
 	}
 

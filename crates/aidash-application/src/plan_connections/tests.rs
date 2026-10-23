@@ -142,6 +142,7 @@ struct FakeStore(
 #[derive(Default)]
 struct Failing {
 	add_version: bool,
+	passing_versions: usize,
 	destroy: bool,
 	delete: bool,
 }
@@ -178,8 +179,13 @@ impl Store for FakeStore {
 		Ok(())
 	}
 	async fn add_version(&self, _: &str, resource: &str, key: &SecretString) -> Result<String> {
-		if self.1.lock().unwrap().add_version {
-			return Err(Error::External("store unavailable".into()));
+		{
+			let mut faults = self.1.lock().unwrap();
+			if faults.passing_versions > 0 {
+				faults.passing_versions -= 1;
+			} else if faults.add_version {
+				return Err(Error::External("store unavailable".into()));
+			}
 		}
 		let mut state = self.0.lock().unwrap();
 		let versions = state.get_mut(resource).unwrap();
@@ -242,6 +248,7 @@ enum RefreshMode {
 	Ok,
 	Terminal,
 	Unavailable,
+	Ambiguous,
 	WithoutPlanScope,
 }
 struct Calls {
@@ -342,6 +349,9 @@ impl Authorization for FakeAuthorization {
 				Some("openid offline_access"),
 			)),
 			RefreshMode::Terminal => Err(RefreshFailure::Terminal),
+			RefreshMode::Ambiguous => Err(RefreshFailure::Ambiguous(Error::External(
+				"lost refresh response".into(),
+			))),
 			RefreshMode::Unavailable => Err(RefreshFailure::Unavailable(Error::ProviderRejected {
 				status: 503,
 				reason: "unavailable".into(),
@@ -825,6 +835,11 @@ async fn unavailable_refreshes_keep_the_tokens() {
 	assert_eq!(after.state, State::Active);
 	assert_eq!(after.pinned_version, before.pinned_version);
 	assert_eq!(fixture.store.plaintexts().len(), 1);
+	assert!(matches!(
+		fixture.service.bearer(before.pin()).await,
+		Err(Error::ProviderRejected { status: 503, .. })
+	));
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 2);
 }
 
 #[tokio::test]
@@ -1189,34 +1204,150 @@ async fn reconnecting_another_chatgpt_account_is_refused() {
 	);
 }
 
-/// The old refresh token is spent once OpenAI rotates it. A rotated pair that
-/// cannot be stored is revoked, and the connection asks for reconnection
-/// instead of pinning the spent token.
+/// A failed replacement Store write is gracefully revoked and discarded.
+/// A metadata commit failure leaves the durable replacement recoverable.
 #[rstest::rstest]
-#[case::store_write(true, 0)]
-#[case::metadata_commit(false, 1)]
+#[case::store_write(true, 0, false)]
+#[case::unconfirmed_revoke(true, 0, true)]
+#[case::metadata_commit(false, 1, false)]
 #[tokio::test]
-async fn rotated_tokens_that_cannot_be_kept_are_revoked(
+async fn rotated_tokens_are_abandoned_only_before_local_durability(
 	#[case] store_fails: bool,
 	#[case] failing_commits: usize,
+	#[case] revoke_fails: bool,
 ) {
-	let fixture = fixture(1, FakeAuthorization::default());
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			revoke_fails,
+			..FakeAuthorization::default()
+		},
+	);
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
 	let pin = only_row(&fixture).await.pin();
-	fixture.store.1.lock().unwrap().add_version = store_fails;
+	{
+		let mut faults = fixture.store.1.lock().unwrap();
+		faults.add_version = store_fails;
+		faults.passing_versions = 1; // intent durability succeeds
+	}
 	fixture.repo.0.lock().await.failing_commits = failing_commits;
+	let result = fixture.service.bearer(pin).await;
+	if store_fails {
+		assert!(matches!(
+			result,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+		assert_eq!(
+			fixture.authorization.calls.lock().unwrap().revoked,
+			vec!["refresh-r1"]
+		);
+		let row = only_row(&fixture).await;
+		assert_eq!(row.state, State::NeedsReconnection);
+		if revoke_fails {
+			assert!(row.pinned_version.is_some());
+			assert!(
+				!fixture
+					.service
+					.disconnect(&owner(), row.revision, "alice")
+					.await
+					.unwrap()
+					.revoked
+			);
+		} else {
+			assert!(row.pinned_version.is_none());
+		}
+		assert!(fixture.store.plaintexts().is_empty());
+	} else {
+		assert!(matches!(result, Err(Error::External(_))));
+		assert_eq!(
+			fixture.service.bearer(pin).await.unwrap().expose_secret(),
+			"access-r1"
+		);
+		assert!(
+			fixture
+				.authorization
+				.calls
+				.lock()
+				.unwrap()
+				.revoked
+				.is_empty()
+		);
+		assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	}
+}
+
+#[tokio::test]
+async fn a_refresh_requires_durable_intent_before_dispatch() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let before = only_row(&fixture).await;
+	fixture.store.1.lock().unwrap().add_version = true;
+	assert!(matches!(
+		fixture.service.bearer(before.pin()).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
+	assert_eq!(
+		only_row(&fixture).await.pinned_version,
+		before.pinned_version
+	);
+}
+
+#[rstest::rstest]
+#[case::disconnect(false, false)]
+#[case::reconnect(true, false)]
+#[case::reconnect_then_expire(true, true)]
+#[tokio::test]
+async fn an_unknown_refresh_result_is_never_replayed_or_reported_revoked(
+	#[case] reconnect: bool,
+	#[case] expire: bool,
+) {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Ambiguous,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let pin = only_row(&fixture).await.pin();
 	assert!(matches!(
 		fixture.service.bearer(pin).await,
-		Err(Error::Plan(Failure::NeedsReconnection))
+		Err(Error::External(_))
 	));
-	assert_eq!(
-		fixture.authorization.calls.lock().unwrap().revoked,
-		vec!["refresh-r1"]
-	);
+	for _ in 0..2 {
+		assert!(matches!(
+			fixture.service.bearer(pin).await,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+	}
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	if reconnect {
+		connect(&fixture, Some("oaiapp_1"), None).await.unwrap();
+		assert_eq!(
+			fixture.service.bearer(pin).await.unwrap().expose_secret(),
+			"access-1"
+		);
+	}
+	if expire {
+		set_row(&fixture, |row| row.refresh_expires_at = Utc::now()).await;
+		assert!(matches!(
+			fixture.service.bearer(pin).await,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+	}
 	let row = only_row(&fixture).await;
-	assert_eq!(row.state, State::NeedsReconnection);
-	assert!(row.pinned_version.is_none());
+	assert!(
+		!fixture
+			.service
+			.disconnect(&owner(), row.revision, "alice")
+			.await
+			.unwrap()
+			.revoked
+	);
 	assert!(fixture.store.plaintexts().is_empty());
 }
 
@@ -1303,7 +1434,11 @@ async fn abandoning_a_rotation_preserves_a_concurrent_reconnect() {
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
 	let pin = only_row(&fixture).await.pin();
-	fixture.repo.0.lock().await.failing_commits = 1;
+	{
+		let mut faults = fixture.store.1.lock().unwrap();
+		faults.add_version = true;
+		faults.passing_versions = 1;
+	}
 	*fixture
 		.authorization
 		.reconnect_during_revoke
@@ -1372,13 +1507,23 @@ async fn failed_discards_are_retried_by_the_next_call() {
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::Active);
 	assert!(row.pinned_version.is_some());
-	assert_eq!(fixture.store.plaintexts().len(), 1);
+	assert_eq!(fixture.store.plaintexts().len(), 2);
 	fixture.store.1.lock().unwrap().destroy = false;
 	assert!(matches!(
 		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	assert_eq!(only_row(&fixture).await.state, State::NeedsReconnection);
+	let row = only_row(&fixture).await;
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	assert!(
+		!fixture
+			.service
+			.disconnect(&owner(), row.revision, "alice")
+			.await
+			.unwrap()
+			.revoked
+	);
 	assert!(fixture.store.plaintexts().is_empty());
 }
 
@@ -1599,4 +1744,47 @@ async fn connections_retire_with_their_owners_mapping() {
 		.retire_unmapped(&owner(), "tenant_administrator")
 		.await
 		.unwrap();
+}
+
+/// An interrupted rotation's unpinned receipt must not overwrite a reconnect.
+/// Its grant remains reachable for revocation through later refresh cleanup.
+#[tokio::test]
+async fn a_stale_rotation_receipt_never_replaces_a_reconnected_grant() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let pin = only_row(&fixture).await.pin();
+	fixture.repo.0.lock().await.failing_commits = 1;
+	assert!(matches!(
+		fixture.service.bearer(pin).await,
+		Err(Error::External(_))
+	));
+	connect(&fixture, Some("oaiapp_1"), None).await.unwrap();
+	assert_eq!(
+		fixture.service.bearer(pin).await.unwrap().expose_secret(),
+		"access-1"
+	);
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	assert_eq!(only_row(&fixture).await.revision, 3);
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	fixture.service.bearer(pin).await.unwrap();
+	let row = only_row(&fixture).await;
+	assert!(
+		fixture
+			.service
+			.disconnect(&owner(), row.revision, "alice")
+			.await
+			.unwrap()
+			.revoked
+	);
+	assert!(
+		fixture
+			.authorization
+			.calls
+			.lock()
+			.unwrap()
+			.revoked
+			.contains(&"refresh-r1".into())
+	);
+	assert!(fixture.store.plaintexts().is_empty());
 }

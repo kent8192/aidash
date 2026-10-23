@@ -303,11 +303,14 @@ async fn refreshes_keep_the_grant_and_classify_rejections() {
 		let result = authorization
 			.refresh("oaiapp_1", &"refresh-0".to_owned().into())
 			.await;
-		assert_eq!(
-			matches!(result, Err(RefreshFailure::Terminal)),
-			terminal,
-			"{code}"
-		);
+		if terminal {
+			assert!(matches!(result, Err(RefreshFailure::Terminal)), "{code}");
+		} else {
+			assert!(
+				matches!(result, Err(RefreshFailure::Unavailable(_))),
+				"{code}"
+			);
+		}
 	}
 }
 
@@ -420,4 +423,52 @@ fn earliest_refresh_times_are_read_leniently() {
 	}))
 	.unwrap();
 	assert_eq!(tokens.into_issued().unwrap().earliest_refresh_at, at);
+}
+
+/// A malformed successful refresh response can follow upstream rotation.
+/// Its uncertainty must not be classified as permission to replay the grant.
+#[rstest::rstest]
+#[case::malformed_success(StatusCode::OK)]
+#[case::proxy_failure(StatusCode::BAD_GATEWAY)]
+#[tokio::test]
+async fn refresh_reply_loss_is_distinct_from_a_confirmed_rejection(#[case] status: StatusCode) {
+	let (authorization, seen, _server) = fake(
+		(status, json!({"access_token":"incomplete-response"})),
+		StatusCode::OK,
+		ok_models(),
+	)
+	.await;
+	let result = authorization
+		.refresh("oaiapp_1", &"refresh-0".to_owned().into())
+		.await;
+	assert_eq!(seen.lock().unwrap().token_forms.len(), 1);
+	assert!(result.is_err());
+	assert!(
+		matches!(result, Err(RefreshFailure::Ambiguous(_))),
+		"a possibly rotated grant cannot safely be retried"
+	);
+}
+
+#[tokio::test]
+async fn refresh_discovery_failure_is_safe_to_retry_before_dispatch() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let url = format!("http://{}", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/discovery",
+		get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+	);
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let authorization = ChatgptAuthorization::at(
+		reqwest::Client::new(),
+		format!("{url}/discovery"),
+		format!("{url}/v1"),
+	);
+	assert!(matches!(
+		authorization
+			.refresh("oaiapp_1", &"refresh-0".to_owned().into())
+			.await,
+		Err(RefreshFailure::Unavailable(_))
+	));
 }
