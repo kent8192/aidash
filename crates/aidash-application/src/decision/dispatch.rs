@@ -44,20 +44,21 @@ pub fn decision_identity(
 	window: usize,
 	route: u32,
 ) -> Uuid {
-	stable_id(&json!({
-		"contract":"aidash.decision/2", "node":boundary.node, "run":boundary.run,
-		"step":boundary.step, "cycle":boundary.cycle, "retry":boundary.retry,
-		"input_revision":boundary.input_revision, "input_digest":boundary.input_digest,
-		"decider":decider, "route":route,
-		"binding_restrictions":binding_restrictions, "state":state,
-		"sources":sources, "window":window,
-	}))
+	aidash_domain::decision::charged_decision_identity(
+		boundary,
+		decider,
+		binding_restrictions,
+		state,
+		sources,
+		window,
+		route,
+	)
 }
 
 /// The stable identity of one Decision Attempt of a decision. A journal
 /// recomputes it before charging, so an attempt is never charged under another key.
 pub fn attempt_identity(decision: Uuid, request_digest: &str, questions: &[String]) -> Uuid {
-	stable_id(&json!({"decision":decision,"request":request_digest,"questions":questions}))
+	aidash_domain::decision::charged_attempt_identity(decision, request_digest, questions)
 }
 
 pub(super) fn record(

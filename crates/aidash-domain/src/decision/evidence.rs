@@ -531,7 +531,7 @@ impl Evidence {
 
 /// Each attempt is well formed and asks questions of the decision that no other
 /// attempt asks; returns how many questions an answered attempt covers.
-pub(super) fn validate_attempt_set(
+pub(crate) fn validate_attempt_set(
 	attempts: &[AttemptEvidence],
 	questions: &Questions,
 ) -> Result<usize> {
@@ -615,4 +615,31 @@ pub struct OutcomeLink {
 	pub decision: Uuid,
 	pub next_inference: Option<String>,
 	pub observed_status: String,
+}
+
+fn charged_stable_id(value: &serde_json::Value) -> Uuid {
+	Uuid::parse_str(&digest(value)[7..39]).expect("canonical SHA256 contains 32 UUID hex digits")
+}
+pub fn charged_decision_identity(
+	boundary: &crate::decision::Boundary,
+	decider: &crate::decision::DeciderPin,
+	binding_restrictions: &crate::decision::Restrictions,
+	state: &str,
+	sources: &[crate::decision::SourcePin],
+	window: usize,
+	route: u32,
+) -> Uuid {
+	charged_stable_id(
+		&serde_json::json!({"contract":"aidash.decision/2","node":boundary.node,"run":boundary.run,"step":boundary.step,"cycle":boundary.cycle,"retry":boundary.retry,"input_revision":boundary.input_revision,"input_digest":boundary.input_digest,"decider":decider,"route":route,"binding_restrictions":binding_restrictions,"state":state,"sources":sources,"window":window}),
+	)
+}
+
+pub fn charged_attempt_identity(
+	decision: Uuid,
+	request_digest: &str,
+	questions: &[String],
+) -> Uuid {
+	charged_stable_id(
+		&serde_json::json!({"decision":decision,"request":request_digest,"questions":questions}),
+	)
 }
