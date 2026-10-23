@@ -1,0 +1,65 @@
+# Review dispositions for Issue #391
+
+This records a decision for all 27 findings listed in [Issue #391](https://github.com/kent8192/aidash/issues/391), plus its two findings from the merge. Implementation PRs are separate review units. Delivery of a fix here does not mean its PR has merged or its own hosted checks have passed.
+
+## Implemented findings
+
+| Component                                   | Finding                                                                                                                                | Implementation                                         |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Tenant restoration                          | [Serialize restoration through Plan Connection retirement](https://github.com/kent8192/aidash/pull/351#discussion_r4307262394)         | [PR #475](https://github.com/kent8192/aidash/pull/475) |
+| Page-image admission and immutable bundles  | [Version the expanded research bundles](https://github.com/kent8192/aidash/pull/375#discussion_r4307331975)                            | [PR #479](https://github.com/kent8192/aidash/pull/479) |
+| Page-image admission and immutable bundles  | [Validate media headroom before recording the page view](https://github.com/kent8192/aidash/pull/375#discussion_r4307394272)           | [PR #479](https://github.com/kent8192/aidash/pull/479) |
+| Research retention and inference boundaries | [Distinguish account expiry from ordinary retention purges](https://github.com/kent8192/aidash/pull/337#discussion_r4305731993)        | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Scope recorded terminations to the agreement](https://github.com/kent8192/aidash/pull/337#discussion_r4305732003)                     | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Refuse snapshots after their attempt is purged](https://github.com/kent8192/aidash/pull/337#discussion_r4307500127)                   | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Preserve the original age when replay settles abandoned attempts](https://github.com/kent8192/aidash/pull/337#discussion_r4307500134) | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Handle expired placeholders during later revocation](https://github.com/kent8192/aidash/pull/337#discussion_r4307500138)              | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Recheck expiry immediately before dispatching inference](https://github.com/kent8192/aidash/pull/337#discussion_r4307555181)          | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Revalidate completed results before replaying them](https://github.com/kent8192/aidash/pull/337#discussion_r4307555183)               | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Research retention and inference boundaries | [Detect account expiry after an earlier retention purge](https://github.com/kent8192/aidash/pull/337#discussion_r4307555185)           | [PR #478](https://github.com/kent8192/aidash/pull/478) |
+| Compaction                                  | [Restore a response-size bound for compaction](https://github.com/kent8192/aidash/pull/338#discussion_r4305744732)                     | [PR #477](https://github.com/kent8192/aidash/pull/477) |
+| Compaction                                  | [Reject staged decisions before returning on summary revocation](https://github.com/kent8192/aidash/pull/338#discussion_r4307563023)   | [PR #477](https://github.com/kent8192/aidash/pull/477) |
+| Compaction                                  | [Avoid cloning the full state for every question](https://github.com/kent8192/aidash/pull/338#discussion_r4307563025)                  | [PR #477](https://github.com/kent8192/aidash/pull/477) |
+| Compaction                                  | [Remove dropped Native tools that have no Model Turn](https://github.com/kent8192/aidash/pull/338#discussion_r4307563029)              | [PR #477](https://github.com/kent8192/aidash/pull/477) |
+| Tenant administration                       | [Show tenant controls independently of policy.read](https://github.com/kent8192/aidash/pull/384#discussion_r4307590377)                | [PR #476](https://github.com/kent8192/aidash/pull/476) |
+| Tenant administration                       | [Index credentials by mapping_id](https://github.com/kent8192/aidash/pull/384#discussion_r4307590381)                                  | [PR #476](https://github.com/kent8192/aidash/pull/476) |
+| Tenant administration                       | [Page through all self-issued credentials](https://github.com/kent8192/aidash/pull/384#discussion_r4307590384)                         | [PR #476](https://github.com/kent8192/aidash/pull/476) |
+| Tenant administration                       | [Expose issuance for resource-scoped grants](https://github.com/kent8192/aidash/pull/384#discussion_r4308644357)                       | [PR #476](https://github.com/kent8192/aidash/pull/476) |
+| Tenant administration                       | [Supply credentials to peer-mapping writers without read access](https://github.com/kent8192/aidash/pull/384#discussion_r4308644368)   | [PR #476](https://github.com/kent8192/aidash/pull/476) |
+| Workbench administration                    | [Page through all administered test profiles](https://github.com/kent8192/aidash/pull/384#discussion_r4308644361)                      | [PR #474](https://github.com/kent8192/aidash/pull/474) |
+| Workbench administration                    | [Use each test limit's actual minimum](https://github.com/kent8192/aidash/pull/384#discussion_r4308644362)                             | [PR #474](https://github.com/kent8192/aidash/pull/474) |
+| Workbench administration                    | [Run binding removal before Workbench authority locks](https://github.com/kent8192/aidash/pull/384#discussion_r4308644365)             | [PR #474](https://github.com/kent8192/aidash/pull/474) |
+| Workbench administration                    | [Require a rules array before submitting profiles](https://github.com/kent8192/aidash/pull/384#discussion_r4308644373)                 | [PR #474](https://github.com/kent8192/aidash/pull/474) |
+| Catalog freshness                           | [Start catalog freshness after the fetch completes](https://github.com/kent8192/aidash/pull/384#discussion_r4308644359)                | [PR #471](https://github.com/kent8192/aidash/pull/471) |
+
+## Development migration decisions
+
+The two findings below assume an upgraded deployed database. Aidash currently has no deployment. Its [migration history policy](../../server/instructions/ORM_GUIDANCE.md#migration-history-rules) explicitly permits baseline edits with matching logical state and recreated development databases. The choice here is to follow that policy, rather than add an unneeded deployment compatibility path.
+
+| Finding                                                                                                                   | Disposition and boundary                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [4305731988: backfill old Research attempts](https://github.com/kent8192/aidash/pull/337#discussion_r4305731988)          | Not applicable under the development baseline/reset policy. Recreate databases containing attempts without retention metadata before validating account terms. Unknown metadata in a retained older database is not supported or claimed safe by PR #478. Revisit and implement an explicit backfill before supporting upgrades of a deployed database. |
+| [4307161376: forward migrations for baseline columns](https://github.com/kent8192/aidash/pull/384#discussion_r4307161376) | Not applicable under that same policy. The physical baseline and logical state already contain the fields; development databases are recreated. A future deployed upgrade must introduce additive migrations instead of reapplying an edited baseline.                                                                                                  |
+
+## Findings from the merge
+
+- **Expired page-image citations:** report `expired` with their identity and digest, without PNG bytes, title or surrounding context. Ordinary snapshot retention alone retains delivered fragments/images under ADR 0053. Account expiry removes those contents even if ordinary retention marked the snapshot first. PR #478 implements this decision and amends ADR 0058; both orders have Application citation coverage and the earlier-retention order has native account-terms coverage.
+- **Historical Federation/browser setup failure (#386):** the repair landed in [PR #392](https://github.com/kent8192/aidash/pull/392) and [PR #456](https://github.com/kent8192/aidash/pull/456), and [Issue #386 is closed](https://github.com/kent8192/aidash/issues/386). At the batch base `48787522ae2e2bdeea4e7a158eb819b4b8aec154`, [Browser tests](https://github.com/kent8192/aidash/actions/runs/39852175260/job/120081702981), [Federation tests](https://github.com/kent8192/aidash/actions/runs/39852175260/job/120081703076), and [CI Success](https://github.com/kent8192/aidash/actions/runs/39852175260/job/120116114824) all succeeded. The new administration controls also passed local browser tests (10 Tenant administration cases and one Workbench form case). This is distinct from the current checks of each repair PR.
+
+## Behavior decisions
+
+PR #477 imposes a Node transport bound of 8 MiB on Decider Route responses, with the existing invalid-answer fallback/pause policy. It retains the existing valid 1.1 MiB debug-response case. ADR 0042 records the bound.
+
+PR #478 makes recorded Research account IDs nonrenewable: a new agreement uses a new account ID. Reusing a terminated account ID is refused before paid dispatch rather than accepting results under its old deletion deadline. Both PRs carry `breaking-change` and target `develop/0.1.0`.
+
+## Validation references
+
+| PR   | Local evidence                                                                                                                                                          |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #471 | Slow successful catalog fetch regression failed on baseline, then 19 catalog tests passed; strict Application Clippy.                                                   |
+| #474 | 101-profile endpoint boundary; three removed-Binding bearer boundaries; browser form validation; strict Server Clippy.                                                  |
+| #475 | Overlapping HTTP restore regression failed on baseline, then waited in PostgreSQL before returning Conflict; all 14 deletion/restore/purge tests; strict Server Clippy. |
+| #476 | All 10 Tenant administration browser tests; all eight native Tenant authority tests; TypeScript/build and strict Server Clippy.                                         |
+| #477 | Domain 52, Application 100 and Integrations 15 decision tests; full Harness 322; strict all-target Clippy for changed crates.                                           |
+| #478 | Domain Research 129, Application Research 77, full Harness 322, native account terms four; strict all-target Clippy.                                                    |
+| #479 | Full Application 3,748; native Web Research 13 with capability admission enabled; strict all-target Server/Application Clippy.                                          |
