@@ -1,3 +1,11 @@
+import { selfHostedPlanConnections } from "@slots/plan-connections";
+import type { PlanConnectionStatus } from "./generated/models";
+import {
+  planConnectionStatus,
+  planConnectionDisconnect,
+  planAuthorizationStart,
+  planAuthorizationComplete,
+} from "./generated/aidash";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
@@ -6,7 +14,6 @@ import { Alert, Hint, Notice } from "./components/patterns";
 import { Field, useI18n } from "./ui";
 import { desktop, desktopAvailable } from "./desktop";
 import {
-  apiFetch,
   dashboardContext,
   transportGeneration,
   AUTHENTICATION_EXPIRED,
@@ -24,24 +31,6 @@ function ownerKey(tenant: string, subject: string) {
     transportGeneration(),
   ];
 }
-export type PlanConnectionStatus = {
-  enabled: boolean;
-  connection: {
-    id: string;
-    state: "active" | "needs_reconnection" | "ineligible";
-    revision: number;
-    refresh_expires_at: string;
-  } | null;
-};
-export type PlanModel = {
-  slug: string;
-  display_name: string;
-  context_window: number;
-  max_output_tokens: number;
-  defaulted: boolean;
-};
-export const planPath = (tenant: string) =>
-  `/api/tenants/${encodeURIComponent(tenant)}/plan-connections/chatgpt`;
 export function usePlanConnection(tenant: string, subject: string) {
   const [epoch, setEpoch] = useState(0);
   useEffect(() => {
@@ -51,7 +40,9 @@ export function usePlanConnection(tenant: string, subject: string) {
   }, []);
   return useQuery({
     queryKey: ["personal-plan", ...ownerKey(tenant, subject), epoch],
-    queryFn: () => apiFetch<PlanConnectionStatus>(planPath(tenant)),
+    queryFn: ({ signal }) =>
+      planConnectionStatus(encodeURIComponent(tenant), "chatgpt", { signal }),
+    enabled: selfHostedPlanConnections,
     retry: false,
     gcTime: 0,
     refetchInterval: 30_000,
@@ -198,14 +189,11 @@ export function PlanConnectionsPage({
     if (!holds(flow)) return;
     setBusy(true);
     try {
-      const result = await apiFetch<{ outcome: string }>(
-        `${planPath(tenant)}/authorizations/complete`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callback_url: callbackUrl }),
-          signal: flow.signal,
-        },
+      const result = await planAuthorizationComplete(
+        encodeURIComponent(tenant),
+        "chatgpt",
+        { callback_url: callbackUrl },
+        { signal: flow.signal },
       );
       if (!holds(flow)) return;
       setPending(null);
@@ -254,14 +242,11 @@ export function PlanConnectionsPage({
         listener.current = opened.id;
         port = opened.port;
       }
-      const started = await apiFetch<{ authorization_url: string }>(
-        `${planPath(tenant)}/authorizations`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(port ? { port } : {}),
-          signal: flow.signal,
-        },
+      const started = await planAuthorizationStart(
+        encodeURIComponent(tenant),
+        "chatgpt",
+        port ? { port } : {},
+        { signal: flow.signal },
       );
       if (!holds(flow)) return;
       if (listener.current) {
@@ -294,8 +279,8 @@ export function PlanConnectionsPage({
     <div className="grid max-w-3xl gap-4">
       <Notice>
         {ja
-          ? "これはあなた個人の Plan 接続です。あなたが直接開始したローカル Run のみで使用でき、他の利用者に権限を与えません。ホストの運用者は Plan Token を読み取ることができます。コンテキストの圧縮には Tenant の OpenRouter 認証情報を使います。"
-          : "This is your personal Plan Connection. Only local Runs you admit directly may use it; it grants no authority to other subjects. Whoever operates this host can read the Plan Tokens. Context compaction uses the Tenant's OpenRouter binding."}
+          ? "これはあなた個人の Plan 接続です。あなたを起点とする委譲で実行するローカル Run（スケジュール・イベント・子 Run を含む）で使用でき、他の利用者に権限を与えません。ホストの運用者は Plan Token を読み取ることができます。コンテキストの圧縮には Tenant の OpenRouter 認証情報を使います。"
+          : "This is your personal Plan Connection. It serves local Runs whose delegation starts with you, including scheduled, event-triggered and child Runs; it grants no authority to other subjects. Whoever operates this host can read the Plan Tokens. Context compaction uses the Tenant's OpenRouter binding."}
       </Notice>
       <Hint>
         {ja
@@ -367,16 +352,11 @@ export function PlanConnectionsPage({
               const flow = begin();
               setBusy(true);
               try {
-                const result = await apiFetch<{ revoked: boolean }>(
-                  planPath(tenant),
-                  {
-                    method: "DELETE",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      expected_revision: connection.revision,
-                    }),
-                    signal: flow.signal,
-                  },
+                const result = await planConnectionDisconnect(
+                  encodeURIComponent(tenant),
+                  "chatgpt",
+                  { expected_revision: connection.revision },
+                  { signal: flow.signal },
                 );
                 if (!holds(flow)) return;
                 setMessage(

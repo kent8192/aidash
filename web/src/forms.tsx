@@ -1,3 +1,4 @@
+import { selfHostedPlanConnections } from "@slots/plan-connections";
 import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
 import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
@@ -702,11 +703,12 @@ export function EntityForm({
                 <option value="openrouter">
                   OpenRouter · {t("providerCredentials")}
                 </option>
-                {data.access.kind === "subject" && (
-                  <option value="chatgpt">
-                    ChatGPT · {t("planConnections")}
-                  </option>
-                )}
+                {selfHostedPlanConnections &&
+                  data.access.kind === "subject" && (
+                    <option value="chatgpt">
+                      ChatGPT · {t("planConnections")}
+                    </option>
+                  )}
                 <option value="keyless">
                   {t("openaiCompatible")} · Keyless
                 </option>
@@ -715,7 +717,8 @@ export function EntityForm({
             <div key={modelSource} className="grid min-w-0 gap-4">
               {modelSource === "openrouter" ? (
                 <OpenRouterModelPicker onNameChange={setModelName} />
-              ) : modelSource === "chatgpt" &&
+              ) : selfHostedPlanConnections &&
+                modelSource === "chatgpt" &&
                 data.access.kind === "subject" ? (
                 <PlanModelPicker
                   tenant={data.access.tenant}

@@ -1,3 +1,4 @@
+import { selfHostedPlanConnections } from "@slots/plan-connections";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -909,7 +910,7 @@ function Dashboard({
           }}
         >
           <BillingNotice />
-          {data?.access.kind === "subject" && (
+          {selfHostedPlanConnections && data?.access.kind === "subject" && (
             <PlanConnectionBanner
               key={`${browserSessionId}:${context}`}
               tenant={data.access.tenant}

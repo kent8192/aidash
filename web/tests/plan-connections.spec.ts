@@ -165,6 +165,10 @@ async function setup(
     return route.fulfill({ json: [] });
   });
   await page.goto("/settings?view=planConnections");
+  if (options.desktop)
+    await page
+      .getByRole("button", { name: "alpha / alice", exact: true })
+      .click();
   return requests;
 }
 
@@ -403,7 +407,7 @@ test("Desktop relays through its authenticated session and drops a callback afte
       (
         window as unknown as { nativeCallback: (value: string) => void }
       ).nativeCallback(value),
-    callback,
+    callback.replace(":1457", ":49123"),
   );
   await expect(
     page.getByRole("button", { name: "Connect ChatGPT", exact: true }),
@@ -452,7 +456,7 @@ test("Desktop relays through its authenticated session and drops a callback afte
       (
         window as unknown as { nativeCallback: (value: string) => void }
       ).nativeCallback(value),
-    callback,
+    callback.replace(":1457", ":49123"),
   );
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   expect(

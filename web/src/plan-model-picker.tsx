@@ -4,12 +4,9 @@ import { Field, useI18n } from "./ui";
 import { Hint, Alert, Notice, pairClass } from "./components/patterns";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
-import { apiFetch, dashboardContext, transportGeneration } from "./transport";
-import {
-  planPath,
-  type PlanModel,
-  usePlanConnection,
-} from "./plan-connections";
+import { dashboardContext, transportGeneration } from "./transport";
+import { planConnectionModels } from "./generated/aidash";
+import { usePlanConnection } from "./plan-connections";
 
 export function PlanModelPicker({
   tenant,
@@ -37,8 +34,8 @@ export function PlanModelPicker({
       transportGeneration(),
       status.data?.connection?.revision,
     ],
-    queryFn: () =>
-      apiFetch<{ models: PlanModel[] }>(`${planPath(tenant)}/models`),
+    queryFn: ({ signal }) =>
+      planConnectionModels(encodeURIComponent(tenant), "chatgpt", { signal }),
     enabled: usable,
     gcTime: 0,
     retry: false,

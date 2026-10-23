@@ -1,3 +1,4 @@
+import { selfHostedPlanConnections } from "@slots/plan-connections";
 import {
   Bot,
   Boxes,
@@ -117,11 +118,13 @@ function SettingsFrame({
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const label = useSectionLabel();
-  const sections = visibleSettingsSections.filter((value) =>
-    deploymentAdministrator
-      ? !personalSettingsSections[value]
-      : !deploymentAdministratorSections[value],
-  );
+  const sections = visibleSettingsSections
+    .filter((value) => value !== "planConnections" || selfHostedPlanConnections)
+    .filter((value) =>
+      deploymentAdministrator
+        ? !personalSettingsSections[value]
+        : !deploymentAdministratorSections[value],
+    );
   return (
     <section className="collab-settings flex h-full min-h-0 flex-col">
       <ScreenHeader
@@ -566,7 +569,13 @@ export function Configuration({
             </>
           )}
           {section === "planConnections" &&
-            (data.access.kind === "subject" ? (
+            (!selfHostedPlanConnections ? (
+              <Notice role="status">
+                {locale === "ja-JP"
+                  ? "この Deployment では ChatGPT Plan 接続を利用できません。"
+                  : "ChatGPT Plan Connections are unavailable on this deployment."}
+              </Notice>
+            ) : data.access.kind === "subject" ? (
               <PlanConnectionsPage
                 key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
                 tenant={data.access.tenant}

@@ -416,9 +416,13 @@ test("Plan configuration disablement retires a previously selected personal mode
   const model = dialog.getByLabel("プロバイダーのモデルID", { exact: true });
   await model.selectOption("gpt-plan-fixture");
   enabled = false;
-  await page.evaluate(() =>
-    document.dispatchEvent(new Event("visibilitychange")),
-  );
-  await expect(model).toBeDisabled();
+  await expect
+    .poll(async () => {
+      await page.evaluate(() =>
+        window.dispatchEvent(new Event("visibilitychange")),
+      );
+      return model.isDisabled();
+    })
+    .toBe(true);
   await expect(model).toHaveValue("");
 });

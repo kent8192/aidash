@@ -1,3 +1,4 @@
+import { selfHostedPlanConnections } from "@slots/plan-connections";
 import {
   forwardRef,
   useEffect,
@@ -159,6 +160,9 @@ function SettingsLinks({
   return (
     <div className="grid gap-px">
       {visibleSettingsSections
+        .filter(
+          (value) => value !== "planConnections" || selfHostedPlanConnections,
+        )
         .filter((value) =>
           deploymentAdministrator
             ? !personalSettingsSections[value]
