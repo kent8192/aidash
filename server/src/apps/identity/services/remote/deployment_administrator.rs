@@ -3,9 +3,55 @@
 //! view. Deployment Administrator APIs retain content-free stop controls and infrastructure data.
 use crate::database::native::Transaction;
 use crate::{Error, Result, domain::Event};
-use reinhardt::query::{Alias, Expr, JoinType, PostgresQueryBuilder, Query, SimpleExpr};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait as _, JoinType, PostgresQueryBuilder, Query, SimpleExpr,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+fn deleted_tenants() -> reinhardt::query::SelectStatement {
+	Query::select()
+		.column(Alias::new("tenant"))
+		.from(Alias::new("tenant_deletions"))
+		.and_where(Expr::col("restored_at").is_null())
+		.to_owned()
+}
+
+async fn deleted_workspaces(
+	connection: &mut Transaction,
+	workspaces: &[Uuid],
+) -> Result<BTreeSet<Uuid>> {
+	if workspaces.is_empty() {
+		return Ok(BTreeSet::new());
+	}
+	let query = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("id").is_in(workspaces.iter().copied().map(Expr::value)))
+		.and_where(Expr::col("tenant").in_subquery(deleted_tenants()))
+		.to_string(PostgresQueryBuilder);
+	let ids: Vec<Uuid> = crate::database::native::query_scalar(&query)
+		.scalar_all(&mut *connection)
+		.await?;
+	Ok(ids.into_iter().collect())
+}
+
+/// Tenant events need this check even when they name no local Workspace or Run.
+async fn deleted_events(connection: &mut Transaction, events: &[Event]) -> Result<BTreeSet<Uuid>> {
+	if events.is_empty() {
+		return Ok(BTreeSet::new());
+	}
+	let query = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("events"))
+		.and_where(Expr::col("id").is_in(events.iter().map(|event| Expr::value(event.id))))
+		.and_where(Expr::col("tenant").in_subquery(deleted_tenants()))
+		.to_string(PostgresQueryBuilder);
+	let ids: Vec<Uuid> = crate::database::native::query_scalar(&query)
+		.scalar_all(&mut *connection)
+		.await?;
+	Ok(ids.into_iter().collect())
+}
 
 pub(crate) async fn blocked(
 	connection: &mut Transaction,
@@ -47,9 +93,11 @@ pub(crate) async fn blocked(
 		.to_string(PostgresQueryBuilder);
 	let values: Vec<Uuid> = crate::database::native::query_scalar(&query)
 		.bind(workspaces)
-		.scalar_all(connection)
+		.scalar_all(&mut *connection)
 		.await?;
-	Ok(values.into_iter().collect())
+	let mut denied: BTreeSet<_> = values.into_iter().collect();
+	denied.extend(deleted_workspaces(connection, workspaces).await?);
+	Ok(denied)
 }
 
 pub(crate) async fn visible(connection: &mut Transaction, workspace: Uuid) -> Result<bool> {
@@ -57,6 +105,12 @@ pub(crate) async fn visible(connection: &mut Transaction, workspace: Uuid) -> Re
 }
 
 pub(crate) async fn require(connection: &mut Transaction, workspace: Uuid) -> Result<()> {
+	if deleted_workspaces(connection, &[workspace])
+		.await?
+		.contains(&workspace)
+	{
+		return Err(Error::TenantDeleted);
+	}
 	if visible(connection, workspace).await? {
 		Ok(())
 	} else {
@@ -65,6 +119,12 @@ pub(crate) async fn require(connection: &mut Transaction, workspace: Uuid) -> Re
 }
 
 pub(crate) async fn event_visible(connection: &mut Transaction, event: &Event) -> Result<bool> {
+	if deleted_events(connection, std::slice::from_ref(event))
+		.await?
+		.contains(&event.id)
+	{
+		return Ok(false);
+	}
 	if let Some(workspace) = event_workspaces(connection, std::slice::from_ref(event)).await?[0] {
 		return visible(connection, workspace).await;
 	}
@@ -122,15 +182,21 @@ use reinhardt::query::QueryStatementBuilder as _;
 /// Apply the required-Home exclusion before a state collection's LIMIT.
 /// `column` is a fixed query alias supplied by the caller.
 pub(crate) fn state_visible(column: &str) -> SimpleExpr {
+	let deleted = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("tenant").in_subquery(deleted_tenants()))
+		.to_owned();
 	Expr::cust(format!(
 		"NOT EXISTS (SELECT 1 FROM tasks v_task JOIN authorization_remote_grants v_grant ON v_grant.task_id=v_task.id WHERE v_task.workspace_id={column} AND v_grant.semantic->>'mode'='required_home') AND NOT EXISTS (SELECT 1 FROM runs v_run JOIN authorization_remote_admissions v_admission ON v_admission.id=v_run.id WHERE v_run.workspace_id={column} AND v_admission.description->'semantic'->>'mode'='required_home')"
-	)).into()
+	)).and(Expr::cust(column).not_in_subquery(deleted))
 }
 
 pub(crate) async fn filter_events(
 	connection: &mut Transaction,
 	events: Vec<Event>,
 ) -> Result<Vec<Event>> {
+	let deleted = deleted_events(connection, &events).await?;
 	let workspaces = event_workspaces(connection, &events).await?;
 	let denied = blocked(
 		connection,
@@ -141,6 +207,9 @@ pub(crate) async fn filter_events(
 		.into_iter()
 		.zip(workspaces)
 		.filter_map(|(event, workspace)| {
+			if deleted.contains(&event.id) {
+				return None;
+			}
 			workspace
 				.is_none_or(|id| !denied.contains(&id))
 				.then_some(event)

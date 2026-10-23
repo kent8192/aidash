@@ -84,6 +84,15 @@ impl CollaborationManagement {
 		input: StateInput,
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			let scope = f.store.workspace_tenancy(id).await?;
+			crate::authorization::remote::deployment_administrator::require(
+				&mut f.store.pool.begin(&scope).await?,
+				id,
+			)
+			.await?;
+			return Err(Error::Forbidden);
+		}
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};

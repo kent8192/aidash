@@ -65,6 +65,142 @@ fn deleted<'a>(session: &'a Value, tenant: &str) -> Option<&'a Value> {
 
 #[rstest::rstest]
 #[tokio::test]
+async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let carol = d.person("carol").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(carol.identity)
+		.execute(d.federation.store.pool.driver())
+		.await
+		.unwrap();
+	let (tenant, context) = d.tenant_of(&alice, "Deleted data").await;
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
+	let workspace = d
+		.federation
+		.store
+		.create_workspace(&scope, "alice", "Private workspace", "Keep data private")
+		.await
+		.unwrap();
+	let task = d
+		.federation
+		.store
+		.create_task(
+			&scope,
+			workspace.id,
+			&aidash_domain::NewTask {
+				title: "Private task".into(),
+				description: "Deleted Tenant data".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	let path = format!("/api/workspaces/{}", workspace.id);
+	let tenant_event = d
+		.federation
+		.store
+		.emit(
+			&scope,
+			None,
+			"tenant.fixture",
+			json!({"content":"Tenant-only event"}),
+		)
+		.await
+		.unwrap();
+	let (status, body) = d
+		.as_deployment_administrator("GET", &path, Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d.delete(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+
+	for method in ["GET", "PATCH"] {
+		let (status, body) = d
+			.as_deployment_administrator(
+				method,
+				&path,
+				json!({"revision":workspace.revision,"state":{}}),
+			)
+			.await;
+		assert_eq!(status, 410, "{method}: {body}");
+		assert_eq!(body["error"], "tenant_deleted");
+		let (status, body) = d
+			.as_person(
+				&carol,
+				method,
+				&path,
+				Some("deployment_administrator"),
+				json!({"revision":workspace.revision,"state":{}}),
+			)
+			.await;
+		assert_eq!(status, 410, "browser {method}: {body}");
+		assert_eq!(body["error"], "tenant_deleted");
+	}
+	let (status, page) = d
+		.as_deployment_administrator("GET", "/api/tasks", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{page}");
+	assert!(
+		page["tasks"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["id"] != task.id.to_string()),
+		"{page}"
+	);
+	let (status, state) = d
+		.as_deployment_administrator("GET", "/api/state", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{state}");
+	assert!(
+		state["workspaces"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["id"] != workspace.id.to_string()),
+		"{state}"
+	);
+	assert!(
+		state["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["workspace_id"] != workspace.id.to_string()),
+		"{state}"
+	);
+	assert!(
+		state["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["id"] != tenant_event.id.to_string()),
+		"{state}"
+	);
+
+	let (status, body) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/restore"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d
+		.as_deployment_administrator("GET", &path, Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
