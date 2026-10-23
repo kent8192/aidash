@@ -556,6 +556,13 @@ impl SelectionEvidence {
 			}) {
 			return Err(corrupt());
 		}
+		if self.failure.is_none()
+			&& !keys.is_empty()
+			&& self.mode == Mode::Enforce
+			&& self.restrictions.forbid_apply
+		{
+			return Err(corrupt());
+		}
 		let canonical = selection_questions(&self.candidates);
 		if keys.is_empty()
 			&& (self.route.is_some()
@@ -599,6 +606,9 @@ impl SelectionEvidence {
 			{
 				return Err(corrupt());
 			}
+			attempt
+				.provider_report
+				.validate_route(&self.configuration.routes[route as usize])?;
 			let decision = crate::decision::charged_decision_identity(
 				&self.boundary,
 				&self.decider,

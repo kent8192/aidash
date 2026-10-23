@@ -2301,3 +2301,124 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 		"{error}"
 	);
 }
+
+#[rstest::rstest]
+#[case::implicit_defaults(None, None, true)]
+#[case::one_explicit_correction_first(
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	None,
+	false
+)]
+#[case::workspace_only_correction_first(
+	None,
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	false
+)]
+#[case::matching_explicit_corrections(
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	true
+)]
+#[tokio::test]
+async fn semantic_query_policy_agrees_including_implicit_defaults(
+	#[case] memory_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] workspace_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] accepted: bool,
+) {
+	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	for (id, kind, source, query) in [
+		(
+			"query-memory",
+			"memory",
+			NativeSource::SemanticMemory {},
+			memory_query,
+		),
+		(
+			"query-workspace",
+			"source",
+			NativeSource::WorkspaceRetrieval {
+				on_unavailable: OnUnavailable::Pause,
+			},
+			workspace_query,
+		),
+	] {
+		let mut native = NativeContext {
+			schema_version: 1,
+			source,
+			context_source: None,
+		};
+		if let Some(query) = query {
+			let mut declaration = native.declaration(&reference(id));
+			declaration.query = query;
+			native.context_source = Some(declaration);
+		}
+		catalog.insert(entry(id, kind, serde_json::to_value(native).unwrap()));
+		config.bindings.push(
+			serde_json::from_value(json!({"kind":kind,"target":reference(id),"narrow":{}}))
+				.unwrap(),
+		);
+	}
+	let result = snapshot(&mut catalog, &config, false).await;
+	assert_eq!(result.is_ok(), accepted, "{result:?}");
+	if let Err(error) = result {
+		assert!(error.to_string().contains("query policy"), "{error}");
+	}
+}
+
+#[tokio::test]
+async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_policy() {
+	use aidash_domain::{
+		context::source::QueryPolicy,
+		registry::bindings::sources::{NativeContext, NativeSource, semantic_query_policy},
+	};
+	let mut catalog = Catalog::new();
+	for declaration in crate::test_support::native_memory_entries() {
+		catalog.insert(declaration);
+	}
+	catalog.insert(entry("fixture-model", "model", json!({})));
+	let identity = reference("native");
+	let mut declaration = NativeContext {
+		schema_version: 1,
+		source: NativeSource::SemanticMemory {},
+		context_source: None,
+	}
+	.declaration(&identity);
+	declaration.query = QueryPolicy::AcceptedInputsFirstV1;
+	let provider = catalog.entries.get_mut(&identity).unwrap();
+	let original: aidash_domain::memory::ProviderConfig =
+		serde_json::from_value(provider.config.clone()).unwrap();
+	assert_eq!(
+		serde_json::to_value(&original).unwrap(),
+		provider.config,
+		"omitted source policy keeps existing ProviderConfig bytes"
+	);
+	provider.config["context_source"] = json!(declaration);
+	catalog.insert(entry("workspace-bank-source","source",json!({"scope":"workspace","memory":{"id":"native","version":"1.0.0"},"max_tokens":512,"context_source":declaration})));
+	let mut config = agent_config();
+	config.bindings.push(
+		serde_json::from_value(json!({"kind":"memory","target":identity,"narrow":{}})).unwrap(),
+	);
+	config.bindings.push(
+		serde_json::from_value(
+			json!({"kind":"source","target":reference("workspace-bank-source"),"narrow":{}}),
+		)
+		.unwrap(),
+	);
+	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert_eq!(
+		semantic_query_policy(&admitted).unwrap(),
+		QueryPolicy::AcceptedInputsFirstV1
+	);
+	catalog
+		.entries
+		.get_mut(&reference("workspace-bank-source"))
+		.unwrap()
+		.config
+		.as_object_mut()
+		.unwrap()
+		.remove("context_source");
+	let error = snapshot(&mut catalog, &config, false).await.unwrap_err();
+	assert!(error.to_string().contains("query policy"), "{error}");
+}
