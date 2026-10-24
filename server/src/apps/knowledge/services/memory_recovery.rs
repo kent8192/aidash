@@ -823,23 +823,33 @@ async fn finish(
 }
 
 pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
-	let recovery = active_external(store, directory).await?;
-	let ledger = recovery.load()?;
 	let archives = directory.join("archives");
-	if archives.exists() {
-		let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
-		let result = prune(
-			&mut lease,
-			&archives,
-			store.deployment.as_str(),
-			ledger.epoch,
-			Utc::now(),
-		)
-		.await
-		.map(|_| ());
-		lease.finish(result).await?;
+	if !archives.exists() {
+		return Ok(());
 	}
-	Ok(())
+	// Worker sweeps reuse startup verification and its local publication gate.
+	// Full history replay holds the writer lock across remote I/O and belongs
+	// to startup and explicit recovery, never routine local archive cleanup.
+	let active = store
+		.pool
+		.memory_recovery()
+		.ok_or(Error::SemanticUnavailable)?;
+	active.require_serving()?;
+	let epoch = external(store, directory)?.epoch()?;
+	if active.epoch()? != epoch {
+		return Err(Error::Forbidden);
+	}
+	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
+	let result = prune(
+		&mut lease,
+		&archives,
+		store.deployment.as_str(),
+		epoch,
+		Utc::now(),
+	)
+	.await
+	.map(|_| ());
+	lease.finish(result).await
 }
 
 /// Persistently close memory serving before Deployment Administrator recovery work.

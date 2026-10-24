@@ -21,6 +21,9 @@ pub(crate) enum Lease<'a> {
 	/// Administrator or for Aidash's own work.
 	WithoutSubject(crate::database::native::Transaction),
 	BorrowedWithoutSubject(&'a mut crate::database::native::Transaction),
+	/// Recovery revalidation retains this mode through credentialless lineage.
+	ProofWithoutSubject(crate::database::native::Transaction),
+	BorrowedProofWithoutSubject(&'a mut crate::database::native::Transaction),
 	Scoped(Box<Access>),
 	Inherited(&'a mut Access),
 }
@@ -78,7 +81,15 @@ impl Lease<'_> {
 				&& authority.tenant.is_empty()
 				&& authority.subjects.is_empty() =>
 			{
-				Self::within(store, &store.workspace_tenancy(workspace).await?).await
+				let tx = store
+					.pool
+					.begin(&store.workspace_tenancy(workspace).await?)
+					.await?;
+				Ok(if proof {
+					Self::ProofWithoutSubject(tx)
+				} else {
+					Self::WithoutSubject(tx)
+				})
 			}
 			Some(credential_id) => {
 				let identity = SubjectIdentity {
@@ -106,17 +117,28 @@ impl Lease<'_> {
 	}
 	pub(crate) fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
-			Self::WithoutSubject(tx) => tx,
-			Self::BorrowedWithoutSubject(tx) => tx,
+			Self::WithoutSubject(tx) | Self::ProofWithoutSubject(tx) => tx,
+			Self::BorrowedWithoutSubject(tx) | Self::BorrowedProofWithoutSubject(tx) => tx,
 			Self::Scoped(a) => &mut a.tx,
 			Self::Inherited(a) => &mut a.tx,
 		}
 	}
 	pub(crate) fn access(&mut self) -> Option<&mut Access> {
 		match self {
-			Self::WithoutSubject(_) | Self::BorrowedWithoutSubject(_) => None,
+			Self::WithoutSubject(_)
+			| Self::BorrowedWithoutSubject(_)
+			| Self::ProofWithoutSubject(_)
+			| Self::BorrowedProofWithoutSubject(_) => None,
 			Self::Scoped(a) => Some(a),
 			Self::Inherited(a) => Some(a),
+		}
+	}
+	pub(crate) fn proof(&self) -> bool {
+		match self {
+			Self::ProofWithoutSubject(_) | Self::BorrowedProofWithoutSubject(_) => true,
+			Self::WithoutSubject(_) | Self::BorrowedWithoutSubject(_) => false,
+			Self::Scoped(access) => !access.audit,
+			Self::Inherited(access) => !access.audit,
 		}
 	}
 	pub(crate) fn durable(&mut self) {
@@ -143,7 +165,7 @@ impl Lease<'_> {
 	}
 	pub(crate) async fn finish<T>(self, result: Result<T>) -> Result<T> {
 		match self {
-			Self::WithoutSubject(tx) => {
+			Self::WithoutSubject(tx) | Self::ProofWithoutSubject(tx) => {
 				if result.is_ok() {
 					tx.commit().await?;
 				} else {
@@ -152,7 +174,9 @@ impl Lease<'_> {
 				result
 			}
 			Self::Scoped(a) => a.finish(result).await,
-			Self::Inherited(_) | Self::BorrowedWithoutSubject(_) => result,
+			Self::Inherited(_)
+			| Self::BorrowedWithoutSubject(_)
+			| Self::BorrowedProofWithoutSubject(_) => result,
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {

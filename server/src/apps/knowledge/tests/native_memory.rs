@@ -31,6 +31,8 @@ mod change_matrix;
 mod decay;
 #[path = "native_memory/diversity.rs"]
 mod diversity;
+#[path = "native_memory/maintenance_review.rs"]
+mod maintenance_review;
 #[path = "native_memory/policy_bounds.rs"]
 mod policy_bounds;
 #[path = "native_memory/precision.rs"]
@@ -43,6 +45,10 @@ mod recovery_deployment;
 mod recovery_history;
 #[path = "native_memory/recovery_policy.rs"]
 mod recovery_policy;
+#[path = "native_memory/recovery_publications.rs"]
+mod recovery_publications;
+#[path = "native_memory/remote_prune_review.rs"]
+mod remote_prune_review;
 #[path = "native_memory/review_capacity.rs"]
 mod review_capacity;
 #[path = "native_memory/review_delivery.rs"]

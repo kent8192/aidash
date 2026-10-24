@@ -416,6 +416,9 @@ pub async fn prune_remote(store: &Store, remote: Arc<dyn RecoveryObjects>) -> Re
 			};
 			let archive = recovery::decode::<Archive>(&object.bytes);
 			let valid = match &archive {
+				// A concurrent backup can upload after this pass captured its cut.
+				// Defer that copy; temporal ineligibility at an older cut is not expiry.
+				Ok(archive) if archive.created_at > now => return Ok(()),
 				Ok(archive) => eligible(store, archive, None, now).await?,
 				Err(_) => false,
 			};

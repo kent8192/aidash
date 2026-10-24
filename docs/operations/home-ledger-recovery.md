@@ -186,14 +186,17 @@ starve later banks or monopolize the publication lock.
 
 Run remote pruning independently of archive generation, local ledger health and
 the native-memory serving gate. Read current policies from unrewound PostgreSQL.
-The existing `prune_expired` path cannot be reused unchanged: a missing ledger
-currently stops it, and its error short-circuits later background maintenance.
+Local `prune_expired` checks its attached ledger when archives exist. Semantic
+workers log local pruning failures and continue unrelated cleanup; the local
+path does not replace the independent remote Job.
 
 Retire copies when their recorded expiry is reached, current `backup_days`
 shortens their lifetime, their exact settings revision/provider is superseded,
 or their bank is no longer eligible. Use generation-aware deletion and isolate
 per-object failures so a corrupt archive cannot prevent cleanup of every bank.
 An archive never becomes restorable merely because cleanup was delayed.
+Each remote prune pass defers archives created after its starting cut to the
+next pass, preserving copies uploaded by an overlapping backup Job.
 
 Create the body bucket with soft delete explicitly disabled, versioning disabled,
 no holds and no bucket/object minimum-retention requirements. Verify those
@@ -328,6 +331,9 @@ settings after protection has been established cannot override the on-disk
 `protection-required` marker. Protected startup verifies the complete history;
 an incomplete pending append is retried with its original identity and sequence.
 A failed verification closes memory while management remains available.
+Routine local archive pruning reuses the active verified recovery state and
+checks its local publication gate; it does not replay GCS history on worker
+sweeps. Full history verification remains part of startup and explicit recovery.
 
 Bootstrap Terraform provisions fixed custom storage roles and the deployment
 identity's limited bucket creation/configuration permissions. Environment

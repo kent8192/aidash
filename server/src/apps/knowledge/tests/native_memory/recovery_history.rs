@@ -100,12 +100,13 @@ use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 /// Models object-store durability separately from delivery of its acknowledgement.
 #[derive(Default)]
-struct Objects {
+pub(super) struct Objects {
 	entries: Mutex<BTreeMap<String, Object>>,
-	outage: AtomicBool,
+	pub(super) outage: AtomicBool,
 	lose_reply: AtomicBool,
 	read_only_shards: Mutex<Option<std::path::PathBuf>>,
 	pause: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+	pub(super) pause_list: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 #[async_trait::async_trait]
 impl RecoveryObjects for Objects {
@@ -156,6 +157,11 @@ impl RecoveryObjects for Objects {
 		Ok(generation)
 	}
 	async fn list(&self, prefix: &str, _: Option<&str>) -> ApplicationResult<ObjectPage> {
+		let pause = self.pause_list.lock().unwrap().take();
+		if let Some((entered, release)) = pause {
+			entered.notify_one();
+			release.notified().await;
+		}
 		if self.outage.load(Ordering::SeqCst) {
 			return Err(ApplicationError::SemanticUnavailable);
 		}
