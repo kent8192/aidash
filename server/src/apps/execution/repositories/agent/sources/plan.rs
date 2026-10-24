@@ -45,6 +45,108 @@ impl Slot {
 	}
 }
 
+fn compile_context_source_plan(
+	run_id: Uuid,
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	local_authority: bool,
+	remote: bool,
+) -> Result<Vec<PlannedContextSource>> {
+	let agent = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.ok_or_else(|| aidash_application::Error::Invalid("snapshot lacks its Agent".into()))?;
+	let bindings: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(agent.definition.config.clone())?;
+	let deferred = bindings.exposure_policy().budgets().is_some();
+	let local_skills = local_authority
+		&& snapshot.bindings.iter().any(|binding| {
+			binding.excluded_reason.is_none() && binding.alias.as_deref() == Some("skill_list")
+		});
+	let snapshot_digest = digest(&serde_json::to_value(snapshot)?);
+	if remote {
+		for binding in snapshot
+			.bindings
+			.iter()
+			.filter(|binding| Slot::Semantic.matches(binding))
+		{
+			if binding
+				.definition
+				.config
+				.get("context_source")
+				.and_then(|config| serde_json::from_value::<SourceDeclaration>(config.clone()).ok())
+				.is_some_and(|declaration| {
+					matches!(
+						declaration.pin,
+						PinPolicy::OnDemand
+							| PinPolicy::Scored {
+								mode: aidash_domain::decision::Mode::Enforce,
+								..
+							}
+					)
+				}) {
+				return Err(aidash_application::Error::Invalid(
+					"required-Home context must retain its mandatory delivery".into(),
+				));
+			}
+		}
+	}
+	let mut plan = vec![];
+	// Host compatibility order is independent of the order in which an Agent
+	// declared groups. Within each group the recorded binding order survives.
+	for slot in [
+		Slot::ResidentSkills,
+		Slot::RegistrySkills,
+		Slot::Skills,
+		Slot::References,
+		Slot::Observation,
+		Slot::Semantic,
+	] {
+		if (matches!(slot, Slot::ResidentSkills) && !deferred)
+			|| (matches!(slot, Slot::RegistrySkills | Slot::Skills) && deferred)
+			|| (matches!(slot, Slot::Skills) && !local_skills)
+		{
+			continue;
+		}
+		let admitted = snapshot
+			.bindings
+			.iter()
+			.filter(|binding| slot.automatic_matches(binding))
+			.collect::<Vec<_>>();
+		if admitted.is_empty() {
+			continue;
+		}
+		let refresh_each_step = admitted.iter().any(|binding| {
+			binding
+				.definition
+				.config
+				.get("context_source")
+				.and_then(|config| serde_json::from_value::<SourceDeclaration>(config.clone()).ok())
+				.is_some_and(|declaration| {
+					declaration.volatility == Volatility::Step
+						&& !matches!(declaration.pin, PinPolicy::OnDemand)
+				})
+		});
+		plan.push(PlannedContextSource {
+			handle: ContextSourceHandle::new(format!(
+				"{}:{snapshot_digest}:{}",
+				run_id,
+				slot.name()
+			)),
+			phase: slot.phase(),
+			target: slot.target(),
+			cache: slot.cache(),
+			contribution_slot: slot.name().into(),
+			sources: admitted
+				.iter()
+				.map(|binding| binding.identity.clone())
+				.collect(),
+			refresh_each_step,
+		});
+	}
+	Ok(plan)
+}
+
 impl Environment<'_> {
 	pub(in super::super) fn native_context_source_plan(
 		&self,
@@ -53,109 +155,16 @@ impl Environment<'_> {
 		let snapshot = run.context.binding_snapshot.as_deref().ok_or_else(|| {
 			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
 		})?;
-		let agent = snapshot
-			.definitions
-			.iter()
-			.find(|definition| definition.identity == snapshot.agent)
-			.ok_or_else(|| aidash_application::Error::Invalid("snapshot lacks its Agent".into()))?;
-		let bindings: aidash_domain::registry::bindings::AgentBindings =
-			serde_json::from_value(agent.definition.config.clone())?;
-		let deferred = bindings.exposure_policy().budgets().is_some();
-		let local_skills = self.home(run).has_local_authority()
-			&& snapshot.bindings.iter().any(|binding| {
-				binding.excluded_reason.is_none() && binding.alias.as_deref() == Some("skill_list")
-			});
-		let snapshot_digest = digest(&serde_json::to_value(snapshot)?);
-		if snapshot.remote
-			|| self
-				.authority
-				.as_ref()
-				.is_some_and(|authority| authority.is_remote())
-		{
-			for binding in snapshot
-				.bindings
-				.iter()
-				.filter(|binding| Slot::Semantic.matches(binding))
-			{
-				if binding
-					.definition
-					.config
-					.get("context_source")
-					.and_then(|config| {
-						serde_json::from_value::<SourceDeclaration>(config.clone()).ok()
-					})
-					.is_some_and(|declaration| {
-						matches!(
-							declaration.pin,
-							PinPolicy::OnDemand
-								| PinPolicy::Scored {
-									mode: aidash_domain::decision::Mode::Enforce,
-									..
-								}
-						)
-					}) {
-					return Err(aidash_application::Error::Invalid(
-						"required-Home context must retain its mandatory delivery".into(),
-					));
-				}
-			}
-		}
-		let mut plan = vec![];
-		// Host compatibility order is independent of the order in which an Agent
-		// declared groups. Within each group the recorded binding order survives.
-		for slot in [
-			Slot::ResidentSkills,
-			Slot::RegistrySkills,
-			Slot::Skills,
-			Slot::References,
-			Slot::Observation,
-			Slot::Semantic,
-		] {
-			if (matches!(slot, Slot::ResidentSkills) && !deferred)
-				|| (matches!(slot, Slot::RegistrySkills | Slot::Skills) && deferred)
-				|| (matches!(slot, Slot::Skills) && !local_skills)
-			{
-				continue;
-			}
-			let admitted = snapshot
-				.bindings
-				.iter()
-				.filter(|binding| slot.automatic_matches(binding))
-				.collect::<Vec<_>>();
-			if admitted.is_empty() {
-				continue;
-			}
-			let refresh_each_step = admitted.iter().any(|binding| {
-				binding
-					.definition
-					.config
-					.get("context_source")
-					.and_then(|config| {
-						serde_json::from_value::<SourceDeclaration>(config.clone()).ok()
-					})
-					.is_some_and(|declaration| {
-						declaration.volatility == Volatility::Step
-							&& !matches!(declaration.pin, PinPolicy::OnDemand)
-					})
-			});
-			plan.push(PlannedContextSource {
-				handle: ContextSourceHandle::new(format!(
-					"{}:{snapshot_digest}:{}",
-					run.id,
-					slot.name()
-				)),
-				phase: slot.phase(),
-				target: slot.target(),
-				cache: slot.cache(),
-				contribution_slot: slot.name().into(),
-				sources: admitted
-					.iter()
-					.map(|binding| binding.identity.clone())
-					.collect(),
-				refresh_each_step,
-			});
-		}
-		Ok(plan)
+		compile_context_source_plan(
+			run.id,
+			snapshot,
+			self.home(run).has_local_authority(),
+			snapshot.remote
+				|| self
+					.authority
+					.as_ref()
+					.is_some_and(|authority| authority.is_remote()),
+		)
 	}
 
 	pub(in super::super) fn planned_context_slot(
@@ -253,3 +262,6 @@ impl Environment<'_> {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests;
