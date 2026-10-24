@@ -1,5 +1,17 @@
 # GitHub Labels
 
+## Label Definitions
+
+[`.github/labels.yml`](../.github/labels.yml) is the source of truth for repository
+label names, colors, and descriptions. It uses the same YAML list of `name`,
+`color`, and `description` entries as Reinhardt's label definitions.
+
+When changing label definitions, update this catalog and the relevant guidance
+below together. Apply the intended metadata changes on GitHub with
+[`gh label create --force`](https://cli.github.com/manual/gh_label_create), then
+verify them against the live inventory. Renames and deletions require an explicit
+migration. Issue/PR assignments are managed separately using the steps below.
+
 ## Select Labels
 
 Before creating or updating an Issue or PR, inspect the repository's current labels
@@ -48,19 +60,6 @@ Assess them independently: impact alone does not determine when work should be
 scheduled. Add at most one label from each family when the classification is
 known and applicable; leave it unset otherwise. When reassessing a classification,
 replace the previous label in that family and preserve other valid labels.
-
-The names, descriptions, and colors for these eight labels are managed in
-[`.github/labels.json`](../.github/labels.json). Update that file and the tables
-below together when changing this taxonomy.
-
-The [Sync repository labels workflow](../.github/workflows/sync-labels.yml) applies
-configuration changes after they reach the repository's default branch (currently
-`develop/0.1.0`). It can also be run manually on that branch to repair drift.
-It uses [`gh label create --force`](https://cli.github.com/manual/gh_label_create)
-to create missing labels and update existing descriptions and colors in place,
-preserving Issue/PR assignments and unrelated labels. Removing a definition does
-not delete its GitHub label; renames and deletions require a separate, explicit
-migration.
 
 ### Severity
 
