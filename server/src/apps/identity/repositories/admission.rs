@@ -190,70 +190,9 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		result.map_err(Into::into)
 	}
 	async fn persist_grant(&mut self, grant: &ExecutionGrant) -> Result<()> {
-		let result: NativeResult<()> = async {
-			let access = &mut *self.access;
-			let run_id = grant.run_id;
-			{
-				let query_bind_1 = run_id;
-				let query_bind_2 = grant.task_id;
-				let query_bind_3 = grant.workspace_id;
-				let query_bind_4 = &grant.tenant;
-				let query_bind_5 = grant.credential_id;
-				let query_bind_6 = &grant.root_subject;
-				let query_bind_7 = &grant.subject_chain;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("authorization_execution"))
-						.columns([
-							Alias::new("run_id"),
-							Alias::new("task_id"),
-							Alias::new("workspace_id"),
-							Alias::new("tenant"),
-							Alias::new("credential_id"),
-							Alias::new("root_subject"),
-							Alias::new("subject_chain"),
-						])
-						.from_subquery(
-							reinhardt::query::Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_6.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![crate::database::text_array(query_bind_7.to_owned())],
-								))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
+		persist_grant_in(&mut *self.access.tx, grant)
+			.await
+			.map_err(Into::into)
 	}
 	async fn admit_plan_connections(
 		&mut self,
@@ -536,4 +475,72 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+}
+
+/// The native admission owner validates live Home bindings once at creation.
+/// Afterwards the scalar evidence belongs to the executing Run, not Home lifetime.
+pub(crate) async fn persist_grant_in(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	grant: &ExecutionGrant,
+) -> NativeResult<()> {
+	use reinhardt::{db::orm::execution::convert_values, query::LockType};
+	for (table, key, id) in [
+		("runs", "id", grant.run_id),
+		(
+			"authorization_workspaces",
+			"workspace_id",
+			grant.workspace_id,
+		),
+		("tasks", "id", grant.task_id),
+	] {
+		let mut query = Query::select();
+		query
+			.column(Alias::new(key))
+			.from(Alias::new(table))
+			.and_where(Expr::col(key).eq(Expr::value(id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(&grant.tenant)))
+			.lock(LockType::KeyShare);
+		if table == "runs" || table == "tasks" {
+			query.and_where(Expr::col("workspace_id").eq(Expr::value(grant.workspace_id)));
+		}
+		if table == "runs" {
+			query.and_where(Expr::col("task_id").eq(Expr::value(grant.task_id)));
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		if tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_none()
+		{
+			return Err(crate::Error::Forbidden);
+		}
+	}
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("authorization_execution"))
+		.columns(
+			[
+				"run_id",
+				"task_id",
+				"workspace_id",
+				"tenant",
+				"credential_id",
+				"root_subject",
+				"subject_chain",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(grant.run_id))
+				.expr(Expr::value(grant.task_id))
+				.expr(Expr::value(grant.workspace_id))
+				.expr(Expr::value(&grant.tenant))
+				.expr(Expr::value(grant.credential_id))
+				.expr(Expr::value(&grant.root_subject))
+				.expr(crate::database::text_array(grant.subject_chain.clone()))
+				.to_owned(),
+		)
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
 }

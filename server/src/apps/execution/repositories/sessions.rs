@@ -651,60 +651,54 @@ impl SessionScope for Scope<'_> {
 		super::node_cancellations::require_area_open(&mut **self.access.tx, area.id).await?;
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
-			{
-				let query_bind_1 = run_id;
-				let query_bind_2 = area.id;
-				let query_bind_3 = area.next_sequence;
-				let query_bind_4 = area.generation;
-				let query_bind_5 = initialized;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("core_runs"))
-						.columns(
-							[
-								"run_id",
-								"area_id",
-								"sequence",
-								"generation",
-								"initialized",
-								"tenant",
-							]
-							.map(Alias::new),
-						)
-						.from_subquery(
-							reinhardt::query::Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								))
-								.expr(crate::database::scope::tenant_of(
-									"runs",
-									"id",
-									query_bind_1,
-								))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
+			// A Run owns this binding; the Area's lifetime is separate. Keep the
+			// former same-Tenant existence guarantee at insertion under KeyShare.
+			let source = crate::database::native::query(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("core_areas"))
+					.and_where(Expr::col("id").eq(Expr::value(area.id)))
+					.and_where(
+						Expr::col("tenant")
+							.eq(crate::database::scope::tenant_of("runs", "id", run_id)),
+					)
+					.lock(LockType::KeyShare)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **access.tx)
+			.await?;
+			if source.is_none() {
+				return Err(NativeError::NotFound("area".into()));
+			}
+
+			crate::database::native::query(
+				&Query::insert()
+					.into_table(Alias::new("core_runs"))
+					.columns(
+						[
+							"run_id",
+							"area_id",
+							"sequence",
+							"generation",
+							"initialized",
+							"tenant",
+						]
+						.map(Alias::new),
+					)
+					.from_subquery(
+						Query::select()
+							.expr(Expr::value(run_id))
+							.expr(Expr::value(area.id))
+							.expr(Expr::value(area.next_sequence))
+							.expr(Expr::value(area.generation))
+							.expr(Expr::value(initialized))
+							.expr(crate::database::scope::tenant_of("runs", "id", run_id))
+							.to_owned(),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **access.tx)
+			.await?;
 			{
 				let query_bind_1 = area.id;
 				crate::database::native::query(

@@ -473,6 +473,8 @@ async fn catalog_approvals_belong_to_one_node(
 	d.finish().await;
 }
 
+#[path = "nodes/purge.rs"]
+mod purge;
 /// The HTTP lifecycle owns default safety, capacity release, and immutable
 /// deletion history. Missing lifecycle routes or counting retained rows breaks
 /// this contract; a pure repository test would miss authorization and routing.

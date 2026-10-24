@@ -1,6 +1,5 @@
 //! Persistent authorization_task_origins records.
 
-use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -9,13 +8,9 @@ use serde::{Deserialize, Serialize};
 pub struct AuthorizationTaskOrigin {
 	#[field(primary_key = true)]
 	pub task_id: uuid::Uuid,
-	#[rel(
-		foreign_key,
-		shared_fields = ["tenant"],
-		db_constraint = "authorization_task_origins_source_run_id_fkey",
-		db_index = false
-	)]
-	pub source_run: ForeignKeyField<crate::apps::execution::models::Run>,
+	/// Historical source UUID; insertion checks same-Tenant existence.
+	#[field]
+	pub source_run_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field(field_type = "text")]

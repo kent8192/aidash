@@ -31,6 +31,7 @@ use reinhardt::query::{
 use serde_json::Value;
 use std::{borrow::Borrow, ops::DerefMut};
 use uuid::Uuid;
+pub(crate) mod terminal;
 struct Record {
 	cancelled: bool,
 	id: Uuid,
@@ -912,14 +913,19 @@ impl PeerAdmissionRepository for Repository<'_> {
 		tenant: &str,
 		receiver: &aidash_domain::nodes::NodeName,
 		source: &str,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
 		id: Uuid,
 		grant: Uuid,
-	) -> Result<bool> {
+	) -> Result<aidash_domain::federation::execution::admission::Activation> {
 		let store = &self.runtime.store;
 		let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 		crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+		super::nodes::lock_tenant(&mut *tx, tenant).await?;
 		crate::transactions::gate::read_in(&mut tx).await?;
-		let record: Record = crate::database::native::query_as(
+		let owner = store.deployment.node(receiver.clone());
+		let sender = aidash_domain::nodes::NodeAddress::parse(source)?;
+		let record: Option<Record> = crate::database::native::query_as(
 			&Query::select()
 				.column(Asterisk)
 				.from(Alias::new("authorization_remote_admissions"))
@@ -928,8 +934,24 @@ impl PeerAdmissionRepository for Repository<'_> {
 				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut *tx)
+		.fetch_optional(&mut *tx)
 		.await?;
+		let mut record = if let Some(record) = record {
+			record
+		} else {
+			if super::nodes::is_live(&mut *tx, tenant, receiver.as_str()).await? {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			if let Some(saved) = terminal::replay_in(
+				&mut *tx, tenant, &owner, &sender, subject, id, grant, request,
+			)
+			.await?
+			{
+				tx.commit().await?;
+				return Ok(saved);
+			}
+			return Err(aidash_application::Error::Forbidden);
+		};
 		if record.node != receiver.as_str()
 			|| record.source_node != source
 			|| record.grant_id != grant
@@ -937,6 +959,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		cancel_in(tx.as_mut(), tenant, id).await?;
+		record.cancelled = true;
 		let run: Option<aidash_domain::run_state::RawRun> = crate::database::query_as(
 			&Query::select()
 				.column(Asterisk)
@@ -948,7 +971,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 		)
 		.fetch_optional(&mut *tx)
 		.await?;
-		if let Some(raw) = &run {
+		if let Some(raw) = run {
 			if raw.metadata.node != *receiver
 				|| raw.metadata.home_node != source
 				|| raw.metadata.task_id != record.task_id
@@ -963,9 +986,12 @@ impl PeerAdmissionRepository for Repository<'_> {
 					.await?;
 			}
 		}
+		let activation = terminal::response_in(&mut *tx, &store.deployment, &record).await?;
 		tx.commit().await?;
-		Ok(run.is_none())
+		self.runtime.notify.notify_waiters();
+		Ok(activation)
 	}
+
 	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection> {
 		let store = &self.runtime.store;
 		let scope = store.run_tenancy(id).await?;

@@ -107,3 +107,6 @@ pub mod plan_connections;
 pub mod secret_store;
 
 pub mod tenant_secrets;
+
+mod authorization_remote_terminal_receipts;
+pub use authorization_remote_terminal_receipts::AuthorizationRemoteTerminalReceipt;

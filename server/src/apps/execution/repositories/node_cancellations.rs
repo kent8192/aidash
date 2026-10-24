@@ -696,26 +696,9 @@ fn stop(request: &RequestDigest<'_>) -> Option<Stop> {
 			serde_json::from_slice(request.body).ok()?;
 		return Some(Stop::Generation(input.intent_id));
 	}
-	let id = request
-		.path
-		.strip_prefix("/scoped/execution/admissions/")?
-		.strip_suffix("/control")?;
-	let admission = Uuid::parse_str(id).ok()?;
-	if admission.to_string() != id {
-		return None;
-	}
-	let input: crate::apps::identity::serializers::peer_admission::RemoteExecutionControlInput =
-		serde_json::from_slice(request.body).ok()?;
-	if !matches!(
-		input.action,
-		aidash_domain::federation::execution::admission::RemoteExecutionControl::Cancel
-	) {
-		return None;
-	}
-	Some(Stop::Execution {
-		admission,
-		grant: input.grant_id,
-	})
+	let (admission, grant) =
+		crate::apps::identity::serializers::peer_admission::cancel_request(request)?;
+	Some(Stop::Execution { admission, grant })
 }
 
 /// Proof for the sending side: durable cancellation, exact original Home Node,
@@ -808,6 +791,18 @@ pub(crate) async fn allows_closed_node_request_in(
 ) -> Result<bool> {
 	if !subject.is_empty() {
 		return Ok(false);
+	}
+	if let Some((id, grant)) =
+		crate::apps::identity::serializers::peer_admission::cancel_request(request)
+	{
+		if crate::apps::identity::repositories::peer_admission::terminal::replay_in(
+			tx, tenant, receiver, sender, subject, id, grant, request,
+		)
+		.await?
+		.is_some()
+		{
+			return Ok(true);
+		}
 	}
 	let id: Option<Uuid> = match stop(request) {
 		Some(Stop::Generation(id)) => {

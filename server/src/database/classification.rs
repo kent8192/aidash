@@ -164,6 +164,11 @@ pub const TABLES: &[Table] = &[
 	table("execution", "generation_remote_finalizations", TenantOwned),
 	table("execution", "generation_remote_intents", TenantOwned),
 	table("execution", "node_cancellation_jobs", TenantOwned),
+	table(
+		"identity",
+		"authorization_remote_terminal_receipts",
+		TenantOwned,
+	),
 	table("execution", "generation_remote_usage", TenantOwned),
 	table("execution", "generation_requests", TenantOwned),
 	table("execution", "generation_summary_usage", TenantOwned),
@@ -397,3 +402,5 @@ pub const TABLES: &[Table] = &[
 
 #[cfg(test)]
 mod tests;
+
+pub mod node;
