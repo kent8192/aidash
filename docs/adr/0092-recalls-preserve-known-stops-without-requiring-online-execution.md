@@ -8,7 +8,7 @@ A Recall identifies an Agent Plugin version that must not be used to start a new
 
 Deployments retain their last synchronized Recall state during communication loss. A known Recall remains effective even if the Marketplace Connection is disconnected or removed; disconnecting is not a way to clear the stop. A Recall issued while a Deployment is offline is applied after it synchronizes again. This deliberately preserves offline execution instead of promising instantaneous Recall delivery through a network partition.
 
-These rules govern the supported runtime. As recorded in ADR 0091, an operator who controls a modified Self-hosted runtime can remove its checks, so Recall is not a remote wipe or DRM guarantee for delivered content.
+These rules govern the supported runtime. As recorded in ADR 0091, a person who controls a modified Self-hosted runtime can remove its checks, so Recall is not a remote wipe or DRM guarantee for delivered content.
 
 ## Considered Options
 

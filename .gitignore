@@ -197,11 +197,19 @@ docs/specs/
 
 # Aidash application artifacts
 !Cargo.lock
-web/node_modules/
+web/node_modules
 web/dist/
 web/test-results/
 web/gcip-test-results/
 web/playwright-report/
+enterprise/marketplace-web/node_modules
+enterprise/marketplace-web/dist/
+enterprise/marketplace-web/test-results/
+enterprise/marketplace-web/playwright-report/
+enterprise/auth-web/node_modules
+enterprise/auth-web/dist/
+enterprise/auth-web/test-results/
+enterprise/auth-web/playwright-report/
 
 web/*.tsbuildinfo
 

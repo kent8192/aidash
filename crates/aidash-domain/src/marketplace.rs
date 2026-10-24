@@ -145,4 +145,5 @@ pub struct Replay {
 
 pub mod installations;
 
+pub mod distribution;
 pub mod events;

@@ -119,6 +119,7 @@ impl AccountStatus for Scope {
 impl Accounts for Scope {
 	fn policy(&self) -> Option<AccountPolicy> {
 		self.configured.then(|| AccountPolicy {
+			authority: None,
 			issuers: match &self.restrictions {
 				Some(restrictions) => Arc::new(Restricted(restrictions.clone())),
 				None => Arc::new(Issuer("issuer".into())),
@@ -812,6 +813,7 @@ fn mapping_requires_the_exact_bound_tenant(
 	#[case] allowed: bool,
 ) {
 	let policy = AccountPolicy {
+		authority: None,
 		issuers: Arc::new(Restricted([("pool-a".into(), "acme".into())].into())),
 		personal_tenants: true,
 		demo_data: false,
@@ -819,6 +821,7 @@ fn mapping_requires_the_exact_bound_tenant(
 	assert_eq!(policy.require_mapping(pool, tenant).is_ok(), allowed);
 	assert!(policy.require_mapping("old-issuer", tenant).is_err());
 	let unrestricted = AccountPolicy {
+		authority: None,
 		issuers: Arc::new(Issuer("issuer".into())),
 		personal_tenants: true,
 		demo_data: false,

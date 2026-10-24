@@ -48,6 +48,9 @@ pub mod sandbox;
 
 pub mod activation;
 
+#[cfg(feature = "authentication")]
+pub mod authentication;
+
 pub mod oidc;
 
 pub mod jwks;
@@ -60,3 +63,5 @@ pub mod provider_credentials;
 pub mod research;
 
 pub mod egress;
+
+pub mod marketplace;

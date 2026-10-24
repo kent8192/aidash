@@ -9,6 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+reinhardt = { workspace = true, features = ["grpc-tls"], optional = true }
+prost = { version = "0.14", optional = true }
+tonic-prost = { version = "0.14", optional = true }
 bytes = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
@@ -71,12 +74,20 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 ] }
 openidconnect = "4.0.1"
 
+[build-dependencies]
+tonic-prost-build = "0.14"
+prost-build = "0.14"
+protoc-bin-vendored = "3"
+
 [features]
+authentication = ["dep:reinhardt", "dep:prost", "dep:tonic-prost"]
 # Fake-provider constructors for tests (ADR 0006). Production dependencies never
 # enable it; see scripts/check-workspace-boundaries.py.
 test-support = []
 
 [dev-dependencies]
+rcgen = "0.14"
+tokio-stream = { version = "0.1", features = ["net"] }
 # The live Token Encoding checks count requests (ADR 0017).
 aidash-domain = { workspace = true, features = ["token-encodings"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = [

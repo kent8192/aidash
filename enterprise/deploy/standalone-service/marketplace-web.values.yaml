@@ -1,0 +1,9 @@
+# Set image to the digest-pinned image built from enterprise/marketplace-web.
+port: 8080
+environment:
+  MARKETPLACE_BACKEND_URL: http://marketplace:8082
+writableDirectories:
+  - name: nginx-config
+    mountPath: /etc/nginx/conf.d
+  - name: nginx-tmp
+    mountPath: /tmp

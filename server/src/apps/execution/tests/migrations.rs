@@ -53,6 +53,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0042_external_services"),
 	("registry", "0043_external_services_state"),
 	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_marketplace_recalls"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -2260,6 +2261,7 @@ async fn agent_plugin_copies_key_by_tenant_and_digest_and_check_their_documents(
 			.plugin(plugin.into())
 			.files(files.into())
 			.denied(json!([]).into())
+			.entitlement_expires_at(None)
 			.finish()
 	};
 	let plugin = json!({"digest":digest,"manifest":{"name":"tools"}});
