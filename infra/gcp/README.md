@@ -159,7 +159,8 @@ configured. The project is never inferred from a developer's `gcloud` default.
    `main` through the normal review process. Nonproduction privileged jobs pin
    the reviewed controller on `automation_branch`; production jobs use `main`. Select a deployable source containing Google OAuth,
    trusted-proxy authentication rate limits, the existing runtime contract and
-   successful `ci.yml` for its **exact SHA**. The app build explicitly refuses
+   successful `release-ci.yml` for its **exact develop SHA** (`ci.yml` remains
+   the PR and main verification workflow). The app build explicitly refuses
    sources missing either HTTP integration. Enable production only after its
    isolated account setup and acceptance checks in the release runbook pass.
 3. Copy `bootstrap/terraform.example.tfvars` to the ignored

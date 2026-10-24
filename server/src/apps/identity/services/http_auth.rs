@@ -68,7 +68,7 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 				_,
 				"nodes",
 				_,
-				"default" | "deletion" | "restore" | "purge"
+				"default" | "deletion" | "restore" | "purge" | "registration-keys"
 			]
 		) {
 		return true;

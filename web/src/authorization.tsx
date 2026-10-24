@@ -1,3 +1,4 @@
+import { GraphGrantKeyControls } from "./receiving-key-controls";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -324,6 +325,9 @@ function TenantAuthorization({
             <JsonView value={current.bundle} />
           </Disclosure>
         </Panel>
+      )}
+      {current && access.deploymentAdministrator && (
+        <GraphGrantKeyControls tenant={tenant} />
       )}
       {current && onDeleted && (
         <div className="w-full max-w-md">

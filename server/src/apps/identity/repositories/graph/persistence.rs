@@ -646,7 +646,18 @@ pub(crate) async fn set_grant(
 		};
 		aidash_domain::configuration::validate_endpoint(endpoint)?;
 		let key_id = aidash_domain::nodes::DeploymentKeyId::parse(key_id)?;
+		if current_key_id
+			.as_deref()
+			.is_some_and(|current| current != key_id.as_str())
+		{
+			return Err(Error::Conflict(
+				"use independent key confirmation to replace an existing pin".into(),
+			));
+		}
 		if input.expected_revision != 0 && current_key_id.as_deref() == Some(key_id.as_str()) {
+			// This authorization-only UPDATE writes no trust or endpoint.
+			// Its repeated pin is not a crypto CAS precondition: concurrent
+			// manual and normal key changes must remain untouched.
 			None
 		} else {
 			let key = aidash_application::federation::registrations::pin(
@@ -732,25 +743,9 @@ pub(crate) async fn set_grant(
 				};
 			let stored = super::super::receiving_keys::get_locked(&mut *tx, &owner).await?;
 			if stored.is_none_or(|stored| stored.keys.current.key_id != key.key_id) {
-				update
-					.value_expr(
-						Alias::new("source_key_id"),
-						Expr::value(key.key_id.to_string()),
-					)
-					.value_expr(
-						Alias::new("source_public_key_pem"),
-						Expr::value(key.public_key_pem.clone()),
-					)
-					.value_expr(
-						Alias::new("source_keys"),
-						Expr::value(serde_json::to_string(
-							&aidash_application::federation::registrations::trusted_keys(&key)?,
-						)?),
-					)
-					.value_expr(
-						Alias::new("keys_revision"),
-						Expr::col("keys_revision").add(Expr::value(1_i64)),
-					);
+				return Err(Error::Conflict(
+					"receiving key changed; use independent confirmation".into(),
+				));
 			}
 		}
 		crate::database::native::query_as(
