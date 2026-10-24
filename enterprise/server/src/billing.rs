@@ -9,7 +9,9 @@ use aidash_server::store::Store;
 use aidash_server::{Error, Result};
 use std::sync::{Arc, OnceLock};
 
+pub(crate) mod facts;
 pub mod gate;
+pub use facts::{AccountSample, AccountSegment, AccountUsage};
 pub mod meter;
 pub mod models;
 pub mod nodes;

@@ -60,11 +60,12 @@ def tenant_subject(base, label, subject, agents=()):
     Deployment Administrator creates the Tenant, writes its first policy and
     issues the credential. `agents` name Agents as subjects: `id@version` for
     one that executes on the Tenant's default Node, or the full subject of one
-    that executes elsewhere.
+    that executes elsewhere. Every Agent subject belongs to this Tenant's
+    local default Node, even when its subject name identifies a remote Agent.
     """
     tenant = api_request(base, "/api/tenants", {"label": label})["name"]
-    _, address = default_node(base, tenant)
-    subjects = {subject: {"kind": "user"}, **{(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent"} for agent in agents}}
+    node, address = default_node(base, tenant)
+    subjects = {subject: {"kind": "user", "node": None}, **{(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent", "node": node} for agent in agents}}
     bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
     api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 1, "bundle": bundle})
     credential = api_request(base, f"/api/authorization/{tenant}/credentials", {"subject": subject, "expires_in_seconds": 3600})

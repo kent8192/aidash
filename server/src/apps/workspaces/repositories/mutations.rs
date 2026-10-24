@@ -33,7 +33,7 @@ impl WorkspaceMutations for NativeMutations<'_> {
 		let tenant = self.access.identity.tenant.clone();
 		let node = match requested {
 			Some(name) => {
-				crate::apps::identity::repositories::nodes::get(
+				crate::apps::identity::repositories::nodes::get_live(
 					&mut **self.access.tx,
 					&tenant,
 					name.as_str(),

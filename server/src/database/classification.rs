@@ -215,7 +215,8 @@ pub const TABLES: &[Table] = &[
 	table("federation", "authorization_remote_grants", TenantOwned),
 	table("federation", "delegations", TenantOwned),
 	// Node Registrations and their revisions: the receiving Node's Tenant
-	// decides whom its Node accepts (#241)
+	// decides whom its Node accepts (#241). Receiver-local keysets share that
+	// same Tenant RLS boundary; key learning creates no Deployment-wide trust.
 	table("federation", "node_registration_history", TenantOwned),
 	table("federation", "node_registrations", TenantOwned),
 	table("federation", "deployment_key_rollovers", DeploymentWide),

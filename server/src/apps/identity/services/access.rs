@@ -275,9 +275,7 @@ impl Access {
 		};
 		let mut tx = store.pool.begin(&identity.tenancy()?).await?;
 		let snapshot = Authorization::load_with_mode(&mut tx, tenant, exclusive).await?;
-		if !super::identity::enabled(&snapshot, subject) {
-			return Err(Error::Forbidden);
-		}
+		super::identity::require_live_subject(&mut *tx, &snapshot, subject).await?;
 		Ok(Self::from_transaction(
 			tx,
 			&store.pool,
@@ -372,6 +370,9 @@ impl Access {
 				.any(|s| !super::identity::enabled(&self.snapshot, s))
 		{
 			return Err(Error::Forbidden);
+		}
+		for subject in &subjects {
+			super::identity::require_live_subject(&mut *self.tx, &self.snapshot, subject).await?;
 		}
 		if identity.credential_id != self.identity.credential_id {
 			identity.lock_credential(&mut self.tx).await?;
@@ -498,6 +499,14 @@ impl Access {
 				.install(self.pool.begin(&self.identity.tenancy()?).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
+		if let Some(node) = &self.node {
+			crate::apps::identity::repositories::nodes::require_live(
+				&mut *self.tx,
+				&self.identity.tenant,
+				node.as_str(),
+			)
+			.await?;
+		}
 		self.tx.admissions.clear();
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
@@ -568,7 +577,7 @@ impl Access {
 		&mut self,
 		name: &aidash_domain::nodes::NodeName,
 	) -> Result<Resource> {
-		let node = crate::apps::identity::repositories::nodes::get(
+		let node = crate::apps::identity::repositories::nodes::get_live(
 			&mut *self.tx,
 			&self.identity.tenant,
 			name.as_str(),
@@ -584,7 +593,13 @@ impl Access {
 	/// Authorize work on an owned Node using its current policy attributes,
 	/// then select its Catalog and Federation identity.
 	pub(crate) async fn use_node(&mut self, name: aidash_domain::nodes::NodeName) -> Result<()> {
-		let resource = self.node_resource(&name).await?;
+		let resource = self
+			.node_resource(&name)
+			.await
+			.map_err(|error| match error {
+				Error::NotFound(_) => Error::Forbidden,
+				other => other,
+			})?;
 		self.require(
 			&resource,
 			aidash_domain::identity::tenant_administration::NODE_USE,
@@ -608,6 +623,12 @@ impl Access {
 		)
 		.scalar_one(&mut **self.tx)
 		.await?;
+		crate::apps::identity::repositories::nodes::require_live(
+			&mut *self.tx,
+			&self.identity.tenant,
+			&name,
+		)
+		.await?;
 		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
 	}
 
@@ -615,6 +636,12 @@ impl Access {
 	/// operation has named it, the Tenant's default Node otherwise.
 	pub(crate) async fn catalog_node(&mut self) -> Result<aidash_domain::nodes::NodeName> {
 		if let Some(node) = &self.node {
+			crate::apps::identity::repositories::nodes::require_live(
+				&mut *self.tx,
+				&self.identity.tenant,
+				node.as_str(),
+			)
+			.await?;
 			return Ok(node.clone());
 		}
 		let name: String = crate::database::native::query_scalar(
@@ -628,6 +655,12 @@ impl Access {
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **self.tx)
+		.await?;
+		crate::apps::identity::repositories::nodes::require_live(
+			&mut *self.tx,
+			&self.identity.tenant,
+			&name,
+		)
 		.await?;
 		let node = aidash_domain::nodes::NodeName::parse(&name)?;
 		self.set_node(node.clone());
@@ -644,6 +677,9 @@ impl Access {
 	}
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		for subject in &self.subjects {
+			super::identity::require_live_subject(&mut *self.tx, &self.snapshot, subject).await?;
+		}
 		aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			resource,

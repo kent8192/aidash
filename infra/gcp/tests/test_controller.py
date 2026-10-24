@@ -11,7 +11,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -283,8 +283,88 @@ class ReconcileFixture:
 
         return patch.object(self.cloud, "outputs", side_effect=values)
 
+    def partial_start(self):
+        prior = self.request("develop", action="up", source_ref="develop/0.1.0", sha="b" * 40)
+        managed = dict(kind="develop", generation=prior["generation"], incarnation=prior["incarnation"],
+                       running=True, published=False, address=None, spot=False, nodes=1,
+                       release_sha=prior["sha"])
+        self.request("develop", action="up", source_ref="develop/0.1.0")
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        # Terraform may persist the input output before creating any node pool.
+        snapshot = Mock()
+        resources = [{
+            "mode": "managed", "type": "google_container_node_pool",
+            "module": f'module.environment["{identity}"]', "name": "environment",
+            "instances": [{"attributes": {"node_count": 1 if value["running"] else 0}}],
+        } for identity, value in self.cloud.managed.items()]
+        snapshot.read.return_value = ({"resources": resources, "outputs": {
+            "managed_configuration": {"value": dict(self.cloud.managed, develop=managed)},
+        }}, "1")
+        return patch.object(self.cloud, "configuration_in_state", side_effect=lambda store:
+                            NativeTerraform.configuration_in_state(self.cloud, snapshot))
+
 
 class ReconcileTests(ReconcileFixture, unittest.TestCase):
+    def test_partial_start_recovers_through_shared_refresh_then_current_start(self):
+        partial = self.partial_start()
+        requested = deepcopy(self.store.state["environments"]["develop"])
+        with partial:
+            self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertEqual(entry["status"], "ready")
+        self.assertTrue(entry["published"])
+        self.assertFalse(entry["start_pending"])
+        self.assertEqual(entry["incarnation"], requested["incarnation"])
+        self.assertEqual(self.cloud.managed["develop"]["generation"], requested["generation"])
+        self.assertEqual(self.cloud.managed["develop"]["release_sha"], SHA)
+        self.assertEqual(self.calls.count(("migrate", "develop")), 1)
+        self.reconcile()
+        self.assertEqual(self.calls.count(("migrate", "develop")), 1)
+
+    def test_partial_start_without_a_pending_start_stays_interrupted(self):
+        partial = self.partial_start()
+        self.store.state["environments"]["develop"]["start_pending"] = False
+        with partial:
+            self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertEqual(entry["status"], "interrupted")
+        self.assertEqual(entry["desired"], "stopped")
+        self.assertFalse(self.cloud.managed["develop"]["running"])
+        self.assertFalse(self.deployed("develop"))
+
+    def test_partial_start_preserves_another_running_environment(self):
+        self.request()
+        self.reconcile()
+        tokens = self.kube.secret("aidash-test", "aidash-identity")
+        with self.partial_start():
+            self.reconcile()
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "ready")
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+        self.assertTrue(self.cloud.managed["test"]["running"])
+        self.assertTrue(self.cloud.managed["test"]["published"])
+        self.assertEqual(self.kube.secret("aidash-test", "aidash-identity"), tokens)
+        self.assertEqual(self.calls.count(("migrate", "test")), 1)
+
+    def test_newer_stop_fences_a_partially_applied_start(self):
+        partial = self.partial_start()
+        self.request("develop", action="stop", source_ref="develop/0.1.0")
+        with partial:
+            self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertEqual(entry["status"], "stopped")
+        self.assertFalse(entry["start_pending"])
+        self.assertFalse(self.cloud.managed["develop"]["running"])
+        self.assertFalse(self.deployed("develop"))
+
+    def test_newer_destroy_fences_a_partially_applied_start(self):
+        partial = self.partial_start()
+        self.request("develop", action="destroy", source_ref="develop/0.1.0")
+        with partial:
+            self.reconcile()
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "destroyed")
+        self.assertNotIn("develop", self.cloud.managed)
+        self.assertFalse(self.deployed("develop"))
+
     def test_create_installs_dependencies_migrates_with_writers_stopped_then_publishes(self):
         self.request()
         applies = []

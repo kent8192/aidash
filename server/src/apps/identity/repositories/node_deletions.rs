@@ -88,6 +88,7 @@ pub(crate) async fn record(
 		.purge_leased_until(None)
 		.audit_erased_at(None)
 		.finish();
+	super::nodes::fence_old_admission_snapshots(tx, tenant, node).await?;
 	NodeDeletion::objects().create_with_conn(tx, &row).await?;
 	Ok(row)
 }

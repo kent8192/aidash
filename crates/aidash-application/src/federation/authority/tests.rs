@@ -72,7 +72,17 @@ struct Sources {
 }
 #[async_trait]
 impl Peers for Sources {
-	async fn route(&self, node: &str) -> Result<Route> {
+	async fn route(
+		&self,
+		node: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+	) -> Result<Route> {
+		assert_eq!(request.method, "POST");
+		assert_eq!(request.path, "/scoped/verify");
+		assert_eq!(
+			serde_json::from_slice::<Value>(request.body).unwrap(),
+			json!({"grant_id":"grant"})
+		);
 		self.log.lock().unwrap().push(format!("trust:{node}"));
 		if self.denied {
 			return Err(Error::Forbidden);
@@ -158,7 +168,7 @@ async fn denied_trust_does_not_contact_peer() {
 			.await
 			.unwrap_err()
 			.to_string(),
-		"remote execution authority unavailable"
+		"forbidden"
 	);
 	assert_eq!(*log.lock().unwrap(), ["trust:aidash://peer"]);
 }

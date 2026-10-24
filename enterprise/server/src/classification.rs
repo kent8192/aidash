@@ -24,8 +24,10 @@ pub const TABLES: &[Table] = &[
 	table("billing", "billing_attachments", DeploymentWide),
 	table("billing", "billing_coverage_periods", DeploymentWide),
 	table("billing", "billing_pod_usage", DeploymentWide),
+	table("billing", "billing_retention_state", DeploymentWide),
 	table("billing", "billing_storage_samples", DeploymentWide),
 	table("billing", "billing_subscriptions", DeploymentWide),
+	table("billing", "billing_usage_segments", DeploymentWide),
 	// how each GCIP External Identity was admitted; names a Tenant, belongs to none
 	table("gcip", "gcip_admissions", DeploymentWide),
 ];
