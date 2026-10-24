@@ -164,3 +164,28 @@ impl DeploymentKey for FileDeploymentKey {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod rollover_tests;
+
+/// Community source resolver. Enterprise composes the same file loader with
+/// its KMS adapter; the scheduled ring is independent of either implementation.
+pub struct FileKeySources;
+#[async_trait]
+impl aidash_application::federation::key::DeploymentKeyLoader for FileKeySources {
+	async fn load(
+		&self,
+		source: &aidash_application::federation::key::DeploymentKeySource,
+	) -> Result<std::sync::Arc<dyn DeploymentKey>> {
+		use aidash_application::federation::key::DeploymentKeySource;
+		source.validate()?;
+		match source {
+			DeploymentKeySource::File(path) => {
+				Ok(std::sync::Arc::new(FileDeploymentKey::load(path)?))
+			}
+			DeploymentKeySource::Kms(_) => Err(Error::Invalid(
+				"the Community build has no Cloud KMS Deployment Key".into(),
+			)),
+		}
+	}
+}

@@ -215,6 +215,7 @@ pub const TABLES: &[Table] = &[
 	// decides whom its Node accepts (#241)
 	table("federation", "node_registration_history", TenantOwned),
 	table("federation", "node_registrations", TenantOwned),
+	table("federation", "deployment_key_rollovers", DeploymentWide),
 	table("federation", "remote_run_message_fences", TenantOwned),
 	// identity
 	table("identity", "authorization_bundles", TenantOwned),

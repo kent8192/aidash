@@ -71,9 +71,6 @@ pub async fn initialize(
 		.with_ansi(false)
 		.try_init();
 	let mut config = Config::from_settings(settings)?;
-	// A Deployment Key that cannot be loaded refuses to start (ADR 0064).
-	config.deployment_key =
-		configure_deployment_key(settings.deployment.key.as_ref(), &settings.core.base_dir).await?;
 	// A malformed Research provider declaration refuses to start (ADR 0055),
 	// before registry validation reads which providers are available.
 	crate::apps::execution::services::research::configure(
@@ -95,6 +92,21 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
+	let keys = configure_deployment_keys(
+		settings.deployment.key.as_ref(),
+		&settings.core.base_dir,
+		config.deployment.clone(),
+		crate::database::native::Pool::from(pool.clone()),
+	)
+	.await?;
+	if let Some(keys) = &keys {
+		use aidash_application::federation::key::DeploymentKeys;
+		config.deployment_key = Some(
+			keys.signing(chrono::Utc::now().timestamp().max(0) as u64)
+				.await?
+				.key,
+		);
+	}
 	let mut store = Store::from_pool(pool, config.deployment.clone())
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
@@ -103,6 +115,7 @@ pub async fn initialize(
 		.with_egress(aidash_integrations::federation::Egress {
 			enabled: config.federation,
 			key: config.deployment_key.clone(),
+			keys: keys.map(|keys| keys as Arc<dyn aidash_application::federation::key::DeploymentKeys>),
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
@@ -2380,6 +2393,44 @@ pub(crate) fn desktop_protocol(
 	runtime: &Federation,
 ) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}
+
+/// Construct scheduled sender keys after a database pool exists. The configured
+/// source bootstraps an empty schedule; stored sources remain authoritative.
+pub async fn configure_deployment_keys(
+	settings: Option<&crate::apps::operations::serializers::deployment::DeploymentKeySettings>,
+	base_dir: &std::path::Path,
+	deployment: aidash_domain::nodes::DeploymentId,
+	pool: crate::database::native::Pool,
+) -> Result<Option<Arc<aidash_application::federation::key::ScheduledDeploymentKeys>>> {
+	use crate::apps::operations::serializers::deployment::DeploymentKeySource as Configured;
+	use aidash_application::federation::key::{DeploymentKeySource, ScheduledDeploymentKeys};
+	let Some(settings) = settings else {
+		return Ok(None);
+	};
+	let source = match settings.source().map_err(Error::Invalid)? {
+		Configured::File(file) => {
+			let base_dir = if base_dir.is_absolute() {
+				base_dir.to_owned()
+			} else {
+				std::env::current_dir()?.join(base_dir)
+			};
+			DeploymentKeySource::File(base_dir.join(file))
+		}
+		Configured::Kms(version) => DeploymentKeySource::Kms(version.to_owned()),
+	};
+	source.validate()?;
+	let store =
+		crate::apps::federation::peer::repositories::deployment_keys::PostgresDeploymentKeys {
+			pool,
+			deployment: deployment.clone(),
+		};
+	Ok(Some(Arc::new(ScheduledDeploymentKeys::new(
+		deployment,
+		source,
+		Arc::new(store),
+		Arc::new(crate::apps::federation::peer::services::key_sources::Sources::default()),
+	))))
 }
 
 /// The Deployment Key `[deployment.key]` names, or none when it is omitted. A

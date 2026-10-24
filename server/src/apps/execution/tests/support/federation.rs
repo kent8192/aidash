@@ -84,6 +84,7 @@ pub fn give_key(f: &mut Federation) -> Arc<KeyFile> {
 	f.store.egress = Egress {
 		enabled: true,
 		key: Some(key),
+		keys: None,
 	};
 	file
 }

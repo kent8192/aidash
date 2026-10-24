@@ -30,3 +30,5 @@ registration: the Tenant's policy decides over the sender's own subject.
   Nodes. A Node's address names its Deployment and its Node name, never its Tenant, and the
   sending Tenant's name leaves the protocol and the Peer Mapping key.
 - A Peer Graph Grant also pins the other Deployment's key.
+
+Normal planned updates extend the single-key model through [ADR 0084](0084-normal-deployment-key-rollover-is-proven-by-the-currently-trusted-key.md): a durable sender schedule publishes a predecessor-signed successor proof, activates after 24 hours and retires the predecessor seven days later. Requests carry the bounded proof during overlap; publication alone does not authorize replacement.

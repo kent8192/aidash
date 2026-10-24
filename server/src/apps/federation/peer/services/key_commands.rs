@@ -1,4 +1,4 @@
-//! `manage deployment-key generate|show`: the Deployment Key of ADR 0064.
+//! `manage deployment-key`: initial creation and durable normal rollover (ADR 0084).
 use crate::apps::operations::serializers::deployment::{
 	DeploymentKeySettings, DeploymentKeySource,
 };
@@ -17,7 +17,7 @@ pub struct Command;
 impl CapabilityCommand for Command {
 	fn cli(&self) -> clap::Command {
 		clap::Command::new("deployment-key")
-			.about("Create or show the Deployment Key that signs Federation tokens")
+			.about("Create, inspect or roll over the Deployment Key that signs Federation tokens")
 			.subcommand_required(true)
 			.arg_required_else_help(true)
 			.subcommand(
@@ -35,8 +35,16 @@ impl CapabilityCommand for Command {
 					),
 			)
 			.subcommand(
-				clap::Command::new("show").about("Print the key ID and the public key of the Deployment Key"),
+				clap::Command::new("show").about("Print the configured initial source (use status for scheduled keys)"),
 			)
+            .subcommand(clap::Command::new("status")
+                .about("Read the authoritative current key and rollover schedule from the database"))
+            .subcommand(clap::Command::new("rollover")
+                .about("Publish a successor: activate after 24 hours, retire the predecessor seven days later")
+                .arg(clap::Arg::new("file").long("file").value_name("PATH").conflicts_with("kms").required_unless_present("kms"))
+                .arg(clap::Arg::new("kms").long("kms").value_name("VERSION").conflicts_with("file").required_unless_present("file"))
+                .arg(clap::Arg::new("expected-current").long("expected-current").value_name("KEY_ID").required(true)
+                    .help("Current key ID from status; refuse a changed identity")))
 	}
 	fn requirements(&self, _: &clap::ArgMatches) -> Vec<CapabilityRequirement> {
 		Vec::new()
@@ -53,7 +61,13 @@ impl CapabilityCommand for Command {
 					generate(settings.as_ref(), &base_dir, arguments.get_flag("force"))?
 				}
 				Some(("show", _)) => show(settings.as_ref(), &base_dir).await?,
-				_ => return Err(Error::Invalid("name generate or show".into())),
+				Some(("status", _)) => operate(None).await?,
+				Some(("rollover", arguments)) => operate(Some(arguments)).await?,
+				_ => {
+					return Err(Error::Invalid(
+						"name generate, show, status or rollover".into(),
+					));
+				}
 			};
 			print!("{report}");
 			Ok(())
@@ -128,3 +142,67 @@ fn describe(key: &dyn DeploymentKey) -> String {
 #[cfg(test)]
 #[path = "../tests/key_commands.rs"]
 mod tests;
+
+/// Scheduled operations open only the database, never initialize Runs, migrate
+/// schemas or change KMS resources. Initial generation retains its early path.
+async fn operate(arguments: Option<&clap::ArgMatches>) -> Result<String> {
+	use aidash_application::federation::key::{DeploymentKeySource, DeploymentKeys};
+	let settings = crate::config::startup::load_settings()?;
+	let config = crate::config::Config::from_settings(&settings)?;
+	let database = crate::database::runtime::connect_maintenance(&config.database_url, 2).await?;
+	let pool = crate::database::native::Pool::from(
+		database
+			.into_postgres()
+			.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?,
+	);
+	let keys = bootstrap::configure_deployment_keys(
+		settings.deployment.key.as_ref(),
+		&settings.core.base_dir,
+		config.deployment,
+		pool,
+	)
+	.await?
+	.ok_or_else(|| Error::Invalid("this Deployment has no [deployment.key]".into()))?;
+	let now = chrono::Utc::now().timestamp().max(0) as u64;
+	let public = if let Some(arguments) = arguments {
+		let expected = aidash_domain::nodes::DeploymentKeyId::parse(
+			arguments
+				.get_one::<String>("expected-current")
+				.expect("required by clap"),
+		)?;
+		let source = match arguments.get_one::<String>("file") {
+			Some(file) => DeploymentKeySource::File(
+				std::fs::canonicalize(settings.core.base_dir.join(file)).map_err(|_| {
+					Error::Invalid("successor Deployment Key file is unavailable".into())
+				})?,
+			),
+			None => DeploymentKeySource::Kms(
+				arguments
+					.get_one::<String>("kms")
+					.expect("required by clap")
+					.clone(),
+			),
+		};
+		keys.rollover(&expected, source, now).await?
+	} else {
+		keys.publication(now).await?
+	};
+	let mut report = format!(
+		"Key ID: {}\n{}\n",
+		public.current.id,
+		public.current.public_key_pem.trim_end()
+	);
+	if let Some(schedule) = public.schedule {
+		report.push_str(&format!(
+			"Published at: {}\nActivates at: {}\nPredecessor retires at: {}\n",
+			schedule.published_at, schedule.activates_at, schedule.retires_at
+		));
+	}
+	if let Some(next) = public.successor {
+		report.push_str(&format!("Successor key ID: {}\n", next.id));
+	}
+	if let Some(old) = public.retiring {
+		report.push_str(&format!("Retiring key ID: {}\n", old.id));
+	}
+	Ok(report)
+}
