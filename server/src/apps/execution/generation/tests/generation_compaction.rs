@@ -428,9 +428,9 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case(false)]
 #[case(true)]
+#[tokio::test]
 async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 	#[future(awt)]
 	#[from(common::native_application)]
@@ -694,9 +694,9 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case(true)]
 #[case(false)]
+#[tokio::test]
 async fn nested_generation_intersects_compaction_approval_and_charges_both_ancestors(
 	#[future(awt)]
 	#[from(provider_4)]
@@ -830,7 +830,8 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 			if matches!(
 				current.phase().as_str(),
 				"COMPLETED" | "FAILED" | "CANCELLED"
-			) {
+			) || current.control == aidash_domain::RunControl::Paused
+			{
 				break current;
 			}
 			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -840,11 +841,24 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	.unwrap();
 	assert_eq!(
 		current.phase().as_str(),
-		if approved { "COMPLETED" } else { "FAILED" },
-		"phase={}, error={:?}, pending={}",
+		if approved { "COMPLETED" } else { "THINKING" },
+		"phase={}, control={:?}, error={:?}, pending={}",
 		current.phase().as_str(),
+		current.control,
 		current.error,
 		json!(current.state)["data"]
+	);
+	assert_eq!(
+		current.control,
+		if approved {
+			aidash_domain::RunControl::Active
+		} else {
+			aidash_domain::RunControl::Paused
+		}
+	);
+	assert_eq!(
+		current.recovery.context_reason,
+		(!approved).then_some(aidash_domain::context::recovery::Failure::ContextUnreducible)
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), usize::from(approved));
 	for job in [&parent["generation"], &child["generation"]] {
