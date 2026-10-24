@@ -85,7 +85,10 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         tenant,
         subjects: {
           alice: { kind: "user" },
-          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
+          [`${node.address}/agents/${id}@1.0.0`]: {
+            kind: "agent",
+            node: node.name,
+          },
         },
         policies: [
           {

@@ -32,6 +32,7 @@ fn repository() -> Repository {
 			operation_id: Uuid::from_u128(1),
 			kind: "shell".into(),
 			state: "running".into(),
+			result: json!({}),
 			epoch: 8,
 			generation: 3,
 			area_epoch: 8,

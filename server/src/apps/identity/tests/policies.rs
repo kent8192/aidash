@@ -95,7 +95,7 @@ fn bundle() -> Value {
 		"tenant":"acme",
 		"subjects":{
 			"alice":{"kind":"user","roles":["editor"],"groups":["research"],"attributes":{"department":"research"}},
-			"agent":{"kind":"agent","roles":["editor"],"attributes":{"department":"research"},"delegated_by":"alice"}
+			"agent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["editor"],"attributes":{"department":"research"},"delegated_by":"alice"}
 		},
 		"groups":{"research":{"roles":["reader"]}},
 		"roles":{"reader":{},"editor":{"inherits":["reader"]}},
@@ -1054,8 +1054,8 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	assert_eq!(decisions[0]["decision"]["allowed"], true);
 	assert!(decisions[0].get("attributes").is_none());
 	assert_eq!(
-		get(&app, "/api/authorization/unknown/decisions").await.1,
-		json!([])
+		get(&app, "/api/authorization/unknown/decisions").await.0,
+		404
 	);
 }
 
@@ -1129,7 +1129,10 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 			.await
 			.is_err()
 	);
-	assert!(service.revisions("other", 0, 100).await.unwrap().is_empty());
+	assert!(matches!(
+		service.revisions("other", 0, 100).await,
+		Err(aidash_server::Error::NotFound(_))
+	));
 }
 
 fn lock_timeout_sql() -> String {

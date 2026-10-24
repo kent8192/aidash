@@ -149,6 +149,15 @@ Run: `cargo test --locked -p aidash-domain --lib`; then server `startup` and
 `migrations` targets. New ownership must not add an application/domain dependency
 on server or Reinhardt.
 
+Task 1 local evidence: domain 2,187, application 3,755 and startup/classification
+15 tests passed. The deletion-deadline regression failed across a daylight-saving
+transition before the CHECK used elapsed-hour bounds. Both focused in-process
+migration tests then passed on the final source, including rollback/reapply,
+model/schema agreement and the ownership, RLS and immutable-deadline constraints.
+The independent fix review approved the integrated range ending `94b2c4cde2`.
+The separate external migration CLI fixture stalled locally before SQL; broad
+migration and hosted acceptance remain Task 13 requirements.
+
 ## Task 2: Default selection, delete/restore and live capacity
 
 **Files:** Modify identity `services/nodes.rs`, `views/nodes.rs`,
@@ -173,6 +182,14 @@ All lifecycle/capacity changes share the existing `nodes:<tenant>` lock.
 
 Run: `cargo test --locked -p aidash-server --test dashboard_oidc tenancy::nodes`;
 Enterprise `--test billing` with the same package/manifest command as Task 10.
+
+Task 2 local source evidence: independent review approved the lifecycle API,
+explicit Node administration audit and live-capacity changes. Node HTTP tests
+10/10, migration tests 3/3, the real concurrent delete/restore and Tier-change
+capacity test, and strict server library clippy passed. The broader Tenancy run
+was 70/73; its three purge-receipt failures passed in the unchanged serial owner
+run (12/12), without establishing the parallel failure's cause. Task 3 cancellation,
+Task 4 physical purge/measured bytes and Task 5 UI remain separate acceptance.
 
 ## Task 3: Stop deleted Node work at every real boundary
 
@@ -260,14 +277,19 @@ leaf crate, using wire strings rather than a new dependency on domain.
 and returns `Result<String, SignError>`; `verify_transition(compact, trusted,
 deployment, now)` returns `Result<RolloverClaims, FederationFailure>`.
 
-- [ ] Add contract tests for the exact 24-hour/7-day boundaries, forged proof,
+- [x] Add contract tests for the exact 24-hour/7-day boundaries, forged proof,
       wrong Deployment, successor key digest mismatch, future activation, retirement,
       replayed predecessor and oversized token. Existing request-binding tests remain.
-- [ ] Add one optional compact proof to Federation claims within the total
+- [x] Add one optional compact proof to Federation claims within the total
       8192-byte limit. Verify both transition and successor-signed outer token,
       including the original request binding; a proof alone never admits a request.
-- [ ] Run capability/domain tests and commit
+- [x] Run capability/domain tests and commit
       `feat(federation): authenticate bounded Deployment Key transitions`.
+
+Task 6 local evidence: 2,228 capability/domain tests and strict clippy passed;
+independent specification and quality review approved. The integrated commits
+are `1d45dfedf4` and the consumer initialization `4696173d7b`. Receiving
+persistence and deployed sender continuity remain Tasks 7 and 8.
 
 ## Task 7: Persistent receiving keysets and automatic advancement
 
@@ -296,7 +318,7 @@ for a particular receiving registration/grant under its existing authority.
 Run `dashboard_oidc tenancy::registrations`, `peer_graph_review`,
 `peer_graph_nodes`, migrations and startup/classification tests.
 
-## Task 8: File/KMS keyring, operator controls and continuity
+## Task 8: File/KMS keyring, management controls and continuity
 
 **Files:** Extend application `federation/key.rs`, integrations
 `federation.rs` and `federation/key.rs`, Enterprise KMS Deployment Key adapter,
@@ -424,6 +446,12 @@ must retain confirmed timestamps and undelivered reports across restart.
 Run Enterprise billing/Stripe tests and the owning storage, allocation journal
 and withdrawal tests. Actual preview acceptance also requires Issue 405's runtime.
 Do not rerun cryptographic negative cases here.
+
+Task 11a local evidence: the physical-purge regression failed with stale 4,000
+bytes before the repair, then passed; all 12 existing billing tests passed.
+Independent review approved the scoped sampler change, integrated as
+`639c182bc8`. Actual Node purge, allocation lifetime, coverage attribution and
+processor export remain separate acceptance requirements above.
 
 ## Task 12: Billing dashboard and actual sandbox end-to-end acceptance
 

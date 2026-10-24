@@ -46,5 +46,100 @@ pub async fn pin(
 	})
 }
 
+/// Initial receiver-local trust after an administrator confirmed the pin.
+pub fn trusted_keys(key: &PinnedKey) -> Result<aidash_domain::nodes::keys::TrustedDeploymentKeys> {
+	use aidash_domain::nodes::keys::{PublicDeploymentKey, TrustedDeploymentKeys};
+	let bytes = aidash_capability::public_key_bytes(&key.public_key_pem)
+		.map_err(|_| Error::Unauthorized)?;
+	Ok(TrustedDeploymentKeys::new(PublicDeploymentKey::new(
+		key.key_id.clone(),
+		bytes,
+	)?)?)
+}
+
+/// Returns a candidate only after the whole outer request authenticates. The
+/// caller must still check its owner/subject claims and current authorization
+/// before committing that candidate with both expected revisions.
+pub(super) fn verify_request(
+	raw: &str,
+	deployment: &DeploymentId,
+	trusted: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+	now: u64,
+	request: &aidash_capability::federation::RequestBinding<'_>,
+) -> Result<(
+	aidash_capability::federation::FederationClaims,
+	Option<aidash_domain::nodes::keys::TrustedDeploymentKeys>,
+)> {
+	use aidash_capability::{
+		PublicKeys,
+		federation::{
+			FederationClaims,
+			rollover::{TrustedRolloverKey, verify_transition},
+		},
+	};
+	use aidash_domain::nodes::keys::{PublicDeploymentKey, RolloverSchedule};
+	use chrono::{DateTime, Utc};
+	use std::collections::BTreeMap;
+	fn refused<E>(_: E) -> Error {
+		Error::Unauthorized
+	}
+	let instant = |seconds: u64| -> Result<DateTime<Utc>> {
+		DateTime::from_timestamp(i64::try_from(seconds).map_err(refused)?, 0)
+			.ok_or(Error::Unauthorized)
+	};
+	let timestamp = instant(now)?;
+	if trusted.quarantined {
+		return Err(Error::Unauthorized);
+	}
+	let kid = DeploymentKeyId::parse(&FederationClaims::unverified(raw).map_err(refused)?.kid)
+		.map_err(refused)?;
+	if let Some(key) = trusted.trusted_key(&kid, timestamp) {
+		key.validate().map_err(refused)?;
+		let pem = aidash_capability::public_key_pem(&key.public_key).map_err(refused)?;
+		let keys =
+			PublicKeys::from_pems(BTreeMap::from([(kid.to_string(), pem)])).map_err(refused)?;
+		return Ok((
+			FederationClaims::verify(raw, &keys, now, request).map_err(refused)?,
+			None,
+		));
+	}
+	trusted.current.validate().map_err(refused)?;
+	let predecessor = TrustedRolloverKey {
+		kid: trusted.current.key_id.to_string(),
+		public_key_pem: aidash_capability::public_key_pem(&trusted.current.public_key)
+			.map_err(refused)?,
+	};
+	let claims = FederationClaims::verify_with_transition(
+		raw,
+		&predecessor,
+		deployment.as_str(),
+		now,
+		request,
+	)
+	.map_err(refused)?;
+	let transition = verify_transition(
+		claims.transition.as_deref().ok_or(Error::Unauthorized)?,
+		&predecessor,
+		deployment.as_str(),
+		now,
+	)
+	.map_err(refused)?;
+	let successor = PublicDeploymentKey::new(
+		DeploymentKeyId::parse(&transition.successor_kid).map_err(refused)?,
+		transition.successor_key_bytes().map_err(refused)?,
+	)
+	.map_err(refused)?;
+	let schedule = RolloverSchedule {
+		published_at: instant(transition.published_at)?,
+		activates_at: instant(transition.activates_at)?,
+		retires_at: instant(transition.retires_at)?,
+	};
+	let mut advanced = trusted.clone();
+	advanced
+		.accept_successor(&trusted.current.key_id, successor, schedule, timestamp)
+		.map_err(refused)?;
+	Ok((claims, Some(advanced)))
+}
+
 #[cfg(test)]
 mod tests;

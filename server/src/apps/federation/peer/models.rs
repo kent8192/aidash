@@ -12,3 +12,6 @@ mod node_registration_history;
 pub use node_registration_history::NodeRegistrationHistory;
 mod node_registrations;
 pub use node_registrations::NodeRegistration;
+
+mod deployment_key_rollovers;
+pub use deployment_key_rollovers::DeploymentKeyRollover;

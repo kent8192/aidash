@@ -106,7 +106,7 @@ async fn research_fixture(
 		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
 		VERSION,
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	let bundle =
 		c.f.registry
@@ -208,7 +208,7 @@ impl Research {
 			&aidash_domain::nodes::NodeAddress::derived(&node, "acme"),
 			"research",
 			"3.1.0",
-		)] = json!({"kind":"agent"});
+		)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		let mut agent = self
 			.c
 			.f

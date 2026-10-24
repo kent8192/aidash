@@ -28,6 +28,7 @@ pub async fn publish(
 		subject,
 		Subject {
 			kind: SubjectKind::Agent,
+			node: Some(job.node.clone()),
 			roles: spec.permissions.roles.clone(),
 			groups: spec.permissions.groups.clone(),
 			attributes: spec.permissions.attributes.clone(),

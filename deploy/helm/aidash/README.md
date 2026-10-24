@@ -44,8 +44,10 @@ needs the cluster's Stateful HA add-on and claims on a regional
 the server and workers. A Tenant's model or embedding definition without
 `provider_credential` calls its endpoint without a key, and it may connect only
 to public addresses unless its exact origin, such as `http://ollama.lan:11434`,
-is listed here. Every resolved address is checked when the connection is made,
-and a default port is omitted from an origin.
+is listed here. Tenant HTTP and MCP tool endpoints and Agent Plugin remote MCP
+servers follow the same rule and share this list. Every resolved address is
+checked when the connection is made, and a default port is omitted from an
+origin.
 
 `trustedProxy.cidrs` sets the server's `AIDASH_AUTH_TRUSTED_PROXY_IPS`: socket
 peers, given as exact IPs or CIDR networks such as the cluster Pod range, that may
@@ -306,7 +308,7 @@ The root `allocation-journal` initialization anchor must stay with `instance` an
 the `allocations/` subjournal. An initialized root never recreates missing journal
 state, including an empty restored directory; restore a verified complete journal
 before restarting. Contradictory provider evidence is durably quarantined: its
-original immutable receipt remains available for operator recovery, but delivery,
+original immutable receipt remains available for manual recovery, but delivery,
 ACK and finalizer release stay blocked until that state is explicitly recovered.
 Structured `allocation_usage` diagnostics include the allocation and runner IDs,
 pending evidence/cleanup reason, observation age and observation/cleanup attempts.

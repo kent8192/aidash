@@ -57,7 +57,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.1.1",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	for entry in [model, agent] {
 		let (status, body) =

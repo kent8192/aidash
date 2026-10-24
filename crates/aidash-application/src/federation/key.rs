@@ -1,5 +1,5 @@
 //! The Deployment Key: the one key a Deployment signs its Federation tokens
-//! with, and the one `/.well-known/aidash` publishes (ADR 0064).
+//! with. The scheduled ring publishes public transition state (ADR 0084).
 use aidash_capability::{SignError, TokenSigner};
 use aidash_domain::nodes::DeploymentKeyId;
 use async_trait::async_trait;
@@ -29,3 +29,10 @@ impl TokenSigner for Signing<'_> {
 		self.0.sign(input).await
 	}
 }
+
+mod ring;
+pub use ring::{
+	DeploymentKeyLoader, DeploymentKeyPublication, DeploymentKeyRollover, DeploymentKeySource,
+	DeploymentKeyStore, DeploymentKeys, DeploymentPublicKey, FederationSigning,
+	ScheduledDeploymentKeys,
+};

@@ -303,7 +303,7 @@ impl Batching {
 			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 			"research",
 			AGENT_VERSION,
-		)] = json!({"kind":"agent"});
+		)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		common::replace_policy(&f.store, "acme", policy.clone()).await;
 		Self {
 			_runtime: runtime,

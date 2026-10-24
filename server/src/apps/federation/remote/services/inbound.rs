@@ -8,7 +8,9 @@ use crate::apps::identity::repositories::{
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
-	ports::federation::inbound::{InboundRepository, ViewerGrant},
+	ports::federation::inbound::{
+		InboundRepository, ReceivingKeyOwner, ReceivingKeys, ViewerGrant,
+	},
 	tenancy::TenancyScope,
 };
 use aidash_domain::{
@@ -146,5 +148,60 @@ impl InboundRepository for Federation {
 			})
 		})
 		.transpose()
+	}
+	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
+		use crate::apps::identity::repositories::receiving_keys;
+		Ok(self
+			.store
+			.pool
+			.atomic(
+				&TenancyScope::Tenant(receiving_keys::tenant(owner).clone()),
+				async |tx| receiving_keys::get(tx, owner).await,
+			)
+			.await?)
+	}
+
+	async fn advance_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+	) -> Result<bool> {
+		use crate::apps::identity::repositories::receiving_keys;
+		let tenant = receiving_keys::tenant(owner);
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				// Deletion takes exclusive policy then capacity locks in this order.
+				let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await;
+				match snapshot {
+					Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
+						return Ok(false);
+					}
+					other => {
+						other?;
+					}
+				}
+				if let ReceivingKeyOwner::Registration { node, .. } = owner {
+					nodes::lock_tenant(tx, tenant.as_str()).await?;
+					match nodes::get_live(tx, tenant.as_str(), node.as_str()).await {
+						Err(crate::Error::NotFound(_)) => return Ok(false),
+						other => {
+							other?;
+						}
+					}
+				}
+				receiving_keys::advance(
+					tx,
+					owner,
+					expected_keys_revision,
+					expected_authorization_revision,
+					keys,
+				)
+				.await
+			})
+			.await?)
 	}
 }

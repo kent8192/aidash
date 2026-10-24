@@ -735,7 +735,9 @@ fn federation(
 		let federation = Federation {
 			sandbox: Default::default(),
 			store: store.clone(),
-			registry: Registry::new(store.pool.clone(), &store.deployment).unwrap(),
+			registry: Registry::new(store.pool.clone(), &store.deployment)
+				.unwrap()
+				.with_keyless_origins(store.keyless.clone()),
 			config: Config {
 				deployment: store.deployment.clone(),
 				endpoint: "http://127.0.0.1:18080".into(),
@@ -1020,6 +1022,8 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 
 	let endpoint = server.url.clone();
 	let f = _federation.await.federation;
+	// The tool fixture is a loopback endpoint the Deployment permits (#376).
+	f.store.keyless.permit_origin_of(&endpoint).unwrap();
 	seed(&f.registry).await;
 	f.registry
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
@@ -1775,6 +1779,11 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
+	// The unreachable tool endpoint stays permitted so it keeps failing to connect.
+	f.store
+		.keyless
+		.permit_origin_of("http://127.0.0.1:9")
+		.unwrap();
 	let mut agent = seed(&f.registry).await;
 	f.registry
 		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(

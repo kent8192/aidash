@@ -210,6 +210,8 @@ pub struct TenancyRules {
 	pub invitations: bool,
 	/// How long a deleted Tenant stays restorable before it is purged.
 	pub deletion_grace_days: u32,
+	/// Days a deleted Node stays restorable, fixed at deletion.
+	pub node_deletion_grace_days: u32,
 	/// How long audit history outlives a Tenant's purge before it is deleted.
 	pub audit_retention_days: u32,
 	/// How many Nodes a Tenant may hold. A Tier may be stricter.
@@ -228,6 +230,7 @@ impl TenancyRules {
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
+			node_deletion_grace_days: crate::nodes::deletion::DEFAULT_GRACE_DAYS,
 			audit_retention_days: deletion::DEFAULT_AUDIT_RETENTION_DAYS,
 			nodes_per_tenant: DEFAULT_NODES_PER_TENANT,
 		};
@@ -335,6 +338,7 @@ pub fn initial_policy(tenant: &str, creator: bool) -> Result<PolicyBundle> {
 				OWNER.to_owned(),
 				Subject {
 					kind: SubjectKind::User,
+					node: None,
 					groups: [ADMINISTRATORS.to_owned()].into(),
 					roles: BTreeSet::new(),
 					attributes: json!({}),

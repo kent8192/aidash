@@ -26,8 +26,8 @@ import uuid
 # -I excludes the script directory. Only this trusted controller installation
 # supplies its journal helpers; sandbox paths and environment imports stay excluded.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner_journal import Rejected, identity, save, sync_directory
 from allocation_usage import AllocationJournal, FINALIZER
+from runner_journal import Rejected, identity, save, sync_directory
 
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.

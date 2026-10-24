@@ -1,16 +1,15 @@
 //! One function decides every inbound Federation exchange, whatever carried it
 //! (ADR 0064). Every step fails closed.
-use crate::{Error, Result, ports::federation::inbound::InboundRepository};
-use aidash_capability::{
-	PublicKeys,
-	federation::{FederationClaims, RequestBinding},
+use crate::{
+	Error, Result,
+	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner},
 };
+use aidash_capability::federation::RequestBinding;
 use aidash_domain::{
 	federation::protocol::CURRENT,
 	nodes::{DeploymentId, NodeAddress, registration::Counterpart},
 	tenancy::TenantName,
 };
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// What the transport knows before anything is checked. The receiver, sender
@@ -161,17 +160,23 @@ pub async fn accept(
 		.await?
 		.filter(|registration| registration.enabled)
 		.ok_or(Error::Unauthorized)?;
+	let owner = ReceivingKeyOwner::Registration {
+		tenant: tenant.clone(),
+		node: receiver.node.clone(),
+		source_node: sender.clone(),
+	};
+	let mut advancement = None;
 	match (&proof, &registration.counterpart) {
 		(Proof::InProcess, Counterpart::SameDeployment) => {}
-		(Proof::Token(raw), Counterpart::OtherDeployment { key, .. }) => {
-			let keys = PublicKeys::from_pems(BTreeMap::from([(
-				key.key_id.as_str().to_owned(),
-				key.public_key_pem.clone(),
-			)]))
-			.map_err(|_| Error::Unauthorized)?;
-			let claims = FederationClaims::verify(
+		(Proof::Token(raw), Counterpart::OtherDeployment { .. }) => {
+			let stored = repository
+				.receiving_keys(&owner)
+				.await?
+				.ok_or(Error::Unauthorized)?;
+			let (claims, candidate) = super::registrations::verify_request(
 				raw,
-				&keys,
+				&sender.deployment,
+				&stored.keys,
 				repository.now(),
 				&RequestBinding {
 					protocol: CURRENT,
@@ -179,8 +184,8 @@ pub async fn accept(
 					path: request.path,
 					body: request.body,
 				},
-			)
-			.map_err(|_| Error::Unauthorized)?;
+			)?;
+			advancement = candidate.map(|keys| (stored.keys_revision, keys));
 			if claims.iss != sender.deployment.as_str()
 				|| claims.sub != sender.to_string()
 				|| claims.aud != receiver.to_string()
@@ -191,29 +196,34 @@ pub async fn accept(
 		}
 		_ => return Err(Error::Unauthorized),
 	}
-	if subject.is_empty() {
-		return Ok(Admitted {
-			tenant,
-			receiver,
-			sender,
-			acting: Acting::Node,
-		});
+	let acting = if subject.is_empty() {
+		Acting::Node
+	} else {
+		// A missing mapping after authentication is a denial. No trust write is
+		// performed until this last admission check has passed.
+		let mapping = repository
+			.mapping(&tenant, &receiver.node, &sender, &subject)
+			.await?
+			.filter(|mapping| mapping.enabled)
+			.ok_or(Error::Forbidden)?;
+		Acting::Mapped {
+			credential_id: mapping.credential_id,
+			subject,
+		}
+	};
+	if let Some((keys_revision, keys)) = advancement {
+		if !repository
+			.advance_keys(&owner, keys_revision, registration.revision, &keys)
+			.await?
+		{
+			return Err(Error::Unauthorized);
+		}
 	}
-	// A missing Peer Mapping after a valid signature is a denial, not an
-	// authentication failure.
-	let mapping = repository
-		.mapping(&tenant, &receiver.node, &sender, &subject)
-		.await?
-		.filter(|mapping| mapping.enabled)
-		.ok_or(Error::Forbidden)?;
 	Ok(Admitted {
 		tenant,
 		receiver,
 		sender,
-		acting: Acting::Mapped {
-			credential_id: mapping.credential_id,
-			subject,
-		},
+		acting,
 	})
 }
 
@@ -263,14 +273,19 @@ pub async fn accept_grant_viewer(
 		.viewer_grant(&tenant, &viewer, identity)
 		.await?
 		.ok_or(Error::Unauthorized)?;
-	let keys = PublicKeys::from_pems(BTreeMap::from([(
-		grant.key.key_id.as_str().to_owned(),
-		grant.key.public_key_pem.clone(),
-	)]))
-	.map_err(|_| Error::Unauthorized)?;
-	let claims = FederationClaims::verify(
+	let owner = ReceivingKeyOwner::ViewerGrant {
+		tenant: tenant.clone(),
+		viewer: viewer.clone(),
+		identity,
+	};
+	let stored = repository
+		.receiving_keys(&owner)
+		.await?
+		.ok_or(Error::Unauthorized)?;
+	let (claims, candidate) = super::registrations::verify_request(
 		&token,
-		&keys,
+		&viewer,
+		&stored.keys,
 		repository.now(),
 		&RequestBinding {
 			protocol: CURRENT,
@@ -278,14 +293,21 @@ pub async fn accept_grant_viewer(
 			path: request.path,
 			body: request.body,
 		},
-	)
-	.map_err(|_| Error::Unauthorized)?;
+	)?;
 	if claims.iss != viewer.as_str()
 		|| claims.sub != viewer.as_str()
 		|| claims.aud != receiver.as_str()
 		|| claims.subject != format!("oidc:{identity}")
 	{
 		return Err(Error::Unauthorized);
+	}
+	if let Some(keys) = candidate {
+		if !repository
+			.advance_keys(&owner, stored.keys_revision, grant.revision, &keys)
+			.await?
+		{
+			return Err(Error::Unauthorized);
+		}
 	}
 	Ok(AdmittedViewer {
 		tenant,
