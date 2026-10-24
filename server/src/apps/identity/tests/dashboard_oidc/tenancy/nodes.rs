@@ -846,7 +846,7 @@ async fn node_lifecycle_browser_administrator_keeps_identity_and_requires_curren
 			)
 			.await;
 		assert!(
-			matches!(status, 403 | 404 | 405),
+			matches!(status, 403..=405),
 			"noncanonical lifecycle path must be refused: {status} {body}"
 		);
 	}

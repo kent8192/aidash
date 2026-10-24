@@ -751,13 +751,13 @@ pub(crate) async fn cancel_deleted_node_grant(
 	use aidash_domain::federation::execution::admission::{
 		RemoteExecutionControlState, RemoteExecutionPhase,
 	};
-	if !matches!(
+	if !(matches!(
 		response.phase,
 		RemoteExecutionPhase::Completed
 			| RemoteExecutionPhase::Failed
 			| RemoteExecutionPhase::Cancelled
-	) && !(matches!(response.phase, RemoteExecutionPhase::Admitted)
-		&& matches!(response.control, RemoteExecutionControlState::Cancelled))
+	) || (matches!(response.phase, RemoteExecutionPhase::Admitted)
+		&& matches!(response.control, RemoteExecutionControlState::Cancelled)))
 	{
 		return Ok(false);
 	}

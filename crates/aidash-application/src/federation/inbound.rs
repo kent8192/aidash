@@ -367,13 +367,12 @@ pub async fn accept_grant_viewer(
 	{
 		return Err(Error::Unauthorized);
 	}
-	if let Some(keys) = candidate {
-		if !repository
+	if let Some(keys) = candidate
+		&& !repository
 			.advance_keys(&owner, stored.keys_revision, grant.revision, &keys)
 			.await?
-		{
-			return Err(Error::Unauthorized);
-		}
+	{
+		return Err(Error::Unauthorized);
 	}
 	Ok(AdmittedViewer {
 		tenant,

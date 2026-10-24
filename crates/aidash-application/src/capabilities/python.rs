@@ -235,7 +235,7 @@ pub async fn stop_frozen(
 		.await?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		let mut current = scope.locked(&snapshot, &operation).await?;
+		let mut current = scope.locked(snapshot, &operation).await?;
 		if current.revision != snapshot.revision || current.state != "frozen" {
 			return Ok(false);
 		}

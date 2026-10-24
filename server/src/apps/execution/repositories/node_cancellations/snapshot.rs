@@ -22,7 +22,6 @@ fn boolean(key: &str, expected: bool) -> SimpleExpr {
 			.eq(Expr::value(serde_json::json!(expected))),
 		Expr::value(false).into(),
 	])
-	.into()
 }
 pub(super) fn unsafe_operation() -> SimpleExpr {
 	let stopped = boolean("termination_confirmed", true).and(boolean("runner_acknowledged", true));

@@ -35,37 +35,35 @@ pub(crate) async fn subject_may_use(
 	receiver: &NodeName,
 	subject: &str,
 ) -> Result<bool> {
-	Ok(pool
-		.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
-			let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await?;
-			if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
-				return Ok(false);
-			}
-			crate::authorization::identity::require_live_subject(tx, &snapshot, subject).await?;
-			let node = nodes::get_live(tx, tenant.as_str(), receiver.as_str()).await?;
-			let evaluation = Evaluation {
-				subject: subject.to_owned(),
-				action: NODE_USE.into(),
-				resource: Resource {
-					tenant: tenant.to_string(),
-					kind: "node".into(),
-					id: receiver.to_string(),
-					attributes: json!({"label": node.label, "default": node.default}),
-				},
-				environment: json!({"transport": "federation"}),
-			};
-			Ok(snapshot.bundle.evaluate(&evaluation).allowed)
-		})
-		.await?)
+	pool.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+		let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await?;
+		if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
+			return Ok(false);
+		}
+		crate::authorization::identity::require_live_subject(tx, &snapshot, subject).await?;
+		let node = nodes::get_live(tx, tenant.as_str(), receiver.as_str()).await?;
+		let evaluation = Evaluation {
+			subject: subject.to_owned(),
+			action: NODE_USE.into(),
+			resource: Resource {
+				tenant: tenant.to_string(),
+				kind: "node".into(),
+				id: receiver.to_string(),
+				attributes: json!({"label": node.label, "default": node.default}),
+			},
+			environment: json!({"transport": "federation"}),
+		};
+		Ok(snapshot.bundle.evaluate(&evaluation).allowed)
+	})
+	.await
 }
 
 pub(crate) async fn get(pool: &Pool, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
-	Ok(pool
-		.atomic(
-			&TenancyScope::Tenant(receiving_keys::tenant(owner).clone()),
-			async |tx| receiving_keys::get(tx, owner).await,
-		)
-		.await?)
+	pool.atomic(
+		&TenancyScope::Tenant(receiving_keys::tenant(owner).clone()),
+		async |tx| receiving_keys::get(tx, owner).await,
+	)
+	.await
 }
 
 pub(crate) async fn advance(
@@ -76,37 +74,36 @@ pub(crate) async fn advance(
 	keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
 ) -> Result<bool> {
 	let tenant = receiving_keys::tenant(owner);
-	Ok(pool
-		.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
-			// Deletion takes exclusive policy then capacity locks in this order.
-			let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await;
-			match snapshot {
-				Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
-					return Ok(false);
-				}
+	pool.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+		// Deletion takes exclusive policy then capacity locks in this order.
+		let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await;
+		match snapshot {
+			Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
+				return Ok(false);
+			}
+			other => {
+				other?;
+			}
+		}
+		if let ReceivingKeyOwner::Registration { node, .. } = owner {
+			nodes::lock_tenant(tx, tenant.as_str()).await?;
+			match nodes::get_live(tx, tenant.as_str(), node.as_str()).await {
+				Err(crate::Error::NotFound(_)) => return Ok(false),
 				other => {
 					other?;
 				}
 			}
-			if let ReceivingKeyOwner::Registration { node, .. } = owner {
-				nodes::lock_tenant(tx, tenant.as_str()).await?;
-				match nodes::get_live(tx, tenant.as_str(), node.as_str()).await {
-					Err(crate::Error::NotFound(_)) => return Ok(false),
-					other => {
-						other?;
-					}
-				}
-			}
-			receiving_keys::advance(
-				tx,
-				owner,
-				expected_keys_revision,
-				expected_authorization_revision,
-				keys,
-			)
-			.await
-		})
-		.await?)
+		}
+		receiving_keys::advance(
+			tx,
+			owner,
+			expected_keys_revision,
+			expected_authorization_revision,
+			keys,
+		)
+		.await
+	})
+	.await
 }
 
 pub(crate) async fn advance_recovery(
@@ -120,33 +117,32 @@ pub(crate) async fn advance_recovery(
 	let ReceivingKeyOwner::Registration { tenant, .. } = owner else {
 		return Ok(false);
 	};
-	Ok(pool
-		.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
-			match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await {
-				Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
-					return Ok(false);
-				}
-				other => {
-					other?;
-				}
-			}
-			nodes::lock_tenant(tx, tenant.as_str()).await?;
-			// No Node catalog/deletion read: permanent name ownership and the real
-			// immutable journal bind this retained registration, even after purge.
-			if receiving_keys::get_locked(tx, owner).await?.is_none() {
+	pool.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+		match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await {
+			Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
 				return Ok(false);
 			}
-			if !proof.validate(tx, owner).await? {
-				return Ok(false);
+			other => {
+				other?;
 			}
-			receiving_keys::advance_recovery(
-				tx,
-				owner,
-				expected_keys_revision,
-				expected_authorization_revision,
-				keys,
-			)
-			.await
-		})
-		.await?)
+		}
+		nodes::lock_tenant(tx, tenant.as_str()).await?;
+		// No Node catalog/deletion read: permanent name ownership and the real
+		// immutable journal bind this retained registration, even after purge.
+		if receiving_keys::get_locked(tx, owner).await?.is_none() {
+			return Ok(false);
+		}
+		if !proof.validate(tx, owner).await? {
+			return Ok(false);
+		}
+		receiving_keys::advance_recovery(
+			tx,
+			owner,
+			expected_keys_revision,
+			expected_authorization_revision,
+			keys,
+		)
+		.await
+	})
+	.await
 }

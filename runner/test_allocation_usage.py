@@ -223,7 +223,8 @@ class AllocationUsageTest(unittest.TestCase):
         self.runner.kube = Mock(return_value=Mock(stdout=json.dumps(self.pod).encode()))
         self.runner.exec_collector = Mock(side_effect=RuntimeError('collector harvest failed'))
         def failed_guard(record, action, **_):
-            if action == 'status': return {'termination_confirmed':True}
+            if action == 'status':
+                return {'termination_confirmed':True}
             raise RuntimeError('guard harvest failed')
         self.runner.guard = failed_guard
         self.runner.reconcile(self.operation)
@@ -239,24 +240,31 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertFalse(allocation.get('cleanup_ready', False))
         entered, release = threading.Event(), threading.Event()
         def guard(record, action, **_):
-            if action == 'status': return {'termination_confirmed':True}
-            if action == 'export': return {'files':[file]}
-            if action == 'logs': return {'stdout':base64.b64encode(b'recovered stdout').decode()}
+            if action == 'status':
+                return {'termination_confirmed':True}
+            if action == 'export':
+                return {'files':[file]}
+            if action == 'logs':
+                return {'stdout':base64.b64encode(b'recovered stdout').decode()}
             if action == 'read':
                 entered.set()
-                if not release.wait(5): raise RuntimeError('test harvest not released')
+                if not release.wait(5):
+                    raise RuntimeError('test harvest not released')
                 return {'data':base64.b64encode(content).decode()}
             raise AssertionError(action)
         self.runner.guard = guard
         failures = []
         def ack():
-            try: self.runner.acknowledge(self.operation, 'command')
-            except Exception as error: failures.append(error)
+            try:
+                self.runner.acknowledge(self.operation, 'command')
+            except Exception as error:
+                failures.append(error)
         worker = threading.Thread(target=ack)
         worker.start()
         try:
             self.assertTrue(entered.wait(5))
-            with self.assertRaises(Rejected): self.runner.acknowledge(self.operation, 'command')
+            with self.assertRaises(Rejected):
+                self.runner.acknowledge(self.operation, 'command')
             self.assertFalse(self.runner.get(self.operation).get('output_harvested', False))
         finally:
             release.set()
@@ -274,14 +282,16 @@ class AllocationUsageTest(unittest.TestCase):
         public = runner.public(runner.get(self.operation))
         self.assertEqual(public['stdout'], base64.b64encode(b'recovered stdout').decode())
         for proof in (None, 'wrong-output-digest'):
-            with self.assertRaises(Rejected): runner.acknowledge(self.operation, 'command', proof)
+            with self.assertRaises(Rejected):
+                runner.acknowledge(self.operation, 'command', proof)
         self.assertEqual(base64.b64decode(runner.output_chunk(self.operation, file['object_id'], 0)['data']), content)
         self.finish()
         before = runner.allocation_receipts()
         self.assertEqual(len(before['receipts']), 1)
         # A crash after the saved ACK but before payload unlink retries drain.
         with patch('pathlib.Path.unlink', side_effect=OSError('interrupted unlink')):
-            with self.assertRaises(OSError): runner.acknowledge(self.operation, 'command', public['output_digest'])
+            with self.assertRaises(OSError):
+                runner.acknowledge(self.operation, 'command', public['output_digest'])
         self.assertTrue((self.root / (self.operation+'.files')).exists())
         runner = self.restart()
         acknowledged = runner.acknowledge(self.operation, 'command', public['output_digest'])
@@ -299,12 +309,15 @@ class AllocationUsageTest(unittest.TestCase):
         save(self.runner.path(self.operation), self.record)
         self.runner.config.update(working_bytes=1<<20)
         def guard(record, action, **_):
-            if action == 'status': return {'termination_confirmed':True}
-            if action == 'export': return {'files':[]}
+            if action == 'status':
+                return {'termination_confirmed':True}
+            if action == 'export':
+                return {'files':[]}
             raise AssertionError('Python must not read shell logs: '+action)
         self.runner.guard = guard
         self.runner.observe_allocation(self.record, self.pod)
-        with self.assertRaises(Rejected): self.runner.acknowledge(self.operation, 'cell')
+        with self.assertRaises(Rejected):
+            self.runner.acknowledge(self.operation, 'cell')
         saved = self.runner.get(self.operation)
         self.assertEqual(saved['stdout'], self.record['stdout'])
         self.assertEqual(saved['displays'], self.record['displays'])

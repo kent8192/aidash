@@ -22,7 +22,6 @@ pub(super) fn json(expr: SimpleExpr, field: &str) -> SimpleExpr {
 		BinOper::PgOperator(PgBinOper::JsonGetAsText),
 		Expr::value(field).into(),
 	)
-	.into()
 }
 impl Owners<'_> {
 	pub fn subject(&self, table: &str, field: &str) -> SimpleExpr {

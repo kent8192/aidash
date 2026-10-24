@@ -3198,27 +3198,36 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 	pool.close().await;
 }
 
+struct SourceLifetimeMigration {
+	app: &'static str,
+	physical: &'static str,
+	state: Option<&'static str>,
+}
+
 /// Provenance/session bindings retain their actual owner while a used source
 /// can expire. Rollback restores only the named former source-lifetime FK.
 #[rstest]
-#[case::memory("knowledge", "0037_remote_read_source_lifetime", None, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
-#[case::origin("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
-#[case::execution_task("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
-#[case::execution_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
-#[case::read_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
-#[case::session("execution", "0056_session_area_lifetime", Some("0057_session_area_lifetime_state"), "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
+#[case::memory(SourceLifetimeMigration { app: "knowledge", physical: "0037_remote_read_source_lifetime", state: None }, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
+#[case::origin(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
+#[case::execution_task(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::execution_workspace(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::read_workspace(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
+#[case::session(SourceLifetimeMigration { app: "execution", physical: "0056_session_area_lifetime", state: Some("0057_session_area_lifetime_state") }, "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
 #[tokio::test]
 async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
 	#[future] fresh_database: MigrationFixture,
-	#[case] app: &str,
-	#[case] physical: &str,
-	#[case] state: Option<&str>,
+	#[case] migration: SourceLifetimeMigration,
 	#[case] table: &str,
 	#[case] source_fk: &str,
 	#[case] trigger: &str,
 	#[case] required: &[&str],
 ) {
 	use reinhardt::db::migrations::executor::DatabaseMigrationExecutor;
+	let SourceLifetimeMigration {
+		app,
+		physical,
+		state,
+	} = migration;
 	let fixture = fresh_database.await;
 	let source =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
