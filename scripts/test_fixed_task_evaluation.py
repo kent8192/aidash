@@ -1052,27 +1052,29 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(observed["interrupted"])
 
     def test_a_mandatory_context_block_is_preserved_as_local_overflow_after_cancellation(self):
-        node = FakeNode(["WAITING"])
-        reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+        for active_phase in ("WAITING", "THINKING"):
+            with self.subTest(active_phase=active_phase):
+                node = FakeNode([active_phase])
+                reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
 
-        def blocked(method, path, body, token, timeout=None):
-            status, payload = node.call(method, path, body, token)
-            if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == "WAITING":
-                payload["run"]["state_error"] = reason
-            return status, payload
+                def blocked(method, path, body, token, timeout=None, node=node, active_phase=active_phase, reason=reason):
+                    status, payload = node.call(method, path, body, token)
+                    if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+                        payload["run"]["state_error"] = reason
+                    return status, payload
 
-        clock = Clock()
-        experiment = self.experiment(node)
-        experiment.api = runner.Api(blocked, "deployment-administrator")
-        observed = runner.run_task(experiment.api, experiment, self.planned, 1,
-                                   {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
-        graded = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
-        self.assertTrue(node.cancelled, "the blocked Run must not remain active")
-        self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
-        self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
-        self.assertEqual(graded["outcome"], "overflow_failure")
-        self.assertFalse(graded["interrupted"], "a known local fitting failure is not an observer timeout")
-        self.assertEqual(clock.now, 0, "do not retry a mandatory window block until the observer deadline")
+                clock = Clock()
+                experiment = self.experiment(node)
+                experiment.api = runner.Api(blocked, "deployment-administrator")
+                observed = runner.run_task(experiment.api, experiment, self.planned, 1,
+                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+                graded = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
+                self.assertTrue(node.cancelled, "the blocked Run must not remain active")
+                self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
+                self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
+                self.assertEqual(graded["outcome"], "overflow_failure")
+                self.assertFalse(graded["interrupted"], "a known local fitting failure is not an observer timeout")
+                self.assertEqual(clock.now, 0, "do not retry a mandatory window block until the observer deadline")
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
