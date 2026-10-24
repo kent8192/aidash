@@ -1,5 +1,5 @@
 //! Source eligibility is tested from real admitted closures, independently of
-//! the operator's provider-neutral request rendering tests.
+//! the Harness's provider-neutral request rendering tests.
 use super::*;
 use aidash_application::ports::bindings::BindingCatalog;
 use aidash_domain::registry::{Entry, Projection, bindings::BindingSnapshot};

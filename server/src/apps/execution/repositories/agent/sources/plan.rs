@@ -1,6 +1,6 @@
 //! Compile admitted declarations into provider-owned lifecycle handles. The
 //! grouping preserves the established native renderer and its request bytes;
-//! adding a native adapter does not add an operator branch.
+//! adding a native adapter does not add a Harness branch.
 use super::*;
 
 impl Slot {

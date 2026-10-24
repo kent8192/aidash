@@ -1425,6 +1425,14 @@ impl Guard {
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
+		let mut agent = std::borrow::Cow::Borrowed(&self.agent);
+		if self.remote.is_none()
+			&& !crate::semantic::services::memory_context::automatic_primary(&self.run, &self.agent)
+		{
+			// Provider identity is still pinned for shared Sources and explicit
+			// reads; inference does not require an unread OnDemand primary Bank.
+			agent.to_mut().memory = None;
+		}
 		aidash_application::authorization::inference::authorize(
 			&mut crate::bootstrap::inference_approval_scope(
 				access,
@@ -1432,7 +1440,7 @@ impl Guard {
 				self.remote.is_some(),
 			),
 			&self.run.metadata(),
-			&self.agent,
+			agent.as_ref(),
 		)
 		.await
 		.map_err(Into::into)

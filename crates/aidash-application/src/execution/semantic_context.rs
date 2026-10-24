@@ -92,7 +92,7 @@ pub fn query_material(
 	))
 }
 
-/// The native combined provider's reusable read key. The operator delegates
+/// The native combined provider's reusable read key. The Harness delegates
 /// this material to the environment so other providers can use their own keys.
 pub fn retrieval_key(
 	run: &aidash_domain::Run,

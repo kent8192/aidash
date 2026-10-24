@@ -135,9 +135,19 @@ impl HistoryEntry {
 impl Serialize for HistoryEntry {
 	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
 		use serde::ser::SerializeStruct;
-		let mut entry = serializer.serialize_struct("HistoryEntry", 2)?;
+		let event = self.durable_event();
+		// Tool JSON may happen to use our contract marker without being an
+		// internal reference. Escape that ordinary value explicitly rather
+		// than relaxing validation of damaged durable references.
+		let inline_result = event["result"]["contract"] == CONTRACT
+			&& ResearchReference::parse(&event["result"]).is_none();
+		let mut entry =
+			serializer.serialize_struct("HistoryEntry", 2 + usize::from(inline_result))?;
 		entry.serialize_field("seq", &self.seq)?;
-		entry.serialize_field("event", &self.durable_event())?;
+		entry.serialize_field("event", &event)?;
+		if inline_result {
+			entry.serialize_field("inline_result", &true)?;
+		}
 		entry.end()
 	}
 }
@@ -148,14 +158,20 @@ impl<'de> Deserialize<'de> for HistoryEntry {
 		struct Stored {
 			seq: u64,
 			event: ContextEvent,
+			#[serde(default)]
+			inline_result: bool,
 		}
 		let stored = Stored::deserialize(deserializer)?;
-		if let ContextEvent::Tool { result, .. } = &stored.event
-			&& result["contract"] == CONTRACT
-			&& ResearchReference::parse(result).is_none()
-		{
+		let inline_result = matches!(&stored.event, ContextEvent::Tool { result, .. }
+			if result["contract"] == CONTRACT && ResearchReference::parse(result).is_none());
+		if inline_result && !stored.inline_result {
 			return Err(serde::de::Error::custom(
 				"invalid Research journal reference",
+			));
+		}
+		if stored.inline_result && !inline_result {
+			return Err(serde::de::Error::custom(
+				"invalid inline Research result marker",
 			));
 		}
 		Ok(Self::new(stored.seq, stored.event))

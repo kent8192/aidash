@@ -45,28 +45,10 @@ impl Context {
 	}
 }
 
-/// `key` is present for an Ordered Run. Its boundary is then the Retrieval Key
-/// itself, without step or Run revision, so a re-retrieval under the same key
-/// replays the same recall operation and envelope bytes.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn retrieve(
-	store: &Store,
-	lease: &mut Lease<'_>,
-	run: &Run,
-	task: &Task,
-	inputs: &[(InputRead, String)],
-	budget: usize,
-	agent: &AgentConfig,
-	key: Option<&RetrievalKey>,
-) -> Result<Context> {
-	if !run.is_local(store.deployment.as_str()) {
-		return Err(Error::Forbidden);
-	}
-	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
-		return Ok(Context::status(bounded_status("disabled", budget)?));
-	}
-	let primary_automatic = !run
-		.context
+/// OnDemand keeps the Home-issued provider binding without automatically
+/// reading its primary Bank. Shared Sources retain their independent policy.
+pub(crate) fn automatic_primary(run: &Run, agent: &AgentConfig) -> bool {
+	!run.context
 		.binding_snapshot
 		.as_ref()
 		.is_some_and(|snapshot| {
@@ -91,7 +73,30 @@ pub(crate) async fn retrieve(
 							)
 						})
 			})
-		});
+		})
+}
+
+/// `key` is present for an Ordered Run. Its boundary is then the Retrieval Key
+/// itself, without step or Run revision, so a re-retrieval under the same key
+/// replays the same recall operation and envelope bytes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn retrieve(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	task: &Task,
+	inputs: &[(InputRead, String)],
+	budget: usize,
+	agent: &AgentConfig,
+	key: Option<&RetrievalKey>,
+) -> Result<Context> {
+	if !run.is_local(store.deployment.as_str()) {
+		return Err(Error::Forbidden);
+	}
+	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
+		return Ok(Context::status(bounded_status("disabled", budget)?));
+	}
+	let primary_automatic = automatic_primary(run, agent);
 	// This branch precedes bank binding, source authorization and provider I/O.
 	if !primary_automatic && agent.sources.is_empty() {
 		return Ok(Context::status(None));
