@@ -91,19 +91,52 @@ pub struct BillingAttachmentConsent {
 	pub expires_at: DateTime<Utc>,
 }
 
-/// The time one Execution Pod ran for a Tenant, in milliseconds that were
-/// metered: time after the Tenant's Deletion was recorded is not.
+/// One immutable complete allocation receipt. Epoch nanoseconds are authoritative;
+/// timestamps and millis are legacy report projections, not attribution inputs.
 #[model(app_label = "billing", table_name = "billing_pod_usage")]
 #[derive(Serialize, Deserialize)]
 pub struct BillingPodUsage {
-	/// The operation that ran in the Pod, so a repeated report is the same row.
 	#[field(primary_key = true)]
-	pub operation: Uuid,
+	pub allocation: Uuid,
+	#[field(field_type = "text")]
+	pub receipt_digest: String,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	pub started_at: DateTime<Utc>,
 	pub ended_at: DateTime<Utc>,
 	pub millis: i64,
+	pub started_ns: i64,
+	pub ended_ns: i64,
+	pub billable_ns: i64,
+}
+
+/// A complete frozen partition of an allocation: covered, uncovered or exempt.
+#[model(app_label = "billing", table_name = "billing_usage_segments")]
+#[derive(Serialize, Deserialize)]
+pub struct BillingUsageSegment {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	pub allocation: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	pub starts_ns: i64,
+	pub ends_ns: i64,
+	#[field(field_type = "text")]
+	pub status: String,
+	#[field(null = true)]
+	pub coverage_id: Option<Uuid>,
+	#[field(null = true)]
+	pub account_id: Option<Uuid>,
+}
+
+/// Permanent history lower bound. Retention UPDATE excludes concurrent intake
+/// SHARE locks; Tenant birth supplies the initial per-Tenant known boundary.
+#[model(app_label = "billing", table_name = "billing_retention_state")]
+#[derive(Serialize, Deserialize)]
+pub struct BillingRetentionState {
+	#[field(primary_key = true, field_type = "text")]
+	pub id: String,
+	pub floor_ns: i64,
 }
 
 /// The bytes of files stored for a Tenant, sampled once a UTC day.
@@ -117,4 +150,11 @@ pub struct BillingStorageSample {
 	pub sampled_on: NaiveDate,
 	pub sampled_at: DateTime<Utc>,
 	pub bytes: i64,
+	pub sampled_ns: i64,
+	#[field(field_type = "text")]
+	pub status: String,
+	#[field(null = true)]
+	pub coverage_id: Option<Uuid>,
+	#[field(null = true)]
+	pub account_id: Option<Uuid>,
 }
