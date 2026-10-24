@@ -395,7 +395,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: enterprise/marketplace-web
@@ -408,18 +408,9 @@ jobs:
           node-version: "24.12.0"
           cache: npm
           cache-dependency-path: enterprise/marketplace-web/package-lock.json
-      - run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          key: marketplace-web-wasm
-          workspaces: "enterprise/marketplace-web -> target"
-      - name: Install the pinned WebAssembly build tool
-        run: cargo install wasm-pack --version 0.15.0 --locked
       - run: npm ci
       - name: Build without the Cloud dashboard or API generator
         run: npm run build
-      - name: Check the Rust browser application
-        run: cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
       - run: npx playwright install --with-deps chromium
       - name: Exercise UI HTTP contracts with controlled backend responses
         run: npm test -- --reporter=list,json
@@ -436,7 +427,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: enterprise/auth-web
@@ -449,18 +440,9 @@ jobs:
           node-version: "24.12.0"
           cache: npm
           cache-dependency-path: enterprise/auth-web/package-lock.json
-      - run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          key: authentication-web-wasm
-          workspaces: "enterprise/auth-web -> target"
-      - name: Install the pinned WebAssembly build tool
-        run: cargo install wasm-pack --version 0.15.0 --locked
       - run: npm ci
       - name: Build authentication assets without the Cloud dashboard
         run: npm run build
-      - name: Check the Rust browser application
-        run: cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
       - run: npx playwright install --with-deps chromium
       - name: Exercise browser proof flows with the controlled GCIP adapter
         run: npm test -- --reporter=list,json

@@ -1,7 +1,5 @@
 node_modules/
 dist/
-pkg/
-target/
 playwright-report/
 test-results/
 .env.local

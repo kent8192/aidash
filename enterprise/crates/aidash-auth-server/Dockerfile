@@ -19,26 +19,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ "$CARGO_PROFILE" = dev ]; then directory=debug; else directory="$CARGO_PROFILE"; fi && \
     cp "enterprise/target/$directory/aidash-auth-server" /out/
 
-FROM rust:1.96-bookworm AS web-wasm
-ARG CARGO_BUILD_JOBS=2
-WORKDIR /build
-RUN rustup target add wasm32-unknown-unknown && \
-    cargo install wasm-pack --version 0.15.0 --locked
-COPY enterprise/auth-web/Cargo.toml enterprise/auth-web/Cargo.lock ./
-COPY enterprise/auth-web/src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    wasm-pack build . --target web --out-dir pkg --out-name aidash_auth_web -- --locked
-
 FROM node:24.12.0-bookworm-slim AS web
 WORKDIR /build
 COPY enterprise/auth-web/package.json enterprise/auth-web/package-lock.json ./
 RUN npm ci --ignore-scripts
-COPY enterprise/auth-web/index.html enterprise/auth-web/tsconfig.json enterprise/auth-web/vite.config.ts ./
-COPY enterprise/auth-web/src ./src
-COPY --from=web-wasm /build/pkg ./pkg
-RUN npm run build:assets
+COPY enterprise/auth-web ./
+RUN npm run build
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \

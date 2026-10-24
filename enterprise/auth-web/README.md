@@ -4,35 +4,15 @@ An independent UI for the shared Authentication Server. Build it without the
 Cloud dashboard, its API generator, or Cloud runtime. The only external sign-in
 adapter is GCIP; passwords and MFA verification stay there.
 
-The page tree, form state, protocol requests, navigation and account actions are
-Rust code rendered by Reinhardt Pages in WebAssembly. This directory is its own
-Cargo workspace. `src/main.ts` loads that module and exposes a dynamically loaded
-Firebase client factory to Rust. The TypeScript adapter handles only the GCIP
-SDK; it does not render the UI or decide Aidash Account authorization.
-
 ## Build and run
 
-Use Rust 1.96.0, wasm-pack 0.15.0, and Node.js 24.12 or later. Run the application
-commands from this directory.
+Use Node.js 24.12 or later, matching the Firebase SDK's runtime requirement.
 
 ```sh
-rustup target add --toolchain 1.96.0 wasm32-unknown-unknown
-cargo install wasm-pack --version 0.15.0 --locked
 npm ci
 npm run build
 AUTHENTICATION_BACKEND_URL=http://127.0.0.1:8081 npm run dev -- --port 5191
 ```
-
-`npm run build` compiles release WASM into the ignored `pkg/` directory and then
-bundles it with Vite. `npm run dev` builds development WASM once before starting
-Vite; rerun `npm run build:wasm -- --dev` after changing Rust while Vite runs.
-`npm run typecheck` generates development WASM and checks the TypeScript bridge
-against wasm-bindgen's generated declarations. `build:assets` bundles an already
-built `pkg/`, as used by the image's separate Rust and Node stages.
-
-The build wrapper forwards `CARGO_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR`, other
-Cargo settings and an optional `WASM_PACK_CACHE` without changing host
-configuration. All Rust dependencies are resolved from this app's lockfile.
 
 The development server proxies `/login/`, `/account`, `/logout`, `/oauth/` and
 `/.well-known/` to the Authentication Server. Set its public issuer to the
@@ -51,11 +31,11 @@ docker run --rm --read-only --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
   aidash-auth-web
 ```
 
+The image runs as UID/GID 10001; generated proxy configuration, the process ID
+and temporary files stay in `/tmp`, allowing a read-only root filesystem.
+
 Nginx proxies the owned protocol endpoints while serving `/sign-in` and
-`/settings/account` as UI routes at the same origin. It runs as UID/GID 10001;
-generated proxy configuration, the process ID and temporary files stay in
-`/tmp`, allowing a read-only root filesystem. Its CSP permits WebAssembly
-compilation through `wasm-unsafe-eval`, the HTTPS
+`/settings/account` as UI routes at the same origin. Its CSP permits the HTTPS
 iframe used by a configured GCIP auth domain, including custom domains, and
 Google's iframe API. The upstream backend URL is a runtime proxy setting and is
 not bundled into JavaScript.
@@ -96,10 +76,6 @@ and [Google session metadata contract](https://developers.google.com/identity/si
 
 ## Verification
 
-`npm test` starts Vite directly and requires an existing `pkg/` WASM build.
-Run `npm run build:wasm -- --dev` after a fresh checkout or Rust changes before
-running browser tests on their own; `typecheck` and `build` also generate it.
-
 ```sh
 npm run typecheck
 npm run build
@@ -114,6 +90,4 @@ real Google/password/MFA authentication, token verification, ownership or server
 authorization. The Authentication Server owns those tests; live GCIP acceptance
 also needs configured provider credentials. The Node Firestore dependency pulled
 by Firebase is constrained to a patched `@grpc/grpc-js` release in this package's
-lockfile; the browser imports only Firebase app/auth modules. The development
-adapter retains its `/src/gcip-sdk.ts` module URL so the same Playwright adapter
-replacement exercises the Rust page flow.
+lockfile; the browser imports only Firebase app/auth modules.

@@ -1,18 +1,15 @@
 # Aidash Marketplace web
 
-An independent Rust application for the Agent Plugin Marketplace, rendered in
-the browser by Reinhardt Pages and WebAssembly. It does not
+An independent React application for the Agent Plugin Marketplace. It does not
 import the Cloud dashboard, run Cloud API generation, or require Cloud to build.
 The Night Ops colors and self-hosted IBM Plex faces match the existing Aidash
 design language. Existing Shared Package screens remain in the dashboard.
 
 ## Local development
 
-Use Rust 1.96 or later, Node.js 22.12 or later, and wasm-pack. Run from this directory:
+Use Node.js 22.12 or later. Run from this directory:
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-pack --version 0.15.0 --locked
 npm ci
 MARKETPLACE_BACKEND_URL=http://127.0.0.1:8082 npm run dev -- --port 5192
 ```
@@ -30,14 +27,6 @@ listing creation and immutable version publication use actual backend APIs.
 Free acquisition is available through the backend's entitlement endpoint. Paid
 prices are visible; payment checkout is not offered until a Billing adapter
 exists. Library downloads use the backend's protected download endpoint.
-
-The Reinhardt `ClientLauncher` owns the application's reactive scope. The
-`app`, `publishers`, and `ui` Rust modules create Pages components, typed API
-resources, forms, and reactive state. `src/main.ts` only initializes the WASM
-module and imports the stylesheet; there is no JavaScript UI framework. Hash
-routes retain static hosting and existing Marketplace links. BFF routes and
-downloads stay outside the client router. After changing Rust during local
-development, run `npm run build:wasm:dev` to refresh the WASM module.
 
 ## Plugin bundles
 
@@ -76,9 +65,6 @@ terminate HTTPS at the deployment ingress. The browser-facing callback origin
 and backend's configured product origin must agree. Nginx does not share cookies
 with Cloud or expose backend tokens to JavaScript. Its runtime environment
 variable selects an upstream; it is not bundled into JavaScript.
-The Docker build compiles the independent Rust crate before bundling assets.
-The content security policy allows same-origin WASM compilation through
-`wasm-unsafe-eval` without allowing JavaScript string evaluation.
 
 ## Verification
 
@@ -89,12 +75,7 @@ npx playwright install chromium
 npm test
 ```
 
-`typecheck` checks the Rust browser target and the TypeScript build/test tools.
-`build` runs wasm-pack and Vite; Playwright serves the built output through
-Vite preview. The committed independent Cargo lockfile keeps this application
-build separate from the Cloud and Enterprise server workspaces.
-
-Playwright exercises the built WASM UI's HTTP contract with controlled backend
+Playwright exercises the built UI's HTTP contract with controlled backend
 responses: public provenance/permission metadata, BFF sign-in links, CSRF-bound
 free acquisition, Library download links, fail-closed protected views, Publisher
 registration/publication, errors, empty states and keyboard navigation. These

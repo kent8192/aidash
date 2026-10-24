@@ -10,8 +10,6 @@ The Marketplace distributes Agent Plugins. Registry downloads and validates them
 
 Dedicated and Self-hosted Deployment sign-in remain independent in the initial rollout. Their Marketplace Connections stay optional. The existing one-codebase and Community/Enterprise boundaries remain: Community never depends on Enterprise, and GCIP types, persistence and adapters stay in Enterprise.
 
-The authentication and Marketplace web applications use Rust with Reinhardt Pages, compiled to WebAssembly. This implementation choice follows the explicit request of 2026-10-24 and replaces their initial React implementations. Each frontend has its own Cargo workspace, locked dependencies, build and container; neither composes the Cloud dashboard. Vite remains asset tooling. Authentication retains a narrow JavaScript adapter for the upstream Firebase browser SDK, while page rendering, product HTTP calls and UI flow state belong to Rust. Passwords and upstream proofs remain transient, and downstream product tokens remain backend-owned.
-
 ## Service boundaries
 
 ```mermaid
