@@ -168,6 +168,12 @@ controlled external responses. They do not prove live GCIP or payment-provider
 acceptance. Service role/FK tests apply the distributed bootstrap/seal scripts
 to a shared physical PostgreSQL database with no Cloud schema or migrations.
 
+`enterprise/compose.yaml` exposes separate Auth and Marketplace profiles with
+owner migration, ledger sealing and runtime-only secret mounts. Cloud's GCP
+controller and chart accept an explicit common-auth profile with private mTLS
+files mounted on both server and worker. The services retain independent image
+and release lifecycles; see the deployment guide for exact configuration.
+
 Use the per-product READMEs and the
 [deployment guide](../enterprise/deploy/standalone-service/README.md) for current
 build commands, owner/runtime credentials, certificate configuration and image

@@ -524,6 +524,19 @@ jobs:
             --auth-binary enterprise/target/debug/aidash-auth-server \
             --marketplace-binary enterprise/target/debug/aidash-marketplace-server \
             --auth-assets enterprise/auth/frontend/dist
+  standalone-containers:
+    name: Standalone container acceptance
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Keep Docker's Rust/WASM build storage separate from the native Cargo job.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build all four product images and exercise independent Compose profiles
+        run: python3 scripts/test-standalone-compose.py --build
   infrastructure-tests:
     name: Infrastructure contract tests
     needs: scope
@@ -554,6 +567,7 @@ jobs:
       - run: python3 -m pip install PyYAML==6.0.3
       - run: python3 -m unittest discover -s scripts -p test_local_activation.py
       - run: python3 -m unittest discover -s scripts -p test_helm_execution.py
+      - run: python3 -m unittest discover -s scripts -p test_standalone_deployment.py
   acceptance:
     name: Federation tests
     needs: scope
@@ -680,6 +694,7 @@ jobs:
         marketplace-web,
         authentication-web,
         standalone-services,
+        standalone-containers,
         bruno,
         acceptance,
         browser,

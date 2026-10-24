@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM rust:1.96-bookworm AS wasm
 ARG CARGO_BUILD_JOBS=2
 RUN rustup target add wasm32-unknown-unknown \
@@ -5,7 +6,10 @@ RUN rustup target add wasm32-unknown-unknown \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN wasm-pack build --target web --out-dir pkg --out-name aidash_marketplace_web --release --locked
+RUN --mount=type=cache,id=aidash-standalone-pages-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=aidash-standalone-pages-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=aidash-standalone-pages-target,target=/app/target,sharing=locked \
+    wasm-pack build . --target web --out-dir pkg --out-name aidash_marketplace_web -- --locked
 
 FROM node:24.12.0-bookworm-slim AS build
 WORKDIR /app

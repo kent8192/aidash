@@ -276,8 +276,19 @@ impl Authentication {
 				&read_secret(&config.signing_key_file)?,
 			)
 			.map_err(|_| Error::Configuration)?;
-		PostgresOidcStore::new(store.pool.clone())
-			.rotate_key(public, Utc::now().timestamp(), 960)
+		let keys = PostgresOidcStore::new(store.pool.clone());
+		if let Some(active) = keys.active_key().await.map_err(|_| Error::Unavailable)?
+			&& active.public.kid == public.kid
+		{
+			// Migration retries retain the active key and its activation time. A
+			// changed private key must use a new ID and the normal rotation path.
+			return if active.public == public && !active.compromised {
+				Ok(())
+			} else {
+				Err(Error::Configuration)
+			};
+		}
+		keys.rotate_key(public, Utc::now().timestamp(), 960)
 			.await
 			.map_err(|_| Error::Unavailable)?;
 		Ok(())

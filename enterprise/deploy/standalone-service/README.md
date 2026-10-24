@@ -23,6 +23,8 @@ Run migrations with each schema's owner credential before rolling its service.
 Runtime credentials receive only the service schema's data privileges. PostgreSQL
 schemas, roles and credentials are externally provisioned; sharing a database
 instance does not mean sharing a role or running Cloud migrations.
+For the corresponding disposable local bootstrap/migration/seal lifecycle, use
+[the standalone Compose profiles](../local/README.md), not root `compose.yaml`.
 
 For authentication set port 8081, enable the private gRPC port 9091, mount its
 configuration and TLS files, and pass `--config /run/aidash/config/auth.toml serve`.
@@ -105,3 +107,11 @@ leaf credentials under the new CA, verify all peers, then remove old trust and
 roll again. Do not overwrite the only trusted root before both sides can connect.
 No deployment, certificate issuance or credential rotation is performed merely by
 adding these chart files.
+
+On GKE, provision Authentication's own Kubernetes/Google service accounts and
+Workload Identity binding, and grant its configured GCIP pools the tenant-scoped
+account-read permission required by Application Default Credentials. These are
+separate from Cloud's product mTLS identity. Preserve existing pool IDs/users
+while transferring infrastructure ownership and retiring obsolete direct-lookup
+grants. See [Cloud common-auth configuration](cloud-common-auth.md) for the
+runtime descriptor; changing runtime authority must not delete upstream pools.

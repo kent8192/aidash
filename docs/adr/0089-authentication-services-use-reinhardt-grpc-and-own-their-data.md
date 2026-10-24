@@ -34,3 +34,9 @@ with an owning app. Their sibling `frontend` directories are generated Pages
 projects with independent static builds. Each backend owns its bootstrap/seal
 DDL and native migrations; neither starts or migrates Cloud. The shared database
 role/FK contract is verified in Authentication's PostgreSQL suite.
+
+Independent Compose profiles now apply bootstrap, owning-service migrations and
+ledger sealing before serving with runtime credentials. Cloud's chart and GCP
+controller accept the explicit common-auth profile with a private product mTLS
+Secret mounted on server and worker. Existing GCIP resources/IDs survive the
+runtime-authority switch. Service image builds and releases remain independent.

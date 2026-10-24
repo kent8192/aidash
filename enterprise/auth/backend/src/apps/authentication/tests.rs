@@ -159,6 +159,7 @@ pub(super) struct Fixture {
 	pub(super) browser: String,
 	admin: reinhardt::db::backends::DatabaseConnection,
 	marketplace_database_url: String,
+	owner_config: Config,
 	tasks: Vec<tokio::task::JoinHandle<()>>,
 	_guards: Vec<Box<dyn std::any::Any + Send>>,
 }
@@ -290,6 +291,7 @@ pub(super) async fn fixture(configure: impl FnOnce(&mut Authentication)) -> Fixt
 		.execute(include_str!("../../../seal-ledger.sql"), Vec::new())
 		.await
 		.unwrap();
+	let owner_config = config.clone();
 	config.database_url_file = runtime_file;
 	let store = Authentication::connect(config.clone()).await.unwrap();
 	let mut service = Authentication::new(config, store).await.unwrap();
@@ -381,9 +383,60 @@ pub(super) async fn fixture(configure: impl FnOnce(&mut Authentication)) -> Fixt
 		browser,
 		admin,
 		marketplace_database_url: marketplace_runtime,
+		owner_config,
 		tasks: vec![auth_task, marketplace_task],
 		_guards: vec![Box::new(_container), Box::new(temp)],
 	}
+}
+
+#[tokio::test]
+async fn migration_retry_preserves_the_active_signing_key_and_rejects_key_id_reuse() {
+	use reinhardt::auth::oidc_op::{OidcStateStore, PostgresOidcStore};
+	let fixture = fixture(|_| {}).await;
+	let owner = Authentication::connect(fixture.owner_config.clone())
+		.await
+		.unwrap();
+	let keys = PostgresOidcStore::new(owner.pool.clone());
+	let before = keys.active_key().await.unwrap().unwrap();
+	owner.migrate().await.unwrap();
+	Authentication::provision(&fixture.owner_config, &owner)
+		.await
+		.unwrap();
+	let after = keys.active_key().await.unwrap().unwrap();
+	assert_eq!(after.public, before.public);
+	assert_eq!(after.activated_at, before.activated_at);
+	assert!(after.active && !after.compromised);
+	let directory = reinhardt::test::fixtures::temp_dir();
+	let changed_key = directory.path().join("different-key.pem");
+	assert!(
+		std::process::Command::new("openssl")
+			.args(["genrsa", "-out"])
+			.arg(&changed_key)
+			.arg("2048")
+			.output()
+			.unwrap()
+			.status
+			.success()
+	);
+	let changed = Config {
+		signing_key_file: changed_key,
+		..fixture.owner_config.clone()
+	};
+	let replacement = reinhardt::auth::oidc_op::RsaPemKeyRing::new()
+		.add_private_key_pem(
+			&changed.signing_key_id,
+			&std::fs::read_to_string(&changed.signing_key_file).unwrap(),
+		)
+		.unwrap();
+	assert_ne!(replacement.n, before.public.n);
+	assert!(matches!(
+		Authentication::provision(&changed, &owner).await,
+		Err(crate::Error::Configuration)
+	));
+	assert_eq!(
+		keys.active_key().await.unwrap().unwrap().public,
+		before.public
+	);
 }
 
 #[tokio::test]

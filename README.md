@@ -91,6 +91,9 @@ The [Marketplace web app](enterprise/marketplace/frontend/README.md) has its own
 and container; the [authentication web app](enterprise/auth/frontend/README.md) is
 bundled with its service image. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
 and [approved authentication/distribution design](docs/authentication-and-standalone-marketplace-design.md).
+The [standalone Compose profiles](enterprise/deploy/local/README.md) start either
+product with `cargo make auth-dev` or `cargo make marketplace-dev`; root
+`compose.yaml` remains the Cloud development stack.
 Cloud enables shared authentication explicitly through `[dashboard.common_auth]` and
 `[dashboard.oidc]`; direct `[dashboard.gcip]` sign-in is mutually exclusive.
 Dedicated and Self-hosted keep independent sign-in. Import retained legacy

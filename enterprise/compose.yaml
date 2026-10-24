@@ -1,0 +1,267 @@
+# Independent local services. Never merge this with the Cloud compose file.
+# Generate private/standalone-compose first; see deploy/local/README.md.
+name: ${AIDASH_STANDALONE_PROJECT:-aidash-standalone}
+
+x-service: &service
+  restart: unless-stopped
+  read_only: true
+  user: "10001:10001"
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+
+services:
+  postgres:
+    profiles: [auth, marketplace]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: standalone
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+      - auth-owner-password
+      - auth-app-password
+      - marketplace-owner-password
+      - marketplace-app-password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./deploy/local/init-roles.sh:/docker-entrypoint-initdb.d/10-service-roles.sh:ro
+      - ./auth/backend/bootstrap.sql:/bootstrap/auth.sql:ro
+      - ./marketplace/backend/bootstrap.sql:/bootstrap/marketplace.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U postgres -d standalone"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  auth-migrate:
+    profiles: [auth]
+    image: ${AIDASH_AUTH_IMAGE:-aidash-auth:local}
+    build:
+      context: ..
+      dockerfile: enterprise/auth/backend/Dockerfile
+    command: [--config, /run/secrets/auth-config, migrate]
+    secrets:
+      - source: auth-owner-config
+        target: auth-config
+      - source: auth-owner-url
+        target: auth-database-url
+      - auth-signing-key.pem
+      - auth-token-encryption-key
+      - marketplace-client-secret
+      - marketplace-resource-secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  auth-seal:
+    profiles: [auth]
+    image: postgres:17-alpine
+    entrypoint: [sh, -ec]
+    command:
+      [
+        'exec psql "$$(cat /run/secrets/owner-url)" -v ON_ERROR_STOP=1 -f /seal-ledger.sql',
+      ]
+    secrets:
+      - source: auth-owner-url
+        target: owner-url
+    volumes:
+      - ./auth/backend/seal-ledger.sql:/seal-ledger.sql:ro
+    depends_on:
+      auth-migrate:
+        condition: service_completed_successfully
+
+  authentication:
+    <<: *service
+    profiles: [auth]
+    image: ${AIDASH_AUTH_IMAGE:-aidash-auth:local}
+    build:
+      context: ..
+      dockerfile: enterprise/auth/backend/Dockerfile
+    command: [--config, /run/secrets/auth-config, serve]
+    secrets:
+      - source: auth-runtime-config
+        target: auth-config
+      - source: auth-app-url
+        target: auth-database-url
+      - auth-signing-key.pem
+      - auth-token-encryption-key
+      - marketplace-client-secret
+      - marketplace-resource-secret
+      - auth-server.crt
+      - auth-server.key
+      - auth-client-ca.pem
+    ports:
+      - "127.0.0.1:${AIDASH_AUTH_PORT:-18081}:8081"
+      - "127.0.0.1:${AIDASH_AUTH_GRPC_PORT:-19091}:9091"
+    depends_on:
+      auth-seal:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8081/healthz]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  marketplace-migrate:
+    profiles: [marketplace]
+    image: ${AIDASH_MARKETPLACE_IMAGE:-aidash-marketplace:local}
+    build:
+      context: ..
+      dockerfile: enterprise/marketplace/backend/Dockerfile
+    command: [migrate]
+    environment:
+      AIDASH_MARKETPLACE_DATABASE_URL_FILE: /run/secrets/owner-url
+    secrets:
+      - source: marketplace-owner-url
+        target: owner-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  marketplace-seal:
+    profiles: [marketplace]
+    image: postgres:17-alpine
+    entrypoint: [sh, -ec]
+    command:
+      [
+        'exec psql "$$(cat /run/secrets/owner-url)" -v ON_ERROR_STOP=1 -f /seal-ledger.sql',
+      ]
+    secrets:
+      - source: marketplace-owner-url
+        target: owner-url
+    volumes:
+      - ./marketplace/backend/seal-ledger.sql:/seal-ledger.sql:ro
+    depends_on:
+      marketplace-migrate:
+        condition: service_completed_successfully
+
+  marketplace:
+    <<: *service
+    profiles: [marketplace]
+    image: ${AIDASH_MARKETPLACE_IMAGE:-aidash-marketplace:local}
+    build:
+      context: ..
+      dockerfile: enterprise/marketplace/backend/Dockerfile
+    environment:
+      AIDASH_MARKETPLACE_DATABASE_URL_FILE: /run/secrets/marketplace-app-url
+      AIDASH_MARKETPLACE_LISTEN: 0.0.0.0:8082
+      AIDASH_MARKETPLACE_ORIGIN: http://127.0.0.1:${AIDASH_MARKETPLACE_PORT:-18082}
+      AIDASH_AUTH_ISSUER: http://127.0.0.1:${AIDASH_AUTH_PORT:-18081}
+      AIDASH_MARKETPLACE_CLIENT_SECRET_FILE: /run/secrets/marketplace-client-secret
+      AIDASH_MARKETPLACE_RESOURCE_SECRET_FILE: /run/secrets/marketplace-resource-secret
+      AIDASH_MARKETPLACE_BILLING_SECRET_FILE: /run/secrets/marketplace-billing-secret
+      AIDASH_MARKETPLACE_ENROLLMENT_SECRET_FILE: /run/secrets/marketplace-enrollment-secret
+      AIDASH_MARKETPLACE_RECALL_SECRET_FILE: /run/secrets/marketplace-recall-secret
+    secrets:
+      - marketplace-app-url
+      - marketplace-client-secret
+      - marketplace-resource-secret
+      - marketplace-billing-secret
+      - marketplace-enrollment-secret
+      - marketplace-recall-secret
+    depends_on:
+      marketplace-seal:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8082/healthz]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # Preserve the exact loopback issuer in this development BFF's network
+  # namespace. It can start while Authentication is absent; login then fails
+  # closed. Production uses a reachable HTTPS issuer without this relay.
+  authentication-loopback:
+    <<: *service
+    profiles: [marketplace]
+    image: node:24.12.0-bookworm-slim
+    entrypoint: [node, /oidc-loopback.cjs]
+    environment:
+      AUTH_PORT: ${AIDASH_AUTH_PORT:-18081}
+    network_mode: service:marketplace
+    volumes:
+      - ./deploy/local/oidc-loopback.cjs:/oidc-loopback.cjs:ro
+    depends_on:
+      marketplace:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "const s=require('node:net').connect(+process.env.AUTH_PORT,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  marketplace-web:
+    <<: *service
+    profiles: [marketplace]
+    image: ${AIDASH_MARKETPLACE_WEB_IMAGE:-aidash-marketplace-web:local}
+    build:
+      context: ./marketplace/frontend
+    environment:
+      MARKETPLACE_BACKEND_URL: http://marketplace:8082
+    tmpfs: [/tmp, "/etc/nginx/conf.d:uid=10001,gid=10001,mode=0700"]
+    ports:
+      - "127.0.0.1:${AIDASH_MARKETPLACE_PORT:-18082}:8080"
+    depends_on:
+      marketplace:
+        condition: service_healthy
+      authentication-loopback:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1:8080/healthz]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres:
+
+secrets:
+  postgres-password:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/postgres-password
+  auth-owner-password:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-owner-password
+  auth-app-password:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-app-password
+  marketplace-owner-password:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-owner-password
+  marketplace-app-password:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-app-password
+  auth-owner-url:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-owner-url
+  auth-app-url:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-app-url
+  marketplace-owner-url:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-owner-url
+  marketplace-app-url:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-app-url
+  auth-owner-config:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-owner.toml
+  auth-runtime-config:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-runtime.toml
+  auth-signing-key.pem:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-signing-key.pem
+  auth-token-encryption-key:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-token-encryption-key
+  auth-server.crt:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-server.crt
+  auth-server.key:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-server.key
+  auth-client-ca.pem:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/auth-client-ca.pem
+  marketplace-client-secret:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-client-secret
+  marketplace-resource-secret:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-resource-secret
+  marketplace-billing-secret:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-billing-secret
+  marketplace-enrollment-secret:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-enrollment-secret
+  marketplace-recall-secret:
+    file: ${AIDASH_STANDALONE_DIRECTORY:-../private/standalone-compose}/marketplace-recall-secret

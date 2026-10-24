@@ -8,10 +8,10 @@ RUN cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked && \
     rustup target add wasm32-unknown-unknown
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/usr/local/cargo/wasm-pack-cache \
-    --mount=type=cache,target=/app/target \
+RUN --mount=type=cache,id=aidash-standalone-pages-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=aidash-standalone-pages-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=aidash-standalone-wasm-pack,target=/usr/local/cargo/wasm-pack-cache,sharing=locked \
+    --mount=type=cache,id=aidash-standalone-pages-target,target=/app/target,sharing=locked \
     WASM_PACK_CACHE=/usr/local/cargo/wasm-pack-cache \
     wasm-pack build . --target web --out-dir pkg --out-name aidash_auth_web -- --locked
 

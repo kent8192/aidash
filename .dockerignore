@@ -14,6 +14,9 @@ coverage
 openapi
 **/node_modules
 **/dist
+**/pkg
+**/test-results
+**/playwright-report
 web/src/generated
 web/test-results
 web/playwright-report

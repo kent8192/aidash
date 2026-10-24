@@ -202,6 +202,17 @@ with a disposable PostgreSQL database and production bootstrap/seal scripts.
 It starts no Cloud server, worker, NATS or Cloud migrations. The `CI Success`
 aggregate requires this service acceptance job for full CI.
 
+`Standalone container acceptance` uses a separate runner to build all four
+images and run `scripts/test-standalone-compose.py` against the actual Compose
+profiles, frontend proxies and loopback PKCE transport. It is also required by
+`CI Success`; its Docker storage is independent of the native Cargo job.
+
+Infrastructure contracts render both independent `enterprise/compose.yaml`
+profiles and all standalone Helm examples, checking migration/seal ordering,
+runtime-only credential mounts and build paths. GCP and Cloud Helm contracts
+cover the managed common-auth profile and private mTLS Secret on server and
+worker. They do not deploy a cluster or publish images.
+
 Library tests in the Enterprise workspace additionally exercise signed OIDC/BFF
 flows, Product Session and refresh boundaries, mTLS peer permissions and source
 lifecycle, real service-role isolation and cross-schema FK rejection. These
