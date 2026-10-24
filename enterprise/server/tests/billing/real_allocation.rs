@@ -813,7 +813,7 @@ impl Dispatch {
 		let context = format!("mapping:{tenant}:{}", mapping["id"].as_str().unwrap());
 		let account = d.account(alice, Some("team")).await;
 		let ((a, _), (b, _)) = d.attach(alice, &context, alice, &tenant, account).await;
-		assert!(matches!(a, 200 | 201 | 202) && matches!(b, 200 | 201 | 202));
+		assert!(matches!(a, 200..=202) && matches!(b, 200..=202));
 		let f = &d.federation;
 		let node = common::default_node(&f.store, &tenant).await;
 		let policy_path = format!("/api/authorization/{tenant}");
@@ -826,7 +826,7 @@ impl Dispatch {
 			"id":"allocation-acceptance-work", "effect":"allow", "subjects":{"ids":[agent]},
 			"actions":["*"], "resources":{"kinds":["*"]}
 		}));
-		let (status, _, ..) = d
+		let (status, ..) = d
 			.send(
 				"POST",
 				&policy_path,
