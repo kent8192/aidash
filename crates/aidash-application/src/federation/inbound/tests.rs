@@ -156,6 +156,20 @@ impl InboundRepository for World {
 	async fn tenant_live(&self, tenant: &TenantName) -> Result<bool> {
 		Ok(!self.deleted.contains(tenant))
 	}
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool> {
+		Ok(self.nodes.contains(&(node.clone(), tenant.clone())) && !self.deleted.contains(tenant))
+	}
+	async fn closed_node_request(
+		&self,
+		_: &TenantName,
+		_: &NodeAddress,
+		_: &NodeAddress,
+		_: &str,
+		_: &RequestDigest<'_>,
+	) -> Result<bool> {
+		// This authority fixture has no durable transaction participants.
+		Ok(false)
+	}
 	async fn registration(
 		&self,
 		tenant: &TenantName,
@@ -208,6 +222,19 @@ impl InboundRepository for World {
 			.find(|(held, _)| held == owner)
 			.map(|(_, keys)| keys.clone()))
 	}
+	async fn advance_recovery_keys(
+		&self,
+		_: &ReceivingKeyOwner,
+		_: i64,
+		_: i64,
+		_: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+		_: &str,
+		_: &RequestDigest<'_>,
+	) -> Result<bool> {
+		// This World has no durable journal; real recovery is owned by HTTP/PG.
+		Ok(false)
+	}
+
 	async fn advance_keys(
 		&self,
 		owner: &ReceivingKeyOwner,

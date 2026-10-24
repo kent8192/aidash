@@ -4,7 +4,7 @@ import type { Run, State, TenantState } from "./types";
 /** What the dashboard knows about one Node of the signed-in Tenant. */
 export type TenantNode = Pick<
   NodeRecord,
-  "name" | "address" | "label" | "default"
+  "name" | "address" | "label" | "default" | "state"
 >;
 
 export const NODE_STORAGE_PREFIX = "aidash-node:";
@@ -19,14 +19,14 @@ export function nodeStorageKey(tenant: string): string {
  * holds it, otherwise the default Node. A Tenant always has a default Node, so
  * only an empty list, a Deployment Administrator or a failed read has none.
  */
-export function chooseNode<Node extends Pick<TenantNode, "name" | "default">>(
-  nodes: readonly Node[],
-  remembered: string | null,
-): Node | undefined {
+export function chooseNode<
+  Node extends Pick<TenantNode, "name" | "default" | "state">,
+>(nodes: readonly Node[], remembered: string | null): Node | undefined {
+  const live = nodes.filter((node) => node.state === "live");
   return (
-    nodes.find((node) => node.name === remembered) ??
-    nodes.find((node) => node.default) ??
-    nodes[0]
+    live.find((node) => node.name === remembered) ??
+    live.find((node) => node.default) ??
+    live[0]
   );
 }
 

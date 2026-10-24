@@ -217,6 +217,23 @@ impl Federation {
 			.await?
 			.ok_or_else(routes::unregistered)
 	}
+	/// Delivery of an immutable durable obligation may outlive its sending Node.
+	pub(crate) async fn route_delivery(
+		&self,
+		sender: &Sender,
+		node: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<Route> {
+		let target =
+			aidash_domain::nodes::NodeAddress::parse(node).map_err(|_| routes::unregistered())?;
+		self.store
+			.pool
+			.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
+				routes::route_delivery(tx, &self.config.deployment, sender, &target, request).await
+			})
+			.await?
+			.ok_or_else(routes::unregistered)
+	}
 	/// Every Node the sender addresses.
 	pub async fn routes(&self, sender: &Sender) -> Result<Vec<Route>> {
 		self.store

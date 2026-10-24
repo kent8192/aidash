@@ -54,6 +54,34 @@ pub(crate) fn enabled(snapshot: &Snapshot, subject: &str) -> bool {
 	aidash_domain::identity::authority::enabled(&snapshot.bundle, subject)
 }
 
+/// Effect callers hold the policy lease that serializes Node closure with effects.
+/// Idle stream snapshots also check closure before their next locked page.
+/// Users are Tenant-wide; each non-user in the delegator chain has a live owner.
+pub(crate) async fn require_live_subject(
+	tx: &mut dyn TransactionExecutor,
+	snapshot: &Snapshot,
+	subject: &str,
+) -> Result<()> {
+	if !enabled(snapshot, subject) {
+		return Err(Error::Forbidden);
+	}
+	let mut current = Some(subject);
+	while let Some(id) = current {
+		let subject = snapshot.bundle.subjects.get(id).ok_or(Error::Forbidden)?;
+		if subject.kind != aidash_domain::policy::SubjectKind::User {
+			let node = subject.node.as_ref().ok_or(Error::Forbidden)?;
+			crate::apps::identity::repositories::nodes::require_live(
+				tx,
+				&snapshot.bundle.tenant,
+				node.as_str(),
+			)
+			.await?;
+		}
+		current = subject.delegated_by.as_deref();
+	}
+	Ok(())
+}
+
 impl Authorization {
 	pub async fn issue_credential(
 		&self,
@@ -78,6 +106,7 @@ impl Authorization {
 							.into(),
 					));
 				}
+				require_live_subject(tx, &snapshot, subject).await?;
 				AuthorizationCredential::issue(
 					tx,
 					tenant,
@@ -269,9 +298,7 @@ impl SubjectIdentity {
 			policy,
 		)
 		.await?;
-		if !enabled(&snapshot, &self.subject) {
-			return Err(Error::Forbidden);
-		}
+		require_live_subject(tx, &snapshot, &self.subject).await?;
 		if let Some(session) = &self.http_session {
 			DashboardSession::require_current(
 				tx,
@@ -294,9 +321,7 @@ impl SubjectIdentity {
 	) -> Result<Snapshot> {
 		let snapshot = Authorization::load_with_mode(tx, &self.tenant, exclusive).await?;
 		self.lock_credential(tx).await?;
-		if !enabled(&snapshot, &self.subject) {
-			return Err(Error::Forbidden);
-		}
+		require_live_subject(&mut **tx, &snapshot, &self.subject).await?;
 		self.session_current(tx, true).await?;
 		Ok(snapshot)
 	}

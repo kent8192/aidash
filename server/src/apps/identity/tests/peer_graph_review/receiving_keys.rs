@@ -4,9 +4,7 @@ use super::*;
 use aidash_application::federation::key::{DeploymentKey, Signing};
 use aidash_application::{
 	federation::inbound::{self, RequestDigest},
-	ports::federation::inbound::{
-		InboundRepository, ReceivingKeyOwner, ReceivingKeys, ViewerGrant,
-	},
+	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner},
 };
 use aidash_capability::{
 	InMemorySigner, TokenSigner,
@@ -16,16 +14,13 @@ use aidash_capability::{
 	},
 };
 use aidash_domain::{
-	identity::peer_mapping::Mapping,
 	nodes::{
 		DeploymentId, DeploymentKeyId, NodeAddress, NodeName,
-		keys::{PublicDeploymentKey, RolloverSchedule, TrustedDeploymentKeys},
-		registration::NodeRegistration,
+		keys::{PublicDeploymentKey, RolloverSchedule},
 	},
 	tenancy::TenantName,
 };
 use aidash_integrations::federation::key::FileDeploymentKey;
-use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::ExposeSecret;
 
@@ -107,78 +102,9 @@ async fn post(app: &common::TestApplication, raw: &str, body: &Value) -> (u16, V
 	)
 }
 
-/// Only time is virtual. All authority/key reads and writes delegate to the
-/// restarted production PostgreSQL adapter, with no production test seam.
-struct Clock<'a>(&'a Federation, u64);
-#[async_trait]
-impl InboundRepository for Clock<'_> {
-	fn deployment(&self) -> &DeploymentId {
-		self.0.deployment()
-	}
-	fn federation_enabled(&self) -> bool {
-		self.0.federation_enabled()
-	}
-	fn holds_key(&self) -> bool {
-		self.0.holds_key()
-	}
-	fn now(&self) -> u64 {
-		self.1
-	}
-	async fn node_tenant(&self, node: &NodeName) -> aidash_application::Result<Option<TenantName>> {
-		self.0.node_tenant(node).await
-	}
-	async fn tenant_live(&self, tenant: &TenantName) -> aidash_application::Result<bool> {
-		self.0.tenant_live(tenant).await
-	}
-	async fn registration(
-		&self,
-		tenant: &TenantName,
-		receiver: &NodeName,
-		sender: &NodeAddress,
-	) -> aidash_application::Result<Option<NodeRegistration>> {
-		self.0.registration(tenant, receiver, sender).await
-	}
-	async fn mapping(
-		&self,
-		tenant: &TenantName,
-		receiver: &NodeName,
-		sender: &NodeAddress,
-		subject: &str,
-	) -> aidash_application::Result<Option<Mapping>> {
-		self.0.mapping(tenant, receiver, sender, subject).await
-	}
-	async fn subject_may_use(
-		&self,
-		tenant: &TenantName,
-		receiver: &NodeName,
-		subject: &str,
-	) -> aidash_application::Result<bool> {
-		self.0.subject_may_use(tenant, receiver, subject).await
-	}
-	async fn viewer_grant(
-		&self,
-		tenant: &TenantName,
-		viewer: &DeploymentId,
-		identity: Uuid,
-	) -> aidash_application::Result<Option<ViewerGrant>> {
-		self.0.viewer_grant(tenant, viewer, identity).await
-	}
-	async fn receiving_keys(
-		&self,
-		owner: &ReceivingKeyOwner,
-	) -> aidash_application::Result<Option<ReceivingKeys>> {
-		self.0.receiving_keys(owner).await
-	}
-	async fn advance_keys(
-		&self,
-		owner: &ReceivingKeyOwner,
-		kr: i64,
-		ar: i64,
-		keys: &TrustedDeploymentKeys,
-	) -> aidash_application::Result<bool> {
-		self.0.advance_keys(owner, kr, ar, keys).await
-	}
-}
+#[path = "../../../execution/tests/support/federation_clock.rs"]
+mod federation_clock;
+use federation_clock::Clock;
 
 #[rstest::rstest]
 #[tokio::test]
@@ -724,5 +650,235 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 
 	drop(source);
 	drop(app);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_proofs(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, member, _) = bootstrap(&f, &app, "http://localhost:1").await;
+	let (_, _, source) = viewer(&f, &app).await;
+	for title in ["second", "third"] {
+		assert_eq!(
+			request(
+				&app,
+				&member,
+				"POST",
+				"/api/workspaces",
+				json!({"title":title,"goal":"cursor"})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	let identity = Uuid::new_v4();
+	let endpoint = source.remote.endpoint.clone();
+	let old = FileDeploymentKey::load(&source.remote.key.path).unwrap();
+	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
+        json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":old.key_id().as_str(),"enabled":true,"expected_revision":0})).await.0, 200);
+	drop(source);
+	let owner = ReceivingKeyOwner::ViewerGrant {
+		tenant: TenantName::new("acme").unwrap(),
+		viewer: DeploymentId::parse(SOURCE).unwrap(),
+		identity,
+	};
+	let route = "/api/authorization/acme/peer-graph-grant-keys";
+	let now = chrono::Utc::now().timestamp() as u64;
+	let body = graph(
+		json!({"kind":"deployment_administrator","id":identity}),
+		2,
+		Value::Null,
+	);
+	let old_token = token(
+		&Signing(&old),
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&body,
+		None,
+		now,
+		false,
+	)
+	.await;
+	let (status, page) = post(&app, &old_token, &body).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page["next_cursor"].is_string());
+	let quarantine = json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":1,"expected_authorization_revision":1,"action":"quarantine"});
+	let (status, state) =
+		request(&app, &f.config.api_token, "POST", route, quarantine.clone()).await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["quarantined"], true);
+	let query = format!("{route}?source_deployment={SOURCE}&source_identity={identity}");
+	let (status, current) = request(&app, &f.config.api_token, "GET", &query, Value::Null).await;
+	assert_eq!(status, 200, "{current}");
+	assert_eq!(current, state);
+	assert_eq!(
+		request(&app, &member, "GET", &query, Value::Null).await.0,
+		403
+	);
+	assert_eq!(
+		request(&app, &member, "POST", route, quarantine).await.0,
+		403
+	);
+	let next = successor();
+	let transition = proof(&old, &next, now).await;
+	let next_token = token(
+		&next,
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&body,
+		Some(transition),
+		now,
+		false,
+	)
+	.await;
+	let quarantined = f.receiving_keys(&owner).await.unwrap().unwrap();
+	assert_eq!(post(&app, &next_token, &body).await.0, 401);
+	assert_eq!(
+		f.receiving_keys(&owner).await.unwrap().unwrap(),
+		quarantined
+	);
+	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
+        json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":next.kid(),"enabled":true,"expected_revision":1})).await.0, 409);
+	let confirm = json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":2,"expected_authorization_revision":1,"action":"confirm","public_key_pem":next.public_key_pem(),"expected_key_id":next.kid()});
+	let (first, second) = tokio::join!(
+		request(&app, &f.config.api_token, "POST", route, confirm.clone()),
+		request(&app, &f.config.api_token, "POST", route, confirm),
+	);
+	let mut statuses = [first.0, second.0];
+	statuses.sort();
+	assert_eq!(
+		statuses,
+		[200, 409],
+		"one concurrent confirmation wins: {first:?} {second:?}"
+	);
+	let state = if first.0 == 200 { first.1 } else { second.1 };
+	assert_eq!(state["keys_revision"], 3);
+	assert_eq!(state["authorization_revision"], 1);
+	let continuation = graph(
+		json!({"kind":"deployment_administrator","id":identity}),
+		2,
+		page["next_cursor"].clone(),
+	);
+	let raw = token(
+		&next,
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&continuation,
+		None,
+		now,
+		false,
+	)
+	.await;
+	let (status, continued) = post(&app, &raw, &continuation).await;
+	assert_eq!(
+		status, 200,
+		"crypto-only confirmation preserves the cursor: {continued}"
+	);
+	let temporary = InMemorySigner::new("unused".into(), [10; 32]);
+	let third = InMemorySigner::new(
+		DeploymentKeyId::of_public_key(temporary.public_key().as_bytes()).to_string(),
+		[10; 32],
+	);
+	let stale = token(
+		&third,
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&body,
+		Some(proof(&old, &third, now).await),
+		now,
+		false,
+	)
+	.await;
+	let pinned = f.receiving_keys(&owner).await.unwrap().unwrap();
+	assert_eq!(post(&app, &stale, &body).await.0, 401);
+	assert_eq!(f.receiving_keys(&owner).await.unwrap().unwrap(), pinned);
+	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
+        json!({"source_deployment":SOURCE,"source_identity":identity,"enabled":false,"expected_revision":1})).await.0, 200);
+	let (status, disabled) = request(&app, &f.config.api_token, "POST", route,
+        json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":3,"expected_authorization_revision":2,"action":"confirm","public_key_pem":next.public_key_pem(),"expected_key_id":next.kid()})).await;
+	assert_eq!(status, 200, "{disabled}");
+	assert_eq!(disabled["enabled"], false);
+	assert_eq!(disabled["authorization_revision"], 2);
+
+	{
+		// This grant is disabled. Queue a real independent re-pin first, then an
+		// enabled=false -> true update whose repeated pin still names the old key.
+		let mut blocker = f.store.pool.fixture_driver().begin().await.unwrap();
+		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		sqlx::query("SELECT 1 FROM authorization_peer_graph_grants WHERE tenant='acme' AND source_deployment=$1 AND source_identity=$2 FOR UPDATE")
+			.bind(SOURCE).bind(identity).fetch_one(&mut *blocker).await.unwrap();
+		let manual = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			route,
+			json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":4,"expected_authorization_revision":2,"action":"confirm","public_key_pem":third.public_key_pem(),"expected_key_id":third.kid()}),
+		);
+		tokio::pin!(manual);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation did not wait for its row: {result:?}"),
+			() = common::wait_for_blocked(&f.store.pool, pid, 1) => {},
+		}
+		let permission = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme/peer-graph-grants",
+			json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":next.kid(),"enabled":true,"expected_revision":2}),
+		);
+		tokio::pin!(permission);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation escaped its row lock: {result:?}"),
+			result = &mut permission => panic!("permission edit did not wait behind confirmation: {result:?}"),
+			() = common::wait_for_blocked(&f.store.pool, pid, 2) => {},
+		}
+		blocker.commit().await.unwrap();
+		let ((manual_status, confirmed), (permission_status, edited)) =
+			tokio::join!(manual, permission);
+		assert_eq!(manual_status, 200, "{confirmed}");
+		assert_eq!(
+			confirmed["enabled"], false,
+			"confirmation itself keeps the grant disabled"
+		);
+		assert_eq!(confirmed["authorization_revision"], 2);
+		assert_eq!(confirmed["keys_revision"], 5);
+		assert_eq!(permission_status, 200, "{edited}");
+		assert_eq!(
+			edited["enabled"], true,
+			"false -> true is an actual permission change"
+		);
+		assert_eq!(edited["revision"], 3);
+		assert_eq!(edited["source_key_id"], third.kid());
+		let (encoded, keys_revision, key_id, public_pem, authorization_revision, enabled):
+			(String, i64, String, String, i64, bool) = sqlx::query_as(
+			"SELECT source_keys,keys_revision,source_key_id,source_public_key_pem,revision,enabled FROM authorization_peer_graph_grants WHERE tenant='acme' AND source_deployment=$1 AND source_identity=$2")
+			.bind(SOURCE).bind(identity).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+		assert_eq!(authorization_revision, 3);
+		assert!(enabled);
+		assert_eq!(keys_revision, 5);
+		assert_eq!(key_id, third.kid());
+		assert_eq!(public_pem, third.public_key_pem());
+		assert_eq!(
+			serde_json::from_str::<Value>(&encoded).unwrap(),
+			json!({
+				"current":{"key_id":third.kid(),"public_key":third.public_key().to_bytes()},
+				"retiring":null,"quarantined":false,
+			})
+		);
+	}
 	cleanup(f, &url, &schema).await;
 }

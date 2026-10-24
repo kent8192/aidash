@@ -25,9 +25,11 @@ NEXT = "c" * 40
 CONFIG = {"repository": REPOSITORY, "develop_branch": "develop/0.1.0", "automation_branch": "develop/0.1.0", "trusted_branch": "main", "project_id": "aidash-test", "release_app_bot_login": BOT}
 
 
-def workflow_run(identifier, name="CI", sha=SOURCE, event="push"):
-    return {"id": identifier, "workflow_id": 10 if name == "CI" else 20,
-            "name": name, "path": ".github/workflows/ci.yml" if name == "CI" else ".github/workflows/gcp-environments.yml",
+def workflow_run(identifier, name="Release CI", sha=SOURCE, event="push"):
+    identifier_by_name = {"Release CI": (10, "release-ci.yml"), "GCP environments": (20, "gcp-environments.yml"), "CI": (30, "ci.yml")}
+    owner, filename = identifier_by_name[name]
+    return {"id": identifier, "workflow_id": owner,
+            "name": name, "path": f".github/workflows/{filename}",
             "head_sha": sha, "head_branch": CONFIG["develop_branch"], "status": "completed", "conclusion": "success", "event": event,
             "repository": {"full_name": REPOSITORY}, "head_repository": {"full_name": REPOSITORY},
             "run_attempt": 1, "created_at": "2026-10-12T01:02:03Z"}
@@ -105,11 +107,12 @@ class GitHubTransport:
         elif path.startswith("compare/"):
             before, after = path.removeprefix("compare/").split("...")
             response = {"merge_base_commit": {"sha": before if before == after or before in self.parents[after] else MAIN}, "status": "identical" if before == after else "ahead" if before in self.parents[after] else "diverged"}
-        elif path in {"actions/workflows/ci.yml", "actions/workflows/gcp-environments.yml"}:
-            ci = path.endswith("/ci.yml")
-            response = {"id": 10 if ci else 20, "path": ".github/workflows/ci.yml" if ci else ".github/workflows/gcp-environments.yml", "name": "CI" if ci else "GCP environments", "state": "active"}
+        elif path in {"actions/workflows/release-ci.yml", "actions/workflows/ci.yml", "actions/workflows/gcp-environments.yml"}:
+            filename = path.split("/")[-1]
+            identifier, name = {"release-ci.yml": (10, "Release CI"), "ci.yml": (30, "CI"), "gcp-environments.yml": (20, "GCP environments")}[filename]
+            response = {"id": identifier, "path": f".github/workflows/{filename}", "name": name, "state": "active"}
         elif path.endswith("/runs") and path.startswith("actions/workflows/"):
-            identifier = 10 if "/ci.yml/" in path else 20
+            identifier = {"release-ci.yml": 10, "ci.yml": 30, "gcp-environments.yml": 20}[path.split("/")[2]]
             runs = [item for item in self.runs.values() if item["workflow_id"] == identifier]
             if "head_sha" in query:
                 runs = [item for item in runs if item["head_sha"] == query["head_sha"][0]]
@@ -198,6 +201,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
 
     def test_untrusted_or_stale_ci_cannot_create_release_or_close_old_pr(self):
         changes = [lambda gh: gh.runs[100].update(event="pull_request"),
+                   lambda gh: gh.runs[100].update(name="CI", path=".github/workflows/ci.yml", workflow_id=30),
                    lambda gh: gh.runs[100].update(workflow_id=99),
                    lambda gh: gh.runs[100].update(path=".github/workflows/untrusted.yml"),
                    lambda gh: gh.runs[100]["head_repository"].update(full_name="attacker/aidash"),

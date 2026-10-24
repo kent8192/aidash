@@ -27,6 +27,7 @@ pub mod nodes;
 pub mod plan_connections;
 pub mod provider_authorizations;
 pub mod provider_credentials;
+pub(crate) mod receiving_keys;
 pub mod secret_store_recovery;
 pub mod sign_in;
 pub mod tenant_administration;
@@ -34,3 +35,5 @@ pub mod tenant_deletions;
 pub mod tenant_purge;
 pub mod tenant_secrets;
 pub mod tenants;
+
+pub(crate) mod manual_keys;
