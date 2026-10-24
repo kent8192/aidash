@@ -41,6 +41,18 @@ acknowledgement is introduced. Missing or inconsistent ownership, manifest,
 digest or required current trust blocks erasure. An absent Node remains closed;
 only the exact existing journal-bound recovery path may use retained trust.
 
+A lost terminal execution Cancel reply has the same independent retry lifetime.
+The receiver retains a compact typed terminal Activation and its exact original
+Tenant, receiver, source, grant and admission identities. The real response owner
+captures it in its locked transaction; Rows captures already-stopped admissions
+before recomputing required receiving pairs. File preflight validates planned
+evidence and current trust before unlink. Admission/Run payload is still erased.
+Only the original strict, Node-acting Cancel request can replay this evidence or
+advance its current receiving keys; fresh activation, resume and other bindings
+remain denied. Current Tenant policy, deletion state and quarantine still apply.
+Receipts and their exact current receiving pair outlive finite Node audit, with
+no guessed ACK or TTL. Whole-Tenant purge removes this Tenant-owned metadata.
+
 Deletion records exact work identities in a durable cancellation queue in the
 same transaction. Restore retains that stop intent; mutable Run timestamps cannot
 stand in for an immutable deletion-time snapshot.

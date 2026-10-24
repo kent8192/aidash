@@ -1,4 +1,4 @@
-//! Current registration dependencies of immutable, replayable atomic journals.
+//! Exact current trust dependencies of retained atomic journals and terminal receipts.
 //! This is recovery state, not audit retention or permission to admit fresh work.
 use crate::{Error, Result};
 use aidash_domain::{
@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 fn blocked() -> Error {
-	Error::Conflict("Node purge cannot verify an atomic recovery registration dependency; retain its current trust and inspect the recovery journal".into())
+	Error::Conflict("Node purge cannot verify a recovery registration dependency; retain its current trust and inspect the recovery evidence".into())
 }
 
 /// Exact counterpart addresses for a permanent local owner. The caller holds
@@ -31,6 +31,18 @@ pub async fn registration_sources_in(
 	deployment: &DeploymentId,
 	tenant: &str,
 	node: &str,
+) -> Result<Vec<String>> {
+	registration_sources_with_planned_in(tx, deployment, tenant, node, &[]).await
+}
+
+/// Planned sources come only from the same in-TX admission projection used by
+/// Rows capture; validate them before any physical unlink.
+pub(crate) async fn registration_sources_with_planned_in(
+	tx: &mut dyn TransactionExecutor,
+	deployment: &DeploymentId,
+	tenant: &str,
+	node: &str,
+	planned: &[String],
 ) -> Result<Vec<String>> {
 	let name = NodeName::parse(node).map_err(|_| blocked())?;
 	let owner = deployment.node(name);
@@ -106,6 +118,23 @@ pub async fn registration_sources_in(
 			}
 		}
 	}
+	let receipts = super::peer_admission::terminal::sources_in(tx, tenant, node).await?;
+	for source in receipts.iter().chain(planned) {
+		let source = NodeAddress::parse(source).map_err(|_| blocked())?;
+		if source == owner {
+			return Err(blocked());
+		}
+		if &source.deployment == deployment {
+			let holder = super::node_registrations::name_tenant(tx, source.node.as_str())
+				.await?
+				.ok_or_else(blocked)?;
+			// Same-Tenant sibling routes require permanent identity, no registration.
+			if holder == tenant {
+				continue;
+			}
+		}
+		sources.insert(source.to_string());
+	}
 	if sources.is_empty() {
 		return Ok(Vec::new());
 	}
@@ -124,6 +153,36 @@ pub async fn registration_sources_in(
 		return Err(blocked());
 	}
 	for source in &sources {
+		let address = NodeAddress::parse(source).map_err(|_| blocked())?;
+		let registration = super::node_registrations::get_locked(tx, tenant, node, &address, true)
+			.await?
+			.ok_or_else(blocked)?;
+		if &address.deployment != deployment {
+			let owner =
+				aidash_application::ports::federation::inbound::ReceivingKeyOwner::Registration {
+					tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
+					node: NodeName::parse(node)?,
+					source_node: address,
+				};
+			let keys = super::receiving_keys::get(tx, &owner)
+				.await?
+				.ok_or_else(blocked)?;
+			keys.keys.current.validate().map_err(|_| blocked())?;
+			if let Some(retiring) = &keys.keys.retiring {
+				retiring.key.validate().map_err(|_| blocked())?;
+				retiring.schedule.validate().map_err(|_| blocked())?;
+			}
+			let aidash_domain::nodes::registration::Counterpart::OtherDeployment { key, .. } =
+				registration.counterpart
+			else {
+				return Err(blocked());
+			};
+			if aidash_application::federation::registrations::trusted_keys(&key)?.current
+				!= keys.keys.current
+			{
+				return Err(blocked());
+			}
+		}
 		let (sql, values) = Query::select()
 			.expr(Expr::value(1_i32))
 			.from(Alias::new("node_registrations"))

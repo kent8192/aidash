@@ -339,17 +339,44 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	let shared_audit = Uuid::new_v4();
 	sqlx::query("INSERT INTO dashboard_administration_history (id,occurred_at,action,tenant,subject,node,actor_kind) VALUES ($1,clock_timestamp(),'fixture.shared',$2,$3,NULL,'deployment_administrator')").bind(shared_audit).bind(&tenant).bind(&target).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 
+	// A pending durable job fences files even when its retry is in the future.
+	// The producer's binding/dispatcher has its own real owner coverage.
+	let job = format!("{deletion}:task:{parent}");
+	sqlx::query("INSERT INTO node_cancellation_jobs(id,deletion_id,tenant,node,kind,work_id,binding,retry_at) VALUES ($1,$2,$3,$4,'task',$5,'{}',clock_timestamp()+interval '1 day')")
+        .bind(&job).bind(deletion).bind(&tenant).bind(&target).bind(parent)
+        .execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	let claimed = node_purge::claim(&d.federation.store)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	let error = node_purge::run_step(
+		&d.federation.store,
+		&claimed,
+		aidash_domain::nodes::deletion::PurgeStep::FIRST,
+	)
+	.await
+	.unwrap_err();
+	assert!(
+		matches!(error,aidash_server::Error::Conflict(ref reason) if reason.contains("durable cancellation settlement"))
+	);
+	assert!(storage.path().join(work[0].1.simple().to_string()).exists());
+	sqlx::query("DELETE FROM node_cancellation_jobs WHERE id=$1 AND tenant=$2 AND node=$3")
+		.bind(job)
+		.bind(&tenant)
+		.bind(&target)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	// A real unlink error must preserve row anchors and record a resumable step.
 	let path = storage.path().join(work[0].1.simple().to_string());
 	tokio::fs::remove_file(&path).await.unwrap();
 	tokio::fs::create_dir(&path).await.unwrap();
-	for claimed in node_purge::claim(&d.federation.store).await.unwrap() {
-		assert!(
-			node_purge::purge_node(&d.federation.store, claimed)
-				.await
-				.is_err()
-		);
-	}
+	assert!(
+		node_purge::purge_node(&d.federation.store, claimed)
+			.await
+			.is_err()
+	);
 
 	assert_eq!(d.count(&format!("SELECT count(*) FROM node_deletions WHERE id='{deletion}' AND purge_step='capability_objects' AND purge_failures=1 AND purge_lease IS NULL AND purge_after>clock_timestamp()+interval '29 days'")).await,1);
 	assert_eq!(
@@ -1142,7 +1169,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			sqlx::query("INSERT INTO atomic_participants(id,coordinator,digest,manifest,phase) VALUES ($1,$2,$3,$4,'COMMITTED')")
 				.bind(metadata).bind(&manifest.coordinator).bind(digest).bind(json!(manifest))
 				.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-			"atomic recovery registration dependency"
+			"recovery registration dependency"
 		}
 		"coordinator" => {
 			sqlx::query("INSERT INTO atomic_coordinators (id,digest,manifest,complete) VALUES ($1,'fixture','{}',false)").bind(metadata).execute(d.federation.store.pool.fixture_driver()).await.unwrap();

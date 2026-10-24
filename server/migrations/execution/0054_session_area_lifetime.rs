@@ -5,9 +5,26 @@
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0054_session_area_lifetime", "execution")
-		.add_dependency("execution", "0050_runner_allocation_journals")
+		.add_dependency(
+			"execution",
+			"0053_node_cancellation_jobs_row_level_security",
+		)
 		.database_only(true)
 		.atomic(true)
+		// Keep the canonical direct Tenant anchor beside the deletion's exact
+		// composite ownership constraint; both survive reverse/reapplication.
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "node_cancellation_jobs".into(),
+			constraint: Constraint::ForeignKey {
+				name: "node_cancellation_jobs_tenant_fkey".into(),
+				columns: vec!["tenant".into()],
+				referenced_table: "tenants".into(),
+				referenced_columns: vec!["name".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "core_runs".into(),
 			constraint: Constraint::ForeignKey {

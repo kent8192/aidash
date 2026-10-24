@@ -110,7 +110,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		57
+		60
 	);
 	let tables = migrations
 		.iter()
@@ -169,7 +169,11 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
 					);
 				} else if sql.starts_with("ALTER TABLE")
-					&& migration.name.ends_with("_row_level_security")
+					&& (migration.name.ends_with("_row_level_security")
+						// This typed table creation includes its unsupported RLS DDL
+						// in the same atomic migration, rather than a separate slot.
+						|| (migration.app_label.as_str(), migration.name.as_str())
+							== ("identity", "0049_remote_terminal_receipts"))
 				{
 					// Reinhardt has no row-level security operations (#6770). The
 					// database::policy unit tests compare these assets with the
@@ -714,7 +718,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		57
+		60
 	);
 }
 
@@ -3028,6 +3032,7 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 		"dashboard_administration_history",
 		"node_cancellation_jobs",
 		"authorization_remote_admissions",
+		"authorization_remote_terminal_receipts",
 	] {
 		assert_eq!(
 			columns(logical.find_model_by_table(table).unwrap()),
@@ -3037,13 +3042,40 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 	}
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for pass in 0..2 {
-		let policy: (bool, bool) = sqlx::query_as("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass('public.node_deletions')")
-            .fetch_one(&pool).await.unwrap();
+		let job_tenant: (String, String, String, String) = sqlx::query_as(
+			"SELECT confrelid::regclass::text,pg_get_constraintdef(oid),confdeltype::text,confupdtype::text FROM pg_constraint WHERE conrelid='public.node_cancellation_jobs'::regclass AND conname='node_cancellation_jobs_tenant_fkey'",
+		)
+		.fetch_one(&pool).await.unwrap();
 		assert_eq!(
-			policy,
-			(true, true),
-			"Tenant RLS must survive reapplication"
+			job_tenant,
+			(
+				"tenants".into(),
+				"FOREIGN KEY (tenant) REFERENCES tenants(name)".into(),
+				"a".into(),
+				"a".into(),
+			),
+			"direct Tenant ownership and NoAction survive reapplication"
 		);
+		for protected in ["node_deletions", "authorization_remote_terminal_receipts"] {
+			let policy: (bool, bool) = sqlx::query_as(
+				"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+			)
+			.bind(format!("public.{protected}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert_eq!(
+				policy,
+				(true, true),
+				"Tenant RLS survives reapplication for {protected}"
+			);
+		}
+		let owner:String=sqlx::query_scalar("SELECT confrelid::regclass::text FROM pg_constraint WHERE conrelid='public.authorization_remote_terminal_receipts'::regclass AND conname='remote_terminal_receipts_owner_fkey'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(owner, "node_names");
+		let atomic:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.authorization_remote_terminal_receipts'::regclass AND tgname='atomic_write_guard' AND NOT tgisinternal)")
+            .fetch_one(&pool).await.unwrap();
+		assert!(atomic);
 		let node_nullable: String = sqlx::query_scalar("SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='node'")
             .fetch_one(&pool).await.unwrap();
 		assert_eq!(node_nullable, "NO");

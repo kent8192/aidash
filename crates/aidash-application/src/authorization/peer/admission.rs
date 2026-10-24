@@ -435,25 +435,15 @@ pub async fn control<R: PeerAdmissionRepository>(
 	tenant: &str,
 	receiver: &NodeName,
 	source: &str,
+	subject: &str,
 	id: Uuid,
 	grant: Uuid,
 	action: RemoteExecutionControl,
 ) -> Result<Activation> {
-	if matches!(action, RemoteExecutionControl::Cancel)
-		&& repository
-			.cancel_admission(tenant, receiver, source, id, grant)
-			.await?
-	{
-		return Ok(Activation {
-			grant_id: grant,
-			admission_id: id,
-			run_id: id,
-			phase: RemoteExecutionPhase::Admitted,
-			control: RemoteExecutionControlState::Cancelled,
-			semantic_reason: None,
-			context_reason: None,
-			error: None,
-		});
+	if matches!(action, RemoteExecutionControl::Cancel) {
+		return repository
+			.cancel_admission(tenant, receiver, source, subject, id, grant)
+			.await;
 	}
 	let record = repository.record(id).await?.ok_or(Error::Forbidden)?;
 	if record.tenant != tenant

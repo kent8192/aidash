@@ -1,7 +1,7 @@
 //! Explicit Node ownership (ADR 0083). A migration must classify every table.
 //!
 //! `Shared` means Tenant/Deployment-owned, never inferred from an incidental
-//! Node address. `Recovery` retains atomic recovery and allocation accounting.
+//! Node address. `Recovery` retains exact recovery evidence and allocation accounting.
 //! Roots and edges below are persistence contracts, not column-name discovery.
 use crate::{Error, Result};
 
@@ -53,6 +53,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"workspaces"
 		| "runs"
 		| "generation_requests"
+		| "node_cancellation_jobs"
 		| "authorization_catalog"
 		| "node_registration_history"
 		| "authorization_peer_mappings"
@@ -60,6 +61,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "authorization_remote_admissions"
 		| "authorization_remote_grants" => Node("node"),
 		"nodes" => Audit,
+		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
 		"core_areas" => Areas,
 		"core_records" => Records,

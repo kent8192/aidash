@@ -171,12 +171,23 @@ pub async fn run_step(store: &Store, deletion: &NodeDeletion, step: PurgeStep) -
 		// Prospective policy and all cross-owner references are checked before the
 		// first file unlink, not merely when a later FK DELETE happens to fail.
 		preflight::check(&mut *tx, &owners, &snapshot).await?;
+		// Rows captures the response before computing dependencies. File preflight
+		// validates the same planned evidence/trust without writing a receipt.
+		let planned = crate::apps::identity::repositories::peer_admission::terminal::purge_in(
+			&mut *tx,
+			&store.deployment,
+			owners.tenant,
+			owners.node,
+			step == PurgeStep::Rows,
+		)
+		.await?;
 		owners.retained_registrations =
-			crate::apps::identity::repositories::node_recovery::registration_sources_in(
+			crate::apps::identity::repositories::node_recovery::registration_sources_with_planned_in(
 				&mut *tx,
 				&store.deployment,
 				owners.tenant,
 				owners.node,
+                &planned,
 			)
 			.await?;
 		rows::validate(&mut *tx, &owners).await?;

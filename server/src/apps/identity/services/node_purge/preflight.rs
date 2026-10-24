@@ -29,6 +29,14 @@ pub(super) async fn check(
 	owners: &Owners<'_>,
 	snapshot: &Snapshot,
 ) -> Result<()> {
+	// Every durable job fences erasure, including jobs reserved for a future retry.
+	refuse(
+		tx,
+		"node_cancellation_jobs",
+		owners.predicate("node_cancellation_jobs")?,
+		"awaits durable cancellation settlement",
+	)
+	.await?;
 	let mut policy = snapshot.bundle.clone();
 	policy
 		.subjects

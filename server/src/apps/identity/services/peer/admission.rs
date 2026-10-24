@@ -93,6 +93,7 @@ pub(crate) async fn control(
 		admitted.tenant.as_str(),
 		&admitted.receiver.node,
 		&source(&admitted),
+		admitted.subject().unwrap_or(""),
 		id,
 		input.grant_id,
 		input.action,
