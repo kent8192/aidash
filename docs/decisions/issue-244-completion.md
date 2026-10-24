@@ -178,7 +178,7 @@ trust model, lifecycle, billing boundary or administrator authority. Recreate
 development schemas and fixtures instead of adding legacy compatibility.
 
 For emergency replacement, keep local quarantine and manual re-pin within the
-operator's existing authority. Require an independent confirmation of the new
+responsible administrator's existing authority. Require an independent confirmation of the new
 key. A sender publishing an incident notice does not force every independent
 receiver to learn or act on that notice instantly.
 
