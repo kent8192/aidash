@@ -353,9 +353,13 @@ class AllocationJournal:
                     self.observe_allocation(record, pod)
                     allocation = json.loads(path.read_bytes())
                     monitor = allocation.get('monitor')
+                    # A current non-idle harvest also hands off stop intent, including
+                    # replay after the terminal save but before the first DELETE.
+                    harvested_stop = allocation.get('cleanup_ready') and not allocation.get('idle_cleanup_ready')
                     stopped = (allocation.get('idle_cleanup_ready') and not allocation.get('receipt') and monitor
                                and self.guard(monitor, 'status').get('termination_confirmed') is True)
-                    if allocation.get('receipt') or allocation.get('stop_requested') or pod['metadata'].get('deletionTimestamp') or stopped:
+                    if (allocation.get('receipt') or allocation.get('stop_requested')
+                            or pod['metadata'].get('deletionTimestamp') or harvested_stop or stopped):
                         self.close_allocation(record)
                     elif allocation.get('pending_reason'):
                         self.allocation_diagnostic(allocation)

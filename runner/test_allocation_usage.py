@@ -193,6 +193,50 @@ class AllocationUsageTest(unittest.TestCase):
         runner.allocation_housekeeping()
         self.assertTrue(any(call.args[0][0] == 'delete' for call in runner.kube.call_args_list))
 
+    def test_restart_stops_non_idle_shell_after_durable_harvest_before_delete(self):
+        self.record.update(status='completed', digest='command', container_id='a'*64,
+                           writer_frozen=False, termination_confirmed=True, output_harvested=True,
+                           request={'usage_tenant':'acme', 'kind':'shell', 'files':[]})
+        save(self.runner.path(self.operation), self.record)
+        self.pod['status']['containerStatuses'][0]['state'] = {
+            'terminated':{'finishedAt':'2026-10-02T00:02:00Z', 'exitCode':0}}
+        self.runner.observe_allocation(self.record, self.pod)
+        allocation_path = self.root / 'allocations' / (self.uid+'.json')
+        allocation = json.loads(allocation_path.read_bytes())
+        self.assertFalse(allocation.get('stop_requested'))
+        self.assertFalse(allocation.get('receipt'))
+        runner = self.restart()
+        runner.recover()
+        allocation = json.loads(allocation_path.read_bytes())
+        self.assertTrue(allocation['cleanup_ready'])
+        self.assertFalse(allocation['idle_cleanup_ready'])
+        self.assertFalse(allocation.get('stop_requested'))
+        self.assertFalse(allocation.get('receipt'))
+        runner.guard = Mock(side_effect=AssertionError('non-idle cleanup cannot require an idle guard'))
+        deleted = []
+        def kube(arguments, data=None, **_):
+            if arguments[0] == 'get':
+                return Mock(stdout=json.dumps(self.pod).encode())
+            if arguments[0] == 'delete':
+                deleted.append(True)
+                self.pod['metadata']['deletionTimestamp'] = '2026-10-02T00:02:01Z'
+                self.pod['status']['containerStatuses'][1]['state'] = {
+                    'terminated':{'finishedAt':'2026-10-02T00:02:01Z'}}
+            if arguments[0] == 'patch':
+                self.pod['metadata']['finalizers'].remove('aidash.dev/allocation-receipt')
+            return Mock(stdout=b'')
+        runner.kube = kube
+        runner.allocation_housekeeping()
+        self.assertEqual(deleted, [True], 'replayed non-idle harvest must resume deletion')
+        self.assertEqual(runner.allocation_receipts()['receipts'], [])
+        runner.allocation_housekeeping()
+        [receipt] = runner.allocation_receipts()['receipts']
+        self.assertEqual(receipt['allocation_id'], self.uid)
+        self.assertEqual(receipt['started_at'], '2026-10-01T23:59:00Z')
+        self.assertEqual(receipt['ended_at'], '2026-10-02T00:02:01Z')
+        self.assertEqual(self.pod['metadata']['finalizers'], ['another.example/retention'])
+        self.assertTrue(json.loads(allocation_path.read_bytes())['released'])
+
     def test_reused_python_admission_revokes_the_old_cleanup_handoff_before_dispatch(self):
         self.record.update(status='completed', termination_confirmed=False, writer_frozen=True,
                            container_id='a'*64, pod_operation=self.operation, output_harvested=True)
