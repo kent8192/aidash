@@ -286,6 +286,10 @@ is durable. Deletion uses API-side UID and observed resource-version preconditio
 a replaced or changed Pod stays untouched until fresh evidence permits retry. The
 Runner then removes only its own finalizer with a UID precondition. Its sandbox
 Role therefore also needs `patch` on Pods.
+Execution stop alone never permits cleanup: the output owner first fsyncs saved
+files and their directory, saves the terminal operation, and persists the allocation
+cleanup handoff. Python reuse revokes the previous handoff before dispatch; idle
+cleanup requires a settled frozen-session handoff. Operation ACK cannot erase it.
 
 Authenticated native housekeeping polls `GET /v1/allocations/receipts` in bounded
 pages and acknowledges each immutable digest with
@@ -298,6 +302,12 @@ Deployment configuration retained for the Deployment lifetime, with no Tenant or
 Node foreign key. A changed runner instance is unavailable for usage delivery until
 the original journal is restored; housekeeping does not automatically repin it.
 Keep and back up the journal volume together with native persistence.
+The root `allocation-journal` initialization anchor must stay with `instance` and
+the `allocations/` subjournal. An initialized root never recreates missing journal
+state, including an empty restored directory; restore a verified complete journal
+before restarting. Contradictory provider evidence is durably quarantined: its
+original immutable receipt remains available for operator recovery, but delivery,
+ACK and finalizer release stay blocked until that state is explicitly recovered.
 Structured `allocation_usage` diagnostics include the allocation and runner IDs,
 pending evidence/cleanup reason, observation age and observation/cleanup attempts.
 Observation age is diagnostic metadata and never supplies billable timestamps.

@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
 import collector
-from control import Rejected, Runner, termination_time
+from control import Rejected, Runner, save, termination_time
 
 
 def request(kind):
@@ -64,6 +64,7 @@ class VerificationTest(unittest.TestCase):
 
             runner.guard = guard
             record = {"operation_id": str(uuid.uuid4()), "request": request(kind)}
+            save(runner.path(record["operation_id"]), record)
             runner.recover_stopped_shell(record)
             return calls, runner.update.call_args.kwargs
 

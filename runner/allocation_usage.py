@@ -21,17 +21,21 @@ def digest(receipt):
 
 
 class AllocationJournal:
-    def initialize_allocations(self):
+    def initialize_allocations(self, fresh_instance=False):
         self.allocations = self.root / 'allocations'
-        self.allocations.mkdir(exist_ok=True, mode=0o700)
         marker = self.allocations / 'instance'
-        if marker.exists():
-            if json.loads(marker.read_bytes()) != self.instance:
-                raise RuntimeError('allocation journal identity changed')
-        else:
-            if any(self.allocations.glob('*.json')):
-                raise RuntimeError('allocation journal identity unavailable')
+        # The initialization anchor is outside the subjournal whose loss it detects.
+        anchor = self.root / 'allocation-journal'
+        if not anchor.exists():
+            if not fresh_instance or self.allocations.exists():
+                raise RuntimeError('allocation journal initialization unavailable')
+            save(anchor, self.instance)
+            self.allocations.mkdir(mode=0o700)
             save(marker, self.instance)
+        try:
+            self.confirm_allocation_instance()
+        except Rejected as error:
+            raise RuntimeError('allocation journal identity unavailable') from error
         self.allocation_pending = []
         self.allocation_watch = []
         self.allocation_incomplete = set()
@@ -47,6 +51,8 @@ class AllocationJournal:
                 self.allocation_pending.append(path.stem)
                 if record.get('pending_reason'):
                     self.allocation_incomplete.add(path.stem)
+            if record.get('quarantined'):
+                self.allocation_incomplete.add(path.stem)
         self.allocation_pending.sort()
         self.allocation_watch.sort()
 
@@ -57,15 +63,36 @@ class AllocationJournal:
         uid = identity(pod['metadata']['uid'])
         path = self.allocations / (uid + '.json')
         with self.lock:
+            operation = record.get('pod_operation', record['operation_id'])
+            origin = self.get(operation)
+            annotations = pod['metadata'].get('annotations', {})
+            if (record.get('pod_uid', uid) != uid or origin.get('pod_uid', uid) != uid
+                    or record['area_id'] != origin['area_id']
+                    or pod['metadata']['name'] != self.pod_name(operation)
+                    or annotations.get('aidash/digest') != origin['wire_digest']
+                    or annotations.get('aidash/area') != origin['area_id']
+                    or annotations.get('aidash/epoch') != str(origin['epoch'])):
+                bound = origin.get('pod_uid') or record.get('pod_uid')
+                bound_path = self.allocations / (identity(bound)+'.json') if bound else None
+                if bound_path and bound_path.exists():
+                    self.quarantine_allocation(bound_path, json.loads(bound_path.read_bytes()), 'allocation origin identity changed')
+                raise Rejected(409, 'allocation origin identity changed')
+            if not origin.get('pod_uid'):
+                # Persist first adoption in the trusted operation journal before indexing usage.
+                self.update(operation, pod_uid=uid)
             old = json.loads(path.read_bytes()) if path.exists() else None
+            if old and old.get('quarantined'):
+                self.allocation_diagnostic(old)
+                raise Rejected(503, 'allocation evidence quarantined')
             if not old:
+                tenant = origin.get('request', {}).get('usage_tenant')
                 if not isinstance(tenant, str) or not tenant or len(tenant.encode()) > 255:
                     raise Rejected(409, 'native allocation usage context unavailable')
                 old = dict(allocation_id=uid, runner_instance=self.instance, tenant=tenant,
-                           operation_id=record.get('pod_operation', record['operation_id']),
-                           area_id=record['area_id'], epoch=record['epoch'],
-                           pod_name=pod['metadata']['name'], wire_digest=pod['metadata']['annotations']['aidash/digest'],
-                           first_observed_at=time.time())
+                           operation_id=operation, area_id=origin['area_id'], epoch=origin['epoch'],
+                           pod_name=pod['metadata']['name'], wire_digest=origin['wire_digest'],
+                           first_observed_at=time.time(), work_operation=record['operation_id'],
+                           work_epoch=record['epoch'], cleanup_ready=False, idle_cleanup_ready=False)
                 bisect.insort(self.allocation_pending, uid)
                 bisect.insort(self.allocation_watch, uid)
                 self.allocation_incomplete.add(uid)
@@ -73,15 +100,23 @@ class AllocationJournal:
                     or old['pod_name'] != pod['metadata']['name']
                     or old['wire_digest'] != pod['metadata']['annotations'].get('aidash/digest')
                     or tenant is not None and tenant != old['tenant']):
+                self.quarantine_allocation(path, old, 'allocation identity changed')
                 raise Rejected(409, 'allocation identity changed')
             old['finalizers'] = pod['metadata'].get('finalizers', [])
             old['resource_version'] = pod['metadata'].get('resourceVersion')
+            if record['epoch'] > old.get('work_epoch', 0):
+                old.update(work_operation=record['operation_id'], work_epoch=record['epoch'],
+                           cleanup_ready=False, idle_cleanup_ready=False)
             start = pod.get('status', {}).get('startTime')
             try:
                 instant(start)
             except (ValueError, TypeError, AttributeError):
                 start = None
+            if old.get('receipt') and not start:
+                self.quarantine_allocation(path, old, 'allocation provider start unavailable after receipt')
+                raise Rejected(409, 'allocation provider start unavailable')
             if old.get('started_at') and start and start != old['started_at']:
+                self.quarantine_allocation(path, old, 'allocation provider start changed')
                 raise Rejected(409, 'allocation provider start changed')
             old['started_at'] = old.get('started_at') or start
             # Keep latest trusted guard binding for Python cells; origin stays fixed.
@@ -110,11 +145,15 @@ class AllocationJournal:
                                evidence=dict(pod_uid=uid, start_time=old['started_at'], containers=containers))
                 receipt['digest'] = digest(receipt)
                 if old.get('receipt') and old['receipt'] != receipt:
+                    self.quarantine_allocation(path, old, 'allocation receipt evidence changed')
                     raise Rejected(409, 'allocation receipt changed')
                 old['receipt'] = receipt
                 old.pop('pending_reason', None)
                 self.allocation_incomplete.discard(uid)
             except (KeyError, ValueError, TypeError, AttributeError):
+                if old.get('receipt'):
+                    self.quarantine_allocation(path, old, 'allocation terminal evidence changed or unavailable')
+                    raise Rejected(409, 'allocation terminal evidence unavailable') from None
                 stopped = expected and all('terminated' in statuses.get(name, {}).get('state', {}) for name in expected)
                 if stopped or old.get('stop_requested') or pod.get('status', {}).get('phase') in ('Failed', 'Succeeded'):
                     old['pending_reason'] = 'provider start/stop evidence unavailable'
@@ -123,6 +162,13 @@ class AllocationJournal:
                     old.pop('pending_reason', None)
                     self.allocation_incomplete.discard(uid)
             save(path, old)
+
+    def quarantine_allocation(self, path, allocation, reason):
+        allocation.update(quarantined=True, pending_reason=reason,
+                          cleanup_blocker='provider evidence quarantined; operator recovery required')
+        save(path, allocation)
+        self.allocation_incomplete.add(allocation['allocation_id'])
+        self.allocation_diagnostic(allocation)
 
     def allocation_receipts(self, after='', limit=16):
         if after:
@@ -134,7 +180,8 @@ class AllocationJournal:
             offset = bisect.bisect(self.allocation_pending, after)
             ids = self.allocation_pending[offset:offset + limit]
             records = [json.loads((self.allocations / (uid + '.json')).read_bytes()) for uid in ids]
-            return dict(instance=self.instance, receipts=[r['receipt'] for r in records if r.get('receipt')],
+            return dict(instance=self.instance, receipts=[r['receipt'] for r in records
+                        if r.get('receipt') and not r.get('quarantined') and not r.get('pending_reason')],
                         next_after=ids[-1] if len(ids) == limit else '', pending_evidence=len(self.allocation_incomplete))
 
     def acknowledge_allocation(self, uid, instance, receipt_digest):
@@ -146,6 +193,7 @@ class AllocationJournal:
                 raise Rejected(409, 'allocation receipt unavailable')
             record = json.loads(path.read_bytes())
             if (instance != self.instance or record['runner_instance'] != instance
+                    or record.get('quarantined') or record.get('pending_reason')
                     or not record.get('receipt') or record['receipt']['digest'] != receipt_digest):
                 raise Rejected(409, 'allocation receipt identity mismatch')
             record['acknowledged'] = True
@@ -158,11 +206,39 @@ class AllocationJournal:
     def confirm_allocation_instance(self):
         # Callers hold the journal lock through the following read or acknowledgement.
         try:
-            if json.loads((self.allocations / 'instance').read_bytes()) == self.instance:
+            if (json.loads((self.root / 'allocation-journal').read_bytes()) == self.instance
+                    and json.loads((self.allocations / 'instance').read_bytes()) == self.instance):
                 return
         except (OSError, ValueError):
             pass
         raise Rejected(503, 'allocation journal identity unavailable')
+
+    def begin_allocation_work(self, record):
+        uid = record.get('pod_uid')
+        if not uid or record.get('admission_probe'):
+            return
+        with self.lock:
+            path = self.allocations / (identity(uid) + '.json')
+            allocation = json.loads(path.read_bytes())
+            allocation.update(work_operation=record['operation_id'], work_epoch=record['epoch'],
+                              cleanup_ready=False, idle_cleanup_ready=False)
+            save(path, allocation)
+
+    def allocation_harvested(self, record, idle=False):
+        uid = record.get('pod_uid')
+        if not uid or record.get('admission_probe'):
+            return
+        with self.lock:
+            path = self.allocations / (identity(uid) + '.json')
+            if not path.exists():
+                return
+            allocation = json.loads(path.read_bytes())
+            if (allocation.get('work_operation') != record['operation_id']
+                    or allocation.get('work_epoch') != record['epoch']):
+                return
+            # Only the output owner calls this after fsync and its terminal journal save.
+            allocation.update(cleanup_ready=True, idle_cleanup_ready=idle)
+            save(path, allocation)
 
     def close_allocation(self, record):
         with self.lock:
@@ -182,6 +258,14 @@ class AllocationJournal:
                 return
             allocation = json.loads(path.read_bytes())
             allocation['stop_requested'] = True
+            if allocation.get('quarantined'):
+                self.allocation_diagnostic(allocation)
+                return
+            if not allocation.get('cleanup_ready'):
+                allocation['cleanup_blocker'] = 'durable output harvest pending'
+                save(path, allocation)
+                self.allocation_diagnostic(allocation)
+                return
             allocation['cleanup_attempts'] = allocation.get('cleanup_attempts', 0) + 1
             save(path, allocation)
             try:
@@ -217,7 +301,8 @@ class AllocationJournal:
                   json.dumps({'preconditions':preconditions}).encode(), check=True)
 
     def allocation_diagnostic(self, allocation):
-        status = ('acknowledged' if allocation.get('acknowledged') else
+        status = ('evidence_unavailable' if allocation.get('quarantined') else
+                  'acknowledged' if allocation.get('acknowledged') else
                   'receipt_pending_delivery' if allocation.get('receipt') else
                   'evidence_unavailable' if allocation.get('evidence_lost') else
                   'pending_evidence' if allocation.get('pending_reason') else 'running')
@@ -245,6 +330,9 @@ class AllocationJournal:
                     allocation = json.loads(path.read_bytes())
                     allocation['observation_attempts'] = allocation.get('observation_attempts', 0) + 1
                     save(path, allocation)
+                    if allocation.get('quarantined'):
+                        self.allocation_diagnostic(allocation)
+                        continue
                     result = self.kube(['get', 'pod', allocation['pod_name'], '-o', 'json', '--ignore-not-found'])
                     pod = json.loads(result.stdout) if result.stdout.strip() else None
                     if pod is None or pod['metadata']['uid'] != uid:
@@ -265,7 +353,8 @@ class AllocationJournal:
                     self.observe_allocation(record, pod)
                     allocation = json.loads(path.read_bytes())
                     monitor = allocation.get('monitor')
-                    stopped = (not allocation.get('receipt') and monitor and self.guard(monitor, 'status').get('termination_confirmed') is True)
+                    stopped = (allocation.get('idle_cleanup_ready') and not allocation.get('receipt') and monitor
+                               and self.guard(monitor, 'status').get('termination_confirmed') is True)
                     if allocation.get('receipt') or allocation.get('stop_requested') or pod['metadata'].get('deletionTimestamp') or stopped:
                         self.close_allocation(record)
                     elif allocation.get('pending_reason'):
