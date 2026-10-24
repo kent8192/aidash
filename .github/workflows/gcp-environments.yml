@@ -45,6 +45,7 @@ jobs:
   intake:
     if: >-
       vars.GCP_ENVIRONMENTS_ENABLED == 'true' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
       (github.event_name != 'issue_comment' ||
        (github.event.issue.pull_request && startsWith(github.event.comment.body, '/preview ') &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
@@ -52,6 +53,7 @@ jobs:
     timeout-minutes: 3
     permissions:
       contents: read
+      actions: read
     outputs:
       proceed: ${{ steps.filter.outputs.proceed }}
       # Every later job checks out this one protected default-branch commit, so
@@ -87,6 +89,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 infra/gcp/control/controller.py preflight
+      - name: Record the exact staging attempt before credentialed work
+        if: >-
+          steps.filter.outputs.proceed == 'true' &&
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release CI'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVELOP_BRANCH: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').develop_branch }}
+        run: python3 infra/gcp/control/releases.py attempt
+      - name: Publish the bounded staging attempt identity
+        if: >-
+          steps.filter.outputs.proceed == 'true' &&
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release CI'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-attempt
+          overwrite: true
+          path: ${{ runner.temp }}/staging-attempt.json
+          if-no-files-found: error
+          retention-days: 7
 
   prepare:
     needs: intake
