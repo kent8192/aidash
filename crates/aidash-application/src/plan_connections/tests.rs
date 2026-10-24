@@ -144,6 +144,7 @@ struct Failing {
 	add_version: bool,
 	passing_versions: usize,
 	destroy: bool,
+	passing_destroys: usize,
 	delete: bool,
 }
 impl FakeStore {
@@ -211,8 +212,13 @@ impl Store for FakeStore {
 		Ok(())
 	}
 	async fn destroy(&self, _tenant: &str, version: &str) -> Result<()> {
-		if self.1.lock().unwrap().destroy {
-			return Err(Error::External("store unavailable".into()));
+		{
+			let mut faults = self.1.lock().unwrap();
+			if faults.passing_destroys > 0 {
+				faults.passing_destroys -= 1;
+			} else if faults.destroy {
+				return Err(Error::External("store unavailable".into()));
+			}
 		}
 		let (resource, n) = split(version);
 		if let Some(versions) = self.0.lock().unwrap().get_mut(resource) {
@@ -1368,6 +1374,100 @@ async fn an_unknown_refresh_result_is_never_replayed_or_reported_revoked(
 			.unwrap()
 			.revoked
 	);
+	assert!(fixture.store.plaintexts().is_empty());
+}
+
+/// A matching durable receipt cannot erase evidence of an older unknown grant
+/// after disconnect has destroyed both that grant's intent and the current pin.
+#[rstest::rstest]
+#[case::status(true)]
+#[case::bearer(false)]
+#[tokio::test]
+async fn recovery_after_partial_disconnect_keeps_revocation_unconfirmed(
+	#[case] recover_with_status: bool,
+) {
+	let mut fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Ambiguous,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let pin = only_row(&fixture).await.pin();
+	assert!(matches!(
+		fixture.service.bearer(pin).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	connect(&fixture, Some("oaiapp_1"), None).await.unwrap();
+
+	// The next upstream refresh returns normally, but its independently durable
+	// intent and replacement outlive the failed connection metadata commit.
+	fixture.authorization = Arc::new(FakeAuthorization::default());
+	fixture.service.authorization = fixture.authorization.clone();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let before = only_row(&fixture).await;
+	fixture.repo.0.lock().await.failing_commits = 1;
+	assert!(matches!(
+		fixture.service.bearer(pin).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(fixture.store.plaintexts().len(), 4);
+
+	// Pin-first cleanup destroys the reconnected pin and the older unknown
+	// intent, then fails with the matching newer intent/receipt still present.
+	{
+		let mut faults = fixture.store.1.lock().unwrap();
+		faults.destroy = true;
+		faults.passing_destroys = 2;
+	}
+	assert!(matches!(
+		fixture
+			.service
+			.disconnect(&owner(), before.revision, "alice")
+			.await,
+		Err(Error::External(_))
+	));
+	let retained = fixture.store.plaintexts();
+	assert_eq!(retained.len(), 2);
+	assert_eq!(
+		only_row(&fixture).await.pinned_version,
+		before.pinned_version
+	);
+	fixture.store.1.lock().unwrap().destroy = false;
+
+	let recovered_as_usable = if recover_with_status {
+		fixture
+			.service
+			.status(&owner())
+			.await
+			.unwrap()
+			.unwrap()
+			.state == State::Active
+	} else {
+		match fixture.service.bearer(pin).await {
+			Ok(_) => true,
+			Err(Error::Plan(Failure::NeedsReconnection)) => false,
+			Err(error) => panic!("unexpected recovery failure: {error}"),
+		}
+	};
+	assert_eq!(fixture.store.plaintexts(), retained);
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	let recovered = only_row(&fixture).await;
+	let disconnected = fixture
+		.service
+		.disconnect(&owner(), recovered.revision, "alice")
+		.await
+		.unwrap();
+	assert!(
+		!disconnected.revoked,
+		"recovery must preserve uncertainty from the interrupted disconnect"
+	);
+	assert!(!recovered_as_usable);
+	assert_eq!(recovered.state, State::NeedsReconnection);
+	assert_eq!(recovered.pinned_version, before.pinned_version);
 	assert!(fixture.store.plaintexts().is_empty());
 }
 

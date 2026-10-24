@@ -1028,7 +1028,11 @@ impl Service {
 		if intents.is_empty() && replacements.is_empty() && pinned_exists {
 			return Ok(false);
 		}
-		if intents.len() == 1
+		// Terminal cleanup may remove the pin and older uncertainty records
+		// before this matching receipt. A missing pin must remain evidence of
+		// unconfirmed revocation, so recovery cannot replace it with a new pin.
+		if pinned_exists
+			&& intents.len() == 1
 			&& replacements.len() == 1
 			&& replacements[0].1.intent_version == intents[0]
 		{
