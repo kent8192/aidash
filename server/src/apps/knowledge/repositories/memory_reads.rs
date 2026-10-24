@@ -222,9 +222,9 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		.await?;
 		return Ok(read.map(|_| Failure::Authority));
 	};
-	// A Run may have read only a shared Bank while its primary is OnDemand.
-	// Each journaled Unit below proves access to its own Bank, including any
-	// primary Unit that a manual read actually delivered.
+	if let Err(error) = units::authorize(lease, &binding.bank, "memory.read").await {
+		return binding_change(error);
+	}
 	let policy = match crate::apps::knowledge::services::native_memory::policy(
 		lease,
 		&binding.bank.tenant,
