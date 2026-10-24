@@ -173,5 +173,6 @@ pub(crate) async fn persist(access: &mut Access, operation: &Operation) -> Resul
 pub(crate) mod reconciliation;
 
 mod processing;
+mod receipt_output;
 
 mod pod_usage;

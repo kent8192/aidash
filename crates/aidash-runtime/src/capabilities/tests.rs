@@ -36,6 +36,14 @@ impl OperationReconciliationRepository for Repository {
 }
 #[async_trait]
 impl OperationProcessingRepository for Repository {
+	async fn begin_receipt_output(
+		&self,
+		_: &Receipt,
+	) -> Result<Box<dyn aidash_application::ports::capabilities::processing::ReceiptOutputScope + '_>>
+	{
+		Err(Error::Forbidden)
+	}
+
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		self.ticks.fetch_add(1, Ordering::SeqCst);
 		self.entered.notify_one();

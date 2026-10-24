@@ -183,6 +183,12 @@ impl Run {
 			)
 			.and_where(worker_lease(id, worker))
 			.and_where(
+				crate::apps::execution::repositories::node_cancellations::run_open_condition(
+					Expr::col((Alias::new("runs"), Alias::new("id"))).into(),
+					Expr::col((Alias::new("runs"), Alias::new("tenant"))).into(),
+				),
+			)
+			.and_where(
 				crate::apps::identity::repositories::nodes::live_node_condition(
 					Expr::col((Alias::new("runs"), Alias::new("tenant"))).into(),
 					Expr::col((Alias::new("runs"), Alias::new("node"))).into(),

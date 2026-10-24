@@ -25,8 +25,8 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
+	Alias, ColumnRef, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -94,12 +94,22 @@ impl GrantScope for Scope {
 		self.access.subjects.push(subject);
 	}
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()> {
+		crate::apps::execution::repositories::node_cancellations::require_task_open(
+			self.access.tx.as_mut(),
+			id,
+		)
+		.await?;
 		crate::authorization::execution::inherit_task_origin(&mut self.access, id)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn live(&mut self, id: Uuid) -> Result<bool> {
+		crate::apps::execution::repositories::node_cancellations::require_grant_open(
+			self.access.tx.as_mut(),
+			id,
+		)
+		.await?;
 		live(&mut self.access, id).await.map_err(Into::into)
 	}
 	async fn grant_reads_visible(&mut self, id: Uuid) -> Result<bool> {
@@ -370,27 +380,9 @@ impl GrantScope for Scope {
 		result.map(|r| r.map(Into::into)).map_err(Into::into)
 	}
 	async fn revoke_locked(&mut self, id: Uuid) -> Result<()> {
-		let result: NativeResult<()> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = id;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("authorization_remote_grants"))
-						.value_expr(Alias::new("revoked"), Expr::cust("TRUE"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
+		revoke_in(&mut **self.access.tx, &self.access.identity.tenant, id)
+			.await
+			.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -478,4 +470,56 @@ impl aidash_application::ports::authorization::source::SourcePeerScope for Scope
 	) -> Result<Option<aidash_domain::federation::route::Route>> {
 		self.access.route_to(node).await.map_err(Into::into)
 	}
+}
+
+/// Revocation is irreversible and shares the grant row with Home command leases.
+pub(crate) async fn revoke_in(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> NativeResult<()> {
+	crate::database::native::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(Alias::new("revoked"), true)
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(tx)
+	.await?;
+	Ok(())
+}
+
+/// The lifecycle caller holds exclusive policy; retain the existing revocation
+/// event in that same transaction and make duplicate cleanup idempotent.
+pub(crate) async fn revoke_for_node_in(
+	store: &crate::store::Store,
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> NativeResult<()> {
+	let grant: GrantRow = crate::database::native::query_as(
+		&Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("authorization_remote_grants"))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("tenant").eq(tenant))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	if !grant.revoked {
+		revoke_in(tx, tenant, id).await?;
+		store
+			.event_in_executor(
+				tx,
+				Some(grant.workspace_id),
+				"task.remote_grant_revoked",
+				serde_json::json!({"grant_id":id,"task_id":grant.task_id}),
+			)
+			.await?;
+	}
+	Ok(())
 }

@@ -70,6 +70,12 @@ impl OperationReconciliationRepository for Repository {
 }
 #[async_trait]
 impl OperationProcessingRepository for Repository {
+	async fn begin_receipt_output(
+		&self,
+		_: &Receipt,
+	) -> Result<Box<dyn crate::ports::capabilities::processing::ReceiptOutputScope + '_>> {
+		Err(Error::Forbidden)
+	}
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		let mut trace = self.0.lock().unwrap();
 		trace.calls.push("active".into());
@@ -92,6 +98,7 @@ impl OperationProcessingRepository for Repository {
 				id,
 				digest,
 				runner_instance,
+				uncertain: false,
 			})
 			.collect())
 	}

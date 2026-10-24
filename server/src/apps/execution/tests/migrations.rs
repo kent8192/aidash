@@ -673,19 +673,30 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 	.unwrap();
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["makemigrations", "--check", "--dry-run"]);
+	let log_path = fixture.directory.path().join("schema-check.log");
+	let log = File::create(&log_path).unwrap();
+	command.stdout(log.try_clone().unwrap()).stderr(log);
 	// Act: use the shipped command, including installed-app model scope.
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
-		.await
-		.unwrap()
-		.unwrap();
+	let started = std::time::Instant::now();
+	let mut child = command.spawn().unwrap();
+	eprintln!(
+		"schema-check child={} log={}",
+		child.id().unwrap(),
+		log_path.display()
+	);
+	let result = tokio::time::timeout(Duration::from_secs(35), child.wait()).await;
+	eprintln!("schema-check elapsed={:?}", started.elapsed());
+	let output = std::fs::read_to_string(log_path).unwrap();
+	assert!(
+		result.is_ok(),
+		"manage makemigrations exceeded its deadline: {output}"
+	);
 	// Assert: neither built-in auth tables nor existing Aidash tables are proposed.
 	assert!(
-		output.status.success(),
-		"{}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
+		result.unwrap().unwrap().success(),
+		"manage makemigrations failed: {output}"
 	);
-	assert!(String::from_utf8_lossy(&output.stdout).contains("No changes detected"));
+	assert!(output.contains("No changes detected"));
 	let applied = DatabaseMigrationRecorder::new(fixture.connection)
 		.get_applied_migrations_if_present()
 		.await
@@ -703,7 +714,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		55
+		57
 	);
 }
 
@@ -2944,7 +2955,7 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 		.with_migration_history(migrations.clone());
 	executor.apply_migrations(&migrations).await.unwrap();
 	let before = recorded_keys(&fixture.connection).await;
-	let mut node_migrations: Vec<_> = migrations
+	let roots: Vec<_> = migrations
 		.iter()
 		.filter(|migration| {
 			migration.app_label == "identity"
@@ -2959,8 +2970,41 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 		})
 		.cloned()
 		.collect();
-	node_migrations.sort_by(|left, right| left.name.cmp(&right.name));
-	assert_eq!(node_migrations.len(), 5);
+	assert_eq!(roots.len(), 5);
+	// Roll back every dependent migration first, including cancellation jobs
+	// whose composite foreign key retains the original deletion fact. This
+	// closure also covers later migrations extending these owners.
+	let mut selected: BTreeSet<_> = roots
+		.iter()
+		.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+		.collect();
+	loop {
+		let descendants: Vec<_> = migrations
+			.iter()
+			.filter(|migration| {
+				!selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+					&& migration
+						.dependencies
+						.iter()
+						.any(|key| selected.contains(key))
+			})
+			.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+			.collect();
+		if descendants.is_empty() {
+			break;
+		}
+		selected.extend(descendants);
+	}
+	let mut ordered = reinhardt::db::migrations::MigrationPlan::new();
+	ordered.migrations = migrations.clone();
+	ordered.sort().unwrap();
+	let node_migrations: Vec<_> = ordered
+		.migrations
+		.into_iter()
+		.filter(|migration| {
+			selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+		})
+		.collect();
 
 	let logical = build_state_from_files(&source).await.unwrap();
 	let registered = ProjectState::from_global_registry();
@@ -2979,7 +3023,12 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 			})
 			.collect::<BTreeMap<_, _>>()
 	};
-	for table in [table, "dashboard_administration_history"] {
+	for table in [
+		table,
+		"dashboard_administration_history",
+		"node_cancellation_jobs",
+		"authorization_remote_admissions",
+	] {
 		assert_eq!(
 			columns(logical.find_model_by_table(table).unwrap()),
 			columns(registered.find_model_by_table(table).unwrap()),

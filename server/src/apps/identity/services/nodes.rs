@@ -463,16 +463,17 @@ async fn change_in(
 				return Err(Error::Conflict("node_deleted".into()));
 			}
 			domain::deletion::check_delete(node.default, nodes::count_live(tx, tenant).await?)?;
-			Some(
-				node_deletions::record(
-					tx,
-					tenant,
-					name,
-					actor,
-					f.config.tenancy.node_deletion_grace_days,
-				)
-				.await?,
+			let deletion = node_deletions::record(
+				tx,
+				tenant,
+				name,
+				actor,
+				f.config.tenancy.node_deletion_grace_days,
 			)
+			.await?;
+			crate::apps::execution::repositories::node_cancellations::record(f, tx, &deletion)
+				.await?;
+			Some(deletion)
 		}
 		Change::Restore => {
 			let row = current.ok_or_else(|| Error::Conflict("the Node is not deleted".into()))?;

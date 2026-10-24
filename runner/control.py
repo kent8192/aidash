@@ -145,7 +145,7 @@ class Runner(AllocationJournal):
             with self.lock:
                 self.aggregate.track(path.stem, record)
             if record.get('output_harvested') and record['status'] in TERMINAL:
-                self.allocation_harvested(record, idle=record.get('writer_frozen') is True)
+                self.allocation_harvested(record, idle=record['status'] != 'uncertain' and record.get('writer_frozen') is True)
             if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
 
@@ -273,7 +273,15 @@ class Runner(AllocationJournal):
             return record
 
     def public(self, record):
-        return {k: v for k, v in record.items() if k not in ("request", "pod_uid", "output_harvested")}
+        public = {k: v for k, v in record.items() if k not in ("request", "pod_uid")}
+        if record.get('status') == 'uncertain' and record.get('output_harvested') is True and not record.get('acknowledged'):
+            public['output_digest'] = self.output_digest(record)
+        return public
+
+    def output_digest(self, record):
+        snapshot = {key: record.get(key) for key in ('operation_id', 'digest', 'stdout', 'files', 'displays', 'truncated')}
+        snapshot['runner_instance'] = self.instance
+        return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
     def accept(self, request, admission_probe=False):
         if set(request) - {"session_id", "egress", "usage_tenant"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
@@ -436,18 +444,43 @@ class Runner(AllocationJournal):
             data = f.read(4194304)
         return {"data": base64.b64encode(data).decode(), "offset": offset, "size": file["size"], "digest": file["digest"]}
 
-    def acknowledge(self, operation, digest):
+    def acknowledge(self, operation, digest, output_digest=None):
         with self.lock:
             record = self.get(operation)
-            if record["digest"] != digest or record["status"] not in ("completed", "cancelled", "failed"):
-                raise Rejected(409, "outcome is not ready to acknowledge")
-            record = self.update(operation, acknowledged=True, request={}, stdout="", files=[], displays=[])
-            for suffix in (".inputs", ".files"):
+            uncertain = record['status'] == 'uncertain'
+            if record['digest'] != digest or (record['status'] not in ('completed', 'cancelled', 'failed') and
+                                               not (uncertain and record.get('termination_confirmed') is True)):
+                raise Rejected(409, 'outcome is not ready to acknowledge')
+            if operation in self.active:
+                raise Rejected(409, 'output collection remains active')
+            if record.get('acknowledged'):
+                if uncertain and output_digest != record.get('acknowledged_output_digest'):
+                    raise Rejected(409, 'saved output acknowledgement proof changed')
+            harvest = uncertain and not record.get('acknowledged') and record.get('output_harvested') is not True
+            if harvest:
+                self.active.add(operation)
+        if harvest:
+            try:
+                self.harvest_stopped_output(record)
+            finally:
+                with self.lock:
+                    self.active.discard(operation)
+            # The caller has not yet adopted the newly recovered bytes.
+            raise Rejected(409, 'harvested output must be persisted before acknowledgement')
+        with self.lock:
+            record = self.get(operation)
+            if uncertain and not record.get('acknowledged'):
+                if output_digest != self.output_digest(record):
+                    raise Rejected(409, 'output snapshot has not been adopted')
+                self.update(operation, acknowledged_output_digest=output_digest)
+            record = self.update(operation, acknowledged=True, request={}, stdout='', files=[], displays=[])
+            for suffix in ('.inputs', '.files'):
                 directory = self.root / (operation + suffix)
                 if directory.exists():
                     for path in directory.iterdir():
                         path.unlink()
                     directory.rmdir()
+            sync_directory(self.root)
             return self.public(record)
 
     def start(self, operation):
@@ -699,7 +732,8 @@ class Runner(AllocationJournal):
                 frozen = self.guard(record, "freeze", idle_seconds=self.config["idle_seconds"])
                 if not frozen["writer_frozen"]:
                     raise RuntimeError("Python memory no longer live")
-            self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live)
+            self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
+                        stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
             exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
             directory = self.root / (operation + ".files")
             directory.mkdir(exist_ok=True, mode=0o700)
@@ -753,9 +787,19 @@ class Runner(AllocationJournal):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.25)
+        exported, captured = self.collect_stopped_output(record)
+        operation = record['operation_id']
+        self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
+                    output_harvested=True,
+                    stdout=captured['stdout'], truncated=True, files=exported['files'],
+                    finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped; saved files were recovered and output may be incomplete.'})
+        self.allocation_harvested(self.get(operation))
+        self.close_allocation(record)
+
+    def collect_stopped_output(self, record):
         exported = ({'files': []} if record['request']['kind'] == 'verify' else
                     self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
-        captured = self.guard(record, 'logs')
+        captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
         operation = record['operation_id']
         directory = self.root / (operation + '.files')
         directory.mkdir(exist_ok=True, mode=0o700)
@@ -775,11 +819,17 @@ class Runner(AllocationJournal):
             if digest.hexdigest() != file['digest']:
                 raise RuntimeError('stopped output integrity')
         sync_directory(directory)
-        self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
-                    output_harvested=True,
-                    stdout=captured['stdout'], truncated=True, files=exported['files'],
-                    finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped; saved files were recovered and output may be incomplete.'})
-        self.allocation_harvested(self.get(operation))
+        return exported, captured
+
+    def harvest_stopped_output(self, record):
+        # Never re-run code, reinterpret the semantic outcome, or substitute
+        # shell output.bin for Python's saved stdout/displays.
+        if record.get('termination_confirmed') is not True or self.guard(record, 'status').get('termination_confirmed') is not True:
+            raise Rejected(409, 'physical termination proof unavailable')
+        exported, captured = self.collect_stopped_output(record)
+        self.update(record['operation_id'], output_harvested=True, stdout=captured['stdout'],
+                    files=exported['files'], displays=record.get('displays', []), truncated=True)
+        self.allocation_harvested(self.get(record['operation_id']), idle=False)
         self.close_allocation(record)
 
     def reconcile(self, operation):
@@ -997,7 +1047,8 @@ class Handler(BaseHTTPRequestHandler):
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 < size <= 256:
                     raise Rejected(400, "invalid receipt")
-                return runner.acknowledge(operation, json.loads(self.rfile.read(size))["digest"])
+                body = json.loads(self.rfile.read(size))
+                return runner.acknowledge(operation, body["digest"], body.get("output_digest"))
         session_match = re.fullmatch(r"/v1/sessions/([0-9a-f-]+)(/stop)?", path)
         if session_match:
             if self.command == "GET" and not session_match[2]:

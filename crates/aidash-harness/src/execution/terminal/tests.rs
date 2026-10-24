@@ -12,6 +12,7 @@ struct Scope {
 	denied: bool,
 	input_failed: bool,
 	status: TaskStatus,
+	target: TaskStatus,
 	finished: Option<TaskStatus>,
 	paused: Option<bool>,
 }
@@ -45,6 +46,7 @@ fn scope() -> Scope {
 		denied: false,
 		input_failed: false,
 		status: TaskStatus::Running,
+		target: TaskStatus::Failed,
 		finished: None,
 		paused: None,
 	}
@@ -71,7 +73,7 @@ impl FailureScope for Scope {
 		&self.metadata
 	}
 	fn target(&self) -> TaskStatus {
-		TaskStatus::Failed
+		self.target
 	}
 	async fn remote_grant(&mut self) -> Result<bool> {
 		self.calls.push("grant");
@@ -121,6 +123,7 @@ impl FailureScope for Scope {
 #[tokio::test]
 async fn revoked_remote_cancellation_finishes_without_reaching_home(mut scope: Scope) {
 	scope.metadata.control = RunControl::Cancelled;
+	scope.target = TaskStatus::Cancelled;
 	scope.grant = true;
 	assert!(finish_cancelled(&mut scope).await.unwrap());
 	assert_eq!(scope.finished, Some(TaskStatus::Cancelled));
@@ -131,9 +134,23 @@ async fn revoked_remote_cancellation_finishes_without_reaching_home(mut scope: S
 #[tokio::test]
 async fn local_cancellation_still_requires_live_admission(mut scope: Scope) {
 	scope.metadata.control = RunControl::Cancelled;
+	scope.target = TaskStatus::Cancelled;
 	assert!(!finish_cancelled(&mut scope).await.unwrap());
 	assert_eq!(scope.finished, None);
 	assert_eq!(scope.calls, ["grant"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn cancellation_does_not_replace_saved_failure_delivery(mut scope: Scope) {
+	scope.metadata.control = RunControl::Cancelled;
+	scope.grant = true;
+	assert!(!finish_cancelled(&mut scope).await.unwrap());
+	assert_eq!(scope.finished, None);
+	assert!(scope.calls.is_empty());
+	let result = deliver(&mut scope).await;
+	settle(&mut scope, result).await.unwrap();
+	assert_eq!(scope.finished, Some(TaskStatus::Failed));
 }
 
 #[rstest]

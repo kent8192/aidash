@@ -180,8 +180,15 @@ pub(crate) async fn closed_node_request_in(
 	{
 		return Ok(false);
 	}
-	crate::apps::federation::transactions::repositories::recovery_admission::inbound(
+	if crate::apps::federation::transactions::repositories::recovery_admission::inbound(
 		tx, receiver, sender, subject, request,
+	)
+	.await?
+	{
+		return Ok(true);
+	}
+	crate::apps::execution::repositories::node_cancellations::allows_closed_node_request_in(
+		tx, tenant, receiver, sender, subject, request,
 	)
 	.await
 }
@@ -221,6 +228,9 @@ pub(crate) async fn route_delivery(
 		request,
 	)
 	.await?
+		&& !crate::apps::execution::repositories::node_cancellations::allows_closed_node_delivery_in(
+			tx, own, sender, target, request,
+		).await?
 	{
 		return Ok(None);
 	}
