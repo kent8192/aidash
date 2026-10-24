@@ -1,5 +1,6 @@
 //! Persistent records owned by the authorization app.
 mod authority;
+pub(in crate::apps::identity) use authority::authority_control;
 mod read_dependencies;
 
 mod authorization_bundles;

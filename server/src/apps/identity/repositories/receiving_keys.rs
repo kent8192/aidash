@@ -1,5 +1,6 @@
 //! Authentication-only receiving trust. Every operation runs in its owner's
 //! Tenant transaction; callers retain the current policy and Node locks.
+use super::super::models::authority_control;
 use crate::{Error, Result};
 use aidash_application::ports::federation::inbound::{ReceivingKeyOwner, ReceivingKeys};
 use aidash_domain::nodes::keys::TrustedDeploymentKeys;
@@ -194,6 +195,10 @@ async fn compare_and_advance(
 		.and_where(Expr::col("revision").eq(Expr::value(expected_authorization_revision)))
 		.and_where(Expr::col("enabled").eq(Expr::value(enabled_at_read)))
 		.build(PostgresQueryBuilder);
+	// Classification for this bounded authentication update, not authorization:
+	// the same transaction already holds current policy/owner locks and, for
+	// recovery, the exact durable proof. Ordinary work retains its atomic gate.
+	authority_control(tx).await?;
 	Ok(tx
 		.execute(&sql, convert_values(values))
 		.await?

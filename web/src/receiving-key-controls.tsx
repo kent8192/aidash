@@ -31,14 +31,16 @@ type Selector = RegistrationKeySelector | GraphKeySelector;
 export function ReceivingKeyControl({
   endpoint,
   selector,
+  initialStatus,
 }: {
   endpoint: string;
   selector: Selector;
+  initialStatus?: KeyStatus;
 }) {
   const { t } = useI18n();
   const client = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [status, setStatus] = useState<KeyStatus | null>(null);
+  const [open, setOpen] = useState(initialStatus !== undefined);
+  const [status, setStatus] = useState<KeyStatus | null>(initialStatus ?? null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [kid, setKid] = useState("");
@@ -101,8 +103,14 @@ export function ReceivingKeyControl({
           /* Keep the stale form unusable. */
         }
         setError("receivingKeyConflict");
-      } else
+      } else {
+        if (
+          reason instanceof ApiError &&
+          [401, 403, 404, 410].includes(reason.status)
+        )
+          setStatus(null);
         setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
       setBusy(false);
     }
@@ -180,6 +188,91 @@ export function ReceivingKeyControl({
         </Modal>
       )}
     </>
+  );
+}
+
+/** Known immutable names address the existing control directly; catalog
+ * enumeration and the ordinary live Node selector do not establish authority. */
+export function KnownRegistrationKeyControls({ tenant }: { tenant: string }) {
+  const { t } = useI18n();
+  const [node, setNode] = useState("");
+  const [source, setSource] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState<{
+    endpoint: string;
+    source: string;
+    status: KeyStatus;
+  } | null>(null);
+  const clear = () => {
+    setSelected(null);
+    setError("");
+  };
+  const lookup = async () => {
+    if (busy || !node.trim() || !source.trim()) return;
+    clear();
+    setBusy(true);
+    const endpoint = `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node.trim())}/registration-keys`;
+    const sourceNode = source.trim();
+    try {
+      const status = await apiFetch<KeyStatus>(
+        `${endpoint}?${new URLSearchParams({ source_node: sourceNode })}`,
+      );
+      setSelected({ endpoint, source: sourceNode, status });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Panel title={t("receivingKeyKnownPair")}>
+      <Hint>{t("receivingKeyKnownHelp")}</Hint>
+      <form
+        className="grid min-w-0 gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void lookup();
+        }}
+      >
+        <Field label={t("receivingKeyReceiver")}>
+          <Input
+            value={node}
+            required
+            maxLength={128}
+            disabled={busy}
+            onChange={(event) => {
+              clear();
+              setNode(event.target.value);
+            }}
+          />
+        </Field>
+        <Field label={t("receivingKeySource")}>
+          <Input
+            value={source}
+            required
+            maxLength={4096}
+            disabled={busy}
+            onChange={(event) => {
+              clear();
+              setSource(event.target.value);
+            }}
+          />
+        </Field>
+        <Button type="submit" disabled={busy || !node.trim() || !source.trim()}>
+          {t("receivingKeyLookup")}
+        </Button>
+      </form>
+      {error && <Alert>{error}</Alert>}
+      {selected && (
+        <ReceivingKeyControl
+          key={`${selected.endpoint}/${selected.source}`}
+          endpoint={selected.endpoint}
+          selector={{ source_node: selected.source }}
+          initialStatus={selected.status}
+        />
+      )}
+    </Panel>
   );
 }
 

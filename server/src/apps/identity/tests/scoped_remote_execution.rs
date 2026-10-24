@@ -8,6 +8,8 @@ use upstream_fixtures::reply;
 mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
 mod native_memory;
+#[path = "../../execution/tests/support/sender_schedule.rs"]
+mod sender_schedule;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]
 mod tenant_openrouter;
 use aidash_server::{
@@ -3036,6 +3038,12 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	#[from(signal_state)] receiver_notify: Arc<Notify>,
 ) {
 	let mut p = scoped_pair;
+	let a_file = common::peering::key_file(&p.a).unwrap();
+	let b_file = common::peering::key_file(&p.b).unwrap();
+	let mut a_keys = sender_schedule::SenderSchedule::install(&mut p.a, a_file).await;
+	let mut b_keys = sender_schedule::SenderSchedule::install(&mut p.b, b_file).await;
+	p.aa.context.set_singleton(p.a.clone());
+	p.ba.context.set_singleton(p.b.clone());
 	p.step().await;
 	for server in p.servers.drain(..) {
 		server.abort();
@@ -3060,29 +3068,14 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 			.artifacts
 			.is_empty()
 	);
-	reconnect(&mut p.a, source_notify).await;
-	reconnect(&mut p.b, receiver_notify).await;
-	// Act: rebuild both native applications over the reconnected durable stores.
-	p.aa = common::application(p.a.clone()).await;
-	p.ba = common::application(p.b.clone()).await;
-	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
-		let app: Arc<dyn reinhardt::Handler> = Arc::new(
-			aidash_server::routes()
-				.into_server()
-				.with_di_context(application.context.clone())
-				.with_middleware(SourceReplyMiddleware(p.drop_reply.clone())),
-		);
-		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
-		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
-			.await
-			.unwrap();
-		// Act: replace the stopped peer transport at its original address.
-		p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
-			Arc::new(listener),
-			app,
-			Some(application.context.clone()),
-		));
-	}
+	restart_scoped_peers(
+		&mut p,
+		source_notify.clone(),
+		receiver_notify.clone(),
+		&mut a_keys,
+		&mut b_keys,
+	)
+	.await;
 	let replay = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert_eq!(replay.0, 200, "{}", replay.1);
 	assert_eq!(replay.1["run_id"], p.admission.to_string());
@@ -3099,6 +3092,62 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	)
 	.await;
 	assert_eq!(resumed.0, 200, "{}", resumed.1);
+	// The already-admitted Run reaches a genuinely held provider before either
+	// authoritative schedule activates. Tokens and receiver clocks stay real.
+	p.model.hold.store(true, Ordering::Release);
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
+	let held = tokio::spawn(async move { worker.worker_once().await.unwrap() });
+	tokio::time::timeout(
+		std::time::Duration::from_secs(60),
+		p.model.entered.notified(),
+	)
+	.await
+	.expect("recovered Run must reach the held provider");
+	assert_eq!(p.run().await.id, p.admission);
+	assert!(!p.run().await.phase().is_terminal());
+	a_keys.activate(&p.a).await;
+	b_keys.activate(&p.b).await;
+	p.model.hold.store(false, Ordering::Release);
+	p.model.release.notify_one();
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_secs(60), held)
+			.await
+			.unwrap()
+			.unwrap()
+	);
+	let replay = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(replay.0, 200, "{}", replay.1);
+	assert_eq!(replay.1["run_id"], p.admission.to_string());
+	a_keys.assert_selected(true);
+	b_keys.assert_selected(true);
+	// Each receiver must really have learned B before sender-only retirement.
+	a_keys
+		.assert_trusted_by(&p.b, &node_of(&p.b), &node_of(&p.a))
+		.await;
+	b_keys
+		.assert_trusted_by(&p.a, &node_of(&p.a), &node_of(&p.b))
+		.await;
+	a_keys.retire_sender(&p.a).await;
+	b_keys.retire_sender(&p.b).await;
+	restart_scoped_peers(
+		&mut p,
+		source_notify,
+		receiver_notify,
+		&mut a_keys,
+		&mut b_keys,
+	)
+	.await;
+	let replay = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(replay.0, 200, "{}", replay.1);
+	assert_eq!(replay.1["run_id"], p.admission.to_string());
+	a_keys
+		.assert_trusted_by(&p.b, &node_of(&p.b), &node_of(&p.a))
+		.await;
+	b_keys
+		.assert_trusted_by(&p.a, &node_of(&p.a), &node_of(&p.b))
+		.await;
 	for _ in 0..10 {
 		if p.run().await.phase().as_str() == "COMPLETED" {
 			break;
@@ -3152,7 +3201,47 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 		1
 	);
 	assert_eq!(p.requests.lock().await.len(), 2);
+	a_keys.assert_selected(false);
+	b_keys.assert_selected(false);
 	p.close().await;
+}
+
+/// Reuse the owner's actual stable-origin restart, now reloading SQL/File
+/// schedules too. No direct token or persisted schedule/journal edits.
+async fn restart_scoped_peers(
+	p: &mut Pair,
+	source_notify: Arc<Notify>,
+	receiver_notify: Arc<Notify>,
+	a_keys: &mut sender_schedule::SenderSchedule,
+	b_keys: &mut sender_schedule::SenderSchedule,
+) {
+	for server in p.servers.drain(..) {
+		server.abort();
+		let _ = server.stopped().await;
+	}
+	reconnect(&mut p.a, source_notify).await;
+	reconnect(&mut p.b, receiver_notify).await;
+	a_keys.reload(&mut p.a).await;
+	b_keys.reload(&mut p.b).await;
+	p.aa = common::application(p.a.clone()).await;
+	p.ba = common::application(p.b.clone()).await;
+	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
+		let app: Arc<dyn reinhardt::Handler> = Arc::new(
+			aidash_server::routes()
+				.into_server()
+				.with_di_context(application.context.clone())
+				.with_middleware(SourceReplyMiddleware(p.drop_reply.clone())),
+		);
+		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
+		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
+			.await
+			.unwrap();
+		p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
+			Arc::new(listener),
+			app,
+			Some(application.context.clone()),
+		));
+	}
 }
 
 #[rstest::rstest]

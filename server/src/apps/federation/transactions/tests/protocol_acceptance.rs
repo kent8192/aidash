@@ -1,6 +1,8 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "../../../execution/tests/support/sender_schedule.rs"]
+mod sender_schedule;
 #[path = "../../../execution/tests/support/worker_process.rs"]
 mod worker_process;
 use aidash_application::tenancy::TEST_FIXTURE;
@@ -844,6 +846,12 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 	#[future(awt)] pair: Pair,
 ) {
 	let (mut a, mut b, manifest, wa, wb) = pair;
+	let a_file = common::peering::key_file(&a.f).unwrap();
+	let b_file = common::peering::key_file(&b.f).unwrap();
+	let mut a_keys = sender_schedule::SenderSchedule::install(&mut a.f, a_file).await;
+	let mut b_keys = sender_schedule::SenderSchedule::install(&mut b.f, b_file).await;
+	a.application.context.set_singleton(a.f.clone());
+	b.application.context.set_singleton(b.f.clone());
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
@@ -853,12 +861,63 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 	assert!(!waiting.visible);
 	assert!(waiting.last_error.is_some());
 	unavailable(&a, wa).await;
+	a_keys.activate(&a.f).await;
+	b_keys.activate(&b.f).await;
 	a.restart().await;
 	b.restart().await;
+	a_keys.reload(&mut a.f).await;
+	b_keys.reload(&mut b.f).await;
+	a.application.context.set_singleton(a.f.clone());
+	b.application.context.set_singleton(b.f.clone());
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
+	// Real remote Finish and its reverse durable-decision read must learn B
+	// before virtualizing only the sender's retirement clock.
+	steps(&a, manifest.id, 1).await;
+	let applied = coordinator::status(&a.f, manifest.id).await.unwrap();
+	assert!(
+		applied.last_error.is_none(),
+		"first pending-COMMIT Finish failed: recorded last_error={:?}",
+		applied.last_error
+	);
+	assert_eq!(applied.decision.as_deref(), Some("COMMIT"));
+	assert!(!applied.visible);
+	a_keys.assert_selected(true);
+	b_keys.assert_selected(true);
+	a_keys.assert_trusted_by(&b.f, &b.address, &a.address).await;
+	b_keys.assert_trusted_by(&a.f, &a.address, &b.address).await;
+	// Authentication-only persistence must neither release visibility nor allow
+	// an ordinary registration edit through the still-pending atomic barrier.
+	unavailable(&a, wa).await;
+	unavailable(&b, wb).await;
+	assert_eq!(
+		b.request(
+			reqwest::Method::POST,
+			&common::peering::registration_path("acme", b.node_address().node.as_str()),
+			Some(json!({"source_node":a.address,"atomic_transactions":false,"enabled":false,"expected_revision":1})),
+		)
+		.await.0,
+		503
+	);
+	a_keys.retire_sender(&a.f).await;
+	b_keys.retire_sender(&b.f).await;
+	// Reconnect again with learned trust and reload authoritative File sources.
+	a.restart().await;
+	b.restart().await;
+	a_keys.reload(&mut a.f).await;
+	b_keys.reload(&mut b.f).await;
+	a.application.context.set_singleton(a.f.clone());
+	b.application.context.set_singleton(b.f.clone());
+	a_keys.assert_trusted_by(&b.f, &b.address, &a.address).await;
+	b_keys.assert_trusted_by(&a.f, &a.address, &b.address).await;
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("COMMIT"));
+	a_keys.assert_selected(false);
+	b_keys.assert_selected(false);
+	assert_eq!(
+		complete(&a, manifest.id).await.decision.as_deref(),
+		Some("COMMIT")
+	);
 	assert_eq!(
 		a.f.store
 			.workspace(&TEST_FIXTURE, wa)
@@ -2198,6 +2257,12 @@ async fn node_closure_preserves_decided_recovery_but_denies_new_or_misbound_requ
 		.0,
 		200
 	);
+	let a_file = common::peering::key_file(&a.f).unwrap();
+	let b_file = common::peering::key_file(&b.f).unwrap();
+	let mut a_keys = sender_schedule::SenderSchedule::install(&mut a.f, a_file).await;
+	let mut b_keys = sender_schedule::SenderSchedule::install(&mut b.f, b_file).await;
+	a.application.context.set_singleton(a.f.clone());
+	b.application.context.set_singleton(b.f.clone());
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
@@ -2211,6 +2276,8 @@ async fn node_closure_preserves_decided_recovery_but_denies_new_or_misbound_requ
 		Some("COMMIT")
 	);
 	b.restart().await;
+	b_keys.reload(&mut b.f).await;
+	b.application.context.set_singleton(b.f.clone());
 	for node in [&a, &b] {
 		let name = node.node_address().node;
 		let (status, value) = node
@@ -2222,8 +2289,34 @@ async fn node_closure_preserves_decided_recovery_but_denies_new_or_misbound_requ
 			.await;
 		assert_eq!(status, 200, "{value}");
 	}
+	let pending = coordinator::status(&a.f, manifest.id).await.unwrap();
+	assert_eq!(pending.decision.as_deref(), Some("COMMIT"));
+	assert!(!pending.visible && !pending.complete);
+	// The real closed Nodes retain their exact already-decided obligation.
+	// Activate before either participant releases the pending visibility gate.
+	a_keys.activate(&a.f).await;
+	b_keys.activate(&b.f).await;
 	a.restart().await;
 	b.restart().await;
+	a_keys.reload(&mut a.f).await;
+	b_keys.reload(&mut b.f).await;
+	a.application.context.set_singleton(a.f.clone());
+	b.application.context.set_singleton(b.f.clone());
+	steps(&a, manifest.id, 1).await;
+	let learned = coordinator::status(&a.f, manifest.id).await.unwrap();
+	assert!(
+		learned.last_error.is_none(),
+		"first closed-node Finish failed: recorded last_error={:?}",
+		learned.last_error
+	);
+	assert_eq!(learned.decision.as_deref(), Some("COMMIT"));
+	assert!(!learned.visible && !learned.complete);
+	a_keys.assert_selected(true);
+	b_keys.assert_selected(true);
+	a_keys.assert_trusted_by(&b.f, &b.address, &a.address).await;
+	b_keys.assert_trusted_by(&a.f, &a.address, &b.address).await;
+	unavailable(&a, wa).await;
+	unavailable(&b, wb).await;
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("COMMIT"));
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
