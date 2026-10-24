@@ -37,13 +37,13 @@ TOKEN = "acceptance-access-token"
 API_TIMEOUT = 60
 
 
-def api_request(base, path, body=None, token=TOKEN, headers=None):
+def api_request(base, path, body=None, token=TOKEN, headers=None, timeout=API_TIMEOUT):
     request = urllib.request.Request(
         base + path,
         data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})},
     )
-    with urllib.request.urlopen(request, timeout=API_TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -683,7 +683,98 @@ def main():
         for proxy in browser_provider_proxies:
             proxy.start()
         browser_report = logs / "browser-report.json"
-        subprocess.run(["npx", "playwright", "test", *grep_args, "--reporter=list,json"], cwd=ROOT / "web", check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"})
+        browser_env = {**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}
+        lifecycle_stop = threading.Event()
+        lifecycle_errors = []
+        lifecycle_thread = None
+        if args.browser_suite:
+            # This acceptance owner's context has only its isolated Subject credential.
+            # DB, Deployment Key and provider settings remain in node_env/launch.
+            lifecycle_dir = pathlib.Path(profile_directory.name) / "node-lifecycle"
+            lifecycle_dir.mkdir(mode=0o700)
+            lifecycle_tenant, lifecycle_subject = tenant_subject(base_a, f"Node lifecycle {run_id}", "lifecycle-member")
+            sibling, _ = default_node(base_a, lifecycle_tenant)
+            target = api_request(base_a, f"/api/tenants/{lifecycle_tenant}/nodes", {"label": "Lifecycle target"})["name"]
+            context_path = lifecycle_dir / "context.json"
+            context_path.write_text(json.dumps({"tenant": lifecycle_tenant, "target": target, "sibling": sibling,
+                                                "subject": {"name": "lifecycle-member", "token": lifecycle_subject["token"]}}))
+            context_path.chmod(0o600)
+            browser_env["AIDASH_E2E_NODE_LIFECYCLE_FIXTURE"] = str(context_path)
+
+            def lifecycle_worker():
+                child = None
+                evidence = {"tenant": lifecycle_tenant, "node": target, "source": source, "binary_sha256": binary_sha256}
+                try:
+                    request_path = lifecycle_dir / "purge-request.json"
+                    while not lifecycle_stop.wait(0.1):
+                        if request_path.exists():
+                            break
+                    else:
+                        return
+                    requested = json.loads(request_path.read_text())
+                    assert requested["tenant"] == lifecycle_tenant and requested["node"] == target, "Wrong lifecycle target"
+                    path = f"/api/tenants/{lifecycle_tenant}/nodes?include_deleted=true&offset=0&limit=25"
+                    row = next(row for row in api_request(base_a, path, timeout=5) if row["name"] == target)
+                    # A browser signal is not a receipt: reread the committed exact
+                    # deletion cycle from the actual owning database before launch.
+                    assert row["state"] == "deleting" and row["deletion"]["purge_step"] is not None, "Purge request not committed"
+                    assert row["deletion"]["id"] == requested["deletion_id"], "Wrong deletion cycle"
+                    assert row["retained_storage_bytes"] == requested["expected_bytes"] > 0, "Wrong retained payload amount"
+                    assert source == revision(), "Source changed before lifecycle worker"
+                    assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed before lifecycle worker"
+                    evidence["worker_log"] = f"{db_a}-worker-{len(children)}.log"
+                    child = launch(node_a, db_a, port_a, "worker")
+                    evidence.update({"worker_pid": child.pid, "command": [str(pathlib.Path(args.binary).resolve()), "worker"],
+                                     "deletion_id": row["deletion"]["id"], "committed_step": row["deletion"]["purge_step"],
+                                     "retained_storage_bytes_before": row["retained_storage_bytes"]})
+                    deadline = time.monotonic() + 90
+                    while not lifecycle_stop.is_set() and time.monotonic() < deadline:
+                        if child.poll() is not None:
+                            raise RuntimeError("Owned lifecycle worker exited before purge")
+                        row = next(row for row in api_request(base_a, path, timeout=5) if row["name"] == target)
+                        if row["state"] == "purged":
+                            assert row["retained_storage_bytes"] == 0 and row["deletion"]["purged_at"], "Incomplete purge projection"
+                            evidence.update({"state": "purged", "retained_storage_bytes": 0, "purged_at": row["deletion"]["purged_at"]})
+                            break
+                        if lifecycle_stop.wait(0.2):
+                            break
+                    else:
+                        raise TimeoutError("Owned lifecycle worker did not complete purge")
+                    assert evidence.get("state") == "purged", "Browser ended before purge"
+                except Exception as error:
+                    # Do not copy request bodies, credentials or private IO errors.
+                    evidence["failure"] = type(error).__name__
+                    lifecycle_errors.append(type(error).__name__)
+                finally:
+                    if child is not None:
+                        try:
+                            if child.poll() is None:
+                                child.terminate()
+                            try:
+                                child.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                child.kill()
+                                child.wait(timeout=10)
+                        except Exception as error:
+                            evidence["cleanup_failure"] = type(error).__name__
+                            lifecycle_errors.append(type(error).__name__)
+                        evidence["worker_stopped"] = child.poll() is not None
+                    (lifecycle_dir / "worker-evidence.json").write_text(json.dumps(evidence, indent=2))
+
+            lifecycle_thread = threading.Thread(target=lifecycle_worker, name="node-lifecycle-worker")
+            lifecycle_thread.start()
+        try:
+            subprocess.run(["npx", "playwright", "test", *grep_args, "--reporter=list,json"], cwd=ROOT / "web", check=True, env=browser_env)
+        finally:
+            lifecycle_stop.set()
+            if lifecycle_thread is not None:
+                lifecycle_thread.join(timeout=30)
+                assert not lifecycle_thread.is_alive(), "Owned lifecycle worker cleanup did not finish"
+                # Sanitized evidence survives the private credential directory.
+                evidence_path = lifecycle_dir / "worker-evidence.json"
+                if evidence_path.exists():
+                    (logs / "node-lifecycle-worker.json").write_bytes(evidence_path.read_bytes())
+        assert not lifecycle_errors, f"Node lifecycle worker fixture failed: {lifecycle_errors}"
         return json.loads(browser_report.read_text())["stats"]["expected"]
 
     def launch(node, database, port, mode):
