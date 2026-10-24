@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::provider_access::KeylessAccess;
 use std::sync::Arc;
 #[rstest::rstest]
 #[tokio::test]
@@ -60,6 +61,220 @@ async fn native_http_dns_resolution_is_bounded_by_the_tool_deadline() {
 	assert!(tokio::time::Instant::now() >= deadline);
 }
 
+mod destinations {
+	use super::*;
+	use aidash_domain::keyless::PermittedOrigins;
+	use axum::{
+		Json, Router,
+		http::StatusCode,
+		response::{IntoResponse, Redirect, Response},
+		routing::post,
+	};
+	use std::time::Duration;
+
+	fn tools(permitted: &[&str]) -> HttpTools {
+		HttpTools::new(
+			KeylessAccess::permitting(PermittedOrigins::parse(permitted).unwrap()),
+			ToolClients::new().unwrap(),
+		)
+	}
+
+	fn http(endpoint: String) -> ToolConfig {
+		ToolConfig::Http {
+			endpoint,
+			replay: "read_only".into(),
+			secret: None,
+		}
+	}
+
+	fn mcp(endpoint: String) -> ToolConfig {
+		ToolConfig::Mcp {
+			endpoint,
+			tool_name: "echo".into(),
+			replay: "read_only".into(),
+			secret: None,
+			idempotency_argument: None,
+		}
+	}
+
+	async fn echo_mcp(Json(body): Json<Value>) -> Response {
+		let Some(id) = body.get("id") else {
+			return StatusCode::ACCEPTED.into_response();
+		};
+		let result = match body["method"].as_str() {
+			Some("initialize") => json!({
+				"protocolVersion": body["params"]["protocolVersion"],
+				"capabilities": {"tools": {}},
+				"serverInfo": {"name": "fixture", "version": "1.0.0"}
+			}),
+			Some("tools/call") => json!({
+				"content": [{"type": "text", "text": body["params"]["arguments"].to_string()}],
+				"isError": false
+			}),
+			method => panic!("unexpected MCP method {method:?}"),
+		};
+		Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+	}
+
+	fn fixture() -> Router {
+		Router::new()
+			.route(
+				"/echo",
+				post(|Json(body): Json<Value>| async move { Json(body) }),
+			)
+			.route("/mcp", post(echo_mcp))
+			.route("/moved", post(|| async { Redirect::temporary("/echo") }))
+	}
+
+	async fn serve() -> (tokio::net::TcpListener, u16) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let port = listener.local_addr().unwrap().port();
+		(listener, port)
+	}
+
+	async fn never_accepts(listener: &tokio::net::TcpListener) {
+		assert!(
+			tokio::time::timeout(Duration::from_millis(200), listener.accept())
+				.await
+				.is_err(),
+			"no connection may reach the listener"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_permitted_origin_is_reached_over_http_and_mcp() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
+		let tools = tools(&[&format!("http://127.0.0.1:{port}")]);
+		let base = format!("http://127.0.0.1:{port}");
+		let input = json!({"topic": "tools"});
+
+		assert_eq!(
+			tools
+				.invoke(&http(format!("{base}/echo")), input.clone(), "key-1", None)
+				.await
+				.unwrap(),
+			input
+		);
+		let result = tools
+			.invoke(&mcp(format!("{base}/mcp")), input.clone(), "key-2", None)
+			.await
+			.unwrap();
+		assert_eq!(result["content"][0]["text"], input.to_string());
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn legacy_public_http_endpoints_are_refused_for_http_and_mcp() {
+		let (listener, port) = serve().await;
+		let address = listener.local_addr().unwrap();
+		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
+		// Reach a local fixture if an old immutable snapshot bypasses admission.
+		let tools = HttpTools::new(
+			KeylessAccess::default(),
+			ToolClients {
+				permitted: reqwest::Client::new(),
+				public: reqwest::Client::builder()
+					.no_proxy()
+					.resolve("public.example", address)
+					.build()
+					.unwrap(),
+			},
+		);
+		let mut refused = Vec::new();
+		for config in [
+			http(format!("http://public.example:{port}/echo")),
+			mcp(format!("http://public.example:{port}/mcp")),
+		] {
+			refused.push(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::Forbidden)
+			));
+		}
+		server.abort();
+		assert_eq!(refused, [true, true]);
+	}
+
+	#[tokio::test]
+	async fn an_address_literal_that_is_not_permitted_is_refused_before_connecting() {
+		let (listener, port) = serve().await;
+		let tools = tools(&[]);
+		for config in [
+			http(format!("http://127.0.0.1:{port}/echo")),
+			mcp(format!("http://127.0.0.1:{port}/mcp")),
+		] {
+			assert!(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::Forbidden)
+			));
+		}
+		never_accepts(&listener).await;
+	}
+
+	#[tokio::test]
+	async fn permitting_one_origin_does_not_permit_another_port() {
+		let (listener, port) = serve().await;
+		let tools = tools(&[&format!("http://127.0.0.1:{}", port.wrapping_add(1))]);
+		assert!(matches!(
+			tools
+				.invoke(
+					&http(format!("http://127.0.0.1:{port}/echo")),
+					json!({}),
+					"key",
+					None,
+				)
+				.await,
+			Err(Error::Forbidden)
+		));
+		never_accepts(&listener).await;
+	}
+
+	#[tokio::test]
+	async fn a_name_resolving_to_a_private_address_is_refused_for_http_and_mcp() {
+		let (listener, port) = serve().await;
+		let tools = tools(&[]);
+		for config in [
+			http(format!("https://localhost:{port}/echo")),
+			mcp(format!("https://localhost:{port}/mcp")),
+		] {
+			assert!(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::Forbidden)
+			));
+		}
+		never_accepts(&listener).await;
+	}
+
+	#[tokio::test]
+	async fn a_permitted_origin_cannot_redirect_a_call_elsewhere() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
+		let base = format!("http://127.0.0.1:{port}");
+		let tools = tools(&[&base]);
+		for config in [http(format!("{base}/moved")), mcp(format!("{base}/moved"))] {
+			assert!(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::External(_))
+			));
+		}
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn an_unreachable_permitted_origin_stays_an_outage() {
+		let (listener, port) = serve().await;
+		drop(listener);
+		let base = format!("http://127.0.0.1:{port}");
+		let tools = tools(&[&base]);
+		for config in [http(format!("{base}/echo")), mcp(format!("{base}/mcp"))] {
+			assert!(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::External(_))
+			));
+		}
+	}
+}
+
 /// Serves one JSON route that echoes the request's Authorization header, and
 /// reports every header value it saw.
 async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
@@ -89,9 +304,7 @@ async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
 #[tokio::test]
 async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothing_otherwise() {
 	let (endpoint, server) = authorization_echo().await;
-	let tools = HttpTools {
-		client: reqwest::Client::new(),
-	};
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let config = ToolConfig::Http {
 		endpoint,
 		replay: "idempotent".into(),
@@ -137,9 +350,7 @@ async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret
 			Json(json!({"jsonrpc":"2.0","id":message["id"],"result":result})).into_response()
 		}
 	}))).await;
-	let tools = HttpTools {
-		client: reqwest::Client::new(),
-	};
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let config = ToolConfig::Mcp {
 		endpoint,
 		tool_name: "lookup".into(),
@@ -327,7 +538,7 @@ async fn an_mcp_endpoint_outside_the_permitted_origins_is_never_contacted() {
 	assert!(
 		matches!(
 			mcp_read_only_hint(&clients, &permitting([]), &name, "lookup").await,
-			Err(Error::External(_))
+			Err(Error::Forbidden)
 		),
 		"a name resolving to loopback is refused"
 	);
@@ -365,4 +576,30 @@ async fn a_permitted_mcp_origin_follows_no_redirects() {
 	));
 	server.abort();
 	let _ = server.await;
+}
+
+#[tokio::test]
+async fn an_unpermitted_plaintext_mcp_hint_is_refused_before_discovery() {
+	let (endpoint, server) = serve(mcp_server(
+		vec![
+			json!([{"name":"lookup", "inputSchema":{"type":"object"}, "annotations":{"readOnlyHint":true}}]),
+		],
+		false,
+	))
+	.await;
+	let address: std::net::SocketAddr = reqwest::Url::parse(&endpoint)
+		.unwrap()
+		.socket_addrs(|| None)
+		.unwrap()[0];
+	let endpoint = format!("http://public.example:{}/mcp", address.port());
+	let public = reqwest::Client::builder()
+		.no_proxy()
+		.resolve("public.example", address)
+		.build()
+		.unwrap();
+	let mut clients = clients();
+	clients.public = public;
+	let result = mcp_read_only_hint(&clients, &KeylessAccess::default(), &endpoint, "lookup").await;
+	server.abort();
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 }

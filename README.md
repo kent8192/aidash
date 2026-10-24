@@ -289,6 +289,8 @@ Direct OpenAI and Anthropic inference configurations are no longer supported. Re
 
 **Upgrading past #256 (breaking):** a model or embedding configuration without `provider_credential` now connects only to public addresses. An existing one that points at a private, loopback or in-cluster server, such as a local Ollama, stops with an authority failure until a Deployment Administrator lists its origin in `[keyless_endpoints] permitted_private_origins`, `AIDASH_KEYLESS_PRIVATE_ORIGINS` or the Helm value `keylessEndpoints.permittedPrivateOrigins`.
 
+**Upgrading past #376 (breaking):** Tenant HTTP and MCP tool endpoints, and the remote MCP servers of Agent Plugins, now follow the same rule and share the same list. A tool registered at a private, loopback or in-cluster address is refused when it is called until a Deployment Administrator lists its origin, and registering one is refused with `TOOL_ENDPOINT_FORBIDDEN`. A host name needs HTTPS unless its origin is listed.
+
 The Compose Vite service proxies API requests to the backend container. When
 running Vite directly on the host, set `AIDASH_BACKEND` to the backend's URL; Vite
 defaults to `http://127.0.0.1:8080` outside Compose.
@@ -445,6 +447,11 @@ Aidash uses two PostgreSQL logins, so that row-level security can bind the serve
 Servers and workers (`serve`, `server`, `worker`, `runserver` and `runworker`) refuse to start when their login is a superuser, has `BYPASSRLS` or owns any database object, and they no longer apply migrations: they start only once `aidash migrate` has applied every migration. A PostgreSQL superuser provisions the roles once: it creates them, makes `aidash_owner` own the database, creates the `pg_jsonschema`, `vector` and `pgroonga` extensions, and grants the default privileges. The bundled PostgreSQL image does this on a new data directory when `AIDASH_OWNER_PASSWORD` and `AIDASH_SERVER_PASSWORD` are set, as Compose and the local Kubernetes manifests do; `deploy/postgres/init-roles.sh` lists the statements for other servers. A Compose volume created before these roles must be recreated with `docker compose down -v`.
 
 ## CI and coverage
+
+Application PRs run **CI**. Merges into `develop/0.1.0` and other `develop/**`
+branches run **Release CI**, which reuses the same validation suite and supplies
+the successful source evidence for staging and Release PR automation. Main
+pushes retain CI's release verification.
 
 CI runs Trunk, Clippy, eight Rust test partitions, a separate coverage upload, Bruno API contracts, infrastructure checks, collaboration browser tests, and the PostgreSQL/NATS/Chromium acceptance suite in separate jobs. Each Cargo test target belongs to exactly one partition; the inventory is derived from locked Cargo metadata and validated before execution. Dependency caches are isolated by partition. All eight LCOV reports are required and uploaded together under the same Rust coverage flag. `CI Success` requires every CI job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `crates/` and `server/src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
 

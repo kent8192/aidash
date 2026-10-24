@@ -974,7 +974,7 @@ def main(argv=None):
     live_command.add_argument("--server-revision", required=True,
                               help="deployed source fingerprint of the evaluated Node: 7 to 64 lowercase "
                                    "hexadecimal characters (a git commit or SHA-256)")
-    live_command.add_argument("--tool-endpoint", default="http://127.0.0.1:9/aidash-fixed-task-evaluation",
+    live_command.add_argument("--tool-endpoint", default="https://tools.invalid/aidash-fixed-task-evaluation",
                               help="endpoint declared by fixture tools; approvals for them are denied")
     live_command.add_argument("--provider-credential", help="connected Tenant Provider Credential ID")
     live_command.add_argument("--execution-estimator", choices=("bytes", "calibrated"), default="bytes",

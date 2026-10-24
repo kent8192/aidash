@@ -2,13 +2,16 @@
 use crate::{
 	Error, Result,
 	ports::{bindings::ProviderCatalog, registry::CoreToolCatalog},
+	provider_access::KeylessAccess,
 };
 use aidash_domain::exposure::{
 	self, CapabilityIdentity, CapabilityKind, DeferredBudgets, ExposureState,
 };
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
+	agent_plugin::McpServer,
 	configuration::validate_endpoint,
+	keyless::Destination,
 	model::ModelConfig,
 	nodes::DeploymentId,
 	registry::{AgentConfig, ClusterConfig, Entry},
@@ -28,10 +31,18 @@ fn reject_deployment_secret(transport: Option<&Value>) -> Result<()> {
 	Ok(())
 }
 
+enum EndpointRefusal {
+	NonPublic,
+	PlainHttp,
+}
+
 #[derive(Clone)]
 pub struct DefinitionValidation {
 	provider_credentials_enabled: bool,
 	plan_connections_enabled: bool,
+	/// A Tenant chooses its tool endpoints, so they follow the Keyless endpoint
+	/// rule (ADR 0036, #376). Without origins, only public addresses pass.
+	keyless: KeylessAccess,
 	tenant_secrets_enabled: bool,
 	egress_limits: aidash_domain::egress::Limits,
 	core_tools: Arc<dyn CoreToolCatalog>,
@@ -41,10 +52,73 @@ impl DefinitionValidation {
 		Self {
 			provider_credentials_enabled: false,
 			plan_connections_enabled: false,
+			keyless: KeylessAccess::default(),
 			tenant_secrets_enabled: false,
 			egress_limits: aidash_domain::egress::Limits::default(),
 			core_tools,
 		}
+	}
+	/// The Deployment's permitted private origins. Every clone of `origins`
+	/// shares one list, so origins added later still count.
+	pub fn with_keyless_origins(mut self, origins: KeylessAccess) -> Self {
+		self.keyless = origins;
+		self
+	}
+	/// Why an endpoint at `origin` may not be called, or `None` when it may.
+	fn refused_endpoint(&self, origin: &str) -> Result<Option<EndpointRefusal>> {
+		Ok(match self.keyless.destination(origin)? {
+			Destination::Forbidden => Some(EndpointRefusal::NonPublic),
+			Destination::PublicOnly if !origin.starts_with("https://") => {
+				Some(EndpointRefusal::PlainHttp)
+			}
+			Destination::Permitted | Destination::PublicOnly => None,
+		})
+	}
+	fn validate_tool_endpoint(&self, endpoint: &str) -> Result<()> {
+		let url =
+			url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+		match self.refused_endpoint(&url.origin().ascii_serialization())? {
+			None => Ok(()),
+			Some(EndpointRefusal::NonPublic) => Err(Error::Invalid(
+				"TOOL_ENDPOINT_FORBIDDEN: a tool endpoint at a non-public address needs its origin in [keyless_endpoints] permitted_private_origins"
+					.into(),
+			)),
+			Some(EndpointRefusal::PlainHttp) => Err(Error::Invalid(
+				"TOOL_ENDPOINT_FORBIDDEN: tool endpoints require HTTPS unless the Deployment permits their origin"
+					.into(),
+			)),
+		}
+	}
+	/// Remote MCP servers of the plugins an Agent takes in follow the same rule.
+	fn validate_plugin_servers(
+		&self,
+		bindings: &aidash_domain::registry::bindings::AgentBindings,
+	) -> Result<()> {
+		for plugin in &bindings.agent_plugins {
+			self.validate_agent_plugin(plugin)?;
+		}
+		Ok(())
+	}
+	/// Enforce the Deployment's endpoint policy before an imported plugin is stored.
+	pub fn validate_agent_plugin(
+		&self,
+		plugin: &aidash_domain::agent_plugin::AgentPluginRef,
+	) -> Result<()> {
+		for (name, server) in &plugin.servers {
+			let McpServer::Remote(remote) = server else {
+				continue;
+			};
+			let reason = match self.refused_endpoint(&remote.url.origin().ascii_serialization())? {
+				None => continue,
+				Some(EndpointRefusal::NonPublic) => "",
+				Some(EndpointRefusal::PlainHttp) => " needs HTTPS unless its origin is permitted",
+			};
+			return Err(Error::Invalid(format!(
+				"AGENT_PLUGIN_SERVER_FORBIDDEN: {}/{name}{reason}",
+				plugin.name
+			)));
+		}
+		Ok(())
 	}
 	pub fn with_egress_limits(mut self, limits: aidash_domain::egress::Limits) -> Self {
 		self.egress_limits = limits;
@@ -236,6 +310,7 @@ impl DefinitionValidation {
 				let input: aidash_domain::registry::bindings::AgentBindings =
 					serde_json::from_value(e.config.clone())?;
 				input.validate()?;
+				self.validate_plugin_servers(&input)?;
 			}
 			"cluster" => {
 				let cluster: ClusterConfig =
@@ -332,6 +407,7 @@ impl DefinitionValidation {
 				..
 			} => {
 				validate_endpoint(endpoint)?;
+				self.validate_tool_endpoint(endpoint)?;
 				if let Some(name) = secret {
 					if !self.tenant_secrets_enabled {
 						return Err(Error::Invalid(

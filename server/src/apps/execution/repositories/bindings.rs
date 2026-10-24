@@ -95,7 +95,7 @@ impl Providers {
 					.clone()
 					.ok_or_else(|| Error::Invalid("missing tool alias".into()))?,
 				config: transport,
-				client: self.federation.client.clone(),
+				transport: crate::bootstrap::tool_transport(&self.federation.store),
 			})
 		} else {
 			implementations
