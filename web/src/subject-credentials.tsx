@@ -32,11 +32,25 @@ export function OwnCredentials({
   const [revoking, setRevoking] = useState<Credential | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [offset, setOffset] = useState(0);
   const credentials = useQuery({
-    queryKey: ["authorization", tenant, "credentials", "mine"],
-    queryFn: () => authorizationCredentials(path, { mine: true }),
+    queryKey: ["authorization", tenant, "credentials", "mine", offset],
+    queryFn: () => authorizationCredentials(path, { mine: true, offset }),
     refetchInterval: 5000,
   });
+  const active = useQuery({
+    queryKey: ["authorization", tenant, "credentials", "mine", "active"],
+    queryFn: () => authorizationCredentials(path, { mine: true, active: true }),
+    refetchInterval: 5000,
+  });
+  const rows = [
+    ...new Map(
+      [
+        ...(!active.isError ? (active.data ?? []) : []),
+        ...(!credentials.isError ? (credentials.data ?? []) : []),
+      ].map((row) => [row.id, row]),
+    ).values(),
+  ];
   const act = async (action: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
@@ -77,15 +91,19 @@ export function OwnCredentials({
     >
       <Hint>{t("ownCredentialsHelp")}</Hint>
       {error && !issuing && !revoking && <Alert>{error}</Alert>}
-      {credentials.isPending && <Loading />}
+      {(credentials.isPending || active.isPending) && <Loading />}
       {credentials.isError && <Alert>{credentials.error.message}</Alert>}
-      {!credentials.isError && credentials.data?.length === 0 && <Empty />}
-      {!credentials.isError && !!credentials.data?.length && (
+      {active.isError && <Alert>{active.error.message}</Alert>}
+      {!credentials.isError && !active.isError && rows.length === 0 && (
+        <Empty />
+      )}
+      {!!rows.length && (
         <RowList>
-          {credentials.data.map((credential) => {
+          {rows.map((credential) => {
             const state = credential.revoked_at
               ? "authRevoked"
-              : Date.parse(credential.expires_at) <= credentials.dataUpdatedAt
+              : Date.parse(credential.expires_at) <=
+                  Math.max(credentials.dataUpdatedAt, active.dataUpdatedAt)
                 ? "authExpired"
                 : "authActive";
             return (
@@ -133,6 +151,24 @@ export function OwnCredentials({
           })}
         </RowList>
       )}
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={offset === 0}
+          onClick={() => setOffset(Math.max(0, offset - 200))}
+        >
+          {t("previous")}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={credentials.isError || credentials.data?.length !== 200}
+          onClick={() => setOffset(offset + 200)}
+        >
+          {t("next")}
+        </Button>
+      </div>
       {issuing && (
         <Modal title={t("authIssueCredential")} close={close}>
           <form

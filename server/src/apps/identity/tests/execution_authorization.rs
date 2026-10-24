@@ -340,9 +340,9 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let builtin_count = aidash_application::registry::system::operations().count();
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
-	// The Tenant's three approved definitions, the built-in tools and the
-	// approval Decider, which is listed so a person can find it to approve it.
-	assert_eq!(catalog.as_array().unwrap().len(), 4 + builtin_count);
+	// The Tenant's three approved definitions, the built-in tools, workspace
+	// observation Source and both Deciders. Listing a Decider grants no approval.
+	assert_eq!(catalog.as_array().unwrap().len(), 6 + builtin_count);
 	assert!(
 		catalog
 			.as_array()
@@ -399,7 +399,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{other_catalog}");
 	let other_catalog = other_catalog.as_array().unwrap();
-	assert_eq!(other_catalog.len(), builtin_count + 1);
+	assert_eq!(other_catalog.len(), builtin_count + 3);
 	assert!(
 		other_catalog
 			.iter()
@@ -1364,6 +1364,26 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	assert_eq!(call.id, "effect");
 	let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
 	assert_eq!(status, 200, "{decided}");
+	let label: String = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![reinhardt::query::Expr::value(approval).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		label, "human_allow",
+		"the explicit capability decision records its typed label atomically"
+	);
+
 	harness.worker_once().await.unwrap();
 	assert!(matches!(
 		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().state,

@@ -651,6 +651,98 @@ async fn expired_capability_is_non_retryable_without_remint_or_key_read() {
 }
 
 #[tokio::test]
+async fn an_independent_observer_mints_and_relays_its_exact_decision_attempt() {
+	let c = Cloud::new(false).await;
+	let id = c.context.provider_credential_id.unwrap();
+	*c.repo.bindings.lock().unwrap() = vec![Binding {
+		tenant: "tenant-a".into(),
+		provider: Provider::Openrouter,
+		provider_credential_id: Some(id),
+		revision: 1,
+	}];
+	let observation = Uuid::from_u128(42);
+	let attempt = Uuid::from_u128(43);
+	let mut context = c.scoped(CallOperation::Decision);
+	context.run = None;
+	context.observation = Some(observation);
+	let inference = context.inference.as_mut().unwrap();
+	inference.model = "typesafe/jev-1.13".into();
+	inference.max_output_tokens = 0;
+	inference.call = Some(attempt);
+	let source = AccessSource::Tenant {
+		provider: "openrouter".into(),
+	};
+	let access = c
+		.access
+		.resolve(&context, Provider::Openrouter.base_url(), &source)
+		.await
+		.unwrap();
+	let response = reqwest::Client::new()
+		.post(format!("{}/systemone", access.endpoint))
+		.bearer_auth(access.bearer.expose_secret())
+		.json(&decision())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	assert_eq!(
+		response.json::<Value>().await.unwrap()["answers"]["keep"]["noul"],
+		0.9
+	);
+	let claims = c.signer.claims.lock().unwrap().last().unwrap().clone();
+	assert_eq!(
+		claims.sub,
+		TokenSubject::ApprovalObservation {
+			observation,
+			tenant: "tenant-a".into(),
+			call: attempt,
+		}
+	);
+	assert_eq!(claims.ops, vec![Operation::Decision]);
+	assert_eq!(claims.credential, id);
+	for change in 0..4 {
+		let mut invalid = context.clone();
+		match change {
+			0 => invalid.run = c.context.run,
+			1 => invalid.maintenance = Some(MaintenancePurpose::MemoryIndexing),
+			2 => invalid.inference.as_mut().unwrap().call = None,
+			3 => {
+				let inference = invalid.inference.as_mut().unwrap();
+				inference.operations = vec![CallOperation::Chat];
+				inference.max_output_tokens = 10;
+			}
+			_ => unreachable!(),
+		}
+		assert!(
+			c.access
+				.resolve(&invalid, Provider::Openrouter.base_url(), &source)
+				.await
+				.is_err(),
+			"change {change}"
+		);
+	}
+	assert_eq!(c.signer.claims.lock().unwrap().len(), 1);
+	let response = reqwest::Client::new()
+		.post(format!("{}/chat/completions", access.endpoint))
+		.bearer_auth(access.bearer.expose_secret())
+		.json(&chat())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 403);
+	assert_eq!(c.fixture.provider.calls.load(Ordering::SeqCst), 1);
+	assert!(
+		c.fixture
+			.logs
+			.0
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|line| !line.contains(CANARY))
+	);
+}
+
+#[tokio::test]
 async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 	let c = Cloud::new(false).await;
 	let id = c.context.provider_credential_id.unwrap();

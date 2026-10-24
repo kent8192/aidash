@@ -26,6 +26,8 @@ pub trait ForeignSourceAuthority: Send {
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// Current readable metadata for a dormant Decider, without acquiring dispatch approval.
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry>;
 }
 
 #[async_trait]

@@ -8,7 +8,7 @@ The sweeper on the existing retention loop replaces Provider results without a b
 
 As with an Evidence Revocation (ADR 0046), the Context Journal is not edited. After the basis ends, later model requests carry an expired placeholder, distinct from the revoked one, instead of the research result. An Execution Summary that absorbed an expired result is discarded, and its range is restored from the Context Journal with the placeholder in place of that result. The Run continues without pausing. Answers already published and the model's own Model Turns stay.
 
-The known limit is that the Context Journal keeps its copy of Provider results for as long as the Run exists, beyond what the account terms allow. A journal that holds research results only by reference is a separate design, filed as a follow-up.
+The original inline Context Journal exception is superseded by [ADR 0083](0083-research-journals-retain-content-addressed-references-and-purges-remove-the-owned-bytes.md) (#331). Journal and serialized projection entries retain immutable references; account-terms expiry removes their Research-owned exact payloads and all fitted variants without changing journal/range commitments. Replays receive placeholders after purge. Development databases containing the earlier inline format must be recreated.
 
 ## Considered Options
 
@@ -21,3 +21,9 @@ The known limit is that the Context Journal keeps its copy of Provider results f
 - **Also redact the Context Journal.** This was rejected for the same reasons as in ADR 0046. Holding results by reference is deferred to the follow-up.
 - **Keep an Execution Summary that absorbed expired results.** The summary is a compressed copy of those results. Rejected.
 - **Stop the Run's research, as a revocation does.** Expiry is routine and the Source can lawfully be read again. Rejected.
+
+## Review follow-up (#391, 2026-10-23)
+
+A recorded account termination permanently retires that account ID. A renewed agreement uses a new ID; a new profile cannot reuse a terminated ID to dispatch requests. Provider retention uses the durable dispatch time conservatively, so settling an abandoned attempt on a later replay never renews the age of artifacts already stored. An expired attempt cannot record late sources or snapshots. A snapshot's first ordinary retention purge reason does not hide later account expiry, which is determined from its originating attempt. Expired page-image citations retain their identity and digest and report `expired`, as passages do.
+
+Completed invocation replay revalidates its result under the same native research lock as settlement, and inference rechecks expiry after context reads and compaction. A later Evidence Revocation also recognizes expired placeholders and removes their original disclosed arguments.

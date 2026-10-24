@@ -10,7 +10,8 @@ use aidash_domain::{
 		operations::{FileScope, MountedFile as FileEntry},
 		sessions::Area,
 		skills::{
-			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillRead, content_digest, validate,
+			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillMetadata, SkillRead, content_digest,
+			validate,
 		},
 	},
 	exposure::{DirectSkill, SkillOriginKind},
@@ -290,7 +291,109 @@ pub(crate) fn text_chunk(
 	let next = offset + count;
 	Ok((&text[start..end], (next < total).then_some(next)))
 }
+/// One authorized pinned Skill's metadata and currently loaded instructions.
+#[derive(Debug, Clone)]
+pub struct ContextItem {
+	pub metadata: SkillMetadata,
+	/// Exact legacy contribution, including its trailing newline(s).
+	pub text: String,
+}
+
+fn context_sources(
+	scope: &dyn SkillScope,
+) -> Result<Vec<aidash_domain::registry::bindings::sources::NativeContext>> {
+	let Ok(snapshot) = scope.binding_snapshot() else {
+		return Ok(vec![]);
+	};
+	snapshot
+		.bindings
+		.iter()
+		.filter(|binding| {
+			binding.excluded_reason.is_none()
+				&& binding.definition.kind == "source"
+				&& binding.definition.config.get("schema_version").is_some()
+		})
+		.map(|binding| {
+			serde_json::from_value(binding.definition.config.clone()).map_err(Into::into)
+		})
+		.collect()
+}
+
+fn automatic_skill(
+	sources: &[aidash_domain::registry::bindings::sources::NativeContext],
+	skill: &SkillMetadata,
+) -> bool {
+	use aidash_domain::context::source::PinPolicy;
+	let mut owned = false;
+	for source in sources {
+		if owns_skill(source, skill) {
+			owned = true;
+			if source
+				.context_source
+				.as_ref()
+				.is_none_or(|declaration| !matches!(declaration.pin, PinPolicy::OnDemand))
+			{
+				return true;
+			}
+		}
+	}
+	// Registry and plugin Skills keep their existing instruction/discovery rules.
+	!owned
+}
+
+fn owns_skill(
+	source: &aidash_domain::registry::bindings::sources::NativeContext,
+	skill: &SkillMetadata,
+) -> bool {
+	use aidash_domain::registry::bindings::sources::NativeSource;
+	match &source.source {
+		NativeSource::SkillAttachments { attachments } => attachments
+			.iter()
+			.any(|attachment| attachment.skill_id == skill.skill_id),
+		NativeSource::SkillRoots { roots } => skill
+			.origin
+			.strip_prefix("area:")
+			.and_then(|origin| origin.split_once(':'))
+			.is_some_and(|(_, path)| {
+				roots
+					.iter()
+					.any(|root| path.starts_with(&format!("{root}/")))
+			}),
+		_ => false,
+	}
+}
+
+fn on_demand_body_asset(
+	sources: &[aidash_domain::registry::bindings::sources::NativeContext],
+	skill: &SkillMetadata,
+	reader: &aidash_domain::registry::bindings::QualifiedRef,
+) -> bool {
+	sources.iter().any(|source| {
+		owns_skill(source, skill)
+			&& source.context_source.as_ref().is_some_and(|declaration| {
+				matches!(
+					declaration.pin,
+					aidash_domain::context::source::PinPolicy::OnDemand
+				) && declaration.tools.read.contains(reader)
+			})
+	})
+}
+
 pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<String> {
+	let items = context_items(scope, run).await?;
+	let mut text = String::from("\nPinned Skills (select by UUID and origin; use skill_load):\n");
+	for item in items {
+		text.push_str(&item.text);
+	}
+	Ok(text)
+}
+
+/// Preserve source identity while using the same authority and reads as `context`.
+pub async fn context_items(
+	scope: &mut dyn SkillScope,
+	run: &RunMetadata,
+) -> Result<Vec<ContextItem>> {
+	let sources = context_sources(scope)?;
 	scope.context_authority(run).await?;
 	let support = if deferred(scope)? {
 		SKILL_ASSET_READ
@@ -309,9 +412,12 @@ pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<St
 	scope.require(&resource, "tool.invoke").await?;
 	let record = scope.skill_record(run.id).await?;
 	let pinned: Vec<Pinned> = serde_json::from_value(record.data)?;
-	let mut text = String::from("\nPinned Skills (select by UUID and origin; use skill_load):\n");
+	let mut items = Vec::with_capacity(pinned.len());
 	for skill in pinned {
-		text.push_str(&serde_json::to_string(&skill.metadata)?);
+		if !automatic_skill(&sources, &skill.metadata) {
+			continue;
+		}
+		let mut text = serde_json::to_string(&skill.metadata)?;
 		text.push('\n');
 		if skill.loaded {
 			let file = skill
@@ -323,8 +429,12 @@ pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<St
 			text.push_str(std::str::from_utf8(&bytes).map_err(|_| Error::Forbidden)?);
 			text.push('\n');
 		}
+		items.push(ContextItem {
+			metadata: skill.metadata,
+			text,
+		});
 	}
-	Ok(text)
+	Ok(items)
 }
 pub async fn mounted(scope: &mut dyn SkillScope, run: Uuid) -> Result<Vec<FileEntry>> {
 	let record = match scope.skill_record(run).await {
@@ -414,13 +524,30 @@ async fn instructions(scope: &mut dyn SkillScope, skill: &Pinned) -> Result<Stri
 
 /// Pinned direct Skills as Discoverable capabilities of a `deferred@1` Run.
 pub async fn direct(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<Vec<DirectSkill>> {
+	let sources = context_sources(scope)?;
 	let Some((config, pinned)) = exposure_record(scope, run).await? else {
 		return Ok(vec![]);
 	};
+	let reader = scope
+		.binding_snapshot()?
+		.operation(SKILL_ASSET_READ)?
+		.identity
+		.clone();
 	let mut skills = Vec::with_capacity(pinned.len());
 	for skill in pinned {
+		let include_body = on_demand_body_asset(&sources, &skill.metadata, &reader);
 		let body_bytes = match skill.instruction_json_len {
 			Some(length) => length,
+			None if !automatic_skill(&sources, &skill.metadata) => skill
+				.files
+				.iter()
+				.find(|file| file.path == SKILL_BODY)
+				.map(|file| {
+					usize::try_from(file.size)
+						.unwrap_or(usize::MAX)
+						.saturating_mul(6)
+				})
+				.unwrap_or(0),
 			None => escaped_instruction_len(&instructions(scope, &skill).await?)?,
 		};
 		let origin = if config
@@ -438,7 +565,7 @@ pub async fn direct(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<Vec
 			files: skill
 				.files
 				.iter()
-				.filter(|file| file.path != SKILL_BODY)
+				.filter(|file| file.path != SKILL_BODY || include_body)
 				.map(|file| json!({"path":file.path,"digest":file.digest,"size":file.size}))
 				.collect(),
 			metadata: skill.metadata,
@@ -447,24 +574,28 @@ pub async fn direct(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<Vec
 	Ok(skills)
 }
 
-/// Exact SKILL.md text of one pinned direct Skill.
+/// Resident prompt preparation is automatic context, independently of discovery
+/// and manual Skill tools. OnDemand bodies never reach their private reader here.
 pub async fn direct_body(
 	scope: &mut dyn SkillScope,
 	run: &RunMetadata,
 	skill_id: Uuid,
 	digest: &str,
-) -> Result<String> {
+) -> Result<Option<String>> {
+	let sources = context_sources(scope)?;
 	let (_, pinned) = exposure_record(scope, run)
 		.await?
 		.ok_or_else(|| Error::NotFound("skill unavailable".into()))?;
 	let skill = pinned_skill(pinned, skill_id, digest)?;
-	instructions(scope, &skill).await
+	if !automatic_skill(&sources, &skill.metadata) {
+		return Ok(None);
+	}
+	instructions(scope, &skill).await.map(Some)
 }
 
 /// Bytes of one packaged file of a pinned direct Skill, `None` for a file
-/// declared binary (base64) at pinning. SKILL.md is the instruction body:
-/// only `capability_load` makes it resident, under the `skill_bytes` budget,
-/// so it is never an asset.
+/// declared binary (base64) at pinning. An OnDemand Source may expose SKILL.md
+/// through its exact admitted asset reader; automatic resident injection stays off.
 pub async fn direct_file(
 	scope: &mut dyn SkillScope,
 	run: &RunMetadata,
@@ -473,13 +604,22 @@ pub async fn direct_file(
 	path: &str,
 ) -> Result<Option<Vec<u8>>> {
 	aidash_domain::registry::rules::validate_path(path)?;
-	if path == SKILL_BODY {
-		return Err(Error::Invalid("SKILL_FILE_UNAVAILABLE".into()));
-	}
+	let sources = context_sources(scope)?;
 	let (_, pinned) = exposure_record(scope, run)
 		.await?
 		.ok_or_else(|| Error::NotFound("skill unavailable".into()))?;
 	let skill = pinned_skill(pinned, skill_id, digest)?;
+	if path == SKILL_BODY
+		&& !on_demand_body_asset(
+			&sources,
+			&skill.metadata,
+			&scope
+				.binding_snapshot()?
+				.operation(SKILL_ASSET_READ)?
+				.identity,
+		) {
+		return Err(Error::Invalid("SKILL_FILE_UNAVAILABLE".into()));
+	}
 	let file = skill
 		.files
 		.iter()

@@ -1,4 +1,5 @@
 //! Persistent records owned by the harness app.
+pub(crate) mod approval_observations;
 mod catalog;
 mod completion;
 pub(crate) mod context_journal;

@@ -28,7 +28,7 @@ use uuid::Uuid;
 pub(crate) mod account_terms;
 pub(crate) mod retention;
 mod revocation;
-pub(crate) use revocation::{Revocations, scrub_revoked_projections};
+pub(crate) use revocation::{Revocations, protect_projection, scrub_revoked_projections};
 
 /// A transaction for retention work, which reaches every Tenant's Research
 /// evidence: purging snapshots and catching up revoked Runs.
@@ -115,6 +115,21 @@ pub(crate) async fn revoked_under_lock(
 
 #[async_trait]
 impl EvidenceStore for Evidence {
+	async fn expired_results(
+		&self,
+		run: Uuid,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		native(
+			async {
+				let mut tx = self.store.pool.begin(&self.scope).await?.into_executor()?;
+				let expired = account_terms::expired(tx.as_mut(), run).await?;
+				tx.commit().await?;
+				Ok(expired)
+			}
+			.await,
+		)
+	}
+
 	async fn revoked(&self, run: Uuid) -> Result<bool> {
 		native(
 			async {
@@ -266,6 +281,12 @@ impl EvidenceStore for Evidence {
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
 				}
+				if ResearchAttempt::expired_tombstone(tx.as_mut(), run, key)
+					.await?
+					.is_some()
+				{
+					return Ok(Err(Failure::ResultExpired));
+				}
 				let held = ResearchSource::count(tx.as_mut(), run).await?;
 				let room = max_sources.saturating_sub(held) as usize;
 				let mut records = Vec::with_capacity(sources.len().min(room));
@@ -317,6 +338,12 @@ impl EvidenceStore for Evidence {
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
+				}
+				if ResearchAttempt::expired_tombstone(tx.as_mut(), run, key)
+					.await?
+					.is_some()
+				{
+					return Ok(Err(Failure::ResultExpired));
 				}
 				let (snapshots, held) = ResearchSnapshot::usage(tx.as_mut(), run).await?;
 				let bytes = page
@@ -643,4 +670,62 @@ pub(crate) async fn run_research(
 		can_revoke: false,
 		can_read_revocation: false,
 	})
+}
+
+/// Freeze exact materialized variants under the caller's Run row fence.
+pub(crate) async fn freeze_context(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	context: &aidash_domain::context::Context,
+) -> crate::Result<()> {
+	if !context
+		.history
+		.iter()
+		.any(|entry| entry.research_reference().is_some())
+	{
+		return Ok(());
+	}
+	lock(tx, &run_lock(run)).await?;
+	let expired = account_terms::expired(tx, run).await?;
+	let revoked = ResearchRevocation::exists(tx, run).await?;
+	crate::apps::execution::models::research::ResearchJournalResult::freeze(
+		tx,
+		run,
+		&context.history,
+		&expired,
+		revoked,
+	)
+	.await
+}
+
+/// Materialize a projection for execution; durable serialization still writes
+/// only immutable references. The final expiry/revocation check covers a
+/// purge committed while the payloads were being read.
+pub(crate) async fn resolve_entries(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	entries: &mut [aidash_domain::context::HistoryEntry],
+) -> crate::Result<()> {
+	if !entries.iter().any(|entry| matches!(&entry.event, aidash_domain::context::ContextEvent::Tool { result, .. } if aidash_domain::context::research::ResearchReference::parse(result).is_some())) { return Ok(()); }
+	let expired = account_terms::expired(tx, run).await?;
+	let revoked = ResearchRevocation::exists(tx, run).await?;
+	crate::apps::execution::models::research::ResearchJournalResult::resolve(
+		tx, run, entries, &expired, revoked,
+	)
+	.await?;
+	let expired = account_terms::expired(tx, run).await?;
+	let revoked = ResearchRevocation::exists(tx, run).await?;
+	if revoked {
+		for entry in entries {
+			if entry.research_reference().is_some()
+				&& let aidash_domain::context::ContextEvent::Tool { call, result } =
+					&mut entry.event
+			{
+				*result = aidash_domain::context::ContextEvent::revoked_result(&call.id);
+			}
+		}
+	} else {
+		aidash_domain::research::expiry::expire(entries, &expired, &Default::default());
+	}
+	Ok(())
 }

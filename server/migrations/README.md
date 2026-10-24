@@ -564,6 +564,8 @@ pruning or summary, journals those events as `imported`.
 
 `execution/0049_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0039_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0044_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0044` is listed in `TENANT_REGISTRY_MIGRATIONS`.
 
+`registry/0045_context_sources` (after `0044_foreign_key_relations_state`) validates the optional native `context_source` declaration and the required workspace-observation source (#110, ADR 0086). Exact Tool and Decider references remain admission and live-authority checks. The migration replaces PostgreSQL JSON validation functions using DDL because Reinhardt has no typed function-body operation. It changes no rows and rollback refuses while declarations requiring the new schema remain.
+
 ## Projection comparison evidence (#181)
 
 `registry/0045_projection_measurement_config` (after
@@ -619,3 +621,11 @@ The [projection comparison guide](../../docs/projection-comparison.md)
 describes the prompt-free diagnostic export, complete attempt inventories and
 remaining live acceptance requirements. These migrations do not switch the
 projection default or rewrite pinned definitions and Runs.
+
+`execution/0058_research_projection_merge` and
+`registry/0046_context_projection_merge` join the independent Research/approval
+and projection evidence histories, and the Context Source and projection
+configuration histories, respectively. Each empty state-only migration depends
+on both existing leaves and changes no schema or data. Existing migration names,
+dependencies and rollback guards remain intact; each app has one head for future
+generation.

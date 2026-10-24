@@ -324,6 +324,7 @@ impl DecisionJournal for Fixture {
 					.cloned()
 					.unwrap_or((AttemptStatus::Uncertain, None));
 				RecoveredAttempt {
+					provider_report: Default::default(),
 					permit: permit.clone(),
 					status,
 					answers,
@@ -353,6 +354,7 @@ impl DecisionJournal for Fixture {
 				.cloned()
 				.unwrap_or((AttemptStatus::Uncertain, None));
 			return Ok(Reservation::Recovered(RecoveredAttempt {
+				provider_report: Default::default(),
 				permit: permit.clone(),
 				status,
 				answers,
@@ -1530,6 +1532,7 @@ async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_statu
 		] {
 			let mut corrupt = evidence.clone();
 			corrupt.attempts.push(AttemptEvidence {
+				provider_report: Default::default(),
 				id: Uuid::new_v4(),
 				request_digest: format!("sha256:{}", "c".repeat(64)),
 				question_digest: format!("sha256:{}", "d".repeat(64)),
@@ -2135,3 +2138,33 @@ fn the_resume_cycle_changes_the_decision_identity() {
 		first
 	);
 }
+
+#[test]
+fn a_question_budget_matches_the_largest_encoded_request_with_escaped_text() {
+	let state = json!({"history": "quote\" and 日本語".repeat(1000)});
+	let questions = Questions::from([
+		(
+			"q\"1".into(),
+			aidash_domain::decision::Question {
+				description: "short".into(),
+				answer_type: AnswerType::Noul,
+			},
+		),
+		(
+			"q2".into(),
+			aidash_domain::decision::Question {
+				description: "a long \"quoted\" instruction".repeat(100),
+				answer_type: AnswerType::Noul,
+			},
+		),
+	]);
+	let framing_reserve =
+		super::state::single_question_request_bytes(&state, &Questions::new()).unwrap();
+	let largest = questions.iter().map(|(id, question)| serde_json::to_vec(&json!({"state": state, "questions": { id: {"type": "noul", "instructions": question.description}}})).unwrap().len()).max().unwrap();
+	assert_eq!(
+		super::state::single_question_request_bytes(&state, &questions).unwrap(),
+		largest + framing_reserve
+	);
+}
+
+mod source_selection_tests;

@@ -61,6 +61,33 @@ pub(crate) async fn entry(
 	.map_err(Into::into)
 }
 
+/// A pinned dormant Decider still needs readable immutable Registry metadata.
+/// This path neither acquires Catalog Approval nor records an invocation/read
+/// grant; the decision gate must separately authorize every disclosure.
+pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
+	let entry = crate::apps::registry::models::Definition::read_in(
+		&mut **access.tx,
+		&reference.id,
+		&reference.version,
+	)
+	.await?;
+	if !aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry)
+		&& !aidash_domain::registry::bindings::sources::is_selection_decider(&entry)
+	{
+		return Err(crate::Error::Forbidden);
+	}
+	if let Some(projection) = &entry.installation
+		&& (projection.contract != 1 || projection.tenant != access.identity.tenant)
+	{
+		return Err(crate::Error::Forbidden);
+	}
+	access
+		.require(&resource(access, &entry), "registry.read")
+		.await?;
+	crate::marketplace::check_pinned(access, &entry).await?;
+	Ok(entry)
+}
+
 pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resource {
 	if entry.kind == "tool"
 		&& let Ok(descriptor) = serde_json::from_value::<

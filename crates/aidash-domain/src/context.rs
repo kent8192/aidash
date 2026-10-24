@@ -20,11 +20,12 @@ pub const EXPIRED_RESULT_CONTRACT: &str = "aidash.research.expired/1";
 
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, schemars::JsonSchema)]
 pub struct HistoryEntry {
 	pub seq: u64,
 	pub event: ContextEvent,
+	#[schemars(skip)]
+	pub research: Option<research::ResearchReference>,
 }
 
 /// Context Journal position. Entries up to `imported_through` were recovered
@@ -46,6 +47,12 @@ pub struct JournalCursor {
 pub struct Context {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub source_observation: Option<sources::SourceObservation>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_contributions: Vec<source::SourceContribution>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_deliveries: Vec<source::SourceDelivery>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_selections: Vec<source::SelectionEvidence>,
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
@@ -63,7 +70,7 @@ pub struct Context {
 	pub revoked_summary_dependencies: Option<summary::SummaryDependencies>,
 	/// The Run's Research evidence was revoked (ADR 0046). Its research results
 	/// are placeholders here and no Execution Summary holds them; the Context
-	/// Journal keeps the originals.
+	/// Journal keeps the immutable references.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub research_revoked: bool,
 	/// The latest purge under the Research account terms already applied
@@ -121,6 +128,12 @@ pub struct Context {
 struct StoredContext {
 	#[serde(default)]
 	source_observation: Option<sources::SourceObservation>,
+	#[serde(default)]
+	source_contributions: Vec<source::SourceContribution>,
+	#[serde(default)]
+	source_deliveries: Vec<source::SourceDelivery>,
+	#[serde(default)]
+	source_selections: Vec<source::SelectionEvidence>,
 	#[serde(default)]
 	binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
 	#[serde(default)]
@@ -203,7 +216,7 @@ impl<'de> Deserialize<'de> for Context {
 					.into_iter()
 					.zip(1_u64..)
 					.filter_map(|(entry, seq)| match entry {
-						StoredHistory::Legacy(event) => Some(HistoryEntry { seq, event }),
+						StoredHistory::Legacy(event) => Some(HistoryEntry::new(seq, event)),
 						StoredHistory::Entry(_) => None,
 					})
 					.collect();
@@ -225,6 +238,9 @@ impl<'de> Deserialize<'de> for Context {
 		};
 		Ok(Self {
 			source_observation: stored.source_observation,
+			source_contributions: stored.source_contributions,
+			source_deliveries: stored.source_deliveries,
+			source_selections: stored.source_selections,
 			binding_snapshot: stored.binding_snapshot,
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
@@ -258,10 +274,15 @@ impl Context {
 	/// Append an event to the projection with the next Context Journal sequence.
 	pub fn push(&mut self, event: ContextEvent) {
 		self.journal.head += 1;
-		self.history.push(HistoryEntry {
-			seq: self.journal.head,
-			event,
-		});
+		self.history
+			.push(HistoryEntry::new(self.journal.head, event));
+	}
+
+	/// Append a tool result with its durable invocation identity.
+	pub fn push_invocation(&mut self, event: ContextEvent, invocation: &str) {
+		self.journal.head += 1;
+		self.history
+			.push(HistoryEntry::new(self.journal.head, event).with_invocation(invocation));
 	}
 
 	/// Append a Completion Gate repair request. Each repair reruns its Check,
@@ -327,6 +348,16 @@ impl Context {
 
 	/// Provider-visible projection of this context.
 	pub fn model_view(&self, current: &Value) -> Value {
+		let projected = source::project(self, current);
+		let mut current = projected.snapshot;
+		let envelopes = projected
+			.run
+			.into_iter()
+			.chain(projected.step)
+			.collect::<Vec<_>>();
+		if !envelopes.is_empty() {
+			current["context_sources"] = json!(envelopes);
+		}
 		json!({
 			"current": current,
 			"summary": self.summary_view(),
@@ -336,7 +367,8 @@ impl Context {
 	}
 }
 
-/// Public inspection omits the durable, authority-bound Source cache.
+/// Public inspection omits source content, detail routes, selection manifests
+/// and delivery receipts; these execution records require source authority.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct InspectionContext<'a> {
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -480,6 +512,7 @@ pub struct RequestBudget<'a> {
 
 impl RequestBudget<'_> {
 	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
+		let context_sources = &context.source_contributions;
 		let (context, cache_scope) = match self.projection {
 			RequestProjection::Legacy => (context.model_view(pinned).into(), None),
 			RequestProjection::Ordered(scope) => (
@@ -493,7 +526,7 @@ impl RequestBudget<'_> {
 				Some(scope.clone()),
 			),
 		};
-		crate::provider::ModelRequest {
+		let mut request = crate::provider::ModelRequest {
 			instructions: self.instructions.into(),
 			context,
 			tools: self.tools.to_vec(),
@@ -505,7 +538,9 @@ impl RequestBudget<'_> {
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
 			estimate: self.estimate,
-		}
+		};
+		source::fit_declared(&mut request, context_sources, self.window);
+		request
 	}
 
 	/// The same budget under the conservative byte estimate. Run-fixed quotas
@@ -546,6 +581,11 @@ const ORDERED_VOLATILE_KEYS: [&str; 11] = [
 /// Render an Ordered context. Declaration order of these typed views fixes the
 /// byte order; `serde_json::Value` maps are only used for nested values.
 pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::OrderedContext {
+	let projected = source::project(context, pinned);
+	let mut pinned = projected.snapshot;
+	if !projected.step.is_empty() {
+		pinned["context_sources"] = json!(projected.step);
+	}
 	#[derive(Serialize)]
 	struct Stable<'a> {
 		#[serde(skip_serializing_if = "Option::is_none")]
@@ -554,6 +594,8 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		task: Option<&'a Value>,
 		#[serde(skip_serializing_if = "Option::is_none")]
 		reference_documents: Option<&'a Value>,
+		#[serde(skip_serializing_if = "Vec::is_empty")]
+		context_sources: Vec<crate::projection::native::Envelope>,
 		run_message_summary: &'a str,
 		// Absent without any summary, so prune-only bytes stay unchanged.
 		#[serde(skip_serializing_if = "Option::is_none")]
@@ -567,6 +609,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		identity: fields.get("identity"),
 		task: fields.get("task"),
 		reference_documents: fields.get("reference_documents"),
+		context_sources: projected.run,
 		run_message_summary: &context.run_message_summary,
 		summary: context.summary_projection(),
 		history: context.events().collect(),
@@ -574,7 +617,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 	crate::provider::OrderedContext {
 		// Serializing borrowed JSON values and derived structs cannot fail.
 		stable: serde_json::to_string(&stable).expect("serializable Ordered stable part"),
-		volatile: volatile_part(pinned, None),
+		volatile: volatile_part(&pinned, None),
 	}
 }
 
@@ -882,7 +925,7 @@ impl ContextEvent {
 
 	/// A research result the Research account terms no longer keep. Later
 	/// model requests carry this instead; the Context Journal keeps the
-	/// original (ADR 0058). Unlike a revoked result, its call's arguments,
+	/// reference (ADR 0083). Unlike a revoked result, its call's arguments,
 	/// which Aidash itself sent, stay.
 	pub fn expired_result(call_id: &str) -> Value {
 		json!({
@@ -937,9 +980,12 @@ pub mod sources;
 
 pub mod policy;
 pub mod recovery;
+pub mod research;
 pub mod summary;
 
 #[cfg(test)]
 mod journal_tests;
 #[cfg(test)]
 mod plugin_tools_tests;
+
+pub mod source;

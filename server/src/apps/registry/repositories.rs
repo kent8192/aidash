@@ -201,6 +201,22 @@ impl Registry {
 			})
 			.await
 	}
+	/// Automatic context excludes OnDemand before private payload reads.
+	pub(crate) async fn automatic_documents(
+		&self,
+		tenant: &TenantName,
+		bindings: &[aidash_domain::registry::bindings::ResolvedBinding],
+	) -> Result<Value> {
+		self.pool
+			.atomic(&scope(tenant), async |tx| {
+				Ok(aidash_application::registry::personal::automatic_documents(
+					&mut OrmScope::new(tx, tenant),
+					bindings,
+				)
+				.await?)
+			})
+			.await
+	}
 }
 
 pub(crate) struct OrmScope<'a, E: OrmExecutor> {

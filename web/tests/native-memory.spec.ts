@@ -484,90 +484,128 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     ).toHaveLength(4);
   });
 
-  test(`memory Registry pins all six roles and an explicit graph cutoff (${locale})`, async ({
-    page,
-  }) => {
-    await fixture(page, locale, false, false, 4096, tenantSubject);
-    await routeTenantActions(page, ["registry.create"]);
-    await routeRegistryVersions(page, () => []);
-    const ja = locale === "ja-JP";
-    await page.goto("/registry");
-    await page
-      .getByRole("button", {
-        name: ja ? "エンティティを登録" : "Register entity",
-        exact: true,
-      })
-      .click();
-    const dialog = page.getByRole("dialog");
-    await dialog.locator("select").first().selectOption("memory");
-    await dialog
-      .locator('[name="description_en"]')
-      .fill("Current native memory / 最新のネイティブ記憶");
-    for (const role of [
-      "extraction",
-      "derivation",
-      "reflection",
-      "embedding",
-      "reranker",
-      "tokenizer",
-    ]) {
-      const id = ["extraction", "derivation", "reflection"].includes(role)
-        ? "model"
-        : role;
+  for (const sourcePolicy of ["default", "accepted-inputs-first@1"] as const) {
+    test(`memory Registry pins all six roles and an explicit graph cutoff (${sourcePolicy}, ${locale})`, async ({
+      page,
+    }) => {
+      await fixture(page, locale, false, false, 4096, tenantSubject);
+      await routeTenantActions(page, ["registry.create"]);
+      await routeRegistryVersions(page, () => []);
+      const ja = locale === "ja-JP";
+      await page.goto("/registry");
+      await page
+        .getByRole("button", {
+          name: ja ? "エンティティを登録" : "Register entity",
+          exact: true,
+        })
+        .click();
+      const dialog = page.getByRole("dialog");
+      await dialog.locator("select").first().selectOption("memory");
       await dialog
-        .locator(`[name="memory_role_${role}"]`)
-        .selectOption(`${id}@1.0.0`);
-    }
-    for (const field of await dialog.locator('input[name^="price_"]').all())
-      await field.fill("0");
-    const cutoff = dialog.locator(
-      '[name="semantic_link_min_similarity_millionths"]',
-    );
-    await cutoff.fill("0");
-    expect(
-      await cutoff.evaluate((element: HTMLInputElement) =>
-        element.checkValidity(),
-      ),
-    ).toBe(false);
-    await cutoff.fill("800000");
-    await dialog.locator('[name="memory_learning"]').check();
-    const request = page.waitForRequest(
-      (request) =>
-        request.method() === "POST" &&
-        new URL(request.url()).pathname === "/api/registry",
-    );
-    await dialog
-      .getByRole("button", {
-        name: ja ? "エンティティを登録" : "Register entity",
-        exact: true,
-      })
-      .click();
-    const config = (await request).postDataJSON().config;
-    expect(config.engine).toBe("hindsight_rust");
-    expect(config.policy.semantic_link_min_similarity_millionths).toBe(800000);
-    expect(config.policy.learn_from_runs).toBe(true);
-    for (const role of [
-      "extraction",
-      "derivation",
-      "reflection",
-      "embedding",
-      "reranker",
-      "tokenizer",
-    ]) {
-      expect(config.policy[role]).toEqual(
-        ref(
-          ["extraction", "derivation", "reflection"].includes(role)
-            ? "model"
-            : role,
-        ),
+        .locator('[name="description_en"]')
+        .fill("Current native memory / 最新のネイティブ記憶");
+      for (const role of [
+        "extraction",
+        "derivation",
+        "reflection",
+        "embedding",
+        "reranker",
+        "tokenizer",
+      ]) {
+        const id = ["extraction", "derivation", "reflection"].includes(role)
+          ? "model"
+          : role;
+        await dialog
+          .locator(`[name="memory_role_${role}"]`)
+          .selectOption(`${id}@1.0.0`);
+      }
+      for (const field of await dialog.locator('input[name^="price_"]').all())
+        await field.fill("0");
+      const cutoff = dialog.locator(
+        '[name="semantic_link_min_similarity_millionths"]',
       );
-    }
-    expect(config.policy.bounds.max_model_calls).toBeGreaterThan(0);
-    expect(config.policy.bounds.max_units ** 2 * 3072).toBeLessThanOrEqual(
-      32 * 1024 * 1024,
-    );
-    expect(config.policy.retention.backup_days).toBe(7);
-  });
+      await cutoff.fill("0");
+      expect(
+        await cutoff.evaluate((element: HTMLInputElement) =>
+          element.checkValidity(),
+        ),
+      ).toBe(false);
+      await cutoff.fill("800000");
+      await dialog.locator('[name="memory_learning"]').check();
+      const sourceDeclaration = dialog.getByLabel(
+        ja
+          ? "明示的なソース宣言を設定"
+          : "Configure an explicit source declaration",
+      );
+      await expect(sourceDeclaration).toBeVisible();
+      if (sourcePolicy !== "default") {
+        await sourceDeclaration.check();
+        await expect(
+          dialog.getByLabel(ja ? "プロバイダー操作" : "Provider operation", {
+            exact: true,
+          }),
+        ).toHaveValue("semantic_memory");
+        await dialog
+          .getByLabel(ja ? "クエリーポリシー" : "Query policy")
+          .selectOption(sourcePolicy);
+        await expect(dialog).toContainText(
+          ja ? "プライマリーメモリー" : "primary memory",
+        );
+      }
+      const request = page.waitForRequest(
+        (request) =>
+          request.method() === "POST" &&
+          new URL(request.url()).pathname === "/api/registry",
+      );
+      await dialog
+        .getByRole("button", {
+          name: ja ? "エンティティを登録" : "Register entity",
+          exact: true,
+        })
+        .click();
+      const config = (await request).postDataJSON().config;
+      expect(config.engine).toBe("hindsight_rust");
+      if (sourcePolicy === "default")
+        expect(config).not.toHaveProperty("context_source");
+      else
+        expect(config.context_source).toEqual({
+          provider: "aidash.native-context/1",
+          operation: "semantic_memory",
+          tools: { read: [], write: [], detail: null },
+          pin: { policy: "always" },
+          volatility: "step",
+          query: "accepted-inputs-first@1",
+          refresh: "revision-bound@1",
+          disclosure: { previews: false, query: false },
+          required_home: false,
+        });
+      expect(config.policy.semantic_link_min_similarity_millionths).toBe(
+        800000,
+      );
+      expect(config.policy.learn_from_runs).toBe(true);
+      for (const role of [
+        "extraction",
+        "derivation",
+        "reflection",
+        "embedding",
+        "reranker",
+        "tokenizer",
+      ]) {
+        expect(config.policy[role]).toEqual(
+          ref(
+            ["extraction", "derivation", "reflection"].includes(role)
+              ? "model"
+              : role,
+          ),
+        );
+      }
+      expect(config.policy.bounds.max_model_calls).toBeGreaterThan(0);
+      expect(config.policy.bounds.max_units ** 2 * 3072).toBeLessThanOrEqual(
+        32 * 1024 * 1024,
+      );
+      expect(config.policy.retention.backup_days).toBe(7);
+    });
+  }
 
   test(`native memory preserves structured provenance and retries the same request (${locale})`, async ({
     page,

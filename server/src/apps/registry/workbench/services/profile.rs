@@ -33,11 +33,13 @@ impl TestProfiles {
 		&self,
 		actor: Actor,
 		tenant: String,
+		after: Option<String>,
 	) -> Result<Vec<TestProfile>> {
 		aidash_domain::policy::identifier(&tenant)?;
 		aidash_application::registry::workbench::profile::administered(
 			&crate::bootstrap::workbench_profile_repository(&self.runtime, actor),
 			tenant,
+			after,
 		)
 		.await
 		.map_err(Into::into)

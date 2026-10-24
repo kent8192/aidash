@@ -144,7 +144,7 @@ fn a_snapshot_without_retained_text_has_no_context_but_keeps_the_fragment() {
 }
 
 #[rstest]
-fn an_empty_passage_is_expired_only_once_its_snapshot_was_purged() {
+fn an_empty_passage_expires_only_under_account_terms() {
 	// Arrange: a fresh passage whose lines carry no text.
 	let mut document = snapshot(lines(2, |_| String::new()));
 	let passage = Passage {
@@ -156,6 +156,12 @@ fn an_empty_passage_is_expired_only_once_its_snapshot_was_purged() {
 	let fragment = EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), &document, &passage);
 
 	// Act + Assert: still retained, so not expired.
+	assert!(!CitedEvidence::new(fragment.clone(), &document).expired);
+
+	document.purged = Some(Purge {
+		at: Utc::now(),
+		reason: PurgeReason::Retention,
+	});
 	assert!(!CitedEvidence::new(fragment.clone(), &document).expired);
 
 	// The account terms purge the snapshot and empty the passage.

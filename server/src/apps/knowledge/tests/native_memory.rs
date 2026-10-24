@@ -2219,6 +2219,11 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 #[case(false, false, "later_bank")]
 #[case(false, false, "reflection")]
 #[case(false, false, "commit_failure")]
+#[case(false, false, "accepted_save_failure")]
+#[case(false, false, "accepted_lease_lost")]
+#[case(false, false, "shared_read_revoked")]
+#[case::extra_on_demand(false, false, "extra_on_demand")]
+#[case::primary_on_demand(false, false, "primary_on_demand")]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
@@ -2238,6 +2243,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let id = fixture.state.id;
 	let reflect = fixture.state.reflect;
 	let captured = fixture.state.captured;
+	let invalidate = fixture.state.invalidate;
 	let provider = fixture.server;
 
 	if journal_bound {
@@ -2261,15 +2267,86 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		(learning_enabled, false, false),
 	)
 	.await;
-	let agent_ref = if delivery == "later_bank" {
+	let mixed_on_demand = matches!(delivery, "extra_on_demand" | "primary_on_demand");
+	let shared_source = mixed_on_demand || matches!(delivery, "later_bank" | "shared_read_revoked");
+	let primary = reference(if delivery == "primary_on_demand" {
+		"on-demand-memory"
+	} else {
+		"p"
+	});
+	let on_demand_declaration = || {
+		use aidash_domain::{
+			context::source::PinPolicy,
+			registry::bindings::{
+				QualifiedRef,
+				sources::{NativeContext, NativeSource},
+			},
+		};
+		let mut declaration = NativeContext {
+			schema_version: 1,
+			context_source: None,
+			source: NativeSource::SemanticMemory {},
+		}
+		.declaration(&QualifiedRef {
+			registry_deployment: store.deployment.to_string(),
+			id: primary.id.clone(),
+			version: primary.version.clone(),
+		});
+		declaration.pin = PinPolicy::OnDemand;
+		serde_json::to_value(declaration).unwrap()
+	};
+	if delivery == "primary_on_demand" {
+		let mut provider = registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"p",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
+		provider.id = primary.id.clone();
+		provider.binding_normalization = None;
+		provider.config["context_source"] = on_demand_declaration();
 		registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-				entry(
-					"source",
-					"shared-source",
-					json!({"scope":"workspace","memory":reference("p"),"max_tokens":8192}),
-				),
+				provider,
+			)
+			.await
+			.unwrap();
+	}
+	let roomy_model = mixed_on_demand || delivery == "shared_read_revoked";
+	if roomy_model {
+		let mut model = registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"m",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
+		model.id = "two-bank-model".into();
+		model.binding_normalization = None;
+		// Both complete Banks must reach the provider for the revocation and
+		// OnDemand controls; a clipped shared Bank cannot exercise either guard.
+		model.config["context_window"] = json!(65_536);
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				model,
+			)
+			.await
+			.unwrap();
+	}
+	let agent_ref = if shared_source {
+		let mut shared_config = json!({"scope":"workspace","memory":primary,"max_tokens":8192});
+		if delivery == "extra_on_demand" {
+			shared_config["context_source"] = on_demand_declaration();
+		}
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				entry("source", "shared-source", shared_config),
 			)
 			.await
 			.unwrap();
@@ -2301,7 +2378,11 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			&Actor::DeploymentAdministrator,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
-				provider: reference("other-memory"),
+				provider: if delivery == "later_bank" {
+					reference("other-memory")
+				} else {
+					primary.clone()
+				},
 				bank: shared,
 				action: memory::Action::ConfigureBank {
 					expected_revision: 0,
@@ -2320,6 +2401,12 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.unwrap();
 		agent.id = "late-agent".into();
 		agent.binding_normalization = None;
+		if delivery == "primary_on_demand" {
+			replace_memory_binding(&mut agent, primary.clone());
+		}
+		if roomy_model {
+			agent.config["model"] = json!(reference("two-bank-model"));
+		}
 		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
 		registry
 			.register(
@@ -2345,7 +2432,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.replace(
 			"acme",
 			1,
-			serde_json::from_value(policy).unwrap(),
+			serde_json::from_value(policy.clone()).unwrap(),
 			"deployment_administrator",
 		)
 		.await
@@ -2363,7 +2450,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 	}
-	if delivery == "later_bank" {
+	if shared_source {
 		for reference in [
 			&agent_ref,
 			&reference("shared-source"),
@@ -2381,6 +2468,32 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.await
 				.unwrap();
 		}
+	}
+	if delivery == "primary_on_demand" {
+		authorization
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&primary,
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+	if roomy_model {
+		authorization
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference("two-bank-model"),
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
 	}
 	let issued = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -2400,19 +2513,15 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	)
 	.await
 	.unwrap();
-	memory::mutate(
-		&store,
-		&actor,
-		mutation(
-			&participant.bank,
-			Change::Add {
-				id,
-				content: content("東京の地下鉄を利用する。 Use the subway in Tokyo."),
-			},
-		),
-	)
-	.await
-	.unwrap();
+	let mut initial = mutation(
+		&participant.bank,
+		Change::Add {
+			id,
+			content: content("東京の地下鉄を利用する。 Use the subway in Tokyo."),
+		},
+	);
+	initial.provider = primary.clone();
+	memory::mutate(&store, &actor, initial).await.unwrap();
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();
@@ -2434,6 +2543,25 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		);
 	}
 
+	let shared_unit = Uuid::now_v7();
+	if delivery == "shared_read_revoked" || mixed_on_demand {
+		let shared = Bank {
+			participant: None,
+			..participant.bank.clone()
+		};
+		let mut addition = mutation(
+			&shared,
+			Change::Add {
+				id: shared_unit,
+				content: content("Shared Tokyo subway source"),
+			},
+		);
+		addition.provider = primary.clone();
+		memory::mutate(&store, &actor, addition).await.unwrap();
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+	}
 	if reflect {
 		memory::mutate(
 			&store,
@@ -2452,7 +2580,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 	}
-	if delivery == "commit_failure" {
+	if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 		// DDL exception: SeaQuery cannot express PostgreSQL deferred constraint
 		// triggers. Reject the enclosing task-snapshot commit after reads are
 		// staged, before inference, rather than failing the read insert. Only
@@ -2462,12 +2590,17 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.await
 				.into();
 		let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();
+		let table = if delivery == "accepted_save_failure" {
+			"memory_run_reads"
+		} else {
+			"run_task_snapshots"
+		};
 		let ddl = [
-			"CREATE FUNCTION reject_context_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture context commit failure'; END $$",
-			"CREATE CONSTRAINT TRIGGER reject_context_commit AFTER INSERT ON run_task_snapshots DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_context_commit()",
+			"CREATE FUNCTION reject_context_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture context commit failure'; END $$".to_owned(),
+			format!("CREATE CONSTRAINT TRIGGER reject_context_commit AFTER INSERT ON {table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_context_commit()"),
 		];
 		for ddl in ddl {
-			aidash_server::database::native::query(ddl)
+			aidash_server::database::native::query(&ddl)
 				.execute(&mut *tx)
 				.await
 				.unwrap();
@@ -2542,16 +2675,104 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	.await
 	.unwrap();
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	if delivery == "extra_on_demand" {
+		let mut denied = policy.clone();
+		denied["policies"].as_array_mut().unwrap().push(json!({
+			"id":"deny-only-on-demand-bank","effect":"deny","subjects":{"any":true},
+			"actions":["memory.read"],"resources":{"kinds":["memory"]},
+			"condition":{"op":"eq","left":{"source":"resource","path":"/shared"},"right":{"source":"literal","value":true}}
+		}));
+		authorization
+			.replace(
+				"acme",
+				2,
+				serde_json::from_value(denied).unwrap(),
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+		let denied_bank = Bank {
+			participant: None,
+			..participant.bank.clone()
+		};
+		let denied_read = memory::list(
+			&f.store,
+			&actor,
+			memory::ReadBank {
+				provider: primary.clone(),
+				bank: denied_bank,
+			},
+		)
+		.await;
+		assert!(
+			matches!(denied_read, Err(aidash_server::Error::Forbidden)),
+			"the excluded Bank must really deny reads: {denied_read:?}"
+		);
+	}
+	if delivery == "primary_on_demand" {
+		// Run eligibility still requires the primary Bank's memory.read. Its
+		// payload must stay unread: this array passes the relational CHECK but
+		// fails the real Unit loader's typed Entity decoding.
+		let updated = aidash_server::database::native::query(
+			&Query::update()
+				.table(Alias::new("memory_units"))
+				.value(
+					Alias::new("entities"),
+					Expr::value(json!([{"on_demand_loader_sentinel":true}])),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.in_scope(&TEST_FIXTURE))
+		.await
+		.unwrap();
+		assert_eq!(updated.rows_affected(), 1);
+		let unreadable = memory::list(
+			&f.store,
+			&actor,
+			memory::ReadBank {
+				provider: primary.clone(),
+				bank: participant.bank.clone(),
+			},
+		)
+		.await;
+		assert!(
+			matches!(&unreadable, Err(aidash_server::Error::Json(error)) if error.is_data() && error.to_string().contains("on_demand_loader_sentinel")),
+			"the primary payload loader must really fail after authorization: {unreadable:?}"
+		);
+	}
+	if delivery == "accepted_lease_lost" {
+		*invalidate.lock().unwrap() = Some((f.store.clone(), run.id, None));
+	}
+	if delivery == "shared_read_revoked" {
+		let mut revoked = policy;
+		revoked["policies"].as_array_mut().unwrap().push(json!({"id":"shared-only-revocation","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["memory"]},"condition":{"op":"eq","left":{"source":"resource","path":"/shared"},"right":{"source":"literal","value":true}}}));
+		*invalidate.lock().unwrap() = Some((f.store.clone(), run.id, Some(revoked)));
+	}
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
+	let accepted_save_rejected = matches!(
+		delivery,
+		"accepted_save_failure" | "accepted_lease_lost" | "shared_read_revoked"
+	);
 	for _ in 0..4 {
 		let attempt =
 			tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
 				.await
 				.expect("native inference and explicit recall must not deadlock");
-		if !matches!(delivery, "later_bank" | "commit_failure") {
+		if !matches!(
+			delivery,
+			"later_bank" | "commit_failure" | "accepted_lease_lost"
+		) {
 			attempt.unwrap();
+		}
+
+		if accepted_save_rejected && !captured.lock().unwrap().is_empty() {
+			break;
+		}
+		if mixed_on_demand && !captured.lock().unwrap().is_empty() {
+			break;
 		}
 		if (reflect && captured.lock().unwrap().len() > 1)
 			|| (!reflect
@@ -2566,11 +2787,76 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			break;
 		}
 	}
-	if matches!(delivery, "later_bank" | "commit_failure") {
-		assert!(
-			captured.lock().unwrap().is_empty(),
-			"failed Bank or enclosing commit must prevent context delivery"
+	if mixed_on_demand {
+		let requests = captured.lock().unwrap().clone();
+		let accepted = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert_eq!(
+			requests.len(),
+			1,
+			"the excluded Bank must not block inference: {:?}",
+			accepted.error
 		);
+		assert_eq!(accepted.error, None);
+		let primary_text = "東京の地下鉄を利用する。 Use the subway in Tokyo.";
+		let shared_text = "Shared Tokyo subway source";
+		let (delivered_text, excluded_text, delivered_unit, delivered_source) =
+			if delivery == "extra_on_demand" {
+				(primary_text, shared_text, id, primary.id.as_str())
+			} else {
+				(shared_text, primary_text, shared_unit, "shared-source")
+			};
+		let request = requests[0].to_string();
+		assert!(
+			request.contains(delivered_text),
+			"Always content must reach the model: {request}"
+		);
+		assert!(
+			!request.contains(excluded_text),
+			"OnDemand content must not reach the model: {request}"
+		);
+		let bank_deliveries = accepted
+			.context
+			.source_deliveries
+			.iter()
+			.filter(|receipt| {
+				receipt.identity.source.id == primary.id
+					|| receipt.identity.source.id == "shared-source"
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(bank_deliveries.len(), 1);
+		assert_eq!(bank_deliveries[0].identity.source.id, delivered_source);
+		let reads: Vec<Uuid> = aidash_server::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("unit_id"))
+				.from(Alias::new("memory_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(f.store.pool.in_scope(&TEST_FIXTURE))
+		.await
+		.unwrap();
+		assert_eq!(
+			reads,
+			vec![delivered_unit],
+			"only accepted Always content earns a full read"
+		);
+		drop(provider);
+		return;
+	}
+	if matches!(delivery, "later_bank" | "commit_failure") || accepted_save_rejected {
+		assert_eq!(
+			captured.lock().unwrap().len(),
+			usize::from(accepted_save_rejected),
+			"only accepted-save failure reaches the provider; pre-read failure never does"
+		);
+		if delivery == "shared_read_revoked" {
+			let actual = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
+			assert_eq!(
+				actual["memory"]["banks"][1]["recall"]["units"][0]["id"],
+				json!(shared_unit),
+				"the shared Unit must actually reach the provider before its authority is revoked: {actual:?}"
+			);
+		}
 		let count: i64 = aidash_server::database::native::query_scalar(
 			&Query::select()
 				.expr(reinhardt::query::Func::count(
@@ -2583,11 +2869,23 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.scalar_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
+		let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(
-			count, 0,
-			"earlier successful Bank must leave no phantom read"
+			count,
+			0,
+			"earlier successful Bank must leave no phantom read; phase={:?}; deliveries={:?}",
+			stored.phase(),
+			stored.context.source_deliveries
 		);
-		if delivery != "later_bank" {
+		assert!(
+			stored.context.source_deliveries.is_empty(),
+			"rejected save cannot adopt delivery evidence"
+		);
+		if delivery == "shared_read_revoked" {
+			assert_eq!(stored.control, aidash_domain::RunControl::Paused);
+			assert_eq!(stored.error.as_deref(), Some("execution authority denied"));
+		}
+		if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 			let error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
 			assert!(
 				error
@@ -2649,10 +2947,18 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		// Automatic learning may combine the Run proof with up to seven input/
 		// output sources: two Unit roots fit a Run-only proof at nine visits but
 		// leave too little space for that complete canonical evidence envelope.
+		let deliveries = f
+			.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.context
+			.source_deliveries;
+		let addition_id = Uuid::now_v7();
 		let addition = mutation(
 			&participant.bank,
 			Change::Add {
-				id: Uuid::now_v7(),
+				id: addition_id,
 				content: content("東京の追加根拠。 Another subway source."),
 			},
 		);
@@ -2665,10 +2971,29 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.await
 				.unwrap();
 		}
+		let frames = captured.lock().unwrap().clone();
+		let journal_run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(
-			captured.lock().unwrap().len(),
-			1,
-			"over-bound recall must not reach another inference"
+			frames.len(),
+			2,
+			"automatic recall stages both Units before the response adoption checks its journal"
+		);
+		let proposed =
+			frames[1]["current"]["semantic_memory"]["memory"]["banks"][0]["recall"]["units"]
+				.as_array()
+				.unwrap();
+		assert!(
+			proposed.iter().any(|unit| unit["id"] == json!(addition_id)),
+			"the new Unit must reach the provider before its read save is rejected"
+		);
+		assert_eq!(journal_run.phase(), aidash_domain::RunPhase::Failed);
+		assert_eq!(
+			journal_run.error.as_deref(),
+			Some("Run memory read journal exceeds its provenance bound")
+		);
+		assert_eq!(
+			journal_run.context.source_deliveries, deliveries,
+			"a rejected adoption cannot replace prior accepted delivery evidence"
 		);
 		let reads = aidash_server::database::native::query(
 			&Query::select()
@@ -4363,9 +4688,12 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider
 	FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider { state, server }
 }
 
+type InferenceInvalidation = (Store, Uuid, Option<serde_json::Value>);
+
 #[derive(Clone)]
 struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 	id: Uuid,
+	invalidate: Arc<Mutex<Option<InferenceInvalidation>>>,
 	reflect: bool,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
@@ -4375,6 +4703,7 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 ) -> HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 	HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 		id: Uuid::now_v7(),
+		invalidate: Arc::new(Mutex::new(None)),
 		reflect,
 		captured: Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new())),
 	}
@@ -4390,11 +4719,42 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 	let reflect = state.reflect;
 	let captured = state.captured.clone();
 	let received = captured.clone();
+	let invalidate = state.invalidate.clone();
 	std::sync::Arc::new({
 		let model = reply(move |request: reinhardt::Request| {
 			let input = request.json::<serde_json::Value>().unwrap();
 			let received = received.clone();
+			let invalidation = invalidate.lock().unwrap().take();
 			async move {
+				if let Some((store, run, policy)) = invalidation {
+					if let Some(policy) = policy {
+						aidash_server::authorization::Authorization {
+							pool: store.pool.clone(),
+						}
+						.replace(
+							"acme",
+							2,
+							serde_json::from_value(policy).unwrap(),
+							"deployment_administrator",
+						)
+						.await
+						.unwrap();
+					} else {
+						aidash_server::database::native::query(
+							&Query::update()
+								.table(Alias::new("runs"))
+								.value(
+									Alias::new("lease_until"),
+									chrono::Utc::now() - chrono::Duration::seconds(1),
+								)
+								.and_where(Expr::col("id").eq(Expr::value(run)))
+								.to_string(PostgresQueryBuilder),
+						)
+						.execute(store.pool.in_scope(&TEST_FIXTURE))
+						.await
+						.unwrap();
+					}
+				}
 				let context: serde_json::Value =
 					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
 						.unwrap();

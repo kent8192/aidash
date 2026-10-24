@@ -659,11 +659,8 @@ impl crate::ports::bindings::ProviderCatalog for DefinitionValidation {
 		config: &aidash_domain::decision::DeciderConfig,
 	) -> Result<String> {
 		config.validate()?;
-		if !self.provider_credentials_enabled {
-			return Err(Error::Invalid(
-				"Node has no supported Decision Provider".into(),
-			));
-		}
+		// The compiled adapter exists independently of the Tenant's live
+		// credential. Missing credential authority pauses at decision dispatch.
 		Ok(decision_implementation_id())
 	}
 	fn contract(

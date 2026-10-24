@@ -417,12 +417,25 @@ impl TenantAdministrator {
 		id: &str,
 		attributes: Value,
 	) -> Result<()> {
+		let (evaluation, decision) = self.authorize(snapshot, action, id, attributes)?;
+		AuthorizationDecision::append(tx, self.tenant(), &evaluation, &decision).await
+	}
+
+	/// Checks under the caller's retained policy lock. The caller must append
+	/// the returned decision before committing a successful operation. This
+	/// lets long reads acquire the global audit cursor lock only at the end.
+	pub(crate) fn authorize(
+		&self,
+		snapshot: &Snapshot,
+		action: &str,
+		id: &str,
+		attributes: Value,
+	) -> Result<(Evaluation, Decision)> {
 		let evaluation = self.evaluation(action, id, attributes);
 		let mut decision = snapshot.bundle.evaluate(&evaluation);
 		decision.revision = snapshot.revision;
 		if decision.allowed {
-			AuthorizationDecision::append(tx, self.tenant(), &evaluation, &decision).await?;
-			return Ok(());
+			return Ok((evaluation, decision));
 		}
 		*self.denial.lock().expect("denial lock") = Some((evaluation, decision));
 		Err(Error::Forbidden)
@@ -510,6 +523,54 @@ impl TenantAdministrator {
 			{
 				actions.push(rules::CREDENTIAL_CREATE.to_owned());
 			}
+			let candidates: Vec<_> = snapshot
+				.bundle
+				.subjects
+				.iter()
+				.filter(|(id, subject)| {
+					aidash_domain::identity::authority::enabled(&snapshot.bundle, id)
+						&& matches!(
+							subject.kind,
+							aidash_domain::policy::SubjectKind::Service
+								| aidash_domain::policy::SubjectKind::Agent
+						)
+				})
+				.collect();
+			let mut mapped = BTreeSet::<String>::new();
+			if !candidates.is_empty() {
+				let (sql, values) = Query::select()
+					.distinct()
+					.column(Alias::new("subject"))
+					.from(Alias::new(DashboardMapping::table_name()))
+					.and_where(Expr::col("tenant").eq(Expr::value(self.tenant())))
+					.and_where(
+						Expr::col("subject")
+							.is_in(candidates.iter().map(|(id, _)| Expr::value(id.as_str()))),
+					)
+					.build(PostgresQueryBuilder);
+				for row in TransactionExecutor::fetch_all(tx, &sql, convert_values(values)).await? {
+					mapped.insert(
+						row.get("subject")
+							.map_err(reinhardt::core::exception::Error::from)?,
+					);
+				}
+			}
+			let mut issuable_subjects = vec![];
+			let mut decisions = vec![];
+			for (id, subject) in candidates {
+				if mapped.contains(id) {
+					continue;
+				}
+				let evaluation =
+					self.evaluation(rules::CREDENTIAL_ISSUE, id, json!({"kind": subject.kind}));
+				let mut decision = snapshot.bundle.evaluate(&evaluation);
+				decision.revision = snapshot.revision;
+				if decision.allowed {
+					issuable_subjects.push(id.clone());
+				}
+				decisions.push((evaluation, decision));
+			}
+			AuthorizationDecision::append_many(tx, self.tenant(), &decisions).await?;
 			let label = super::Tenant::objects()
 				.filter(super::Tenant::field_name().eq(tenant))
 				.all_with_db(tx)
@@ -520,6 +581,7 @@ impl TenantAdministrator {
 				label,
 				tenant: self.tenant().to_owned(),
 				actions,
+				issuable_subjects,
 				assignable_groups: if administrator {
 					rules::assignable_groups(&snapshot.bundle)
 				} else {

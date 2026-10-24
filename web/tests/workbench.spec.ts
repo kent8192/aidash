@@ -1394,3 +1394,180 @@ test("a draft keeps the Agent Plugins it carries through an edit and save", asyn
     entry: { config: { instructions: "Edited with plugins", agent_plugins } },
   });
 });
+
+test("Tenant test settings enforce field minima and require a rules array before writing", async ({
+  page,
+}) => {
+  await setup(page, {
+    locale: "en-US",
+    subject: true,
+    tenantActions: [
+      "workbench.test_limits.update",
+      "workbench.test_profile.update",
+    ],
+  });
+  const limits = {
+    tenant: "acme",
+    revision: 1,
+    max_input_bytes: 4096,
+    max_output_tokens: 128,
+    max_total_tokens: 512,
+    max_steps: 4,
+    max_duration_secs: 30,
+    max_concurrent: 1,
+    payload_days: 7,
+    incident_evidence_days: 14,
+  };
+  const writes: unknown[] = [];
+  await page.route("**/api/workbench/test-limits/acme", (route) =>
+    route.fulfill({
+      json: {
+        limits,
+        ceilings: {
+          ...limits,
+          max_input_bytes: 1000000,
+          max_output_tokens: 8192,
+          max_total_tokens: 1000000,
+          max_steps: 64,
+          max_duration_secs: 900,
+          max_concurrent: 32,
+          payload_days: 365,
+          incident_evidence_days: 3650,
+        },
+      },
+    }),
+  );
+  await page.route("**/api/workbench/test-profiles/acme", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route("**/api/workbench/test-profiles/acme/*", (route) => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({
+      json: { id: "new", revision: 1, enabled: true, rules: [] },
+    });
+  });
+  await page.goto("/settings?view=registry");
+  await page
+    .getByRole("button", { name: "Workbench tests", exact: true })
+    .click();
+  for (const [label, minimum] of [
+    ["Input bytes", 1024],
+    ["Output tokens per call", 64],
+    ["Total tokens", 256],
+    ["Seconds per test", 5],
+  ] as const) {
+    const input = page.getByLabel(label, { exact: true });
+    await expect(input).toHaveAttribute("min", String(minimum));
+    await input.fill(String(minimum - 1));
+    expect(
+      await input.evaluate(
+        (element: HTMLInputElement) => element.validity.rangeUnderflow,
+      ),
+    ).toBe(true);
+    await input.fill(String(minimum));
+  }
+  await page.getByLabel("Profile", { exact: true }).last().fill("new");
+  await page.getByLabel("Rules (JSON)", { exact: true }).fill("{}");
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect(
+    page.getByText("Enter a valid JSON array of rules.", { exact: true }),
+  ).toBeVisible();
+  expect(writes).toEqual([]);
+  await page.getByLabel("Rules (JSON)", { exact: true }).fill("[]");
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect
+    .poll(() => writes)
+    .toEqual([{ expected_revision: 0, enabled: true, rules: [] }]);
+});
+
+test("Tenant profile writers page to later profiles and keep the current revision on save", async ({
+  page,
+}) => {
+  await setup(page, {
+    locale: "en-US",
+    subject: true,
+    tenantActions: ["workbench.test_profile.update"],
+  });
+  const profile = (n: number) => ({
+    tenant: "acme",
+    id: `profile-${String(n).padStart(3, "0")}`,
+    revision: 17,
+    enabled: n !== 100,
+    rules: [],
+    updated_at: "2026-10-23T00:00:00Z",
+  });
+  const cursors: (string | null)[] = [];
+  const writes: unknown[] = [];
+  await page.route(
+    /\/api\/workbench\/test-profiles\/acme(?:\?.*)?$/,
+    (route) => {
+      const after = new URL(route.request().url()).searchParams.get("after");
+      cursors.push(after);
+      return route.fulfill({
+        json:
+          after === "profile-099"
+            ? [profile(100)]
+            : Array.from({ length: 100 }, (_, n) => profile(n)),
+      });
+    },
+  );
+  await page.route(
+    "**/api/workbench/test-profiles/acme/profile-100",
+    (route) => {
+      writes.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ...profile(100), revision: 18 } });
+    },
+  );
+  await page.goto("/settings?view=registry");
+  await page
+    .getByRole("button", { name: "Workbench tests", exact: true })
+    .click();
+  const select = page.getByLabel("Profile", { exact: true }).first();
+  await expect(select.locator("option")).toHaveCount(101);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(select.locator("option")).toHaveCount(2);
+  await select.selectOption("profile-100");
+  await expect(page.getByLabel("Rules (JSON)", { exact: true })).toHaveValue(
+    "[]",
+  );
+  await page.getByRole("button", { name: "Save profile", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({
+    expected_revision: 17,
+    enabled: false,
+    rules: [],
+  });
+  await expect(
+    page.getByRole("button", { name: "Next", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Previous", exact: true }).click();
+  await expect(select.locator("option")).toHaveCount(101);
+  expect(cursors).toContain("profile-099");
+});
+
+test("Creator explicitly removes and restores the built-in compaction default", async ({
+  page,
+}) => {
+  const { saves } = await editableDrafts(page);
+  const compaction = page.getByLabel("Use the built-in compaction Decider");
+  await expect(compaction).toBeChecked();
+  await expect(
+    page.getByText("aidash.compaction-decider@1.0.0", { exact: true }),
+  ).toBeVisible();
+  await compaction.uncheck();
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0]).toMatchObject({
+    entry: { config: { remove_default: ["compaction"] } },
+  });
+  await compaction.check();
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(2);
+  expect(saves[1]).toMatchObject({ entry: { config: { remove_default: [] } } });
+});

@@ -9,7 +9,14 @@ import { disambiguateLabels } from "./display-labels";
 import { hasPluginSkills, type AgentPluginRef } from "./agent-plugins";
 import { groupByKind } from "./registry-kinds";
 export type Binding = {
-  kind: "tool" | "bundle" | "skill" | "memory" | "source" | "external_service";
+  kind:
+    | "tool"
+    | "bundle"
+    | "skill"
+    | "memory"
+    | "source"
+    | "decider"
+    | "external_service";
   target: { registry_deployment: string; id: string; version: string };
   alias?: string;
   narrow: {
@@ -117,11 +124,14 @@ export function AgentBindings({
   node = "",
   entries = [],
   cluster = false,
+  generated = false,
 }: {
   value: BindingConfiguration;
   change: (v: BindingConfiguration) => void;
   node?: string;
   cluster?: boolean;
+  /** Generated chains use only their explicit generation-policy Decider. */
+  generated?: boolean;
   entries?: {
     id: string;
     version: string;
@@ -134,15 +144,22 @@ export function AgentBindings({
   const ja = locale === "ja-JP";
   const [target, setTarget] = useState("");
   const origin = node;
-  const available = entries.filter((e) =>
-    [
-      "tool",
-      "bundle",
-      "skill",
-      "memory",
-      "source",
-      "external_service",
-    ].includes(e.kind),
+  const available = entries.filter(
+    (e) =>
+      [
+        "tool",
+        "bundle",
+        "skill",
+        "memory",
+        "source",
+        "external_service",
+        "decider",
+      ].includes(e.kind) &&
+      (e.kind !== "decider" ||
+        (!generated &&
+          ["compaction", "context_selection"].includes(
+            String(e.config?.hook),
+          ))),
   );
   const labels = disambiguateLabels(
     available,
@@ -340,6 +357,45 @@ export function AgentBindings({
           ))}
         </ul>
       )}
+      <Group nested legend={ja ? "履歴の圧縮" : "History compaction"}>
+        {generated ? (
+          <Hint>
+            {ja
+              ? "生成された Agent は生成ポリシーの正確な Decider だけを使います。組み込みの既定値は追加されず、祖先の呼び出し予算も引き継ぎます。"
+              : "Generated Agents use only the exact Decider in their generation policy. They receive no implicit default and retain ancestor call budgets."}
+          </Hint>
+        ) : (
+          <>
+            <Check
+              checked={!removed.includes("compaction")}
+              onChange={(event) =>
+                save({
+                  ...value,
+                  remove_default: event.target.checked
+                    ? removed.filter((name) => name !== "compaction")
+                    : [...removed, "compaction"],
+                })
+              }
+            >
+              {ja
+                ? "組み込みの圧縮 Decider を使う"
+                : "Use the built-in compaction Decider"}
+            </Check>
+            <Hint>
+              <code>aidash.compaction-decider@1.0.0</code>
+              {" · "}
+              {ja
+                ? '上で追加した compaction Decider が既定値を置き換えます。チェックを外すと remove_default: ["compaction"] で明示的に削除します。'
+                : 'A compaction Decider added above replaces this default. Clearing the checkbox explicitly records remove_default: ["compaction"].'}
+            </Hint>
+          </>
+        )}
+        <Hint>
+          {ja
+            ? "正確なバージョンの Catalog Approval と現在の認証情報が必要です。未承認・呼び出し予算超過・利用不可では、それぞれの理由を示して Run が一時停止します。"
+            : "The exact version needs Catalog Approval and current credentials. Unapproved, call-budget-exhausted and unavailable compaction pause the Run with distinct reasons."}
+        </Hint>
+      </Group>
       <Group nested legend={ja ? "組み込みツール" : "Built-in tools"}>
         <Hint>
           {ja

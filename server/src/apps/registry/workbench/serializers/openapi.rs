@@ -132,6 +132,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::profile::administered, &["String"])?;
+	contracts
+		.query::<_, super::profile::ProfilePageQuery>(document, views::profile::administered)?;
 	contracts.response::<_, TestProfile>(document, views::profile::put, 200, "application/json")?;
 	contracts.request::<_, ProfileInput>(document, views::profile::put)?;
 	contracts.path(document, views::profile::put, &["String", "String"])?;

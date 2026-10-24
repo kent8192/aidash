@@ -86,6 +86,7 @@ pub fn attach(entry: &mut Entry, node: &str, documents: &Value) -> Result<Entry>
 		schema: json!({}),
 		config: serde_json::to_value(NativeContext {
 			schema_version: 1,
+			context_source: None,
 			source: NativeSource::PrivateReferences { digest },
 		})?,
 	})
