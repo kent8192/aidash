@@ -532,6 +532,24 @@ def _estimates(row):
     return result
 
 
+def _estimator_observations(row):
+    selected, *shadows = _estimates(row)
+    selected["ratio_ppm"] = row.get("estimate_ratio_ppm")
+    result, seen = [], set()
+    fields = ("estimator", "version", "confidence", "tokens", "output_reservation", "byte_basis", "ratio_ppm")
+    for estimate in [selected, *shadows]:
+        # Different frozen snapshots can yield the same measurement. They do
+        # not add independent error samples for this attempt and estimator.
+        identity = {field: estimate.get(field) for field in fields}
+        identity.update(requested_estimator=estimate.get("requested_estimator") or estimate.get("estimator"),
+                        applicable=estimate.get("applicable", True))
+        key = json.dumps(identity, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            result.append(estimate)
+    return result
+
+
 def _model_identity(row, settings):
     """Compare two separately recorded facts, using only declared equivalences."""
     identity = row.get("provider_identity") or {}
@@ -654,7 +672,7 @@ def _run_metrics(run, complete, settings):
         route_rows.append(_model_identity(row, purpose_settings))
     estimates = defaultdict(list)
     for row in all_usage:
-        for estimate in _estimates(row):
+        for estimate in _estimator_observations(row):
             name = estimate.get("requested_estimator") or estimate.get("estimator") or "unknown"
             tokens_estimate, output, reported = estimate.get("tokens"), estimate.get("output_reservation"), row.get("input_tokens")
             applicable = estimate.get("applicable", True)

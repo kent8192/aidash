@@ -239,6 +239,42 @@ class AccountingReportTest(unittest.TestCase):
         self.assertFalse(run["estimator_errors"]["calibrated"][0]["selected"])
         self.assertEqual(run["estimator_errors"]["calibrated"][0]["version"], 2)
 
+    def test_execution_shadow_counts_each_attempt_once_in_estimator_statistics(self):
+        for estimator, version, confidence in (("bytes", 1, "conservative"), ("calibrated", 2, "calibrated"),
+                                               ("tokenized", 1, "tokenized")):
+            with self.subTest(estimator=estimator):
+                export = copy.deepcopy(self.export)
+                for row, tokens in zip(export["inference_usage"], (150, 110)):
+                    ratio = 300000 if estimator == "calibrated" else None
+                    row.update(estimated_tokens=tokens, byte_basis=300, estimator=estimator,
+                               estimator_version=version, estimate_confidence=confidence, estimate_ratio_ppm=ratio)
+                    row["shadow_estimates"] = [item for item in row["shadow_estimates"]
+                                               if item["snapshot"]["estimator"]["id"] != estimator]
+                    shadow = {"snapshot": {"step": 0, "estimator": {"id": estimator, "version": version}},
+                              "estimate": {"tokens": tokens, "output_reservation": 20, "byte_basis": 300,
+                                           "estimator": estimator, "version": version, "confidence": confidence,
+                                           "ratio_ppm": ratio}}
+                    if estimator == "calibrated":
+                        shadow["snapshot"]["estimator"].update(samples=25, ratio_ppm=ratio, margin_permille=100)
+                    if estimator == "tokenized":
+                        shadow["snapshot"]["estimator"].update(encoding="o200k_base", encoding_version=1)
+                    execution = copy.deepcopy(shadow)
+                    if estimator == "calibrated":
+                        execution["snapshot"]["estimator"]["samples"] = 30
+                    row["shadow_estimates"].extend([shadow, execution])
+                evidence = projection.load_evidence(self.manifest, export)
+                evidence["runs"] = evidence["runs"][:1]
+                report = projection.analyze_campaign([evidence], configuration(self.manifest))
+                observations = report["runs"][0]["estimator_errors"][estimator]
+                self.assertEqual(len(observations), 2)
+                self.assertTrue(all(item["selected"] for item in observations))
+                self.assertTrue(all(item["snapshot"] is None for item in observations))
+                summary = report["campaign_all_work"]["estimator_errors"][estimator]
+                self.assertEqual(summary["signed_input_error"]["n"], 2)
+                self.assertEqual(summary["signed_input_error"]["mean"], 10)
+                self.assertEqual(summary["signed_input_error"]["sample_variance"], 800)
+                self.assertEqual(summary["underestimated"], 1)
+
     def test_unknown_auxiliary_charge_and_unreported_route_never_become_zero_or_requested_identity(self):
         export = copy.deepcopy(self.export)
         first = export["run_inventory"][0]
