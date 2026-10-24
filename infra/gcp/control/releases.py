@@ -147,9 +147,9 @@ def current_candidate(config, sha):
 
 @phase
 def source_ci(config, sha):
-    owner = workflow(config, "ci.yml", "CI")
+    owner = workflow(config, "release-ci.yml", "Release CI")
     query = urlencode({"head_sha": sha, "event": "push", "branch": config["develop_branch"]})
-    runs = pages(f"repos/{config['repository']}/actions/workflows/ci.yml/runs?{query}", "workflow_runs")
+    runs = pages(f"repos/{config['repository']}/actions/workflows/release-ci.yml/runs?{query}", "workflow_runs")
     matching = [value for value in runs if (
         value.get("workflow_id") == owner["id"]
         and value.get("path") == owner["path"]
@@ -223,7 +223,7 @@ def check(config, sha, receipt=None):
 
 @phase
 def create_candidate(config, event):
-    completed = completed_run(config, event, "ci.yml", "CI", "push")
+    completed = completed_run(config, event, "release-ci.yml", "Release CI", "push")
     if completed["head_branch"] != config["develop_branch"]:
         emit("candidate.ignored", reason="different_development_branch")
         return False
@@ -365,7 +365,7 @@ def accept_staging(config, event, receipt):
         raise Refused("The receipt must match one current immutable managed release PR")
     pr, metadata = matches[0]
     original = api(f"repos/{config['repository']}/actions/runs/{metadata['ci_run_id']}")
-    owner = workflow(config, "ci.yml", "CI")
+    owner = workflow(config, "release-ci.yml", "Release CI")
     if (original.get("head_sha") != validated["source_sha"] or original.get("head_branch") != config["develop_branch"] or original.get("event") != "push" or original.get("conclusion") != "success"
         or original.get("status") != "completed" or original.get("workflow_id") != owner["id"] or original.get("path") != owner["path"]
         or original.get("repository", {}).get("full_name") != config["repository"] or original.get("head_repository", {}).get("full_name") != config["repository"]):

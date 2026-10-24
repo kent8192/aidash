@@ -7,7 +7,7 @@ use aidash_domain::{
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall,
-		usage::{ProviderCost, ReportedUsage},
+		usage::{PROVIDER_IDENTITY_FIELD_BYTES, ProviderCost, ProviderIdentity, ReportedUsage},
 	},
 };
 use async_trait::async_trait;
@@ -47,7 +47,8 @@ impl OpenRouterProvider {
 		});
 		context
 	}
-	async fn verified_media_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
+	async fn verified_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
+		self.config.validate_provider_route()?;
 		let formats: Vec<&str> = request
 			.content_parts
 			.iter()
@@ -57,10 +58,10 @@ impl OpenRouterProvider {
 				ContentPart::Text(_) => None,
 			})
 			.collect();
-		if formats.is_empty() {
+		if formats.is_empty() && self.config.provider_route.is_none() {
 			return Ok(Vec::new());
 		}
-		if self.config.media_routes.is_empty() {
+		if !formats.is_empty() && self.config.media_routes.is_empty() {
 			return Err(Error::Invalid(format!(
 				"model {} has no verified media route",
 				self.config.model_id
@@ -126,14 +127,19 @@ impl OpenRouterProvider {
 		let modalities = endpoints
 			.pointer("/data/architecture/input_modalities")
 			.and_then(Value::as_array)
-			.ok_or_else(|| Error::External("OpenRouter model modalities unavailable".into()))?;
+			.filter(|_| !formats.is_empty());
+		if !formats.is_empty() && modalities.is_none() {
+			return Err(Error::External(
+				"OpenRouter model modalities unavailable".into(),
+			));
+		}
 		for part in &request.content_parts {
 			let modality = match part {
 				ContentPart::Image { .. } => "image",
 				ContentPart::Audio { .. } => "audio",
 				ContentPart::Text(_) => continue,
 			};
-			if !modalities.iter().any(|value| value == modality) {
+			if !modalities.is_some_and(|values| values.iter().any(|value| value == modality)) {
 				return Err(Error::Invalid(format!(
 					"OpenRouter model {} no longer supports {modality} input",
 					self.config.model_id
@@ -149,6 +155,28 @@ impl OpenRouterProvider {
 			.and_then(Value::as_array)
 			.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
 		let now = chrono::Utc::now();
+		if let Some(route) = &self.config.provider_route {
+			let media_approved = formats.is_empty()
+				|| self.config.media_routes.iter().any(|media| {
+					media.tag == route.tag
+						&& media.verified_at <= now
+						&& media.expires_at > now
+						&& formats
+							.iter()
+							.all(|format| media.formats.iter().any(|approved| approved == format))
+				});
+			if route.verified_at > now
+				|| route.expires_at <= now
+				|| !media_approved
+				|| !eligible_route(&route.tag, endpoints, zdr, &self.config.model_id, request)
+			{
+				return Err(Error::Invalid(format!(
+					"model {} pinned provider route is unavailable",
+					self.config.model_id
+				)));
+			}
+			return Ok(vec![route.tag.clone()]);
+		}
 		let mut eligible = Vec::new();
 		for evidence in &self.config.media_routes {
 			if evidence.verified_at > now
@@ -159,26 +187,13 @@ impl OpenRouterProvider {
 			{
 				continue;
 			}
-			// A base slug also matches variants. An exact route can only be
-			// allowlisted when it cannot select an unverified sibling variant.
-			if !evidence.tag.contains('/')
-				&& endpoints.iter().any(|endpoint| {
-					endpoint["tag"]
-						.as_str()
-						.is_some_and(|tag| tag.starts_with(&format!("{}/", evidence.tag)))
-				}) {
-				continue;
-			}
-			let present = endpoints.iter().any(|endpoint| {
-				endpoint["tag"] == evidence.tag
-					&& endpoint["context_length"]
-						.as_u64()
-						.is_none_or(|limit| request.estimated_total_tokens() as u64 <= limit)
-			});
-			let private = zdr.iter().any(|endpoint| {
-				endpoint["model_id"] == self.config.model_id && endpoint["tag"] == evidence.tag
-			});
-			if present && private {
+			if eligible_route(
+				&evidence.tag,
+				endpoints,
+				zdr,
+				&self.config.model_id,
+				request,
+			) {
 				eligible.push(evidence.tag.clone());
 			}
 		}
@@ -187,6 +202,29 @@ impl OpenRouterProvider {
 		}
 		Ok(eligible)
 	}
+}
+
+/// Every slug prefix may match descendant regions or variants. Only a leaf
+/// tag present in both current catalogs is safe to send as an exact allowlist.
+fn eligible_route(
+	tag: &str,
+	endpoints: &[Value],
+	zdr: &[Value],
+	model: &str,
+	request: &ModelRequest,
+) -> bool {
+	!endpoints.iter().any(|endpoint| {
+		endpoint["tag"]
+			.as_str()
+			.is_some_and(|other| other.starts_with(&format!("{tag}/")))
+	}) && endpoints.iter().any(|endpoint| {
+		endpoint["tag"] == tag
+			&& endpoint["context_length"]
+				.as_u64()
+				.is_none_or(|limit| request.estimated_total_tokens() as u64 <= limit)
+	}) && zdr
+		.iter()
+		.any(|endpoint| endpoint["model_id"] == model && endpoint["tag"] == tag)
 }
 
 /// A provider without Cache Salt Keys: every salted request is rejected
@@ -208,6 +246,8 @@ pub fn salted_provider(
 	context: Context,
 	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
+	config.validate_provider_route()?;
+	config.validate_estimate_diagnostics()?;
 	aidash_domain::provider_credentials::validate_grants(
 		&config.endpoint,
 		&config.provider,
@@ -314,7 +354,7 @@ impl ModelProvider for OpenRouterProvider {
 					)));
 				}
 			}
-			let media_routes = self.verified_media_routes(&request).await?;
+			let media_routes = self.verified_routes(&request).await?;
 			let mut body = request_body(&self.config, &request, media_routes, salt.as_deref());
 			if streaming {
 				body["stream"] = json!(true);
@@ -432,7 +472,9 @@ fn request_body(
 	}
 	// Enforce ZDR on every call, including existing registered models. Never
 	// retry against non-ZDR endpoints if no eligible provider is available.
-	body["provider"] = if media_routes.is_empty() {
+	body["provider"] = if let Some(route) = &config.provider_route {
+		json!({"zdr": true, "require_parameters": true, "only": [route.tag], "allow_fallbacks": false})
+	} else if media_routes.is_empty() {
 		json!({"zdr": true, "require_parameters": true})
 	} else {
 		json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
@@ -572,6 +614,7 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 		cache_write_tokens: count("/usage/prompt_tokens_details/cache_write_tokens"),
 		reasoning_tokens: count("/usage/completion_tokens_details/reasoning_tokens"),
 		cost: provider_cost(body),
+		provider_identity: provider_identity(&value),
 	};
 	let usage = ModelResponse {
 		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
@@ -634,6 +677,31 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	}
 	validate_response(&result)?;
 	Ok(result)
+}
+
+/// Retain bounded, explicit response fields only. In particular, a provider
+/// name is not an endpoint tag, and no requested value fills a missing field.
+fn provider_identity(value: &Value) -> Option<ProviderIdentity> {
+	let field = |name: &str| {
+		value
+			.get(name)
+			.and_then(Value::as_str)
+			.filter(|text| {
+				!text.trim().is_empty()
+					&& text.len() <= PROVIDER_IDENTITY_FIELD_BYTES
+					&& !text.chars().any(char::is_control)
+			})
+			.map(str::to_owned)
+	};
+	let identity = ProviderIdentity {
+		reported_model: field("model"),
+		reported_provider: field("provider"),
+		// OpenRouter's ordinary completion schema does not report an exact
+		// endpoint tag. Preserve one only if explicitly supplied upstream.
+		reported_route: field("provider_route"),
+		provider_request_id: field("id"),
+	};
+	(identity != ProviderIdentity::default()).then_some(identity)
 }
 
 fn field(v: &Value, key: &str) -> Result<String> {

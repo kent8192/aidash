@@ -202,6 +202,139 @@ fn completion(usage: Value) -> Value {
 }
 
 #[rstest::rstest]
+#[case::reported(json!({"model":"actual/model","provider":"Actual Provider","provider_route":"actual/region","id":"generation-7","metadata":{"prompt":"private"}}), Some(ProviderIdentity {
+	reported_model: Some("actual/model".into()), reported_provider: Some("Actual Provider".into()), reported_route: Some("actual/region".into()), provider_request_id: Some("generation-7".into())
+}))]
+#[case::missing(json!({"requested_model":"configured/model","route":"requested/region","metadata":{"provider":"requested"}}), None)]
+#[case::invalid(json!({"model":[],"provider":"\nprivate","provider_route":" ","id":"x".repeat(PROVIDER_IDENTITY_FIELD_BYTES + 1)}), None)]
+#[case::provider_is_not_route(json!({"provider":"Actual Provider"}), Some(ProviderIdentity { reported_provider: Some("Actual Provider".into()), ..Default::default() }))]
+fn completion_preserves_only_bounded_explicit_identity(
+	#[case] metadata: Value,
+	#[case] expected: Option<ProviderIdentity>,
+) {
+	let mut body = completion(Value::Null);
+	body.as_object_mut()
+		.unwrap()
+		.extend(metadata.as_object().unwrap().clone());
+	let response = parse(body).unwrap();
+	assert_eq!(response.reported.provider_identity, expected);
+	assert_eq!(response.reported.input_tokens, None);
+}
+
+mod exact_routes {
+	use super::*;
+	use aidash_application::ports::NoProgress;
+	use aidash_domain::model::{MediaRouteEvidence, ProviderRouteEvidence};
+	use axum::{
+		Json, Router,
+		routing::{get, post},
+	};
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	struct TestServer(tokio::task::JoinHandle<()>);
+	impl Drop for TestServer {
+		fn drop(&mut self) {
+			self.0.abort();
+		}
+	}
+
+	/// Both discovery APIs are independent inputs; only the completion
+	/// handler records dispatched traffic.
+	#[rstest::rstest]
+	#[case::exact_leaf(vec!["fixture/variant/us"], true, 8192, false, true, true)]
+	#[case::missing_catalog(vec!["other/region"], true, 8192, false, true, false)]
+	#[case::not_zdr(vec!["fixture/variant/us"], false, 8192, false, true, false)]
+	#[case::descendant_region(vec!["fixture/variant/us", "fixture/variant/us/priority"], true, 8192, false, true, false)]
+	#[case::context_limit(vec!["fixture/variant/us"], true, 1, false, true, false)]
+	#[case::media_exact(vec!["fixture/variant/us"], true, 8192, true, true, true)]
+	#[case::media_other_approval(vec!["fixture/variant/us"], true, 8192, true, false, false)]
+	#[tokio::test]
+	async fn pinned_inference_requires_current_exact_zdr_and_media_approval(
+		#[case] tags: Vec<&str>,
+		#[case] private: bool,
+		#[case] limit: u64,
+		#[case] media: bool,
+		#[case] approve_media: bool,
+		#[case] accepted: bool,
+	) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+		let catalog = json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":tags.iter().map(|tag| json!({"tag":tag,"context_length":limit})).collect::<Vec<_>>()}});
+		let zdr = json!({"data": if private { vec![json!({"model_id":"vendor/model","tag":"fixture/variant/us"})] } else { vec![] }});
+		let sent = Arc::new(AtomicUsize::new(0));
+		let recorded = Arc::new(std::sync::Mutex::new(None));
+		let (sent_handler, recorded_handler) = (sent.clone(), recorded.clone());
+		let app = Router::new()
+			.route("/v1/models/vendor/model/endpoints", get(move || { let catalog = catalog.clone(); async move { Json(catalog) } }))
+			.route("/v1/endpoints/zdr", get(move || { let zdr = zdr.clone(); async move { Json(zdr) } }))
+			.route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+				let (sent, recorded) = (sent_handler.clone(), recorded_handler.clone());
+				async move {
+					sent.fetch_add(1, Ordering::SeqCst);
+					*recorded.lock().unwrap() = Some(body);
+					Json(json!({"model":"actual/model","provider":"Actual Provider","id":"generation-1","choices":[{"finish_reason":"stop","message":{"content":"done"}}]}))
+				}
+			}));
+		let _server = TestServer(tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap()
+		}));
+		let now = chrono::Utc::now();
+		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"vendor/model","endpoint":endpoint,"context_window":8192,"modalities":["text","image"],"cost":{},"streaming":false})).unwrap();
+		config.provider_route = Some(ProviderRouteEvidence {
+			tag: "fixture/variant/us".into(),
+			source: "administrator approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		});
+		config.media_routes = vec![MediaRouteEvidence {
+			tag: if approve_media {
+				"fixture/variant/us"
+			} else {
+				"other/region"
+			}
+			.into(),
+			formats: vec!["image/png".into()],
+			source: "media probe".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		}];
+		let provider = provider(
+			test_clients(),
+			config,
+			Arc::new(permitting(&endpoint)),
+			Default::default(),
+		)
+		.unwrap();
+		let request = ModelRequest {
+			instructions: "Inspect".into(),
+			max_output_tokens: 64,
+			content_parts: if media {
+				vec![ContentPart::Image {
+					media_type: "image/png".into(),
+					bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+				}]
+			} else {
+				vec![]
+			},
+			..Default::default()
+		};
+		let result = provider.infer(request, &NoProgress).await;
+		assert_eq!(result.is_ok(), accepted, "{result:?}");
+		assert_eq!(sent.load(Ordering::SeqCst), usize::from(accepted));
+		if accepted {
+			let body = recorded.lock().unwrap().take().unwrap();
+			assert_eq!(
+				body["provider"],
+				json!({"only":["fixture/variant/us"],"allow_fallbacks":false,"zdr":true,"require_parameters":true})
+			);
+			let identity = result.unwrap().reported.provider_identity.unwrap();
+			assert_eq!(identity.reported_model.as_deref(), Some("actual/model"));
+			assert_eq!(identity.reported_route, None);
+		}
+	}
+}
+
+#[rstest::rstest]
 #[case::complete(
 	json!({"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}),
 	ReportedUsage { input_tokens: Some(120), output_tokens: Some(30), ..Default::default() },
@@ -224,7 +357,7 @@ fn completion(usage: Value) -> Value {
 )]
 #[case::cache_read_and_write(
 	json!({"prompt_tokens":2000,"completion_tokens":40,"prompt_tokens_details":{"cached_tokens":1500,"cache_write_tokens":400},"completion_tokens_details":{"reasoning_tokens":12}}),
-	ReportedUsage { input_tokens: Some(2000), output_tokens: Some(40), cache_read_tokens: Some(1500), cache_write_tokens: Some(400), reasoning_tokens: Some(12), cost: None },
+	ReportedUsage { input_tokens: Some(2000), output_tokens: Some(40), cache_read_tokens: Some(1500), cache_write_tokens: Some(400), reasoning_tokens: Some(12), ..Default::default() },
 	(2000, 40, true)
 )]
 #[case::cache_absent(

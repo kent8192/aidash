@@ -546,6 +546,12 @@ async fn the_native_summary_stage_absorbs_whole_turns_before_inference(mut fixtu
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(true));
 	state.jev_retention = Some(1.0);
+	state.summary_estimate_diagnostics = Some(json!({
+		"calibrations": {
+			"legacy": {"ratio_ppm":250000,"samples":20},
+			"native": {"ratio_ppm":750000,"samples":20}
+		}
+	}));
 	*state.summary_text.lock().unwrap() = Some(
 		json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[],"resolved":[],"artifacts":[],"verification":[]})
 			.to_string(),
@@ -569,4 +575,34 @@ async fn the_native_summary_stage_absorbs_whole_turns_before_inference(mut fixtu
 	);
 	assert!(!request.input_body().to_string().contains("old-0"));
 	assert!(matches!(native.history[0], NativeMessage::Human { .. }));
+	// A Native parent still sends its summarizer a Legacy request. Usage and
+	// shadows must follow the actual call, including its distinct calibration.
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	let (summary, _) = usage
+		.iter()
+		.find(|(dispatch, _)| dispatch.purpose == UsagePurpose::Summary)
+		.unwrap();
+	assert_eq!(
+		summary.projection_version,
+		ProjectionVersion::Legacy.number()
+	);
+	let calibrated = summary
+		.shadow_estimates
+		.iter()
+		.find(|shadow| shadow.estimate.estimator == "calibrated")
+		.unwrap();
+	assert_eq!(calibrated.estimate.ratio_ppm, Some(250000));
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let request = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	assert_eq!(
+		request.context.projection_version(),
+		ProjectionVersion::Legacy
+	);
+	assert_eq!(
+		request.request_estimate_with_snapshot(&calibrated.snapshot),
+		Some(calibrated.estimate.clone())
+	);
 }

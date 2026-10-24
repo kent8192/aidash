@@ -1,5 +1,17 @@
 # GitHub Labels
 
+## Label Definitions
+
+[`.github/labels.yml`](../.github/labels.yml) is the source of truth for repository
+label names, colors, and descriptions. It uses the same YAML list of `name`,
+`color`, and `description` entries as Reinhardt's label definitions.
+
+When changing label definitions, update this catalog and the relevant guidance
+below together. Apply the intended metadata changes on GitHub with
+[`gh label create --force`](https://cli.github.com/manual/gh_label_create), then
+verify them against the live inventory. Renames and deletions require an explicit
+migration. Issue/PR assignments are managed separately using the steps below.
+
 ## Select Labels
 
 Before creating or updating an Issue or PR, inspect the repository's current labels
@@ -40,6 +52,32 @@ Add supplementary labels only when their meaning applies:
 - `duplicate`, `invalid`, or `wontfix`: a recorded triage decision. Link the
   canonical Issue for duplicates and explain invalid or wontfix decisions. Closing
   an Issue or merging a PR alone does not justify these labels.
+
+## Severity and Priority
+
+Use `severity:*` for observed impact and `priority:*` for scheduling urgency.
+Assess them independently: impact alone does not determine when work should be
+scheduled. Add at most one label from each family when the classification is
+known and applicable; leave it unset otherwise. When reassessing a classification,
+replace the previous label in that family and preserve other valid labels.
+
+### Severity
+
+| Label               | Meaning                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `severity:critical` | Critical impact: core functionality unavailable, data loss, or severe security exposure. |
+| `severity:high`     | Major impact: important functionality is broken with no practical workaround.            |
+| `severity:medium`   | Moderate impact: functionality is impaired, but a practical workaround exists.           |
+| `severity:low`      | Minor impact: limited disruption, cosmetic defects, or small usability issues.           |
+
+### Priority
+
+| Label         | Meaning                                                                             |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `priority:P0` | Immediate: address before other planned work; blocks release or ongoing operations. |
+| `priority:P1` | High: schedule in the next available work cycle.                                    |
+| `priority:P2` | Normal: schedule through regular backlog planning.                                  |
+| `priority:P3` | Low: address when capacity permits; may be deferred.                                |
 
 ## Apply and Verify
 

@@ -6,6 +6,16 @@ a small versioned task corpus, grades each Run with an independent oracle, and
 writes a validated result manifest. It complements, and never replaces, the
 deterministic protocol, authorization and recovery tests.
 
+For the three-way Legacy/Ordered/Native campaign, its two caching routes,
+shared budget, usage ledger import and frozen confirmation phases, use the
+[matched projection comparison guide](projection-comparison.md). The current
+corpus is v2; `tests/evaluation/corpus-v1.toml` preserves the v1 snapshot for
+validating historical results.
+
+The [2026-10-24 projection report](evaluation/projection-comparison-2026-10-24.md)
+retains the measured fixture outcomes and calibration failures separately from
+the live experiment, which has not run.
+
 Results are measurements. Every manifest sets `grade: "measurement-only"` and
 all `approvals` to `false`. Conclusions are limited to the tested tasks, the
 tested model or fixture configuration and the recorded repeat counts. A
@@ -61,7 +71,10 @@ a harness regression into a quiet `feature-not-available`; pass
 error or Ctrl-C, with the failure in its `error` field. Server logs stay in
 `private/evaluation/logs-<hex>/`.
 
-Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
+Useful options: `--task ID`, `--comparison ID` and `--arm ID` (repeatable)
+narrow the plan; `--execution-seed N` balances and shuffles matched repetitions
+reproducibly. Each arm selector must be present in the selected comparison.
+
 `--binary PATH` uses a built `manage` (by default the command builds this
 worktree's; either way the executable is copied into a private directory
 first, and the manifest fingerprints and runs that copy), `--run-timeout SECONDS` (default 180,
@@ -137,13 +150,13 @@ ignored.
 Before it registers anything or starts a Run, the live tier refuses unless:
 
 - `--base-url` is `https://`; plain `http://` is accepted only for a loopback
-  Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are sent
-  with every request. Redirects are never followed: urllib would resend the
+  Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are used
+  against that Node. Redirects are never followed: urllib would resend the
   bearer token to the new location, so a 30x response is a failed request.
   Plain `http://` never goes through an environment proxy (`HTTP_PROXY`),
   which would otherwise receive both tokens in plaintext;
-- both bearer tokens are set (Deployment Administrator for Registry writes, Tenant subject for
-  Tasks); neither is copied into the manifest;
+- both bearer tokens are set (Deployment Administrator for credential/binding inspection,
+  Tenant subject for Registry, Catalog and Tasks); neither is copied into the manifest;
 - the named Provider Credential exists, is `active`, and is the credential the
   Tenant's Provider Credential Binding for its provider names (Run admission
   pins the bound credential, not the one on the command line), the binding has
@@ -153,8 +166,9 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   times, the exact corpus SHA-256, exactly the mapped models, a disclosure
   statement, a maximum spend at least the requested ceiling, positive
   per-token input, cache-write and output prices for each model, and
-  `external_compaction: "disabled"`. Every field is type-checked. Times are
-  ISO 8601 with a UTC offset (`Z` or `+09:00`) and are compared as instants,
+  the exact auxiliary-work contract. Current v2 experiments additionally bind
+  every actual model configuration with `model_config_digests`. Every field is
+  type-checked. Times are ISO 8601 with a UTC offset (`Z` or `+09:00`) and are compared as instants,
   not strings; the approval must already be in effect (`approved_at` not in
   the future), expire after it was approved, and not have expired;
 - every mapped model configuration has a positive `context_window` and
@@ -163,25 +177,23 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   and a finite `--run-timeout` of at least one second are given (both tiers
   refuse a shorter `--run-timeout`: the manifest records limits in seconds of
   at least one);
-- no selected task needs a fixture tool result. Fixture tools point at an
-  unroutable endpoint and their approvals are denied, so such a task could
-  only fail or pass by guessing; only `approval-escalation`, which needs the
-  denial, keeps its tool;
+- selected tasks that need fixture Tool results have an exact approved
+  `fixture_service` contract: its endpoint, corpus digest, task/alias allowlist
+  and `synthetic_only: true` must match. Without it, Tool approvals remain
+  denied and tasks requiring those results are refused. The escalation control
+  still exercises denial;
 - every selected task's oracle names the fields its kind reads, with valid
   types and regular expressions; the corpus is checked when it loads, so no
   Run is dispatched for a task that cannot be graded;
 - the `--output` path (default `private/evaluation/live-<prefix>.json`) can be
   created exclusively. It is reserved before the first Registry write, so a
   path held by another invocation is refused before any paid work;
-- no selected task uses a `python-tests` oracle. **The live tier never runs
-  model-written code.** Those oracles execute the answer on the evaluator host,
-  and nothing there isolates them: a stripped environment does not hide the
-  parent's tokens (`ps eww $PPID` on macOS, `/proc/<ppid>/environ` on Linux),
-  the child has network access, and a model-written module can exit 0 on its
-  own (`os._exit(0)`) so that the held-out tests appear to pass. They need a
-  container runner (`--network none`, no host environment, no parent process
-  visibility), which is a deferred follow-up. Select other tasks with `--task`.
-  The deterministic tier still runs them, because its answers are scripted.
+- selected `python-tests` tasks have an explicit `code_oracle` approval for
+  a pinned disposable Docker image, with no network, 128 MiB memory, one CPU,
+  64 pids and a 20-second timeout. The live tier refuses host execution of
+  model-written code. These resource limits isolate execution; the independent
+  oracle must still verify actual behavior rather than trusting the answer's
+  success claim. Deterministic answers remain scripted.
 
 ```json
 {
@@ -218,12 +230,14 @@ dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
 `external_compaction: "disabled"` attests that the evaluated Tenant approves
-no compaction Decider. Only a Run bound to an approved compaction Decider calls
-Jev, on the Tenant's own OpenRouter Provider Credential (ADR 0041, ADR 0042). Those calls have no price in the approval and
-no HTTP surface that reports the Tenant's approvals, so the live tier cannot
-reserve them. A Run whose context records an applied compaction proves a
-compaction Decider answered: the manifest records the error and no further Run is
-dispatched.
+no compaction Decider. A Run whose context records an applied compaction then
+violates the declared experiment: the manifest records the error and no further
+Run is dispatched. A bounded auxiliary-work declaration pins exact Decider and
+Summary configurations, call limits and per-call price bounds separately from
+main inference. A declaration alone cannot enforce a provider's monetary cost:
+current live Decider execution is refused until an actual monetary upper bound
+is enforceable. See the [comparison admission requirements](projection-comparison.md#live-admission-and-shared-limits).
+Never replace unknown Decider cost with zero or a reservation amount.
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
 takes no expected credential. The evaluator therefore reads the binding just
@@ -241,11 +255,17 @@ accepted attempts the Node reported are kept in
 `spend.attempts[].provider_work` for information only (step and token counts).
 Pricing Runs from Usage Records waits for an HTTP read endpoint for them.
 
-The live manifest records `model.reported_identities: null`: neither Usage
-Records (unreadable over HTTP) nor `model.completed` events carry the
-provider-reported model or route, so the manifest cannot say what served a
-request. `model.route` is only the connected Provider Credential's catalog
-provider. Every request is bounded by the Run's time limit; when it passes,
+The live manifest records `model.reported_identities: null`: the live HTTP
+surfaces do not expose the complete per-attempt Usage Records, so the manifest
+cannot independently say what served a request. A live `--source-attestation`
+can bind the exact deployed commit, clean state and binary digest;
+without it the remote source facts stay unknown. This is explicitly attested
+provenance, not automatic remote binary verification. `model.route` is only the
+connected Provider Credential's catalog provider. The separate, authorized
+usage ledger export can supply the bounded provider-reported identities retained in
+the ledger. Missing exact model revisions or endpoint tags stay unknown;
+requested routing is not a substitute for reported routing. Every request is
+bounded by the Run's time limit; when it passes,
 even inside a stalled request, the Run is cancelled on the Node, and so it is
 when a request about the Run fails. A claim retried after a gateway error
 may already have admitted the Run, so when its backoff would end past the
@@ -272,28 +292,31 @@ check observed are kept only as `arguments_sha256` and `observed_sha256`,
 because a model can copy task data into them. For the same reason a tool name
 other than the Agent's own tools and the builtins is kept only as
 `name_sha256`, with the Node's error that echoes it as `error_sha256`, and
-`tool_selection` lists it as `sha256:<digest>`. Fixture tools point at an unroutable endpoint
-and their Tool call approvals are denied, so a live Run never causes an external
-tool effect. Usage Records have no HTTP read endpoint, so live token counts come
-from Workspace events (at most the latest 100) and do not price anything. The
-live tier has been exercised only against in-memory fakes; it has never been run
-against a provider.
+`tool_selection` lists it as `sha256:<digest>`. Without an approved
+`fixture_service`, fixture tools point at an unroutable endpoint and their Tool
+call approvals are denied. With that approval, only the exact synthetic service
+and task/alias allowlist can receive calls. Usage Records have no HTTP read
+endpoint, so the live manifest's token counts come from Workspace events (at
+most the latest 100) and do not price anything. Complete ledger imports supply
+the separate campaign report. No live-provider campaign was run for the
+[2026-10-24 report](evaluation/projection-comparison-2026-10-24.md).
 
 ## Corpus
 
 `tests/evaluation/` is versioned with the code:
 
-| Path                   | Content                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------- |
-| `corpus.toml`          | Tasks, fixture models, fixture tools and paired comparisons (`fixed-task-corpus-v1`). |
-| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                        |
-| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                           |
-| `oracles/`             | Held-out checks. They are never sent to an Agent.                                     |
-| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                  |
+| Path                   | Content                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`). |
+| `corpus-v1.toml`       | Archived `fixed-task-corpus-v1` for historical result validation.                      |
+| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                         |
+| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                            |
+| `oracles/`             | Held-out checks. They are never sent to an Agent.                                      |
+| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                   |
 
 The corpus SHA-256 covers `corpus.toml` and every input and oracle file it
 references. The memory corpus has its own SHA-256. Changing a task, an input,
-an oracle or the evaluator (`evaluator.sha256` covers the four scripts and the
+an oracle or the evaluator (`evaluator.sha256` covers the five scripts and the
 two manifest schemas) changes the manifest's identity, and direct comparisons
 with earlier manifests are no longer valid. Each invocation reads the corpus
 files once: Task text and oracles use exactly the bytes that were hashed. Both
@@ -349,19 +372,22 @@ keeping only the Skill support tools their bound Skills need: delegation
 other Agents' models, and memory operations may call memory models, none of
 which the ledger reserves or the evaluator cancels.
 
-| Comparison     | Baseline → candidate                                | Issue |
-| -------------- | --------------------------------------------------- | ----- |
-| `projection`   | Legacy → `projection_version: ordered`              | #116  |
-| `prompt-cache` | Ordered → Ordered with `prompt_cache: explicit`     | #142  |
-| `exposure`     | Legacy exposure → `exposure: {version: deferred@1}` | #115  |
+| Comparison            | Baseline → candidate                                   | Issue      |
+| --------------------- | ------------------------------------------------------ | ---------- |
+| `projection`          | Legacy, Ordered, Native; `prompt_cache: off`           | #116, #181 |
+| `explicit-projection` | Legacy/Ordered/Native off plus Ordered/Native explicit | #181       |
+| `prompt-cache`        | Ordered → Ordered with `prompt_cache: explicit`        | #142       |
+| `exposure`            | Legacy exposure → `exposure: {version: deferred@1}`    | #115       |
 
 `completion-gate` (#112), `repository-rules` (#117) and `acp-adapter` (#121)
-are reported as `feature-not-available`. `context-recovery` (#113, the Summary
-Stage that distinguishes summary recovery from pruning), `parallel-read-tools`
-(#119) and `streaming` (#120) are on this branch but have no comparison yet
-(no task overflows a Context Policy, and the scripted provider does not
-stream), so they are reported as `not-measured`: available, with nothing
-measured. A comparison whose Agent
+are reported as `feature-not-available`. `context-recovery` (#113),
+`parallel-read-tools` (#119) and `streaming` (#120) remain `not-measured` as
+standalone comparisons. The v2 projection comparisons include frozen pruning
+and Summary diagnostics, but the Python deterministic tier has no approved
+fixture Decider route and reports those diagnostic Runs as skipped rather than
+claiming recovery evidence. Actual Rust recovery tests are separate evidence;
+complete live diagnostics require enforceable auxiliary bounds. The scripted
+provider does not stream. A comparison whose Agent
 definition the Node rejects at registration is an error and fails the command;
 only with `--allow-unavailable-arms` is it reported as `feature-not-available`
 with the rejection as its `detail`.

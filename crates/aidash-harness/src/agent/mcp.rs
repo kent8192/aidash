@@ -611,6 +611,10 @@ impl Executor<'_> {
 					projection_version: aidash_domain::projection::ProjectionVersion::Legacy
 						.number(),
 					upstream_model: model.model_id.clone(),
+					purpose: UsagePurpose::Main,
+					requested_route: model.provider_route.as_ref().map(|route| route.tag.clone()),
+					// Sampling does not render the Run's context projection.
+					shadow_estimates: Vec::new(),
 					estimate: request.request_estimate(),
 					calibration_sample: false,
 					cache_identity: None,

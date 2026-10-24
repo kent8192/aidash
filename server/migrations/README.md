@@ -572,3 +572,70 @@ Reinhardt constraint operations. `0051_mcp_elicitation_state` updates the ORM en
 state. Rollback's restored check refuses existing MCP elicitation rows rather
 than deleting them. Deploy API servers and workers together before enabling
 these requests; older binaries cannot decode the new kind.
+
+## Projection comparison evidence (#181)
+
+`registry/0045_projection_measurement_config` (after
+`registry/0044_foreign_key_relations_state`) adds the optional model
+`provider_route` and `estimate_diagnostics` keys. It edits the current
+`registry_model_config` allowlist from `pg_get_constraintdef`, retaining earlier
+fields and refusing a missing anchor. An exact route records `tag`, `source`,
+`verified_at` and `expires_at`; it is valid only for an OpenRouter model without
+a Plan Connection. Diagnostics accept a supported Token Encoding and bounded,
+per-projection calibration snapshots. These are observational inputs and do not
+change an Agent's Projection Version or the runtime estimator. Separate
+PostgreSQL validation functions and a named CHECK enforce their JSON shapes.
+Catalog-driven constraint edits and PL/pgSQL function bodies have no typed
+Reinhardt operation, so this database-only migration uses reversible DDL assets.
+Definitions are immutable: rollback refuses with SQLSTATE `55000` while any model
+definition contains either key, including an explicit null. Retain the migration
+or restore the pre-upgrade database rather than rewriting registered versions.
+
+`execution/0050_usage_evidence` (after
+`execution/0049_foreign_key_relations_state`) extends `inference_usage` with
+`purpose`, `requested_route`, `provider_identity` and `shadow_estimates` through
+typed Reinhardt column operations. Historical records receive `purpose = 'main'`;
+the migration then removes that default so a new dispatch supplies its purpose.
+Main and Summary provider calls have distinct durable attempt records. Requested
+routes are separate from bounded provider-reported identities; omitted provider
+facts remain unknown. Shadow snapshots do not alter dispatch. The ordinary
+column operations also update migration model state, so no separate state-only
+checkpoint is needed. Rollback drops these evidence columns and loses their
+contents; preserve required experiment exports first.
+
+`execution/0051_compaction_provider_dispatch` (after
+`execution/0050_usage_evidence`) adds nullable `provider_dispatched` to
+`context_compaction_attempts` with a typed Reinhardt column operation. A Summary
+journal entry is created before authorization and reservation, so its existence
+alone does not prove provider I/O. New Summary attempts start false; the flag
+becomes true in the same transaction as their durable Inference Usage dispatch.
+Historical null remains unknown. Export consumers can exclude a proven
+undispatched attempt from provider accounting, but must not treat null as zero
+cost. The operation updates model state and requires no state-only checkpoint.
+Rollback drops this evidence column and loses the distinction.
+
+`knowledge/0036_memory_attempt_evidence` (after
+`knowledge/0035_foreign_key_relations_state`) adds nullable `source_run_ids`,
+`reserved_tokens`, `reserved_cost_micros` and `provider_usage` to
+`memory_model_attempts` with typed Reinhardt column operations. These preserve
+physical-call lineage, original reservations and actual provider observations
+apart from settled policy tariffs. Historical rows remain null: the migration
+does not invent old ownership or provider measurements. It also needs no
+state-only checkpoint; rollback drops the added evidence columns and their
+contents. Existing Tenant row policies continue to cover both attempt tables.
+
+The [projection comparison guide](../../docs/projection-comparison.md)
+describes the prompt-free diagnostic export, complete attempt inventories and
+remaining live acceptance requirements. These migrations do not switch the
+projection default or rewrite pinned definitions and Runs.
+
+## Merged MCP and projection histories
+
+`execution/0052_merge_mcp_and_usage_evidence` depends on both
+`0051_mcp_elicitation_state` and `0051_compaction_provider_dispatch`.
+`registry/0046_merge_agent_plugin_and_projection` depends on both
+`0045_agent_plugin_settings` and `0045_projection_measurement_config`.
+These empty merge migrations give each app one leaf while preserving the
+original migration identities, dependencies, schema changes and rollback
+guards. New migrations depend on the merged leaf. They perform no schema
+operations and change neither retained MCP state nor projection behavior.
