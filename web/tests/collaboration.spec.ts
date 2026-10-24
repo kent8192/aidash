@@ -1140,7 +1140,9 @@ for (const action of ["accept", "decline", "cancel"] as const) {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toContainText("Do not enter secrets or credentials");
     if (action === "accept") {
-      await dialog.getByLabel("Market", { exact: true }).selectOption("Japan");
+      await dialog
+        .getByLabel("Market", { exact: true })
+        .selectOption({ label: "Japan" });
       await dialog.getByLabel("Count", { exact: true }).fill("3");
       await dialog.getByLabel("Publish", { exact: true }).selectOption("false");
     }
@@ -1165,6 +1167,264 @@ for (const action of ["accept", "decline", "cancel"] as const) {
         ? { action, content: { market: "Japan", count: 3, publish: false } }
         : { action },
     );
+    expect(errors).toEqual([]);
+  });
+}
+
+test("MCP elicitation remains usable when Content Security Policy blocks code evaluation", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, {
+    subject: true,
+    elicitation: {
+      message: "Choose the report count",
+      schema: {
+        type: "object",
+        properties: { count: { type: "integer", title: "Count", minimum: 1 } },
+        required: ["count"],
+      },
+    },
+  });
+  await page.route("**/", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: {
+        ...response.headers(),
+        "content-security-policy": "script-src 'self'; object-src 'none'",
+      },
+    });
+  });
+  await page.goto("/");
+  await page
+    .getByRole("button")
+    .filter({ hasText: "Choose the report count" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("button", { name: "Accept", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByLabel("Count", { exact: true }).fill("2");
+  await dialog.getByRole("button", { name: "Accept", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find(
+      (item) => item.path === "/api/human-requests/question-one/answer",
+    )?.body,
+  ).toEqual({ action: "accept", content: { count: 2 } });
+  expect(errors).toEqual([]);
+});
+
+for (const [constraint, property] of [
+  ["format", { type: "string", format: "server-specific-format" }],
+  ["pattern", { type: "string", pattern: "(?i)hello" }],
+] as const) {
+  test(`MCP elicitation refuses an unavailable ${constraint} and still allows declining`, async ({
+    page,
+  }) => {
+    const { submissions, errors } = await setup(page, {
+      subject: true,
+      elicitation: {
+        message: "Choose a server-specific value",
+        schema: { type: "object", properties: { value: property } },
+      },
+    });
+    await page.goto("/");
+    await page
+      .getByRole("button")
+      .filter({ hasText: "Choose a server-specific value" })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This browser cannot validate this form's constraints",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Accept", exact: true }),
+    ).toBeDisabled();
+    await dialog.getByRole("button", { name: "Decline", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(
+      submissions.find(
+        (item) => item.path === "/api/human-requests/question-one/answer",
+      )?.body,
+    ).toEqual({ action: "decline" });
+    expect(errors).toEqual([]);
+  });
+}
+
+test("MCP elicitation shows constants and defaults and preserves their primitive types", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, {
+    subject: true,
+    elicitation: {
+      message: "Confirm the fixed settings",
+      schema: {
+        type: "object",
+        properties: {
+          market: { type: "string", title: "Market", const: "Japan" },
+          empty: { type: "string", title: "Empty", const: "" },
+          zero: { type: "integer", title: "Zero", const: 0 },
+          publish: { type: "boolean", title: "Publish", const: false },
+          label: { type: "string", title: "Label", default: "Quarterly" },
+          count: { type: "number", title: "Count", default: 0 },
+          optional: { type: "boolean", title: "Optional", default: false },
+          choice: {
+            type: "string",
+            title: "Choice",
+            enum: ["", "Japan"],
+            default: "",
+          },
+        },
+        required: ["market", "empty", "zero", "publish"],
+      },
+    },
+  });
+  await page.goto("/");
+  await page
+    .getByRole("button")
+    .filter({ hasText: "Confirm the fixed settings" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Market", { exact: true })).toHaveValue(
+    "Japan",
+  );
+  await expect(dialog.getByLabel("Zero", { exact: true })).toHaveValue("0");
+  await expect(dialog.getByLabel("Publish", { exact: true })).toHaveValue(
+    "false",
+  );
+  await expect(dialog.getByLabel("Label", { exact: true })).toHaveValue(
+    "Quarterly",
+  );
+  await dialog.getByRole("button", { name: "Accept", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find(
+      (item) => item.path === "/api/human-requests/question-one/answer",
+    )?.body,
+  ).toEqual({
+    action: "accept",
+    content: {
+      market: "Japan",
+      empty: "",
+      zero: 0,
+      publish: false,
+      label: "Quarterly",
+      count: 0,
+      optional: false,
+      choice: "",
+    },
+  });
+  expect(errors).toEqual([]);
+});
+
+for (const { constraint, property, invalid, valid } of [
+  {
+    constraint: "pattern",
+    property: { type: "string", pattern: "[A-Z]{2}" },
+    invalid: "lowercase",
+    valid: "prefixJPtail",
+  },
+  {
+    constraint: "multipleOf",
+    property: { type: "number", minimum: 0.1, multipleOf: 0.5 },
+    invalid: "0.6",
+    valid: "0.5",
+  },
+  {
+    constraint: "fractional multipleOf",
+    property: { type: "number", multipleOf: 0.1 },
+    invalid: "0.31",
+    valid: "0.3",
+  },
+  {
+    constraint: "precise multipleOf",
+    property: { type: "number", multipleOf: 1 },
+    invalid: "1.00000001",
+    valid: "2",
+  },
+  {
+    constraint: "exclusiveMinimum",
+    property: { type: "integer", exclusiveMinimum: 2 },
+    invalid: "2",
+    valid: "3",
+  },
+  {
+    constraint: "exclusiveMaximum",
+    property: { type: "number", exclusiveMaximum: 4 },
+    invalid: "4",
+    valid: "3.5",
+  },
+  {
+    constraint: "enum constraints",
+    property: { type: "number", enum: [1, 2], minimum: 2 },
+    invalid: "1",
+    valid: "2",
+  },
+  {
+    constraint: "format",
+    property: { type: "string", format: "email" },
+    invalid: "invalid-address",
+    valid: "person@example.com",
+  },
+  {
+    constraint: "Unicode minLength",
+    property: { type: "string", minLength: 2 },
+    invalid: "😀",
+    valid: "😀a",
+  },
+  {
+    constraint: "Unicode maxLength",
+    property: { type: "string", maxLength: 2 },
+    invalid: "abc",
+    valid: "😀a",
+  },
+]) {
+  test(`MCP elicitation validates ${constraint} before sending an answer`, async ({
+    page,
+  }) => {
+    const { submissions, errors } = await setup(page, {
+      subject: true,
+      elicitation: {
+        message: "Choose a constrained value",
+        schema: {
+          type: "object",
+          properties: { value: { ...property, title: "Value" } },
+          required: ["value"],
+        },
+      },
+    });
+    await page.goto("/");
+    await page
+      .getByRole("button")
+      .filter({ hasText: "Choose a constrained value" })
+      .click();
+    const dialog = page.getByRole("dialog");
+    const control = dialog.getByLabel("Value", { exact: true });
+    const enter = (value: string) =>
+      "enum" in property
+        ? control.selectOption({ label: value })
+        : control.fill(value);
+    await enter(invalid);
+    await dialog.getByRole("button", { name: "Accept", exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+    expect(
+      submissions.filter(
+        (item) => item.path === "/api/human-requests/question-one/answer",
+      ),
+    ).toEqual([]);
+    await enter(valid);
+    await dialog.getByRole("button", { name: "Accept", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(
+      submissions.find(
+        (item) => item.path === "/api/human-requests/question-one/answer",
+      )?.body,
+    ).toEqual({
+      action: "accept",
+      content: { value: property.type === "string" ? valid : Number(valid) },
+    });
     expect(errors).toEqual([]);
   });
 }

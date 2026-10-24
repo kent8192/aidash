@@ -377,6 +377,12 @@ fn schema_of_size(bytes: usize) -> Value {
 #[case::schema_that_is_an_array(json!([]), "schema_not_object")]
 #[case::schema_that_is_null(Value::Null, "schema_not_object")]
 #[case::schema_one_byte_over(schema_of_size(MAX_SCHEMA_BYTES + 1), "schema_too_large")]
+#[case::invalid_type(json!({"type": 7}), "schema_invalid")]
+#[case::invalid_nested_type(json!({"type": "object", "properties": {"q": {"type": 7}}}), "schema_invalid")]
+#[case::invalid_required(json!({"type": "object", "required": "q"}), "schema_invalid")]
+#[case::invalid_pattern(json!({"type": "object", "properties": {"q": {"pattern": "["}}}), "schema_invalid")]
+#[case::unresolved_reference(json!({"type": "object", "$ref": "#/$defs/missing"}), "schema_invalid")]
+#[case::remote_reference(json!({"type": "object", "$ref": "https://schema.example/tool.json"}), "schema_invalid")]
 fn a_tool_with_an_unusable_schema_is_skipped(#[case] input_schema: Value, #[case] why: &str) {
 	let plugin = acme();
 	let mut broken = tool("broken");

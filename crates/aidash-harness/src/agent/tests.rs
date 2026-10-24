@@ -57,12 +57,16 @@ struct State {
 	writes: Mutex<Vec<(String, Run)>>,
 	scoped: bool,
 	deny_inference: bool,
+	/// Inference authority changes while a provider response is in flight.
+	revoke_inference_after_response: bool,
 	deny_resume: bool,
+	deny_visibility_resume: bool,
 	permit_completion: bool,
 	provider_status: Option<u16>,
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	human: Mutex<Option<HumanRequest>>,
+	human_key: Mutex<Option<String>>,
 	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
 	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
 	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
@@ -394,8 +398,17 @@ impl ExecutionStore for Backend {
 		Ok(())
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
-		let _ = (workspace, kind, data);
-		unexpected("ExecutionStore.emit")
+		assert_eq!(kind, "mcp.input_failed");
+		self.record("mcp.input_failed");
+		Ok(Event {
+			sequence: 1,
+			id: Uuid::new_v4(),
+			node: None,
+			workspace_id: workspace,
+			kind: kind.into(),
+			data,
+			created_at: chrono::Utc::now(),
+		})
 	}
 	async fn research_revoked(&self, _: &Run) -> Result<bool> {
 		self.record("store.research_revoked");
@@ -476,6 +489,24 @@ impl ExecutionStore for Backend {
 			.or_insert_with(|| ("STARTED".into(), None))
 			.clone();
 		Ok(InvocationOutcome { status, result })
+	}
+	async fn completed_invocation(
+		&self,
+		_run: &Run,
+		token: Uuid,
+		key: &str,
+		_name: &str,
+		_input: &Value,
+	) -> Result<Option<Value>> {
+		assert_eq!(token, self.0.token);
+		Ok(self
+			.0
+			.invocations
+			.lock()
+			.unwrap()
+			.get(key)
+			.filter(|(status, _)| status == "COMPLETED")
+			.and_then(|(_, result)| result.clone()))
 	}
 	async fn invocation_start_batch(
 		&self,
@@ -686,8 +717,10 @@ impl ExecutionHome for Backend {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
-		let _ = key;
 		self.record("home.human_request");
+		if self.0.human_key.lock().unwrap().as_deref() == Some(key) {
+			return Ok(self.0.human.lock().unwrap().clone().expect("Home request"));
+		}
 		let request = HumanRequest {
 			id: Uuid::new_v4(),
 			workspace_id: run.workspace_id,
@@ -700,6 +733,7 @@ impl ExecutionHome for Backend {
 			answer_by: None,
 		};
 		*self.0.human.lock().unwrap() = Some(request.clone());
+		*self.0.human_key.lock().unwrap() = Some(key.into());
 		Ok(request)
 	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
@@ -846,7 +880,10 @@ impl ExecutionAuthority for Backend {
 	}
 	async fn inference(&self) -> Result<()> {
 		self.record("authority.inference");
-		if self.0.deny_inference {
+		if self.0.deny_inference
+			|| (self.0.revoke_inference_after_response
+				&& self.calls().contains(&"provider.response"))
+		{
 			Err(Error::Forbidden)
 		} else {
 			Ok(())
@@ -881,6 +918,19 @@ impl ExecutionAuthority for Backend {
 			.unwrap()
 			.pop_front()
 			.expect("scripted tool call approval"))
+	}
+	async fn sampling_approval(
+		&self,
+		_run: &Run,
+		_request: aidash_application::ports::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<ToolCallApproval> {
+		Ok(self
+			.0
+			.tool_call_approvals
+			.lock()
+			.unwrap()
+			.pop_front()
+			.expect("scripted sampling approval"))
 	}
 	async fn approval_mode(
 		&self,
@@ -953,7 +1003,7 @@ impl ExecutionAuthority for Backend {
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>> {
 		let _ = (window, output, request);
-		assert_eq!(token, self.0.token);
+		assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
 	}
@@ -1294,7 +1344,11 @@ impl ExecutionVisibility for Backend {
 	}
 	async fn resume(&mut self) -> Result<()> {
 		self.record("visibility.resume");
-		Ok(())
+		if self.0.deny_visibility_resume {
+			Err(Error::External("visibility resume failed".into()))
+		} else {
+			Ok(())
+		}
 	}
 }
 
@@ -1458,12 +1512,15 @@ fn fixture() -> Fixture {
 		writes: Mutex::new(vec![]),
 		scoped: false,
 		deny_inference: false,
+		revoke_inference_after_response: false,
 		deny_resume: false,
+		deny_visibility_resume: false,
 		permit_completion: true,
 		provider_status: None,
 		dependency_status: None,
 		remote_home: false,
 		human: Mutex::new(None),
+		human_key: Mutex::new(None),
 		journal: Mutex::new(vec![]),
 		compaction_attempts: Mutex::new(vec![]),
 		context_policy: None,
@@ -4733,6 +4790,7 @@ mod batch;
 mod decider;
 mod degraded;
 mod estimate;
+mod mcp;
 mod native;
 mod plugins;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.

@@ -8,7 +8,10 @@ use aidash_domain::agent_plugin::{
 	model_alias, schema_digest,
 };
 use aidash_server::{
-	authorization::Authorization, domain::Run, federation::Federation, harness::Harness,
+	authorization::Authorization,
+	domain::{Run, RunControlAction},
+	federation::Federation,
+	harness::Harness,
 	registry::EntityRef,
 };
 use common::*;
@@ -353,7 +356,11 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 	let pinned = events(&world, "run.plugin_tools_pinned").await;
 	assert_eq!(pinned.len(), 1, "{pinned:?}");
 	assert_eq!(pinned[0]["skipped"], json!([]));
-	assert_eq!(world.mcp.requests("tools/list").len(), 1);
+	assert_eq!(
+		world.mcp.requests("tools/list").len(),
+		2,
+		"the initial pin and the read-only call each verify the schema"
+	);
 	let tools = &waiting.context.plugin_tools.as_ref().unwrap().servers[0].tools;
 	assert_eq!(
 		tools
@@ -428,7 +435,11 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 		assert_eq!(result["isError"], false, "{name}: {result}");
 		assert!(result["error"].is_null(), "{name}: {result}");
 	}
-	assert_eq!(world.mcp.requests("tools/list").len(), 1);
+	assert_eq!(
+		world.mcp.requests("tools/list").len(),
+		3,
+		"both calls verify their pinned schemas on the retained session"
+	);
 	assert_eq!(world.mcp.sessions_issued(), 1);
 	let (_, all) = request(
 		&world.app,
@@ -498,11 +509,19 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 }
 
 #[rstest::rstest]
+#[case::cancel(None, false, RunControlAction::Cancel)]
+#[case::pause_store(None, false, RunControlAction::Pause)]
+#[case::pause_subject_control(Some("control"), false, RunControlAction::Pause)]
+#[case::pause_administrator_control(Some("control"), true, RunControlAction::Pause)]
+#[case::pause_subject_management(Some("management"), false, RunControlAction::Pause)]
 #[tokio::test]
-async fn a_cancelled_run_ends_its_sessions_without_the_harness_closing_them(
+async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_commits(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: ApplicationFixture,
+	#[case] endpoint: Option<&str>,
+	#[case] administrator: bool,
+	#[case] action: RunControlAction,
 ) {
 	let world = world(fixture, false).await;
 	let harness = Harness {
@@ -510,23 +529,42 @@ async fn a_cancelled_run_ends_its_sessions_without_the_harness_closing_them(
 	};
 	step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
 	assert_eq!(world.mcp.sessions_issued(), 1);
-	assert!(
-		world.mcp.ended().is_empty(),
-		"the session lives while the Run waits"
-	);
+	assert!(world.mcp.ended().is_empty());
 
-	world
+	if let Some(endpoint) = endpoint {
+		let token = if administrator {
+			&world.f.config.api_token
+		} else {
+			&world.token
+		};
+		let (status, body) = request(
+			&world.app,
+			token,
+			"POST",
+			&format!("/api/runs/{}/{endpoint}", world.run.id),
+			json!({"action":action}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	} else {
+		world
+			.f
+			.store
+			.control(&TEST_FIXTURE, world.run.id, action)
+			.await
+			.unwrap();
+	}
+	if action == RunControlAction::Cancel {
+		step_until(&harness, &world, |run| run.phase().as_str() == "CANCELLED").await;
+	}
+	let controlled = world
 		.f
 		.store
-		.control(
-			&TEST_FIXTURE,
-			world.run.id,
-			aidash_server::domain::RunControlAction::Cancel,
-		)
+		.run(&TEST_FIXTURE, world.run.id)
 		.await
 		.unwrap();
-	step_until(&harness, &world, |run| run.phase().as_str() == "CANCELLED").await;
-
+	assert_eq!(controlled.control, action.control());
+	// A pause runs no worker: control must close the quiet retained session itself.
 	for _ in 0..50 {
 		if world.mcp.ended().len() == 1 {
 			break;

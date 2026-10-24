@@ -147,11 +147,14 @@ impl Executor<'_> {
 				let state = run.clone();
 				let input_handler: Arc<dyn PluginInputs> = Arc::new(LiveInputs(sender));
 				let tool = call.tool;
+				// Freeze the payload of this send while live callbacks update
+				// the logical call's cumulative wait in the outer checkpoint.
+				let wire_checkpoint = checkpoint.clone();
 				let future = tool.mcp_round(
 					&state,
 					call.call.arguments.clone(),
 					&round_key,
-					Some(&checkpoint),
+					Some(&wire_checkpoint),
 					Some(input_handler),
 				);
 				tokio::pin!(future);
@@ -169,6 +172,11 @@ impl Executor<'_> {
 								let _ = input.reply.send(Err(Error::Invalid("MCP_INPUT_CLOSED".into())));
 								self.environment.close_plugin_sessions(run.id).await;
 								return Err(error);
+							}
+							// A live callback checkpoints its own human wait while
+							// this wire round still owns the logical continuation.
+							if let Some(saved) = &run.state.tool()?.mcp {
+								checkpoint.waited_millis = checkpoint.waited_millis.max(saved.waited_millis);
 							}
 							let _ = input.reply.send(answer);
 						}
@@ -236,12 +244,9 @@ impl Executor<'_> {
 		id: String,
 		request: InputRequest,
 	) -> Result<Value> {
-		let mut checkpoint = run
-			.state
-			.tool()?
-			.mcp
-			.clone()
-			.unwrap_or_else(|| logical.clone());
+		// The outer loop may have answered modern inputs since the last saved
+		// checkpoint. Its logical state owns this callback's remaining budget.
+		let mut checkpoint = logical.clone();
 		checkpoint.accept(RequiredInput {
 			request_state: None,
 			requests: [(id.clone(), request.clone())].into(),
@@ -635,16 +640,35 @@ impl Executor<'_> {
 				},
 			}
 		}
-		call.visibility.resume().await?;
-		call.guard.resume().await?;
-		call.guard.inference().await?;
-		match result {
-			Ok(response) => {
-				let value = json!({"role":"assistant","content":{"type":"text","text":response.text},"model":model.model_id,"stopReason":"endTurn"});
-				store
-					.finish_sampling(run, token, key, &value, attempt)
-					.await
-			}
+		let resumed = async {
+			call.visibility
+				.resume()
+				.await
+				.map_err(|error| (InterruptionReason::StreamError, error))?;
+			call.guard
+				.resume()
+				.await
+				.map_err(|error| (InterruptionReason::Revoked, error))?;
+			call.guard
+				.inference()
+				.await
+				.map_err(|error| (InterruptionReason::Revoked, error))
+		}
+		.await;
+		if let Err((reason, error)) = resumed {
+			self.close_inference(run, token, attempt, ProgressOutcome::Interrupted(reason))
+				.await?;
+			store
+				.invocation_finish(run, token, key, &json!({"mcp_error":"provider"}))
+				.await?;
+			return Err(error);
+		}
+		let (response, stop_reason) = match result {
+			Ok(response) => (response, "endTurn"),
+			Err(Error::TerminalResponse(
+				aidash_domain::context::recovery::Failure::OutputTruncated,
+				response,
+			)) => (*response, "maxTokens"),
 			Err(_) => {
 				store
 					.finish_inference(
@@ -657,9 +681,13 @@ impl Executor<'_> {
 				store
 					.invocation_finish(run, token, key, &json!({"mcp_error":"provider"}))
 					.await?;
-				Err(Error::Invalid("MCP_SAMPLING_FAILED".into()))
+				return Err(Error::Invalid("MCP_SAMPLING_FAILED".into()));
 			}
-		}
+		};
+		let value = json!({"role":"assistant","content":{"type":"text","text":response.text},"model":model.model_id,"stopReason":stop_reason});
+		store
+			.finish_sampling(run, token, key, &value, attempt)
+			.await
 	}
 }
 

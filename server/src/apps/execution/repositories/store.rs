@@ -3356,13 +3356,20 @@ impl Store {
 	}
 
 	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for
-	/// them. A Run that fails, expires or is cancelled never reaches the harness's own close, and
+	/// them. A Run that pauses, fails, expires or is cancelled may not reach the harness's close, and
 	/// a session closed too early reopens on the next call.
 	fn close_plugin_sessions_soon(&self, run: Uuid) {
 		let sessions = self.plugin_sessions.clone();
 		tokio::spawn(async move {
 			aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run).await;
 		});
+	}
+
+	/// Release retained sessions only after the caller's control transaction has committed.
+	pub(crate) fn run_control_committed(&self, run: Uuid, control: RunControl) {
+		if control == RunControl::Paused {
+			self.close_plugin_sessions_soon(run);
+		}
 	}
 
 	pub async fn control(
@@ -3374,6 +3381,7 @@ impl Store {
 		let mut tx = self.pool.begin(scope).await?;
 		let run = self.control_in(&mut tx, id, action).await?;
 		tx.commit().await?;
+		self.run_control_committed(run.id, run.control);
 		Ok(run)
 	}
 

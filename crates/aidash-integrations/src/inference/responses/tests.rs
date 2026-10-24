@@ -1,5 +1,9 @@
 use super::*;
 use aidash_application::provider_access::Access;
+use aidash_domain::{
+	agent_plugin::interaction::SamplingMessage,
+	provider::{ModelContext, OrderedContext, SamplingContext},
+};
 use axum::{
 	Json, Router,
 	http::{HeaderMap, StatusCode, header},
@@ -119,24 +123,28 @@ fn requests_carry_the_projected_context_without_server_state() {
 	}
 }
 
-#[test]
-fn ordered_contexts_send_both_parts_in_order() {
+#[rstest::rstest]
+#[case::ordered(
+	ModelContext::Ordered(OrderedContext { stable: "stable-part".into(), volatile: "volatile-part".into() }),
+	json!([{"role":"user","content":[{"type":"input_text","text":"stable-part"},{"type":"input_text","text":"volatile-part"}]}])
+)]
+#[case::sampling(
+	ModelContext::Sampling(SamplingContext { sampling_messages: vec![
+		SamplingMessage { role: "assistant".into(), text: "Earlier answer".into() },
+		SamplingMessage { role: "user".into(), text: "Server follow-up".into() },
+		SamplingMessage { role: "assistant".into(), text: "Server supplied draft".into() },
+	] }),
+	json!([{"role":"assistant","content":"Earlier answer"},{"role":"user","content":"Server follow-up"},{"role":"assistant","content":"Server supplied draft"}])
+)]
+fn request_contexts_preserve_all_content_and_message_roles(
+	#[case] context: ModelContext,
+	#[case] expected: Value,
+) {
 	let mut request = request();
-	request.context =
-		aidash_domain::provider::ModelContext::Ordered(aidash_domain::provider::OrderedContext {
-			stable: "stable-part".into(),
-			volatile: "volatile-part".into(),
-		});
+	request.context = context;
+	request.tools.clear();
 	let body = request_body(&config(), &request, None).unwrap();
-	let content = &body["input"][0]["content"];
-	assert_eq!(
-		content[0],
-		json!({"type":"input_text","text":"stable-part"})
-	);
-	assert_eq!(
-		content[1],
-		json!({"type":"input_text","text":"volatile-part"})
-	);
+	assert_eq!(body["input"], expected);
 	assert_eq!(body["instructions"], "Be precise.");
 }
 
@@ -238,16 +246,32 @@ fn streamed_context_overflow_keeps_its_classification(#[case] event: Value) {
 
 /// Plan usage ignores the request's output limit; a response that reports
 /// more output than requested is never acted on, but its usage still settles.
-#[test]
-fn responses_beyond_the_requested_output_are_not_acted_on() {
-	let stream = sse(&[completed_event(json!([
+#[rstest::rstest]
+#[case::completed(false)]
+#[case::incomplete(true)]
+fn responses_beyond_the_requested_output_are_not_acted_on(#[case] incomplete: bool) {
+	let mut event = completed_event(json!([
 		{"type":"message","content":[{"type":"output_text","text":"Looking."}]},
 		{"type":"function_call","call_id":"call_1","name":"search","arguments":"{}"}
-	]))]);
+	]));
+	if incomplete {
+		event["type"] = json!("response.incomplete");
+		event["response"]["status"] = json!("incomplete");
+		event["response"]["incomplete_details"] = json!({"reason":"max_output_tokens"});
+	}
+	let stream = sse(&[event]);
 	let (result, _) = assemble(&stream);
-	let output = result.as_ref().unwrap().reported.output_tokens.unwrap();
+	let response = result
+		.as_ref()
+		.unwrap_or_else(|error| error.terminal_usage().expect("a truncated completion"));
+	let output = response.reported.output_tokens.unwrap();
 	let capped = u32::try_from(output).unwrap();
-	assert!(within_output_cap(assemble(&stream).0, capped).is_ok());
+	let within = within_output_cap(assemble(&stream).0, capped);
+	assert_eq!(within.is_err(), incomplete);
+	let response = within
+		.as_ref()
+		.unwrap_or_else(|error| error.terminal_usage().expect("a truncated completion"));
+	assert_eq!(response.text, "Looking.");
 	match within_output_cap(result, capped - 1) {
 		Err(Error::TerminalResponse(ContextFailure::OutputTruncated, usage)) => {
 			assert!(usage.tool_calls.is_empty() && usage.text.is_empty());
@@ -275,6 +299,7 @@ fn truncated_and_filtered_responses_keep_their_usage() {
 	] {
 		let stream = sse(&[json!({"type":"response.incomplete","response":{
 			"status":"incomplete","incomplete_details":{"reason":reason},
+			"output":[{"type":"message","content":[{"type":"output_text","text":"Partial answer"}]},{"type":"function_call","call_id":"unfinished","name":"write","arguments":"{"}],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}})]);
 		let (result, _) = assemble(&stream);
@@ -282,6 +307,15 @@ fn truncated_and_filtered_responses_keep_their_usage() {
 			Err(Error::TerminalResponse(failure, usage)) => {
 				assert_eq!(failure, expected);
 				assert_eq!((usage.input_tokens, usage.output_tokens), (10, 5));
+				assert_eq!(
+					usage.text,
+					if expected == ContextFailure::OutputTruncated {
+						"Partial answer"
+					} else {
+						""
+					}
+				);
+				assert!(usage.tool_calls.is_empty());
 			}
 			other => panic!("{reason}: {other:?}"),
 		}

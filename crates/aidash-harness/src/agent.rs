@@ -2993,7 +2993,10 @@ impl<'a> Executor<'a> {
 						_ => {}
 					}
 					completion::answer_review(run, id, Some(&response));
-					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
+					// MCP form data is disclosed to its server, not to the model.
+					if h.kind != "MCP_ELICITATION"
+						&& !matches!(waiting, WaitingState::Reconciliation { .. })
+					{
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,

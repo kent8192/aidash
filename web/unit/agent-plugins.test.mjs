@@ -261,16 +261,27 @@ test("removing a plugin keeps the others and drops the key with the last one", (
   const config = {
     model: { id: "m" },
     agent_plugins: [plugin("alpha"), plugin("beta")],
+    agent_plugin_settings: {
+      alpha: { servers: { search: { read_only: true } } },
+      beta: { servers: { docs: { read_only: false } } },
+    },
   };
   assert.deepEqual(withoutPlugin(config, "alpha"), {
     model: { id: "m" },
     agent_plugins: [plugin("beta")],
+    agent_plugin_settings: {
+      beta: { servers: { docs: { read_only: false } } },
+    },
   });
   const emptied = withoutPlugin(withoutPlugin(config, "alpha"), "beta");
   assert.deepEqual(emptied, { model: { id: "m" } });
   assert.ok(!("agent_plugins" in emptied));
   assert.deepEqual(withoutPlugin({ model: 1 }, "alpha"), { model: 1 });
   assert.equal(config.agent_plugins.length, 2);
+  assert.deepEqual(Object.keys(config.agent_plugin_settings), [
+    "alpha",
+    "beta",
+  ]);
 });
 
 test("the import answer keeps the reference exactly as the server sent it", () => {

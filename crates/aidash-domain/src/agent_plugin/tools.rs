@@ -296,6 +296,10 @@ fn refusal(tool: &ListedTool) -> Option<&'static str> {
 		.is_some_and(|description| description.len() > MAX_DESCRIPTION_BYTES)
 	{
 		Some("description_too_large")
+	} else if jsonschema::validator_for(&tool.input_schema).is_err() {
+		// Check the complete schema before it reaches the model provider or argument validation.
+		// External schema retrieval is disabled in this crate.
+		Some("schema_invalid")
 	} else {
 		None
 	}

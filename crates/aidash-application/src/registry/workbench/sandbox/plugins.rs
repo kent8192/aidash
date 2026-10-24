@@ -1,5 +1,5 @@
-//! A test offers the tools of its Agent's remote plugin servers from one listing made before it is
-//! admitted. The session answers them only from fixtures, so no server is called after that.
+//! A test offers the tools of its Agent's remote plugin servers from one listing made after reserving
+//! admission. The session answers them only from fixtures, so no server is called after that.
 use crate::{
 	plugin_tools::{Listings, list_servers},
 	ports::tools::PluginSessions,
@@ -28,10 +28,11 @@ pub(super) fn remote_plugins(draft: &Draft) -> Option<AgentBindings> {
 }
 
 /// What the remote servers of the draft's plugins list. Listing waits on other hosts for up to
-/// 30 s, so admission runs it before it takes the draft and Tenant-limits locks and hands the
-/// answers in. The listing's sessions end before this returns.
+/// 30 s, so admission commits a reserved slot and releases its locks before listing. The answers
+/// are pinned only after authority and the draft revision are checked again. The listing's sessions
+/// end before this returns.
 pub(super) async fn list(sessions: &Arc<dyn PluginSessions>, agent: &AgentBindings) -> Listings {
-	// The test session does not exist before admission commits, so the listing has its own key.
+	// Listing uses a temporary key; it never creates a retained execution session.
 	let listing = Uuid::new_v4();
 	let listed = list_servers(sessions.as_ref(), listing, agent).await;
 	sessions.close(listing).await;

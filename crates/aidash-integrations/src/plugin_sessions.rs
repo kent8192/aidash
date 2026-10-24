@@ -166,7 +166,7 @@ type Attempt<T> = std::result::Result<T, Fault>;
 pub struct McpPluginSessions {
 	origins: KeylessAccess,
 	clients: ToolClients,
-	state: Mutex<State>,
+	state: Arc<Mutex<State>>,
 }
 
 const _: () = {
@@ -203,6 +203,7 @@ struct State {
 	entries: HashMap<Key, Entry>,
 	idle: Duration,
 	capacity: usize,
+	reaping: bool,
 }
 
 impl State {
@@ -308,11 +309,12 @@ impl McpPluginSessions {
 		Self {
 			origins,
 			clients,
-			state: Mutex::new(State {
+			state: Arc::new(Mutex::new(State {
 				entries: HashMap::new(),
 				idle,
 				capacity: capacity.max(1),
-			}),
+				reaping: false,
+			})),
 		}
 	}
 
@@ -320,24 +322,62 @@ impl McpPluginSessions {
 		self.state.lock().unwrap_or_else(PoisonError::into_inner)
 	}
 
-	/// The Run's session with the server, and whether this call opened it. A refused destination
-	/// fails before any I/O.
-	async fn session(&self, key: &Key, config: &RemoteServer) -> Attempt<(Arc<Service>, bool)> {
+	/// The Run's session with the server. A refused destination fails before any I/O.
+	async fn session(&self, key: &Key, config: &RemoteServer) -> Attempt<Arc<Service>> {
 		let live = self.state().live(key);
 		if let Some(service) = live {
-			return Ok((service, false));
+			return Ok(service);
 		}
 		let client = self
 			.clients
 			.select_mcp(&self.origins, config.url.as_str())
 			.map_err(Fault::Early)?;
 		let service = open(client, config).await?;
-		Ok((
-			self.state()
-				.adopt(key.clone(), Arc::new(service))
-				.map_err(Fault::Early)?,
-			true,
-		))
+		let service = self
+			.state()
+			.adopt(key.clone(), Arc::new(service))
+			.map_err(Fault::Early)?;
+		self.expire_when_idle();
+		Ok(service)
+	}
+
+	/// One deadline task closes quiet deployments too. Its weak reference keeps neither the owner
+	/// nor any service alive, and it stops when the map empties.
+	fn expire_when_idle(&self) {
+		{
+			let mut state = self.state();
+			if state.reaping {
+				return;
+			}
+			state.reaping = true;
+		}
+		let state = Arc::downgrade(&self.state);
+		tokio::spawn(async move {
+			loop {
+				let delay = {
+					let Some(state) = state.upgrade() else {
+						return;
+					};
+					let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+					state.sweep();
+					if state.entries.is_empty() {
+						state.reaping = false;
+						return;
+					}
+					state
+						.entries
+						.values()
+						.filter(|entry| Arc::strong_count(&entry.service) == 1)
+						.map(|entry| state.idle.saturating_sub(entry.used.elapsed()))
+						.min()
+						// Live calls and input waits retain their services. Completion refreshes
+						// `used`, so checking within one idle interval cannot miss that deadline.
+						.unwrap_or(state.idle)
+						.max(Duration::from_millis(1))
+				};
+				tokio::time::sleep(delay).await;
+			}
+		});
 	}
 }
 
@@ -350,8 +390,10 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 	) -> Result<Vec<ListedTool>> {
 		let key = Key::new(run, server);
-		let (service, _) = self.session(&key, config).await.map_err(Fault::for_list)?;
-		list_tools(&service).await.map_err(|fault| {
+		let service = self.session(&key, config).await.map_err(Fault::for_list)?;
+		let result = list_tools(&service).await;
+		self.state().touch(&key, &service);
+		result.map_err(|fault| {
 			// The Run pins nothing from a server that failed to list, so nothing will use the session.
 			self.state().forget(&key, &service);
 			fault.for_list()
@@ -410,8 +452,8 @@ impl PluginSessions for McpPluginSessions {
 			.cloned()
 			.ok_or_else(|| Error::Invalid("tool arguments must be an object".into()))?;
 		let key = Key::new(run, server);
-		let (service, opened) = self.session(&key, config).await.map_err(Fault::for_call)?;
-		if opened && let Err(fault) = verify(&service, tool, expected_digest).await {
+		let service = self.session(&key, config).await.map_err(Fault::for_call)?;
+		if let Err(fault) = verify(&service, tool, expected_digest).await {
 			self.state().forget(&key, &service);
 			return Err(fault.for_call());
 		}

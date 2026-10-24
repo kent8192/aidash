@@ -580,9 +580,15 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 		reported,
 		..Default::default()
 	};
-	// Truncated or refused output is never acted on, so no tool call escapes;
-	// only its usage is kept, to settle the call's reservation.
-	let terminal = |failure| Err(Error::TerminalResponse(failure, Box::new(usage.clone())));
+	// Ordinary inference rejects every terminal response. Bounded MCP sampling
+	// can accept truncated text, while no terminal tool call may escape.
+	let terminal = |failure| {
+		let mut response = usage.clone();
+		if failure == Failure::OutputTruncated {
+			response.text = message["content"].as_str().unwrap_or_default().to_owned();
+		}
+		Err(Error::TerminalResponse(failure, Box::new(response)))
+	};
 	if !message["refusal"].is_null() {
 		return terminal(Failure::Refused);
 	}

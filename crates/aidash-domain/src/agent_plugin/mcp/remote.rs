@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
-use url::{Host, Url};
+use url::Url;
 
 pub(in crate::agent_plugin) const KEYS: [&str; 3] = ["type", "url", "headers"];
 
@@ -48,7 +48,8 @@ pub(super) fn parse(object: &Map<String, Value>) -> Result<super::McpServer, Ref
 	Ok(super::McpServer::Remote(RemoteServer { url, headers }))
 }
 
-/// An absolute HTTP(S) URL without user information or fragment; plain HTTP only for loopback.
+/// An absolute HTTP(S) URL without user information or fragment. Deployment admission decides
+/// whether the origin is permitted, including the exceptions for plain HTTP and private hosts.
 fn endpoint(raw: &str) -> Result<Url, Refusal> {
 	let invalid = |detail: &str| Refusal::invalid(format!("url {detail}"));
 	if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -64,14 +65,8 @@ fn endpoint(raw: &str) -> Result<Url, Refusal> {
 	if url.fragment().is_some() {
 		return Err(invalid("must not contain a fragment"));
 	}
-	let loopback = match url.host() {
-		Some(Host::Domain(domain)) => domain == "localhost",
-		Some(Host::Ipv4(address)) => address.is_loopback(),
-		Some(Host::Ipv6(address)) => address.to_canonical().is_loopback(),
-		None => return Err(invalid("must have a host")),
-	};
-	if url.scheme() == "http" && !loopback {
-		return Err(invalid("must use https unless the host is loopback"));
+	if url.host().is_none() {
+		return Err(invalid("must have a host"));
 	}
 	Ok(url)
 }

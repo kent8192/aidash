@@ -93,16 +93,17 @@ fn truncation_cannot_complete_a_task() {
 	));
 }
 #[rstest::rstest]
-fn a_terminal_response_keeps_its_usage_for_settlement() {
+fn a_truncated_response_keeps_text_and_usage_without_exposing_tool_calls() {
 	let error = parse(json!({
-		"choices":[{"finish_reason":"length","message":{"content":"partial"}}],
+		"choices":[{"finish_reason":"length","message":{"content":"partial","tool_calls":[{"id":"unfinished","function":{"name":"write","arguments":"{"}}]}}],
 		"usage":{"prompt_tokens":1200,"completion_tokens":256}
 	}))
 	.unwrap_err();
 	let usage = error.terminal_usage().unwrap();
 	assert_eq!((usage.input_tokens, usage.output_tokens), (1200, 256));
 	assert!(usage.usage_complete);
-	assert!(usage.text.is_empty() && usage.tool_calls.is_empty());
+	assert_eq!(usage.text, "partial");
+	assert!(usage.tool_calls.is_empty());
 	assert!(matches!(
 		error.settled(),
 		Error::Context(Failure::OutputTruncated)

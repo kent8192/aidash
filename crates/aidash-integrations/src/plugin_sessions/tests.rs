@@ -88,10 +88,6 @@ impl Fake {
 		*self.tools.lock().unwrap() = tools;
 	}
 
-	fn forget_sessions(&self) {
-		self.live.lock().unwrap().clear();
-	}
-
 	fn count(&self, method: &str) -> usize {
 		self.seen
 			.lock()
@@ -521,7 +517,8 @@ async fn closing_a_run_that_never_opened_a_session_changes_nothing() {
 async fn a_sent_call_is_never_replayed_on_session_loss_and_a_later_call_reopens_explicitly() {
 	let fixture = Fixture::start().await;
 	fixture.list().await.unwrap();
-	fixture.fake.forget_sessions();
+	// Lose the session at tools/call, after the pre-call listing succeeded.
+	fixture.fake.lost_calls.store(1, SeqCst);
 	let result = fixture
 		.call("alpha", &digest(&alpha()), json!({"q":"first"}))
 		.await;
@@ -555,35 +552,46 @@ async fn a_call_that_failed_after_the_server_got_it_is_not_sent_again() {
 }
 
 #[tokio::test]
-async fn a_reopened_session_refuses_a_tool_whose_schema_changed() {
-	let fixture = Fixture::start().await;
-	let pinned = digest(&alpha());
-	fixture.list().await.unwrap();
-	fixture.sessions.close(fixture.run).await;
-	let changed = json!({
-		"name": "alpha",
-		"description": "Alpha tool",
-		"inputSchema": {"type": "object", "properties": {"q": {"type": "integer"}}}
-	});
-	fixture.fake.set_tools(vec![changed.clone(), beta()]);
+async fn retained_and_reopened_sessions_refuse_a_tool_whose_schema_changed_or_disappeared() {
+	for reopen in [false, true] {
+		for remove in [false, true] {
+			let fixture = Fixture::start().await;
+			let pinned = digest(&alpha());
+			fixture.list().await.unwrap();
+			if reopen {
+				fixture.sessions.close(fixture.run).await;
+			}
+			let changed = json!({
+				"name": "alpha",
+				"description": "Alpha tool",
+				"inputSchema": {"type": "object", "properties": {"q": {"type": "integer"}}}
+			});
+			fixture.fake.set_tools(if remove {
+				vec![beta()]
+			} else {
+				vec![changed.clone(), beta()]
+			});
 
-	for _ in 0..2 {
-		let refused = fixture.call("alpha", &pinned, json!({"q": "x"})).await;
-		assert!(
-			matches!(&refused, Err(Error::Invalid(message)) if message == "CAPABILITY_CHANGED: alpha")
-		);
+			for _ in 0..2 {
+				let refused = fixture.call("alpha", &pinned, json!({"q": "x"})).await;
+				assert!(
+					matches!(&refused, Err(Error::Invalid(message)) if message == "CAPABILITY_CHANGED: alpha")
+				);
+			}
+			let gone = fixture.call("gamma", &pinned, json!({})).await;
+			assert!(
+				matches!(&gone, Err(Error::Invalid(message)) if message == "CAPABILITY_CHANGED: gamma")
+			);
+			assert_eq!(fixture.fake.count("tools/call"), 0);
+
+			fixture.fake.set_tools(vec![changed.clone(), beta()]);
+			fixture
+				.call("alpha", &digest(&changed), json!({"q": 1}))
+				.await
+				.unwrap();
+			assert_eq!(fixture.fake.count("tools/call"), 1);
+		}
 	}
-	let gone = fixture.call("gamma", &pinned, json!({})).await;
-	assert!(
-		matches!(&gone, Err(Error::Invalid(message)) if message == "CAPABILITY_CHANGED: gamma")
-	);
-	assert_eq!(fixture.fake.count("tools/call"), 0);
-
-	fixture
-		.call("alpha", &digest(&changed), json!({"q": 1}))
-		.await
-		.unwrap();
-	assert_eq!(fixture.fake.count("tools/call"), 1);
 }
 
 #[tokio::test]
@@ -739,12 +747,11 @@ async fn a_session_idle_for_too_long_is_closed_and_opened_again() {
 	let fixture = Fixture::start_with(&[], Duration::from_millis(100), MAX_SESSIONS).await;
 	fixture.list().await.unwrap();
 
-	tokio::time::sleep(Duration::from_millis(300)).await;
+	// No subsequent session operation may be needed to close a quiet session.
+	until(|| fixture.fake.deleted() == ["s1"]).await;
 	fixture.list().await.unwrap();
 
 	assert_eq!(fixture.fake.count("initialize"), 2);
-	// Dropping the session ends it in the background.
-	until(|| fixture.fake.deleted() == ["s1"]).await;
 }
 
 #[tokio::test]

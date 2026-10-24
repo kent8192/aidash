@@ -84,14 +84,60 @@ fn request(
 	request
 }
 fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, SseError>> {
-	// A session is only used for one tool invocation. Cap its entire response,
-	// including unterminated SSE fields, before the parser can buffer them.
+	// The GET stream can outlive many calls. Bound each event before the parser
+	// buffers its fields, and feed completed events separately so an HTTP chunk
+	// containing many events cannot build an unbounded parser queue.
 	let stream = async_stream::try_stream! {
 		let mut received = 0_usize;
+		let mut line_empty = true;
+		let mut comment_bytes = None;
+		let mut skip_lf = false;
+		let mut count_lf = false;
+		let mut bom_prefix = Some(0_usize);
 		while let Some(chunk) = response.chunk().await.map_err(std::io::Error::other)? {
-			received = received.saturating_add(chunk.len());
-			if received > LIMIT { Err(std::io::Error::other("MCP response exceeds 256 KB"))?; }
-			yield chunk;
+			let mut start = 0;
+			for (offset, byte) in chunk.iter().enumerate() {
+				// sse-stream ignores one initial UTF-8 BOM, including before a comment.
+				if let Some(matched) = bom_prefix {
+					if *byte == b"\xef\xbb\xbf"[matched] {
+						bom_prefix = (matched < 2).then_some(matched + 1);
+						continue;
+					}
+					bom_prefix = None;
+					// A partial prefix is ordinary line content when it is not a BOM.
+					received += matched;
+					line_empty = matched == 0;
+				}
+				// Match sse-stream's CR, LF and CRLF framing across chunks. An LF
+				// after a comment or an event-ending CR adds no retained event bytes.
+				if std::mem::take(&mut skip_lf) && *byte == b'\n' {
+					if count_lf {
+						received += 1;
+						if received > LIMIT { Err(std::io::Error::other("MCP SSE event exceeds 256 KB"))?; }
+					}
+					continue;
+				}
+				if line_empty && *byte == b':' { comment_bytes = Some(0_usize); }
+				// Comments retain no event content after their line ends. Bound their
+				// unfinished line separately without resetting an event's existing fields.
+				let bytes = comment_bytes.as_mut().unwrap_or(&mut received);
+				*bytes += 1;
+				if *bytes > LIMIT { Err(std::io::Error::other("MCP SSE event exceeds 256 KB"))?; }
+				if matches!(*byte, b'\r' | b'\n') {
+					let comment = comment_bytes.take().is_some();
+					if line_empty {
+						received = 0;
+						yield chunk.slice(start..offset + 1);
+						start = offset + 1;
+					}
+					count_lf = !comment && !line_empty;
+					line_empty = true;
+					skip_lf = *byte == b'\r';
+				} else {
+					line_empty = false;
+				}
+			}
+			if start < chunk.len() { yield chunk.slice(start..); }
 		}
 	};
 	SseStream::from_bytes_stream(stream.map(|item: Result<_, std::io::Error>| item)).boxed()
@@ -219,3 +265,6 @@ impl StreamableHttpClient for BoundedClient {
 		Ok(events(response.error_for_status()?))
 	}
 }
+
+#[cfg(test)]
+mod tests;
