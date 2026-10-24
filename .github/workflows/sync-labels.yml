@@ -1,0 +1,52 @@
+name: Sync repository labels
+on:
+  push:
+    branches: [main, "develop/**"]
+    paths:
+      - .github/labels.json
+      - .github/workflows/sync-labels.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-labels
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Repository labels are shared across branches; only the default branch owns them.
+    if: github.repository == 'kent8192/aidash' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create or update configured labels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Updating in place preserves assignments and leaves other labels alone.
+          jq -c '.[]' .github/labels.json | while IFS= read -r label; do
+            gh label create "$(jq -r '.name' <<< "$label")" \
+              --repo "$GITHUB_REPOSITORY" \
+              --color "$(jq -r '.color' <<< "$label")" \
+              --description "$(jq -r '.description' <<< "$label")" \
+              --force
+          done
+
+          gh label list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --json name,color,description > "$RUNNER_TEMP/repository-labels.json"
+          jq --exit-status --slurpfile actual "$RUNNER_TEMP/repository-labels.json" '
+            all(.[]; . as $label | any($actual[0][];
+              .name == $label.name and
+              .description == $label.description and
+              (.color | ascii_downcase) == ($label.color | ascii_downcase)
+            ))
+          ' .github/labels.json

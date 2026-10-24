@@ -1,0 +1,42 @@
+[
+  {
+    "name": "severity:critical",
+    "color": "B60205",
+    "description": "Critical impact: core functionality unavailable, data loss, or severe security exposure."
+  },
+  {
+    "name": "severity:high",
+    "color": "D93F0B",
+    "description": "Major impact: important functionality is broken with no practical workaround."
+  },
+  {
+    "name": "severity:medium",
+    "color": "FBCA04",
+    "description": "Moderate impact: functionality is impaired, but a practical workaround exists."
+  },
+  {
+    "name": "severity:low",
+    "color": "0E8A16",
+    "description": "Minor impact: limited disruption, cosmetic defects, or small usability issues."
+  },
+  {
+    "name": "priority:P0",
+    "color": "B60205",
+    "description": "Immediate: address before other planned work; blocks release or ongoing operations."
+  },
+  {
+    "name": "priority:P1",
+    "color": "D93F0B",
+    "description": "High: schedule in the next available work cycle."
+  },
+  {
+    "name": "priority:P2",
+    "color": "FBCA04",
+    "description": "Normal: schedule through regular backlog planning."
+  },
+  {
+    "name": "priority:P3",
+    "color": "0E8A16",
+    "description": "Low: address when capacity permits; may be deferred."
+  }
+]
