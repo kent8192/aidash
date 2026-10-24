@@ -170,3 +170,6 @@ pub mod secret_store;
 pub mod tenant_secrets;
 
 pub(crate) mod manual_keys;
+pub(crate) mod node_purge;
+
+pub mod node_recovery;

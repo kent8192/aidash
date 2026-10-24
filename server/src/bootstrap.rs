@@ -373,6 +373,14 @@ impl RuntimeTasks {
 					{
 						tracing::warn!(%error, "Tenant purge sweep failed");
 					}
+					if let Err(error) = crate::apps::identity::services::node_purge::sweep(
+						&retention,
+						audit_retention_days,
+					)
+					.await
+					{
+						tracing::warn!(%error, "Node purge sweep failed");
+					}
 					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
 						tracing::warn!(%error, "agent test retention cleanup failed");
 					}

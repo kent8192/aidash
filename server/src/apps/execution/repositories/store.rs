@@ -2709,118 +2709,61 @@ impl Store {
 		let Some(run) = run else {
 			return Ok(());
 		};
-		let valid: bool = {
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			crate::database::native::query_scalar(&Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_execution WHERE run_id = ? AND workspace_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-				.to_string(PostgresQueryBuilder))
+		let valid: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::exists(
+					Query::select()
+						.expr(Expr::value(1_i32))
+						.from(Alias::new("authorization_execution"))
+						.and_where(Expr::col("run_id").eq(Expr::value(run)))
+						.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+						.to_owned(),
+				))
+				.to_string(PostgresQueryBuilder),
+		)
 		.scalar_one(&mut **tx)
-		.await?
-		};
+		.await?;
 		if !valid {
 			return Err(Error::Forbidden);
 		}
-		{
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			let query_bind_3 = kind;
-			let query_bind_4 = id;
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("authorization_run_reads"))
-					.columns([
-						Alias::new("run_id"),
-						Alias::new("workspace_id"),
-						Alias::new("resource_kind"),
-						Alias::new("resource_id"),
-						Alias::new("tenant"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"runs",
-								"id",
-								query_bind_1,
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::columns(["run_id", "resource_kind", "resource_id"])
-							.do_nothing()
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
-		{
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			let query_bind_3 = kind;
-			let query_bind_4 = id;
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("authorization_run_outputs"))
-					.columns([
-						Alias::new("run_id"),
-						Alias::new("workspace_id"),
-						Alias::new("resource_kind"),
-						Alias::new("resource_id"),
-						Alias::new("tenant"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"runs",
-								"id",
-								query_bind_1,
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::columns(["run_id", "resource_kind", "resource_id"])
-							.do_nothing()
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
+		crate::apps::identity::models::AuthorizationRunRead::record_sources(
+			&mut **tx,
+			run,
+			workspace,
+			&[(kind.to_owned(), id)],
+		)
+		.await?;
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("authorization_run_outputs"))
+				.columns(
+					[
+						"run_id",
+						"workspace_id",
+						"resource_kind",
+						"resource_id",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(run))
+						.expr(Expr::value(workspace))
+						.expr(Expr::value(kind))
+						.expr(Expr::value(id))
+						.expr(crate::database::scope::tenant_of("runs", "id", run))
+						.to_owned(),
+				)
+				.on_conflict(
+					OnConflict::columns(["run_id", "resource_kind", "resource_id"])
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
 
 		Ok(())
 	}
