@@ -1728,7 +1728,8 @@ async fn coverage_same_account_is_an_authorized_noop(
 }
 
 /// Either consent order produces one interval; a later move ends it exactly
-/// where the next starts, atomically with the admission projection.
+/// where the next starts, atomically with the admission projection. A delayed
+/// allocation retains each account's frozen usage across that actual move.
 #[rstest::rstest]
 #[case(false)]
 #[case(true)]
@@ -1742,6 +1743,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 	let (tenant, context) = d.tenant_of(&alice).await;
 	let first = d.account(&bob, Some("team")).await;
 	let second = d.account(&bob, Some("team")).await;
+	let mut allocation_started_at = None;
 	for account in [first, second] {
 		let admin_path = format!("/api/tenants/{tenant}/billing/attachment");
 		let owner_path = format!("/api/billing/accounts/{account}/attachments");
@@ -1765,7 +1767,14 @@ async fn coverage_moves_share_one_half_open_boundary(
 			"{:?}",
 			attached
 		);
+		if account == first {
+			// Observe the fixture allocation's start before requesting the move;
+			// its lifetime is not manufactured from the eventual move boundary.
+			allocation_started_at =
+				Some(d.scalar::<DateTime<Utc>>("SELECT clock_timestamp()").await);
+		}
 	}
+	let allocation_ended_at: DateTime<Utc> = d.scalar("SELECT clock_timestamp()").await;
 	let periods = d.coverage(&tenant).await;
 	assert_eq!(periods.len(), 2);
 	assert_eq!(
@@ -1781,6 +1790,97 @@ async fn coverage_moves_share_one_half_open_boundary(
 			(alice.identity, bob.identity)
 		);
 	}
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_attachment_consents")
+			.await,
+		0
+	);
+	// Deliver only after the move has committed. Independent DB observations
+	// bracket its persisted boundary without sleeps or invented historical spans.
+	let event = receipt(&tenant, allocation_started_at.unwrap(), allocation_ended_at);
+	let boundary = periods[1].starts_at;
+	assert!(periods[0].starts_at <= event.started_at);
+	assert!(event.started_at < boundary && boundary < event.ended_at);
+	let pool = d.federation.store.pool.fixture_driver();
+	let mut frozen = None;
+	for _ in 0..2 {
+		// Use the installed production sink, including an identical delayed retry.
+		d.federation
+			.store
+			.usage
+			.pod_time(event.clone())
+			.await
+			.unwrap();
+		let raw: Value =
+			sqlx::query_scalar("SELECT to_jsonb(p) FROM billing_pod_usage p WHERE allocation = $1")
+				.bind(event.allocation)
+				.fetch_one(pool)
+				.await
+				.unwrap();
+		assert_eq!(
+			raw["started_ns"],
+			event.started_at.timestamp_nanos_opt().unwrap()
+		);
+		assert_eq!(
+			raw["ended_ns"],
+			event.ended_at.timestamp_nanos_opt().unwrap()
+		);
+		assert_eq!(raw["receipt_digest"], event.receipt_digest);
+		let segments: Vec<Value> = sqlx::query_scalar(
+			"SELECT to_jsonb(s) FROM billing_usage_segments s WHERE allocation = $1 ORDER BY starts_ns",
+		)
+		.bind(event.allocation)
+		.fetch_all(pool)
+		.await
+		.unwrap();
+		assert_eq!(segments.len(), 2);
+		for (index, (period, start, end)) in [
+			(&periods[0], event.started_at, boundary),
+			(&periods[1], boundary, event.ended_at),
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let nanos = (end - start).num_nanoseconds().unwrap().to_string();
+			assert_eq!(segments[index]["status"], "covered");
+			assert_eq!(segments[index]["account_id"], json!(period.account_id));
+			assert_eq!(segments[index]["coverage_id"], json!(period.id));
+			let path = format!(
+				"/api/billing/accounts/{}/usage?starts_at={}&ends_at={}",
+				period.account_id,
+				event
+					.started_at
+					.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+				event
+					.ended_at
+					.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+			);
+			let (status, usage) = d.call(&bob, "GET", &path, None, Value::Null).await;
+			assert_eq!(status, 200, "{usage}");
+			assert_eq!(usage["account"], json!(period.account_id));
+			assert_eq!(usage["pod_nanos"], nanos);
+			assert_eq!(
+				usage["segments"],
+				json!([{
+					"allocation": event.allocation,
+					"tenant": tenant,
+					"coverage_id": period.id,
+					"starts_at": start,
+					"ends_at": end,
+					"nanos": nanos,
+				}]),
+			);
+		}
+		if let Some(expected) = &frozen {
+			assert_eq!(
+				&(raw, segments),
+				expected,
+				"retry must retain the original raw and frozen facts"
+			);
+		} else {
+			frozen = Some((raw, segments));
+		}
+	}
 	let current: (Uuid, DateTime<Utc>) =
 		sqlx::query_as("SELECT account_id, attached_at FROM billing_attachments WHERE tenant = $1")
 			.bind(&tenant)
@@ -1788,11 +1888,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 			.await
 			.unwrap();
 	assert_eq!(current, (second, periods[1].starts_at));
-	assert_eq!(
-		d.scalar::<i64>("SELECT count(*) FROM billing_attachment_consents")
-			.await,
-		0
-	);
+	assert_eq!(d.coverage(&tenant).await, periods);
 	// Storage rejects a zero-length closed period and two open periods even
 	// when a writer bypasses the service. Ordinary adjacent spans are above.
 	for (start, end) in [
