@@ -35,6 +35,7 @@ pub enum Ownership {
 	Objects,
 	Dispatches,
 	SemanticJournals,
+	Registrations,
 	SourceReads,
 	RemoteUsageRows,
 	Finalizations,
@@ -53,13 +54,13 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "runs"
 		| "generation_requests"
 		| "authorization_catalog"
-		| "node_registrations"
 		| "node_registration_history"
 		| "authorization_peer_mappings"
 		| "authorization_peer_mapping_history"
 		| "authorization_remote_admissions"
 		| "authorization_remote_grants" => Node("node"),
 		"nodes" => Audit,
+		"node_registrations" => Registrations,
 		"core_areas" => Areas,
 		"core_records" => Records,
 		"core_objects" => Objects,

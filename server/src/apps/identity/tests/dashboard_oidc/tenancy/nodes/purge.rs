@@ -811,13 +811,18 @@ async fn node_purge_refuses_an_unclassified_migrated_table_before_claiming_or_er
 	let (_, node) = d.create_node(&alice, &context, &tenant, "Delete").await;
 	let node = node["name"].as_str().unwrap();
 	let deletion = request_purge(&d, &tenant, node).await;
-	// Deliberate fixture DDL: the production guard must observe the migrated
-	// database, not merely compare two checked-in copies of the same list.
+	// Supported fixture DDL: the guard must observe the actual database,
+	// not merely compare two checked-in copies of the same table list.
 	let owner = common::owner_pool(d.federation.store.pool.driver()).await;
-	sqlx::query("CREATE TABLE unclassified_node_owned_records (id uuid PRIMARY KEY)")
-		.execute(&owner)
-		.await
-		.unwrap();
+	let create = reinhardt::query::Query::create_table()
+		.table("unclassified_node_owned_records")
+		.col(
+			reinhardt::query::ColumnDef::new("id")
+				.uuid()
+				.primary_key(true),
+		)
+		.to_string(reinhardt::query::PostgresQueryBuilder);
+	sqlx::query(&create).execute(&owner).await.unwrap();
 	assert!(node_purge::sweep(&d.federation.store, 365).await.is_err());
 	assert_eq!(
 		d.count(&format!("SELECT count(*) FROM nodes WHERE name='{node}'"))
@@ -831,10 +836,10 @@ async fn node_purge_refuses_an_unclassified_migrated_table_before_claiming_or_er
 		.await,
 		1
 	);
-	sqlx::query("DROP TABLE unclassified_node_owned_records")
-		.execute(&owner)
-		.await
-		.unwrap();
+	let drop = reinhardt::query::Query::drop_table()
+		.table("unclassified_node_owned_records")
+		.to_string(reinhardt::query::PostgresQueryBuilder);
+	sqlx::query(&drop).execute(&owner).await.unwrap();
 	owner.close().await;
 	d.finish().await;
 }
@@ -974,6 +979,9 @@ async fn node_purge_starts_only_from_a_committed_request_or_due_deadline(
 #[case::global_coordinator_recovery("coordinator")]
 #[case::global_participant_recovery("participant")]
 #[case::visibility_gate_before_unlink("gate")]
+#[case::corrupt_terminal_digest("atomic_digest")]
+#[case::missing_terminal_owner("atomic_owner")]
+#[case::missing_terminal_current_trust("atomic_trust")]
 #[tokio::test]
 async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_recovery_evidence(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
@@ -1077,6 +1085,38 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			};
 			sqlx::query("INSERT INTO core_operations (id,area_id,run_id,credential_id,tenant,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,id,$2,$3,tenant,'purge-target','fixture','fixture','shell',$6,1,1,1,1,'[\"purge-target\"]','{}',$4,$7 FROM core_areas WHERE workspace_id=$5").bind(metadata).bind(Uuid::new_v4()).bind(target_credential).bind(result).bind(work[0]).bind(state).bind(runner).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"confirmed command termination"
+		}
+		"atomic_digest" | "atomic_owner" | "atomic_trust" => {
+			let local_name = if blocker == "atomic_owner" {
+				aidash_domain::nodes::NodeName::derived("absent-permanent-owner")
+			} else {
+				aidash_domain::nodes::NodeName::parse(&target).unwrap()
+			};
+			let local = d.federation.config.deployment.node(local_name).to_string();
+			let remote = aidash_domain::nodes::DeploymentId::parse("aidash://atomic-peer")
+				.unwrap()
+				.node(aidash_domain::nodes::NodeName::derived("peer"))
+				.to_string();
+			let mut participants = vec![
+				json!({"node_id":local,"mutations":[{"kind":"workspace_state","workspace_id":work[0],"expected_revision":0,"state":{}}]}),
+				json!({"node_id":remote,"mutations":[]}),
+			];
+			participants.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
+			let manifest: aidash_domain::transactions::Manifest = serde_json::from_value(json!({
+				"id":metadata,"coordinator":remote,"isolation":"serializable",
+				"deadline":chrono::Utc::now()+chrono::Duration::minutes(5),"participants":participants
+			}))
+			.unwrap();
+			manifest.validate::<aidash_server::Error>().unwrap();
+			let digest = if blocker == "atomic_digest" {
+				"corrupt".to_owned()
+			} else {
+				manifest.digest().unwrap()
+			};
+			sqlx::query("INSERT INTO atomic_participants(id,coordinator,digest,manifest,phase) VALUES ($1,$2,$3,$4,'COMMITTED')")
+				.bind(metadata).bind(&manifest.coordinator).bind(digest).bind(json!(manifest))
+				.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			"atomic recovery registration dependency"
 		}
 		"coordinator" => {
 			sqlx::query("INSERT INTO atomic_coordinators (id,digest,manifest,complete) VALUES ($1,'fixture','{}',false)").bind(metadata).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -1363,7 +1403,7 @@ async fn cross_node_execution_evidence(
 	}
 	let descendant = Uuid::new_v4();
 	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'descendant','descendant','COMPLETED',1,'purge-sibling')").bind(descendant).bind(tenant).bind(sibling_workspace).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	sqlx::query("INSERT INTO authorization_task_origins (task_id,tenant,source_run_id,root_subject,subject_chain) VALUES ($1,$2,$3,'purge-sibling',ARRAY['purge-sibling'])").bind(descendant).bind(tenant).bind(result[1].1).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO authorization_task_origins (task_id,tenant,source_run_id,root_subject,subject_chain) VALUES ($1,$2,$3,'purge-sibling',ARRAY['purge-sibling','fixture-agent'])").bind(descendant).bind(tenant).bind(result[1].1).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO remote_run_message_fences (task_id,tenant,idempotency_key,run_id,content,consumed) VALUES ($1,$2,'retained',$3,'sibling message',true)").bind(descendant).bind(tenant).bind(result[0].1).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	(
 		result[0].1,

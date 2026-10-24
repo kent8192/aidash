@@ -3126,7 +3126,7 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 #[case::read_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
 #[case::session("execution", "0054_session_area_lifetime", Some("0055_session_area_lifetime_state"), "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
 #[tokio::test]
-async fn source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
+async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
 	#[future] fresh_database: MigrationFixture,
 	#[case] app: &str,
 	#[case] physical: &str,
@@ -3299,6 +3299,75 @@ async fn receiving_keysets_roundtrip_with_registered_model_state(
 			}
 			executor.apply_migrations(&receiving).await.unwrap();
 			assert_eq!(recorded_keys(&fixture.connection).await, before);
+		}
+	}
+}
+
+/// Recovery trust belongs to permanent Node identity, without making the
+/// catalog permanent or changing the scalar ORM's physical-only FK contract.
+#[rstest]
+#[tokio::test]
+async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog_shell(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let group = migrations
+		.iter()
+		.filter(|migration| {
+			migration.app_label == "federation"
+				&& migration.name == "0019_node_registration_recovery_ownership"
+		})
+		.cloned()
+		.collect::<Vec<_>>();
+	assert_eq!(group.len(), 1);
+	assert!(group[0].database_only);
+	for state in [
+		build_state_from_files(&source).await.unwrap(),
+		ProjectState::from_global_registry(),
+	] {
+		assert!(
+			!state
+				.find_model_by_table("node_registrations")
+				.unwrap()
+				.constraints
+				.iter()
+				.any(|constraint| constraint.name == "node_registrations_node_fkey")
+		);
+	}
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for (pass, parent) in ["node_names", "nodes", "node_names"]
+		.into_iter()
+		.enumerate()
+	{
+		let actual: (String, String) = sqlx::query_as("SELECT confrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='node_registrations'::regclass AND conname='node_registrations_node_fkey'").fetch_one(&pool).await.unwrap();
+		assert_eq!(actual.0, parent);
+		assert!(
+			actual.1.contains(if parent == "node_names" {
+				"FOREIGN KEY (node, tenant) REFERENCES node_names(name, tenant)"
+			} else {
+				"FOREIGN KEY (tenant, node) REFERENCES nodes(tenant, name)"
+			}),
+			"{actual:?}"
+		);
+		let root: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='node_registrations'::regclass AND conname='node_registrations_tenant_fkey')").fetch_one(&pool).await.unwrap();
+		assert!(root);
+		let rls: (bool, bool) = sqlx::query_as("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid='node_registrations'::regclass").fetch_one(&pool).await.unwrap();
+		assert_eq!(rls, (true, true));
+		match pass {
+			0 => {
+				executor.rollback_migrations(&group).await.unwrap();
+			}
+			1 => {
+				executor.apply_migrations(&group).await.unwrap();
+			}
+			_ => {}
 		}
 	}
 }

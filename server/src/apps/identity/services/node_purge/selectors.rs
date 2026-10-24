@@ -7,6 +7,7 @@ pub(super) struct Owners<'a> {
 	pub tenant: &'a str,
 	pub node: &'a str,
 	pub subjects: Vec<String>,
+	pub retained_registrations: Vec<String>,
 	pub journals: Vec<Uuid>,
 	pub home_journals: Vec<Uuid>,
 	pub remote_usage: Vec<(Uuid, Uuid)>,
@@ -63,6 +64,9 @@ impl Owners<'_> {
 		use Ownership::*;
 		let predicate = match classification::node::ownership(source)? {
 			Shared | Recovery | Audit => return Ok(Expr::value(false).into()),
+			Registrations => col(table, "node")
+				.eq(Expr::value(self.node))
+				.and(strings(col(table, "source_node"), &self.retained_registrations).not()),
 			Node(field) => col(table, field).eq(Expr::value(self.node)),
 			Subject(field) => self.subject(table, field),
 			Link(field, root) => self.root(table, field, root)?,

@@ -171,6 +171,14 @@ pub async fn run_step(store: &Store, deletion: &NodeDeletion, step: PurgeStep) -
 		// Prospective policy and all cross-owner references are checked before the
 		// first file unlink, not merely when a later FK DELETE happens to fail.
 		preflight::check(&mut *tx, &owners, &snapshot).await?;
+		owners.retained_registrations =
+			crate::apps::identity::repositories::node_recovery::registration_sources_in(
+				&mut *tx,
+				&store.deployment,
+				owners.tenant,
+				owners.node,
+			)
+			.await?;
 		rows::validate(&mut *tx, &owners).await?;
 		let complete = match step {
 			PurgeStep::CapabilityObjects => objects::erase(store, &mut tx, &owners).await?,
@@ -225,6 +233,7 @@ fn owners<'a>(deletion: &'a NodeDeletion, snapshot: &Snapshot) -> Owners<'a> {
 		home_journals: Vec::new(),
 		remote_usage: Vec::new(),
 		dispatches: Vec::new(),
+		retained_registrations: Vec::new(),
 		tenant: &deletion.tenant,
 		node: &deletion.node,
 		subjects: snapshot
@@ -338,6 +347,7 @@ pub async fn retained_storage_bytes_in(
 		home_journals: Vec::new(),
 		remote_usage: Vec::new(),
 		dispatches: Vec::new(),
+		retained_registrations: Vec::new(),
 		tenant,
 		node,
 		subjects: snapshot
