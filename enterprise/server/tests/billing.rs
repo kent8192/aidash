@@ -1731,7 +1731,8 @@ async fn coverage_same_account_is_an_authorized_noop(
 
 /// Either consent order produces one interval; a later move ends it exactly
 /// where the next starts, atomically with the admission projection. A delayed
-/// allocation retains each account's frozen usage across that actual move.
+/// allocation retains each account's frozen usage across that actual move,
+/// physical Node purge, finite audit expiry and fresh serving-state reconstruction.
 #[rstest::rstest]
 #[case(false)]
 #[case(true)]
@@ -1740,12 +1741,199 @@ async fn coverage_moves_share_one_half_open_boundary(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 	#[case] owner_first: bool,
 ) {
-	let d = Cloud::new(runtime).await;
+	use aidash_server::apps::identity::services::node_purge;
+	use aidash_server::capabilities::services::core::Runtime as CapabilityRuntime;
+	use aidash_server::registry::Registry;
+	use aidash_server::store::Store;
+
+	struct OwnedFile {
+		node: String,
+		workspace: Uuid,
+		file: Uuid,
+	}
+
+	// Full rows include generated fact/sample IDs, not only equivalent totals.
+	type FrozenFacts = (Value, Vec<Value>, Vec<Value>, Vec<Value>);
+
+	async fn workspace_file(
+		d: &Cloud,
+		person: &Person,
+		context: &str,
+		tenant: &str,
+		node: String,
+		bytes: &[u8],
+	) -> OwnedFile {
+		let (status, workspace) = d
+			.call(
+				person,
+				"POST",
+				"/api/workspaces",
+				Some(context),
+				json!({"title":"Retained usage", "goal":"Node purge composition", "node":node}),
+			)
+			.await;
+		assert_eq!(status, 200, "{workspace}");
+		let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+		let area = Uuid::new_v4();
+		let file = Uuid::new_v4();
+		let pool = d.federation.store.pool.fixture_driver();
+		let address = format!("{}/{node}", d.federation.store.deployment);
+		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,$3,'fixture-agent','owner',$4,$5)")
+			.bind(area).bind(tenant).bind(address).bind(workspace).bind(Uuid::new_v4())
+			.execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,$5)")
+			.bind(file).bind(tenant).bind(area).bind(format!("sha256:{:x}", Sha256::digest(bytes)))
+			.bind(i64::try_from(bytes.len()).unwrap()).execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,$2) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+EXCLUDED.used_bytes")
+			.bind(tenant).bind(i64::try_from(bytes.len()).unwrap()).execute(pool).await.unwrap();
+		tokio::fs::write(
+			d.federation
+				.store
+				.capabilities
+				.0
+				.storage
+				.join(file.simple().to_string()),
+			bytes,
+		)
+		.await
+		.unwrap();
+		OwnedFile {
+			node,
+			workspace,
+			file,
+		}
+	}
+
+	async fn snapshot(
+		d: &Cloud,
+		owner: &Person,
+		event: &PodTime,
+		periods: &[Coverage],
+	) -> FrozenFacts {
+		let pool = d.federation.store.pool.fixture_driver();
+		let raw =
+			sqlx::query_scalar("SELECT to_jsonb(p) FROM billing_pod_usage p WHERE allocation=$1")
+				.bind(event.allocation)
+				.fetch_one(pool)
+				.await
+				.unwrap();
+		let segments = sqlx::query_scalar(
+			"SELECT to_jsonb(s) FROM billing_usage_segments s WHERE allocation=$1 ORDER BY starts_ns",
+		)
+		.bind(event.allocation)
+		.fetch_all(pool)
+		.await
+		.unwrap();
+		let samples = sqlx::query_scalar(
+			"SELECT to_jsonb(s) FROM billing_storage_samples s WHERE tenant=$1 ORDER BY sampled_ns,id",
+		)
+		.bind(&event.tenant)
+		.fetch_all(pool)
+		.await
+		.unwrap();
+		let mut reports = Vec::new();
+		for period in periods {
+			let path = format!(
+				"/api/billing/accounts/{}/usage?starts_at={}&ends_at={}",
+				period.account_id,
+				event
+					.started_at
+					.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+				event
+					.ended_at
+					.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+			);
+			let (status, report) = d.call(owner, "GET", &path, None, Value::Null).await;
+			assert_eq!(status, 200, "{report}");
+			reports.push(report);
+		}
+		(raw, segments, samples, reports)
+	}
+
+	async fn assert_retained(
+		d: &Cloud,
+		owner: &Person,
+		event: &PodTime,
+		periods: &[Coverage],
+		expected: &FrozenFacts,
+	) {
+		assert_eq!(&snapshot(d, owner, event, periods).await, expected);
+		assert_eq!(d.coverage(&event.tenant).await, periods);
+		let current: (Uuid, DateTime<Utc>) = sqlx::query_as(
+			"SELECT account_id,attached_at FROM billing_attachments WHERE tenant=$1",
+		)
+		.bind(&event.tenant)
+		.fetch_one(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(current, (periods[1].account_id, periods[1].starts_at));
+	}
+
+	async fn reopened(d: Cloud) -> Cloud {
+		let Cloud {
+			federation,
+			app,
+			url,
+			database,
+			_runtime,
+		} = d;
+		let mut config = federation.config.clone();
+		let deployment = federation.store.deployment.clone();
+		let profile = (*federation.store.capabilities.0).clone();
+		drop(app);
+		federation.store.control_pool.close().await;
+		federation.store.pool.close().await;
+		drop(federation);
+		let pool = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(12)
+			.connect(&url)
+			.await
+			.unwrap();
+		let mut store = Store::from_pool(pool, deployment).await.unwrap();
+		store.capabilities = CapabilityRuntime::new(profile).unwrap();
+		aidash_enterprise_server::billing::install_with(&mut store, settings(), Offering::Cloud);
+		config.tier_limits = aidash_enterprise_server::BUILD
+			.extension
+			.tier_limits(&store)
+			.unwrap();
+		let registry = Registry::new(store.pool.clone(), &store.deployment)
+			.unwrap()
+			.with_keyless_origins(store.keyless.clone());
+		let federation = Federation {
+			sandbox: Default::default(),
+			store,
+			registry,
+			config,
+			client: reqwest::Client::new(),
+			notify: Arc::new(tokio::sync::Notify::new()),
+		};
+		let app = common::application(federation.clone()).await;
+		Cloud {
+			federation,
+			app,
+			url,
+			database,
+			_runtime,
+		}
+	}
+
+	let mut d = Cloud::new(runtime).await;
+	let private = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../private");
+	tokio::fs::create_dir_all(&private).await.unwrap();
+	let storage = tempfile::Builder::new()
+		.prefix("m2-node-purge-")
+		.tempdir_in(private)
+		.unwrap();
+	let mut profile = (*d.federation.store.capabilities.0).clone();
+	profile.storage = storage.path().to_owned();
+	d.federation.store.capabilities = CapabilityRuntime::new(profile).unwrap();
+	d.app.context.set_singleton(d.federation.clone());
 	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
 	let (tenant, context) = d.tenant_of(&alice).await;
 	let first = d.account(&bob, Some("team")).await;
 	let second = d.account(&bob, Some("team")).await;
 	let mut allocation_started_at = None;
+	let mut owned_files = None;
 	for account in [first, second] {
 		let admin_path = format!("/api/tenants/{tenant}/billing/attachment");
 		let owner_path = format!("/api/billing/accounts/{account}/attachments");
@@ -1770,10 +1958,65 @@ async fn coverage_moves_share_one_half_open_boundary(
 			attached
 		);
 		if account == first {
+			let nodes_path = format!("/api/tenants/{tenant}/nodes");
+			let (status, nodes) = d
+				.call(&alice, "GET", &nodes_path, Some(&context), Value::Null)
+				.await;
+			assert_eq!(status, 200, "{nodes}");
+			assert_eq!(nodes.as_array().unwrap().len(), 1);
+			let target = nodes[0]["name"].as_str().unwrap().to_owned();
+			let (status, sibling) = d
+				.call(
+					&alice,
+					"POST",
+					&nodes_path,
+					Some(&context),
+					json!({"label":"Keep"}),
+				)
+				.await;
+			assert_eq!(status, 201, "{sibling}");
+			let sibling = sibling["name"].as_str().unwrap().to_owned();
+			// The public default transition makes the original Node deletable;
+			// both Workspaces and physical files have genuine live Node owners.
+			let (status, default) = d
+				.call(
+					&alice,
+					"POST",
+					&format!("{nodes_path}/{sibling}/default"),
+					Some(&context),
+					Value::Null,
+				)
+				.await;
+			assert_eq!(status, 200, "{default}");
+			assert_eq!(default["default"], true);
+			owned_files = Some([
+				workspace_file(&d, &alice, &context, &tenant, target, b"gone").await,
+				workspace_file(&d, &alice, &context, &tenant, sibling, b"keep-data").await,
+			]);
 			// Observe the fixture allocation's start before requesting the move;
 			// its lifetime is not manufactured from the eventual move boundary.
-			allocation_started_at =
-				Some(d.scalar::<DateTime<Utc>>("SELECT clock_timestamp()").await);
+			let started_at = d.scalar::<DateTime<Utc>>("SELECT clock_timestamp()").await;
+			allocation_started_at = Some(started_at);
+			let samples = aidash_server::apps::execution::services::storage_usage::samples(
+				&d.federation.store,
+				started_at,
+			)
+			.await
+			.unwrap();
+			assert_eq!(
+				samples
+					.iter()
+					.find(|sample| sample.tenant == tenant)
+					.unwrap()
+					.bytes,
+				13
+			);
+			d.federation
+				.store
+				.usage
+				.storage_sampled(samples)
+				.await
+				.unwrap();
 		}
 	}
 	let allocation_ended_at: DateTime<Utc> = d.scalar("SELECT clock_timestamp()").await;
@@ -1803,7 +2046,6 @@ async fn coverage_moves_share_one_half_open_boundary(
 	let boundary = periods[1].starts_at;
 	assert!(periods[0].starts_at <= event.started_at);
 	assert!(event.started_at < boundary && boundary < event.ended_at);
-	let pool = d.federation.store.pool.fixture_driver();
 	let mut frozen = None;
 	for _ in 0..2 {
 		// Use the installed production sink, including an identical delayed retry.
@@ -1813,12 +2055,8 @@ async fn coverage_moves_share_one_half_open_boundary(
 			.pod_time(event.clone())
 			.await
 			.unwrap();
-		let raw: Value =
-			sqlx::query_scalar("SELECT to_jsonb(p) FROM billing_pod_usage p WHERE allocation = $1")
-				.bind(event.allocation)
-				.fetch_one(pool)
-				.await
-				.unwrap();
+		let facts = snapshot(&d, &bob, &event, &periods).await;
+		let (raw, segments, samples, reports) = &facts;
 		assert_eq!(
 			raw["started_ns"],
 			event.started_at.timestamp_nanos_opt().unwrap()
@@ -1828,14 +2066,16 @@ async fn coverage_moves_share_one_half_open_boundary(
 			event.ended_at.timestamp_nanos_opt().unwrap()
 		);
 		assert_eq!(raw["receipt_digest"], event.receipt_digest);
-		let segments: Vec<Value> = sqlx::query_scalar(
-			"SELECT to_jsonb(s) FROM billing_usage_segments s WHERE allocation = $1 ORDER BY starts_ns",
-		)
-		.bind(event.allocation)
-		.fetch_all(pool)
-		.await
-		.unwrap();
 		assert_eq!(segments.len(), 2);
+		assert_eq!(samples.len(), 1);
+		assert_eq!(samples[0]["bytes"], 13);
+		assert_eq!(samples[0]["status"], "covered");
+		assert_eq!(samples[0]["account_id"], json!(first));
+		assert_eq!(samples[0]["coverage_id"], json!(periods[0].id));
+		assert_eq!(
+			samples[0]["sampled_ns"],
+			event.started_at.timestamp_nanos_opt().unwrap()
+		);
 		for (index, (period, start, end)) in [
 			(&periods[0], event.started_at, boundary),
 			(&periods[1], boundary, event.ended_at),
@@ -1847,18 +2087,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 			assert_eq!(segments[index]["status"], "covered");
 			assert_eq!(segments[index]["account_id"], json!(period.account_id));
 			assert_eq!(segments[index]["coverage_id"], json!(period.id));
-			let path = format!(
-				"/api/billing/accounts/{}/usage?starts_at={}&ends_at={}",
-				period.account_id,
-				event
-					.started_at
-					.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-				event
-					.ended_at
-					.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-			);
-			let (status, usage) = d.call(&bob, "GET", &path, None, Value::Null).await;
-			assert_eq!(status, 200, "{usage}");
+			let usage = &reports[index];
 			assert_eq!(usage["account"], json!(period.account_id));
 			assert_eq!(usage["pod_nanos"], nanos);
 			assert_eq!(
@@ -1872,15 +2101,23 @@ async fn coverage_moves_share_one_half_open_boundary(
 					"nanos": nanos,
 				}]),
 			);
+			let expected_samples = if index == 0 {
+				json!([{
+					"id":samples[0]["id"], "tenant":tenant, "coverage_id":period.id,
+					"sampled_at":event.started_at, "bytes":13,
+				}])
+			} else {
+				json!([])
+			};
+			assert_eq!(usage["samples"], expected_samples);
 		}
 		if let Some(expected) = &frozen {
 			assert_eq!(
-				&(raw, segments),
-				expected,
+				&facts, expected,
 				"retry must retain the original raw and frozen facts"
 			);
 		} else {
-			frozen = Some((raw, segments));
+			frozen = Some(facts);
 		}
 	}
 	let current: (Uuid, DateTime<Utc>) =
@@ -1901,6 +2138,190 @@ async fn coverage_moves_share_one_half_open_boundary(
             .bind(Uuid::new_v4()).bind(&tenant).bind(first).bind(start).bind(end).bind(alice.identity).bind(bob.identity)
             .execute(d.federation.store.pool.fixture_driver()).await.is_err());
 	}
+	let frozen = frozen.unwrap();
+	let [target, sibling] = owned_files.unwrap();
+	assert_eq!(
+		tokio::fs::read(storage.path().join(target.file.simple().to_string()))
+			.await
+			.unwrap(),
+		b"gone"
+	);
+	assert_eq!(
+		tokio::fs::read(storage.path().join(sibling.file.simple().to_string()))
+			.await
+			.unwrap(),
+		b"keep-data"
+	);
+	let node_path = format!("/api/tenants/{tenant}/nodes/{}", target.node);
+	let (status, deleted) = d
+		.call(
+			&alice,
+			"POST",
+			&format!("{node_path}/deletion"),
+			Some(&context),
+			json!({"confirmation":target.node}),
+		)
+		.await;
+	assert_eq!(status, 200, "{deleted}");
+	assert_eq!(deleted["state"], "deleted");
+	let deletion = Uuid::parse_str(deleted["deletion"]["id"].as_str().unwrap()).unwrap();
+	let (status, requested, ..) = d
+		.send(
+			"POST",
+			&format!("{node_path}/purge"),
+			None,
+			None,
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{requested}");
+	assert_eq!(requested["deletion"]["id"], json!(deletion));
+	let mut claimed = node_purge::claim(&d.federation.store).await.unwrap();
+	assert_eq!(claimed.len(), 1);
+	let claimed = claimed.pop().unwrap();
+	assert_eq!(
+		(claimed.id, claimed.tenant.as_str(), claimed.node.as_str()),
+		(deletion, tenant.as_str(), target.node.as_str())
+	);
+	node_purge::purge_node(&d.federation.store, claimed)
+		.await
+		.unwrap();
+	assert!(
+		!storage
+			.path()
+			.join(target.file.simple().to_string())
+			.exists()
+	);
+	assert_eq!(
+		tokio::fs::read(storage.path().join(sibling.file.simple().to_string()))
+			.await
+			.unwrap(),
+		b"keep-data"
+	);
+	let remaining: (i64, i64, i64, i64) = sqlx::query_as(
+		"SELECT (SELECT count(*) FROM workspaces WHERE id=$1), (SELECT count(*) FROM core_objects WHERE id=$2), (SELECT count(*) FROM workspaces WHERE id=$3), (SELECT count(*) FROM core_objects WHERE id=$4)",
+	)
+	.bind(target.workspace).bind(target.file).bind(sibling.workspace).bind(sibling.file)
+	.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(remaining, (0, 0, 1, 1));
+	let purged: bool =
+		sqlx::query_scalar("SELECT purged_at IS NOT NULL FROM node_deletions WHERE id=$1")
+			.bind(deletion)
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(purged);
+	let sampled_at: DateTime<Utc> = d.scalar("SELECT clock_timestamp()").await;
+	let remaining_bytes = aidash_server::apps::execution::services::storage_usage::samples(
+		&d.federation.store,
+		sampled_at,
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		remaining_bytes
+			.iter()
+			.find(|sample| sample.tenant == tenant)
+			.unwrap()
+			.bytes,
+		9
+	);
+	// The retained 13-byte historical sample must not become the current 9-byte
+	// footprint or switch to the successor account when its source Node is gone.
+	assert_retained(&d, &bob, &event, &periods, &frozen).await;
+	let audits: (i64, i64) = sqlx::query_as(
+		"SELECT (SELECT count(*) FROM nodes WHERE tenant=$1 AND name=$2), (SELECT count(*) FROM dashboard_administration_history WHERE tenant=$1 AND node=$2)",
+	)
+	.bind(&tenant).bind(&target.node)
+	.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(
+		audits.0, 1,
+		"physical purge retains its Node catalog until audit expiry"
+	);
+	assert!(
+		audits.1 > 0,
+		"actual lifecycle must leave administration audit: {audits:?}"
+	);
+
+	// Accelerated persisted audit time, not a real 365-day wall-clock wait.
+	// Only the completed Node's deadline changes; billing history stays intact.
+	sqlx::query(
+		"UPDATE node_deletions SET purged_at=clock_timestamp()-interval '366 days' WHERE id=$1",
+	)
+	.bind(deletion)
+	.execute(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	node_purge::erase_audit(&d.federation.store, 365)
+		.await
+		.unwrap();
+	for (table, key) in [
+		("nodes", "name"),
+		("node_deletions", "node"),
+		("dashboard_administration_history", "node"),
+	] {
+		let count: i64 = sqlx::query_scalar(&format!(
+			"SELECT count(*) FROM {table} WHERE tenant=$1 AND {key}=$2"
+		))
+		.bind(&tenant)
+		.bind(&target.node)
+		.fetch_one(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(count, 0, "expired {table} for the target Node");
+	}
+	let names: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM node_names WHERE tenant=$1 AND name=$2")
+			.bind(&tenant)
+			.bind(&target.node)
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(names, 1);
+	assert_retained(&d, &bob, &event, &periods, &frozen).await;
+
+	// Reconstruct serving state from fresh pools, Registry and Store, rather
+	// than reusing the old Meter or merely cloning an HTTP router. This is a
+	// model-neutral runtime reopen, not evidence of a provider/PodUID restart.
+	d = reopened(d).await;
+	assert_retained(&d, &bob, &event, &periods, &frozen).await;
+	d.federation
+		.store
+		.usage
+		.pod_time(event.clone())
+		.await
+		.unwrap();
+	assert_retained(&d, &bob, &event, &periods, &frozen).await;
+	let (status, nodes) = d
+		.call(
+			&alice,
+			"GET",
+			&format!("/api/tenants/{tenant}/nodes"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{nodes}");
+	assert_eq!(nodes.as_array().unwrap().len(), 1);
+	assert_eq!(nodes[0]["name"], sibling.node);
+	assert_eq!(nodes[0]["default"], true);
+	let (status, workspace) = d
+		.call(
+			&alice,
+			"GET",
+			&format!("/api/workspaces/{}", sibling.workspace),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(workspace["workspace"]["id"], json!(sibling.workspace));
+	assert_eq!(
+		tokio::fs::read(storage.path().join(sibling.file.simple().to_string()))
+			.await
+			.unwrap(),
+		b"keep-data"
+	);
 	d.finish().await;
 }
 

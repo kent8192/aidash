@@ -1,11 +1,11 @@
 //! Manual receiving trust uses the existing record's management authority.
-//! Deleted Node catalog records remain manageable here; absent catalog records
-//! require the exact retained-journal helper and are deliberately not inferred.
+//! Current authority also covers exact retained recovery registrations after
+//! finite Node catalog expiry; neither missing Nodes nor history imply access.
 use super::tenant_administration::TenantAdministrations;
 use crate::apps::identity::{
 	models::{AdministrationActor, AdministrationEvent},
 	oidc::BrowserOrigin,
-	repositories::{manual_keys as records, nodes},
+	repositories::{manual_keys as records, node_recovery, node_registrations, nodes},
 	serializers::manual_keys::{GraphKeySelector, KeyChange, ReceivingKeyStatus},
 };
 use crate::authorization::identity::Actor;
@@ -65,7 +65,7 @@ impl ManualKeys {
 				super::remote::deployment_administrator::tenant(tx, &tenant).await?;
 				let by = deployment_actor(tx, origin.as_ref()).await?;
 				nodes::lock_tenant(tx, &tenant).await?;
-				nodes::get(tx, &tenant, node.as_str()).await?;
+				registration_owner(tx, &f.config.deployment, &tenant, &node, &source).await?;
 				apply(tx, &owner, change.as_ref(), &by).await
 			}).await,
 			actor => TenantAdministrations { runtime: f.clone() }.run(actor, origin, &tenant, async |administrator| {
@@ -80,7 +80,7 @@ impl ManualKeys {
 						if writing { rules::NODE_REGISTRATION_UPDATE } else { rules::NODE_REGISTRATION_READ },
 						&resource, attributes).await?;
 					nodes::lock_tenant(tx, &tenant).await?;
-					nodes::get(tx, &tenant, node.as_str()).await?;
+					registration_owner(tx, &f.config.deployment, &tenant, &node, &source).await?;
 					apply(tx, &owner, change.as_ref(), &AdministrationActor::TenantAdministrator(administrator.clone())).await
 				}).await
 			}).await,
@@ -112,6 +112,37 @@ impl ManualKeys {
 				apply(tx, &owner, change.as_ref(), &by).await
 			})
 			.await
+	}
+}
+
+/// Only this manual control may use an exact retained dependency when the
+/// catalog has expired. The caller retains current policy and capacity locks.
+async fn registration_owner(
+	tx: &mut dyn TransactionExecutor,
+	deployment: &DeploymentId,
+	tenant: &str,
+	node: &NodeName,
+	source: &NodeAddress,
+) -> Result<()> {
+	match nodes::get(tx, tenant, node.as_str()).await {
+		Ok(_) => Ok(()),
+		Err(missing @ Error::NotFound(_)) => {
+			if node_registrations::name_tenant(tx, node.as_str())
+				.await?
+				.as_deref() != Some(tenant)
+			{
+				return Err(missing);
+			}
+			let required =
+				node_recovery::registration_sources_in(tx, deployment, tenant, node.as_str())
+					.await?;
+			if required.contains(&source.to_string()) {
+				Ok(())
+			} else {
+				Err(missing)
+			}
+		}
+		Err(error) => Err(error),
 	}
 }
 
