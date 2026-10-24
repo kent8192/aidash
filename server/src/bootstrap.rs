@@ -117,6 +117,7 @@ pub async fn initialize(
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
 	configure_tenant_secrets(&mut store);
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
+		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 		.with_tenant_secrets(store.tenant_secrets.is_some());
@@ -588,9 +589,10 @@ pub(crate) fn event_inbox(
 	})
 }
 
-/// HTTP and MCP tools never carry a Deployment secret (#296).
-pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::tools::HttpTools {
-	aidash_integrations::tools::HttpTools { client }
+/// HTTP and MCP tools never carry a Deployment secret (#296). They connect
+/// under the Keyless endpoint rule and its permitted origins (#376).
+pub(crate) fn tool_transport(store: &Store) -> aidash_integrations::tools::HttpTools {
+	aidash_integrations::tools::HttpTools::new(store.keyless.clone(), store.tool_clients.clone())
 }
 
 /// Discovery and worker retries share the native repository and the Deployment Key.
@@ -621,6 +623,14 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 		.and_then(|s| s.resolve().ok())
 		.map(|s| s.into_parts().0);
 	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
+	// Settings that fail to resolve leave no origins, so only public addresses pass.
+	.with_keyless_origins(
+		settings
+			.as_ref()
+			.and_then(|s| s.keyless_endpoints.origins().ok())
+			.map(aidash_application::provider_access::KeylessAccess::permitting)
+			.unwrap_or_default(),
+	)
 	.with_provider_credentials(
 		settings
 			.as_ref()
@@ -642,6 +652,7 @@ pub fn registry_validation_for(
 	store: &Store,
 ) -> aidash_application::registry::DefinitionValidation {
 	registry_validation()
+		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 		.with_tenant_secrets(store.tenant_secrets.is_some())

@@ -45,7 +45,8 @@ fn peer_runtime(
 		f.config.endpoint = format!("http://{}", fixed_listener.await.local_addr().unwrap());
 		f.registry =
 			aidash_server::registry::Registry::new(f.store.pool.clone(), &f.config.deployment)
-				.unwrap();
+				.unwrap()
+				.with_keyless_origins(f.store.keyless.clone());
 		owner
 	}
 	.boxed()

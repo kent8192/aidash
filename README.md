@@ -291,6 +291,8 @@ Direct OpenAI Platform API-key and Anthropic inference configurations are no lon
 
 **Upgrading past #256 (breaking):** a model or embedding configuration without `provider_credential` now connects only to public addresses. An existing one that points at a private, loopback or in-cluster server, such as a local Ollama, stops with an authority failure until a Deployment Administrator lists its origin in `[keyless_endpoints] permitted_private_origins`, `AIDASH_KEYLESS_PRIVATE_ORIGINS` or the Helm value `keylessEndpoints.permittedPrivateOrigins`.
 
+**Upgrading past #376 (breaking):** Tenant HTTP and MCP tool endpoints, and the remote MCP servers of Agent Plugins, now follow the same rule and share the same list. A tool registered at a private, loopback or in-cluster address is refused when it is called until a Deployment Administrator lists its origin, and registering one is refused with `TOOL_ENDPOINT_FORBIDDEN`. A host name needs HTTPS unless its origin is listed.
+
 The Compose Vite service proxies API requests to the backend container. When
 running Vite directly on the host, set `AIDASH_BACKEND` to the backend's URL; Vite
 defaults to `http://127.0.0.1:8080` outside Compose.
