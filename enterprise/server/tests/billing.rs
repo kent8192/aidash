@@ -36,6 +36,8 @@ struct Coverage {
 	consented_by_owner: Uuid,
 }
 
+type CoverageRow = (Uuid, Uuid, DateTime<Utc>, Option<DateTime<Utc>>, Uuid, Uuid);
+
 fn settings() -> Arc<Settings> {
 	Arc::new(Settings::from_value(sandbox_defaults()).unwrap())
 }
@@ -297,7 +299,7 @@ impl Cloud {
 	}
 
 	async fn coverage(&self, tenant: &str) -> Vec<Coverage> {
-		let rows: Vec<(Uuid, Uuid, DateTime<Utc>, Option<DateTime<Utc>>, Uuid, Uuid)> = sqlx::query_as("SELECT id, account_id, starts_at, ends_at, consented_by_administrator, consented_by_owner FROM billing_coverage_periods WHERE tenant = $1 ORDER BY starts_at")
+		let rows: Vec<CoverageRow> = sqlx::query_as("SELECT id, account_id, starts_at, ends_at, consented_by_administrator, consented_by_owner FROM billing_coverage_periods WHERE tenant = $1 ORDER BY starts_at")
 			.bind(tenant)
 			.fetch_all(self.federation.store.pool.fixture_driver())
 			.await
