@@ -308,6 +308,36 @@ class ChartsTest(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, values)
 
+    def test_deployment_settings_reach_every_role_and_restart_on_change(self):
+        descriptor = {'offering': 'dedicated', 'key': {'kms':
+            'projects/fixture/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/18446744073709551615'}}
+        values = dict(self.base, deployment=dict(self.base['deployment'], settings=descriptor))
+        objects = render(self.aidash, values)
+        for role in ('server', 'worker'):
+            self.assertEqual(json.loads(self.mounted(objects, role, 'AIDASH_DEPLOYMENT_SETTINGS')),
+                             {'deployment': descriptor})
+        # Adding the first key changes the startup checksum; later key replacement
+        # belongs to deployment-key rollover, not a chart upgrade.
+        without_key = render(self.aidash, dict(values, deployment=dict(values['deployment'],
+            settings={'offering': 'dedicated'})))
+        def checksum(rendered, role):
+            return select(rendered, 'Deployment', '-aidash-' + role)['spec']['template']['metadata']['annotations']['checksum/settings']
+
+        for role in ('server', 'worker'):
+            self.assertNotEqual(checksum(objects, role), checksum(without_key, role))
+        for invalid in ({'offering': 'enterprise'}, {'offering': 'dedicated', 'extra': True},
+                        {'offering': 'self-hosted', 'key': descriptor['key']},
+                        {'offering': 'cloud', 'key': {'kms': 'projects/p/cryptoKeyVersions/latest'}},
+                        {'offering': 'cloud', 'key': {'file': '/private/key'}},
+                        {'offering': 'dedicated', 'key': {'kms': descriptor['key']['kms'].rsplit('/', 1)[0] + '/18446744073709551616'}},
+                        {'offering': 'dedicated', 'key': {'kms': descriptor['key']['kms'].rsplit('/', 1)[0] + '/100000000000000000000'}},
+                        {'key': descriptor['key']}):
+            with self.subTest(invalid=invalid), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(self.base, deployment=dict(self.base['deployment'], settings=invalid)))
+        default = render(self.aidash, self.base)
+        env = select(default, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]['env']
+        self.assertNotIn('AIDASH_DEPLOYMENT_SETTINGS', [item['name'] for item in env])
+
     def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
         store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
         broker = {'endpoint': 'https://broker.run.app/api/v1', 'issuer': 'aidash-worker', 'audience': 'pr-1', 'kid': 'k1'}

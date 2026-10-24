@@ -79,15 +79,15 @@ federation = true
 # kms = "projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1"
 
 # Tenancy Rules: how Tenants come to exist and how people join them. The
-# Offering supplies each rule left out; these are the Self-hosted Offering's.
+# Offering supplies each rule left out; uncomment a rule to override it.
 # Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
 # one Tenant are never covered.
 [tenancy]
 # Create a Personal Tenant for each External Identity at its first sign-in.
-personal_tenants = false
+# personal_tenants = false
 # Let signed-in External Identities create Tenants. Deployment Administrators
 # always can, without limits.
-tenant_creation = false
+# tenant_creation = false
 creation_per_hour = 5
 creation_total = 20
 # How many Nodes a Tenant may hold (1 to 1000). A Tier may be stricter.
