@@ -21,7 +21,7 @@ use std::{
 };
 
 /// Immutable key source reference, never key material. File paths are absolute
-/// so a restarted worker and the operator process resolve the same source.
+/// so a restarted worker and the management command resolve the same source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DeploymentKeySource {

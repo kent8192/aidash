@@ -20,5 +20,15 @@ Tenant-shared Registry definitions, Provider Credentials, Tenant Secrets, user
 subjects and shared policy revisions survive. Registrations owned by another
 Tenant or Deployment stay under that receiver's control.
 
+Deletion records exact work identities in a durable cancellation queue in the
+same transaction. Restore retains that stop intent; mutable Run timestamps cannot
+stand in for an immutable deletion-time snapshot.
+
+A sibling Node's source-read provenance survives source purge. Source existence is
+checked when recording the read; a source lifetime foreign key must not make valid
+cross-Node reads retain source data forever or deadlock two purges. Existing
+source-deletion cache invalidation removes derived receipt bodies while retaining
+content-free read identities and unrelated sibling data.
+
 Decided in the 2026-10-23 design rounds for [Issue 388](https://github.com/kent8192/aidash/issues/388).
 See the [completion design](../decisions/issue-244-completion.md).

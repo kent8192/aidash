@@ -497,7 +497,7 @@ pub fn policy(deployment: &str) -> Value {
 	);
 	// Peer flows still name the executing Node by its Deployment id (#241).
 	let peer_agent = aidash_domain::agent_subject(deployment, "research", "1.0.0");
-	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"},peer_agent:{"kind":"agent"}},
+	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},peer_agent:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},
         "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
             // A wildcard never grants calling a Tenant's tool without approval.
             {"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})
@@ -1019,14 +1019,14 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			)
 			.await
 			.unwrap();
+		// Fixtures permit their origins on the Store after startup.
+		let registry = Registry::new(database.pool.clone(), &store.deployment)
+			.unwrap()
+			.with_keyless_origins(store.keyless.clone());
 		let mut federation = Federation {
 			sandbox: Default::default(),
 			store,
-			registry: Registry::new(
-				database.pool.clone(),
-				&aidash_domain::nodes::DeploymentId::parse("aidash://execution-test").unwrap(),
-			)
-			.unwrap(),
+			registry,
 			config: Config {
 				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")
 					.unwrap(),

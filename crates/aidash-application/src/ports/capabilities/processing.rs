@@ -7,7 +7,9 @@ use serde_json::Value;
 use tokio::sync::watch;
 use uuid::Uuid;
 #[async_trait]
-pub trait OperationProcessingRepository: OperationReconciliationRepository {
+pub trait OperationProcessingRepository:
+	OperationReconciliationRepository + super::pod_usage::PodUsageRepository
+{
 	async fn active_operations(&self) -> Result<Vec<Uuid>>;
 	async fn receipts(&self, after: Uuid) -> Result<Vec<Receipt>>;
 	async fn mark_acknowledged(&self, id: Uuid) -> Result<()>;

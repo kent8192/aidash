@@ -162,7 +162,7 @@ mod command_fixture;
 /// Each command is a new OS process over the same authoritative schedule.
 #[rstest]
 #[tokio::test]
-async fn operator_cli_generates_offline_and_persists_rollover_across_invocations(
+async fn deployment_key_cli_generates_offline_and_persists_rollover_across_invocations(
 	endpoint: EndpointFuture,
 ) {
 	fn command(

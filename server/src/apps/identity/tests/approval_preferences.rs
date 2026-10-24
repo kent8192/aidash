@@ -91,6 +91,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 fn user(group: &str) -> Subject {
 	Subject {
 		kind: SubjectKind::User,
+		node: None,
 		groups: [group.to_owned()].into(),
 		roles: Default::default(),
 		attributes: json!({}),

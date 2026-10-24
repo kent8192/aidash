@@ -2507,7 +2507,7 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 		.unwrap();
 	assert_eq!(
 		snapshot["bundle"]["subjects"]["carol"],
-		json!({"kind":"user","groups":["members"],"roles":[],"attributes":{},"enabled":true,"delegated_by":null})
+		json!({"kind":"user","node":null,"groups":["members"],"roles":[],"attributes":{},"enabled":true,"delegated_by":null})
 	);
 	let revision = snapshot["revision"].as_i64().unwrap();
 	let admin_identity = admin_mapping["identity_id"].as_str().unwrap();

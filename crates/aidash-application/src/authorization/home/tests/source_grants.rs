@@ -45,7 +45,7 @@ impl SourceRepository {
 			task: task(),
 			subjects: vec!["requester".into()],
 			bundle: serde_json::from_value(
-				json!({"tenant":"tenant","subjects":{executor:{"kind":"agent","delegated_by":null}}}),
+				json!({"tenant":"tenant","subjects":{executor:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}}),
 			)
 			.unwrap(),
 			current: Some(current),

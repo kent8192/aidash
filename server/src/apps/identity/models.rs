@@ -64,6 +64,8 @@ mod tenant_deletions;
 pub use tenant_deletions::TenantDeletion;
 mod tenants;
 pub use tenants::Tenant;
+mod node_deletions;
+pub use node_deletions::NodeDeletion;
 mod nodes;
 pub use nodes::{Node, NodeNameRoot};
 

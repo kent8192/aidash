@@ -49,7 +49,7 @@ async fn working_files_require_explicit_agent_settings(
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.0.1",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	common::replace_policy(&f.store, "acme", policy.clone()).await;
 	let (status, body) = request(
 		&app,
@@ -220,7 +220,9 @@ fn core_runtime(
 		let f = &mut owner.federation;
 		f.config.deployment = node.clone();
 		f.store.deployment = node.clone();
-		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
+		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node)
+			.unwrap()
+			.with_keyless_origins(f.store.keyless.clone());
 		let mut profile = if runner {
 			(*Runtime::from_env().unwrap().0).clone()
 		} else {
@@ -256,7 +258,7 @@ fn capability_fixture(
 let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"), "research", "1.1.0")] =
-		json!({"kind":"agent"});
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	let (status, response) = request(
 		&app,
@@ -1197,7 +1199,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"reader",
 		"1.1.0",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, task) = request(
 		&c.app,
@@ -1383,7 +1385,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.2.0",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
 		request(
 			&c.app,

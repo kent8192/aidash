@@ -111,6 +111,9 @@ impl PythonScope for Scope<'_> {
 		*record = domain(row);
 		Ok(())
 	}
+	async fn confirm_stopped(&mut self, record: &Record) -> Result<()> {
+		confirm_stopped(self.store.ok_or_else(missing)?, &mut self.access.tx, record).await
+	}
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
 		sessions::cached(self.access, key, digest)
 			.await
@@ -368,6 +371,9 @@ impl HeapMaintenance for Maintenance<'_> {
 		*record = domain(row);
 		Ok(())
 	}
+	async fn confirm_stopped(&mut self, record: &Record) -> Result<()> {
+		confirm_stopped(self.store, &mut self.tx, record).await
+	}
 	async fn finish(self: Box<Self>, result: Result<bool>) -> Result<()> {
 		match result {
 			Ok(true) => self.tx.commit().await.map_err(Into::into),
@@ -375,4 +381,87 @@ impl HeapMaintenance for Maintenance<'_> {
 			Err(error) => Err(error),
 		}
 	}
+}
+
+/// Both release and revoked/idle maintenance hold Area then session-record locks.
+/// A session may contain multiple cell epochs in one physical generation. Keep
+/// each command receipt intact and record only execution-writer termination;
+/// allocation collectors and their billing journal have an independent lifetime.
+async fn confirm_stopped(
+	store: &Store,
+	tx: &mut crate::database::native::Transaction,
+	record: &Record,
+) -> Result<()> {
+	use reinhardt::query::{BinOper, types::PgBinOper};
+	// An initial session may never have admitted a cell; there is no receipt.
+	if record.data["operation_id"].is_null() {
+		return Ok(());
+	}
+	let instance = record.data["instance"].as_str().ok_or(Error::Forbidden)?;
+	let session = record.data["session_id"].as_str().ok_or(Error::Forbidden)?;
+	let health = operations::remote(store, reqwest::Method::GET, "/v1/health", None).await?;
+	// A replacement journal can answer "absent" to stop. That is not proof
+	// about the saved writer, so retain its only session binding for retry.
+	if health["instance"].as_str() != Some(instance) {
+		return Err(Error::Conflict("PYTHON_RUNNER_CHANGED".into()));
+	}
+	let id: Uuid = serde_json::from_value(record.data["operation_id"].clone())?;
+	let anchor: operations::Operation = crate::database::native::query_as(
+		&sessions::select("core_operations")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut **tx)
+	.await?;
+	if anchor.tenant != record.tenant
+		|| Some(anchor.area_id) != record.area_id
+		|| anchor.kind != "code_interpreter"
+		|| anchor.input["session_id"].as_str() != Some(session)
+		|| anchor
+			.runner_instance
+			.as_deref()
+			.is_some_and(|saved| saved != instance)
+		|| (anchor.runner_instance.is_none()
+			&& anchor.state != "prepared"
+			&& anchor.result["effects_may_have_occurred"] != false)
+	{
+		return Err(Error::Conflict("PYTHON_OPERATION_CHANGED".into()));
+	}
+	crate::database::native::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value_expr(
+				Alias::new("result"),
+				Expr::col(Alias::new("result")).binary(
+					BinOper::PgOperator(PgBinOper::Concatenate),
+					Expr::value(json!({"termination_confirmed":true})),
+				),
+			)
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(record.tenant.clone())))
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(anchor.area_id)))
+			.and_where(Expr::col(Alias::new("kind")).eq("code_interpreter"))
+			.and_where(Expr::col(Alias::new("generation")).eq(anchor.generation))
+			.and_where(Expr::col(Alias::new("epoch")).lte(anchor.epoch))
+			.and_where(Expr::col(Alias::new("runner_instance")).eq(instance))
+			.and_where(
+				Expr::col(Alias::new("input"))
+					.binary(
+						BinOper::PgOperator(PgBinOper::JsonGetAsText),
+						Expr::value("session_id"),
+					)
+					.eq(session),
+			)
+			.and_where(Expr::col(Alias::new("state")).is_in([
+				"completed",
+				"cancelled",
+				"failed",
+				"withdrawn",
+				"uncertain",
+			]))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	Ok(())
 }

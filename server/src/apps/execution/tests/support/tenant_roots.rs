@@ -338,7 +338,7 @@ pub async fn approve_agent_on(
 	let subject = aidash_server::domain::qualified_agent(node, &agent.id, &agent.version);
 	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
 	if bundle["subjects"].get(&subject).is_none() {
-		bundle["subjects"][&subject] = serde_json::json!({"kind":"agent"});
+		bundle["subjects"][&subject] = serde_json::json!({"kind":"agent", "node": node.node});
 		authorization
 			.replace(
 				tenant,

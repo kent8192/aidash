@@ -49,10 +49,23 @@ impl OperationProcessingRepository for Repository<'_> {
 						.columns(["id", "digest", "runner_instance"].map(Alias::new))
 						.from(Alias::new("core_operations"))
 						.and_where(Expr::cust("result->'runner_acknowledged' = 'false'::jsonb"))
+						.and_where(
+							Expr::col(Alias::new("runner_instance"))
+								.is_not_null()
+								.or(Expr::col(Alias::new("result"))
+									.binary(
+										reinhardt::query::BinOper::PgOperator(
+											reinhardt::query::types::PgBinOper::JsonGetByIndex,
+										),
+										Expr::value("effects_may_have_occurred"),
+									)
+									.eq(Expr::value(serde_json::json!(true)))),
+						)
 						.and_where(Expr::col(Alias::new("state")).is_in([
 							"completed",
 							"cancelled",
 							"failed",
+							"withdrawn",
 						]))
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),

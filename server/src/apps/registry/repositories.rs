@@ -33,9 +33,19 @@ pub struct Registry {
 	deployment: aidash_domain::nodes::DeploymentId,
 	provider_credentials: bool,
 	plan_connections: bool,
+	/// The Deployment's permitted private origins; absent means the settings'.
+	keyless: Option<aidash_application::provider_access::KeylessAccess>,
 	tenant_secrets: bool,
 }
 impl Registry {
+	/// Share the Store's permitted origins, which tests extend after startup.
+	pub fn with_keyless_origins(
+		mut self,
+		origins: aidash_application::provider_access::KeylessAccess,
+	) -> Self {
+		self.keyless = Some(origins);
+		self
+	}
 	/// Whether definitions may name Tenant Secrets (ADR 0051).
 	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {
 		self.tenant_secrets = enabled;
@@ -51,10 +61,14 @@ impl Registry {
 		self
 	}
 	pub(crate) fn validation(&self) -> aidash_application::registry::DefinitionValidation {
-		crate::bootstrap::registry_validation()
+		let validation = crate::bootstrap::registry_validation()
 			.with_provider_credentials(self.provider_credentials)
 			.with_plan_connections(self.plan_connections)
-			.with_tenant_secrets(self.tenant_secrets)
+			.with_tenant_secrets(self.tenant_secrets);
+		match &self.keyless {
+			Some(origins) => validation.with_keyless_origins(origins.clone()),
+			None => validation,
+		}
 	}
 	/// Writes the built-in definitions into one Tenant's Registry, as Tenant
 	/// creation does.
@@ -105,6 +119,7 @@ impl Registry {
 			deployment: deployment.clone(),
 			provider_credentials: false,
 			plan_connections: false,
+			keyless: None,
 			tenant_secrets: false,
 		})
 	}

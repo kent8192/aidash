@@ -16,6 +16,12 @@ pub struct AuthorizationPeerGraphGrants {
 	/// The viewer Deployment's key, pinned like a Node Registration pins one.
 	#[field(field_type = "text")]
 	pub source_key_id: String,
+	/// Receiver-local current/retiring/quarantined authentication state.
+	#[field(field_type = "text")]
+	pub source_keys: String,
+	/// Authentication generation; independent of authorization revision.
+	#[field(default = 1)]
+	pub keys_revision: i64,
 	#[field(field_type = "text")]
 	pub source_public_key_pem: String,
 	#[field]

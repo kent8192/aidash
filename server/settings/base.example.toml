@@ -96,6 +96,8 @@ creation_total = 20
 invitations = true
 # Days a deleted Tenant stays restorable before its data is purged (1 to 90).
 deletion_grace_days = 30
+# Node-specific grace is fixed at deletion; retained files remain billable.
+node_deletion_grace_days = 30
 # Days a purged Tenant's audit history (administration history, authorization
 # decisions, policy revisions, catalog history, Evidence Revocations and
 # Retention Rule history) is kept before it is deleted (1 to 3650).
@@ -118,8 +120,9 @@ enabled = false
 # session_idle_seconds = 1800
 
 # Private origins that Tenants' Keyless model and embedding endpoints (those
-# without provider_credential) and Workbench test endpoints may reach. Every
-# other such endpoint may connect only to public addresses. Omit default ports.
+# without provider_credential), HTTP and MCP tool endpoints, Agent Plugin remote
+# MCP servers and Workbench test endpoints may reach. Every other such endpoint
+# may connect only to public addresses. Omit default ports.
 [keyless_endpoints]
 permitted_private_origins = []
 # permitted_private_origins = ["http://ollama.lan:11434"]
