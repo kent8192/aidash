@@ -2953,12 +2953,14 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 					"0040_node_deletions"
 						| "0041_node_deletions_state"
 						| "0042_node_deletions_row_level_security"
+						| "0043_node_administration_target"
+						| "0044_node_administration_target_state"
 				)
 		})
 		.cloned()
 		.collect();
 	node_migrations.sort_by(|left, right| left.name.cmp(&right.name));
-	assert_eq!(node_migrations.len(), 3);
+	assert_eq!(node_migrations.len(), 5);
 
 	let logical = build_state_from_files(&source).await.unwrap();
 	let registered = ProjectState::from_global_registry();
@@ -2977,11 +2979,13 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 			})
 			.collect::<BTreeMap<_, _>>()
 	};
-	assert_eq!(
-		columns(logical.find_model_by_table(table).unwrap()),
-		columns(registered.find_model_by_table(table).unwrap()),
-		"generated logical migration state must match the production ORM schema"
-	);
+	for table in [table, "dashboard_administration_history"] {
+		assert_eq!(
+			columns(logical.find_model_by_table(table).unwrap()),
+			columns(registered.find_model_by_table(table).unwrap()),
+			"generated logical migration state must match the production ORM schema for {table}"
+		);
+	}
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for pass in 0..2 {
 		let policy: (bool, bool) = sqlx::query_as("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass('public.node_deletions')")
@@ -3036,4 +3040,78 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 			assert_eq!(recorded_keys(&fixture.connection).await, before);
 		}
 	}
+}
+
+/// The audit target survives physical purge and cannot name another Tenant's
+/// Node. HTTP history assertions cannot establish these database constraints.
+#[rstest]
+#[tokio::test]
+async fn node_administration_audit_preserves_permanent_tenant_ownership(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+		.await
+		.unwrap();
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("sibling").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	let name = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let insert = "INSERT INTO dashboard_administration_history (id,occurred_at,action,actor_kind,tenant,node) VALUES ($1,clock_timestamp(),'node.purge','deployment_administrator',$2,$3)";
+	let wrong_owner = sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind("sibling")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		wrong_owner.as_database_error().unwrap().code().as_deref(),
+		Some("23503")
+	);
+	let no_owner = sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind(Option::<String>::None)
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		no_owner.as_database_error().unwrap().code().as_deref(),
+		Some("23514")
+	);
+	let id = Uuid::new_v4();
+	sqlx::query(insert)
+		.bind(id)
+		.bind("acme")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let retained: (String, String) =
+		sqlx::query_as("SELECT tenant,node FROM dashboard_administration_history WHERE id=$1")
+			.bind(id)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(retained, ("acme".to_owned(), name.clone()));
+	let permanent_claim = sqlx::query("DELETE FROM node_names WHERE name=$1")
+		.bind(name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		permanent_claim
+			.as_database_error()
+			.unwrap()
+			.code()
+			.as_deref(),
+		Some("23503")
+	);
+	pool.close().await;
 }

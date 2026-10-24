@@ -144,20 +144,6 @@ pub(crate) async fn list(tx: &mut dyn TransactionExecutor, tenant: &str) -> Resu
 		.collect()
 }
 
-pub(crate) async fn count(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<u32> {
-	let (sql, values) = Query::select()
-		.expr_as(Expr::cust("count(*)"), Alias::new("total"))
-		.from(Alias::new(NodeRow::table_name()))
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-		.build(PostgresQueryBuilder);
-	let total: i64 = tx
-		.fetch_one(&sql, convert_values(values))
-		.await?
-		.get("total")
-		.map_err(reinhardt::core::exception::Error::from)?;
-	Ok(u32::try_from(total).unwrap_or(u32::MAX))
-}
-
 async fn one(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -200,6 +186,7 @@ pub(crate) async fn relabel(
 	name: &str,
 	label: &str,
 ) -> Result<Node> {
+	get_live(tx, tenant, name).await?;
 	let (sql, values) = Query::update()
 		.table(Alias::new(NodeRow::table_name()))
 		.value(Alias::new("label"), Expr::value(label))
@@ -284,4 +271,50 @@ pub(crate) async fn count_live(tx: &mut dyn TransactionExecutor, tenant: &str) -
 		.get("total")
 		.map_err(reinhardt::core::exception::Error::from)?;
 	Ok(u32::try_from(total).unwrap_or(u32::MAX))
+}
+
+/// A bounded management page includes retained deleted Nodes.
+pub(crate) async fn list_management(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	limit: u64,
+	offset: u64,
+) -> Result<Vec<Node>> {
+	let (sql, values) = Query::select()
+		.columns(COLUMNS.map(Alias::new))
+		.from(Alias::new(NodeRow::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.order_by(Alias::new("is_default"), reinhardt::query::Order::Desc)
+		.order_by(Alias::new("created_at"), reinhardt::query::Order::Asc)
+		.order_by(Alias::new("name"), reinhardt::query::Order::Asc)
+		.limit(limit)
+		.offset(offset)
+		.build(PostgresQueryBuilder);
+	tx.fetch_all(&sql, convert_values(values))
+		.await?
+		.iter()
+		.map(node_of)
+		.collect()
+}
+
+/// The caller holds the Tenant capacity lock and its policy lock.
+pub(crate) async fn set_default(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	name: &str,
+) -> Result<Node> {
+	get_live(tx, tenant, name).await?;
+	for (condition, value) in [
+		(Expr::col("is_default").eq(Expr::value(true)), false),
+		(Expr::col("name").eq(Expr::value(name)), true),
+	] {
+		let (sql, values) = Query::update()
+			.table(Alias::new(NodeRow::table_name()))
+			.value(Alias::new("is_default"), Expr::value(value))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(condition)
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+	}
+	get_live(tx, tenant, name).await
 }

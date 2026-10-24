@@ -37,8 +37,10 @@ pub const NODE_READ: &str = "node.read";
 pub const NODE_USE: &str = "node.use";
 /// Creating a Node, within "Nodes per Tenant".
 pub const NODE_CREATE: &str = "node.create";
-/// Changing a Node's label.
+/// Changing a Node's label or default selection.
 pub const NODE_UPDATE: &str = "node.update";
+/// Deleting and restoring Nodes, and reading their deletion management view.
+pub const NODE_DELETE: &str = "node.delete";
 /// Listing the Node Registrations of one of the Tenant's Nodes.
 pub const NODE_REGISTRATION_READ: &str = "node_registration.read";
 /// Registering a Node of another Tenant at one of the Tenant's Nodes, or
@@ -60,7 +62,7 @@ pub const SECRET_MANAGE: &str = "secret.manage";
 pub const SECRET_USE: &str = "secret.use";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 25] = [
+pub const ACTIONS: [&str; 26] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -80,6 +82,7 @@ pub const ACTIONS: [&str; 25] = [
 	PEER_MAPPING_UPDATE,
 	NODE_CREATE,
 	NODE_UPDATE,
+	NODE_DELETE,
 	NODE_REGISTRATION_READ,
 	NODE_REGISTRATION_UPDATE,
 	TEST_LIMITS_UPDATE,
@@ -135,7 +138,7 @@ pub fn resource_kind(action: &str) -> &'static str {
 		DECISION_READ => "decision",
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
-		NODE_READ | NODE_USE | NODE_UPDATE => "node",
+		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE => "node",
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
 		TEST_PROFILE_UPDATE => "test_profile",
