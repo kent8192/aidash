@@ -467,7 +467,10 @@ Replace the example timestamp with the observed fault time. The helper refuses
 to delete an existing ledger, reconstructs behind a barrier, saves the all-bank
 report, resumes, verifies the same epoch and open serving state, and measures
 RTO from the fault. Interrupted recovery keeps the original clock and report;
-rerun with the same evidence and omit `--fault-at`. A missed two-hour target is
+rerun with the same evidence and omit `--fault-at`. If Resume already completed,
+the helper verifies the matching Home, epoch and immediate successor head before
+finishing the receipt without resubmitting the completed report. Later writes or
+a new restore prevent that completion shortcut. A missed two-hour target is
 recorded as a failed drill even if recovery eventually succeeds.
 
 The receipt supplements the required image/revision, canary, object-generation,

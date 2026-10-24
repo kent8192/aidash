@@ -52,6 +52,19 @@ def command(binary, directory, action, *options):
     return json.loads(result.stdout) if result.stdout.lstrip().startswith("{") else None
 
 
+def resumed_reconstruction(status, receipt):
+    """Recognize only the Resume immediately following this saved reconciliation."""
+    report = receipt["reconciliation"]
+    before = receipt["before"]
+    head = (status or {}).get("head") or {}
+    return bool(status and status.get("protected") is True and status.get("serving") is True
+                and status.get("home") == report.get("home") == before.get("home")
+                and status.get("epoch") == report.get("epoch") == before.get("epoch")
+                and status.get("restoring") is False and head.get("recovering") is False
+                and report["head"].get("recovering") is True
+                and head.get("sequence") == report["head"]["sequence"] + 1)
+
+
 def run(args):
     directory = args.directory.resolve()
     evidence = args.evidence.resolve()
@@ -91,13 +104,13 @@ def run(args):
         if receipt["reconciliation"]["epoch"] != receipt["before"]["epoch"]:
             raise ValueError("reconstructed epoch differs from the recorded Home; do not resume")
         save(evidence, receipt)
-    command(args.binary, directory, "resume", "--writers-fenced", "--report", str(report))
     after = command(args.binary, directory, "status", "--json")
+    if not resumed_reconstruction(after, receipt):
+        command(args.binary, directory, "resume", "--writers-fenced", "--report", str(report))
+        after = command(args.binary, directory, "status", "--json")
     complete = datetime.now(timezone.utc)
     seconds = (complete - datetime.fromisoformat(receipt["fault_at"])).total_seconds()
-    passed = (after["epoch"] == receipt["before"]["epoch"] and after.get("home") == receipt["before"].get("home")
-              and after.get("serving") and not after["restoring"] and not after["head"]["recovering"]
-              and after["head"]["sequence"] > receipt["before"]["head"]["sequence"] and seconds <= 7200)
+    passed = resumed_reconstruction(after, receipt) and seconds <= 7200
     receipt.update(completed_at=complete.isoformat(), elapsed_from_fault_seconds=seconds, after=after, passed=bool(passed))
     save(evidence, receipt)
     if not passed:
