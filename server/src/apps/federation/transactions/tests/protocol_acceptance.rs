@@ -2123,3 +2123,263 @@ fn event_streams() -> aidash_server::sse::Service {
 		..Default::default()
 	})
 }
+
+/// Closing both Nodes preserves only the immutable, already-decided obligation.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_closure_preserves_decided_recovery_but_denies_new_or_misbound_requests(
+	#[future(awt)] pair: Pair,
+) {
+	async fn signed(from: &Node, sender: &str, to: &Node, path: &str, manifest: &Manifest) -> u16 {
+		let body = serde_json::to_vec(manifest).unwrap();
+		let token = common::peering::token(
+			from.f.config.deployment_key.as_deref().unwrap(),
+			from.f.config.deployment.as_str(),
+			sender,
+			&to.address,
+			"",
+			("POST", path, &body),
+		)
+		.await;
+		let mut request = from
+			.f
+			.client
+			.post(format!("{}/federation/v0.1{path}", to.f.config.endpoint))
+			.header("content-type", "application/json")
+			.body(body);
+		for (name, value) in common::peering::peer_headers(&token) {
+			request = request.header(name, value);
+		}
+		request.send().await.unwrap().status().as_u16()
+	}
+	let (mut a, mut b, manifest, wa, wb) = pair;
+	let mut siblings = Vec::new();
+	for node in [&a, &b] {
+		let (status, sibling) = node
+			.request(
+				reqwest::Method::POST,
+				"/api/tenants/acme/nodes",
+				Some(json!({"label":"Recovery sibling"})),
+			)
+			.await;
+		assert_eq!(status, 201, "{sibling}");
+		let sibling = sibling["name"].as_str().unwrap().to_owned();
+		assert_eq!(
+			node.request(
+				reqwest::Method::POST,
+				&format!("/api/tenants/acme/nodes/{sibling}/default"),
+				None
+			)
+			.await
+			.0,
+			200
+		);
+		siblings.push(
+			node.f
+				.config
+				.deployment
+				.node(aidash_domain::nodes::NodeName::parse(&sibling).unwrap())
+				.to_string(),
+		);
+	}
+	// An independently registered, correctly signed caller still cannot finish another Node's work.
+	let mut registration = common::peering::registration(
+		&siblings[0],
+		Some((&a.f.config.endpoint, &common::peering::key_id(&a.f))),
+	);
+	registration["atomic_transactions"] = json!(true);
+	assert_eq!(
+		b.request(
+			reqwest::Method::POST,
+			&common::peering::registration_path("acme", b.node_address().node.as_str()),
+			Some(registration)
+		)
+		.await
+		.0,
+		200
+	);
+	coordinator::submit(&a.f, &manifest).await.unwrap();
+	steps(&a, manifest.id, 5).await;
+	b.stop().await;
+	steps(&a, manifest.id, 2).await;
+	assert_eq!(
+		coordinator::status(&a.f, manifest.id)
+			.await
+			.unwrap()
+			.decision
+			.as_deref(),
+		Some("COMMIT")
+	);
+	b.restart().await;
+	for node in [&a, &b] {
+		let name = node.node_address().node;
+		let (status, value) = node
+			.request(
+				reqwest::Method::POST,
+				&format!("/api/tenants/acme/nodes/{name}/deletion"),
+				Some(json!({"confirmation":name})),
+			)
+			.await;
+		assert_eq!(status, 200, "{value}");
+	}
+	a.restart().await;
+	b.restart().await;
+	let done = complete(&a, manifest.id).await;
+	assert_eq!(done.decision.as_deref(), Some("COMMIT"));
+	for (node, workspace) in [(&a, wa), (&b, wb)] {
+		assert_eq!(
+			node.f
+				.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.revision,
+			1
+		);
+	}
+	let mut fresh = manifest.clone();
+	fresh.id = Uuid::new_v4();
+	assert_eq!(
+		signed(&a, &a.address, &b, "/transactions/reserve", &fresh).await,
+		401,
+		"a closed Node cannot reserve new work"
+	);
+	assert_eq!(
+		signed(&a, &a.address, &b, "/transactions/finish", &fresh).await,
+		401,
+		"an unrelated transaction has no durable recovery proof"
+	);
+	let mut wrong = manifest.clone();
+	wrong.deadline += chrono::Duration::seconds(1);
+	assert_eq!(
+		signed(&a, &a.address, &b, "/transactions/finish", &wrong).await,
+		401,
+		"the saved manifest is immutable"
+	);
+	assert_eq!(
+		signed(&a, &siblings[0], &b, "/transactions/finish", &manifest).await,
+		401,
+		"registration and a valid signature cannot replace the original coordinator"
+	);
+	a.cleanup().await;
+	b.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_closure_fences_a_participant_snapshot_taken_before_deletion(
+	#[future(awt)] pair: Pair,
+) {
+	use reinhardt::query::{Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query};
+	use std::time::Duration as Wait;
+	let (a, b, manifest, _, _) = pair;
+	let (status, sibling) = a
+		.request(
+			reqwest::Method::POST,
+			"/api/tenants/acme/nodes",
+			Some(json!({"label":"Snapshot sibling"})),
+		)
+		.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling = sibling["name"].as_str().unwrap();
+	assert_eq!(
+		a.request(
+			reqwest::Method::POST,
+			&format!("/api/tenants/acme/nodes/{sibling}/default"),
+			None
+		)
+		.await
+		.0,
+		200
+	);
+
+	// Reserve has read the participant in its SERIALIZABLE snapshot before it
+	// waits for this gate. The fixture holds no policy or Node authority locks.
+	let pool = a.f.store.control_pool.fixture_driver();
+	let mut barrier = pool.begin().await.unwrap();
+	let blocker: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("pg_backend_pid()"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *barrier)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("singleton"))
+			.from(Alias::new("atomic_gate"))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *barrier)
+	.await
+	.unwrap();
+	let attempt = tokio::spawn({
+		let f = a.f.clone();
+		let caller = a.address.clone();
+		let manifest = manifest.clone();
+		async move { participant::reserve(&f, None, &caller, &manifest).await }
+	});
+	let waiting = Query::select()
+		.column(Alias::new("pid"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(Expr::col("datname").eq(Expr::cust("current_database()")))
+		.and_where(Expr::col("query").like("%atomic_gate%"))
+		.and_where(SimpleExpr::CustomWithExpr(
+			"? = ANY(pg_blocking_pids(pid))".to_owned(),
+			vec![Expr::value(blocker).into()],
+		))
+		.limit(1)
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(Wait::from_secs(5), async {
+		loop {
+			if sqlx::query_scalar::<_, i32>(&waiting)
+				.fetch_optional(pool)
+				.await
+				.unwrap()
+				.is_some()
+			{
+				break;
+			}
+			assert!(
+				!attempt.is_finished(),
+				"reserve must reach the snapshot barrier"
+			);
+			tokio::time::sleep(Wait::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("reserve did not reach its gate after establishing a snapshot");
+	let name = a.node_address().node;
+	let deletion_path = format!("/api/tenants/acme/nodes/{name}/deletion");
+	let deleted = tokio::time::timeout(
+		Wait::from_secs(5),
+		a.request(
+			reqwest::Method::POST,
+			&deletion_path,
+			Some(json!({"confirmation":name})),
+		),
+	)
+	.await
+	.expect("Node deletion must not deadlock behind the waiting admission");
+	assert_eq!(deleted.0, 200, "{}", deleted.1);
+	barrier.rollback().await.unwrap();
+	let admitted = tokio::time::timeout(Wait::from_secs(5), attempt)
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(
+		admitted.is_err(),
+		"a pre-deletion snapshot admitted new work: {admitted:?}"
+	);
+	assert!(
+		matches!(
+			participant::reserve(&a.f, None, &a.address, &manifest).await,
+			Err(Error::Forbidden)
+		),
+		"a fresh retry must observe the closed Node"
+	);
+	a.cleanup().await;
+	b.cleanup().await;
+}

@@ -131,6 +131,17 @@ pub async fn accept(
 	};
 	// 5. Within a Tenant, no registration or mapping: the policy decides.
 	if sender_tenant.as_ref() == Some(&tenant) {
+		require_node_authority(
+			repository,
+			&tenant,
+			&receiver,
+			&sender,
+			&subject,
+			sender_tenant.as_ref(),
+			true,
+			request,
+		)
+		.await?;
 		if subject.is_empty() {
 			return Ok(Admitted {
 				tenant,
@@ -158,7 +169,6 @@ pub async fn accept(
 	let registration = repository
 		.registration(&tenant, &receiver.node, &sender)
 		.await?
-		.filter(|registration| registration.enabled)
 		.ok_or(Error::Unauthorized)?;
 	let owner = ReceivingKeyOwner::Registration {
 		tenant: tenant.clone(),
@@ -196,6 +206,17 @@ pub async fn accept(
 		}
 		_ => return Err(Error::Unauthorized),
 	}
+	let live_authority = require_node_authority(
+		repository,
+		&tenant,
+		&receiver,
+		&sender,
+		&subject,
+		sender_tenant.as_ref(),
+		registration.enabled,
+		request,
+	)
+	.await?;
 	let acting = if subject.is_empty() {
 		Acting::Node
 	} else {
@@ -212,9 +233,10 @@ pub async fn accept(
 		}
 	};
 	if let Some((keys_revision, keys)) = advancement {
-		if !repository
-			.advance_keys(&owner, keys_revision, registration.revision, &keys)
-			.await?
+		if !live_authority
+			|| !repository
+				.advance_keys(&owner, keys_revision, registration.revision, &keys)
+				.await?
 		{
 			return Err(Error::Unauthorized);
 		}
@@ -225,6 +247,37 @@ pub async fn accept(
 		sender,
 		acting,
 	})
+}
+
+/// Run only after the complete cryptographic request binding has been verified.
+/// `false` means exact durable recovery, and must never authorize ordinary effects
+/// or a normal trust CAS. A recovery CAS must revalidate the same proof in its transaction.
+#[allow(clippy::too_many_arguments)] // Explicit verified identity and request bindings.
+pub async fn require_node_authority(
+	repository: &dyn InboundRepository,
+	tenant: &TenantName,
+	receiver: &NodeAddress,
+	sender: &NodeAddress,
+	subject: &str,
+	sender_tenant: Option<&TenantName>,
+	registration_enabled: bool,
+	request: &RequestDigest<'_>,
+) -> Result<bool> {
+	let receiver_live = repository.node_live(tenant, &receiver.node).await?;
+	let sender_live = match sender_tenant {
+		Some(holder) => repository.node_live(holder, &sender.node).await?,
+		None => true,
+	};
+	if registration_enabled && receiver_live && sender_live {
+		return Ok(true);
+	}
+	if repository
+		.closed_node_request(tenant, receiver, sender, subject, request)
+		.await?
+	{
+		return Ok(false);
+	}
+	Err(Error::Unauthorized)
 }
 
 /// A Deployment Administrator of another Deployment reading a Tenant's graph
