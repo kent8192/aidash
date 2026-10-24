@@ -16,12 +16,14 @@ use crate::apps::identity::serializers::tenants::{
 use crate::apps::identity::services::http_auth::bearer;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::authorization::{access::NativeAccess, identity::Actor};
+use crate::database::native::Pool;
 use crate::federation::Federation;
 use crate::http::validate;
 use crate::{Error, Result};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::identity::tenancy::{self, TENANT_UPDATE};
 use aidash_domain::policy::Resource;
+use aidash_domain::tenancy::TenantName;
 use http::{HeaderMap, Method};
 use reinhardt::db::orm::Model as _;
 use reinhardt::injectable;
@@ -35,6 +37,14 @@ pub struct Tenants {
 #[injectable(scope = "request")]
 pub async fn provide(#[inject] runtime: Federation) -> Tenants {
 	Tenants { runtime }
+}
+
+/// Tenant identities for Deployment usage sampling, including retained roots.
+/// The usage adapter owns the exemption for deleted Tenants.
+pub(crate) async fn names_for_usage(pool: &Pool) -> Result<Vec<TenantName>> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::UsageSampling);
+	pool.atomic(&scope, async |tx| Tenant::names(tx).await)
+		.await
 }
 
 impl From<Created> for CreatedTenant {

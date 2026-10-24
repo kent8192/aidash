@@ -35,12 +35,7 @@ pub async fn samples(store: &Store, now: DateTime<Utc>) -> Result<Vec<StorageSam
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::UsageSampling);
 	// A physical purge removes the last source row, but the active Tenant still
 	// needs a zero sample to replace its previous nonzero usage.
-	let tenants = store
-		.pool
-		.atomic(&scope, async |tx| {
-			crate::apps::identity::models::Tenant::names(tx).await
-		})
-		.await?;
+	let tenants = crate::apps::identity::services::tenants::names_for_usage(&store.pool).await?;
 	let mut totals: BTreeMap<String, u64> = tenants
 		.into_iter()
 		.map(|tenant| (tenant.into_inner(), 0))
