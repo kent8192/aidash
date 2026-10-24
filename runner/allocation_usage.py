@@ -165,7 +165,7 @@ class AllocationJournal:
 
     def quarantine_allocation(self, path, allocation, reason):
         allocation.update(quarantined=True, pending_reason=reason,
-                          cleanup_blocker='provider evidence quarantined; recovery by the runner maintainer required')
+                          cleanup_blocker='provider evidence quarantined; manual recovery required')
         save(path, allocation)
         self.allocation_incomplete.add(allocation['allocation_id'])
         self.allocation_diagnostic(allocation)
@@ -339,7 +339,7 @@ class AllocationJournal:
                         if not allocation.get('receipt'):
                             allocation['pending_reason'] = 'allocation provider identity/evidence lost'
                             allocation['evidence_lost'] = True
-                            allocation['cleanup_blocker'] = 'provider Pod absent or replaced; retained evidence requires recovery by the runner maintainer'
+                            allocation['cleanup_blocker'] = 'provider Pod absent or replaced; retained evidence requires manual recovery'
                             save(path, allocation)
                             self.allocation_incomplete.add(uid)
                             self.allocation_diagnostic(allocation)

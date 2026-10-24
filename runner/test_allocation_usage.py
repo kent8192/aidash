@@ -492,7 +492,7 @@ class AllocationUsageTest(unittest.TestCase):
                 with self.assertRaises(Rejected):
                     self.runner.allocation_receipts()
 
-    def test_marker_loss_between_listing_and_ack_retains_the_receipt_until_runner_maintainer_recovery(self):
+    def test_marker_loss_between_listing_and_ack_retains_the_receipt_until_manual_recovery(self):
         self.runner.observe_allocation(self.record, self.pod)
         self.finish()
         [receipt] = self.runner.allocation_receipts()['receipts']

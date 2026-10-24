@@ -308,7 +308,7 @@ The root `allocation-journal` initialization anchor must stay with `instance` an
 the `allocations/` subjournal. An initialized root never recreates missing journal
 state, including an empty restored directory; restore a verified complete journal
 before restarting. Contradictory provider evidence is durably quarantined: its
-original immutable receipt remains available for recovery by the runner maintainer, but delivery,
+original immutable receipt remains available for manual recovery, but delivery,
 ACK and finalizer release stay blocked until that state is explicitly recovered.
 Structured `allocation_usage` diagnostics include the allocation and runner IDs,
 pending evidence/cleanup reason, observation age and observation/cleanup attempts.
