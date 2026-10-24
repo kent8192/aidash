@@ -662,22 +662,45 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 	let report = result.unwrap();
 	assert_eq!(report.restored, 1);
 	assert!(report.head.recovering);
+	// Resume commits remotely, but the local reconstruction stays closed until
+	// an exact retry confirms the lost acknowledgement and finishes the handoff.
+	history.lose_reply.store(true, Ordering::SeqCst);
+	assert!(
+		management::protection::resume(&store, directory, archives.clone(), &report)
+			.await
+			.is_err()
+	);
+	assert!(
+		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+			.await
+			.is_err()
+	);
 	management::protection::resume(&store, directory, archives.clone(), &report)
-		.await
-		.unwrap();
-	// An exact retry can finish a local resume whose acknowledgement was lost.
-	management::protection::resume(&store, directory, archives, &report)
 		.await
 		.unwrap();
 	let store = management::attach_protected(store, directory.to_owned(), history)
 		.await
 		.unwrap();
-	let served = memory::list(&store, &Actor::DeploymentAdministrator, read)
+	let served = memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
 		.await
 		.unwrap();
 	assert_eq!(served.len(), 1);
 	assert_eq!(served[0].id, keep);
 	assert_eq!(served[0].content.text, "current body survives disk loss");
+	// A completed report cannot reopen a later ordinary restore, even when the
+	// immutable head still points to that report's successful Resume record.
+	management::prepare_restore(&store, directory)
+		.await
+		.unwrap();
+	assert!(matches!(
+		management::protection::resume(&store, directory, archives, &report).await,
+		Err(aidash_server::Error::Conflict(_))
+	));
+	assert!(
+		memory::list(&store, &Actor::DeploymentAdministrator, read)
+			.await
+			.is_err()
+	);
 	drop(server);
 }
 

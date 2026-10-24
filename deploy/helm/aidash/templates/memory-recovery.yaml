@@ -29,6 +29,8 @@ metadata:
     app.kubernetes.io/component: {{ printf "memory-%s" $role }}
 spec:
   schedule: {{ ternary $p.backupSchedule $p.pruneSchedule (eq $role "backup") | quote }}
+  # The controller resumes maintenance only after migrations and role provisioning.
+  suspend: true
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 1

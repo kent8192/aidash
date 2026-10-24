@@ -334,7 +334,12 @@ identity's limited bucket creation/configuration permissions. Environment
 Terraform provisions the separate buckets and Workload Identities. Production
 always enables the protected values. Nonproduction requires both
 `memory_recovery_nonproduction_enabled=true` in bootstrap and
-`recovery_protected=true` in that Environment's desired Terraform configuration.
+an Environment opt-in in the trusted controller's `AIDASH_GCP_CONFIG`, for
+example `"recovery_protected": {"test": true, "pr-42": true}`. Keys are exact
+Environment IDs (`develop`, `test`, or `pr-N`). The next authorized deployment
+sets `recovery_protected=true` in that Environment's desired Terraform
+configuration and retains it across updates and stop/resume. Removing the
+opt-in or setting it to `false` does not downgrade an already protected Home.
 Apply bootstrap before the Environment resources. This provisioned configuration
 is not evidence of activation or a successful restore.
 
@@ -349,6 +354,10 @@ settings loader derives its otherwise unused framework key from that token.
 Jobs do not receive the server's runtime Secret or migration credentials. The
 backup identity reads history and creates/verifies body objects; only the prune
 identity deletes body objects, and it has no safety-history grant.
+The chart installs both schedules suspended. The controller resumes them after
+successful deployment or reload initializes the schema and maintenance login,
+and suspends them before stopping the Environment's dependencies. Their network
+access to those dependencies permits PostgreSQL alone.
 
 Both Jobs mount the same public GCIP settings as the serving processes and build
 the same Dashboard AccountPolicy. Saved Subject and Run authority is rechecked
@@ -425,7 +434,9 @@ the archive bucket is not contacted when those bodies suffice. If optional
 archive lookup is unavailable, the report says `archive_unavailable`; uncertain
 bodies remain withheld. Resume rechecks all-bank authority, sources, retention,
 semantic projections, inventory and the same history head. Changed results need
-a fresh report. An identical resume can finish after a lost acknowledgement.
+a fresh report. An identical resume can finish after a lost acknowledgement
+while the Home is still reconstructed. A completed report cannot reopen a later
+ordinary restore; complete that restore's reconciliation before resuming it.
 
 ## Executable drill evidence
 

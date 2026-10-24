@@ -655,12 +655,13 @@ impl FileRecovery {
 		let mut ledger = self.load_locked()?;
 		let mut state = self.publication(ledger.epoch)?;
 		independent.confirm(&state).await?;
+		// Only an unfinished reconstruction may reopen the local restore gate.
+		if !state.reconstructed || (state.head.recovering && &state.head != expected) {
+			return Err(Error::Conflict(
+				"memory reconciliation evidence is no longer current".into(),
+			));
+		}
 		if state.head.recovering {
-			if !state.reconstructed || &state.head != expected {
-				return Err(Error::Conflict(
-					"memory reconciliation evidence is no longer current".into(),
-				));
-			}
 			let mut history = History {
 				ledger: ledger.clone(),
 				head: state.head.clone(),

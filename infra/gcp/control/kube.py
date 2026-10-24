@@ -59,6 +59,7 @@ RUNNER = "deployment/app-execution-runner"
 EDGE = "deployment/env-environment-edge"
 STATEFULSETS = ("statefulset/env-environment-postgres", "statefulset/env-environment-nats")
 ACTIVITY = "env-environment-activity"
+MEMORY_SCHEDULES = ("app-aidash-memory-backup", "app-aidash-memory-prune")
 # Controller-owned desired admission state, read by every edge at start. Never
 # rendered by a chart, so a Helm upgrade cannot reset it.
 ADMISSION = "env-environment-admission"
@@ -911,6 +912,14 @@ def gate(cluster, identity):
     admission(cluster, identity, "close")
 
 
+def memory_schedules(cluster, identity, suspended):
+    """Keep optional maintenance schedules behind database initialization and stop."""
+    namespace = namespace_of(identity)
+    for name in MEMORY_SCHEDULES:
+        if cluster.get("cronjob", name, namespace) is not None:
+            cluster.patch("cronjob", name, {"spec": {"suspend": suspended}}, namespace)
+
+
 def deploy(cluster, identity, output, release, sha, settings, demo_people=None, fork=False):
     """Install both releases with writers stopped, start dependencies, then migrate."""
     namespace = namespace_of(identity)
@@ -933,6 +942,7 @@ def deploy(cluster, identity, output, release, sha, settings, demo_people=None, 
     observer_role(cluster, identity)
     memory_role(cluster, identity)
     cluster.rollout(namespace, target(identity, EDGE))
+    memory_schedules(cluster, identity, False)
 
 
 def migrate(cluster, identity, sha, demo_people=None, fork=False):
@@ -1162,6 +1172,7 @@ def reload(cluster, identity, output, settings):
     observer_role(cluster, identity)
     memory_role(cluster, identity)
     start_writers(cluster, identity)
+    memory_schedules(cluster, identity, False)
 
 
 def health(cluster, identity):
@@ -1198,11 +1209,12 @@ def stop(cluster, identity):
     if cluster.get("namespace", namespace) is None:
         return
     desired_admission(cluster, namespace, "closed")
+    memory_schedules(cluster, identity, True)
+    if cluster.get("cronjob", ACTIVITY, namespace) is not None:
+        cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": True}}, namespace)
     for workload in (*(target(identity, w) for w in (SERVER, WORKER, RUNNER, EDGE)), *STATEFULSETS):
         if exists(cluster, namespace, workload):
             cluster.scale(namespace, workload, 0)
-    if cluster.get("cronjob", ACTIVITY, namespace) is not None:
-        cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": True}}, namespace)
     cluster.delete("service", LOAD_BALANCER, namespace)
     # Dependencies shut down gracefully before their node pool is removed.
     wait_until(lambda: not live_pods(cluster, namespace), "Environment Pods did not stop", 600)

@@ -56,6 +56,7 @@ class ChartsTest(unittest.TestCase):
         for name, action, schedule in [('backup', 'backup-all', '0 */6 * * *'), ('prune', 'prune-remote', '*/15 * * * *')]:
             job = jobs['fixture-aidash-memory-' + name]
             self.assertEqual(job['spec']['schedule'], schedule)
+            self.assertTrue(job['spec']['suspend'], 'initialization must finish before maintenance is scheduled')
             self.assertEqual(job['spec']['concurrencyPolicy'], 'Forbid')
             pod = job['spec']['jobTemplate']['spec']['template']['spec']
             container = pod['containers'][0]
@@ -745,12 +746,13 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(state['volumeClaimTemplates'][0]['spec']['storageClassName'], 'aidash-retain')
         # The controller's migration Job reaches the dependencies alongside server and worker;
         # the activity observer reaches only PostgreSQL, never the unauthenticated NATS port.
-        application, observer = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
+        application, observer, maintenance = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
         self.assertEqual(application['from'], [{'podSelector': {'matchExpressions': [
             {'key': 'app.kubernetes.io/component', 'operator': 'In', 'values': ['server', 'worker', 'migration']}]}}])
         self.assertEqual(application['ports'], [{'protocol': 'TCP', 'port': 5432}, {'protocol': 'TCP', 'port': 4222}])
         self.assertEqual(observer['from'], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'fixture'}}}])
         self.assertEqual(observer['ports'], [{'protocol': 'TCP', 'port': 5432}])
+        self.assertEqual(maintenance['ports'], [{'protocol': 'TCP', 'port': 5432}])
         # A preview edge mounts the controller-bound shared TLS claim instead of its own.
         own = select(objects, 'PersistentVolumeClaim', '-tls')
         self.assertEqual(own['metadata']['annotations'], {'helm.sh/resource-policy': 'keep'})
