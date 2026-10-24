@@ -329,6 +329,7 @@ mod scoped_pair_composition {
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
 		#[default(false)] ordered: bool,
 		#[default(false)] tenant_embedding: bool,
+		#[default(true)] activate: bool,
 		#[future(awt)]
 		#[from(scoped_infrastructure)]
 		#[with(native, ordered)]
@@ -561,16 +562,31 @@ mod scoped_pair_composition {
 			)
 			.await;
 			assert_eq!(status, 200, "{prepared}");
-			let (status, activated) = request(
-				&aa,
-				&token,
-				"POST",
-				&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
-				json!({}),
-			)
-			.await;
-			assert_eq!(status, 200, "{activated}");
-			serde_json::from_value(activated["admission_id"].clone()).unwrap()
+			if activate {
+				let (status, activated) = request(
+					&aa,
+					&token,
+					"POST",
+					&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
+					json!({}),
+				)
+				.await;
+				assert_eq!(status, 200, "{activated}");
+				serde_json::from_value(activated["admission_id"].clone()).unwrap()
+			} else {
+				let receiver = common::default_node(&b.store, "acme").await;
+				let (status, admitted) = common::peer_request(
+					&ba,
+					(&a, "acme"),
+					&receiver,
+					"",
+					"/federation/v0.1/scoped/execution/admissions",
+					json!({"grant_id":grant}),
+				)
+				.await;
+				assert_eq!(status, 200, "{admitted}");
+				serde_json::from_value(admitted["id"].clone()).unwrap()
+			}
 		};
 		Pair {
 			_owners: owners,
@@ -7074,5 +7090,198 @@ async fn foreign_generation_uses_the_receiving_nodes_policy_resource(
 			assert_eq!(body["node_id"], receiver.to_string());
 		}
 	}
+	p.close().await;
+}
+
+/// A queued receiver grant stays cancelled after restoration without inventing a Run.
+#[rstest::rstest]
+#[case::delete_then_restore(true)]
+#[case::cancel_before_activation(false)]
+#[tokio::test]
+async fn node_deletion_or_explicit_cancel_prevents_late_activation(
+	#[case] deletion: bool,
+	#[future(awt)]
+	#[with(false,false,false,false,false,(false,false,32),false,false,false)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	assert!(p.b.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
+	if deletion {
+		let sibling = common::second_node_in(p.b.store.pool.fixture_driver(), "acme").await;
+		let base = "/api/tenants/acme/nodes";
+		for (path, body) in [
+			(format!("{base}/{sibling}/default"), Value::Null),
+			(
+				format!("{base}/{}/deletion", receiver.node),
+				json!({"confirmation":receiver.node}),
+			),
+			(format!("{base}/{}/restore", receiver.node), Value::Null),
+		] {
+			let (status, body) = request(&p.ba, &p.b.config.api_token, "POST", &path, body).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		aidash_server::generation::provision::reconcile(&p.b)
+			.await
+			.unwrap();
+	}
+	for _ in 0..2 {
+		let (status, body) = common::peer_request(
+			&p.ba,
+			(&p.a, "acme"),
+			&receiver,
+			"",
+			&format!(
+				"/federation/v0.1/scoped/execution/admissions/{}/control",
+				p.admission
+			),
+			json!({"grant_id":p.grant,"action":"cancel"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["phase"], "ADMITTED");
+		assert_eq!(body["control"], "CANCELLED");
+		assert!(body["error"].is_null());
+	}
+	let (status, body) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert!(
+		matches!(status, 403 | 409),
+		"late activation must reject original cancelled admission: {status} {body}"
+	);
+	assert!(p.b.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
+	let cancelled: bool = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("cancelled"))
+			.from(Alias::new("authorization_remote_admissions"))
+			.and_where(Expr::col("id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(cancelled);
+	p.close().await;
+}
+
+/// The real final-completion owner survives deletion, while a cached Home cannot
+/// use restoration to admit a different effect.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	for _ in 0..10 {
+		let run = p.run().await;
+		if run
+			.state
+			.tool()
+			.is_ok_and(|tool| tool.response.tool_calls.is_empty())
+		{
+			break;
+		}
+		p.step().await;
+	}
+	let token = Uuid::new_v4();
+	let run =
+		p.b.store
+			.lease_run(token, 60)
+			.await
+			.unwrap()
+			.expect("the saved final answer has a real worker lease");
+	let text = run.state.tool().unwrap().response.text.clone();
+	assert!(run.state.tool().unwrap().response.tool_calls.is_empty());
+	let home = Home::new(p.b.clone(), run.clone());
+	let task = home.task().await.unwrap();
+	let artifact = aidash_domain::ArtifactInput {
+		kind: "text".into(),
+		name: aidash_application::execution::result_artifact_name(&task.title),
+		content: json!(text),
+	};
+	assert!(
+		p.b.store
+			.begin_final_completion(&TEST_FIXTURE, &run, token)
+			.await
+			.unwrap()
+	);
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let sibling = common::second_node_in(p.b.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", receiver.node),
+			json!({"confirmation":receiver.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", receiver.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = request(&p.ba, &p.b.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	assert!(
+		!p.b.store
+			.renew_lease(&TEST_FIXTURE, run.id, token, 60)
+			.await
+			.unwrap()
+	);
+	assert!(
+		home.message("post-restore-fresh", "must never appear")
+			.await
+			.is_err()
+	);
+	let mut different = artifact.clone();
+	different.content = json!("a new answer");
+	assert!(
+		home.complete(&format!("{}:complete", run.id), &different)
+			.await
+			.is_err()
+	);
+	for _ in 0..2 {
+		home.complete(&format!("{}:complete", run.id), &artifact)
+			.await
+			.unwrap();
+	}
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	assert_eq!(
+		snapshot
+			.artifacts
+			.iter()
+			.filter(|saved| saved.content == artifact.content)
+			.count(),
+		1
+	);
+	assert!(
+		!snapshot
+			.messages
+			.iter()
+			.any(|message| message.content == "must never appear")
+	);
+	assert_eq!(
+		p.requests.lock().await.len(),
+		2,
+		"saved inference must not repeat"
+	);
+	aidash_server::generation::provision::reconcile(&p.b)
+		.await
+		.unwrap();
+	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"COMPLETED"
+	);
 	p.close().await;
 }

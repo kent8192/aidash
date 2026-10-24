@@ -110,7 +110,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		53
 	);
 	let tables = migrations
 		.iter()
@@ -348,14 +348,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0051_policy_probe")
+		.get_migration("execution", "0054_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0050_runner_allocation_journals".to_owned()
+			"0053_node_cancellation_jobs_row_level_security".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -703,7 +703,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		53
 	);
 }
 
@@ -2944,7 +2944,7 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 		.with_migration_history(migrations.clone());
 	executor.apply_migrations(&migrations).await.unwrap();
 	let before = recorded_keys(&fixture.connection).await;
-	let mut node_migrations: Vec<_> = migrations
+	let roots: Vec<_> = migrations
 		.iter()
 		.filter(|migration| {
 			migration.app_label == "identity"
@@ -2959,8 +2959,38 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 		})
 		.cloned()
 		.collect();
-	node_migrations.sort_by(|left, right| left.name.cmp(&right.name));
-	assert_eq!(node_migrations.len(), 5);
+	assert_eq!(roots.len(), 5);
+	// Roll back every dependent migration first, including cancellation jobs
+	// whose composite foreign key retains the original deletion fact. This
+	// closure also covers later migrations extending these owners.
+	let mut selected: BTreeSet<_> = roots
+		.iter()
+		.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+		.collect();
+	loop {
+		let descendants: Vec<_> = migrations
+			.iter()
+			.filter(|migration| {
+				!selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+					&& migration
+						.dependencies
+						.iter()
+						.any(|key| selected.contains(key))
+			})
+			.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+			.collect();
+		if descendants.is_empty() {
+			break;
+		}
+		selected.extend(descendants);
+	}
+	let node_migrations: Vec<_> = migrations
+		.iter()
+		.filter(|migration| {
+			selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+		})
+		.cloned()
+		.collect();
 
 	let logical = build_state_from_files(&source).await.unwrap();
 	let registered = ProjectState::from_global_registry();
@@ -2979,7 +3009,12 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 			})
 			.collect::<BTreeMap<_, _>>()
 	};
-	for table in [table, "dashboard_administration_history"] {
+	for table in [
+		table,
+		"dashboard_administration_history",
+		"node_cancellation_jobs",
+		"authorization_remote_admissions",
+	] {
 		assert_eq!(
 			columns(logical.find_model_by_table(table).unwrap()),
 			columns(registered.find_model_by_table(table).unwrap()),

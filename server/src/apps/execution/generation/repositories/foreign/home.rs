@@ -36,7 +36,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef::Asterisk, Expr, LockType, PostgresQueryBuilder, Query,
+	Alias, ColumnRef::Asterisk, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::{Value, json};
@@ -360,24 +360,11 @@ impl HomeGenerationScope for Scope {
 		Ok(())
 	}
 	async fn set_cancelled(&mut self, id: Uuid) -> Result<()> {
-		let access = &mut self.access;
-		{
-			let query_bind_1 = id;
-			crate::database::native::query(
-				&Query::update()
-					.table(Alias::new("generation_remote_intents"))
-					.value(Alias::new("cancelled"), true)
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **access.tx)
-			.await?
-		};
-		Ok(())
+		set_cancelled_in(&mut **self.access.tx, id)
+			.await
+			.map_err(Into::into)
 	}
+
 	async fn finish(self: Box<Self>) -> Result<()> {
 		self.access.finish(Ok(())).await.map_err(Into::into)
 	}
@@ -388,4 +375,21 @@ impl HomeGenerationScope for Scope {
 			.expect_err("aborting an authority session cannot succeed")
 			.into()
 	}
+}
+
+/// Persist cancellation before transport, in the caller's exact transaction.
+pub(crate) async fn set_cancelled_in(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	id: Uuid,
+) -> crate::Result<()> {
+	crate::database::native::query(
+		&Query::update()
+			.table(Alias::new("generation_remote_intents"))
+			.value(Alias::new("cancelled"), true)
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(tx)
+	.await?;
+	Ok(())
 }

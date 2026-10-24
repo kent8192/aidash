@@ -30,6 +30,8 @@ fn repository() -> Repository {
 	Repository(Arc::new(Mutex::new(State {
 		snapshot: Snapshot {
 			operation_id: Uuid::from_u128(1),
+			digest: "immutable-intent".into(),
+			runner_instance: Some("original-runner".into()),
 			kind: "shell".into(),
 			state: "running".into(),
 			result: json!({}),
@@ -61,6 +63,11 @@ impl OperationWithdrawalRepository for Repository {
 			state.alive += 1;
 		}
 		Ok(Box::new(Scope(self.0.clone())))
+	}
+	async fn cancel_bound(&self, operation: Uuid, digest: &str, instance: &str) -> Result<bool> {
+		assert_eq!(digest, "immutable-intent");
+		assert_eq!(instance, "original-runner");
+		Ok(self.cancel(operation).await?["termination_confirmed"] == true)
 	}
 	async fn cancel(&self, operation: Uuid) -> Result<Value> {
 		assert_eq!(operation, Uuid::from_u128(1));
@@ -177,4 +184,57 @@ fn cancellation_during_runner_io_drops_the_owning_scope_without_committing(repos
 	assert_eq!(state.calls, vec!["lock", "cancel", "drop"]);
 	assert_eq!(state.alive, 0);
 	assert!(state.committed.is_none());
+}
+
+#[rstest]
+#[case::completed("completed", true)]
+#[case::uncertain("uncertain", true)]
+#[case::still_running("uncertain", false)]
+#[tokio::test]
+async fn captured_terminal_writer_preserves_saved_outcome(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] stopped: bool,
+) {
+	let original = json!({"stdout":"saved output", "error":"saved error", "runner_acknowledged":true, "effects_may_have_occurred":true, "termination_confirmed":false});
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.snapshot.state = status.into();
+		state.snapshot.result = original.clone();
+		state.stopped = stopped;
+	}
+	stop_captured_writer(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
+		.await
+		.unwrap();
+	let state = repository.0.lock().unwrap();
+	let change = state.committed.as_ref().unwrap();
+	assert_eq!(change.state, status);
+	assert!(change.area_state.is_none());
+	let mut expected = original;
+	expected["termination_confirmed"] = json!(stopped);
+	assert_eq!(change.result, expected);
+	assert_eq!(state.calls, vec!["lock", "cancel", "commit", "drop"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_saved_terminal_stop_schedules_missing_output_ack_without_repeating_cancel(
+	repository: Repository,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.snapshot.state = "uncertain".into();
+		state.snapshot.result = json!({"termination_confirmed":true,"stdout":"retained"});
+	}
+	stop_captured_writer(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
+		.await
+		.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.calls, vec!["lock", "commit", "drop"]);
+	let change = state.committed.as_ref().unwrap();
+	assert_eq!(change.state, "uncertain");
+	assert_eq!(
+		change.result,
+		json!({"termination_confirmed":true,"runner_acknowledged":false,"stdout":"retained"})
+	);
 }

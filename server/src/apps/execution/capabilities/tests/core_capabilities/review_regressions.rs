@@ -618,6 +618,7 @@ fn retry_router(retry_calls: Arc<std::sync::atomic::AtomicUsize>) -> Arc<reinhar
 /// Maintenance starts from committed rows, independently of live tool admission.
 #[rstest::fixture]
 async fn command_cleanup_fixture(
+	#[default(1)] operation_count: usize,
 	#[future(awt)]
 	#[from(common::native_application)]
 	application: common::ApplicationFixture,
@@ -670,56 +671,59 @@ async fn command_cleanup_fixture(
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("core_operations"))
-			.columns(
-				[
-					"id",
-					"area_id",
-					"run_id",
-					"tenant",
-					"principal",
-					"credential_id",
-					"subjects",
-					"request_key",
-					"digest",
-					"kind",
-					"state",
-					"epoch",
-					"generation",
-					"revision",
-					"policy_revision",
-					"input",
-					"result",
-				]
-				.map(Alias::new),
-			)
-			.values(vec![
-				id.into(),
-				area.into(),
-				run.id.into(),
-				"acme".into(),
-				"alice".into(),
-				Uuid::new_v4().into(),
-				json!(["alice"]).into(),
-				id.to_string().into(),
-				"immutable-intent".into(),
-				"shell".into(),
-				"prepared".into(),
-				1_i64.into(),
-				1_i64.into(),
-				1_i64.into(),
-				1_i64.into(),
-				json!({"command":"never replay","seconds":1}).into(),
-				json!({}).into(),
-			])
-			.unwrap()
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	for index in 0..operation_count {
+		let id = if index == 0 { id } else { Uuid::new_v4() };
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("core_operations"))
+				.columns(
+					[
+						"id",
+						"area_id",
+						"run_id",
+						"tenant",
+						"principal",
+						"credential_id",
+						"subjects",
+						"request_key",
+						"digest",
+						"kind",
+						"state",
+						"epoch",
+						"generation",
+						"revision",
+						"policy_revision",
+						"input",
+						"result",
+					]
+					.map(Alias::new),
+				)
+				.values(vec![
+					id.into(),
+					area.into(),
+					run.id.into(),
+					"acme".into(),
+					"alice".into(),
+					Uuid::new_v4().into(),
+					json!(["alice"]).into(),
+					id.to_string().into(),
+					"immutable-intent".into(),
+					"shell".into(),
+					"prepared".into(),
+					1_i64.into(),
+					1_i64.into(),
+					1_i64.into(),
+					1_i64.into(),
+					json!({"command":"never replay","seconds":1}).into(),
+					json!({}).into(),
+				])
+				.unwrap()
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
 	let root = core_storage.path().to_owned();
 	f.store.capabilities = Runtime::new(Profile {
 		admission: true,
@@ -777,7 +781,7 @@ async fn cleanup_runner(
 			let response = if path == "/v1/health" {
 				json!({"instance":*health_instance.lock().unwrap()})
 			} else if path.ends_with("/cancel") || path.ends_with("/stop") {
-				json!({"termination_confirmed":stopped.load(Ordering::SeqCst)})
+				json!({"operation_id":operation,"digest":"immutable-intent","termination_confirmed":stopped.load(Ordering::SeqCst)})
 			} else if path == format!("/v1/operations/{operation}/ack") {
 				assert_eq!(body["digest"], "immutable-intent");
 				json!({"acknowledged":true})
@@ -1129,4 +1133,233 @@ async fn frozen_python_stop_persists_all_bound_cells_without_touching_replacemen
 	worker.stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.close().await;
+}
+
+/// Protocol fixture exercises the production stop owner and durable retries;
+/// physical Kubernetes termination remains covered by the runner's own tests.
+#[rstest::rstest]
+#[case::completed("completed", true)]
+#[case::uncertain("uncertain", true)]
+#[case::uncertain_pending_ack("uncertain", false)]
+#[tokio::test]
+async fn node_deletion_retries_original_terminal_writer_without_rewriting_output(
+	#[case] state: &str,
+	#[case] acknowledged: bool,
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	use std::sync::atomic::Ordering;
+	let (mut c, _, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, confirmed, requests, instance) = cleanup_runner(&mut c, id).await;
+	let original = json!({"termination_confirmed":false,"runner_acknowledged":acknowledged,"effects_may_have_occurred":true,"stdout":"retained output","error":"saved outcome","offset":17});
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(Alias::new("state"), state)
+			.value(Alias::new("runner_instance"), "cleanup-runner")
+			.value(Alias::new("result"), original.clone())
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let node = common::default_node(&c.f.store, "acme").await;
+	let sibling = common::second_node_in(c.f.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+			json!({"confirmation":node.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", node.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = request(&c.app, &c.f.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	for (runner, stopped, done) in [
+		("replacement", true, false),
+		("cleanup-runner", false, false),
+		("cleanup-runner", true, true),
+	] {
+		*instance.lock().unwrap() = runner.into();
+		confirmed.store(stopped, Ordering::SeqCst);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("node_cancellation_jobs"))
+				.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+				.and_where(Expr::col("work_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		// A new dispatcher invocation reads durable due state; it has no volatile cursor.
+		aidash_server::generation::provision::reconcile(&c.f.clone())
+			.await
+			.unwrap();
+		let (saved, result) = cleanup_operation(&c, id).await;
+		assert_eq!(saved, state);
+		let mut expected = original.clone();
+		expected["termination_confirmed"] = json!(done);
+		assert_eq!(result, expected);
+		let pending: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("node_cancellation_jobs"))
+				.and_where(Expr::col("kind").eq("operation"))
+				.and_where(Expr::col("work_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(pending, if done && acknowledged { 0 } else { 1 });
+	}
+	if !acknowledged {
+		// Stop proof alone cannot retire the queue. Let the production receipt
+		// owner acknowledge this exact saved operation before maintenance retries.
+		let worker = CapabilityWorker {
+			stop: worker_control.stop,
+			handle: tokio::spawn(aidash_server::capabilities::operations::run(
+				c.f.store.clone(),
+				worker_control.receiver,
+			)),
+		};
+		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+		loop {
+			let (saved, result) = cleanup_operation(&c, id).await;
+			assert_eq!(saved, state, "ACK must preserve the semantic outcome");
+			if result["runner_acknowledged"] == true {
+				let mut expected = original.clone();
+				expected["termination_confirmed"] = json!(true);
+				expected["runner_acknowledged"] = json!(true);
+				assert_eq!(result, expected);
+				break;
+			}
+			assert!(
+				tokio::time::Instant::now() < deadline,
+				"physically stopped uncertain receipt was not acknowledged: {result}"
+			);
+			tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+		}
+		worker.stop.send(true).unwrap();
+		worker.await.unwrap().unwrap();
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("node_cancellation_jobs"))
+				.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+				.and_where(Expr::col("work_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::generation::provision::reconcile(&c.f.clone())
+			.await
+			.unwrap();
+		let pending: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+				.from(Alias::new("node_cancellation_jobs"))
+				.and_where(Expr::col("kind").eq("operation"))
+				.and_where(Expr::col("work_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(pending, 0, "positive stop and owner ACK retire the job");
+	}
+	assert_eq!(
+		requests
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|request| request["path"] == format!("/v1/operations/{id}/cancel"))
+			.count(),
+		2,
+		"replacement health must never receive the old stop"
+	);
+	cleanup(c.f, &c.url, &c.schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_due_cursor_visits_later_jobs_after_a_failed_page(
+	#[future]
+	#[with(35)]
+	command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+) {
+	let (mut c, area, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, _, requests, instance) = cleanup_runner(&mut c, id).await;
+	*instance.lock().unwrap() = "replacement".into();
+	sqlx::query(&Query::update().table(Alias::new("core_operations"))
+ .value(Alias::new("state"),"uncertain").value(Alias::new("runner_instance"),"cleanup-runner")
+ .value(Alias::new("result"),json!({"termination_confirmed":false,"runner_acknowledged":true,"effects_may_have_occurred":true}))
+ .and_where(Expr::col("area_id").eq(Expr::value(area))).to_string(PostgresQueryBuilder)).execute(c.f.store.pool.fixture_driver()).await.unwrap();
+	let node = common::default_node(&c.f.store, "acme").await;
+	let sibling = common::second_node_in(c.f.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+			json!({"confirmation":node.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", node.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = request(&c.app, &c.f.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	aidash_server::generation::provision::reconcile(&c.f)
+		.await
+		.unwrap();
+	assert_eq!(
+		requests.lock().unwrap().len(),
+		32,
+		"each selected operation stops at mismatched health"
+	);
+	let due = || {
+		Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("node_cancellation_jobs"))
+			.and_where(Expr::col("kind").eq("operation"))
+			.and_where(Expr::col("retry_at").lte(Expr::current_timestamp()))
+			.to_string(PostgresQueryBuilder)
+	};
+	assert_eq!(
+		sqlx::query_scalar::<_, i64>(&due())
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap(),
+		3
+	);
+	aidash_server::generation::provision::reconcile(&c.f.clone())
+		.await
+		.unwrap();
+	assert_eq!(
+		requests.lock().unwrap().len(),
+		35,
+		"failed first page must not starve the later page"
+	);
+	assert_eq!(
+		sqlx::query_scalar::<_, i64>(&due())
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap(),
+		0
+	);
+	cleanup(c.f, &c.url, &c.schema).await;
 }

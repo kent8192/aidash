@@ -674,3 +674,145 @@ impl Scope {
 		*self.access
 	}
 }
+
+/// The durable Node cancellation queue invokes the same Home ledger terminal
+/// owner as explicit remote cancellation, without manufacturing Subject access.
+/// Revocation has already committed before this transport step; failures retry.
+pub(crate) async fn cancel_deleted_node_grant(
+	f: &Federation,
+	tenant: &str,
+	node: &str,
+	id: Uuid,
+) -> NativeResult<bool> {
+	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+	let mut tx = f.store.pool.begin(&scope).await?;
+	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+	crate::transactions::gate::read_in(&mut tx).await?;
+	let grant: GrantRow = crate::database::native::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_remote_grants"))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(node=? OR node_id=?)".into(),
+				vec![
+					Expr::value(node.to_owned()).into(),
+					Expr::value(format!("{}/{}", f.config.deployment, node)).into(),
+				],
+			))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	if !grant.revoked {
+		crate::apps::identity::repositories::remote_grants::persistence::revoke_for_node_in(
+			&f.store,
+			tx.as_mut(),
+			tenant,
+			id,
+		)
+		.await?;
+	}
+	let bound: Option<BindingRow> = crate::database::native::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(id)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut *tx)
+	.await?;
+	tx.commit().await?;
+	let Some(bound) = bound else { return Ok(true) };
+	if bound.task_id != grant.task_id {
+		return Err(NativeError::Forbidden);
+	}
+	let response: Value = crate::authorization::peer::authority_request(
+		f,
+		&aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
+			node: Some(aidash_domain::nodes::NodeName::parse(&grant.node)?),
+			subject: None,
+		},
+		&grant.node_id,
+		&format!(
+			"/scoped/execution/admissions/{}/control",
+			bound.admission_id
+		),
+		&json!({"grant_id":id,"action":"cancel"}),
+	)
+	.await?;
+	if !matches!(
+		response["phase"].as_str(),
+		Some("COMPLETED" | "FAILED" | "CANCELLED")
+	) && !(response["phase"] == "ADMITTED" && response["control"] == "CANCELLED")
+	{
+		return Ok(false);
+	}
+	let mut tx = f.store.pool.begin(&scope).await?;
+	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+	crate::transactions::gate::read_in(&mut tx).await?;
+	let task: Task = crate::database::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("tasks"))
+			.and_where(Expr::col("id").eq(Expr::value(grant.task_id)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	// A historical grant must not cancel an independent later assignment.
+	if task.revision != bound.task_revision {
+		tx.commit().await?;
+		return Ok(true);
+	}
+	if !matches!(
+		task.status,
+		TaskStatus::Completed | TaskStatus::Cancelled | TaskStatus::Abandoned
+	) {
+		let keys: Vec<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("idempotency_key"))
+				.from(Alias::new("remote_run_message_fences"))
+				.and_where(Expr::col("task_id").eq(Expr::value(task.id)))
+				.and_where(Expr::col("run_id").eq(Expr::value(bound.admission_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut *tx)
+		.await?;
+		let domain: Grant = grant.into();
+		let prepared = domain.prepared()?;
+		let owner = aidash_domain::agent_subject(
+			&domain.node_id,
+			&prepared.agent.id,
+			&prepared.agent.version,
+		);
+		let stopped = f
+			.store
+			.transition_remote_terminal_in(
+				&mut tx,
+				task.id,
+				task.revision,
+				&owner,
+				TaskStatus::Cancelled,
+				bound.admission_id,
+				crate::store::TerminalRunMessageInputs::Keys(&keys),
+			)
+			.await?;
+		crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("authorization_remote_execution"))
+				.value(Alias::new("task_revision"), stopped.revision)
+				.and_where(Expr::col("grant_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+	}
+	tx.commit().await?;
+	Ok(true)
+}

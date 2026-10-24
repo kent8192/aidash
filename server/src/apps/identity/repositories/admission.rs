@@ -123,6 +123,11 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		&self.access.snapshot.bundle
 	}
 	async fn task(&mut self, id: Uuid) -> Result<Option<Task>> {
+		crate::apps::execution::repositories::node_cancellations::require_task_open(
+			&mut **self.access.tx,
+			id,
+		)
+		.await?;
 		let result: NativeResult<Option<Task>> = async {
 			let task_id = id;
 			let access = &mut *self.access;

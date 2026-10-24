@@ -162,37 +162,58 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	}
 
 	async fn cancel_runs(&mut self, job: &Request) -> aidash_application::Result<()> {
-		let tx = &mut *self.transaction;
-
-		// Local generations bind their run by task and generated agent revision (the same
-		// binding local expiration uses); foreign generations additionally pin the
-		// admitted remote run.
-		let mut condition = String::from(
-			"task_id = ? AND home_node = ? AND agent_id = ? AND agent_version = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED')",
-		);
-		let mut values: Vec<SimpleExpr> = vec![
-			Expr::value(job.task_id).into(),
-			Expr::value(job.home_node.clone()).into(),
-			Expr::value(job.agent_id.clone()).into(),
-			Expr::value(job.agent_version.clone()).into(),
-		];
-		if let Some(admission_id) = job.admission_id {
-			condition.push_str(" AND id = ?");
-			values.push(Expr::value(admission_id).into());
+		let mut query = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("tenant"),
+				Expr::value(job.tenant.clone()),
+			))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("node"),
+				Expr::value(job.node.as_str().to_owned()),
+			))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("task_id"),
+				Expr::value(job.task_id),
+			))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("home_node"),
+				Expr::value(job.home_node.clone()),
+			))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("agent_id"),
+				Expr::value(job.agent_id.clone()),
+			))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("agent_version"),
+				Expr::value(job.agent_version.clone()),
+			))
+			.and_where(Expr::cust(
+				"phase NOT IN ('COMPLETED','FAILED','CANCELLED') AND control <> 'CANCELLED'",
+			))
+			.lock(LockType::Update)
+			.to_owned();
+		if let Some(id) = job.admission_id {
+			query.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("id"),
+				Expr::value(id),
+			));
 		}
-		crate::database::native::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
-				.value_expr(
-					reinhardt::query::Alias::new("control"),
-					reinhardt::query::Expr::cust("'CANCELLED'"),
+		let ids: Vec<Uuid> =
+			crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
+				.scalar_all(&mut **self.transaction)
+				.await?;
+		for id in ids {
+			self.runtime
+				.store
+				.control_in(
+					self.transaction,
+					id,
+					aidash_domain::RunControlAction::Cancel,
 				)
-				.and_where(SimpleExpr::CustomWithExpr(format!("({condition})"), values))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
-
+				.await?;
+		}
 		Ok(())
 	}
 
