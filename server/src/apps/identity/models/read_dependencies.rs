@@ -89,13 +89,37 @@ impl AuthorizationCatalog {
 }
 
 impl AuthorizationRunRead {
+	/// The historical execution grant is not proof that Home still exists.
+	/// Hold the same-Tenant Workspace through journaling, at both native writers.
+	pub(crate) async fn lock_source_in(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		workspace: Uuid,
+	) -> Result<String> {
+		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let (sql, values) = Query::select()
+			.column(Alias::new("workspace_id"))
+			.from(Alias::new("authorization_workspaces"))
+			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.lock(LockType::KeyShare)
+			.build(PostgresQueryBuilder);
+		if tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_none()
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(tenant)
+	}
 	pub(crate) async fn record_sources(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
 		workspace: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
-		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let tenant = Self::lock_source_in(tx, run, workspace).await?;
 		for chunk in sources.chunks(256) {
 			let mut query = Query::insert();
 			query

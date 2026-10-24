@@ -53,15 +53,24 @@ pub(super) async fn check(
 	)
 	.await?;
 	let now = database_time(tx).await?;
+	let area_runs = Query::select()
+		.column(Alias::new("run_id"))
+		.from(Alias::new("core_runs"))
+		.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
+		.and_where(owners.root("core_runs", "area_id", classification::node::Root::Area)?)
+		.to_owned();
 	refuse(
 		tx,
 		"runs",
-		owners.predicate("runs")?.and(
-			Expr::col("phase")
-				.is_not_in(["COMPLETED", "FAILED", "CANCELLED"])
-				.and(Expr::col("control").ne(Expr::value("CANCELLED")))
-				.or(Expr::col("lease_until").gt(Expr::value(now))),
-		),
+		owners
+			.predicate("runs")?
+			.or(Expr::col("id").in_subquery(area_runs))
+			.and(
+				Expr::col("phase")
+					.is_not_in(["COMPLETED", "FAILED", "CANCELLED"])
+					.and(Expr::col("control").ne(Expr::value("CANCELLED")))
+					.or(Expr::col("lease_until").gt(Expr::value(now))),
+			),
 		"awaits Run cancellation and worker lease drain",
 	)
 	.await?;
@@ -122,22 +131,30 @@ pub(super) async fn check(
 	)
 	.await?;
 	let terminal = Expr::col("state").is_in(["completed", "cancelled", "failed", "withdrawn"]);
-	let stopped = json(col("core_operations", "result"), "termination_confirmed")
-		.eq(Expr::value("true"))
-		.and(json(col("core_operations", "result"), "runner_acknowledged").eq(Expr::value("true")));
-	let never = Expr::col("runner_instance").is_null().and(
-		json(
-			col("core_operations", "result"),
-			"effects_may_have_occurred",
-		)
-		.eq(Expr::value("false")),
-	);
+	let proof = |field: &str, value: bool| {
+		col("core_operations", "result")
+			.binary(
+				reinhardt::query::BinOper::PgOperator(
+					reinhardt::query::types::PgBinOper::JsonGetByIndex,
+				),
+				Expr::value(field).into(),
+			)
+			.eq(Expr::value(serde_json::json!(value)))
+	};
+	let stopped = proof("termination_confirmed", true).and(proof("runner_acknowledged", true));
+	let never = Expr::col("runner_instance")
+		.is_null()
+		.and(proof("effects_may_have_occurred", false));
+	let safe = terminal
+		.and(stopped.clone().or(never))
+		.or(Expr::col("state").eq(Expr::value("uncertain")).and(stopped));
 	refuse(
 		tx,
 		"core_operations",
 		owners
 			.predicate("core_operations")?
-			.and(selectors::not_true(terminal.and(stopped.or(never)))),
+			.or(owners.root("core_operations", "run_id", classification::node::Root::Run)?)
+			.and(selectors::not_true(safe)),
 		"awaits confirmed command termination, output drain and runner acknowledgement",
 	)
 	.await?;

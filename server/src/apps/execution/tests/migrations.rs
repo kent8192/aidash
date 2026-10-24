@@ -98,7 +98,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0035_foreign_key_relations_state");
+	assert_eq!(knowledge[0].name, "0036_remote_read_source_lifetime");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -110,7 +110,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		53
 	);
 	let tables = migrations
 		.iter()
@@ -348,14 +348,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0051_policy_probe")
+		.get_migration("execution", "0056_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0050_runner_allocation_journals".to_owned()
+			"0055_session_area_lifetime_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -3114,4 +3114,101 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 		Some("23503")
 	);
 	pool.close().await;
+}
+
+/// Provenance/session bindings retain their actual owner while a used source
+/// can expire. Rollback restores only the named former source-lifetime FK.
+#[rstest]
+#[case::memory("knowledge", "0036_remote_read_source_lifetime", None, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
+#[case::origin("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
+#[case::execution_task("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::execution_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::read_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
+#[case::session("execution", "0054_session_area_lifetime", Some("0055_session_area_lifetime_state"), "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
+#[tokio::test]
+async fn source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
+	#[future] fresh_database: MigrationFixture,
+	#[case] app: &str,
+	#[case] physical: &str,
+	#[case] state: Option<&str>,
+	#[case] table: &str,
+	#[case] source_fk: &str,
+	#[case] trigger: &str,
+	#[case] required: &[&str],
+) {
+	use reinhardt::db::migrations::executor::DatabaseMigrationExecutor;
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut group = migrations
+		.iter()
+		.filter(|m| m.app_label == app && (m.name == physical || state == Some(m.name.as_str())))
+		.cloned()
+		.collect::<Vec<_>>();
+	group.sort_by(|a, b| a.name.cmp(&b.name));
+	assert_eq!(group.len(), 1 + usize::from(state.is_some()));
+	assert!(
+		group
+			.iter()
+			.find(|m| m.name == physical)
+			.unwrap()
+			.database_only
+	);
+	let logical = build_state_from_files(&source).await.unwrap();
+	assert!(
+		!logical
+			.find_model_by_table(table)
+			.unwrap()
+			.constraints
+			.iter()
+			.any(|c| c.name == source_fk),
+		"logical source lifetime must match scalar ORM metadata"
+	);
+	let registered = reinhardt::db::migrations::ProjectState::from_global_registry();
+	assert!(
+		!registered
+			.find_model_by_table(table)
+			.unwrap()
+			.constraints
+			.iter()
+			.any(|c| c.name == source_fk)
+	);
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for (pass, restored) in [false, true, false].into_iter().enumerate() {
+		let actual: Vec<String> = sqlx::query_scalar(
+			"SELECT conname::text FROM pg_constraint WHERE conrelid=to_regclass($1) ORDER BY conname",
+		)
+		.bind(format!("public.{table}"))
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		for constraint in required {
+			assert!(
+				actual.iter().any(|name| name == constraint),
+				"{constraint}: {actual:?}"
+			);
+		}
+		assert_eq!(actual.iter().any(|name| name == source_fk), restored);
+		let guarded: bool = sqlx::query_scalar(
+			"SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass($1) AND tgname=$2)",
+		)
+		.bind(format!("public.{table}"))
+		.bind(trigger)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert!(guarded);
+		match pass {
+			0 => {
+				executor.rollback_migrations(&group).await.unwrap();
+			}
+			1 => {
+				executor.apply_migrations(&group).await.unwrap();
+			}
+			_ => {}
+		}
+	}
 }

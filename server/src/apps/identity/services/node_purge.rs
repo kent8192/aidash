@@ -263,6 +263,11 @@ pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
 		store
 			.pool
 			.atomic(&TenancyScope::tenant(&deletion.tenant)?, async |tx| {
+				// Keep management response snapshots and expiry serialized. Never
+				// remove the current deletion while its catalog could appear live.
+				AuthorizationBundle::lock_frozen(tx, &deletion.tenant, true).await?;
+				nodes::lock_tenant(tx, &deletion.tenant).await?;
+				rows::coverage(tx).await?;
 				let now = database_time(tx).await?;
 				let (sql, values) = Query::select()
 					.column(Alias::new("id"))
@@ -284,15 +289,16 @@ pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
 				// expiry is idempotent; delete in audit-table order instead of locking
 				// the last table first and inverting whole-Tenant purge's lock order.
 				// Task2 provides the explicit nullable administration-history.node column.
-				for table in [
-					"authorization_catalog_history",
-					"dashboard_administration_history",
-					"node_deletions",
+				for (table, key) in [
+					("nodes", "name"),
+					("authorization_catalog_history", "node"),
+					("dashboard_administration_history", "node"),
+					("node_deletions", "node"),
 				] {
 					let (sql, values) = Query::delete()
 						.from_table(Alias::new(table))
 						.and_where(Expr::col("tenant").eq(Expr::value(&deletion.tenant)))
-						.and_where(Expr::col("node").eq(Expr::value(&deletion.node)))
+						.and_where(Expr::col(key).eq(Expr::value(&deletion.node)))
 						.build(PostgresQueryBuilder);
 					tx.execute(&sql, convert_values(values)).await?;
 				}

@@ -127,6 +127,82 @@ pub(super) async fn validate(tx: &mut dyn TransactionExecutor, owners: &Owners<'
 }
 
 pub(super) async fn erase(tx: &mut dyn TransactionExecutor, owners: &Owners<'_>) -> Result<()> {
+	// Source deletion invalidates disposable body copies even in surviving Home
+	// journals. Do this before CTID snapshots: invalidation updates journal rows.
+	let (sql, values) = Query::select()
+		.columns(["id", "revision"].map(Alias::new))
+		.from(Alias::new("memory_units"))
+		.and_where(owners.predicate("memory_units")?)
+		.order_by(Alias::new("id"), Order::Asc)
+		.lock(LockType::Update)
+		.build(PostgresQueryBuilder);
+	for row in tx.fetch_all(&sql, convert_values(values)).await? {
+		let unit: Uuid = row
+			.get("id")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		let revision: i64 = row
+			.get("revision")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		crate::apps::knowledge::repositories::remote_memory_reads::erase_receipts_in(
+			tx,
+			owners.tenant,
+			unit,
+			revision,
+			true,
+		)
+		.await?;
+	}
+	let (sql, values) = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("semantic_entries"))
+		.and_where(owners.predicate("semantic_entries")?)
+		.order_by(Alias::new("id"), Order::Asc)
+		.lock(LockType::Update)
+		.build(PostgresQueryBuilder);
+	for row in tx.fetch_all(&sql, convert_values(values)).await? {
+		let entry: Uuid = row
+			.get("id")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		crate::apps::knowledge::repositories::remote_memory_reads::erase_entry_receipts_in(
+			tx,
+			owners.tenant,
+			entry,
+		)
+		.await?;
+	}
+	// The verified doomed parent owns its dependency array. Clear only that
+	// parent data through the existing sync trigger before CTID capture; direct
+	// task_dependencies DML is forbidden. This also handles a valid parent B /
+	// child A graph where B depends on A and leaf-only DELETE cannot proceed.
+	let (sql, values) = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("tasks"))
+		.and_where(owners.predicate("tasks")?)
+		.lock(LockType::Update)
+		.build(PostgresQueryBuilder);
+	let tasks = tx
+		.fetch_all(&sql, convert_values(values))
+		.await?
+		.into_iter()
+		.map(|row| {
+			row.get::<Uuid>("id")
+				.map_err(reinhardt::core::exception::Error::from)
+		})
+		.collect::<std::result::Result<Vec<_>, _>>()?;
+	validate(tx, owners).await?;
+	if !tasks.is_empty() {
+		let empty = reinhardt::query::Value::Array(
+			reinhardt::query::ArrayType::Uuid,
+			Some(Box::new(Vec::new())),
+		);
+		let (sql, values) = Query::update()
+			.table(Alias::new("tasks"))
+			.value_expr(Alias::new("dependencies"), Expr::value(empty))
+			.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
+			.and_where(selectors::ids(Expr::col("id").into(), &tasks))
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+	}
 	let mut snapshot = BTreeMap::<&'static str, Vec<String>>::new();
 	// Lock all prospective parents before revalidating cascades. Referencing
 	// inserts now wait on these rows; no selected row is updated before DELETE.

@@ -20,6 +20,9 @@ pub(crate) struct NodeRecord {
 	/// Retained data is physically removed by the purge worker. Offering and
 	/// Tenant deletion rules determine whether retained bytes are billable.
 	pub(crate) storage_retained_until_purge: bool,
+	/// Actual retained storage in authorized management/lifecycle snapshots.
+	/// Ordinary Node selectors omit this private activity projection (`null`).
+	pub(crate) retained_storage_bytes: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema, Validate)]

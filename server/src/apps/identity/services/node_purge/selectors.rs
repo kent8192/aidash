@@ -65,13 +65,7 @@ impl Owners<'_> {
 			Shared | Recovery | Audit => return Ok(Expr::value(false).into()),
 			Node(field) => col(table, field).eq(Expr::value(self.node)),
 			Subject(field) => self.subject(table, field),
-			Links(links) => {
-				let mut result: SimpleExpr = Expr::value(false).into();
-				for (field, root) in links {
-					result = result.or(self.root(table, field, *root)?);
-				}
-				result
-			}
+			Link(field, root) => self.root(table, field, root)?,
 			Areas => {
 				// A present Workspace always owns its area; subject fallback is only for
 				// genuinely absent Workspaces. home_node/agent_id are never selectors.
@@ -91,6 +85,7 @@ impl Owners<'_> {
 				.root(table, "area_id", Root::Area)?
 				.or(col(table, "area_id")
 					.is_null()
+					.and(col(table, "kind").ne(Expr::value("thread_tombstone")))
 					.and(self.subject(table, "owner")))
 				.or(col(table, "area_id")
 					.is_null()
@@ -165,11 +160,12 @@ impl Owners<'_> {
 				any.and(other.not())
 			}
 			Dispatches => ids(col(table, "attempt_id"), &self.dispatches),
-			Event => col(table, "node").eq(Expr::value(self.node)).or(self.root(
-				table,
-				"workspace_id",
-				Root::Workspace,
-			)?),
+			Event => {
+				self.root(table, "workspace_id", Root::Workspace)?
+					.or(col(table, "workspace_id")
+						.is_null()
+						.and(col(table, "node").eq(Expr::value(self.node))))
+			}
 		};
 		Ok(col(table, "tenant")
 			.eq(Expr::value(self.tenant))
