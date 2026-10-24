@@ -1,9 +1,11 @@
 # Retained usage facts
 
 Cloud and Dedicated retain complete Pod allocation receipts independently of Run,
-operation, Node and Tenant authority. An allocation UUID and its canonical receipt
-digest identify one immutable Tenant/start/end payload. An identical retry reuses
-the committed facts; a conflicting payload fails and is not acknowledged to the
+operation, Node and Tenant authority. The allocation UUID is the actual provider
+Pod UID, covering the complete provider start-to-stop lifetime. Command completion,
+Run completion and a deletion request are not stop evidence; a recreated Pod has
+a new UID. An allocation UUID and its canonical receipt digest identify one
+immutable Tenant/start/end payload. An identical retry reuses the committed facts; a conflicting payload fails and is not acknowledged to the
 runner. Entirely exempt and uncovered allocations still retain their raw receipt.
 
 Authoritative boundaries and durations are nonnegative signed 64-bit Unix epoch
@@ -24,6 +26,11 @@ attribution at `sampled_at`. The first accepted sample for a Tenant's UTC day is
 immutable across replicas and retries, including zero bytes. A point exactly at
 an account move belongs to the successor coverage interval. Exempt source samples
 are retained but excluded from the existing billable usage projection.
+
+Retained Node files remain in the active Tenant's storage meter until physical
+purge, according to the Offering; the whole-Tenant deletion exemption still
+applies. Daily sampling explicitly includes zero bytes after physical purge so a
+previous nonzero sample cannot become perpetual usage.
 
 ## Account-period queries
 

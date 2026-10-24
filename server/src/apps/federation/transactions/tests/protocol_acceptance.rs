@@ -2383,3 +2383,6 @@ async fn node_closure_fences_a_participant_snapshot_taken_before_deletion(
 	a.cleanup().await;
 	b.cleanup().await;
 }
+
+#[path = "protocol_acceptance/receiving_keys.rs"]
+mod receiving_keys;

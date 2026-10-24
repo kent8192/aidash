@@ -1,14 +1,15 @@
 name: CI
 on:
+  workflow_call:
   pull_request:
   push:
-    branches: [main, "develop/**"]
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  # Every development line shares one slot. A newer push or manual run replaces
-  # both the running and pending full development CI, while PRs stay independent.
+  # Release CI reuses these jobs for develop pushes. Keep its development runs
+  # in one slot while application PRs retain their independent groups.
   group: ci-${{ startsWith(github.ref, 'refs/heads/develop/') && 'develop' || github.ref }}
   cancel-in-progress: true
 env:
