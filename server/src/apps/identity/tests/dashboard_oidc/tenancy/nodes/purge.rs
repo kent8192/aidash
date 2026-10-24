@@ -1604,9 +1604,14 @@ async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_
 	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	// Credentials keep a real FK to policy. Remove only this deliberate
-	// corruption fixture's authority, then its policy, without any completed
-	// TenantDeletion that could authorize audit expiry.
+	// Dashboard mappings reference credentials, which reference policy. This
+	// Tenant has no Runs/execution origins; remove only its own authority in
+	// FK order, without a completed TenantDeletion authorizing audit expiry.
+	sqlx::query("DELETE FROM dashboard_mappings WHERE tenant=$1")
+		.bind(&tenant)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	sqlx::query("DELETE FROM authorization_credentials WHERE tenant=$1")
 		.bind(&tenant)
 		.execute(d.federation.store.pool.fixture_driver())
