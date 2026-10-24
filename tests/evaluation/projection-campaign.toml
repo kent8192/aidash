@@ -1,0 +1,38 @@
+schema_version = 1
+name = "matched-projections-v1"
+pilot_repeats = 10
+execution_seed = 181
+primary_estimator = "bytes"
+independent_blocks = false
+independence_evidence = ""
+required_routes = ["automatic", "explicit"]
+
+[limits]
+max_spend_nanocredits = 50000000000
+max_wall_seconds = 14400
+run_timeout_seconds = 180
+
+[primary_weights]
+code-change-hidden-regression = 0.125
+code-change-verified-fix = 0.125
+structured-data-overdue-totals = 0.25
+long-conversation-corrections = 0.25
+correction-lost-in-pruned-tool-result = 0.25
+
+[routes.automatic]
+upstream_model = "openai/gpt-oss-20b"
+provider_tag = "groq"
+cache_mode = "automatic"
+reasoning_effort = "medium"
+comparison = "projection"
+arms = ["legacy", "ordered", "native"]
+corpus_models = ["standard", "small-window"]
+
+[routes.explicit]
+upstream_model = "anthropic/claude-haiku-5.5"
+provider_tag = "google-vertex/global"
+cache_mode = "explicit"
+reasoning_effort = "medium"
+comparison = "explicit-projection"
+arms = ["legacy", "ordered", "native", "ordered-explicit", "native-explicit"]
+corpus_models = ["explicit-cache", "explicit-small-window"]

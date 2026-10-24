@@ -4,10 +4,10 @@
 // emitter's finite catalog audit, so retain its permanent same-Tenant identity.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0054_session_area_lifetime", "execution")
+	Migration::new("0056_session_area_lifetime", "execution")
 		.add_dependency(
 			"execution",
-			"0053_node_cancellation_jobs_row_level_security",
+			"0055_node_cancellation_jobs_row_level_security",
 		)
 		.database_only(true)
 		.atomic(true)

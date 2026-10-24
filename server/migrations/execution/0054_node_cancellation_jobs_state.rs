@@ -1,8 +1,8 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0052_node_cancellation_jobs_state", "execution")
-		.add_dependency("execution", "0051_node_cancellation_jobs")
+	Migration::new("0054_node_cancellation_jobs_state", "execution")
+		.add_dependency("execution", "0053_node_cancellation_jobs")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
