@@ -28,11 +28,6 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from allocation_usage import AllocationJournal, FINALIZER
 from runner_journal import Rejected, identity, save, sync_directory
-from allocation_usage import AllocationJournal, FINALIZER
-
-TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
-# The sandbox image's runner/probe.py must emit exactly this evidence contract.
-PROBE_PROTOCOL = "aidash-admission-probe/2"
 
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.
