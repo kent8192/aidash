@@ -4688,10 +4688,12 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider
 	FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider { state, server }
 }
 
+type InferenceInvalidation = (Store, Uuid, Option<serde_json::Value>);
+
 #[derive(Clone)]
 struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 	id: Uuid,
-	invalidate: Arc<Mutex<Option<(Store, Uuid, Option<serde_json::Value>)>>>,
+	invalidate: Arc<Mutex<Option<InferenceInvalidation>>>,
 	reflect: bool,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
