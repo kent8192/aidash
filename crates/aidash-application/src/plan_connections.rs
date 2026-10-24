@@ -1008,10 +1008,28 @@ impl Service {
 			if row.pinned_version.as_ref() == Some(&version) {
 				continue;
 			}
-			let value = self
+			let value = match self
 				.reader
 				.read(&row.tenant, &row.secret_resource, &version)
-				.await?;
+				.await
+			{
+				Ok(value) => value,
+				Err(error @ Error::Invalid(_)) => {
+					// A completed refresh cleans up after releasing its scope.
+					// Ignore a version it removed after this scan listed it,
+					// but keep failures for versions that still exist.
+					if !self
+						.store
+						.versions(&row.tenant, &row.secret_resource)
+						.await?
+						.contains(&version)
+					{
+						continue;
+					}
+					return Err(error);
+				}
+				Err(error) => return Err(error),
+			};
 			match StoredVersion::open(&value)? {
 				StoredVersion::Intent { refresh_intent } if refresh_intent == base => {
 					intents.push(version)

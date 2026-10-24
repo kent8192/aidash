@@ -146,6 +146,8 @@ struct Failing {
 	destroy: bool,
 	passing_destroys: usize,
 	delete: bool,
+	/// Fail a version read, optionally removing it after it was listed.
+	read: Option<(String, bool)>,
 }
 impl FakeStore {
 	fn plaintexts(&self) -> Vec<String> {
@@ -239,6 +241,15 @@ impl KeyMaterialReader for FakeStore {
 	async fn read(&self, _: &str, resource: &str, version: &str) -> Result<SecretString> {
 		let (pinned, n) = split(version);
 		assert_eq!(pinned, resource);
+		let failure = self.1.lock().unwrap().read.clone();
+		if let Some((failed, deleted)) = failure
+			&& failed == version
+		{
+			if deleted {
+				self.0.lock().unwrap().get_mut(resource).unwrap().remove(&n);
+			}
+			return Err(Error::Invalid("version unavailable".into()));
+		}
 		self.0
 			.lock()
 			.unwrap()
@@ -759,6 +770,38 @@ async fn expiring_tokens_are_refreshed_and_rotated() {
 			.expose_secret(),
 		"access-r1"
 	);
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+}
+
+/// Cleanup from a completed refresh may remove a stale version after the
+/// next call lists it. Only confirmed deletion may bypass a failed read.
+#[rstest::rstest]
+#[case::deleted_version_uses_current_pin(true)]
+#[case::unreadable_version_still_fails(false)]
+#[tokio::test]
+async fn stale_version_read_failures_are_reconciled(#[case] deleted: bool) {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let before = only_row(&fixture).await;
+	fixture.store.1.lock().unwrap().destroy = true;
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	fixture.service.bearer(before.pin()).await.unwrap();
+	let refreshed = only_row(&fixture).await;
+	{
+		let mut faults = fixture.store.1.lock().unwrap();
+		faults.destroy = false;
+		faults.read = Some((before.pinned_version.unwrap(), deleted));
+	}
+	let bearer = fixture.service.bearer(refreshed.pin()).await;
+	if deleted {
+		assert_eq!(bearer.unwrap().expose_secret(), "access-r1");
+	} else {
+		assert!(matches!(bearer, Err(Error::Invalid(_))));
+	}
+	let after = only_row(&fixture).await;
+	assert_eq!(after.state, State::Active);
+	assert_eq!(after.pinned_version, refreshed.pinned_version);
+	assert_eq!(after.revision, refreshed.revision);
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
 }
 
