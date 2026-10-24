@@ -3,8 +3,30 @@
 //! cryptographic/routing recovery dependency remains usable after restart.
 use super::*;
 use crate::fixtures::peering;
-use aidash_domain::nodes::NodeAddress;
+use aidash_application::{
+	federation::{
+		inbound::{self, Inbound, Proof, RequestDigest},
+		key::Signing,
+	},
+	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner},
+};
+use aidash_capability::{
+	InMemorySigner, TokenSigner,
+	federation::{
+		FederationClaims, body_digest,
+		rollover::{RolloverClaims, mint_transition},
+	},
+};
+use aidash_domain::{
+	nodes::{DeploymentKeyId, NodeAddress},
+	tenancy::TenantName,
+};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use secrecy::ExposeSecret;
+#[path = "../../../execution/tests/support/federation_clock.rs"]
+mod federation_clock;
 use aidash_server::apps::identity::services::node_purge;
+use federation_clock::Clock;
 
 async fn peer_call(
 	source: &Node,
@@ -97,6 +119,130 @@ async fn trust_row(node: &Node, owner: &str, source: &str) -> Value {
 	.fetch_one(node.f.store.pool.fixture_driver())
 	.await
 	.unwrap()
+}
+
+async fn disable(node: &Node, target: &str, source: &str) -> Value {
+	let mut value = peering::registration(source, None);
+	value["enabled"] = json!(false);
+	value["atomic_transactions"] = json!(false);
+	value["expected_revision"] = json!(1);
+	let (status, body) = node
+		.post(&peering::registration_path("acme", target), &value)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let row = trust_row(node, target, source).await;
+	assert_eq!(row["enabled"], false);
+	assert_eq!(row["atomic_transactions"], false);
+	assert_eq!(row["revision"], 2);
+	row
+}
+
+async fn signed_call(
+	target: &Node,
+	claims: &FederationClaims,
+	signer: &dyn TokenSigner,
+	body: &[u8],
+) -> (u16, Value) {
+	let token = claims.mint(signer).await.unwrap();
+	let mut request = target
+		.peer_client
+		.request(
+			http::Method::from_bytes(claims.method.as_bytes()).unwrap(),
+			&format!("/federation/v0.1{}", claims.path),
+		)
+		.body(bytes::Bytes::copy_from_slice(body))
+		.header(http::header::CONTENT_TYPE, "application/json");
+	for (name, value) in peering::peer_headers(token.expose_secret()) {
+		request = request.header(name, value.as_str());
+	}
+	let response = request.send().await.unwrap();
+	(
+		response.status_code(),
+		response.json_value().unwrap_or(Value::Null),
+	)
+}
+
+async fn successor(
+	source: &Node,
+	target: &Node,
+	method: &str,
+	path: &str,
+	body: &[u8],
+	seed: u8,
+) -> (InMemorySigner, FederationClaims, u64) {
+	let raw = InMemorySigner::new("temporary".into(), [seed; 32]);
+	let next = InMemorySigner::new(
+		DeploymentKeyId::of_public_key(&raw.public_key().to_bytes()).to_string(),
+		[seed; 32],
+	);
+	let old = source.f.config.deployment_key.as_deref().unwrap();
+	let now = Utc::now().timestamp() as u64;
+	let retires = now - 3600 + 604800;
+	let transition = mint_transition(
+		&RolloverClaims {
+			deployment: source.f.config.deployment.to_string(),
+			predecessor_kid: old.key_id().to_string(),
+			successor_kid: next.kid().into(),
+			successor_public_key: URL_SAFE_NO_PAD.encode(next.public_key().to_bytes()),
+			published_at: now - 90000,
+			activates_at: now - 3600,
+			retires_at: retires,
+		},
+		&Signing(old),
+	)
+	.await
+	.unwrap();
+	let claims = FederationClaims {
+		iss: source.f.config.deployment.to_string(),
+		sub: source.address.clone(),
+		aud: target.address.clone(),
+		subject: String::new(),
+		iat: now,
+		exp: now + 60,
+		jti: Uuid::new_v4(),
+		kid: next.kid().into(),
+		protocol: aidash_domain::federation::protocol::CURRENT.into(),
+		method: method.into(),
+		path: path.into(),
+		body: body_digest(body),
+		transition: Some(transition),
+	};
+	(next, claims, retires)
+}
+
+async fn retired_admission(
+	source: &Node,
+	target: &Node,
+	claims: &FederationClaims,
+	signer: &dyn TokenSigner,
+	body: &[u8],
+	after: u64,
+) -> aidash_application::Result<aidash_application::federation::inbound::Admitted> {
+	let token = FederationClaims {
+		iat: after,
+		exp: after + 60,
+		jti: Uuid::new_v4(),
+		transition: None,
+		..claims.clone()
+	}
+	.mint(signer)
+	.await
+	.unwrap();
+	inbound::accept(
+		Inbound {
+			receiver: NodeAddress::parse(&target.address).unwrap(),
+			sender: NodeAddress::parse(&source.address).unwrap(),
+			subject: String::new(),
+			proof: Proof::Token(token.expose_secret().to_owned()),
+		},
+		&RequestDigest {
+			method: &claims.method,
+			path: &claims.path,
+			body,
+		},
+		&Clock(&target.f, after),
+	)
+	.await
 }
 
 async fn purge_and_expire(node: &Node, target: &str) {
@@ -195,8 +341,6 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	assert_eq!(status, 200, "{body}");
 	let (target_file_a, kept_file_a) = (file(&a, wa).await, file(&a, workspace_a).await);
 	let (target_file_b, kept_file_b) = (file(&b, wb).await, file(&b, workspace_b).await);
-	let original_a = trust_row(&a, &target_a, &b.address).await;
-	let original_b = trust_row(&b, &target_b, &a.address).await;
 	a.submit(&manifest).await;
 	if abort {
 		steps(&a, manifest.id, 2).await;
@@ -231,6 +375,7 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 		acknowledged, 0,
 		"terminal reply was not saved at the coordinator"
 	);
+	let original_b = disable(&b, &target_b, &a.address).await;
 	purge_and_expire(&b, &target_b).await;
 	assert!(
 		!storage_b
@@ -262,6 +407,7 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 		Some(if abort { "ABORT" } else { "COMMIT" })
 	);
 	// A completed coordinator journal still serves exact decision retries.
+	let original_a = disable(&a, &target_a, &b.address).await;
 	purge_and_expire(&a, &target_a).await;
 	assert!(
 		!storage_a
@@ -277,37 +423,143 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	);
 	assert_eq!(trust_row(&a, &target_a, &b.address).await, original_a);
 	a.restart().await;
-	let (status, replay) = peer_call(&a, &b, &a.address, "/transactions/finish", &manifest).await;
-	assert_eq!(status, 200, "{replay}");
-	assert_eq!(replay["phase"], phase);
+	let body = serde_json::to_vec(&manifest).unwrap();
+	let (next_a, finish_claims, retires_a) =
+		successor(&a, &b, "POST", "/transactions/finish", &body, 31).await;
+	// All negatives carry a valid successor proof after both catalog/audit rows
+	// are actually absent. Refusal must precede any retained-trust mutation.
 	let mut fresh = manifest.clone();
 	fresh.id = Uuid::new_v4();
-	for path in ["/transactions/reserve", "/transactions/prepare"] {
-		let (status, body) = peer_call(&a, &b, &a.address, path, &fresh).await;
-		assert!((400..500).contains(&status), "{path}: {status}: {body}");
+	let mut forged = manifest.clone();
+	forged.deadline += Duration::seconds(1);
+	for (path, request, sender) in [
+		("/transactions/reserve", &fresh, a.address.as_str()),
+		("/transactions/prepare", &fresh, a.address.as_str()),
+		("/transactions/finish", &forged, a.address.as_str()),
+		("/transactions/finish", &manifest, keeper_a_address.as_str()),
+	] {
+		let bytes = serde_json::to_vec(request).unwrap();
+		let denied = FederationClaims {
+			path: path.into(),
+			sub: sender.into(),
+			body: body_digest(&bytes),
+			jti: Uuid::new_v4(),
+			..finish_claims.clone()
+		};
+		let (status, value) = signed_call(&b, &denied, &next_a, &bytes).await;
+		assert_eq!(status, 401, "{path}: {value}");
+		assert_eq!(trust_row(&b, &target_b, &a.address).await, original_b);
 	}
 	let admitted: i64 = sqlx::query_scalar("SELECT count(*) FROM atomic_participants WHERE id=$1")
 		.bind(fresh.id)
 		.fetch_one(b.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	assert_eq!(admitted, 0, "fresh work creates no journal");
+	let (status, replay) = signed_call(&b, &finish_claims, &next_a, &body).await;
+	assert_eq!(status, 200, "physical-erasure successor Finish: {replay}");
+	assert_eq!(replay["phase"], phase);
+	// The reverse decision owner independently learns the participant's new key.
+	let decision_path = format!("/transactions/{}/decision", manifest.id);
+	let (next_b, decision_claims, retires_b) =
+		successor(&b, &a, "GET", &decision_path, &[], 32).await;
+	let (status, decision) = signed_call(&a, &decision_claims, &next_b, &[]).await;
 	assert_eq!(
-		admitted, 0,
-		"fresh admission never creates a recovery journal"
+		status, 200,
+		"physical-erasure successor decision: {decision}"
 	);
-	let (status, body) =
-		peer_call(&a, &b, &keeper_a_address, "/transactions/finish", &manifest).await;
-	assert!(
-		(400..500).contains(&status),
-		"wrong caller: {status}: {body}"
+	let owner_b = ReceivingKeyOwner::Registration {
+		tenant: TenantName::new("acme").unwrap(),
+		node: NodeAddress::parse(&b.address).unwrap().node,
+		source_node: NodeAddress::parse(&a.address).unwrap(),
+	};
+	let owner_a = ReceivingKeyOwner::Registration {
+		tenant: TenantName::new("acme").unwrap(),
+		node: NodeAddress::parse(&a.address).unwrap().node,
+		source_node: NodeAddress::parse(&b.address).unwrap(),
+	};
+	let learned_b = b.f.receiving_keys(&owner_b).await.unwrap().unwrap();
+	let learned_a = a.f.receiving_keys(&owner_a).await.unwrap().unwrap();
+	for (learned, expected) in [(&learned_b, next_a.kid()), (&learned_a, next_b.kid())] {
+		assert_eq!(learned.keys.current.key_id.as_str(), expected);
+		assert_eq!(learned.keys_revision, 2);
+	}
+	for (node, target, source, before) in [
+		(&a, &target_a, &b.address, &original_a),
+		(&b, &target_b, &a.address, &original_b),
+	] {
+		let after = trust_row(node, target, source).await;
+		for field in [
+			"enabled",
+			"atomic_transactions",
+			"revision",
+			"actor",
+			"created_at",
+			"updated_at",
+			"source_endpoint",
+		] {
+			assert_eq!(
+				after.get(field).unwrap(),
+				before.get(field).unwrap(),
+				"{field}"
+			);
+		}
+		assert_eq!(after["revision"], 2);
+		assert_eq!(after["enabled"], false);
+	}
+	a.restart().await;
+	b.restart().await;
+	assert_eq!(
+		a.f.receiving_keys(&owner_a).await.unwrap().unwrap(),
+		learned_a
 	);
-	let mut forged = manifest.clone();
-	forged.deadline += Duration::seconds(1);
-	let (status, body) = peer_call(&a, &b, &a.address, "/transactions/finish", &forged).await;
-	assert!(
-		(400..500).contains(&status),
-		"wrong manifest: {status}: {body}"
+	assert_eq!(
+		b.f.receiving_keys(&owner_b).await.unwrap().unwrap(),
+		learned_b
 	);
+	// Only admission time is virtual. Restarted production adapters retain all
+	// authority/key reads; actual terminal work fetches reverse decision HTTP
+	// at wall-clock time, not a claim of a future HTTP listener.
+	let after = retires_a.max(retires_b) + 1;
+	let admission = retired_admission(&a, &b, &finish_claims, &next_a, &body, after)
+		.await
+		.unwrap();
+	let terminal = participant::finish(&b.f, Some(&admission), &a.address, &manifest)
+		.await
+		.unwrap();
+	assert_eq!(terminal.phase, phase);
+	retired_admission(&b, &a, &decision_claims, &next_b, &[], after)
+		.await
+		.unwrap();
+	for (source, target, current, bytes) in [
+		(&a, &b, &finish_claims, body.as_slice()),
+		(&b, &a, &decision_claims, &[][..]),
+	] {
+		let old = source.f.config.deployment_key.as_deref().unwrap();
+		let old_claims = FederationClaims {
+			kid: old.key_id().to_string(),
+			..current.clone()
+		};
+		assert!(matches!(
+			retired_admission(source, target, &old_claims, &Signing(old), bytes, after).await,
+			Err(aidash_application::Error::Unauthorized)
+		));
+	}
+	// A fixture quarantine models retained current state. This is not manual
+	// 8b API acceptance and never clears quarantine or restores authority.
+	let mut quarantined = learned_b.keys.clone();
+	quarantined.quarantine();
+	sqlx::query("UPDATE node_registrations SET source_keys=$1,keys_revision=keys_revision+1 WHERE tenant='acme' AND node=$2 AND source_node=$3")
+        .bind(serde_json::to_string(&quarantined).unwrap()).bind(&target_b).bind(&a.address).execute(b.f.store.pool.fixture_driver()).await.unwrap();
+	let held = trust_row(&b, &target_b, &a.address).await;
+	let denied = FederationClaims {
+		jti: Uuid::new_v4(),
+		transition: None,
+		..finish_claims.clone()
+	};
+	let (status, value) = signed_call(&b, &denied, &next_a, &body).await;
+	assert_eq!(status, 401, "quarantined exact recovery refuses: {value}");
+	assert_eq!(trust_row(&b, &target_b, &a.address).await, held);
 	for (node, removed, kept) in [(&a, wa, workspace_a), (&b, wb, workspace_b)] {
 		let counts: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM workspaces WHERE id=$1),(SELECT count(*) FROM workspaces WHERE id=$2)").bind(removed).bind(kept).fetch_one(node.f.store.pool.fixture_driver()).await.unwrap();
 		assert_eq!(counts, (0, 1), "recovery never resurrects ordinary data");
