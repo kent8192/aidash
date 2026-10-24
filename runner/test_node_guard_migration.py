@@ -1,5 +1,7 @@
+import base64
 import fcntl
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +65,11 @@ class GuardMigrationTest(unittest.TestCase):
             current = root / 'release'
             legacy = root / 'legacy'
             legacy.mkdir()
+            native = root / 'native'
+            native.mkdir()
+            work = root / 'saved-work'
+            work.mkdir()
+            (work / 'saved.txt').write_bytes(b'saved before termination')
             area = '00000000-0000-0000-0000-000000000001'
             binding = {'container_id': 'a' * 64, 'pod_uid': '00000000-0000-0000-0000-000000000002',
                        'area_id': area, 'epoch': 1, 'image': 'image'}
@@ -72,19 +79,117 @@ class GuardMigrationTest(unittest.TestCase):
             (legacy / (area + '.json')).write_text(json.dumps(stopped))
             (legacy / (exited['area_id'] + '.json')).write_text(json.dumps(exited))
 
+            native_actions = []
+
+            def native_command(*args, **kwargs):
+                if 'list' in args:
+                    return (binding['container_id'] + '\n').encode()
+                native_actions.append(args)
+                raise AssertionError('unverified native action')
+
             with patch.object(node_guard, 'ROOT', current), patch.object(node_guard, 'LEGACY_ROOT', legacy), \
-                    patch.object(node_guard, 'validate', side_effect=FileNotFoundError('container removed')) as validate, \
+                    patch.object(node_guard, 'RUNTIME', str(native)), \
+                    patch.object(node_guard, 'validate', side_effect=FileNotFoundError('binding unavailable')), \
+                    patch.object(node_guard, 'command', side_effect=native_command), \
+                    patch.object(node_guard, 'volume', return_value=work), \
                     patch.object(node_guard, 'process_identity', side_effect=FileNotFoundError):
                 node_guard.migrate_legacy()
                 status = node_guard.handle(dict(binding, action='status'))
+                node_guard.retry_cleanup('')
+                recovered = node_guard.handle(dict(binding, action='read', path='saved.txt', offset=0))
 
-            validate.assert_not_called()
             self.assertEqual(status, {'termination_confirmed': True, 'status': 'stopped'})
-            self.assertEqual(json.loads((current / (area + '.json')).read_text()), stopped)
+            self.assertEqual(base64.b64decode(recovered['data']), b'saved before termination')
+            retained = json.loads((current / (area + '.json')).read_text())
+            self.assertTrue(retained['terminated'])
+            self.assertTrue(retained['native_cleanup_queued'])
+            self.assertEqual({key:retained[key] for key in binding}, binding)
+            pending = current / 'runtime-cleanup' / (binding['container_id'] + '.json')
+            self.assertTrue(pending.exists())
+            self.assertEqual(json.loads(pending.read_text())['last_error'], 'FileNotFoundError')
+            self.assertEqual(native_actions, [])
             self.assertEqual(json.loads((current / (exited['area_id'] + '.json')).read_text()),
                              dict(exited, terminated=True, deadline=None, frozen=False))
             # Each release adopts its own copy of the proof.
             self.assertTrue((legacy / (area + '.json')).exists())
+
+    def test_pending_cleanup_survives_new_heap_and_restarted_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current, native = root / 'guard', root / 'native'
+            current.mkdir()
+            native.mkdir()
+            old = dict(container_id='a' * 64, pod_uid='00000000-0000-0000-0000-000000000002',
+                       area_id='00000000-0000-0000-0000-000000000001', epoch=1, image='pinned')
+            new = dict(old, container_id='b' * 64, pod_uid='00000000-0000-0000-0000-000000000003', epoch=2)
+            area = current / (old['area_id'] + '.json')
+            area.write_text(json.dumps(dict(old, terminated=True, frozen=False, deadline=None)))
+            containers = {old['container_id']:old, new['container_id']:new}
+            deleted = []
+            inventory = None
+            delete_fails = True
+
+            def native_command(*args, **kwargs):
+                if 'list' in args:
+                    if isinstance(inventory, Exception):
+                        raise inventory
+                    return inventory if inventory is not None else ('\n'.join(containers) + '\n').encode()
+                cid = args[-1]
+                observed = containers[cid]
+                if 'info' in args:
+                    return json.dumps({'ID':cid, 'Runtime':{'Name':'io.containerd.runsc.v1'}, 'Labels':{
+                        'io.kubernetes.pod.namespace':node_guard.NAMESPACE,
+                        'io.kubernetes.pod.uid':observed['pod_uid'],
+                        'io.kubernetes.container.name':'execution',
+                        'io.kubernetes.pod.name':'operation-owned'}}).encode()
+                if 'state' in args:
+                    return json.dumps({'id':cid, 'status':'stopped' if cid == old['container_id'] else 'paused',
+                        'pid':0 if cid == old['container_id'] else 4242,
+                        'annotations':{'io.kubernetes.cri.image-name':observed['image']}}).encode()
+                if 'delete' in args:
+                    # Native cleanup must not hold the newer heap's deadline
+                    # lock while the external runtime can block or fail.
+                    with (current / (old['area_id'] + '.lock')).open('a') as deadline_lock:
+                        fcntl.flock(deadline_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    deleted.append(cid)
+                    if delete_fails:
+                        raise subprocess.TimeoutExpired('native cleanup', 15)
+                    del containers[cid]
+                    return b''
+                raise AssertionError('unexpected native boundary')
+
+            with patch.object(node_guard, 'ROOT', current), patch.object(node_guard, 'RUNTIME', str(native)), \
+                    patch.object(node_guard, 'command', side_effect=native_command), \
+                    patch.object(node_guard, 'process_identity', return_value=('2', 'S')):
+                self.assertTrue(node_guard.handle(dict(old, action='status'))['termination_confirmed'])
+                pending = current / 'runtime-cleanup' / (old['container_id'] + '.json')
+                with self.assertRaisesRegex(ValueError, 'terminated execution cannot be reused'):
+                    node_guard.handle(dict(old, action='status', epoch=2))
+                # Failed, malformed, duplicate and prefix-only inventories cannot
+                # be converted into completed native absence.
+                for inventory in (FileNotFoundError('native command missing'), b'not-an-id\n',
+                                  (old['container_id'] + 'c\n').encode(),
+                                  ((old['container_id'] + '\n') * 2).encode()):
+                    node_guard.retry_cleanup('')
+                    self.assertTrue(pending.exists())
+                    self.assertEqual(deleted, [])
+                inventory = None
+                node_guard.retry_cleanup('')
+                self.assertTrue(pending.exists())
+                self.assertTrue(node_guard.handle(dict(old, action='status'))['termination_confirmed'])
+
+                # Ordinary admission of the next heap replaces area state, while
+                # the old exact-container cleanup remains independently durable.
+                self.assertTrue(node_guard.handle(dict(new, action='freeze', idle_seconds=60))['writer_frozen'])
+                self.assertEqual(json.loads(area.read_text())['container_id'], new['container_id'])
+                self.assertTrue(pending.exists())
+                delete_fails = False
+                # A fresh reader has no prior in-memory queue cursor or binding.
+                node_guard.retry_cleanup('')
+                self.assertFalse(pending.exists())
+                self.assertEqual(deleted, [old['container_id'], old['container_id']])
+                self.assertIn(new['container_id'], containers)
+                self.assertFalse(node_guard.handle(dict(new, action='status'))['termination_confirmed'])
 
     def test_existing_target_retires_the_legacy_record_without_revalidation(self):
         with tempfile.TemporaryDirectory() as directory:
