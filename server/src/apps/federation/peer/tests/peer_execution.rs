@@ -380,6 +380,7 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		(&child, &child_runtime, &home, &home_runtime),
 	] {
 		peering::permit(runtime, &peer.server.url);
+		endpoint::tenant_scope(&runtime.store, "acme").await;
 		let node = endpoint::default_node(&runtime.store, "acme").await;
 		let remote = endpoint::default_node(&peer_runtime.store, "acme").await;
 		let registered = owner
