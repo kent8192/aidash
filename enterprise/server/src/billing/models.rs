@@ -51,6 +51,28 @@ pub struct BillingAttachment {
 	pub consented_by_owner: Uuid,
 }
 
+/// Durable account coverage over `[starts_at, ends_at)`. The current attachment
+/// is only an admission projection; moves retain the preceding interval here.
+/// An open interval survives Tenant purge without inventing a detach time.
+#[model(app_label = "billing", table_name = "billing_coverage_periods")]
+#[derive(Serialize, Deserialize)]
+pub struct BillingCoveragePeriod {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub account_id: Uuid,
+	#[field]
+	pub starts_at: DateTime<Utc>,
+	#[field(null = true)]
+	pub ends_at: Option<DateTime<Utc>>,
+	#[field]
+	pub consented_by_administrator: Uuid,
+	#[field]
+	pub consented_by_owner: Uuid,
+}
+
 /// One party's consent to attaching a Tenant to a Billing Account. The
 /// attachment happens when both parties have consented.
 #[model(app_label = "billing", table_name = "billing_attachment_consents")]

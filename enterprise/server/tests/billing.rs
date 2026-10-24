@@ -26,6 +26,16 @@ use uuid::Uuid;
 
 const DEPLOYMENT_ADMINISTRATOR: &str = "deployment-administrator-execution-fixture";
 
+#[derive(Debug, PartialEq)]
+struct Coverage {
+	id: Uuid,
+	account_id: Uuid,
+	starts_at: DateTime<Utc>,
+	ends_at: Option<DateTime<Utc>>,
+	consented_by_administrator: Uuid,
+	consented_by_owner: Uuid,
+}
+
 fn settings() -> Arc<Settings> {
 	Arc::new(Settings::from_value(sandbox_defaults()).unwrap())
 }
@@ -284,6 +294,33 @@ impl Cloud {
 			.fetch_one(self.federation.store.pool.fixture_driver())
 			.await
 			.unwrap()
+	}
+
+	async fn coverage(&self, tenant: &str) -> Vec<Coverage> {
+		let rows: Vec<(Uuid, Uuid, DateTime<Utc>, Option<DateTime<Utc>>, Uuid, Uuid)> = sqlx::query_as("SELECT id, account_id, starts_at, ends_at, consented_by_administrator, consented_by_owner FROM billing_coverage_periods WHERE tenant = $1 ORDER BY starts_at")
+			.bind(tenant)
+			.fetch_all(self.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		rows.into_iter()
+			.map(
+				|(
+					id,
+					account_id,
+					starts_at,
+					ends_at,
+					consented_by_administrator,
+					consented_by_owner,
+				)| Coverage {
+					id,
+					account_id,
+					starts_at,
+					ends_at,
+					consented_by_administrator,
+					consented_by_owner,
+				},
+			)
+			.collect()
 	}
 
 	/// Queues a Run in `tenant`, which the admission gate may refuse.
@@ -1496,5 +1533,530 @@ async fn a_tier_downgrade_and_node_creation_share_the_capacity_lock(
 		);
 	}
 
+	d.finish().await;
+}
+
+/// Replaying an authorized attachment must not consume a different pending move,
+/// rewrite the consent authors, or bypass the HTTP authority/deletion checks.
+#[rstest::rstest]
+#[tokio::test]
+async fn coverage_same_account_is_an_authorized_noop(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let (alice, bob, carol) = (
+		d.person("alice").await,
+		d.person("bob").await,
+		d.person("carol").await,
+	);
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let account = d.account(&bob, Some("team")).await;
+	let other = d.account(&carol, Some("team")).await;
+	assert_eq!(
+		d.attach(&alice, &context, &bob, &tenant, account).await.1.1["state"],
+		"attached"
+	);
+	let pool = d.federation.store.pool.fixture_driver();
+	let before: Value =
+		sqlx::query_scalar("SELECT to_jsonb(a) FROM billing_attachments a WHERE tenant = $1")
+			.bind(&tenant)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	let (_, pending) = d
+		.call(
+			&carol,
+			"POST",
+			&format!("/api/billing/accounts/{other}/attachments"),
+			None,
+			json!({"tenant":tenant}),
+		)
+		.await;
+	assert_eq!(pending["state"], "awaiting_other_party");
+	// Even a suspended account remains an idempotent attachment; this admits no
+	// new capacity and must not ask for or record either party's consent again.
+	d.subscribe(account, "team", Status::Suspended).await;
+	for (person, path, selector, body) in [
+		(
+			&alice,
+			format!("/api/tenants/{tenant}/billing/attachment"),
+			Some(context.as_str()),
+			json!({"account":account}),
+		),
+		(
+			&bob,
+			format!("/api/billing/accounts/{account}/attachments"),
+			None,
+			json!({"tenant":tenant}),
+		),
+	] {
+		let (status, result) = d.call(person, "POST", &path, selector, body).await;
+		assert_eq!(
+			(status, &result["state"]),
+			(200, &json!("attached")),
+			"{result}"
+		);
+	}
+	let after: Value =
+		sqlx::query_scalar("SELECT to_jsonb(a) FROM billing_attachments a WHERE tenant = $1")
+			.bind(&tenant)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	assert_eq!(after, before);
+	let periods = d.coverage(&tenant).await;
+	assert_eq!(periods.len(), 1);
+	assert_eq!(
+		periods[0].starts_at,
+		DateTime::parse_from_rfc3339(before["attached_at"].as_str().unwrap())
+			.unwrap()
+			.with_timezone(&Utc)
+	);
+	assert_eq!(
+		(
+			periods[0].consented_by_administrator,
+			periods[0].consented_by_owner
+		),
+		(alice.identity, bob.identity)
+	);
+	let remaining: Vec<Uuid> =
+		sqlx::query_scalar("SELECT account_id FROM billing_attachment_consents WHERE tenant = $1")
+			.bind(&tenant)
+			.fetch_all(pool)
+			.await
+			.unwrap();
+	assert_eq!(remaining, vec![other]);
+	let (status, _) = d
+		.call(
+			&carol,
+			"POST",
+			&format!("/api/billing/accounts/{account}/attachments"),
+			None,
+			json!({"tenant":tenant}),
+		)
+		.await;
+	assert_eq!(status, 404);
+	sqlx::query(
+		"UPDATE dashboard_mappings SET enabled = false WHERE tenant = $1 AND identity_id = $2",
+	)
+	.bind(&tenant)
+	.bind(alice.identity)
+	.execute(pool)
+	.await
+	.unwrap();
+	let (status, _) = d
+		.call(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/billing/attachment"),
+			Some(&context),
+			json!({"account":account}),
+		)
+		.await;
+	assert_eq!(status, 403);
+	sqlx::query("INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) VALUES ($1, $2, clock_timestamp(), 'deployment_administrator', clock_timestamp() + interval '30 days', 0)")
+        .bind(Uuid::new_v4()).bind(&tenant).execute(pool).await.unwrap();
+	let (status, _) = d
+		.call(
+			&bob,
+			"POST",
+			&format!("/api/billing/accounts/{account}/attachments"),
+			None,
+			json!({"tenant":tenant}),
+		)
+		.await;
+	assert_eq!(status, 404);
+	assert_eq!(d.coverage(&tenant).await, periods);
+	d.finish().await;
+}
+
+/// Either consent order produces one interval; a later move ends it exactly
+/// where the next starts, atomically with the admission projection.
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn coverage_moves_share_one_half_open_boundary(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[case] owner_first: bool,
+) {
+	let d = Cloud::new(runtime).await;
+	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let first = d.account(&bob, Some("team")).await;
+	let second = d.account(&bob, Some("team")).await;
+	for account in [first, second] {
+		let admin_path = format!("/api/tenants/{tenant}/billing/attachment");
+		let owner_path = format!("/api/billing/accounts/{account}/attachments");
+		let admin = d.call(
+			&alice,
+			"POST",
+			&admin_path,
+			Some(&context),
+			json!({"account":account}),
+		);
+		let owner = d.call(&bob, "POST", &owner_path, None, json!({"tenant":tenant}));
+		let (pending, attached) = if owner_first {
+			(owner.await, admin.await)
+		} else {
+			(admin.await, owner.await)
+		};
+		assert_eq!(pending.1["state"], "awaiting_other_party");
+		assert_eq!(
+			(attached.0, &attached.1["state"]),
+			(200, &json!("attached")),
+			"{:?}",
+			attached
+		);
+	}
+	let periods = d.coverage(&tenant).await;
+	assert_eq!(periods.len(), 2);
+	assert_eq!(
+		(periods[0].account_id, periods[1].account_id),
+		(first, second)
+	);
+	assert_eq!(periods[0].ends_at, Some(periods[1].starts_at));
+	assert!(periods[0].starts_at < periods[1].starts_at);
+	assert_eq!(periods[1].ends_at, None);
+	for period in &periods {
+		assert_eq!(
+			(period.consented_by_administrator, period.consented_by_owner),
+			(alice.identity, bob.identity)
+		);
+	}
+	let current: (Uuid, DateTime<Utc>) =
+		sqlx::query_as("SELECT account_id, attached_at FROM billing_attachments WHERE tenant = $1")
+			.bind(&tenant)
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(current, (second, periods[1].starts_at));
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_attachment_consents")
+			.await,
+		0
+	);
+	// Storage rejects a zero-length closed period and two open periods even
+	// when a writer bypasses the service. Ordinary adjacent spans are above.
+	for (start, end) in [
+		(periods[1].starts_at, Some(periods[1].starts_at)),
+		(periods[1].starts_at + Duration::seconds(1), None),
+	] {
+		assert!(sqlx::query("INSERT INTO billing_coverage_periods (id, tenant, account_id, starts_at, ends_at, consented_by_administrator, consented_by_owner) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+            .bind(Uuid::new_v4()).bind(&tenant).bind(first).bind(start).bind(end).bind(alice.identity).bind(bob.identity)
+            .execute(d.federation.store.pool.fixture_driver()).await.is_err());
+	}
+	d.finish().await;
+}
+
+/// Hold the production capacity lock, observe the actual HTTP waiter, then
+/// compare the committed boundary with the DB clock just before releasing it.
+#[rstest::rstest]
+#[tokio::test]
+async fn coverage_uses_the_database_clock_after_capacity_lock_wait(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let account = d.account(&bob, Some("team")).await;
+	let (_, waiting) = d
+		.call(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/billing/attachment"),
+			Some(&context),
+			json!({"account":account}),
+		)
+		.await;
+	assert_eq!(waiting["state"], "awaiting_other_party");
+	let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+	aidash_server::authorization::services::nodes::lock_capacity(&mut *held, &tenant)
+		.await
+		.unwrap();
+	let pid: i32 = aidash_server::database::native::query_scalar("SELECT pg_backend_pid()")
+		.scalar_one(&mut *held)
+		.await
+		.unwrap();
+	let path = format!("/api/billing/accounts/{account}/attachments");
+	{
+		let request = d.call(&bob, "POST", &path, None, json!({"tenant":tenant}));
+		tokio::pin!(request);
+		tokio::select! {
+			_ = common::wait_for_blocked(d.control(), pid, 1) => {},
+			result = &mut request => panic!("attachment did not wait: {result:?}"),
+		}
+		let released_at: DateTime<Utc> = d.scalar("SELECT clock_timestamp()").await;
+		held.commit().await.unwrap();
+		let (status, attached) = request.await;
+		assert_eq!(
+			(status, &attached["state"]),
+			(200, &json!("attached")),
+			"{attached}"
+		);
+		let periods = d.coverage(&tenant).await;
+		assert_eq!(periods.len(), 1);
+		assert!(
+			periods[0].starts_at >= released_at,
+			"boundary {:?} predates lock release {released_at}",
+			periods[0].starts_at
+		);
+	}
+	d.finish().await;
+}
+
+/// Two target-account locks do not serialize moves from one Tenant. The shared
+/// Tenant capacity lock must consume the competing consents exactly once.
+#[rstest::rstest]
+#[tokio::test]
+async fn coverage_concurrent_moves_cannot_overlap_or_reuse_consumed_consents(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let initial = d.account(&bob, Some("team")).await;
+	assert_eq!(
+		d.attach(&alice, &context, &bob, &tenant, initial).await.1.1["state"],
+		"attached"
+	);
+	let first = d.account(&bob, Some("team")).await;
+	let second = d.account(&bob, Some("team")).await;
+	for account in [first, second] {
+		let (_, result) = d
+			.call(
+				&alice,
+				"POST",
+				&format!("/api/tenants/{tenant}/billing/attachment"),
+				Some(&context),
+				json!({"account":account}),
+			)
+			.await;
+		assert_eq!(result["state"], "awaiting_other_party");
+	}
+	let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+	aidash_server::authorization::services::nodes::lock_capacity(&mut *held, &tenant)
+		.await
+		.unwrap();
+	let pid: i32 = aidash_server::database::native::query_scalar("SELECT pg_backend_pid()")
+		.scalar_one(&mut *held)
+		.await
+		.unwrap();
+	let path1 = format!("/api/billing/accounts/{first}/attachments");
+	let path2 = format!("/api/billing/accounts/{second}/attachments");
+	{
+		let moves = async {
+			tokio::join!(
+				d.call(&bob, "POST", &path1, None, json!({"tenant":tenant})),
+				d.call(&bob, "POST", &path2, None, json!({"tenant":tenant}))
+			)
+		};
+		tokio::pin!(moves);
+		tokio::select! {
+			_ = common::wait_for_blocked(d.control(), pid, 2) => {},
+			result = &mut moves => panic!("moves did not serialize: {result:?}"),
+		}
+		held.commit().await.unwrap();
+		let (a, b) = moves.await;
+		assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
+		let mut states = vec![
+			a.1["state"].as_str().unwrap(),
+			b.1["state"].as_str().unwrap(),
+		];
+		states.sort();
+		assert_eq!(states, ["attached", "awaiting_other_party"]);
+		let periods = d.coverage(&tenant).await;
+		assert_eq!(periods.len(), 2);
+		assert_eq!(periods[0].ends_at, Some(periods[1].starts_at));
+		assert_eq!(periods[1].ends_at, None);
+		let current: Uuid =
+			sqlx::query_scalar("SELECT account_id FROM billing_attachments WHERE tenant = $1")
+				.bind(&tenant)
+				.fetch_one(d.federation.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		assert_eq!(periods[1].account_id, current);
+	}
+	d.finish().await;
+}
+
+/// A closed period can expire only after its retained usage does; the account
+/// reference and open coverage both survive Tenant purge and audit expiry.
+#[rstest::rstest]
+#[tokio::test]
+async fn coverage_retention_keeps_referenced_history_and_accounts_after_tenant_purge(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let now = Utc::now();
+	let boundary = cutoff(now, 7);
+	let expired = d.account(&alice, None).await;
+	let pod_referenced = d.account(&alice, None).await;
+	let recent = d.account(&alice, None).await;
+	let open = d.account(&alice, None).await;
+	let pool = d.federation.store.pool.fixture_driver();
+	for (account, start, end) in [
+		(
+			expired,
+			boundary - Duration::days(10),
+			Some(boundary - Duration::days(9)),
+		),
+		(
+			pod_referenced,
+			boundary - Duration::days(8),
+			Some(boundary - Duration::days(7)),
+		),
+		(
+			recent,
+			boundary + Duration::days(1),
+			Some(boundary + Duration::days(2)),
+		),
+		(open, boundary + Duration::days(3), None),
+	] {
+		sqlx::query("UPDATE billing_accounts SET created_at = $2 WHERE id = $1")
+			.bind(account)
+			.bind(boundary - Duration::days(20))
+			.execute(pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO billing_coverage_periods (id, tenant, account_id, starts_at, ends_at, consented_by_administrator, consented_by_owner) VALUES ($1,$2,$3,$4,$5,$6,$6)")
+            .bind(Uuid::new_v4()).bind(&tenant).bind(account).bind(start).bind(end).bind(alice.identity).execute(pool).await.unwrap();
+	}
+	// This report starts in an expired period but ends within retention. The
+	// raw lifetime still needs that historical account to be attributable.
+	Meter {
+		pool: d.control().clone(),
+	}
+	.pod_time(PodTime {
+		operation: Uuid::new_v4(),
+		tenant: tenant.clone(),
+		started_at: boundary - Duration::days(8) + Duration::hours(1),
+		ended_at: boundary + Duration::hours(1),
+	})
+	.await
+	.unwrap();
+	Meter {
+		pool: d.control().clone(),
+	}
+	.storage_sampled(vec![StorageSample {
+		tenant: tenant.clone(),
+		sampled_at: boundary + Duration::days(1) + Duration::hours(1),
+		bytes: 5,
+	}])
+	.await
+	.unwrap();
+	sqlx::query("INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purged_at, audit_erased_at, purge_failures) VALUES ($1,$2,$3,'deployment_administrator',$4,$5,$6,0)")
+        .bind(Uuid::new_v4()).bind(&tenant).bind(now - Duration::days(400)).bind(now - Duration::days(370)).bind(now - Duration::days(369)).bind(now).execute(pool).await.unwrap();
+	store::sweep(d.control(), boundary, now).await.unwrap();
+	let periods = d.coverage(&tenant).await;
+	assert_eq!(
+		periods.iter().map(|p| p.account_id).collect::<Vec<_>>(),
+		[pod_referenced, recent, open]
+	);
+	let mut accounts: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM billing_accounts")
+		.fetch_all(pool)
+		.await
+		.unwrap();
+	accounts.sort();
+	let mut expected = vec![pod_referenced, recent, open];
+	expected.sort();
+	assert_eq!(accounts, expected);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM tenant_deletions")
+			.await,
+		1
+	);
+	// The next cutoff expires the Pod/sample and every closed period. An open
+	// period remains unknown-ended, even after purge; no detach is invented.
+	store::sweep(d.control(), boundary + Duration::days(4), now)
+		.await
+		.unwrap();
+	let periods = d.coverage(&tenant).await;
+	assert_eq!(periods.len(), 1);
+	assert_eq!((periods[0].account_id, periods[0].ends_at), (open, None));
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_accounts")
+			.await,
+		1
+	);
+	d.finish().await;
+}
+
+/// The target-account lock serializes attachments of different Tenants, so a
+/// one-slot Tier cannot commit two concurrent receiving attachments.
+#[rstest::rstest]
+#[tokio::test]
+async fn coverage_concurrent_attachments_respect_account_capacity(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
+	let (first, _) = d.tenant_of(&alice).await;
+	let (second, _) = d.tenant_of(&alice).await;
+	let account = d.account(&bob, Some("team")).await;
+	let mut tiers = sandbox_defaults();
+	tiers["tiers"]["team"]["tenants"] = json!(1);
+	let billing = Billing {
+		pool: d.control().clone(),
+		settings: Arc::new(Settings::from_value(tiers).unwrap()),
+		payments: Arc::new(Mirror {
+			pool: d.control().clone(),
+		}),
+		nodes: Arc::new(FixedNodes::default()),
+	};
+	for tenant in [&first, &second] {
+		assert_eq!(
+			billing
+				.consent(Party::TenantAdministrator, alice.identity, tenant, account)
+				.await
+				.unwrap(),
+			Consented::AwaitingOtherParty
+		);
+	}
+	let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+	store::lock_account(&mut *held, account)
+		.await
+		.unwrap()
+		.unwrap();
+	let pid: i32 = aidash_server::database::native::query_scalar("SELECT pg_backend_pid()")
+		.scalar_one(&mut *held)
+		.await
+		.unwrap();
+	{
+		let requests = async {
+			tokio::join!(
+				billing.consent(Party::AccountOwner, bob.identity, &first, account),
+				billing.consent(Party::AccountOwner, bob.identity, &second, account)
+			)
+		};
+		tokio::pin!(requests);
+		tokio::select! {
+			_ = common::wait_for_blocked(d.control(), pid, 2) => {},
+			result = &mut requests => panic!("requests did not reach the account lock: {result:?}"),
+		}
+		held.commit().await.unwrap();
+		let results = requests.await;
+		let mut attached = 0;
+		for result in [results.0, results.1] {
+			match result {
+				Ok(Consented::Attached) => attached += 1,
+				Err(aidash_server::Error::Conflict(code)) if code == "tier_tenant_limit" => {}
+				result => panic!("unexpected capacity outcome: {result:?}"),
+			}
+		}
+		assert_eq!(attached, 1);
+		assert_eq!(
+			d.scalar::<i64>("SELECT count(*) FROM billing_coverage_periods")
+				.await,
+			1
+		);
+		assert_eq!(
+			d.scalar::<i64>("SELECT count(*) FROM billing_attachments")
+				.await,
+			1
+		);
+	}
 	d.finish().await;
 }
