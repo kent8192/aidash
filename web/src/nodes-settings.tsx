@@ -162,6 +162,7 @@ export function NodesPage({ data }: { data: State }) {
           tenant={tenant}
           canUpdate={can("node.update")}
           canDelete={can("node.delete")}
+          offering={data.offering}
         />
       )}
       {selected && can("node_registration.read") && (

@@ -7,6 +7,8 @@ use crate::apps::identity::serializers::session::AccessProfile;
 
 #[derive(Serialize, JsonSchema)]
 pub struct StateResponse {
+	/// The current configured Offering: self-hosted, cloud or dedicated.
+	pub offering: String,
 	pub access: AccessProfile,
 	/// The Deployment that answers. A Tenant works in one of its own Nodes, which
 	/// `GET /api/tenants/{tenant}/nodes` lists.

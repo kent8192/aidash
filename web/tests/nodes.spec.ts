@@ -15,6 +15,7 @@ const node = (name: string, label: string, isDefault = false): NodeRecord => ({
   state: "live",
   deletion: null,
   storage_retained_until_purge: false,
+  retained_storage_bytes: name === "first" ? 4096 : 0,
 });
 const deleted = (name: string, by = "tenant_administrator"): NodeRecord => ({
   ...node(name, name),
@@ -70,6 +71,8 @@ async function setup(
     administrator?: boolean;
     retained?: NodeRecord[];
     restoreConflict?: boolean;
+    offering?: string | null;
+    measurement?: number | null;
   } = {},
 ) {
   const nodes = [
@@ -77,6 +80,8 @@ async function setup(
     node("second", "Lab"),
     ...(options.retained ?? []),
   ];
+  if (options.measurement !== undefined)
+    nodes[1].retained_storage_bytes = options.measurement;
   const queries: URL[] = [];
   const actor = options.administrator
     ? { kind: "deployment_administrator" }
@@ -112,6 +117,8 @@ async function setup(
       return route.fulfill({
         json: {
           access: actor,
+          offering:
+            options.offering === undefined ? "self-hosted" : options.offering,
           deployment: {
             id: deployment,
             endpoint: "http://localhost",
@@ -183,7 +190,12 @@ async function setup(
                 Number(url.searchParams.get("limit")),
             )
           : nodes.filter((value) => value.state === "live");
-      return route.fulfill({ json: rows });
+      return route.fulfill({
+        json:
+          url.searchParams.get("include_deleted") === "true"
+            ? rows
+            : rows.map((value) => ({ ...value, retained_storage_bytes: null })),
+      });
     }
     if (path === "/api/tenants")
       return route.fulfill({
@@ -219,7 +231,10 @@ async function setup(
           value.default = value === target;
         });
       if (lifecycle[2] === "deletion")
-        Object.assign(target, deleted(target.name), { label: target.label });
+        Object.assign(target, deleted(target.name), {
+          label: target.label,
+          retained_storage_bytes: target.retained_storage_bytes,
+        });
       if (lifecycle[2] === "restore")
         Object.assign(target, {
           state: "live",
@@ -663,13 +678,14 @@ test("Node management switches the default, confirms deletion and falls back to 
   ).toHaveCount(0);
   await second.getByRole("button", { name: "Make default" }).click();
   await expect(second).toContainText("Default");
+  await expect(first).toContainText("Stored data: 4,096 bytes");
   await page
     .locator('[data-node="first"]')
     .getByRole("button", { name: "Work here" })
     .click();
   await first.getByRole("button", { name: "Delete Node", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Node", exact: true });
-  await expect(dialog).toContainText("Storage charges depend on your Offering");
+  await expect(dialog).toContainText("Stored data: 4,096 bytes");
   await expect(
     dialog.getByRole("button", { name: "Delete Node", exact: true }),
   ).toBeDisabled();
@@ -680,7 +696,7 @@ test("Node management switches the default, confirms deletion and falls back to 
   await expect(dialog).toBeHidden();
   await expect(first).toContainText("Deleted");
   await expect(first).toContainText("2099");
-  await expect(first).toContainText("Files remain stored until purge");
+  await expect(first).toContainText("Retained data: 4,096 bytes");
   await expect(
     second.getByRole("button", { name: "Delete Node", exact: true }),
   ).toHaveCount(0);
@@ -759,7 +775,13 @@ test("a Deployment Administrator explicitly opens a Tenant's Node management and
 }) => {
   const { posts, queries, errors } = await setup(page, {
     administrator: true,
-    retained: [deleted("recoverable", "deployment_administrator")],
+    offering: "cloud",
+    retained: [
+      {
+        ...deleted("recoverable", "deployment_administrator"),
+        retained_storage_bytes: 8192,
+      },
+    ],
   });
   await page.goto("/trust?view=authorization");
   await expect(
@@ -777,6 +799,10 @@ test("a Deployment Administrator explicitly opens a Tenant's Node management and
     name: "Purge Node permanently",
     exact: true,
   });
+  await expect(dialog).toContainText("Retained data: 8,192 bytes");
+  await expect(dialog).toContainText(
+    "Storage charges continue under the current Cloud billing terms",
+  );
   await dialog.getByLabel("Type the Node name to confirm").fill("recoverable");
   await dialog
     .getByRole("button", { name: "Purge Node permanently", exact: true })
@@ -856,6 +882,7 @@ test("Node management pages retained records and offers no recovery for purged o
   await expect(page.locator("[data-lifecycle-node]")).toHaveCount(2);
   const permanent = page.locator('[data-lifecycle-node="permanent"]');
   await expect(permanent).toContainText("Purged");
+  await expect(permanent).toContainText("Stored data: 0 bytes");
   await expect(permanent.getByRole("button")).toHaveCount(0);
   await expect(page.locator('[data-lifecycle-node="expired"]')).toContainText(
     "The restore deadline has passed",
@@ -878,3 +905,51 @@ test("Node management pages retained records and offers no recovery for purged o
     .click();
   await expect(page.locator("[data-lifecycle-node]")).toHaveCount(25);
 });
+
+test("an unavailable measured amount cannot become zero or confirm deletion", async ({
+  page,
+}) => {
+  const { posts } = await setup(page, { measurement: null });
+  await page.goto("/settings?view=nodes");
+  const row = page.locator('[data-lifecycle-node="second"]');
+  await expect(row).toContainText("Stored amount is unavailable");
+  await expect(row).not.toContainText("Stored data: 0 bytes");
+  await row.getByRole("button", { name: "Delete Node", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete Node", exact: true });
+  await dialog.getByLabel("Type the Node name to confirm").fill("second");
+  await expect(dialog).toContainText("Stored amount is unavailable");
+  await expect(
+    dialog.getByRole("button", { name: "Delete Node", exact: true }),
+  ).toBeDisabled();
+  expect(posts).toEqual([]);
+});
+
+for (const [offering, notice] of [
+  ["self-hosted", "Self-hosted has no Aidash usage bill"],
+  ["cloud", "Storage charges continue under the current Cloud billing terms"],
+  ["dedicated", "Dedicated meters and reports usage under your contract"],
+  [null, "Current Offering is unavailable"],
+] as const) {
+  test(`Node storage explains the actual current Offering: ${offering ?? "unavailable"}`, async ({
+    page,
+  }) => {
+    await setup(page, { offering });
+    await page.goto("/settings?view=nodes");
+    const row = page.locator('[data-lifecycle-node="second"]');
+    await row.getByRole("button", { name: "Delete Node", exact: true }).click();
+    const dialog = page.getByRole("dialog", {
+      name: "Delete Node",
+      exact: true,
+    });
+    await expect(dialog).toContainText(notice);
+    await expect(dialog).toContainText(
+      "If the Tenant itself is deleted, its existing storage exemption still applies",
+    );
+    if (offering === null) {
+      await expect(dialog).not.toContainText("Storage charges continue");
+      await expect(dialog).not.toContainText(
+        "Self-hosted has no Aidash usage bill",
+      );
+    }
+  });
+}

@@ -775,7 +775,7 @@
   "nodeConfirmName": "確認のため Node 名を入力",
   "nodeDeleteNotice": "削除すると、この Node はすぐに利用できなくなり、作業が取り消されます。Node 数の枠は解放されます。削除時に確定する復元猶予期間中はデータを復元できます。Node 名は再利用されません。",
   "nodePurgeNotice": "消去すると、この Node のデータは完全に削除されます。消去開始後は復元できません。テナントの共有データと、保存期限内の管理履歴は残ります。",
-  "nodeStorageNotice": "ファイルは消去まで保存されます。ストレージ料金は利用中の Offering に従い、削除済みテナントのストレージ免除も引き続き適用されます。",
+  "nodeStorageNotice": "ファイルは物理的な消去まで保存されます。",
   "nodeDeletedAt": "削除日時",
   "nodePurgeDeadline": "消去期限（削除時に確定）",
   "nodePurgedAt": "消去日時",
@@ -787,5 +787,14 @@
   "nodePurgeFailing": "消去に失敗しています。連続失敗回数:",
   "nodePurgeStep_capability_objects": "保存ファイルを削除中",
   "nodePurgeStep_rows": "Node のデータを削除中",
-  "nodePurgeStep_finish": "完了処理中"
+  "nodePurgeStep_finish": "完了処理中",
+  "nodeStoredData": "保存データ",
+  "nodeRetainedData": "保持中のデータ",
+  "nodeStorageBytes": "バイト",
+  "nodeStoredAmountUnavailable": "保存量を取得できません。更新してから確認してください。",
+  "nodeStorageSelfHosted": "Self-hosted では Aidash の従量課金はありません。ファイルは物理的な消去まで保存されます。",
+  "nodeStorageCloud": "保持ストレージは物理的な消去まで課金対象です。現在の Cloud の課金条件に従ってストレージ料金が継続します。",
+  "nodeStorageDedicated": "Dedicated では物理的な消去まで、契約に従って使用量を計測・報告します。この画面ではストレージ料金を計算しません。",
+  "nodeStorageOfferingUnknown": "現在の Offering を取得できないため、適用されるストレージ料金は判断できません。ファイルは物理的な消去まで保存されます。",
+  "nodeStorageExemption": "Node の削除では、適用されるストレージの課金ルールは変わりません。テナント自体を削除した場合は、既存のストレージ免除が引き続き適用されます。"
 }

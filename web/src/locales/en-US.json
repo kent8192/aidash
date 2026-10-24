@@ -775,7 +775,7 @@
   "nodeConfirmName": "Type the Node name to confirm",
   "nodeDeleteNotice": "Deleting immediately closes this Node and cancels its work. Its capacity slot is released. Data stays recoverable during this Deployment’s Node grace period, fixed at deletion. The Node name is never reused.",
   "nodePurgeNotice": "Purge permanently removes this Node’s data. Once purge starts, the Node cannot be restored. Shared Tenant data and limited administration history remain.",
-  "nodeStorageNotice": "Files remain stored until purge. Storage charges depend on your Offering; the storage exemption for a deleted Tenant still applies.",
+  "nodeStorageNotice": "Files remain stored until physical purge.",
   "nodeDeletedAt": "Deleted at",
   "nodePurgeDeadline": "Purge deadline (fixed at deletion)",
   "nodePurgedAt": "Purged at",
@@ -787,5 +787,14 @@
   "nodePurgeFailing": "Purge needs attention; consecutive failures:",
   "nodePurgeStep_capability_objects": "removing stored files",
   "nodePurgeStep_rows": "removing Node data",
-  "nodePurgeStep_finish": "finishing"
+  "nodePurgeStep_finish": "finishing",
+  "nodeStoredData": "Stored data",
+  "nodeRetainedData": "Retained data",
+  "nodeStorageBytes": "bytes",
+  "nodeStoredAmountUnavailable": "Stored amount is unavailable. Refresh before confirming.",
+  "nodeStorageSelfHosted": "Self-hosted has no Aidash usage bill. Files remain stored until physical purge.",
+  "nodeStorageCloud": "Retained storage remains billable until physical purge. Storage charges continue under the current Cloud billing terms.",
+  "nodeStorageDedicated": "Dedicated meters and reports usage under your contract until physical purge. This view does not calculate a storage charge.",
+  "nodeStorageOfferingUnknown": "Current Offering is unavailable. This view cannot determine the applicable storage charge. Files remain stored until physical purge.",
+  "nodeStorageExemption": "Node deletion does not change the applicable storage billing rules. If the Tenant itself is deleted, its existing storage exemption still applies."
 }

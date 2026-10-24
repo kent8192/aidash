@@ -198,6 +198,7 @@ impl HarnessManagement {
 		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let mut state = StateResponse {
+			offering: crate::bootstrap::build::offering().as_str().to_owned(),
 			access: AccessProfile::DeploymentAdministrator,
 			deployment: crate::apps::federation::peer::services::identity::publication(&f).await?,
 			registry: records,
