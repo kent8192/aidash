@@ -210,6 +210,13 @@ impl Cloud {
 			.await;
 		assert_eq!(status, 201, "{created}");
 		let tenant = created["name"].as_str().unwrap().to_owned();
+		// These metering fixtures simulate historical deployments. Keep the
+		// permanent Tenant birth before their explicitly dated usage/history.
+		sqlx::query("UPDATE tenants SET created_at = '1970-01-01T00:00:00Z' WHERE name = $1")
+			.bind(&tenant)
+			.execute(self.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
 		let context = self.context(person, &tenant).await;
 		(tenant, context)
 	}
@@ -323,6 +330,39 @@ impl Cloud {
 				},
 			)
 			.collect()
+	}
+
+	async fn historical_coverage(
+		&self,
+		tenant: &str,
+		account: Uuid,
+		identity: Uuid,
+		start: DateTime<Utc>,
+		end: Option<DateTime<Utc>>,
+	) -> Uuid {
+		let id = Uuid::new_v4();
+		let pool = self.federation.store.pool.fixture_driver();
+		sqlx::query(
+			"UPDATE billing_accounts SET created_at = '1970-01-01T00:00:00Z' WHERE id = $1",
+		)
+		.bind(account)
+		.execute(pool)
+		.await
+		.unwrap();
+		sqlx::query("INSERT INTO billing_coverage_periods (id, tenant, account_id, starts_at, ends_at, consented_by_administrator, consented_by_owner) VALUES ($1,$2,$3,$4,$5,$6,$6)")
+			.bind(id).bind(tenant).bind(account).bind(start).bind(end).bind(identity).execute(pool).await.unwrap();
+		id
+	}
+
+	async fn historical_deletion(
+		&self,
+		tenant: &str,
+		start: DateTime<Utc>,
+		end: Option<DateTime<Utc>>,
+	) {
+		sqlx::query("INSERT INTO tenant_deletions (id,tenant,deleted_at,deleted_by_kind,purge_after,restored_at,restored_by_kind,purge_failures) VALUES ($1,$2,$3,'deployment_administrator',$4,$5,$6,0)")
+			.bind(Uuid::new_v4()).bind(tenant).bind(start).bind(start+Duration::days(30)).bind(end)
+			.bind(end.map(|_| "deployment_administrator")).execute(self.federation.store.pool.fixture_driver()).await.unwrap();
 	}
 
 	/// Queues a Run in `tenant`, which the admission gate may refuse.
@@ -482,7 +522,7 @@ async fn pod_time_is_metered_once_and_stops_when_a_tenant_deletion_is_recorded(
 	let operation = Uuid::new_v4();
 	let event = |operation, from: DateTime<Utc>, to: DateTime<Utc>| PodTime {
 		allocation: operation,
-		receipt_digest: "a".repeat(64),
+		receipt_digest: format!("{:x}", Sha256::digest(operation.as_bytes())),
 		tenant: tenant.clone(),
 		started_at: from,
 		ended_at: to,
@@ -531,14 +571,17 @@ async fn pod_time_is_metered_once_and_stops_when_a_tenant_deletion_is_recorded(
 		.await
 		.unwrap();
 	let across_millis: i64 =
-		sqlx::query_scalar("SELECT millis FROM billing_pod_usage WHERE operation = $1")
+		sqlx::query_scalar("SELECT millis FROM billing_pod_usage WHERE allocation = $1")
 			.bind(across)
 			.fetch_one(d.federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	assert_eq!(across_millis, 60_000);
 	let rows: i64 = d.scalar("SELECT count(*) FROM billing_pod_usage").await;
-	assert_eq!(rows, 2, "nothing is metered after the Deletion");
+	assert_eq!(
+		rows, 3,
+		"even fully exempt allocations retain their raw receipt"
+	);
 	d.finish().await;
 }
 
@@ -567,8 +610,8 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	)
 	.bind(Uuid::new_v4())
 	.bind(&deleted)
-	.bind(at(-Duration::hours(1)))
-	.bind(at(Duration::days(29)))
+	.bind(at(-Duration::days(3) - Duration::hours(1)))
+	.bind(at(Duration::days(26)))
 	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -630,7 +673,14 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	.await
 	.unwrap();
 	seed.commit().await.unwrap();
-	let now = Utc::now();
+	let now = Utc::now() - Duration::days(3);
+	// The sampler includes bootstrap/Personal Tenants as well as the two named
+	// fixtures. Their birth must also precede this simulated historical pass.
+	sqlx::query("UPDATE tenants SET created_at = LEAST(created_at, $1)")
+		.bind(now - Duration::days(1))
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let samples =
 		aidash_server::apps::execution::services::storage_usage::samples(&d.federation.store, now)
 			.await
@@ -659,7 +709,7 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 		.await
 		.unwrap();
 	let stored: Vec<(String, i64)> = sqlx::query_as(
-		"SELECT tenant, bytes FROM billing_storage_samples WHERE tenant IN ($1, $2)",
+		"SELECT tenant, bytes FROM billing_storage_samples WHERE tenant IN ($1, $2) AND status <> 'exempt'",
 	)
 	.bind(&kept)
 	.bind(&deleted)
@@ -751,12 +801,13 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 			(after_purge.date_naive(), 0)
 		]
 	);
-	let deleted_samples: i64 =
-		sqlx::query_scalar("SELECT count(*) FROM billing_storage_samples WHERE tenant = $1")
-			.bind(&deleted)
-			.fetch_one(pool)
-			.await
-			.unwrap();
+	let deleted_samples: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM billing_storage_samples WHERE tenant = $1 AND status <> 'exempt'",
+	)
+	.bind(&deleted)
+	.fetch_one(pool)
+	.await
+	.unwrap();
 	assert_eq!(
 		deleted_samples, 0,
 		"Tenant deletion remains exempt after physical purge leaves only its root"
@@ -782,7 +833,7 @@ async fn records_older_than_the_retention_period_are_swept_and_the_rest_survive(
 		meter
 			.pod_time(PodTime {
 				allocation: operation,
-				receipt_digest: "a".repeat(64),
+				receipt_digest: format!("{:x}", Sha256::digest(operation.as_bytes())),
 				tenant: tenant.clone(),
 				started_at: ended - Duration::seconds(5),
 				ended_at: ended,
@@ -2065,5 +2116,652 @@ async fn coverage_concurrent_attachments_respect_account_capacity(
 			1
 		);
 	}
+	d.finish().await;
+}
+
+fn receipt(tenant: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> PodTime {
+	let allocation = Uuid::new_v4();
+	PodTime {
+		allocation,
+		receipt_digest: format!("{:x}", Sha256::digest(allocation.as_bytes())),
+		tenant: tenant.into(),
+		started_at: start,
+		ended_at: end,
+	}
+}
+
+fn history_start() -> DateTime<Utc> {
+	"2026-09-30T23:59:59Z".parse().unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attribution_freezes_exact_history_and_clips_authorized_account_periods(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let (first, second) = (d.account(&alice, None).await, d.account(&alice, None).await);
+	let b = history_start();
+	let split = b + Duration::seconds(1);
+	let a = d
+		.historical_coverage(
+			&tenant,
+			first,
+			alice.identity,
+			b + Duration::microseconds(1),
+			Some(split),
+		)
+		.await;
+	let z = d
+		.historical_coverage(
+			&tenant,
+			second,
+			alice.identity,
+			split + Duration::microseconds(2),
+			None,
+		)
+		.await;
+	// Their union, not their sum, exempts exactly1,500,000ns.
+	d.historical_deletion(
+		&tenant,
+		b + Duration::microseconds(500),
+		Some(b + Duration::microseconds(1500)),
+	)
+	.await;
+	d.historical_deletion(
+		&tenant,
+		b + Duration::microseconds(1000),
+		Some(b + Duration::microseconds(2000)),
+	)
+	.await;
+	let event = receipt(
+		&tenant,
+		b + Duration::nanoseconds(1),
+		b + Duration::seconds(2) + Duration::nanoseconds(999),
+	);
+	let meter = Meter {
+		pool: d.control().clone(),
+	};
+	meter.pod_time(event.clone()).await.unwrap();
+	let pool = d.federation.store.pool.fixture_driver();
+	let raw: (i64, i64, String) = sqlx::query_as(
+		"SELECT started_ns,ended_ns,receipt_digest FROM billing_pod_usage WHERE allocation=$1",
+	)
+	.bind(event.allocation)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		raw,
+		(
+			event.started_at.timestamp_nanos_opt().unwrap(),
+			event.ended_at.timestamp_nanos_opt().unwrap(),
+			event.receipt_digest.clone()
+		)
+	);
+	let totals: Vec<(String,i64)> = sqlx::query_as("SELECT status,sum(ends_ns-starts_ns)::bigint FROM billing_usage_segments WHERE allocation=$1 GROUP BY status ORDER BY status").bind(event.allocation).fetch_all(pool).await.unwrap();
+	assert_eq!(
+		totals,
+		vec![
+			("covered".into(), 1_998_497_999),
+			("exempt".into(), 1_500_000),
+			("uncovered".into(), 2_999)
+		]
+	);
+	let partition: Vec<(i64, i64)> = sqlx::query_as(
+		"SELECT starts_ns,ends_ns FROM billing_usage_segments WHERE allocation=$1 ORDER BY starts_ns",
+	)
+	.bind(event.allocation)
+	.fetch_all(pool)
+	.await
+	.unwrap();
+	assert_eq!(partition[0].0, raw.0);
+	assert_eq!(partition.last().unwrap().1, raw.1);
+	assert!(partition.iter().all(|(start, end)| start < end));
+	assert!(partition.windows(2).all(|pair| pair[0].1 == pair[1].0));
+	let provenances: Vec<(Uuid,Uuid)> = sqlx::query_as("SELECT DISTINCT coverage_id,account_id FROM billing_usage_segments WHERE allocation=$1 AND status='covered' ORDER BY account_id").bind(event.allocation).fetch_all(pool).await.unwrap();
+	let mut expected = vec![(a, first), (z, second)];
+	expected.sort_by_key(|p| p.1);
+	assert_eq!(provenances, expected);
+	let query = |account, from: DateTime<Utc>, to: DateTime<Utc>| {
+		format!(
+			"/api/billing/accounts/{account}/usage?starts_at={}&ends_at={}",
+			from.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+			to.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+		)
+	};
+	let path = query(first, b, split);
+	let (status, usage) = d.call(&alice, "GET", &path, None, Value::Null).await;
+	assert_eq!(status, 200, "{usage}");
+	assert_eq!(usage["pod_nanos"], "998499000");
+	let (_, tiny) = d
+		.call(
+			&alice,
+			"GET",
+			&query(
+				first,
+				b + Duration::nanoseconds(999),
+				b + Duration::nanoseconds(1001),
+			),
+			None,
+			Value::Null,
+		)
+		.await;
+	assert_eq!(tiny["pod_nanos"], "1");
+	let (_, right) = d
+		.call(
+			&alice,
+			"GET",
+			&query(first, b + Duration::nanoseconds(1001), split),
+			None,
+			Value::Null,
+		)
+		.await;
+	assert_eq!(right["pod_nanos"], "998498999");
+	let (_, later) = d
+		.call(
+			&alice,
+			"GET",
+			&query(second, split, b + Duration::seconds(3)),
+			None,
+			Value::Null,
+		)
+		.await;
+	assert_eq!(later["pod_nanos"], "999998999");
+	assert_eq!(d.call(&bob, "GET", &path, None, Value::Null).await.0, 404);
+	assert_eq!(
+		d.call(
+			&alice,
+			"GET",
+			&query(first, split, split),
+			None,
+			Value::Null
+		)
+		.await
+		.0,
+		400
+	);
+	// A1ns allocation wholly inside a deletion remains an immutable raw fact.
+	let exempt = receipt(
+		&tenant,
+		b + Duration::microseconds(600) + Duration::nanoseconds(1),
+		b + Duration::microseconds(600) + Duration::nanoseconds(2),
+	);
+	meter.pod_time(exempt.clone()).await.unwrap();
+	let exempt_ns: i64 = sqlx::query_scalar(
+		"SELECT ends_ns-starts_ns FROM billing_usage_segments WHERE allocation=$1 AND status='exempt'",
+	)
+	.bind(exempt.allocation)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(exempt_ns, 1);
+	let frozen:Value = sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(s) ORDER BY starts_ns) FROM billing_usage_segments s WHERE allocation=$1").bind(event.allocation).fetch_one(pool).await.unwrap();
+	// Later lifecycle evidence must not recompute a committed receipt on retry.
+	d.historical_deletion(
+		&tenant,
+		b + Duration::seconds(1),
+		Some(b + Duration::seconds(3)),
+	)
+	.await;
+	meter.pod_time(event.clone()).await.unwrap();
+	let replayed:Value = sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(s) ORDER BY starts_ns) FROM billing_usage_segments s WHERE allocation=$1").bind(event.allocation).fetch_one(pool).await.unwrap();
+	assert_eq!(replayed, frozen);
+	for changed in [
+		PodTime {
+			receipt_digest: "b".repeat(64),
+			..event.clone()
+		},
+		PodTime {
+			ended_at: event.ended_at + Duration::nanoseconds(1),
+			..event.clone()
+		},
+		PodTime {
+			tenant: "missing-tenant".into(),
+			..event.clone()
+		},
+	] {
+		assert!(meter.pod_time(changed).await.is_err());
+	}
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attribution_rejects_invalid_or_contradictory_evidence_without_partial_facts(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let b = history_start();
+	let meter = Meter {
+		pool: d.control().clone(),
+	};
+	for event in [
+		receipt(&tenant, b, b),
+		receipt(&tenant, b, b - Duration::nanoseconds(1)),
+		receipt(
+			&tenant,
+			Utc::now() + Duration::days(1),
+			Utc::now() + Duration::days(2),
+		),
+		PodTime {
+			receipt_digest: "A".repeat(64),
+			..receipt(&tenant, b, b + Duration::seconds(1))
+		},
+		PodTime {
+			allocation: Uuid::nil(),
+			..receipt(&tenant, b, b + Duration::seconds(1))
+		},
+	] {
+		assert!(meter.pod_time(event).await.is_err());
+	}
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		0
+	);
+	let a = d.account(&alice, None).await;
+	d.historical_coverage(
+		&tenant,
+		a,
+		alice.identity,
+		b,
+		Some(b + Duration::seconds(2)),
+	)
+	.await;
+	d.historical_coverage(
+		&tenant,
+		a,
+		alice.identity,
+		b + Duration::seconds(1),
+		Some(b + Duration::seconds(3)),
+	)
+	.await;
+	assert!(
+		meter
+			.pod_time(receipt(&tenant, b, b + Duration::seconds(4)))
+			.await
+			.is_err()
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		0
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_usage_segments")
+			.await,
+		0
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attribution_samples_freeze_successor_zero_and_exempt_facts_across_replicas(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let (first, second) = (d.account(&alice, None).await, d.account(&alice, None).await);
+	let b = history_start() + Duration::seconds(1);
+	d.historical_coverage(
+		&tenant,
+		first,
+		alice.identity,
+		b - Duration::days(1),
+		Some(b),
+	)
+	.await;
+	let successor = d
+		.historical_coverage(&tenant, second, alice.identity, b, None)
+		.await;
+	let meter = Meter {
+		pool: d.control().clone(),
+	};
+	let samples = vec![StorageSample {
+		tenant: tenant.clone(),
+		sampled_at: b,
+		bytes: 0,
+	}];
+	let (a, z) = tokio::join!(
+		meter.storage_sampled(samples.clone()),
+		meter.storage_sampled(samples)
+	);
+	a.unwrap();
+	z.unwrap();
+	meter
+		.storage_sampled(vec![StorageSample {
+			tenant: tenant.clone(),
+			sampled_at: b + Duration::hours(1),
+			bytes: 999,
+		}])
+		.await
+		.unwrap();
+	let row: (i64, Uuid, Uuid, String) = sqlx::query_as(
+		"SELECT bytes,coverage_id,account_id,status FROM billing_storage_samples WHERE tenant=$1",
+	)
+	.bind(&tenant)
+	.fetch_one(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(row, (0, successor, second, "covered".into()));
+	d.historical_deletion(&tenant, b + Duration::days(1), None)
+		.await;
+	meter
+		.storage_sampled(vec![StorageSample {
+			tenant: tenant.clone(),
+			sampled_at: b + Duration::days(1) + Duration::nanoseconds(1),
+			bytes: 55,
+		}])
+		.await
+		.unwrap();
+	let precise: i64 =
+		sqlx::query_scalar("SELECT sampled_ns FROM billing_storage_samples WHERE status='exempt'")
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(
+		precise,
+		(b + Duration::days(1) + Duration::nanoseconds(1))
+			.timestamp_nanos_opt()
+			.unwrap()
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_storage_samples WHERE status='exempt'")
+			.await,
+		1
+	);
+	assert_eq!(
+		store::latest_storage_bytes(d.control(), &tenant)
+			.await
+			.unwrap(),
+		0
+	);
+	let path = format!(
+		"/api/billing/accounts/{second}/usage?starts_at={}&ends_at={}",
+		b.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+		(b + Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+	);
+	let (status, report) = d.call(&alice, "GET", &path, None, Value::Null).await;
+	assert_eq!(status, 200, "{report}");
+	assert_eq!(report["samples"].as_array().unwrap().len(), 1);
+	assert_eq!(report["samples"][0]["bytes"], 0);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attribution_accepts_a_late_receipt_after_actual_completed_tenant_purge(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let account = d.account(&alice, None).await;
+	let b = history_start();
+	d.historical_coverage(&tenant, account, alice.identity, b, None)
+		.await;
+	let meter = Meter {
+		pool: d.control().clone(),
+	};
+	meter
+		.pod_time(receipt(&tenant, b, b + Duration::seconds(1)))
+		.await
+		.unwrap();
+	meter
+		.storage_sampled(vec![StorageSample {
+			tenant: tenant.clone(),
+			sampled_at: b,
+			bytes: 7,
+		}])
+		.await
+		.unwrap();
+	let (status, result, ..) = d
+		.send(
+			"POST",
+			&format!("/api/tenants/{tenant}/deletion"),
+			None,
+			None,
+			json!({"confirmation":tenant}),
+		)
+		.await;
+	assert_eq!(status, 200, "{result}");
+	let pool = d.federation.store.pool.fixture_driver();
+	sqlx::query("UPDATE tenant_deletions SET deleted_at=$2,purge_after=$3 WHERE tenant=$1")
+		.bind(&tenant)
+		.bind(b + Duration::days(1))
+		.bind(b + Duration::days(2))
+		.execute(pool)
+		.await
+		.unwrap();
+	for deletion in aidash_server::authorization::services::tenant_purge::claim(&d.federation.store)
+		.await
+		.unwrap()
+	{
+		aidash_server::authorization::services::tenant_purge::purge_tenant(
+			&d.federation.store,
+			deletion,
+		)
+		.await
+		.unwrap();
+	}
+	let purged: bool =
+		sqlx::query_scalar("SELECT purged_at IS NOT NULL FROM tenant_deletions WHERE tenant=$1")
+			.bind(&tenant)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	assert!(purged);
+	let policies: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM authorization_bundles WHERE tenant=$1")
+			.bind(&tenant)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	assert_eq!(policies, 0);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		1
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_usage_segments")
+			.await,
+		1
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_storage_samples")
+			.await,
+		1
+	);
+	Meter {
+		pool: d.control().clone(),
+	}
+	.pod_time(receipt(
+		&tenant,
+		b + Duration::seconds(1),
+		b + Duration::seconds(3),
+	))
+	.await
+	.unwrap();
+	let attributed: Uuid =
+		sqlx::query_scalar("SELECT account_id FROM billing_usage_segments WHERE status='covered'")
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	assert_eq!(attributed, account);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		2
+	);
+	assert_eq!(d.coverage(&tenant).await[0].ends_at, None);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attribution_retention_waits_for_intake_and_rejects_unknown_old_history(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let (first, second) = (d.account(&alice, None).await, d.account(&alice, None).await);
+	let b = history_start();
+	d.historical_coverage(
+		&tenant,
+		first,
+		alice.identity,
+		b,
+		Some(b + Duration::seconds(2)),
+	)
+	.await;
+	d.historical_coverage(
+		&tenant,
+		second,
+		alice.identity,
+		b + Duration::seconds(2),
+		None,
+	)
+	.await;
+	let meter = Meter {
+		pool: d.control().clone(),
+	};
+	let retained = receipt(&tenant, b, b + Duration::seconds(10));
+	meter.pod_time(retained.clone()).await.unwrap();
+	let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+	aidash_server::authorization::services::nodes::lock_capacity(&mut *held, &tenant)
+		.await
+		.unwrap();
+	let pid: i32 = aidash_server::database::native::query_scalar("SELECT pg_backend_pid()")
+		.scalar_one(&mut *held)
+		.await
+		.unwrap();
+	{
+		let intake = meter.pod_time(receipt(
+			&tenant,
+			b + Duration::seconds(6),
+			b + Duration::seconds(7),
+		));
+		tokio::pin!(intake);
+		tokio::select! {
+			_ = common::wait_for_blocked(d.control(),pid,1)=>{},
+			result = &mut intake=>panic!("usage did not wait for history transition: {result:?}"),
+		}
+		// Intake already holds the real retention SHARE lock while waiting for
+		// capacity. Actual sweep must now queue behind it, not prune its history.
+		let sweep = store::sweep(d.control(), b + Duration::seconds(5), Utc::now());
+		tokio::pin!(sweep);
+		tokio::select! {
+			_ = common::wait_for_blocked(d.control(),pid,2)=>{},
+			result = &mut intake=>panic!("capacity holder was bypassed: {result:?}"),
+			result = &mut sweep=>panic!("retention interleaved with intake: {result:?}"),
+		}
+		held.commit().await.unwrap();
+		let (a, z) = tokio::join!(intake, sweep);
+		a.unwrap();
+		z.unwrap();
+	}
+	assert_eq!(
+		d.coverage(&tenant).await.len(),
+		2,
+		"retained raw receipt still references old account coverage"
+	);
+	meter.pod_time(retained.clone()).await.unwrap();
+	let rejected = meter
+		.pod_time(receipt(
+			&tenant,
+			b + Duration::seconds(4),
+			b + Duration::seconds(6),
+		))
+		.await
+		.unwrap_err();
+	assert!(rejected.to_string().contains("history"), "{rejected}");
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		2
+	);
+	store::sweep(d.control(), b + Duration::seconds(11), Utc::now())
+		.await
+		.unwrap();
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		0
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_usage_segments")
+			.await,
+		0
+	);
+	assert_eq!(d.coverage(&tenant).await.len(), 1);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_accounts")
+			.await,
+		1
+	);
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_retention_state")
+			.await,
+		1
+	);
+	assert!(
+		meter.pod_time(retained).await.is_err(),
+		"expired identity must not be reconstructed from unknown old history"
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attribution_intake_waits_for_the_actual_tenant_policy_lifecycle_lock(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	let pool = d.federation.store.pool.fixture_driver();
+	// Tenant delete/restore exclusively lock this actual policy row. No fake
+	// billing hook can stand in for participating in that lifecycle boundary.
+	let mut held = pool.begin().await.unwrap();
+	sqlx::query("SELECT tenant FROM authorization_bundles WHERE tenant=$1 FOR UPDATE")
+		.bind(&tenant)
+		.execute(&mut *held)
+		.await
+		.unwrap();
+	let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *held)
+		.await
+		.unwrap();
+	let meter = Meter {
+		pool: d.control().clone(),
+	};
+	{
+		let intake = meter.pod_time(receipt(
+			&tenant,
+			history_start(),
+			history_start() + Duration::nanoseconds(1),
+		));
+		tokio::pin!(intake);
+		tokio::select! {
+			_ = common::wait_for_blocked(d.control(),pid,1)=>{},
+			result = &mut intake=>panic!("usage bypassed Tenant deletion/restore serialization: {result:?}"),
+		}
+		held.commit().await.unwrap();
+		intake.await.unwrap();
+	}
+	assert_eq!(
+		d.scalar::<i64>("SELECT count(*) FROM billing_pod_usage")
+			.await,
+		1
+	);
 	d.finish().await;
 }

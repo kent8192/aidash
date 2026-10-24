@@ -1,0 +1,43 @@
+// reinhardt-migration-source: 1
+// Exact immutable raw receipts and frozen coverage/deletion partitions. New
+// non-null evidence is never guessed for old rows: development DBs are recreated.
+// References are NO ACTION, so retention removes dependent facts explicitly.
+use reinhardt::db::migrations::prelude::*;
+pub(super) fn migration() -> Migration {
+	Migration::new("0005_frozen_usage","billing").add_dependency("billing","0004_coverage_periods_state").database_only(true).atomic(true)
+.add_operation(Operation::RenameColumn{table:"billing_pod_usage".into(),old_name:"operation".into(),new_name:"allocation".into()})
+.add_operation(Operation::AddColumn{table:"billing_pod_usage".into(),column:ColumnDefinition::new("receipt_digest",FieldType::Text).with_not_null(true),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_pod_usage".into(),column:ColumnDefinition::new("started_ns",FieldType::BigInteger).with_not_null(true),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_pod_usage".into(),column:ColumnDefinition::new("ended_ns",FieldType::BigInteger).with_not_null(true),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_pod_usage".into(),column:ColumnDefinition::new("billable_ns",FieldType::BigInteger).with_not_null(true),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_storage_samples".into(),column:ColumnDefinition::new("sampled_ns",FieldType::BigInteger).with_not_null(true),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_storage_samples".into(),column:ColumnDefinition::new("status",FieldType::Text).with_not_null(true),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_storage_samples".into(),column:ColumnDefinition::new("coverage_id",FieldType::Uuid).with_not_null(false),mysql_options:None})
+.add_operation(Operation::AddColumn{table:"billing_storage_samples".into(),column:ColumnDefinition::new("account_id",FieldType::Uuid).with_not_null(false),mysql_options:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_pod_usage".into(),name:"billing_pod_usage_identity".into(),columns:vec!["allocation".into(),"tenant".into()],unique:true,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_pod_usage".into(),name:"billing_pod_usage_receipt_digest".into(),columns:vec!["receipt_digest".into()],unique:true,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_coverage_periods".into(),name:"billing_coverage_periods_identity".into(),columns:vec!["id".into(),"account_id".into(),"tenant".into()],unique:true,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateTable{name:"billing_usage_segments".into(),columns:vec![ColumnDefinition::new("account_id",FieldType::Uuid).with_not_null(false),
+ColumnDefinition::new("allocation",FieldType::Uuid).with_not_null(true),
+ColumnDefinition::new("coverage_id",FieldType::Uuid).with_not_null(false),
+ColumnDefinition::new("ends_ns",FieldType::BigInteger).with_not_null(true),
+ColumnDefinition::new("id",FieldType::Uuid).with_not_null(true).with_primary_key(true),
+ColumnDefinition::new("starts_ns",FieldType::BigInteger).with_not_null(true),
+ColumnDefinition::new("status",FieldType::Text).with_not_null(true),
+ColumnDefinition::new("tenant",FieldType::Text).with_not_null(true)],constraints:vec![],without_rowid:None,interleave_in_parent:None,partition:None})
+.add_operation(Operation::CreateTable{name:"billing_retention_state".into(),columns:vec![ColumnDefinition::new("floor_ns",FieldType::BigInteger).with_not_null(true),
+ColumnDefinition::new("id",FieldType::Text).with_not_null(true).with_primary_key(true)],constraints:vec![],without_rowid:None,interleave_in_parent:None,partition:None})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_usage_segments".into(),constraint:Constraint::Check{name:"billing_usage_segments_span".into(),expression:"starts_ns >= 0 AND ends_ns > starts_ns AND ((status = 'covered' AND coverage_id IS NOT NULL AND account_id IS NOT NULL) OR (status IN ('uncovered','exempt') AND coverage_id IS NULL AND account_id IS NULL))".into()}})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_storage_samples".into(),constraint:Constraint::Check{name:"billing_storage_samples_attribution".into(),expression:"sampled_ns >= 0 AND ((status = 'covered' AND coverage_id IS NOT NULL AND account_id IS NOT NULL) OR (status IN ('uncovered','exempt') AND coverage_id IS NULL AND account_id IS NULL))".into()}})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_retention_state".into(),constraint:Constraint::Check{name:"billing_retention_state_history".into(),expression:"id = 'history' AND floor_ns >= 0".into()}})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_usage_segments".into(),constraint:Constraint::ForeignKey{name:"billing_usage_segments_allocation_fkey".into(),columns:vec!["allocation".into(),"tenant".into()],referenced_table:"billing_pod_usage".into(),referenced_columns:vec!["allocation".into(),"tenant".into()],on_delete:ForeignKeyAction::NoAction,on_update:ForeignKeyAction::NoAction,deferrable:None}})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_usage_segments".into(),constraint:Constraint::ForeignKey{name:"billing_usage_segments_coverage_fkey".into(),columns:vec!["coverage_id".into(),"account_id".into(),"tenant".into()],referenced_table:"billing_coverage_periods".into(),referenced_columns:vec!["id".into(),"account_id".into(),"tenant".into()],on_delete:ForeignKeyAction::NoAction,on_update:ForeignKeyAction::NoAction,deferrable:None}})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_storage_samples".into(),constraint:Constraint::ForeignKey{name:"billing_storage_samples_coverage_fkey".into(),columns:vec!["coverage_id".into(),"account_id".into(),"tenant".into()],referenced_table:"billing_coverage_periods".into(),referenced_columns:vec!["id".into(),"account_id".into(),"tenant".into()],on_delete:ForeignKeyAction::NoAction,on_update:ForeignKeyAction::NoAction,deferrable:None}})
+.add_operation(Operation::CreateNamedIndex{table:"billing_usage_segments".into(),name:"billing_usage_segments_allocation_starts".into(),columns:vec!["allocation".into(),"starts_ns".into()],unique:true,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_usage_segments".into(),name:"billing_usage_segments_account_starts".into(),columns:vec!["account_id".into(),"starts_ns".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_usage_segments".into(),name:"billing_usage_segments_coverage".into(),columns:vec!["coverage_id".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_storage_samples".into(),name:"billing_storage_samples_account_ns".into(),columns:vec!["account_id".into(),"sampled_ns".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::CreateNamedIndex{table:"billing_storage_samples".into(),name:"billing_storage_samples_coverage".into(),columns:vec!["coverage_id".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
+.add_operation(Operation::DropConstraintDefinition{table:"billing_pod_usage".into(),constraint:Constraint::Check{name:"billing_pod_usage_span".into(),expression:"ended_at >= started_at AND millis > 0".into()}})
+.add_operation(Operation::AddConstraintDefinition{table:"billing_pod_usage".into(),constraint:Constraint::Check{name:"billing_pod_usage_span".into(),expression:"allocation <> '00000000-0000-0000-0000-000000000000'::uuid AND receipt_digest ~ '^[0-9a-f]{64}$' AND started_ns >= 0 AND ended_ns > started_ns AND ended_at >= started_at AND billable_ns >= 0 AND billable_ns <= ended_ns - started_ns AND millis = billable_ns / 1000000".into()}})
+}
