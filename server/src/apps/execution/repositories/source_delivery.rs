@@ -63,13 +63,12 @@ pub(super) async fn accept(
 				"partial memory content cannot grant a full read".into(),
 			));
 		}
-		if let Ok(unit) = serde_json::from_value::<Unit>(contribution.content.clone()) {
-			if !units
+		if let Ok(unit) = serde_json::from_value::<Unit>(contribution.content.clone())
+			&& !units
 				.iter()
 				.any(|other: &Unit| other.id == unit.id && other.revision == unit.revision)
-			{
-				units.push(unit);
-			}
+		{
+			units.push(unit);
 		}
 	}
 	if !units.is_empty() {
