@@ -3714,7 +3714,35 @@ impl Store {
 					checkpoint.input.is_some()
 						&& key.starts_with(&format!("{}:mcp:", checkpoint.key))
 				});
-		if !continuation {
+		// A recovered send also retains its admission across newer user input.
+		// The checkpoint alone cannot grant that exemption: a newly prepared
+		// send is persisted together with its first journal row below.
+		let sent = tool == "mcp.round"
+			&& run
+				.state
+				.tool()
+				.ok()
+				.and_then(|state| state.mcp.as_ref())
+				.and_then(|checkpoint| checkpoint.sent.as_ref())
+				.is_some_and(|sent| sent.key == key && sent.input == *input);
+		let admitted_send = if !continuation && sent {
+			crate::database::native::query_scalar::<bool>(
+				&Query::select()
+					.expr(Expr::value(true))
+					.from(Alias::new("invocations"))
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+					.and_where(Expr::col(Alias::new("tool")).eq(Expr::value(tool)))
+					.and_where(Expr::col(Alias::new("input")).eq(Expr::value(input.clone())))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?
+			.unwrap_or(false)
+		} else {
+			false
+		};
+		if !continuation && !admitted_send {
 			self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 				.await?;
 		}

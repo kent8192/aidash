@@ -20,6 +20,9 @@ pub const PATH: &str = "/mcp";
 pub struct FakeMcp {
 	modern: AtomicBool,
 	inputs: Mutex<Option<Value>>,
+	live_input: Mutex<Option<Value>>,
+	input_replies: Mutex<Vec<Value>>,
+	input_reply: tokio::sync::Notify,
 	tools: Mutex<Vec<Value>>,
 	live: Mutex<HashSet<String>>,
 	issued: AtomicUsize,
@@ -55,6 +58,32 @@ impl FakeMcp {
 		*self.inputs.lock().unwrap() = Some(inputs);
 	}
 
+	/// Issue a real server-to-client request while the outer `tools/call` is unfinished.
+	/// With modern inputs configured, it is issued from the continuation instead.
+	pub fn live_input(&self, method: &str, params: Value) {
+		*self.live_input.lock().unwrap() = Some(json!({
+			"jsonrpc":"2.0", "id":"live-input", "method":method, "params":params
+		}));
+	}
+
+	fn callback(self: &Arc<Self>, id: Value) -> Response {
+		let fake = self.clone();
+		let input = self.live_input.lock().unwrap().clone().unwrap();
+		let stream = async_stream::stream! {
+			yield Ok::<_, Box<dyn std::error::Error + Send + Sync>>(bytes::Bytes::from(format!("data: {input}\n\n")));
+			loop {
+				let notified = fake.input_reply.notified();
+				if !fake.input_replies.lock().unwrap().is_empty() { break; }
+				notified.await;
+			}
+			let message = json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"live callback completed"}]}});
+			yield Ok(bytes::Bytes::from(format!("data: {message}\n\n")));
+		};
+		Response::ok()
+			.with_stream(stream)
+			.with_header("Content-Type", "text/event-stream")
+	}
+
 	/// The requests of one MCP method, as their `params`, in arrival order.
 	pub fn requests(&self, method: &str) -> Vec<Value> {
 		self.seen
@@ -88,7 +117,7 @@ impl FakeMcp {
 		self.deleted.lock().unwrap().clone()
 	}
 
-	fn handle(&self, request: &Request) -> Response {
+	fn handle(self: &Arc<Self>, request: &Request) -> Response {
 		let Ok(body) = request.json::<Value>() else {
 			return Response::new(StatusCode::BAD_REQUEST);
 		};
@@ -103,6 +132,11 @@ impl FakeMcp {
 			.unwrap()
 			.push((method.clone(), body["params"].clone()));
 		let id = body.get("id").cloned();
+		if method.is_empty() && (body.get("result").is_some() || body.get("error").is_some()) {
+			self.input_replies.lock().unwrap().push(body);
+			self.input_reply.notify_one();
+			return Response::new(StatusCode::ACCEPTED);
+		}
 		if self.modern.load(SeqCst) {
 			assert!(session.is_none());
 			let id = id.unwrap();
@@ -123,6 +157,9 @@ impl FakeMcp {
 				}
 				"tools/call" => {
 					assert_eq!(body["params"]["requestState"], "sealed-request-state");
+					if self.live_input.lock().unwrap().is_some() {
+						return self.callback(id);
+					}
 					answer(
 						id,
 						json!({"resultType":"complete","content":[{"type":"text","text":"continued result"}]}),
@@ -155,6 +192,7 @@ impl FakeMcp {
 		};
 		match method.as_str() {
 			"tools/list" => answer(id, json!({"tools": self.tools.lock().unwrap().clone()})),
+			"tools/call" if self.live_input.lock().unwrap().is_some() => self.callback(id),
 			"tools/call" => answer(
 				id,
 				json!({

@@ -168,6 +168,15 @@ request kind that old API binaries cannot decode. A rollback keeps the migrated
 schema and needs a capable worker for outstanding MCP checkpoints; reversing the
 human-request migration requires that no MCP elicitation rows remain.
 
+Sent MCP rounds (#503) additionally require `mcp_sent_round` while their exact
+invocation identity is retained in `ToolCallState.mcp.sent`. This requirement
+continues through a live callback's form or Sampling approval wait and its
+reconciliation wait. An older worker that understands only `mcp_call_state`
+cannot claim these Runs. A recovered capable worker reconciles the retained send
+before processing callback input; a human answer cannot authorize an automatic
+replay or a new continuation. Checkpoints without a retained send keep their
+existing `mcp_call_state` requirement.
+
 On shutdown, stop new pulls/claims and drain the current step. Do not clear a lease
 while an external effect might still run. Never delete the durable on shutdown.
 `activation_quarantine` stores only a digest, bounded reason, sequence, and time;

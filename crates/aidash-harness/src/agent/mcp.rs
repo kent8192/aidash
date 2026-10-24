@@ -6,7 +6,7 @@ use aidash_application::ports::{
 };
 use aidash_domain::agent_plugin::interaction::{
 	CallCheckpoint, ElicitationRequest, InputRequest, RequiredInput, SamplingRequest,
-	SamplingTarget, ToolRound,
+	SamplingTarget, SentRound, ToolRound,
 };
 use aidash_domain::provider::{ModelContext, ModelRequest, SamplingContext};
 use async_trait::async_trait;
@@ -69,63 +69,98 @@ impl Executor<'_> {
 			store.checkpoint_mcp(run, token).await?;
 		}
 		loop {
-			while let Some((id, request)) = checkpoint
-				.next_input()
-				.map(|(id, request)| (id.to_owned(), request.clone()))
-			{
-				match self
-					.mcp_input(run, token, &mut call, &mut checkpoint, &id, &request)
-					.await
+			// A callback can have replaced the input checkpoint while a send
+			// remained open. Recovery must reconcile that send before touching
+			// the callback or advancing the modern continuation counter.
+			let recovering_send = checkpoint.sent.is_some();
+			if recovering_send {
+				if let Some(active) = checkpoint.active.take() {
+					checkpoint.waited_millis = checkpoint.waited_millis.saturating_add(
+						(chrono::Utc::now().min(active.deadline) - active.started_at)
+							.num_milliseconds()
+							.max(0) as u64,
+					);
+				}
+			} else {
+				while let Some((id, request)) = checkpoint
+					.next_input()
+					.map(|(id, request)| (id.to_owned(), request.clone()))
 				{
-					Ok(Input::Ready(value)) => checkpoint.answer(&id, value, chrono::Utc::now())?,
-					Ok(Input::Wait(wait)) => {
-						run.state.tool_mut()?.mcp = Some(checkpoint.clone());
-						// Rebuild the resume after the input established its deadline.
-						let resume = Box::new(run.state.tool()?.clone());
-						run.state = RunState::Waiting(Box::new(match wait {
-							WaitingState::Approval { approval, .. } => {
-								WaitingState::Approval { approval, resume }
-							}
-							WaitingState::Human {
-								request_id,
-								answer_by,
-								..
-							} => WaitingState::Human {
-								request_id,
-								answer_by,
-								resume: ResumeState::ToolCall(resume),
-							},
-							_ => return Err(Error::Invalid("invalid MCP wait".into())),
-						}));
-						store.save_run(run, token, "run.mcp_waiting").await?;
-						return Ok(None);
-					}
-					Err(error) => {
-						return self
-							.mcp_error(run, token, &checkpoint, error)
-							.await
-							.map(Some);
+					match self
+						.mcp_input(run, token, &mut call, &mut checkpoint, &id, &request)
+						.await
+					{
+						Ok(Input::Ready(value)) => {
+							checkpoint.answer(&id, value, chrono::Utc::now())?
+						}
+						Ok(Input::Wait(wait)) => {
+							run.state.tool_mut()?.mcp = Some(checkpoint.clone());
+							// Rebuild the resume after the input established its deadline.
+							let resume = Box::new(run.state.tool()?.clone());
+							run.state = RunState::Waiting(Box::new(match wait {
+								WaitingState::Approval { approval, .. } => {
+									WaitingState::Approval { approval, resume }
+								}
+								WaitingState::Human {
+									request_id,
+									answer_by,
+									..
+								} => WaitingState::Human {
+									request_id,
+									answer_by,
+									resume: ResumeState::ToolCall(resume),
+								},
+								_ => return Err(Error::Invalid("invalid MCP wait".into())),
+							}));
+							store.save_run(run, token, "run.mcp_waiting").await?;
+							return Ok(None);
+						}
+						Err(error) => {
+							return self
+								.mcp_error(run, token, &checkpoint, error)
+								.await
+								.map(Some);
+						}
 					}
 				}
+				// A checkpoint's continuation number is advanced only after every
+				// input has a result. The journal, not network state, owns send replay.
+				if checkpoint.input.is_some()
+					&& !checkpoint.wire_pending
+					&& let Err(error) = checkpoint.continue_call(self.environment.mcp_limits())
+				{
+					return self
+						.mcp_error(run, token, &checkpoint, error.into())
+						.await
+						.map(Some);
+				}
+				checkpoint.wire_pending = true;
+				let wire_input = json!({"call":call.call,"request_state":checkpoint.input.as_ref().and_then(|input| input.request_state.as_ref()),"input_responses":checkpoint.responses});
+				checkpoint.sent = Some(SentRound {
+					key: format!("{}:mcp:round:{}", call.key, checkpoint.continuation_sends),
+					input: wire_input,
+				});
 			}
-			// A checkpoint's continuation number is advanced only after every
-			// input has a result. The journal, not network state, owns send replay.
-			if checkpoint.input.is_some()
-				&& !checkpoint.wire_pending
-				&& let Err(error) = checkpoint.continue_call(self.environment.mcp_limits())
+			let sent = checkpoint.sent.as_ref().expect("MCP send identity");
+			let round_key = sent.key.clone();
+			if round_key != format!("{}:mcp:round:{}", call.key, checkpoint.continuation_sends)
+				|| sent.input["call"] != serde_json::to_value(call.call)?
 			{
-				return self
-					.mcp_error(run, token, &checkpoint, error.into())
-					.await
-					.map(Some);
+				return Err(Error::Conflict(
+					"MCP sent round belongs to another call".into(),
+				));
 			}
-			let round_key = format!("{}:mcp:round:{}", call.key, checkpoint.continuation_sends);
-			checkpoint.wire_pending = true;
-			let wire_input = json!({"call":call.call,"request_state":checkpoint.input.as_ref().and_then(|input| input.request_state.as_ref()),"input_responses":checkpoint.responses});
+			let wire_input = sent.input.clone();
+			// Admission persists the Run and journal row atomically. Install the
+			// snapshot before admission so even a loss before the first callback
+			// retains the exact request that was sent.
+			run.state.tool_mut()?.mcp = Some(checkpoint.clone());
 			let invocation = store
 				.invocation_start(run, token, &round_key, "mcp.round", &wire_input, false)
 				.await?;
-			if invocation.status == "UNCERTAIN" {
+			if invocation.status == "UNCERTAIN"
+				|| (recovering_send && invocation.status != "COMPLETED")
+			{
 				let prompt = format!(
 					"MCP tool {} may have completed. Reconcile its effect and answer with a JSON object containing result. It will not be sent again. Invocation: {round_key}",
 					call.call.name
@@ -194,8 +229,11 @@ impl Executor<'_> {
 				serde_json::from_value(saved)?
 			};
 			match round {
+				// The immutable journal result and the caller's atomic tool event /
+				// cursor save consume this logical result once across worker loss.
 				ToolRound::Complete(value) => return Ok(Some(value)),
 				ToolRound::InputRequired(input) => {
+					checkpoint.sent = None;
 					if let Err(error) = checkpoint.accept(input) {
 						return self
 							.mcp_error(run, token, &checkpoint, error.into())
@@ -251,6 +289,7 @@ impl Executor<'_> {
 			request_state: None,
 			requests: [(id.clone(), request.clone())].into(),
 		})?;
+		checkpoint.wire_pending = true;
 		let mut saved_wait = false;
 		loop {
 			let outcome = self
@@ -419,6 +458,9 @@ impl Executor<'_> {
 							);
 						}
 						checkpoint.active = None;
+						// Sampling admission persists the Run before provider I/O;
+						// the human wait has already ended at this point.
+						run.state.tool_mut()?.mcp = Some(checkpoint.clone());
 						self.mcp_sample(run, token, call, &input_key, sample, model)
 							.await
 							.map(Input::Ready)
