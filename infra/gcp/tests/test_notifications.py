@@ -424,6 +424,7 @@ class TriggerAuthorizationTests(unittest.TestCase):
             (".github/workflows/gcp-environments.yml", "GCP environments", True),
             (".github/workflows/gcp-production.yml", "GCP production", True),
             (".github/workflows/ci.yml", "CI", False),
+            (".github/workflows/release-ci.yml", "Release CI", False),
             (".github/workflows/other.yml", "GCP environments", False),
         ):
             with (

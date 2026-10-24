@@ -10,6 +10,7 @@ import {
   sessionFetch,
 } from "./transport";
 import { useI18n } from "./ui";
+import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 
 /** A recorded Tenant Deletion (ADR 0060). */
 export type TenantDeletion = {
@@ -448,6 +449,7 @@ export function DeploymentTenants() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [nodeTenant, setNodeTenant] = useState<string | null>(null);
   const tenants = useQuery({
     queryKey: ["deployment-tenants", offset],
     queryFn: () => apiFetch<TenantRecord[]>(`/api/tenants?offset=${offset}`),
@@ -514,6 +516,15 @@ export function DeploymentTenants() {
               )}
             </span>
             <span className="flex flex-wrap items-center gap-2">
+              {!tenant.deletion && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setNodeTenant(tenant.name)}
+                >
+                  {english ? "Manage Nodes" : "Node を管理"}
+                </Button>
+              )}
               {tenant.restorable && (
                 <Button
                   size="sm"
@@ -569,6 +580,18 @@ export function DeploymentTenants() {
           </li>
         ))}
       </ul>
+      {nodeTenant && (
+        <div className="grid gap-2">
+          <span className="font-mono text-xs">{nodeTenant}</span>
+          <NodeLifecycleSettings
+            key={nodeTenant}
+            tenant={nodeTenant}
+            canUpdate
+            canDelete
+            deploymentAdministrator
+          />
+        </div>
+      )}
       <div className="flex gap-2">
         <Button
           size="sm"
