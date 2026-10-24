@@ -3,7 +3,7 @@ use crate::Result;
 use aidash_domain::context::source::{DetailRequest, SourceBatch, SourceRequest};
 use async_trait::async_trait;
 
-/// Lifecycle positions at which the operator has enough information to collect
+/// Lifecycle positions at which the Harness has enough information to collect
 /// a source. Native adapter names and Registry kinds belong to the resolver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextSourcePhase {
@@ -56,7 +56,7 @@ pub struct PlannedContextSource {
 }
 
 /// Private data of the current execution boundary, never Registry configuration.
-/// All providers receive the same frame; the operator knows no native adapter
+/// All providers receive the same frame; the Harness knows no native adapter
 /// discriminator and supplies bounded retrieval information only when available.
 #[derive(Clone, Copy)]
 pub struct ContextSourceFrame<'a> {

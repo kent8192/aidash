@@ -2,6 +2,7 @@
 use super::*;
 use aidash_domain::context::{ContextEvent, HistoryEntry, research::ResearchReference};
 use aidash_domain::research::expiry::ExpiredResults;
+use std::collections::HashSet;
 
 #[model(app_label = "execution", table_name = "research_journal_results")]
 #[derive(Serialize, Deserialize)]
@@ -57,24 +58,46 @@ impl ResearchJournalResult {
 		expired: &ExpiredResults,
 		revoked: bool,
 	) -> Result<()> {
-		for entry in entries {
-			let Some(reference) = entry.research_reference() else {
-				continue;
-			};
-			let (sql, values) = Query::select()
-				.column(Alias::new("id"))
-				.from(Alias::new(Self::table_name()))
-				.and_where(Expr::col("run_id").eq(Expr::value(run)))
-				.and_where(
-					Expr::col("invocation_key").eq(Expr::value(reference.invocation.clone())),
-				)
-				.and_where(Expr::col("digest").eq(Expr::value(reference.digest.clone())))
-				.build(PostgresQueryBuilder);
-			if tx
-				.fetch_optional(&sql, convert_values(values))
-				.await?
-				.is_some()
-			{
+		// Read identities only once; ordinary projection saves already own
+		// nearly every variant and must not query once per retained result.
+		let (sql, values) = Query::select()
+			.columns(["invocation_key", "digest"].map(Alias::new))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		let mut existing = HashSet::new();
+		for row in tx.fetch_all(&sql, convert_values(values)).await? {
+			let data = QueryRow::from_backend_row(row).data;
+			existing.insert((
+				serde_json::from_value::<String>(data["invocation_key"].clone())?,
+				serde_json::from_value::<String>(data["digest"].clone())?,
+			));
+		}
+		let pending: Vec<_> = entries
+			.iter()
+			.filter_map(|entry| {
+				entry
+					.research_reference()
+					.map(|reference| (entry, reference))
+			})
+			.filter(|(_, reference)| {
+				!existing.contains(&(reference.invocation.clone(), reference.digest.clone()))
+			})
+			.collect();
+		if pending.is_empty() {
+			return Ok(());
+		}
+		let (sql, values) = Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one(&sql, convert_values(values)).await?;
+		let tenant: String =
+			serde_json::from_value(QueryRow::from_backend_row(row).data["tenant"].clone())?;
+		for (entry, reference) in pending {
+			// Repeated entries in the same projection share one variant too.
+			if !existing.insert((reference.invocation.clone(), reference.digest.clone())) {
 				continue;
 			}
 			let ContextEvent::Tool { result, .. } = &entry.event else {
@@ -102,17 +125,9 @@ impl ResearchJournalResult {
 				Some(serde_json::to_vec(result)?)
 			};
 			// An unresolved/elided reference cannot manufacture a new payload.
-			let (sql, values) = Query::select()
-				.column(Alias::new("tenant"))
-				.from(Alias::new("runs"))
-				.and_where(Expr::col("id").eq(Expr::value(run)))
-				.build(PostgresQueryBuilder);
-			let row = tx.fetch_one(&sql, convert_values(values)).await?;
-			let tenant: String =
-				serde_json::from_value(QueryRow::from_backend_row(row).data["tenant"].clone())?;
 			let record = Self::new()
 				.id(Uuid::new_v4())
-				.tenant(tenant)
+				.tenant(tenant.clone())
 				.run(run)
 				.invocation_key(reference.invocation.clone())
 				.digest(reference.digest.clone())

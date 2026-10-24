@@ -635,7 +635,7 @@ pub trait ExecutionEnvironment: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<aidash_domain::context::sources::RetrievalScope>;
-	/// Provider-owned reusable key for the plan's budgeted phase. The operator
+	/// Provider-owned reusable key for the plan's budgeted phase. The Harness
 	/// does not choose a native retrieval query or interpret adapter names.
 	async fn source_retrieval_key(
 		&self,

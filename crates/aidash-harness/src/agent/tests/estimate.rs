@@ -90,6 +90,50 @@ async fn a_calibrated_model_pins_its_snapshot_before_the_step_relies_on_it(mut f
 }
 
 #[rstest]
+#[case::calibrated(calibrated as fn(&mut Fixture, Vec<CalibrationSample>))]
+#[case::tokenized(tokenized as fn(&mut Fixture, Vec<CalibrationSample>))]
+#[tokio::test]
+async fn pinning_an_estimate_keeps_resolved_research_in_the_model_request(
+	mut fixture: Fixture,
+	#[case] estimating: fn(&mut Fixture, Vec<CalibrationSample>),
+) {
+	// Arrange: this step resumes from an immutable journal reference. The
+	// estimate save reloads that durable projection before fitting the request.
+	estimating(&mut fixture, warm(4));
+	let payload = json!({
+		"contract": "aidash.research/1", "version": 1, "operation": "fetch",
+		"status": "ok", "data": {"text": "the retained provider passage"},
+	});
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.research_payloads
+		.insert(rules::digest(&payload), payload.clone());
+	fixture.run.context.push(ContextEvent::tool(
+		call(
+			"call-page",
+			"renamed_page",
+			json!({"url": "https://example.com/"}),
+		),
+		payload.clone(),
+	));
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run = serde_json::from_value(serde_json::to_value(&fixture.run).unwrap()).unwrap();
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: pinning is durable while the provider receives the exact payload,
+	// never the journal's opaque reference envelope.
+	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	let request = &fixture.backend.0.requests.lock().unwrap()[0];
+	let ModelContext::Legacy(context) = &request.context else {
+		panic!("the fixture uses the Legacy projection")
+	};
+	assert_eq!(context["history"][0]["result"], payload);
+}
+
+#[rstest]
 #[tokio::test]
 async fn a_resumed_step_reuses_its_snapshot_after_calibration_changed(mut fixture: Fixture) {
 	// Arrange: the step pinned a snapshot, then other attempts moved the key.

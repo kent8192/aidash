@@ -652,7 +652,19 @@ mod exposure {
 			version: "1.0.0".into(),
 		});
 		declaration.pin = PinPolicy::OnDemand;
-		declaration.tools = SourceTools::default();
+		let reader = QualifiedRef::builtin(
+			NODE,
+			if deferred {
+				SKILL_ASSET_READ
+			} else {
+				"skill_read"
+			},
+		);
+		declaration.tools = SourceTools {
+			read: vec![reader.clone()],
+			detail: Some(reader),
+			..Default::default()
+		};
 		on_demand.context_source = Some(declaration);
 		scope.snapshot = crate::test_support::resolve(
 			NODE,
@@ -705,6 +717,24 @@ mod exposure {
 				"OnDemand remains discoverable through its tools"
 			);
 			assert!(
+				catalog
+					.iter()
+					.find(|skill| skill.metadata.skill_id == private.skill_id)
+					.unwrap()
+					.files
+					.iter()
+					.any(|file| file["path"] == "SKILL.md")
+			);
+			assert!(
+				!catalog
+					.iter()
+					.find(|skill| skill.metadata.skill_id == public.skill_id)
+					.unwrap()
+					.files
+					.iter()
+					.any(|file| file["path"] == "SKILL.md")
+			);
+			assert!(
 				!scope.reads.contains(&private_file.file_id),
 				"discovery must not read old-record OnDemand bodies merely to measure them"
 			);
@@ -723,6 +753,45 @@ mod exposure {
 				Some("Always body")
 			);
 			assert_eq!(scope.reads, [public_file.file_id]);
+			scope.denied.clear();
+			assert_eq!(
+				direct_file(
+					&mut scope,
+					&run(),
+					private.skill_id,
+					&private.digest,
+					"SKILL.md"
+				)
+				.await
+				.unwrap(),
+				Some(b"OnDemand body".to_vec())
+			);
+			scope.reads.clear();
+			assert!(
+				matches!(direct_file(&mut scope, &run(), private.skill_id, "stale", "SKILL.md").await, Err(Error::Conflict(code)) if code == "CAPABILITY_CHANGED")
+			);
+			assert!(scope.reads.is_empty());
+			assert!(
+				matches!(direct_file(&mut scope, &run(), public.skill_id, &public.digest, "SKILL.md").await, Err(Error::Invalid(code)) if code == "SKILL_FILE_UNAVAILABLE")
+			);
+			scope.denied.insert(private_file.file_id);
+			assert!(matches!(
+				direct_file(
+					&mut scope,
+					&run(),
+					private.skill_id,
+					&private.digest,
+					"SKILL.md"
+				)
+				.await,
+				Err(Error::Forbidden)
+			));
+			assert_eq!(
+				scope.reads,
+				[private_file.file_id],
+				"the denial comes from the current private object read"
+			);
+			return;
 		}
 		let read = json!({"skill_id":private.skill_id,"digest":private.digest,"path":"SKILL.md","max_chars":16});
 		assert!(
