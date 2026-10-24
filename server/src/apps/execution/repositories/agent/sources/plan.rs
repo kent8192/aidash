@@ -63,6 +63,11 @@ fn compile_context_source_plan(
 		&& snapshot.bindings.iter().any(|binding| {
 			binding.excluded_reason.is_none() && binding.alias.as_deref() == Some("skill_list")
 		});
+	let plugin_skills = local_authority
+		&& snapshot
+			.agent_plugins
+			.iter()
+			.any(|plugin| !plugin.skills.is_empty());
 	let snapshot_digest = digest(&serde_json::to_value(snapshot)?);
 	if remote {
 		for binding in snapshot
@@ -113,7 +118,11 @@ fn compile_context_source_plan(
 			.iter()
 			.filter(|binding| slot.automatic_matches(binding))
 			.collect::<Vec<_>>();
-		if admitted.is_empty() {
+		// Plugin attachments are pinned outside Registry bindings. Their trusted
+		// Skill renderer still needs a lifecycle slot, even in a plugin-only Agent.
+		if admitted.is_empty()
+			&& !(plugin_skills && matches!(slot, Slot::ResidentSkills | Slot::Skills))
+		{
 			continue;
 		}
 		let refresh_each_step = admitted.iter().any(|binding| {

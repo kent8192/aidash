@@ -2847,6 +2847,22 @@ async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mis
 		accepts(json!({"schema_version":1,"source":{"adapter":"workspace_observation"}})).await
 	);
 	assert!(accepts(configured.clone()).await);
+	let tool = json!({"registry_deployment":"aidash://test","id":"shared-tool","version":"1.0.0"});
+	let mut shared_roles = configured.clone();
+	shared_roles["context_source"]["tools"]["read"] = json!([tool]);
+	shared_roles["context_source"]["tools"]["write"] = json!([tool]);
+	assert!(
+		accepts(shared_roles.clone()).await,
+		"one exact Tool may serve both roles"
+	);
+	for role in ["read", "write"] {
+		let mut duplicate = shared_roles.clone();
+		duplicate["context_source"]["tools"][role] = json!([tool, tool]);
+		assert!(
+			!accepts(duplicate).await,
+			"duplicates within {role} must be rejected"
+		);
+	}
 	for (field, value) in [
 		("provider", json!("unavailable.provider")),
 		("operation", json!("skills")),

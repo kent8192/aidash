@@ -16,7 +16,9 @@ pub fn semantic_query_policy(snapshot: &super::super::BindingSnapshot) -> Result
 			let native: NativeContext = serde_json::from_value(binding.definition.config.clone())?;
 			if !matches!(
 				native.source,
-				NativeSource::SemanticMemory {} | NativeSource::WorkspaceRetrieval { .. }
+				NativeSource::ConversationMemory { .. }
+					| NativeSource::SemanticMemory {}
+					| NativeSource::WorkspaceRetrieval { .. }
 			) {
 				continue;
 			}

@@ -417,12 +417,25 @@ impl TenantAdministrator {
 		id: &str,
 		attributes: Value,
 	) -> Result<()> {
+		let (evaluation, decision) = self.authorize(snapshot, action, id, attributes)?;
+		AuthorizationDecision::append(tx, self.tenant(), &evaluation, &decision).await
+	}
+
+	/// Checks under the caller's retained policy lock. The caller must append
+	/// the returned decision before committing a successful operation. This
+	/// lets long reads acquire the global audit cursor lock only at the end.
+	pub(crate) fn authorize(
+		&self,
+		snapshot: &Snapshot,
+		action: &str,
+		id: &str,
+		attributes: Value,
+	) -> Result<(Evaluation, Decision)> {
 		let evaluation = self.evaluation(action, id, attributes);
 		let mut decision = snapshot.bundle.evaluate(&evaluation);
 		decision.revision = snapshot.revision;
 		if decision.allowed {
-			AuthorizationDecision::append(tx, self.tenant(), &evaluation, &decision).await?;
-			return Ok(());
+			return Ok((evaluation, decision));
 		}
 		*self.denial.lock().expect("denial lock") = Some((evaluation, decision));
 		Err(Error::Forbidden)

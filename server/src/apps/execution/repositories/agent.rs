@@ -89,7 +89,9 @@ impl ExecutionStore for RunStore {
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run =
 			Store::save_run(&self.store, &self.scope, run, token, "run.sources_observed").await?;
-		Ok(())
+		// The persisted projection contains immutable Research references. The
+		// same Thinking step continues constructing a request after this save.
+		self.resolve_research(run).await
 	}
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run = Store::save_run(

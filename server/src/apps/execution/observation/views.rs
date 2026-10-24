@@ -362,136 +362,35 @@ pub async fn aggregate(
 				end: query.end,
 			};
 			range.validate()?;
-			let (admins, admin, mut tx) =
-				administrative(&runtime, actor, origin, &tenant, false).await?;
-			let result = report_read(&mut tx, &tenant, range).await;
-			let result = match result {
-				Ok(report) => {
-					tx.commit().await?;
-					Ok(report)
-				}
-				Err(e) => Err(e),
+			let admins = TenantAdministrations {
+				runtime: runtime.clone(),
 			};
+			let admin = admins.administrator(actor, origin, &tenant).await?;
+			let result = async {
+				let mut tx = runtime.store.pool.begin(&admin.scope()?).await?;
+				let snapshot = admin.lock(&mut *tx, false).await?;
+				let (evaluation, decision) = admin.authorize(
+					&snapshot,
+					aidash_domain::identity::tenant_administration::APPROVAL_READ,
+					aidash_domain::identity::tenant_administration::COLLECTION,
+					json!({}),
+				)?;
+				let report = repository::report_read(&mut tx, &tenant, range).await?;
+				crate::apps::identity::models::AuthorizationDecision::append(
+					&mut *tx,
+					&tenant,
+					&evaluation,
+					&decision,
+				)
+				.await?;
+				tx.commit().await?;
+				Ok(report)
+			}
+			.await;
 			admins.finish(&admin, result).await
 		}
 		.await,
 	)
-}
-pub(super) async fn report_read(
-	tx: &mut crate::database::native::Transaction,
-	tenant: &str,
-	range: ReportRange,
-) -> Result<ObservationReport> {
-	range.validate()?;
-	let rows = crate::database::native::query(
-		&SqlQuery::select()
-			.columns(
-				[
-					"approval",
-					"approval_type",
-					"kind",
-					"observer_unavailable",
-					"settlement",
-					"created_at",
-				]
-				.map(Alias::new),
-			)
-			.from(Alias::new("approval_observation_population"))
-			.and_where(Expr::col("tenant").eq(tenant))
-			.and_where(Expr::col("created_at").gte(Expr::value(range.start)))
-			.and_where(Expr::col("created_at").lt(Expr::value(range.end)))
-			.limit(10001)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(&mut **tx)
-	.await?;
-	if rows.len() > 10000 {
-		return Err(Error::Invalid(
-			"report exceeds 10000 approvals; choose a shorter range".into(),
-		));
-	}
-	let mut samples = Vec::with_capacity(rows.len());
-	for row in rows {
-		let approval: Uuid = row.try_get("approval")?;
-		let created_at: DateTime<Utc> = row.try_get("created_at")?;
-		let stored: String = row.try_get("settlement")?;
-		let mut settlement: SettlementClass = serde_json::from_value(json!(stored))?;
-		let kind: String = row.try_get("approval_type")?;
-		let approval_kind: ApprovalKind =
-			serde_json::from_value(json!(row.try_get::<String>("kind")?))?;
-		let unavailable: Option<Value> = row.try_get("observer_unavailable")?;
-		if settlement.label().is_none() {
-			let current = if kind == "capability" {
-				crate::database::native::query(
-					&SqlQuery::select()
-						.columns(["state", "data", "expires_at"].map(Alias::new))
-						.from(Alias::new("core_records"))
-						.and_where(Expr::col("id").eq(Expr::value(approval)))
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **tx)
-				.await?
-			} else {
-				None
-			};
-			if let Some(current) = current {
-				let state: String = current.try_get("state")?;
-				let data: Value = current.try_get("data")?;
-				let expiry: Option<DateTime<Utc>> = current.try_get("expires_at")?;
-				settlement = match state.as_str() {
-					"pending" if expiry.is_some_and(|e| e <= Utc::now()) => {
-						SettlementClass::Expired
-					}
-					"revoked" => SettlementClass::Revoked,
-					"closed" => SettlementClass::Cancelled,
-					_ => repository::initial_settlement(&state, &data),
-				};
-			}
-			if kind == "generation" {
-				let state: Option<String> = crate::database::native::query_scalar(
-					&SqlQuery::select()
-						.column(Alias::new("status"))
-						.from(Alias::new("generation_requests"))
-						.and_where(Expr::col("id").eq(Expr::value(approval)))
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **tx)
-				.await?;
-				settlement = match state.as_deref() {
-					Some("EXPIRED") => SettlementClass::Expired,
-					Some("STOPPED" | "DELETED" | "DENIED") | None => SettlementClass::Cancelled,
-					Some("PENDING_APPROVAL") => SettlementClass::Pending,
-					_ if settlement == SettlementClass::Pending => SettlementClass::Auto,
-					_ => settlement,
-				};
-			}
-		}
-		if let Some(observed) = repository::observation(&mut **tx, tenant, approval).await? {
-			let frame: ObservationFrame = serde_json::from_value(observed.frame.0)?;
-			let evidence: Option<ObservationEvidence> = observed
-				.evidence
-				.map(|e| serde_json::from_value(e.0))
-				.transpose()?;
-			samples.push(ReportSample::observed(
-				&frame,
-				evidence.as_ref(),
-				settlement,
-			)?);
-		} else {
-			samples.push(ReportSample {
-				approval,
-				created_at,
-				group: None,
-				kind: approval_kind,
-				outcome: unavailable.map(|_| ObservationOutcome::Unavailable {
-					reason: UnavailableReason::MissingState,
-				}),
-				settlement,
-				maximum_category_probability: None,
-			});
-		}
-	}
-	Ok(report(range, &samples)?)
 }
 pub(crate) fn routes() -> UnifiedRouter {
 	use crate::apps::identity::services::boundary::AccessBoundary;

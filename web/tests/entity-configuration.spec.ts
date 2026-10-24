@@ -45,6 +45,32 @@ test.beforeEach(async ({ page }) => {
               tags: [],
               skills: [],
             },
+            {
+              id: "fixture-model",
+              version: "1.0.0",
+              kind: "model",
+              name: { en: "Fixture model" },
+              description: { en: "Model" },
+              config: {},
+              schema: {},
+              capabilities: [],
+              languages: [],
+              tags: [],
+              skills: [],
+            },
+            {
+              id: "source-selector",
+              version: "2.0.0",
+              kind: "decider",
+              name: { en: "Source selector" },
+              description: { en: "Scored context" },
+              config: { hook: "context_selection" },
+              schema: {},
+              capabilities: [],
+              languages: [],
+              tags: [],
+              skills: [],
+            },
             ...["1.0.0", "2.0.0"].map((version) => ({
               id: "shared-tool",
               version,
@@ -759,6 +785,49 @@ test("source declarations preserve exact tools and prevent mandatory Home filter
     query: "accepted-inputs-first@1",
     volatility: "step",
     required_home: true,
+  });
+});
+
+test("ordinary Agents can bind the exact context-selection Decider", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("agent");
+  await dialog
+    .getByLabel("Model", { exact: true })
+    .selectOption("fixture-model@1.0.0");
+  await dialog
+    .getByLabel("Additional instructions (optional)")
+    .fill("Select relevant context for the task.");
+  await expect(
+    dialog
+      .getByLabel("Item to add")
+      .locator('option[value="decider:source-selector@2.0.0"]'),
+  ).toHaveCount(1);
+  await dialog
+    .getByLabel("Item to add")
+    .selectOption("decider:source-selector@2.0.0");
+  await dialog
+    .getByRole("button", { name: "Add to this Agent", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Description", { exact: true })
+    .fill("Agent with scored context");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.bindings).toContainEqual({
+    kind: "decider",
+    target: {
+      registry_deployment: "aidash://test",
+      id: "source-selector",
+      version: "2.0.0",
+    },
+    narrow: {},
   });
 });
 

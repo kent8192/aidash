@@ -1,5 +1,5 @@
 //! PostgreSQL tests own observer lease/charge/label/isolation invariants.
-use super::{journal::Journal, repository, views};
+use super::{journal::Journal, repository};
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 use aidash_application::{
 	decision::observation::{ObservationJournal, ObservationLease, observation_boundary},
@@ -363,7 +363,45 @@ async fn native_observation_recovery_labels_and_tenant_isolation(
 	assert_eq!(recovered.len(), 1);
 	assert_eq!(recovered[0].status, AttemptStatus::Uncertain);
 	let mut tx = store.pool.begin(&scope).await.unwrap();
-	let report = views::report_read(
+	// Approval identity includes its type. A colliding UUID of another type
+	// must neither multiply this denominator nor replace its observation.
+	let columns = [
+		"run_id",
+		"workspace_id",
+		"credential_id",
+		"subject",
+		"frame",
+		"evidence",
+		"settlement",
+		"worker",
+		"lease_revision",
+		"leased_until",
+		"created_at",
+	];
+	let copy = Query::select()
+		.expr(Expr::value(Uuid::new_v4()))
+		.columns(["tenant", "approval"].map(Alias::new))
+		.expr(Expr::value("capability"))
+		.columns(columns.map(Alias::new))
+		.from(Alias::new("approval_observations"))
+		.and_where(Expr::col("id").eq(Expr::value(frame.id)))
+		.to_owned();
+	crate::database::native::query(
+		&Query::insert()
+			.into_table(Alias::new("approval_observations"))
+			.columns(
+				["id", "tenant", "approval", "approval_type"]
+					.into_iter()
+					.chain(columns)
+					.map(Alias::new),
+			)
+			.from_subquery(copy)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	let report = repository::report_read(
 		&mut tx,
 		"observer-a",
 		ReportRange {

@@ -1,7 +1,10 @@
 use super::super::models::approval_observations::{ApprovalObservation, ObserverSetting};
 use crate::{Error, Result, authorization::access::Access};
 use aidash_domain::{
-	decision::{observation::*, *},
+	decision::{
+		observation::{report::*, *},
+		*,
+	},
 	registry::{EntityRef, bindings::QualifiedRef, rules::digest},
 };
 use chrono::Utc;
@@ -702,4 +705,144 @@ async fn unavailable(
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())
+}
+
+/// One bounded join reads the denominator, observations and current settlement
+/// together. Report construction never performs a lookup per approval.
+pub(super) async fn report_read(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+	range: ReportRange,
+) -> Result<ObservationReport> {
+	use reinhardt::query::{JoinType, TableRef};
+	range.validate()?;
+	let col = |table: &str, column: &str| (Alias::new(table), Alias::new(column));
+	let rows = crate::database::native::query(
+		&Query::select()
+			.columns(
+				[
+					"approval",
+					"approval_type",
+					"kind",
+					"observer_unavailable",
+					"settlement",
+					"created_at",
+				]
+				.map(|name| col("p", name)),
+			)
+			.expr_as(Expr::col(col("o", "frame")), Alias::new("observed_frame"))
+			.expr_as(
+				Expr::col(col("o", "evidence")),
+				Alias::new("observed_evidence"),
+			)
+			.expr_as(Expr::col(col("c", "state")), Alias::new("current_state"))
+			.expr_as(Expr::col(col("c", "data")), Alias::new("current_data"))
+			.expr_as(
+				Expr::col(col("c", "expires_at")),
+				Alias::new("current_expiry"),
+			)
+			.expr_as(
+				Expr::col(col("g", "status")),
+				Alias::new("generation_status"),
+			)
+			.from_as(
+				Alias::new("approval_observation_population"),
+				Alias::new("p"),
+			)
+			.join(
+				JoinType::LeftJoin,
+				TableRef::table_alias(Alias::new("approval_observations"), Alias::new("o")),
+				Expr::col(col("o", "tenant"))
+					.equals(col("p", "tenant"))
+					.and(Expr::col(col("o", "approval")).equals(col("p", "approval")))
+					.and(Expr::col(col("o", "approval_type")).equals(col("p", "approval_type"))),
+			)
+			.join(
+				JoinType::LeftJoin,
+				TableRef::table_alias(Alias::new("core_records"), Alias::new("c")),
+				Expr::col(col("c", "tenant"))
+					.equals(col("p", "tenant"))
+					.and(Expr::col(col("c", "id")).equals(col("p", "approval")))
+					.and(Expr::col(col("p", "approval_type")).eq("capability")),
+			)
+			.join(
+				JoinType::LeftJoin,
+				TableRef::table_alias(Alias::new("generation_requests"), Alias::new("g")),
+				Expr::col(col("g", "tenant"))
+					.equals(col("p", "tenant"))
+					.and(Expr::col(col("g", "id")).equals(col("p", "approval")))
+					.and(Expr::col(col("p", "approval_type")).eq("generation")),
+			)
+			.and_where(Expr::col(col("p", "tenant")).eq(tenant))
+			.and_where(Expr::col(col("p", "created_at")).gte(Expr::value(range.start)))
+			.and_where(Expr::col(col("p", "created_at")).lt(Expr::value(range.end)))
+			.limit(10001)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **tx)
+	.await?;
+	if rows.len() > 10000 {
+		return Err(Error::Invalid(
+			"report exceeds 10000 approvals; choose a shorter range".into(),
+		));
+	}
+	let now = Utc::now();
+	let mut samples = Vec::with_capacity(rows.len());
+	for row in rows {
+		let approval: Uuid = row.try_get("approval")?;
+		let created_at = row.try_get("created_at")?;
+		let stored: String = row.try_get("settlement")?;
+		let mut settlement: SettlementClass = serde_json::from_value(json!(stored))?;
+		let kind: String = row.try_get("approval_type")?;
+		let approval_kind: ApprovalKind =
+			serde_json::from_value(json!(row.try_get::<String>("kind")?))?;
+		let unavailable: Option<Value> = row.try_get("observer_unavailable")?;
+		if settlement.label().is_none() {
+			if let Some(state) = row.try_get::<Option<String>>("current_state")? {
+				let data: Value = row.try_get("current_data")?;
+				let expiry: Option<chrono::DateTime<Utc>> = row.try_get("current_expiry")?;
+				settlement = match state.as_str() {
+					"pending" if expiry.is_some_and(|e| e <= now) => SettlementClass::Expired,
+					"revoked" => SettlementClass::Revoked,
+					"closed" => SettlementClass::Cancelled,
+					_ => initial_settlement(&state, &data),
+				};
+			}
+			if kind == "generation" {
+				let state: Option<String> = row.try_get("generation_status")?;
+				settlement = match state.as_deref() {
+					Some("EXPIRED") => SettlementClass::Expired,
+					Some("STOPPED" | "DELETED" | "DENIED") | None => SettlementClass::Cancelled,
+					Some("PENDING_APPROVAL") => SettlementClass::Pending,
+					_ if settlement == SettlementClass::Pending => SettlementClass::Auto,
+					_ => settlement,
+				};
+			}
+		}
+		if let Some(frame) = row.try_get::<Option<Value>>("observed_frame")? {
+			let frame: ObservationFrame = serde_json::from_value(frame)?;
+			let evidence: Option<ObservationEvidence> = row
+				.try_get::<Option<Value>>("observed_evidence")?
+				.map(serde_json::from_value)
+				.transpose()?;
+			samples.push(ReportSample::observed(
+				&frame,
+				evidence.as_ref(),
+				settlement,
+			)?);
+		} else {
+			samples.push(ReportSample {
+				approval,
+				created_at,
+				group: None,
+				kind: approval_kind,
+				outcome: unavailable.map(|_| ObservationOutcome::Unavailable {
+					reason: UnavailableReason::MissingState,
+				}),
+				settlement,
+				maximum_category_probability: None,
+			});
+		}
+	}
+	Ok(report(range, &samples)?)
 }

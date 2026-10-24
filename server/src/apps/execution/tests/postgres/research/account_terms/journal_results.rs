@@ -93,6 +93,13 @@ async fn journal_replay_is_exact_until_expiry_and_late_workers_cannot_recreate_i
 	);
 	assert!(original_journal[0].0["result"].get("data").is_none());
 	let executor = store.for_run(ACME.clone());
+	// Selection checkpoints reload the durable row, whose Research results
+	// are references. The continuing step must still see materialized content.
+	executor.observe_sources(&mut run, worker).await.unwrap();
+	assert!(matches!(
+		&run.context.history[0].event,
+		ContextEvent::Tool { result, .. } if result == &output
+	));
 	let replay = executor.context_journal(run.id, 1, 1).await.unwrap();
 	let ContextEvent::Tool { result, .. } = &replay[0].event else {
 		panic!()

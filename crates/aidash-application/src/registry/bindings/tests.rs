@@ -2457,6 +2457,7 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 	#[case] memory_query: Option<aidash_domain::context::source::QueryPolicy>,
 	#[case] workspace_query: Option<aidash_domain::context::source::QueryPolicy>,
 	#[case] accepted: bool,
+	#[values("semantic_memory", "conversation_memory")] memory_adapter: &str,
 ) {
 	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
 	let mut catalog = Catalog::new();
@@ -2465,7 +2466,7 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 		(
 			"query-memory",
 			"memory",
-			NativeSource::SemanticMemory {},
+			serde_json::from_value(json!({"adapter": memory_adapter})).unwrap(),
 			memory_query,
 		),
 		(

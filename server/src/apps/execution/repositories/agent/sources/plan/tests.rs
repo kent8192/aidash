@@ -1,12 +1,18 @@
 //! Source eligibility is tested from real admitted closures, independently of
 //! the Harness's provider-neutral request rendering tests.
 use super::*;
-use aidash_application::ports::bindings::BindingCatalog;
+use aidash_application::ports::bindings::{BindingCatalog, StoredAgentPlugin};
 use aidash_domain::registry::{Entry, Projection, bindings::BindingSnapshot};
 
-struct Catalog(Vec<Entry>);
+struct Catalog(Vec<Entry>, Option<StoredAgentPlugin>);
 #[async_trait]
 impl BindingCatalog for Catalog {
+	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
+		Ok(self
+			.1
+			.clone()
+			.filter(|stored| stored.plugin.digest == digest))
+	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		self.0
 			.iter()
@@ -23,27 +29,50 @@ impl BindingCatalog for Catalog {
 }
 
 async fn admitted(source: Value) -> BindingSnapshot {
+	admitted_with(Some(source), None, false).await
+}
+
+async fn admitted_with(
+	source: Option<Value>,
+	plugin: Option<StoredAgentPlugin>,
+	deferred: bool,
+) -> BindingSnapshot {
 	const NODE: &str = "aidash://source-plan-test";
 	let entry = |id: &str, kind: &str, config: Value| -> Entry {
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Source plan fixture"},"config":config})).unwrap()
 	};
-	let source = entry(
-		"references",
-		"source",
-		json!({"schema_version":1,"source":source}),
-	);
+	let source = source.map(|source| {
+		entry(
+			"references",
+			"source",
+			json!({"schema_version":1,"source":source}),
+		)
+	});
 	let mut agent = entry(
 		"reader",
 		"agent",
 		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Read the admitted reference sources.","bindings":[{"kind":"source","target":{"registry_deployment":NODE,"id":"references","version":"1.0.0"},"narrow":{}}],"remove_default":["compaction"]}),
 	);
+	if source.is_none() {
+		agent.config["bindings"] = json!([]);
+	}
+	if let Some(plugin) = &plugin {
+		agent.config["agent_plugins"] = json!([aidash_domain::agent_plugin::AgentPluginRef::of(
+			&plugin.plugin,
+			&plugin.source
+		)]);
+	}
+	if deferred {
+		agent.config["exposure"] = json!({"version":"deferred@1"});
+	}
 	agent.normalize_agent(NODE).unwrap();
 	let validation = crate::bootstrap::registry_validation();
 	let mut entries =
 		aidash_application::registry::system::declarations(&validation, NODE).unwrap();
-	entries.extend([source, entry("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://models.invalid","context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}))]);
+	entries.extend(source);
+	entries.push(entry("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://models.invalid","context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	let snapshot = aidash_application::registry::bindings::resolve(
-		&mut Catalog(entries),
+		&mut Catalog(entries, plugin),
 		&validation,
 		QualifiedRef {
 			registry_deployment: NODE.into(),
@@ -57,6 +86,53 @@ async fn admitted(source: Value) -> BindingSnapshot {
 	.unwrap();
 	snapshot.validate().unwrap();
 	snapshot
+}
+
+#[rstest::rstest]
+#[case::legacy(false)]
+#[case::deferred(true)]
+#[tokio::test]
+async fn plugin_only_skills_have_an_instruction_source(#[case] deferred: bool) {
+	use aidash_domain::agent_plugin::{PLUGIN_SCHEMA, PluginFile};
+	let file = |path: &str, text: String| PluginFile {
+		path: path.into(),
+		bytes: text.into_bytes(),
+	};
+	let plugin = aidash_domain::agent_plugin::load(&[
+		file(
+			"plugin.json",
+			json!({"$schema":PLUGIN_SCHEMA,"name":"acme-skills","version":"1.0.0"}).to_string(),
+		),
+		file(
+			"skills/lint/SKILL.md",
+			"---\nname: lint\ndescription: Review code.\n---\nCheck the code carefully.\n".into(),
+		),
+	])
+	.unwrap();
+	let snapshot = admitted_with(
+		None,
+		Some(StoredAgentPlugin {
+			source: "https://github.com/acme/tools/tree/0123456789abcdef0123456789abcdef01234567"
+				.into(),
+			plugin,
+		}),
+		deferred,
+	)
+	.await;
+	let plan = compile_context_source_plan(Uuid::from_u128(4), &snapshot, true, false).unwrap();
+	let instructions = plan
+		.iter()
+		.filter(|source| source.target == ContextSourceTarget::Instructions)
+		.collect::<Vec<_>>();
+	assert_eq!(instructions.len(), 1);
+	assert_eq!(
+		instructions[0].contribution_slot,
+		if deferred {
+			"resident_skills"
+		} else {
+			"skills"
+		}
+	);
 }
 
 #[tokio::test]

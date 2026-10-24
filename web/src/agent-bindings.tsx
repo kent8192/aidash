@@ -155,7 +155,11 @@ export function AgentBindings({
         "external_service",
         "decider",
       ].includes(e.kind) &&
-      (e.kind !== "decider" || (!generated && e.config?.hook === "compaction")),
+      (e.kind !== "decider" ||
+        (!generated &&
+          ["compaction", "context_selection"].includes(
+            String(e.config?.hook),
+          ))),
   );
   const labels = disambiguateLabels(
     available,

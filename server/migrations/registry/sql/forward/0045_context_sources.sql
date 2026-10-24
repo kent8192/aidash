@@ -12,7 +12,8 @@ BEGIN
  FOR candidate IN SELECT jsonb_array_elements((tools->'read') || (tools->'write')) LOOP
   IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate),false) THEN RETURN false; END IF;
  END LOOP;
- IF (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements((tools->'read') || (tools->'write')) e) THEN RETURN false; END IF;
+ IF (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements(tools->'read') e)
+ OR (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements(tools->'write') e) THEN RETURN false; END IF;
  IF COALESCE(tools->'detail','null'::jsonb) <> 'null'::jsonb AND NOT COALESCE(public.aidash_qualified_ref_is_valid(tools->'detail'),false) THEN RETURN false; END IF;
  IF value ? 'volatility' AND NOT COALESCE(value->>'volatility' IN ('run','step'),false) THEN RETURN false; END IF;
  IF value ? 'query' AND NOT COALESCE(value->>'query' IN ('task-inputs@1','accepted-inputs-first@1'),false) THEN RETURN false; END IF;
