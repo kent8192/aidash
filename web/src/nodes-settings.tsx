@@ -1,3 +1,7 @@
+import {
+  ReceivingKeyControl,
+  DeletedNodeKeyControls,
+} from "./receiving-key-controls";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check as Tick } from "lucide-react";
@@ -158,6 +162,9 @@ export function NodesPage({ data }: { data: State }) {
           own={registryDeployment(data)}
           editable={can("node_registration.update")}
         />
+      )}
+      {can("node_registration.read") && can("node_registration.update") && (
+        <DeletedNodeKeyControls tenant={tenant} />
       )}
       {labelling && (
         <Modal
@@ -341,6 +348,12 @@ function Registrations({
                 </div>
                 {editable && (
                   <div className="col-span-2 flex flex-wrap gap-1.5 md:col-span-1">
+                    {row.key_id && (
+                      <ReceivingKeyControl
+                        endpoint={`/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registration-keys`}
+                        selector={{ source_node: row.source_node }}
+                      />
+                    )}
                     <Button
                       variant="outline"
                       size="sm"

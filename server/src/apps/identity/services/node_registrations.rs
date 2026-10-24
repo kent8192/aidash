@@ -316,16 +316,21 @@ impl NodeRegistrations {
 					endpoint: pinned,
 					key,
 				}) = current.map(|current| current.counterpart)
-					&& pinned == *endpoint
-					&& key.key_id == *key_id
 				{
-					return Ok((
-						Counterpart::OtherDeployment {
-							endpoint: pinned,
-							key,
-						},
-						true,
-					));
+					if key.key_id != *key_id {
+						return Err(Error::Conflict(
+							"use independent key confirmation to replace an existing pin".into(),
+						));
+					}
+					if pinned == *endpoint {
+						return Ok((
+							Counterpart::OtherDeployment {
+								endpoint: pinned,
+								key,
+							},
+							true,
+						));
+					}
 				}
 				let key = aidash_application::federation::registrations::pin(
 					&HttpDirectory::new(f.store.keyless.clone())?,

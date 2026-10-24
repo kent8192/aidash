@@ -196,7 +196,7 @@ async function setup(
     }
     return route.fulfill({ json: [] });
   });
-  return { posts, errors };
+  return { posts, errors, registrations };
 }
 
 const openAccountMenu = (page: Page) =>
@@ -418,5 +418,120 @@ test("a question waiting in another Node is listed, and answering it goes to tha
   await expect(dialog).toBeHidden();
   await openAccountMenu(page);
   await expect(page.getByTestId("node-selector")).toHaveValue("second");
+  expect(errors).toEqual([]);
+});
+
+/** The browser owns deliberate independent confirmation and stale-form handling;
+ * actual record authority/CAS persistence is owned by HTTP/PostgreSQL tests. */
+test("receiving keys require independent confirmation and discard stale consent", async ({
+  page,
+}) => {
+  const { registrations, errors } = await setup(page);
+  const source = "aidash://remote/remote-node";
+  registrations.first.push(
+    registration("first", source, {
+      endpoint: "https://remote.example",
+      key_id: "a".repeat(43),
+      enabled: false,
+    }),
+  );
+  const writes: Record<string, unknown>[] = [];
+  let status = {
+    key_id: "a".repeat(43),
+    quarantined: false,
+    keys_revision: 1,
+    authorization_revision: 2,
+    enabled: false,
+  };
+  let conflict = false;
+  await page.route(
+    "**/api/tenants/alpha/nodes/first/registration-keys**",
+    async (route) => {
+      if (route.request().method() === "GET")
+        return route.fulfill({ json: status });
+      const body = route.request().postDataJSON();
+      writes.push(body);
+      if (conflict) {
+        conflict = false;
+        status = { ...status, keys_revision: 3 };
+        return route.fulfill({
+          status: 409,
+          json: { error: "revision changed" },
+        });
+      }
+      status = {
+        ...status,
+        quarantined: body.action === "quarantine",
+        keys_revision: status.keys_revision + 1,
+      };
+      return route.fulfill({ json: status });
+    },
+  );
+  await page.goto("/settings?view=nodes");
+  const row = page.locator(`[data-registration="${source}"]`);
+  await row.getByRole("button", { name: "Manage key", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Quarantine key", exact: true })
+    .click();
+  await expect(
+    page.getByText("Key quarantined", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Independently confirmed key ID", { exact: true })
+    .fill("b".repeat(43));
+  await page
+    .getByLabel("Public key PEM", { exact: true })
+    .fill("-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----");
+  const confirm = page.getByRole("button", {
+    name: "Confirm key",
+    exact: true,
+  });
+  await expect(confirm).toBeDisabled();
+  await page
+    .getByLabel("I checked the key ID through a separate trusted channel", {
+      exact: true,
+    })
+    .check();
+  conflict = true;
+  await confirm.click();
+  await expect(
+    page.getByText(
+      "The record changed. Review its current key and confirm again.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(confirm).toBeDisabled();
+  await page
+    .getByLabel("I checked the key ID through a separate trusted channel", {
+      exact: true,
+    })
+    .check();
+  await confirm.click();
+  expect(writes).toEqual([
+    {
+      source_node: source,
+      action: "quarantine",
+      expected_keys_revision: 1,
+      expected_authorization_revision: 2,
+    },
+    {
+      source_node: source,
+      action: "confirm",
+      expected_keys_revision: 2,
+      expected_authorization_revision: 2,
+      expected_key_id: "b".repeat(43),
+      public_key_pem:
+        "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----",
+    },
+    {
+      source_node: source,
+      action: "confirm",
+      expected_keys_revision: 3,
+      expected_authorization_revision: 2,
+      expected_key_id: "b".repeat(43),
+      public_key_pem:
+        "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----",
+    },
+  ]);
   expect(errors).toEqual([]);
 });

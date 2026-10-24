@@ -251,44 +251,26 @@ pub(crate) async fn update(
 	let mut query = Query::update();
 	query.table(Alias::new("node_registrations"));
 	if !write.preserve_keys {
-		let (endpoint, pem, key_id) = write.counterpart.columns();
+		let (endpoint, _, _) = write.counterpart.columns();
 		query.value(
 			Alias::new("source_endpoint"),
 			Expr::value(endpoint.map(str::to_owned)),
 		);
-		let replace_keys = match write.counterpart {
-			Counterpart::SameDeployment => true,
-			Counterpart::OtherDeployment { key, .. } => {
-				let owner = aidash_application::ports::federation::inbound::ReceivingKeyOwner::Registration {
-                    tenant: TenantName::new(write.tenant)?, node: NodeName::parse(write.node)?, source_node: write.source_node.clone(),
-                };
-				super::receiving_keys::get_locked(tx, &owner)
-					.await?
-					.is_none_or(|stored| stored.keys.current.key_id != key.key_id)
+		if let Counterpart::OtherDeployment { key, .. } = write.counterpart {
+			let owner =
+				aidash_application::ports::federation::inbound::ReceivingKeyOwner::Registration {
+					tenant: TenantName::new(write.tenant)?,
+					node: NodeName::parse(write.node)?,
+					source_node: write.source_node.clone(),
+				};
+			let stored = super::receiving_keys::get_locked(tx, &owner).await?;
+			if stored.is_none_or(|stored| stored.keys.current.key_id != key.key_id) {
+				return Err(Error::Conflict(
+					"receiving key changed; use independent confirmation".into(),
+				));
 			}
-		};
-		if replace_keys {
-			let source_keys = match write.counterpart {
-				Counterpart::SameDeployment => None,
-				Counterpart::OtherDeployment { key, .. } => Some(serde_json::to_string(
-					&aidash_application::federation::registrations::trusted_keys(key)?,
-				)?),
-			};
-			query
-				.value(
-					Alias::new("source_public_key_pem"),
-					Expr::value(pem.map(str::to_owned)),
-				)
-				.value(
-					Alias::new("source_key_id"),
-					Expr::value(key_id.map(str::to_owned)),
-				)
-				.value(Alias::new("source_keys"), Expr::value(source_keys))
-				.value_expr(
-					Alias::new("keys_revision"),
-					Expr::col("keys_revision").add(Expr::value(1_i64)),
-				);
 		}
+		// Existing trust is never reset by a permission/endpoint edit.
 	}
 	let (sql, values) = query
 		.value(

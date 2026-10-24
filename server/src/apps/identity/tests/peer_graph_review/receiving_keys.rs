@@ -726,3 +726,163 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 	drop(app);
 	cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_proofs(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, member, _) = bootstrap(&f, &app, "http://localhost:1").await;
+	let (_, _, source) = viewer(&f, &app).await;
+	for title in ["second", "third"] {
+		assert_eq!(
+			request(
+				&app,
+				&member,
+				"POST",
+				"/api/workspaces",
+				json!({"title":title,"goal":"cursor"})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	let identity = Uuid::new_v4();
+	let endpoint = source.remote.endpoint.clone();
+	let old = FileDeploymentKey::load(&source.remote.key.path).unwrap();
+	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
+        json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":old.key_id().as_str(),"enabled":true,"expected_revision":0})).await.0, 200);
+	drop(source);
+	let owner = ReceivingKeyOwner::ViewerGrant {
+		tenant: TenantName::new("acme").unwrap(),
+		viewer: DeploymentId::parse(SOURCE).unwrap(),
+		identity,
+	};
+	let route = "/api/authorization/acme/peer-graph-grant-keys";
+	let now = chrono::Utc::now().timestamp() as u64;
+	let body = graph(
+		json!({"kind":"deployment_administrator","id":identity}),
+		2,
+		Value::Null,
+	);
+	let old_token = token(
+		&Signing(&old),
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&body,
+		None,
+		now,
+		false,
+	)
+	.await;
+	let (status, page) = post(&app, &old_token, &body).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page["next_cursor"].is_string());
+	let quarantine = json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":1,"expected_authorization_revision":1,"action":"quarantine"});
+	let (status, state) =
+		request(&app, &f.config.api_token, "POST", route, quarantine.clone()).await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["quarantined"], true);
+	let query = format!("{route}?source_deployment={SOURCE}&source_identity={identity}");
+	let (status, current) = request(&app, &f.config.api_token, "GET", &query, Value::Null).await;
+	assert_eq!(status, 200, "{current}");
+	assert_eq!(current, state);
+	assert_eq!(
+		request(&app, &member, "GET", &query, Value::Null).await.0,
+		403
+	);
+	assert_eq!(
+		request(&app, &member, "POST", route, quarantine).await.0,
+		403
+	);
+	let next = successor();
+	let transition = proof(&old, &next, now).await;
+	let next_token = token(
+		&next,
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&body,
+		Some(transition),
+		now,
+		false,
+	)
+	.await;
+	let quarantined = f.receiving_keys(&owner).await.unwrap().unwrap();
+	assert_eq!(post(&app, &next_token, &body).await.0, 401);
+	assert_eq!(
+		f.receiving_keys(&owner).await.unwrap().unwrap(),
+		quarantined
+	);
+	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
+        json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":next.kid(),"enabled":true,"expected_revision":1})).await.0, 409);
+	let confirm = json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":2,"expected_authorization_revision":1,"action":"confirm","public_key_pem":next.public_key_pem(),"expected_key_id":next.kid()});
+	let (first, second) = tokio::join!(
+		request(&app, &f.config.api_token, "POST", route, confirm.clone()),
+		request(&app, &f.config.api_token, "POST", route, confirm),
+	);
+	let mut statuses = [first.0, second.0];
+	statuses.sort();
+	assert_eq!(
+		statuses,
+		[200, 409],
+		"one concurrent confirmation wins: {first:?} {second:?}"
+	);
+	let state = if first.0 == 200 { first.1 } else { second.1 };
+	assert_eq!(state["keys_revision"], 3);
+	assert_eq!(state["authorization_revision"], 1);
+	let continuation = graph(
+		json!({"kind":"deployment_administrator","id":identity}),
+		2,
+		page["next_cursor"].clone(),
+	);
+	let raw = token(
+		&next,
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&continuation,
+		None,
+		now,
+		false,
+	)
+	.await;
+	let (status, continued) = post(&app, &raw, &continuation).await;
+	assert_eq!(
+		status, 200,
+		"crypto-only confirmation preserves the cursor: {continued}"
+	);
+	let temporary = InMemorySigner::new("unused".into(), [10; 32]);
+	let third = InMemorySigner::new(
+		DeploymentKeyId::of_public_key(temporary.public_key().as_bytes()).to_string(),
+		[10; 32],
+	);
+	let stale = token(
+		&third,
+		SOURCE,
+		f.config.deployment.as_str(),
+		&format!("oidc:{identity}"),
+		&body,
+		Some(proof(&old, &third, now).await),
+		now,
+		false,
+	)
+	.await;
+	let pinned = f.receiving_keys(&owner).await.unwrap().unwrap();
+	assert_eq!(post(&app, &stale, &body).await.0, 401);
+	assert_eq!(f.receiving_keys(&owner).await.unwrap().unwrap(), pinned);
+	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
+        json!({"source_deployment":SOURCE,"source_identity":identity,"enabled":false,"expected_revision":1})).await.0, 200);
+	let (status, disabled) = request(&app, &f.config.api_token, "POST", route,
+        json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":3,"expected_authorization_revision":2,"action":"confirm","public_key_pem":next.public_key_pem(),"expected_key_id":next.kid()})).await;
+	assert_eq!(status, 200, "{disabled}");
+	assert_eq!(disabled["enabled"], false);
+	assert_eq!(disabled["authorization_revision"], 2);
+	cleanup(f, &url, &schema).await;
+}
