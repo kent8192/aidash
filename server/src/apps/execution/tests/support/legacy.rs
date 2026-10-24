@@ -581,7 +581,7 @@ pub fn require_tool_call_approval(policy: &mut Value) {
 	let policies = policy["policies"].as_array_mut().unwrap();
 	policies.retain(|policy| policy["id"] != "call-unapproved");
 	policies.push(json!({"id":"member-work","effect":"allow","subjects":{"kinds":["user"]},"actions":aidash_domain::identity::tenancy::MEMBER_ACTIONS,"resources":resources}));
-	policies.push(json!({"id":"member-tool-call-approval","effect":"allow","subjects":{"kinds":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}));
+	policies.push(json!({"id":"member-tool-call-approval","effect":"allow","subjects":{"kinds":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool", "sampling"]}}));
 }
 /// The Tool call approval the Run waits for, with the call it asks about.
 #[allow(dead_code)]

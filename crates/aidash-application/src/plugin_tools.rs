@@ -17,7 +17,7 @@ use std::{
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
 
-pub const SERVER_TIMEOUT: Duration = Duration::from_secs(10);
+pub const SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const CONCURRENCY: usize = 4;
 /// The cause code of a server that did not answer in time.
@@ -33,6 +33,9 @@ pub fn agent_bindings(snapshot: &BindingSnapshot) -> Result<AgentBindings> {
 	Ok(serde_json::from_value(agent.definition.config.clone())?)
 }
 
+/// What each remote server of an Agent's plugins answered when it was listed.
+pub type Listings = BTreeMap<(PluginName, ServerName), Listing>;
+
 /// Lists every remote server of the Agent's plugins and decides which tools the Run pins. A server
 /// that times out, is refused or fails is left out with a typed cause, never a URL or a body.
 pub async fn pin_for_run(
@@ -41,6 +44,17 @@ pub async fn pin_for_run(
 	snapshot: &BindingSnapshot,
 ) -> Result<PluginTools> {
 	let agent = agent_bindings(snapshot)?;
+	let listed = list_servers(sessions, run, &agent).await;
+	pin_listed(snapshot, &listed)
+}
+
+/// The network half of [`pin_for_run`]: every remote server of the Agent's plugins, listed within
+/// the per-server and total deadlines. A server that did not answer in time reports so.
+pub async fn list_servers(
+	sessions: &dyn PluginSessions,
+	run: Uuid,
+	agent: &AgentBindings,
+) -> Listings {
 	let servers: Vec<_> = agent
 		.agent_plugins
 		.iter()
@@ -86,6 +100,13 @@ pub async fn pin_for_run(
 			.entry(server)
 			.or_insert_with(|| Listing::Unavailable(TIMEOUT.into()));
 	}
+	listed
+}
+
+/// The pure half of [`pin_for_run`]: decides the tools from what the servers listed. It reads
+/// the snapshot's aliases and the Agent's plugin settings, and touches no network.
+pub fn pin_listed(snapshot: &BindingSnapshot, listed: &Listings) -> Result<PluginTools> {
+	let agent = agent_bindings(snapshot)?;
 	let taken: BTreeSet<String> = reserved_aliases()
 		.into_iter()
 		.map(str::to_owned)
@@ -100,7 +121,7 @@ pub async fn pin_for_run(
 	Ok(agent_plugin::pin(
 		&agent.agent_plugins,
 		&agent.agent_plugin_settings,
-		&listed,
+		listed,
 		&taken,
 	))
 }

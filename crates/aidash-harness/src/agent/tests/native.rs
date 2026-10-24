@@ -10,7 +10,9 @@ fn native(fixture: &mut Fixture) {
 fn native_context(request: &ModelRequest) -> &aidash_domain::projection::native::NativeContext {
 	match &request.context {
 		ModelContext::Native(native) => native,
-		ModelContext::Legacy(_) | ModelContext::Ordered(_) => panic!("expected a Native request"),
+		ModelContext::Legacy(_) | ModelContext::Ordered(_) | ModelContext::Sampling(_) => {
+			panic!("expected a Native request")
+		}
 	}
 }
 

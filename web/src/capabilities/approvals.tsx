@@ -29,6 +29,7 @@ import {
   type DecisionChoice,
 } from "../approval-settings-model";
 import {
+  copyLabel,
   isToolCard,
   toolCallView,
   toolGrantScope,
@@ -44,6 +45,10 @@ function disclosure(item: Approval) {
 }
 
 function title(item: Approval, ja: boolean) {
+  if (item.kind === "sampling")
+    return ja ? "Sampling の承認" : "Sampling approval";
+  if (item.action === "sampling.request_unapproved")
+    return ja ? "Sampling の Run grant" : "Sampling Run grant";
   if (item.kind === "tool_call")
     return ja ? "ツール呼び出しの承認" : "Tool call approval";
   if (item.kind === "grant" && isToolCard(item))
@@ -162,8 +167,18 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
 function ToolFacts({ item, ja }: { item: Approval; ja: boolean }) {
   const none = ja ? "なし" : "None";
   const call = item.kind === "tool_call" ? toolCallView(item.call) : null;
+  const plugin = item.plugin_tool;
   const facts: [string, string][] = [
-    [ja ? "ツール" : "Tool", toolLabel(item)],
+    ...(plugin
+      ? ([
+          [
+            "Agent Plugin",
+            `${plugin.plugin} (${ja ? "コピー" : "copy"} ${copyLabel(plugin.digest)})`,
+          ],
+          [ja ? "MCP サーバー" : "MCP server", plugin.server],
+          [ja ? "ツール" : "Tool", plugin.tool],
+        ] as [string, string][])
+      : ([[ja ? "ツール" : "Tool", toolLabel(item)]] as [string, string][])),
     [ja ? "操作" : "Operation", item.operation ?? none],
     [
       "Agent",
@@ -252,11 +267,17 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   const research = disclosure(item);
   const tool = isToolCard(item);
   // What an "allow for this Run" decision covers, when the card can grant one.
-  const scope = research
-    ? runGrantScope(item, ja)
-    : tool
-      ? toolGrantScope(item, ja)
-      : null;
+  const sampling =
+    item.kind === "sampling" || item.action === "sampling.request_unapproved";
+  const scope = sampling
+    ? ja
+      ? "このAgent PluginのMCPサーバー（ユーザー入力後も有効）"
+      : "This Agent Plugin server, including after new user input"
+    : research
+      ? runGrantScope(item, ja)
+      : tool
+        ? toolGrantScope(item, ja)
+        : null;
   const action = async (choice: string) => {
     setBusy(true);
     setError("");
@@ -290,7 +311,26 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   return (
     <article aria-label={title(item, ja)}>
       <strong>{title(item, ja)}</strong>
-      {research ? (
+      {sampling ? (
+        <>
+          <FactList
+            rows={[
+              ["Agent", item.agent_id ?? ""],
+              ["Agent Plugin", item.sampling_target?.plugin ?? ""],
+              [ja ? "サーバー" : "Server", item.sampling_target?.server ?? ""],
+              ["Origin", item.sampling_target?.origin ?? ""],
+              [ja ? "コピー" : "Copy", item.sampling_target?.digest ?? ""],
+              ["maxTokens", String(item.sampling?.max_tokens ?? "")],
+            ]}
+          />
+          <Hint>
+            {ja
+              ? "Runの会話は含めません（includeContext: none）。Runのモデルと予算を使用します。"
+              : "Run conversation is excluded (includeContext: none). Uses the Run's model and budget."}
+          </Hint>
+          {item.sampling && <Pre>{JSON.stringify(item.sampling, null, 2)}</Pre>}
+        </>
+      ) : research ? (
         <DisclosureFacts item={item} ja={ja} />
       ) : tool ? (
         <ToolFacts item={item} ja={ja} />

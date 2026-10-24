@@ -1,3 +1,4 @@
+import { ElicitationForm, elicitationMessage } from "./elicitation";
 import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -222,48 +223,52 @@ export function OperationsDialog({
               (request &&
               request.response === null &&
               (!d.node || d.node === data.node.id) ? (
-                <form
-                  className={formClass}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const raw = String(
-                      new FormData(event.currentTarget).get("answer"),
-                    );
-                    let response: unknown = raw;
-                    try {
-                      response = JSON.parse(raw);
-                    } catch {
-                      /* A plain text answer is valid. */
-                    }
-                    void submit(() => humanAnswer(request.id, response));
-                  }}
-                >
-                  <div className="grid min-w-0 justify-items-start gap-2">
-                    <Badge value={request.kind} />
-                    <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                      {request.prompt}
-                    </p>
-                    {continues && (
-                      <Hint>
-                        {copy.continuesAt.replace(
-                          "{time}",
-                          deadlineTime(continues, locale),
-                        )}
-                      </Hint>
-                    )}
-                  </div>
-                  <Field label={t("answer")}>
-                    <Textarea name="answer" rows={5} required />
-                  </Field>
-                  <div className="flex justify-end">
-                    <Button type="submit">{copy.send}</Button>
-                  </div>
-                </form>
+                request.kind === "MCP_ELICITATION" ? (
+                  <ElicitationForm request={request} submit={submit} />
+                ) : (
+                  <form
+                    className={formClass}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const raw = String(
+                        new FormData(event.currentTarget).get("answer"),
+                      );
+                      let response: unknown = raw;
+                      try {
+                        response = JSON.parse(raw);
+                      } catch {
+                        /* A plain text answer is valid. */
+                      }
+                      void submit(() => humanAnswer(request.id, response));
+                    }}
+                  >
+                    <div className="grid min-w-0 justify-items-start gap-2">
+                      <Badge value={request.kind} />
+                      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+                        {elicitationMessage(request)}
+                      </p>
+                      {continues && (
+                        <Hint>
+                          {copy.continuesAt.replace(
+                            "{time}",
+                            deadlineTime(continues, locale),
+                          )}
+                        </Hint>
+                      )}
+                    </div>
+                    <Field label={t("answer")}>
+                      <Textarea name="answer" rows={5} required />
+                    </Field>
+                    <div className="flex justify-end">
+                      <Button type="submit">{copy.send}</Button>
+                    </div>
+                  </form>
+                )
               ) : request && answeredAtDeadline(request) ? (
                 <div className="grid min-w-0 justify-items-start gap-2">
                   <Badge value={request.kind} />
                   <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                    {request.prompt}
+                    {elicitationMessage(request)}
                   </p>
                   <Hint role="status">{copy.noAnswerBeforeDeadline}</Hint>
                 </div>

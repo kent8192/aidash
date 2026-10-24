@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
+	pub mcp: aidash_domain::agent_plugin::interaction::InteractionLimits,
 	pub egress: Option<EgressSettings>,
 	pub limits: limits::ContentLimits,
 	pub admission: bool,

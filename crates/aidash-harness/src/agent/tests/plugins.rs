@@ -271,12 +271,11 @@ async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let [request] = requests.as_slice() else {
 		panic!("one approval request");
 	};
+	assert_eq!(request.tool, ToolCallTarget::AgentPlugin(identity()));
+	assert_eq!(request.tool.id(), "agent-plugin:acme/docs/search");
 	assert_eq!(
-		request.tool,
-		EntityRef {
-			id: "agent-plugin:acme/docs/search".into(),
-			version: "0123456789ab".into()
-		}
+		request.tool.label(),
+		"agent-plugin:acme/docs/search@0123456789ab"
 	);
 	assert_eq!(request.operation, "invoke");
 	assert_eq!(request.call, call);
@@ -327,6 +326,46 @@ async fn a_read_only_plugin_call_proceeds_without_approval(mut fixture: Fixture)
 			.contains(&"run.waiting_for_tool_approval".into())
 	);
 	assert!(fixture.backend.0.human.lock().unwrap().is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_executing_for_another_node_asks_that_node_with_the_prompt_prefix_it_always_had(
+	mut fixture: Fixture,
+) {
+	let call = plugin_call(&mut fixture, false);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().remote_home = true;
+
+	advance(&mut fixture).await.unwrap();
+
+	assert_eq!(fixture.backend.events(), ["run.waiting_for_tool_approval"]);
+	assert!(
+		fixture
+			.backend
+			.0
+			.tool_call_requests
+			.lock()
+			.unwrap()
+			.is_empty(),
+		"a capability approval needs the executing Node's own authority"
+	);
+	let prompt = fixture
+		.backend
+		.0
+		.human
+		.lock()
+		.unwrap()
+		.as_ref()
+		.expect("the Home Node is asked")
+		.prompt
+		.clone();
+	assert_eq!(
+		prompt,
+		format!(
+			"Approve this exact external tool action once? Tool: agent-plugin:acme/docs/search@0123456789ab; call: {}",
+			serde_json::to_string(&call).unwrap()
+		)
+	);
 }
 
 #[rstest]

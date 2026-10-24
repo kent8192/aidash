@@ -7964,6 +7964,17 @@
               "type": ["string", "null"],
               "description": "The research operation of a Web disclosure approval, or of the\napproval a Web disclosure Run grant came from; for a Tool call\napproval, the operation of the tool the call invokes."
             },
+            "plugin_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PluginToolCard"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For a Tool call approval of a tool a Run pinned from an Agent Plugin, or a Run grant\nfrom one, the plugin, server and tool, and the plugin copy that declared them. `tool` and\n`version` then hold the tool's path and the copy's digest."
+            },
             "provider": {
               "type": ["string", "null"]
             },
@@ -8003,6 +8014,27 @@
             "viewer_is_approver": {
               "type": "boolean",
               "description": "Whether the reader is the approver this card is addressed to."
+            }
+          }
+        },
+        "PluginToolCard": {
+          "type": "object",
+          "description": "The Agent Plugin tool a Tool call approval is asked for.",
+          "required": ["plugin", "server", "tool", "digest"],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "description": "The digest of the plugin copy the Agent version pins."
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string",
+              "description": "The server's own name for the tool."
             }
           }
         }

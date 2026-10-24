@@ -254,7 +254,7 @@ impl Node {
 		self.f = Federation {
 			registry: Registry::new(store.pool.clone(), &store.deployment)
 				.unwrap()
-				.with_keyless_origins(store.keyless.clone()),
+				.with_keyless_origins(original.store.keyless.clone()),
 			store,
 			notify: Arc::new(tokio::sync::Notify::new()),
 			..original.clone()

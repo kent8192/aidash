@@ -6,6 +6,8 @@ use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::{Request, Response, ServerRouter};
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "../../../execution/tests/support/mcp.rs"]
+mod mcp;
 
 use aidash_server::federation::Federation;
 use common::upstream_fixtures as upstream;
@@ -1916,4 +1918,143 @@ async fn a_tenant_writes_its_test_profiles_for_endpoints_the_deployment_lets_it_
 	.await;
 	assert_eq!(status, 403, "another Tenant's profile");
 	wb.cleanup().await;
+}
+
+/// The HTTP admission persists the listed tools into its original reserved database slot.
+#[rstest::rstest]
+#[tokio::test]
+async fn plugin_listing_completes_the_same_reserved_workbench_session(
+	#[future(awt)] workbench: Workbench,
+) {
+	use aidash_domain::agent_plugin::{self, AgentPluginRef, PluginFile};
+	let mut wb = workbench;
+	let mcp = mcp::FakeMcp::new(vec![mcp::tool("lookup")]);
+	let server = upstream::upstream(Arc::new(
+		mcp.routes(reinhardt::test::stub::StubRouter::new())
+			.into_server_router(),
+	))
+	.await;
+	let endpoint = format!("{}{}", server.url, mcp::PATH);
+	wb.f.store.keyless.permit_origin_of(&endpoint).unwrap();
+	let file = |path: &str, value: Value| PluginFile {
+		path: path.into(),
+		bytes: value.to_string().into_bytes(),
+	};
+	let files = vec![
+		file(
+			"plugin.json",
+			json!({"$schema":agent_plugin::PLUGIN_SCHEMA,"name":"listing-fixture","version":"1.0.0"}),
+		),
+		file(
+			"mcp.json",
+			json!({"$schema":agent_plugin::MCP_SCHEMA,"mcpServers":{"docs":{"type":"streamable-http","url":endpoint}}}),
+		),
+	];
+	let loaded = agent_plugin::load(&files).unwrap();
+	let source =
+		"https://github.com/acme/listing-fixture/tree/0123456789abcdef0123456789abcdef01234567";
+	let reference = AgentPluginRef::of(&loaded, source);
+	let mut tx =
+		wb.f.store
+			.pool
+			.begin(&aidash_application::tenancy::TenancyScope::Tenant(
+				"acme".to_owned().try_into().unwrap(),
+			))
+			.await
+			.unwrap();
+	aidash_server::apps::registry::repositories::agent_plugins::insert(
+		&mut *tx,
+		source,
+		&loaded,
+		&files,
+		&[],
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["agent_plugins"] = json!([reference]);
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	wb.responses.lock().await.push_back(json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}));
+	let session = wb
+		.finished(json!({"expected_revision":2,"message":"List the remote fixture"}))
+		.await;
+	assert_eq!(session["status"], "completed", "{session}");
+	assert_eq!(
+		session["scenario"]["plugin_tools"]["servers"][0]["tools"][0]["name"],
+		"lookup"
+	);
+	assert_eq!(mcp.requests("tools/list").len(), 1);
+	assert!(mcp.calls().is_empty());
+	let sessions = wb
+		.call("GET", &format!("{}/tests", wb.path()), Value::Null)
+		.await;
+	assert_eq!(
+		sessions.as_array().unwrap().len(),
+		1,
+		"listing must complete the reserved slot, not insert another"
+	);
+	assert_eq!(sessions[0]["id"], session["id"]);
+	drop(server);
+	wb.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn recent_workbench_activity_preserves_an_old_sessions_running_slot(
+	#[future(awt)] workbench: Workbench,
+) {
+	let wb = workbench;
+	wb.model_gate.paused.store(true, Ordering::SeqCst);
+	let session = wb
+		.call(
+			"POST",
+			&format!("{}/tests", wb.path()),
+			json!({"expected_revision":1,"message":"Keep the session in flight"}),
+		)
+		.await;
+	tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
+		.await
+		.expect("the model request must still be in flight");
+	let id: uuid::Uuid = serde_json::from_value(session["id"].clone()).unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("agent_test_sessions"))
+			.value_expr(
+				Alias::new("created_at"),
+				Expr::value(chrono::Utc::now() - chrono::Duration::days(1)),
+			)
+			.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(wb.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	aidash_server::workbench::purge_expired(&wb.f.store.pool)
+		.await
+		.unwrap();
+	let retained: (String, Option<uuid::Uuid>) = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("status"), Alias::new("active_slot")])
+			.from(Alias::new("agent_test_sessions"))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(wb.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	wb.model_gate.paused.store(false, Ordering::SeqCst);
+	wb.model_gate.release.notify_one();
+	let finished = wb.observed_finished(&session, "alice").await;
+	let draft_id: uuid::Uuid = serde_json::from_value(wb.draft["id"].clone()).unwrap();
+	wb.cleanup().await;
+	assert_eq!(retained, ("running".into(), Some(draft_id)));
+	assert_eq!(finished["status"], "completed", "{finished}");
 }

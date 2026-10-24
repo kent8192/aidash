@@ -104,10 +104,13 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 }
 
 #[rstest]
+#[case::tool_batch("tool_batch_state")]
+#[case::mcp_continuation("mcp_call_state")]
 #[tokio::test]
 async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	#[future] database: DatabaseFixture,
 	run: Record,
+	#[case] requirement: &str,
 ) {
 	use crate::domain::run_state::PersistedCapability;
 	// Arrange: one Run in the legacy format and one reserved for tool_batch_state workers.
@@ -125,7 +128,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		..run.clone()
 	};
 	let mut pending = run_fixtures::pending(RunState::Ready(ReadyState {}), Default::default());
-	pending["requires"] = serde_json::json!(["tool_batch_state"]);
+	pending["requires"] = serde_json::json!([requirement]);
 	let reserved = Record {
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),

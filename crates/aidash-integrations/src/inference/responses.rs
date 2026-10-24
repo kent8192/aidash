@@ -4,7 +4,8 @@
 //! conversation state, so every request carries the whole projected context
 //! in `input`. Only the Legacy and Ordered Projection Versions are supported;
 //! the Native version and reasoning items are #249. Output is accepted only
-//! from `response.completed`; deltas feed sanitized Inference Progress.
+//! from `response.completed`; truncated terminal responses retain text for
+//! bounded MCP sampling. Deltas feed sanitized Inference Progress.
 use super::{CacheSaltKeys, MAX_RESPONSE_BYTES, safe_upstream_reason};
 use crate::{Error, Result};
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
@@ -14,7 +15,7 @@ use aidash_domain::{
 	model::ModelConfig,
 	plan_connections::{Disposition, Failure},
 	provider::{
-		ContentPart, ModelRequest, ModelResponse, ToolCall,
+		ContentPart, ModelContext, ModelRequest, ModelResponse, ToolCall,
 		progress::{InferenceProgress, MAX_PROGRESS_ITEM_BYTES},
 		usage::ReportedUsage,
 	},
@@ -110,8 +111,9 @@ const TOOL_NAMESPACE: &str = "aidash";
 
 /// The Responses request equivalent to the Chat Completions body every other
 /// route receives, so context accounting stays the same: `system` becomes
-/// `instructions`, the user message becomes one `input` message, and tools
-/// become function tools in one [`TOOL_NAMESPACE`] namespace.
+/// `instructions`, ordinary user content becomes one `input` message, and
+/// Sampling retains every server message and role. Tools become function tools
+/// in one [`TOOL_NAMESPACE`] namespace.
 pub(crate) fn request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
@@ -133,26 +135,35 @@ pub(crate) fn request_body(
 		salt.unwrap_or_default(),
 		text(&chat["messages"][0]["content"])
 	);
-	let content = match &chat["messages"][1]["content"] {
-		Value::String(text) => vec![json!({"type":"input_text","text":text})],
-		Value::Array(parts) => parts
+	let input: Vec<Value> = if let ModelContext::Sampling(sample) = &request.context {
+		sample
+			.sampling_messages
 			.iter()
-			.map(|part| match part["type"].as_str() {
-				Some("text") => Ok(json!({"type":"input_text","text":part["text"]})),
-				Some("image_url") => {
-					Ok(json!({"type":"input_image","image_url":part["image_url"]["url"]}))
-				}
-				_ => Err(Error::Plan(Failure::Unsupported(
-					aidash_domain::plan_connections::Unsupported::Input,
-				))),
-			})
-			.collect::<Result<Vec<_>>>()?,
-		_ => return Err(Error::Invalid("model request has no user message".into())),
+			.map(|message| json!({"role":message.role,"content":message.text}))
+			.collect()
+	} else {
+		let content = match &chat["messages"][1]["content"] {
+			Value::String(text) => vec![json!({"type":"input_text","text":text})],
+			Value::Array(parts) => parts
+				.iter()
+				.map(|part| match part["type"].as_str() {
+					Some("text") => Ok(json!({"type":"input_text","text":part["text"]})),
+					Some("image_url") => {
+						Ok(json!({"type":"input_image","image_url":part["image_url"]["url"]}))
+					}
+					_ => Err(Error::Plan(Failure::Unsupported(
+						aidash_domain::plan_connections::Unsupported::Input,
+					))),
+				})
+				.collect::<Result<Vec<_>>>()?,
+			_ => return Err(Error::Invalid("model request has no user message".into())),
+		};
+		vec![json!({"role":"user","content":content})]
 	};
 	let mut body = json!({
 		"model": config.model_id,
 		"instructions": instructions,
-		"input": [{"role":"user","content":content}],
+		"input": input,
 		// Plan usage requires both; neither is configurable (ADR 0007).
 		"store": false,
 		"stream": true,
@@ -346,23 +357,28 @@ impl ModelProvider for ResponsesProvider {
 /// reported output: a longer response is never acted on, and only its usage
 /// settles the call.
 pub(crate) fn within_output_cap(result: Result<ModelResponse>, cap: u32) -> Result<ModelResponse> {
-	match result {
-		Ok(response)
-			if response
-				.reported
-				.output_tokens
-				.is_some_and(|n| n > u64::from(cap)) =>
-		{
-			Err(Error::TerminalResponse(
-				ContextFailure::OutputTruncated,
-				Box::new(ModelResponse {
-					text: String::new(),
-					tool_calls: Vec::new(),
-					..response
-				}),
-			))
+	let (mut response, truncated) = match result {
+		Ok(response) => (response, false),
+		Err(Error::TerminalResponse(ContextFailure::OutputTruncated, response)) => {
+			(*response, true)
 		}
-		result => result,
+		Err(error) => return Err(error),
+	};
+	let exceeded = response
+		.reported
+		.output_tokens
+		.is_some_and(|n| n > u64::from(cap));
+	if exceeded {
+		response.text.clear();
+		response.tool_calls.clear();
+	}
+	if truncated || exceeded {
+		Err(Error::TerminalResponse(
+			ContextFailure::OutputTruncated,
+			Box::new(response),
+		))
+	} else {
+		Ok(response)
 	}
 }
 
@@ -583,8 +599,23 @@ impl<'a> Assembler<'a> {
 						return Ok(());
 					}
 				};
-				let usage = usage_only(response);
-				self.finished = Some(Err(Error::TerminalResponse(failure, Box::new(usage))));
+				let mut result = usage_only(response);
+				if failure == ContextFailure::OutputTruncated {
+					// Use only the terminal snapshot's text. Incomplete function
+					// calls are never parsed or dispatched, including by sampling.
+					for item in response["output"].as_array().into_iter().flatten() {
+						if item["type"] == "message" {
+							for part in item["content"].as_array().into_iter().flatten() {
+								if part["type"] == "output_text" {
+									result
+										.text
+										.push_str(part["text"].as_str().unwrap_or_default());
+								}
+							}
+						}
+					}
+				}
+				self.finished = Some(Err(Error::TerminalResponse(failure, Box::new(result))));
 			}
 			Some("response.failed") => {
 				let error = event.pointer("/response/error").cloned();

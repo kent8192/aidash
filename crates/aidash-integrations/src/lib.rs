@@ -36,6 +36,8 @@ pub mod nats;
 
 pub mod tools;
 
+pub mod plugin_sessions;
+
 pub mod skill_import;
 
 pub mod agent_plugin_import;

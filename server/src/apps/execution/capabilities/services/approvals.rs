@@ -83,6 +83,7 @@ pub(crate) async fn revocable_kind(access: &mut Access, id: Uuid) -> Result<&'st
 	for kind in [
 		"outbound",
 		aidash_application::capabilities::approvals::TOOL_CALL,
+		aidash_application::capabilities::approvals::SAMPLING,
 	] {
 		match super::records::get(access, id, kind).await {
 			Ok(_) => return Ok(kind),

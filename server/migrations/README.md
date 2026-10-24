@@ -528,6 +528,8 @@ pruning or summary, journals those events as `imported`.
 
 `registry/0041_agent_plugins_definition` (after `registry/0040_agent_plugin_copies_row_level_security`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugins` key of #414: an array of at most 8 objects, each with a `sha256:` `digest`, string `name` and `source`, `skills` and `findings` arrays and a `servers` object. An explicit null is rejected, and a plugin that carries Skills lets the Agent's instructions be empty, as a Skill Binding does. `AgentBindings::validate` checks the rest. It keeps the `0029_completion_policy` body otherwise. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugins` or any Run pins an Agent definition that does, then restores the `0029_completion_policy` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
 
+`registry/0045_agent_plugin_settings` (after `registry/0044_foreign_key_relations_state`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugin_settings` key of #414: what an Agent version decides about the servers of the plugins it takes in (ADR 0072). The key is an object whose members are objects, plugin name to server name to settings. A settings object holds only `tools` (an array of strings, or null), `exposure` (`eager` or `deferred`, or null) and `read_only` (an array of objects with a string `name` and a string `schema_digest`). An explicit null is rejected for the key and for `read_only`, whose Rust fields have no `Option`. `AgentBindings::validate` checks the rest: that each key names an attached plugin and server, the name and count limits, and the digest format. It keeps the `0042_external_services` body otherwise, including External service Bindings. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugin_settings` or any Run pins an Agent definition that does, then restores the `0042_external_services` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
+
 `workspaces/0008_publishing_run` (after `workspaces/0007_model_state`) adds a nullable `run_id` to `messages` and `artifacts` with typed `AddColumn` operations. It records the Run that published the text on this Node, so a Source citation in it resolves only against that Run's Research evidence. It has no foreign key: the value outlives a deleted Run, so such a citation reads as unavailable rather than as text nobody published. Existing rows keep `NULL`, and rollback drops both columns.
 
 `execution/0029_research_retention` (after `execution/0028_url_intents_model_state`) adds `purged_at` and `purge_reason` to `research_snapshots` with typed operations. A check keeps both set or both null, limits the reason to `retention` or `revocation`, and requires a Purged snapshot to keep no contents (`lines = '[]'`, `text_bytes = 0`). A partial index on unpurged snapshot ids serves the retention sweep. It also creates `research_revocations`, keyed by Run with no reference to `runs`, so the audit record of an Evidence Revocation outlives its Run (ADR 0046), with a `(tenant, revoked_at)` index for listing. The generated state-only checkpoint `execution/0030_research_retention_state` records the columns and table in the ORM snapshot without the checks and indexes.
@@ -563,6 +565,13 @@ pruning or summary, journals those events as `imported`.
 `identity/0033_demo_data` (after `identity/0032_tenant_owned_row_level_security`) creates the three tables of Demo data (ADR 0079, ADR 0080) with typed operations. `demo_data_loads` is Deployment-wide: one row per pair of `demo-data` inputs that loaded to completion, keyed by the lowercase hex SHA-256 of their canonical JSON, written last in its own transaction so a rerun with the same digest changes nothing. `demo_tenants` is Deployment-wide and names a Tenant (purge deletes it with the Tenant): it maps a structure key (`[a-z][a-z0-9-]{0,31}`) to the Tenant name assigned to it, one key per Tenant, because Tenant labels are not unique. `demo_reservations` is Tenant-owned: it reserves a fictional subject of the Tenant for a lowercase email address, unique per `(tenant, email)`, and a check keeps `spent_at` and `spent_by` (an External Identity) set together. It references the Tenant root record through `demo_reservations_tenant_root_fkey`. `identity/0034_demo_data_state` is the generated state-only checkpoint, and `identity/0035_demo_reservations_row_level_security` (after it and `identity/0028_tenancy_policy_functions`) enforces the forced Tenant policy on `demo_reservations` with a rendered `RunSQL` asset, as `registry/0040` does.
 
 `execution/0049_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0039_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0044_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0044` is listed in `TENANT_REGISTRY_MIGRATIONS`.
+
+`execution/0050_mcp_elicitation_kind` (after `0049_foreign_key_relations_state`)
+adds `MCP_ELICITATION` to the physical human-request kind check with typed
+Reinhardt constraint operations. `0051_mcp_elicitation_state` updates the ORM enum
+state. Rollback's restored check refuses existing MCP elicitation rows rather
+than deleting them. Deploy API servers and workers together before enabling
+these requests; older binaries cannot decode the new kind.
 
 ## Projection comparison evidence (#181)
 
@@ -619,3 +628,14 @@ The [projection comparison guide](../../docs/projection-comparison.md)
 describes the prompt-free diagnostic export, complete attempt inventories and
 remaining live acceptance requirements. These migrations do not switch the
 projection default or rewrite pinned definitions and Runs.
+
+## Merged MCP and projection histories
+
+`execution/0052_merge_mcp_and_usage_evidence` depends on both
+`0051_mcp_elicitation_state` and `0051_compaction_provider_dispatch`.
+`registry/0046_merge_agent_plugin_and_projection` depends on both
+`0045_agent_plugin_settings` and `0045_projection_measurement_config`.
+These empty merge migrations give each app one leaf while preserving the
+original migration identities, dependencies, schema changes and rollback
+guards. New migrations depend on the merged leaf. They perform no schema
+operations and change neither retained MCP state nor projection behavior.
