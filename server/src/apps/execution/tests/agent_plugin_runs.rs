@@ -1151,15 +1151,12 @@ async fn worker_loss_during_a_live_callback_reconciles_the_original_send_once(
 	.await;
 	assert_eq!(status, 200, "{response}");
 	// Commit reconciliation, then stop at the separate durable step before the
-	// logical tool result is consumed. The next worker must adopt it once.
-	harness.worker_once().await.unwrap();
-	let committed = world
-		.f
-		.store
-		.run(&TEST_FIXTURE, world.run.id)
-		.await
-		.unwrap();
-	assert!(matches!(committed.state, RunState::ToolCall(_)));
+	// logical tool result is consumed. An empty recovery pass may first wrap
+	// its keyset cursor; the next worker must still adopt the result once.
+	let committed = step_until(&harness, &world, |run| {
+		matches!(run.state, RunState::ToolCall(_))
+	})
+	.await;
 	assert!(results(&committed).is_empty());
 	let journal = round_journal(&world).await;
 	let completed = journal
