@@ -182,6 +182,12 @@ impl Run {
 				Expr::current_timestamp().add(duration),
 			)
 			.and_where(worker_lease(id, worker))
+			.and_where(
+				crate::apps::identity::repositories::nodes::live_node_condition(
+					Expr::col((Alias::new("runs"), Alias::new("tenant"))).into(),
+					Expr::col((Alias::new("runs"), Alias::new("node"))).into(),
+				),
+			)
 			.build(PostgresQueryBuilder);
 		Ok(tx
 			.execute(&sql, convert_values(values))

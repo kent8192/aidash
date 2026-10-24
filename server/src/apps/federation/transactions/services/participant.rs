@@ -19,6 +19,10 @@ pub async fn reserve(
 	caller: &str,
 	manifest: &Manifest,
 ) -> Result<LocalStatus> {
+	crate::apps::federation::transactions::repositories::participation::require_live_participant(
+		f, manifest,
+	)
+	.await?;
 	participant(f, admitted)
 		.reserve(caller, manifest)
 		.await
@@ -31,6 +35,10 @@ pub async fn prepare(
 	caller: &str,
 	manifest: &Manifest,
 ) -> Result<LocalStatus> {
+	crate::apps::federation::transactions::repositories::participation::require_live_participant(
+		f, manifest,
+	)
+	.await?;
 	participant(f, admitted)
 		.prepare(caller, manifest)
 		.await

@@ -4290,3 +4290,255 @@ mod approval_modes {
 		cleanup(f, &url, &schema).await;
 	}
 }
+
+/// Saved identity, lease and transport handles all re-enter their real owning boundaries.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[values("credential", "lease", "inprocess", "outbound", "stream")] boundary: &str,
+) {
+	use aidash_application::federation::inbound::{Inbound, Proof, RequestDigest, accept};
+	use aidash_domain::{federation::route::Sender, nodes::NodeName, tenancy::TenantName};
+	use aidash_server::authorization::{Authorization, identity::Actor, workspace::Workspaces};
+	use futures_util::StreamExt;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let target = NodeName::derived("acme");
+	let admin = &f.config.api_token;
+	let (status, sibling) = request(
+		&app,
+		admin,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling = NodeName::parse(sibling["name"].as_str().unwrap()).unwrap();
+	let (status, workspace) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Sibling", "goal":"Independent", "node":sibling}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	policy["subjects"]["node-service"] = json!({"kind":"service", "node":target});
+	assert_eq!(
+		request(
+			&app,
+			admin,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let auth = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let credential = auth
+		.issue_credential("acme", "node-service", 3600, "fixture")
+		.await
+		.unwrap();
+	let Actor::Subject(identity) = auth.authenticate(&credential.token).await.unwrap() else {
+		panic!("subject")
+	};
+	let cached = Workspaces {
+		store: f.store.clone(),
+		identity,
+	};
+	assert!(cached.snapshot(workspace).await.is_ok());
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	let worker = Uuid::new_v4();
+	let run = f.store.lease_run(worker, 120).await.unwrap().unwrap();
+	assert!(
+		f.store
+			.renew_lease(&TEST_FIXTURE, run.id, worker, 120)
+			.await
+			.unwrap()
+	);
+	let from_target = Sender {
+		tenant: TenantName::new("acme").unwrap(),
+		node: Some(target.clone()),
+		subject: Some("alice".into()),
+	};
+	let from_sibling = Sender {
+		node: Some(sibling.clone()),
+		..from_target.clone()
+	};
+	let target_address = f.config.deployment.node(target.clone());
+	let sibling_address = f.config.deployment.node(sibling.clone());
+	assert!(
+		f.route(&from_target, &sibling_address.to_string())
+			.await
+			.is_ok()
+	);
+	let inbound = Inbound {
+		receiver: target_address.clone(),
+		sender: sibling_address.clone(),
+		subject: "alice".into(),
+		proof: Proof::InProcess,
+	};
+	let digest = RequestDigest {
+		method: "POST",
+		path: "/scoped/discover",
+		body: br#"{"search":{}}"#,
+	};
+	assert!(accept(inbound.clone(), &digest, &f).await.is_ok());
+	let discovery: Value = f
+		.request(
+			&from_sibling,
+			&target_address.to_string(),
+			reqwest::Method::POST,
+			"/scoped/discover",
+			Some(&json!({"search":{}})),
+		)
+		.await
+		.unwrap();
+	assert!(discovery.is_array());
+	let response = app
+		.streaming_http
+		.clone()
+		.request(
+			Method::GET,
+			app.url(format!(
+				"/api/events/stream?workspace_id={workspace}&after=0"
+			)),
+		)
+		.header("authorization", format!("Bearer {}", credential.token))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let mut stream = response.bytes_stream();
+	let frame = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	assert!(!frame.is_empty());
+	assert_eq!(
+		request(
+			&app,
+			admin,
+			"POST",
+			&format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	let deleted = request(
+		&app,
+		admin,
+		"POST",
+		&format!("/api/tenants/acme/nodes/{target}/deletion"),
+		json!({"confirmation":target}),
+	)
+	.await;
+	assert_eq!(deleted.0, 200, "{}", deleted.1);
+	// A Tenant-wide user continues to read the sibling Node.
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"GET",
+			&format!("/api/workspaces/{workspace}"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	match boundary {
+		"credential" => {
+			assert!(
+				cached.snapshot(workspace).await.is_err(),
+				"a cached service identity must lose authority even on a live sibling Workspace"
+			);
+			auth.revoke_credential("acme", credential.credential.id)
+				.await
+				.unwrap();
+			assert_eq!(
+				request(
+					&app,
+					admin,
+					"POST",
+					&format!("/api/tenants/acme/nodes/{target}/restore"),
+					Value::Null
+				)
+				.await
+				.0,
+				200
+			);
+			assert!(
+				cached.snapshot(workspace).await.is_err(),
+				"restoration cannot undo independent credential revocation"
+			);
+		}
+		"lease" => assert!(
+			!f.store
+				.renew_lease(&TEST_FIXTURE, run.id, worker, 120)
+				.await
+				.unwrap(),
+			"existing worker token cannot renew on a deleted Node"
+		),
+		"inprocess" => {
+			assert!(
+				accept(inbound, &digest, &f).await.is_err(),
+				"a cached in-process caller cannot admit to a deleted receiver"
+			);
+			assert!(
+				f.request::<Value>(
+					&from_sibling,
+					&target_address.to_string(),
+					reqwest::Method::POST,
+					"/scoped/discover",
+					Some(&json!({"search":{}}))
+				)
+				.await
+				.is_err()
+			);
+		}
+		"outbound" => assert!(
+			f.route(&from_target, &sibling_address.to_string())
+				.await
+				.is_err(),
+			"permanent Node ownership cannot authorize a deleted sender"
+		),
+		"stream" => {
+			let closed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+				while stream.next().await.is_some() {}
+			})
+			.await;
+			assert!(
+				closed.is_ok(),
+				"an idle stream must revalidate the owning Node of its cached credential"
+			);
+		}
+		_ => unreachable!(),
+	}
+	drop(stream);
+	cleanup(f, &url, &schema).await;
+}

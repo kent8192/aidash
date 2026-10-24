@@ -560,3 +560,72 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		403
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn node_closure_mapping_creation_requires_the_non_user_subjects_owning_node(
+	#[future] discovery: (ExecutionFixture, Remote),
+) {
+	let (execution, remote) = Box::pin(discovery).await;
+	let app = &execution.app;
+	let f = &app.runtime;
+	let mut policy = execution.policy;
+	let (status, sibling) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Service owner"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling = sibling["name"].as_str().unwrap();
+	policy["subjects"]["owned-service"] = json!({"kind":"service", "node":sibling});
+	assert_eq!(
+		request(
+			app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, issued) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"owned-service"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{issued}");
+	let mut mapping = json!({"node":receiving_node(f).await,"source_node":remote.node(&sender()),"source_subject":"service","credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0});
+	let path = "/api/authorization/acme/peer-mappings";
+	let (status, value) = request(app, &f.config.api_token, "POST", path, mapping.clone()).await;
+	assert_eq!(
+		status, 403,
+		"another Node cannot receive this service's authority: {value}"
+	);
+	assert_eq!(
+		request(
+			app,
+			&f.config.api_token,
+			"POST",
+			&peering::registration_path("acme", sibling),
+			remote.registration(&sender())
+		)
+		.await
+		.0,
+		200
+	);
+	mapping["node"] = json!(sibling);
+	assert_eq!(
+		request(app, &f.config.api_token, "POST", path, mapping)
+			.await
+			.0,
+		200
+	);
+}

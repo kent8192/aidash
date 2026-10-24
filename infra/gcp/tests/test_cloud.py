@@ -190,6 +190,65 @@ class AppliedProviderProjectTests(unittest.TestCase):
                 self.assertEqual(self.configuration("old-byok", configured, managed=False), {})
 
 
+class AppliedNodePoolTests(unittest.TestCase):
+    def test_recovered_intent_requires_a_current_running_environment_pool(self):
+        pool = {
+            "mode": "managed",
+            "type": "google_container_node_pool",
+            "module": 'module.environment["develop"]',
+            "name": "environment",
+            "instances": [{"attributes": {"node_count": 1}}],
+        }
+        cases = [
+            ("missing", [], False),
+            ("stopped", [dict(pool, instances=[{"attributes": {"node_count": 0}}])], False),
+            ("running", [pool], True),
+            ("deposed", [dict(pool, instances=[{"deposed": "old", "attributes": {"node_count": 1}}])], False),
+            ("deposed and stopped", [dict(pool, instances=[
+                {"deposed": "old", "attributes": {"node_count": 1}},
+                {"attributes": {"node_count": 0}},
+            ])], False),
+            ("another environment", [dict(pool, module='module.environment["test"]')], False),
+            ("system pool", [dict(pool, module=None, name="system")], False),
+            ("data source", [dict(pool, mode="data")], False),
+            ("empty standby", [dict(pool, name="standby", instances=[{"index_key": "us-central1-b", "attributes": {"node_count": 0}}])], False),
+            ("live standby", [dict(pool, name="standby", instances=[{"index_key": "us-central1-b", "attributes": {"node_count": 1}}])], True),
+        ]
+        for label, resources, running in cases:
+            with self.subTest(label=label):
+                terraform = Terraform.__new__(Terraform)
+                terraform.configuration = {}
+                intent = {"kind": "develop", "running": True, "published": True,
+                          "address": "203.0.113.1", "hostname_token": "a" * 32}
+                state = {"resources": resources, "outputs": {
+                    "managed_configuration": {"value": {"develop": intent}},
+                }}
+                store = Mock()
+                store.read.return_value = (state, "1")
+                recovered = terraform.configuration_in_state(store)["develop"]
+                self.assertEqual(recovered["running"], running)
+                self.assertEqual(recovered["published"], running)
+                self.assertEqual(recovered["address"], "203.0.113.1" if running else None)
+                self.assertEqual(recovered["hostname_token"], "a" * 32)
+
+    def test_unknown_pool_count_stops_recovery_before_planning_a_scale_down(self):
+        for attributes in [{}, {"node_count": None}]:
+            with self.subTest(attributes=attributes):
+                terraform = Terraform.__new__(Terraform)
+                terraform.configuration = {}
+                state = {"resources": [{
+                    "mode": "managed", "type": "google_container_node_pool",
+                    "module": 'module.environment["develop"]', "name": "environment",
+                    "instances": [{"attributes": attributes}],
+                }], "outputs": {"managed_configuration": {"value": {
+                    "develop": {"kind": "develop", "running": True, "published": True},
+                }}}}
+                store = Mock()
+                store.read.return_value = (state, "1")
+                with self.assertRaisesRegex(RuntimeError, "node count"):
+                    terraform.configuration_in_state(store)
+
+
 class PlanTests(unittest.TestCase):
     def test_persisted_broker_intent_detects_rotation_disable_and_legacy_state(self):
         terraform = Terraform.__new__(Terraform)

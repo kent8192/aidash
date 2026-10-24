@@ -44,6 +44,12 @@ impl AuthorizationWorkspace {
 		query
 			.column(Alias::new("owner_subject"))
 			.from(Alias::new(Self::table_name()))
+			.and_where(
+				crate::apps::identity::repositories::nodes::live_workspace_condition(
+					Expr::value(workspace).into(),
+					Expr::value(tenant).into(),
+				),
+			)
 			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)));
 		if lock {

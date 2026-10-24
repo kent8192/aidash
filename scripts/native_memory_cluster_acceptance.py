@@ -106,8 +106,9 @@ class NativeMemory(RemoteMemory):
         for node in range(2):
             def binding(kind, target, origin=node):
                 return {"kind": kind, "target": {"registry_deployment": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
-            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
-            subjects[f"{self.nodes[node]['address']}/agents/learning@1.0.0"] = {"kind": "agent"}
+            # Remote Agent names still belong to the policy's local receiving/Home Node.
+            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
+            subjects[f"{self.nodes[node]['address']}/agents/learning@1.0.0"] = {"kind": "agent", "node": self.nodes[node]["node"]}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
