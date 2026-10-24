@@ -1,0 +1,27 @@
+meta {
+  name: 1352 tenant-node-deletion - Delete the disposable nondefault Node
+  type: http
+  seq: 73
+}
+
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/nodes/{{lifecycle_node}}/deletion
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"confirmation": "{{lifecycle_node}}"}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Documented response fields and types", function () { const contract={"definitions":{"NodeDeletionRecord":{"properties":{"deleted_at":{"format":"date-time","type":"string"},"deleted_by_kind":{"type":"string"},"id":{"format":"uuid","type":"string"},"purge_after":{"format":"date-time","type":"string"},"purge_error":{"type":["string","null"]},"purge_failed_at":{"format":"date-time","type":["string","null"]},"purge_failures":{"format":"int64","type":"integer"},"purge_step":{"type":["string","null"]},"purged_at":{"format":"date-time","type":["string","null"]}},"required":["id","deleted_at","deleted_by_kind","purge_after","purged_at","purge_step","purge_failures","purge_error","purge_failed_at"],"type":"object"},"NodeRecord":{"description":"A Node as its Tenant sees it.","properties":{"address":{"description":"`aidash://<deployment>/<name>`, what other Nodes register.","type":"string"},"created_at":{"format":"date-time","type":"string"},"default":{"description":"The current default Node; Workspaces go there unless another is chosen.","type":"boolean"},"deletion":{"anyOf":[{"$ref":"#/components/schemas/NodeDeletionRecord"},{"type":"null"}]},"label":{"type":"string"},"name":{"description":"The Node name Aidash assigned. It never changes.","type":"string"},"retained_storage_bytes":{"description":"Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).","format":"uint64","minimum":0,"type":["integer","null"]},"state":{"$ref":"#/components/schemas/NodeState"},"storage_retained_until_purge":{"description":"Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.","type":"boolean"}},"required":["name","address","label","default","created_at","state","deletion","storage_retained_until_purge","retained_storage_bytes"],"type":"object"},"NodeState":{"enum":["live","deleted","deleting","purged"],"type":"string"}},"schema":{"$ref":"#/components/schemas/NodeRecord"}}; function valid(value,schema){if(schema===true)return true;if(schema===false)return false;if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop().replace(/~1/g,"/").replace(/~0/g,"~")]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });
+  test("Delete the disposable nondefault Node contract", function () { expect(res.getBody().name).to.equal(bru.getVar("lifecycle_node"));expect(res.getBody().state).to.equal("deleted");expect(res.getBody().storage_retained_until_purge).to.equal(true);expect(res.getBody().deletion.id).to.be.a("string");expect(res.getBody().deletion.purge_after).to.be.a("string");bru.setVar("lifecycle_deletion",res.getBody().deletion.id); });
+}
