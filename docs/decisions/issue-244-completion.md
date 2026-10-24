@@ -160,6 +160,29 @@ Never record secret values in this document, source control, logs or comments.
     revision, permissions and enabled state. A concurrent disable forces reload
     and revalidation; quarantine cannot be cleared by a normal proof. Merely
     accepting the proof temporarily would strand a later retry after overlap.
+11. **Physical purge retains exact recovery trust.** Current registration
+    pairs referenced by immutable retained journals survive as recovery state:
+    local coordinator to remote participant, and local participant to remote
+    coordinator. Validate transaction ID, digest, manifest and permanent owner;
+    keep current keys, both revisions, quarantine, permissions, enabled state and
+    endpoint unchanged. Registration ownership is anchored to permanent Node
+    names, allowing finite catalog/deletion/history audit expiry. COMMITTED or
+    ABORTED does not establish remote receipt; Finish still needs the reverse
+    decision route. Trust remains while its journal is replayable, independently
+    of the audit deadline. Unrelated registrations are purged; no participant
+    mesh, historical trust fallback, new acknowledgement or fresh admission is
+    implied. Current manifests allow only one distinct Node per Deployment, so
+    a valid same-Deployment coordinator/participant is self and requires no
+    registration. Malformed or contradictory recovery ownership fails closed.
+    Non-atomic execution Cancel retries retain only the actual typed terminal
+    Activation, exact original binding and required receiver-to-Home trust.
+    Capture shares the real response transaction; Rows captures stopped
+    admissions before dependency selection, with planned evidence/trust checked
+    before files. Ordinary admission/Run payload still erases. Only the exact
+    strict empty-Subject Cancel request may replay or learn receiving keys;
+    current Tenant policy, lifecycle and quarantine remain authoritative. No
+    remote ACK bounds retention, so Node audit expiry does not erase this small
+    recovery obligation. Whole-Tenant purge removes it normally.
 
 The alternatives were immediate final deletion, counting deleted Nodes until
 purge, letting Tenant Administrators bypass the recovery period, restoring an

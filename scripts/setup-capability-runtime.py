@@ -80,6 +80,14 @@ nodes:
     kubeconfig.chmod(0o600)
     node = args.name + "-control-plane"
     docker = [executables["docker"], "exec", "-i", node]
+    ctr = run(docker + ["sh", "-c", "command -v ctr"], capture=True).decode().strip()
+    if not re.fullmatch(r"/[A-Za-z0-9_./+-]+", ctr):
+        raise SystemExit("invalid node ctr executable path")
+    run(docker + ["test", "-x", ctr])
+    ctr_version = run(docker + [ctr, "--version"], capture=True).decode().strip()
+    if not ctr_version:
+        raise SystemExit("node ctr executable returned no version")
+    print(json.dumps({"node_ctr": ctr, "node_ctr_version": ctr_version}), flush=True)
     kube = [executables["kubectl"], "--kubeconfig", kubeconfig]
     chart = run([executables["helm"], "template", "cilium", "cilium", "--repo", "https://helm.cilium.io/",
                  "--version", CILIUM, "--namespace", "kube-system", "--set", "operator.replicas=1",
@@ -113,10 +121,11 @@ Path('/opt/aidash').mkdir(exist_ok=True)
     run(docker + ["python3", "-"], data=configuration)
     run(docker + ["systemctl", "restart", "containerd"])
     run(docker + ["python3", "-c", "from pathlib import Path; import sys; Path('/opt/aidash/node_guard.py').write_bytes(sys.stdin.buffer.read())"], data=(ROOT / "runner/node_guard.py").read_bytes())
-    service = """[Unit]
+    service = f"""[Unit]
 Description=Aidash isolated runtime writer guardian
 After=containerd.service
 [Service]
+Environment=AIDASH_CTR_BINARY={ctr}
 ExecStart=/usr/bin/python3 /opt/aidash/node_guard.py watch
 Restart=always
 RestartSec=1
@@ -141,7 +150,7 @@ WantedBy=multi-user.target
         raise SystemExit("invalid built image digest")
     run([executables["kind"], "load", "docker-image", "--name", args.name, tag])
     image = "docker.io/library/aidash-sandbox@" + digest
-    run(docker + ["ctr", "-n", "k8s.io", "images", "tag", tag, image])
+    run(docker + [ctr, "-n", "k8s.io", "images", "tag", tag, image])
     # Shared with the Rust capability runtime, whose Profile denies unknown fields:
     # Runner-only settings such as host_tasks stay out (the Runner defaults to 512).
     profile = {
@@ -155,7 +164,7 @@ WantedBy=multi-user.target
             "endpoint": f"http://127.0.0.1:{args.port}", "token_env": "AIDASH_CORE_RUNNER_TOKEN", "image": image,
             "runtime_class": "aidash-gvisor", "namespace": "aidash-sandbox", "journal": str(directory / "journal"),
             "kubectl": executables["kubectl"], "kubeconfig": str(kubeconfig), "listen_host": "127.0.0.1", "listen_port": args.port,
-            "node_guard": docker + ["python3", "/opt/aidash/node_guard.py"],
+            "node_guard": docker + ["env", "AIDASH_CTR_BINARY=" + ctr, "python3", "/opt/aidash/node_guard.py"],
         },
     }
     write_private(directory / "profile.json", json.dumps(profile, indent=2) + "\n")

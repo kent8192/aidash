@@ -36,4 +36,6 @@ pub mod tenant_purge;
 pub mod tenant_secrets;
 pub mod tenants;
 
+pub mod node_purge;
+
 pub(crate) mod manual_keys;

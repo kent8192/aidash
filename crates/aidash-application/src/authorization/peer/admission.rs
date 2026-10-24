@@ -405,9 +405,14 @@ pub async fn status<R: PeerAdmissionRepository>(
 		phase: run
 			.as_ref()
 			.map_or(RemoteExecutionPhase::Admitted, |r| r.phase().into()),
-		control: run
-			.as_ref()
-			.map_or(RemoteExecutionControlState::Inactive, |r| r.control.into()),
+		control: run.as_ref().map_or(
+			if record.cancelled {
+				RemoteExecutionControlState::Cancelled
+			} else {
+				RemoteExecutionControlState::Inactive
+			},
+			|r| r.control.into(),
+		),
 		semantic_reason: run
 			.as_ref()
 			.and_then(|r| r.recovery.as_ref())
@@ -427,11 +432,28 @@ pub async fn status<R: PeerAdmissionRepository>(
 }
 pub async fn control<R: PeerAdmissionRepository>(
 	repository: &R,
+	tenant: &str,
+	receiver: &NodeName,
 	source: &str,
+	subject: &str,
+	request: &crate::federation::inbound::RequestDigest<'_>,
 	id: Uuid,
 	grant: Uuid,
 	action: RemoteExecutionControl,
 ) -> Result<Activation> {
+	if matches!(action, RemoteExecutionControl::Cancel) {
+		return repository
+			.cancel_admission(tenant, receiver, source, subject, request, id, grant)
+			.await;
+	}
+	let record = repository.record(id).await?.ok_or(Error::Forbidden)?;
+	if record.tenant != tenant
+		|| record.node != *receiver
+		|| record.source_node != source
+		|| record.grant_id != grant
+	{
+		return Err(Error::Forbidden);
+	}
 	let run = repository.inspect_run(id).await?;
 	if run.home_node != source || run_grant(repository, &run.metadata).await? != Some(grant) {
 		return Err(Error::Forbidden);
@@ -443,7 +465,7 @@ pub async fn control<R: PeerAdmissionRepository>(
 		finish(scope, Ok(())).await?
 	};
 	let run = if matches!(action, RemoteExecutionControl::Cancel)
-		&& run.control == RunControl::Cancelled
+		&& (run.control == RunControl::Cancelled || run.phase().is_terminal())
 	{
 		run
 	} else {

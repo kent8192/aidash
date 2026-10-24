@@ -3445,8 +3445,8 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	tx.commit().await.unwrap();
 	let execution = aidash_server::apps::identity::models::AuthorizationExecution::build()
 		.run_id(id)
-		.task(task.id)
-		.workspace(workspace)
+		.task_id(task.id)
+		.workspace_id(workspace)
 		.tenant("acme")
 		.credential(credential.credential.id)
 		.root_subject("alice")

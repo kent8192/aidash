@@ -33,3 +33,13 @@ fn blocked_publication_uses_only_the_existing_retryable_quota_messages(
 		);
 	}
 }
+
+#[test]
+fn stopped_output_digest_matches_the_runner_canonical_wire_contract() {
+	let observed = json!({"operation_id":"00000000-0000-0000-0000-000000000002","digest":"intent","stdout":"aGk=",
+		"files":[{"path":"結果.txt","size":2,"object_id":"file","digest":"hash"}],"truncated":true});
+	assert_eq!(
+		output_digest("00000000-0000-0000-0000-000000000001", &observed).unwrap(),
+		"0b9c0a8283390da0eb7572f59944f0a7dff0f8503cf29dc25bb74dc2d5d62503"
+	);
+}

@@ -279,9 +279,11 @@ impl PythonRepository for Repository<'_> {
 		}))
 	}
 	async fn begin(&self) -> Result<Box<dyn HeapMaintenance + '_>> {
+		let mut tx = self.store.pool.begin(&MAINTENANCE).await?;
+		crate::transactions::gate::read_in(&mut tx).await?;
 		Ok(Box::new(Maintenance {
 			store: self.store,
-			tx: self.store.pool.begin(&MAINTENANCE).await?,
+			tx,
 		}))
 	}
 }

@@ -11,6 +11,7 @@ import {
 } from "./transport";
 import { useI18n } from "./ui";
 import { NodeLifecycleSettings } from "./node-lifecycle-settings";
+import type { State } from "./types";
 
 /** A recorded Tenant Deletion (ADR 0060). */
 export type TenantDeletion = {
@@ -441,7 +442,11 @@ function purgeProgress(
 /** The Deployment Administrators' list of Tenants, with each deletion's
  *  deadline, Restore while it is restorable, Purge now until it is purged, and
  *  the step and error of a purge that keeps failing. */
-export function DeploymentTenants() {
+export function DeploymentTenants({
+  offering,
+}: {
+  offering?: State["offering"];
+}) {
   const { locale } = useI18n();
   const english = locale === "en-US";
   const client = useQueryClient();
@@ -588,6 +593,7 @@ export function DeploymentTenants() {
             tenant={nodeTenant}
             canUpdate
             canDelete
+            offering={offering}
             deploymentAdministrator
           />
         </div>

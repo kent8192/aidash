@@ -31,6 +31,27 @@
 {{- if $runner.enabled -}}{{- $profile = include "aidash.capabilityProfile" . -}}{{- end -}}
 {{- $providerCredentials := "" -}}
 {{- if not (kindIs "invalid" .Values.providerCredentials.settings) -}}{{- $providerCredentials = include "aidash.providerCredentials" . -}}{{- end -}}
+{{- $deploymentSettings := "" -}}
+{{- if not (kindIs "invalid" .Values.deployment.settings) -}}
+{{- with .Values.deployment.settings.key -}}
+{{- /* The schema ensures positive decimal digits without leading zeros; compare strings to retain u64 precision. */ -}}
+{{- $version := last (splitList "/" .kms) -}}
+{{- if or (gt (len $version) 20) (and (eq (len $version) 20) (gt $version "18446744073709551615")) -}}
+{{- fail "deployment.settings.key.kms version must be at most 18446744073709551615" -}}
+{{- end -}}
+{{- end -}}
+{{- $deploymentSettings = dict "deployment" .Values.deployment.settings | toJson -}}
+{{- end -}}
+{{- /* Keep the installed descriptor as the bootstrap reference. Rotation belongs to the persisted key schedule. */ -}}
+{{- $installed := lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-deployment-settings" $name) -}}
+{{- if $installed -}}
+{{- $previous := (index $installed.data "settings.json" | fromJson).deployment -}}
+{{- if not $deploymentSettings -}}{{ fail "an installed deployment.settings descriptor cannot be removed" }}{{- end -}}
+{{- if ne $previous.offering .Values.deployment.settings.offering -}}{{ fail "an existing Deployment identity must retain its Offering" }}{{- end -}}
+{{- if and $previous.key (ne (toJson $previous.key) (toJson .Values.deployment.settings.key)) -}}
+{{- fail "the initial Deployment Key is immutable; use deployment-key rollover" -}}
+{{- end -}}
+{{- end -}}
 {{- $gcip := "" -}}
 {{- if not (kindIs "invalid" .Values.gcip.settings) -}}{{- $gcip = include "aidash.gcip" . -}}{{- end -}}
 {{- /* Server and worker share each RWO claim, so they must stay on one Cluster Node. */ -}}
@@ -48,7 +69,7 @@
 {{- $mounts = append $mounts (dict "name" "capabilities" "mountPath" (include "aidash.capabilityDirectory" $)) -}}
 {{- $volumes = append $volumes (dict "name" "capabilities" "persistentVolumeClaim" (dict "claimName" .)) -}}
 {{- end -}}
-{{- range $setting := list (dict "name" "capability-profile" "content" $profile) (dict "name" "provider-credentials" "content" $providerCredentials) (dict "name" "gcip" "content" $gcip) -}}
+{{- range $setting := list (dict "name" "capability-profile" "content" $profile) (dict "name" "provider-credentials" "content" $providerCredentials) (dict "name" "gcip" "content" $gcip) (dict "name" "deployment-settings" "content" $deploymentSettings) -}}
 {{- if $setting.content -}}
 {{- $mounts = append $mounts (dict "name" $setting.name "mountPath" (printf "/etc/aidash/%s" $setting.name) "readOnly" true) -}}
 {{- $volumes = append $volumes (dict "name" $setting.name "configMap" (dict "name" (printf "%s-%s" $name $setting.name))) -}}
@@ -82,9 +103,9 @@ spec:
       app.kubernetes.io/component: {{ $role }}
   template:
     metadata:
-      {{- if or $profile $providerCredentials $gcip }}
+      {{- if or $profile $providerCredentials $gcip $deploymentSettings }}
       annotations:
-        checksum/settings: {{ printf "%s\n%s\n%s" $profile $providerCredentials $gcip | sha256sum }}
+        checksum/settings: {{ printf "%s\n%s\n%s\n%s" $profile $providerCredentials $gcip $deploymentSettings | sha256sum }}
       {{- end }}
       labels:
         app.kubernetes.io/name: aidash
@@ -158,6 +179,9 @@ spec:
             {{- end }}
             {{- if $providerCredentials }}
             - { name: AIDASH_PROVIDER_CREDENTIAL_SETTINGS, value: /etc/aidash/provider-credentials/settings.json }
+            {{- end }}
+            {{- if $deploymentSettings }}
+            - { name: AIDASH_DEPLOYMENT_SETTINGS, value: /etc/aidash/deployment-settings/settings.json }
             {{- end }}
             {{- if $gcip }}
             - { name: AIDASH_GCIP_SETTINGS, value: /etc/aidash/gcip/settings.json }
@@ -234,7 +258,7 @@ spec:
         {{- end }}
       ports: [{ protocol: TCP, port: 8080 }]
 {{- end }}
-{{- range $setting := list (dict "name" "capability-profile" "file" "profile.json" "content" $profile) (dict "name" "provider-credentials" "file" "settings.json" "content" $providerCredentials) (dict "name" "gcip" "file" "settings.json" "content" $gcip) }}
+{{- range $setting := list (dict "name" "capability-profile" "file" "profile.json" "content" $profile) (dict "name" "provider-credentials" "file" "settings.json" "content" $providerCredentials) (dict "name" "gcip" "file" "settings.json" "content" $gcip) (dict "name" "deployment-settings" "file" "settings.json" "content" $deploymentSettings) }}
 {{- if $setting.content }}
 ---
 apiVersion: v1

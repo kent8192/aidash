@@ -20,6 +20,39 @@ Tenant-shared Registry definitions, Provider Credentials, Tenant Secrets, user
 subjects and shared policy revisions survive. Registrations owned by another
 Tenant or Deployment stay under that receiver's control.
 
+A Workspace Event follows its Workspace owner. Its scalar emitter Node metadata
+references the permanent same-Tenant name, allowing finite Node catalog audit to
+expire without deleting or rewriting a surviving Workspace's Event body. This
+metadata does not confer current Node admission or access authority.
+
+Current registrations needed by retained atomic journals are recovery state,
+separate from finite audit history. Retain only the exact local coordinator to
+remote participant and local participant to remote coordinator pairs validated
+from immutable manifest, transaction ID, digest and permanent Node ownership.
+Retain terminal COMMITTED and ABORTED dependencies too: neither terminal phase
+proves the remote coordinator received the reply, and Finish also fetches the
+coordinator decision through the reverse route. Keep the current keyset, both
+revisions, quarantine, authority and endpoint unchanged under Tenant ownership.
+Anchor these rows to permanent Node names so catalog and deletion history can
+expire without reopening liveness. Other current registrations and registration
+history follow their own purge/audit classification. No audit deadline expires a
+still-replayable journal's trust; no historical key fallback or new protocol
+acknowledgement is introduced. Missing or inconsistent ownership, manifest,
+digest or required current trust blocks erasure. An absent Node remains closed;
+only the exact existing journal-bound recovery path may use retained trust.
+
+A lost terminal execution Cancel reply has the same independent retry lifetime.
+The receiver retains a compact typed terminal Activation and its exact original
+Tenant, receiver, source, grant and admission identities. The real response owner
+captures it in its locked transaction; Rows captures already-stopped admissions
+before recomputing required receiving pairs. File preflight validates planned
+evidence and current trust before unlink. Admission/Run payload is still erased.
+Only the original strict, Node-acting Cancel request can replay this evidence or
+advance its current receiving keys; fresh activation, resume and other bindings
+remain denied. Current Tenant policy, deletion state and quarantine still apply.
+Receipts and their exact current receiving pair outlive finite Node audit, with
+no guessed ACK or TTL. Whole-Tenant purge removes this Tenant-owned metadata.
+
 Deletion records exact work identities in a durable cancellation queue in the
 same transaction. Restore retains that stop intent; mutable Run timestamps cannot
 stand in for an immutable deletion-time snapshot.

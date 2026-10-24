@@ -40,6 +40,7 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		let operation = Seed { area_id: area, id };
 		let store = self.store;
 		let mut tx = store.pool.begin(&self.scope).await?;
+		crate::transactions::gate::read_in(&mut tx).await?;
 		// Keep the normal area-before-operation lock order and recheck committed
 		// state: a stale worker snapshot cannot declare a dispatched writer safe.
 		let area: Area = {
@@ -85,6 +86,27 @@ impl OperationWithdrawalRepository for Repository<'_> {
 			operation,
 		}))
 	}
+	async fn cancel_bound(&self, operation: Uuid, digest: &str, instance: &str) -> Result<bool> {
+		let health =
+			operations::remote(self.store, reqwest::Method::GET, "/v1/health", None).await?;
+		if health["instance"].as_str() != Some(instance) {
+			return Err(aidash_application::Error::Conflict(
+				"captured runner changed".into(),
+			));
+		}
+		let reply = self.cancel(operation).await?;
+		let health =
+			operations::remote(self.store, reqwest::Method::GET, "/v1/health", None).await?;
+		if reply["operation_id"].as_str() != Some(operation.to_string().as_str())
+			|| reply["digest"].as_str() != Some(digest)
+			|| health["instance"].as_str() != Some(instance)
+		{
+			return Err(aidash_application::Error::Conflict(
+				"captured writer proof changed".into(),
+			));
+		}
+		Ok(reply["termination_confirmed"] == true)
+	}
 	async fn cancel(&self, operation: Uuid) -> Result<Value> {
 		operations::remote(
 			self.store,
@@ -101,6 +123,8 @@ impl OperationWithdrawalScope for Scope {
 	fn snapshot(&self) -> Snapshot {
 		Snapshot {
 			operation_id: self.operation.id,
+			digest: self.operation.digest.clone(),
+			runner_instance: self.operation.runner_instance.clone(),
 			kind: self.operation.kind.clone(),
 			state: self.operation.state.clone(),
 			result: self.operation.result.clone(),

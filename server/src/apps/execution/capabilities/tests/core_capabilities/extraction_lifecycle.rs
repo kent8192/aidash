@@ -119,7 +119,7 @@ fn extraction_lifecycle_fixture(
 				};
 				// Inject a real runner failure or leave its real input staging open.
 				// The database models the already committed extraction intent.
-				let observed = runner(&c, reqwest::Method::POST, "/v1/operations", Some(json!({"operation_id":operation,"area_id":id,"epoch":1,"digest":digest,"kind":"shell","code":code,"seconds":40,"files":files}))).await;
+				let observed = runner(&c, reqwest::Method::POST, "/v1/operations", Some(json!({"operation_id":operation,"area_id":id,"epoch":1,"digest":digest,"usage_tenant":"acme","kind":"shell","code":code,"seconds":40,"files":files}))).await;
 				if staged {
 					assert_eq!(observed["status"], "awaiting_files");
 				}

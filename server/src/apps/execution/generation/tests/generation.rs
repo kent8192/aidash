@@ -2546,3 +2546,198 @@ fn provider_7(
 	}
 	.boxed()
 }
+
+/// The production reconciliation owner must settle deletion even if the Node
+/// was restored before maintenance first observed its durable deletion record.
+#[rstest::rstest]
+#[case::pending(false)]
+#[case::active(true)]
+#[tokio::test]
+async fn node_deletion_settles_generation_once_after_restore(
+	#[case] active: bool,
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let spec = definition(&app, &token).await;
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let target = default_node(&f.store, "acme").await;
+	let task = missing_task(&app, &token).await;
+	let (status, assignment) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{task}/assign"),
+		json!({"policy_id":"research","reason":"pending work on deleted node"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{assignment}");
+	let id = assignment["generation"]["id"].as_str().unwrap();
+	if active {
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/generation/acme/requests/{id}/control"),
+			json!({"action":"approve","reason":"activate deletion fixture"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		aidash_server::generation::provision::reconcile(&f)
+			.await
+			.unwrap();
+		assert_eq!(f.store.runs(&TEST_FIXTURE).await.unwrap().len(), 1);
+	}
+	let sibling = second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	let base = "/api/tenants/acme/nodes";
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		&format!("{base}/{sibling}/default"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	// A live sibling uses the same Tenant policy; deleting the target may
+	// release only its allocation and must not disable the sibling executor.
+	for id in ["model", "http", "research"] {
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.set_catalog(
+			"acme",
+			&sibling,
+			&aidash_domain::registry::EntityRef {
+				id: id.into(),
+				version: "1.0.0".into(),
+			},
+			0,
+			true,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	}
+	let sibling_task = missing_task(&app, &token).await;
+	let (status, sibling_assignment) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{sibling_task}/assign"),
+		json!({"policy_id":"research","reason":"independent sibling work"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{sibling_assignment}");
+	let sibling_id = sibling_assignment["generation"]["id"].as_str().unwrap();
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/requests/{sibling_id}/control"),
+		json!({"action":"approve","reason":"keep sibling live"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		&format!("{base}/{}/deletion", target.node),
+		json!({"confirmation":target.node}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		&format!("{base}/{}/restore", target.node),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..2 {
+		aidash_server::generation::provision::reconcile(&f)
+			.await
+			.unwrap();
+	}
+	let (status, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{jobs}");
+	let job = jobs
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|job| job["id"] == id)
+		.unwrap();
+	assert_eq!(job["status"], "STOPPED");
+	assert_eq!(job["quota_released"], true);
+	let (_, policies) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/policies",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(policies[0]["allocated_tokens"], 200000);
+	let sibling_job = jobs
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|job| job["id"] == sibling_id)
+		.unwrap();
+	assert_eq!(sibling_job["status"], "ACTIVE");
+	assert_eq!(sibling_job["quota_released"], false);
+	let (_, history) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/generation/acme/requests/{id}/history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		history
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|h| h["status"] == "STOPPED")
+			.count(),
+		1
+	);
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+	let sibling_run = runs.iter().find(|run| run.node == sibling).unwrap();
+	assert_eq!(sibling_run.control.as_str(), "ACTIVE");
+	assert!(!sibling_run.phase().is_terminal());
+	let target_runs: Vec<_> = runs.iter().filter(|run| run.node == target.node).collect();
+	if active {
+		assert_eq!(target_runs.len(), 1);
+		assert_eq!(target_runs[0].phase().as_str(), "CANCELLED");
+		assert_eq!(target_runs[0].control.as_str(), "CANCELLED");
+	} else {
+		assert!(target_runs.is_empty());
+	}
+	cleanup(f, &url, &schema).await;
+}

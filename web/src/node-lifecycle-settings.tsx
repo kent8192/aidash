@@ -14,6 +14,7 @@ import type { NodeRecord } from "./generated/models";
 import { useTenantNodes } from "./nodes";
 import { ApiError } from "./transport";
 import { Badge, Field, Modal, Panel, useI18n } from "./ui";
+import type { State } from "./types";
 
 const PAGE_SIZE = 25;
 
@@ -25,11 +26,13 @@ export function NodeLifecycleSettings({
   tenant,
   canUpdate,
   canDelete,
+  offering,
   deploymentAdministrator = false,
 }: {
   tenant: string;
   canUpdate: boolean;
   canDelete: boolean;
+  offering?: State["offering"];
   deploymentAdministrator?: boolean;
 }) {
   const { t, locale } = useI18n();
@@ -65,6 +68,32 @@ export function NodeLifecycleSettings({
   const liveCount = live.isError
     ? 0
     : (live.data?.filter((node) => node.state === "live").length ?? 0);
+  const confirmationNode = rows?.find(
+    (node) => node.name === confirmation?.node.name,
+  );
+  const confirmationBytes = confirmationNode?.retained_storage_bytes;
+  const hasConfirmationBytes =
+    typeof confirmationBytes === "number" &&
+    Number.isSafeInteger(confirmationBytes) &&
+    confirmationBytes >= 0;
+  const canConfirm =
+    hasConfirmationBytes &&
+    !management.isFetching &&
+    !management.isError &&
+    confirmationNode &&
+    (confirmation?.action === "delete"
+      ? confirmationNode.state === "live" &&
+        !confirmationNode.default &&
+        liveCount > 1
+      : deploymentAdministrator && confirmationNode.state === "deleted");
+  const storageNotice =
+    offering === "self-hosted"
+      ? "nodeStorageSelfHosted"
+      : offering === "cloud"
+        ? "nodeStorageCloud"
+        : offering === "dedicated"
+          ? "nodeStorageDedicated"
+          : "nodeStorageOfferingUnknown";
   const act = async (action: () => Promise<NodeRecord>, restoring = false) => {
     if (busy) return;
     setBusy(true);
@@ -99,10 +128,17 @@ export function NodeLifecycleSettings({
     setTyped("");
     setError("");
     setConfirmation({ node, action });
+    void management.refetch();
   };
   return (
     <Panel title={t("nodeLifecycle")}>
       <Hint>{t("nodeLifecycleHelp")}</Hint>
+      {canDelete && (
+        <>
+          <Hint>{t(storageNotice)}</Hint>
+          <Hint>{t("nodeStorageExemption")}</Hint>
+        </>
+      )}
       {error && !confirmation && <Alert>{t(error)}</Alert>}
       {canDelete && management.isError && (
         <Alert>{management.error.message}</Alert>
@@ -114,6 +150,11 @@ export function NodeLifecycleSettings({
         <RowList>
           {rows.map((node) => {
             const deletion = node.deletion;
+            const bytes = node.retained_storage_bytes;
+            const hasBytes =
+              typeof bytes === "number" &&
+              Number.isSafeInteger(bytes) &&
+              bytes >= 0;
             const operatorDeletion =
               deletion?.deleted_by_kind === "deployment_administrator";
             const restorable =
@@ -200,6 +241,19 @@ export function NodeLifecycleSettings({
                 <span className="truncate font-mono text-[11px] text-muted-foreground">
                   {node.address}
                 </span>
+                {canDelete &&
+                  (hasBytes ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t(
+                        node.state === "deleted" || node.state === "deleting"
+                          ? "nodeRetainedData"
+                          : "nodeStoredData",
+                      )}
+                      : {bytes.toLocaleString(locale)} {t("nodeStorageBytes")}
+                    </p>
+                  ) : (
+                    <Hint>{t("nodeStoredAmountUnavailable")}</Hint>
+                  ))}
                 {deletion && (
                   <div className="grid gap-1 text-xs text-muted-foreground">
                     <span>
@@ -286,7 +340,8 @@ export function NodeLifecycleSettings({
             className="grid gap-3"
             onSubmit={(event) => {
               event.preventDefault();
-              if (typed !== confirmation.node.name) return;
+              if (busy || !canConfirm || typed !== confirmation.node.name)
+                return;
               const name = encodeURIComponent(confirmation.node.name);
               void act(() =>
                 confirmation.action === "delete"
@@ -305,7 +360,22 @@ export function NodeLifecycleSettings({
                   : "nodePurgeNotice",
               )}
             </Hint>
-            <Hint>{t("nodeStorageNotice")}</Hint>
+            {hasConfirmationBytes ? (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  confirmationNode?.state === "deleted" ||
+                    confirmationNode?.state === "deleting"
+                    ? "nodeRetainedData"
+                    : "nodeStoredData",
+                )}
+                : {confirmationBytes.toLocaleString(locale)}{" "}
+                {t("nodeStorageBytes")}
+              </p>
+            ) : (
+              <Hint>{t("nodeStoredAmountUnavailable")}</Hint>
+            )}
+            <Hint>{t(storageNotice)}</Hint>
+            <Hint>{t("nodeStorageExemption")}</Hint>
             <Field label={t("nodeConfirmName")}>
               <Input
                 value={typed}
@@ -318,7 +388,9 @@ export function NodeLifecycleSettings({
             <div className="flex justify-end border-t border-border pt-4">
               <Button
                 variant="destructive"
-                disabled={busy || typed !== confirmation.node.name}
+                disabled={
+                  busy || !canConfirm || typed !== confirmation.node.name
+                }
               >
                 {t(
                   confirmation.action === "delete"
