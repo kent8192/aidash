@@ -165,6 +165,63 @@ mod destinations {
 	}
 
 	#[tokio::test]
+	async fn legacy_public_http_endpoints_are_refused_for_http_and_mcp() {
+		use aidash_application::ports::tools::{PluginServer, PluginSessions};
+		use aidash_domain::agent_plugin::RemoteServer;
+
+		let (listener, port) = serve().await;
+		let address = listener.local_addr().unwrap();
+		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
+		// Reach a local fixture if an old immutable snapshot bypasses admission.
+		let permitted = reqwest::Client::new();
+		let public = reqwest::Client::builder()
+			.no_proxy()
+			.resolve("public.example", address)
+			.build()
+			.unwrap();
+		let tools = HttpTools::new(
+			KeylessAccess::default(),
+			ToolClients {
+				mcp_permitted: permitted.clone(),
+				mcp_public: public.clone(),
+				permitted,
+				public,
+			},
+		);
+		let mut refused = Vec::new();
+		for config in [
+			http(format!("http://public.example:{port}/echo")),
+			mcp(format!("http://public.example:{port}/mcp")),
+		] {
+			refused.push(matches!(
+				tools.invoke(&config, json!({}), "key", None).await,
+				Err(Error::Forbidden)
+			));
+		}
+		let sessions = crate::plugin_sessions::McpPluginSessions::new(
+			KeylessAccess::default(),
+			tools.clients.clone(),
+		);
+		let listed = sessions
+			.list(
+				uuid::Uuid::new_v4(),
+				&PluginServer {
+					plugin: "legacy".to_owned().try_into().unwrap(),
+					digest: "sha256:fixture".into(),
+					server: "public".to_owned().try_into().unwrap(),
+				},
+				&RemoteServer {
+					url: format!("http://public.example:{port}/mcp").parse().unwrap(),
+					headers: vec![],
+				},
+			)
+			.await;
+		server.abort();
+		assert_eq!(refused, [true, true]);
+		assert!(matches!(listed, Err(Error::Forbidden)), "{listed:?}");
+	}
+
+	#[tokio::test]
 	async fn an_address_literal_that_is_not_permitted_is_refused_before_connecting() {
 		let (listener, port) = serve().await;
 		let tools = tools(&[]);
@@ -190,7 +247,7 @@ mod destinations {
 					&http(format!("http://127.0.0.1:{port}/echo")),
 					json!({}),
 					"key",
-					None
+					None,
 				)
 				.await,
 			Err(Error::Forbidden)
@@ -203,8 +260,8 @@ mod destinations {
 		let (listener, port) = serve().await;
 		let tools = tools(&[]);
 		for config in [
-			http(format!("http://localhost:{port}/echo")),
-			mcp(format!("http://localhost:{port}/mcp")),
+			http(format!("https://localhost:{port}/echo")),
+			mcp(format!("https://localhost:{port}/mcp")),
 		] {
 			assert!(matches!(
 				tools.invoke(&config, json!({}), "key", None).await,
@@ -273,16 +330,7 @@ async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
 #[tokio::test]
 async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothing_otherwise() {
 	let (endpoint, server) = authorization_echo().await;
-	let tools = HttpTools::new(
-		KeylessAccess::permitting(
-			aidash_domain::keyless::PermittedOrigins::parse([url::Url::parse(&endpoint)
-				.unwrap()
-				.origin()
-				.ascii_serialization()])
-			.unwrap(),
-		),
-		ToolClients::new().unwrap(),
-	);
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let config = ToolConfig::Http {
 		endpoint,
 		replay: "idempotent".into(),
@@ -328,16 +376,7 @@ async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret
 			Json(json!({"jsonrpc":"2.0","id":message["id"],"result":result})).into_response()
 		}
 	}))).await;
-	let tools = HttpTools::new(
-		KeylessAccess::permitting(
-			aidash_domain::keyless::PermittedOrigins::parse([url::Url::parse(&endpoint)
-				.unwrap()
-				.origin()
-				.ascii_serialization()])
-			.unwrap(),
-		),
-		ToolClients::new().unwrap(),
-	);
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let config = ToolConfig::Mcp {
 		endpoint,
 		tool_name: "lookup".into(),
@@ -563,4 +602,30 @@ async fn a_permitted_mcp_origin_follows_no_redirects() {
 	));
 	server.abort();
 	let _ = server.await;
+}
+
+#[tokio::test]
+async fn an_unpermitted_plaintext_mcp_hint_is_refused_before_discovery() {
+	let (endpoint, server) = serve(mcp_server(
+		vec![
+			json!([{"name":"lookup", "inputSchema":{"type":"object"}, "annotations":{"readOnlyHint":true}}]),
+		],
+		false,
+	))
+	.await;
+	let address: std::net::SocketAddr = reqwest::Url::parse(&endpoint)
+		.unwrap()
+		.socket_addrs(|| None)
+		.unwrap()[0];
+	let endpoint = format!("http://public.example:{}/mcp", address.port());
+	let public = reqwest::Client::builder()
+		.no_proxy()
+		.resolve("public.example", address)
+		.build()
+		.unwrap();
+	let mut clients = clients();
+	clients.public = public;
+	let result = mcp_read_only_hint(&clients, &KeylessAccess::default(), &endpoint, "lookup").await;
+	server.abort();
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 }

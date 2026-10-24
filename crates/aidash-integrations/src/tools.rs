@@ -78,7 +78,7 @@ impl ToolClients {
 		origins: &KeylessAccess,
 		endpoint: &str,
 	) -> Result<&reqwest::Client> {
-		match origins.destination(endpoint)? {
+		match tool_destination(origins, endpoint)? {
 			Destination::Permitted => Ok(&self.mcp_permitted),
 			Destination::PublicOnly => Ok(&self.mcp_public),
 			Destination::Forbidden => Err(Error::Forbidden),
@@ -91,7 +91,7 @@ impl ToolClients {
 		origins: &KeylessAccess,
 		endpoint: &str,
 	) -> Result<&reqwest::Client> {
-		match origins.destination(endpoint)? {
+		match tool_destination(origins, endpoint)? {
 			Destination::Permitted => Ok(&self.permitted),
 			Destination::PublicOnly => Ok(&self.public),
 			Destination::Forbidden => {
@@ -100,6 +100,19 @@ impl ToolClients {
 			}
 		}
 	}
+}
+
+/// Invocation and pre-registration discovery apply the same origin/TLS rule.
+fn tool_destination(origins: &KeylessAccess, endpoint: &str) -> Result<Destination> {
+	let destination = origins.destination(endpoint)?;
+	if destination == Destination::PublicOnly {
+		let url = reqwest::Url::parse(endpoint)
+			.map_err(|_| Error::Invalid("invalid tool endpoint URL".into()))?;
+		if url.scheme() != "https" {
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(destination)
 }
 
 /// A Tenant chooses a tool's endpoint, so the Keyless endpoint rule decides
@@ -242,7 +255,7 @@ pub async fn mcp_read_only_hint(
 	tool_name: &str,
 ) -> Result<Option<bool>> {
 	crate::validate_endpoint(endpoint)?;
-	let client = clients.keyless(origins.destination(endpoint)?)?;
+	let client = clients.keyless(tool_destination(origins, endpoint)?)?;
 	// One budget covers the handshake and every page; dropping the session on
 	// timeout closes it.
 	tokio::time::timeout(MCP_LIST_TIMEOUT, async {
