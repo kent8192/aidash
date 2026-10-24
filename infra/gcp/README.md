@@ -252,6 +252,14 @@ settings, applies typed defaults and validates the sole issuer. Legacy OIDC
 settings are not exported in this mode. Removing Tenant Bindings updates the
 settings before the Environment is reopened.
 
+Fixed-origin Cloud environments can opt into the extracted Authentication Server
+using the [common-auth runtime descriptor](../../enterprise/deploy/standalone-service/cloud-common-auth.md).
+The controller materializes its managed TOML profile and private mTLS files in a
+separate Secret mounted on server and worker, selecting it instead of the direct
+GCIP runtime fragment. Retain existing Terraform-owned GCIP pools and their users
+during cutover. Random preview origins retain their current managed GCIP path.
+Auth/Marketplace remain independent image/chart releases outside Cloud's bundle.
+
 The controller generates private database/API/Runner/observer keys once into the
 namespace's `aidash-identity` Secret and never regenerates them (a key added later
 is generated once for existing Environments); callers cannot

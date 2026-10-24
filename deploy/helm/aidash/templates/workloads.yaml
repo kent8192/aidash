@@ -33,11 +33,18 @@
 {{- if not (kindIs "invalid" .Values.providerCredentials.settings) -}}{{- $providerCredentials = include "aidash.providerCredentials" . -}}{{- end -}}
 {{- $gcip := "" -}}
 {{- if not (kindIs "invalid" .Values.gcip.settings) -}}{{- $gcip = include "aidash.gcip" . -}}{{- end -}}
+{{- $commonAuth := .Values.commonAuth.existingSecret -}}
+{{- if and $commonAuth $gcip -}}{{ fail "commonAuth and direct gcip sign-in are mutually exclusive" }}{{- end -}}
 {{- /* Server and worker share each RWO claim, so they must stay on one Cluster Node. */ -}}
 {{- $colocated := or .Values.memoryRecovery.existingClaim .Values.capabilities.storage.existingClaim -}}
 {{- $kind := include "aidash.workloadKind" . -}}
 {{- $mounts := list -}}
 {{- $volumes := list -}}
+{{- if $commonAuth -}}
+{{- $mounts = append $mounts (dict "name" "common-auth" "mountPath" "/run/auth-tls" "readOnly" true) -}}
+{{- $mounts = append $mounts (dict "name" "common-auth" "mountPath" "/app/server/settings/managed-common-auth.toml" "subPath" "settings.toml" "readOnly" true) -}}
+{{- $volumes = append $volumes (dict "name" "common-auth" "secret" (dict "secretName" $commonAuth)) -}}
+{{- end -}}
 {{- with .Values.memoryRecovery.existingClaim -}}
 {{- $mount := dict "name" "memory-recovery" "mountPath" $.Values.memoryRecovery.directory -}}
 {{- with $.Values.memoryRecovery.subPath -}}{{- $_ := set $mount "subPath" . -}}{{- end -}}
@@ -161,6 +168,10 @@ spec:
             {{- end }}
             {{- if $gcip }}
             - { name: AIDASH_GCIP_SETTINGS, value: /etc/aidash/gcip/settings.json }
+            {{- end }}
+            {{- if $commonAuth }}
+            - { name: REINHARDT_SETTINGS_DIR, value: /app/server/settings }
+            - { name: REINHARDT_ENV, value: managed-common-auth }
             {{- end }}
             - name: AIDASH_ENDPOINT
               value: {{ $.Values.deployment.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}

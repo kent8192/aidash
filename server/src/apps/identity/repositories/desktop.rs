@@ -384,6 +384,27 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 		return Err(Error::Unauthorized);
 	}
 	let session_id = Uuid::new_v4();
+	let provider_sid = if let Some(authority) = &f.config.common_auth {
+		let browser_session = browser
+			.provider_sid
+			.as_deref()
+			.and_then(|sid| Uuid::parse_str(sid).ok())
+			.ok_or(Error::Unauthorized)?;
+		Some(
+			authority
+				.desktop_session(
+					browser_session,
+					identity_id,
+					session_id,
+					u32::try_from(policy.absolute).map_err(|_| Error::Forbidden)?,
+					u32::try_from(policy.idle).map_err(|_| Error::Forbidden)?,
+				)
+				.await?
+				.to_string(),
+		)
+	} else {
+		browser.provider_sid.clone()
+	};
 	let tokens = Tokens {
 		access_token: format!("{ACCESS_PREFIX}{}", random_secret()),
 		refresh_token: format!("{REFRESH_PREFIX}{}", random_secret()),
@@ -420,7 +441,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 				.expr(Expr::val(true))
 				.expr(Expr::cust("$6"))
 				.expr(Expr::cust("clock_timestamp()+make_interval(secs => $7)"))
-				.expr(Expr::val(browser.provider_sid.clone()))
+				.expr(Expr::val(provider_sid))
 				.expr(Expr::val(browser.auth_time))
 				.to_owned(),
 		)
@@ -456,7 +477,10 @@ pub(super) async fn lock_identity(tx: &mut Transaction, id: Uuid, lock: LockType
 	if let Some(policy) = tx.pool().dashboard_policy() {
 		policy.require_identity(&issuer)?;
 	}
-	identity::validate_dashboard_status(Some((issuer, valid, disabled)))
+	identity::validate_local_status(
+		tx.pool().dashboard_policy().as_ref(),
+		Some((issuer, valid, disabled)),
+	)
 }
 async fn insert_refresh(tx: &mut Transaction, session: Uuid, token: &str) -> Result<()> {
 	let insert = Query::insert()

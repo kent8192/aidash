@@ -108,6 +108,16 @@ impl DashboardIdentity {
 		db: &Pool,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Self> {
+		Self::register_source(db, sign_in, Uuid::new_v4()).await
+	}
+
+	/// Preserve the authentication server's original source UUID. Existing
+	/// issuer/subject rows are never re-keyed during the common-auth cutover.
+	pub(crate) async fn register_source(
+		db: &Pool,
+		sign_in: &aidash_domain::identity::dashboard::SignIn,
+		source_id: Uuid,
+	) -> Result<Self> {
 		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			let issuer = &sign_in.issuer;
@@ -127,7 +137,7 @@ impl DashboardIdentity {
 					.map(Alias::new),
 				)
 				.values_panic([
-					IntoValue::into_value(Uuid::new_v4()),
+					IntoValue::into_value(source_id),
 					IntoValue::into_value(issuer.clone()),
 					IntoValue::into_value(subject.clone()),
 					IntoValue::into_value(now),

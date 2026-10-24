@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -130,7 +131,10 @@ def enterprise_violations(metadata, root):
     packages = {package["id"]: package for package in metadata["packages"]}
     members = {packages[member]["name"]: member for member in metadata["workspace_members"]}
     errors = []
-    expected = {"aidash-enterprise-server", "aidash-gcp", "aidash-broker"}
+    expected = {
+        "aidash-enterprise-server", "aidash-gcp", "aidash-broker",
+        "aidash-auth-server", "aidash-marketplace-server",
+    }
     if set(members) != expected:
         errors.append(f"Enterprise workspace packages must be {sorted(expected)}, found {sorted(members)}")
     for name, member in members.items():
@@ -140,8 +144,8 @@ def enterprise_violations(metadata, root):
     workspace = manifest["workspace"]
     if workspace.get("resolver") != "3":
         errors.append("the Enterprise workspace must use resolver 3")
-    if workspace.get("members") != ["crates/*", "server"]:
-        errors.append("the Enterprise workspace must include crates/* and server")
+    if workspace.get("members") != ["crates/*", "server", "auth", "marketplace"]:
+        errors.append("the Enterprise workspace must include crates/*, server and both standalone Pages projects")
     if "package" in manifest:
         errors.append("the Enterprise root manifest must be a virtual workspace")
     community = root.parent
@@ -151,7 +155,30 @@ def enterprise_violations(metadata, root):
             continue
         if path != community / "server" and path.parent != community / "crates":
             errors.append(f"Enterprise may depend locally only on Community crates: {package['name']}")
-    errors.extend(module_violations(root, (root / "crates", root / "server")))
+    graph = {
+        node["id"]: [dependency["pkg"] for dependency in node["deps"]
+                     if any(kind["kind"] != "dev" for kind in dependency["dep_kinds"])]
+        for node in metadata["resolve"]["nodes"]
+    }
+    # The independent services may reuse portable adapters, but composing either
+    # Cloud server would silently restore its runtime/migration dependencies.
+    for service in ("aidash-auth-server", "aidash-marketplace-server"):
+        if service not in members:
+            continue
+        visited = set()
+        pending = [(members[service], [service])]
+        while pending:
+            package_id, path = pending.pop()
+            if package_id in visited:
+                continue
+            visited.add(package_id)
+            if packages[package_id]["name"] in {"aidash-server", "aidash-enterprise-server"}:
+                errors.append("standalone service composes Cloud runtime: " + " -> ".join(path))
+                continue
+            pending.extend((dependency, [*path, packages[dependency]["name"]])
+                           for dependency in graph.get(package_id, []))
+    errors.extend(module_violations(root, (root / "crates", root / "server",
+                                         root / "auth", root / "marketplace")))
     return errors
 
 
@@ -163,6 +190,20 @@ def main():
     root = Path(metadata["workspace_root"])
     if args.workspace == "enterprise":
         errors = enterprise_violations(metadata, root)
+        # Workspace metadata unifies all members' features. Check each actual
+        # standalone production build separately so Cloud's selected adapters
+        # cannot mask a runtime/NATS dependency in a service-only build.
+        forbidden = {"aidash-server", "aidash-enterprise-server", "aidash-runtime",
+                     "aidash-harness", "async-nats"}
+        for service in ("aidash-auth-server", "aidash-marketplace-server"):
+            result = subprocess.run(
+                ["cargo", "tree", "--locked", "--manifest-path", str(root / "Cargo.toml"),
+                 "-p", service, "--edges", "normal,build", "--prefix", "none"],
+                capture_output=True, text=True, check=True,
+            )
+            found = {line.split()[0] for line in result.stdout.splitlines() if line.strip()} & forbidden
+            errors.extend(f"standalone build includes {dependency}: {service}"
+                          for dependency in sorted(found))
         message = "The Enterprise workspace composes only Community crates and follows the Rust 2024 conventions."
     else:
         errors = violations(metadata, root)

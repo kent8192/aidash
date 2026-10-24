@@ -43,3 +43,8 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 ] }
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+default = ["cloud"]
+# Authentication needs GCIP verification/status, not the Cloud deployment adapters.
+cloud = ["aidash-integrations/cloud-adapters"]

@@ -197,11 +197,17 @@ docs/specs/
 
 # Aidash application artifacts
 !Cargo.lock
-web/node_modules/
+web/node_modules
 web/dist/
 web/test-results/
 web/gcip-test-results/
 web/playwright-report/
+enterprise/marketplace/dist/
+enterprise/marketplace/test-results/
+enterprise/marketplace/playwright-report/
+enterprise/auth/dist/
+enterprise/auth/test-results/
+enterprise/auth/playwright-report/
 
 web/*.tsbuildinfo
 
@@ -218,3 +224,7 @@ __pycache__/
 /docs/design/
 
 web/desktop-test-results/
+
+# Reinhardt Pages generated bindings (native and WASM share Enterprise Cargo.lock).
+enterprise/auth/dist-wasm/
+enterprise/marketplace/dist-wasm/

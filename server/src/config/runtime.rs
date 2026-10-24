@@ -24,6 +24,9 @@ pub struct Config {
 	/// Demo Reservations at sign-in.
 	pub demo_data: bool,
 	pub oidc: Option<OidcConfig>,
+	pub marketplace: crate::config::marketplace::MarketplaceSettings,
+	pub common_auth: Option<std::sync::Arc<aidash_integrations::authentication::Client>>,
+	pub common_issuers: Option<crate::apps::identity::serializers::settings::CommonAuthSettings>,
 	/// A sign-in that the build adds, from settings only that build reads.
 	pub sign_in:
 		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
@@ -46,15 +49,25 @@ impl Config {
 		&self,
 	) -> Option<aidash_application::ports::authorization::dashboard::AccountPolicy> {
 		use aidash_application::ports::authorization::dashboard::{AccountPolicy, Issuer};
+		if let (Some(authority), Some(issuers)) = (&self.common_auth, &self.common_issuers) {
+			return Some(AccountPolicy {
+				authority: Some(authority.clone()),
+				issuers: std::sync::Arc::new(issuers.clone()),
+				personal_tenants: self.tenancy.personal_tenants,
+				demo_data: self.demo_data,
+			});
+		}
 		self.sign_in
 			.as_ref()
 			.map(|sign_in| AccountPolicy {
+				authority: None,
 				issuers: sign_in.issuers(),
 				personal_tenants: self.tenancy.personal_tenants,
 				demo_data: self.demo_data,
 			})
 			.or_else(|| {
 				self.oidc.as_ref().map(|oidc| AccountPolicy {
+					authority: None,
 					issuers: std::sync::Arc::new(Issuer(oidc.issuer.clone())),
 					personal_tenants: self.tenancy.personal_tenants,
 					demo_data: self.demo_data,
@@ -87,7 +100,28 @@ impl Config {
 			return Err(Error::Invalid("Aidash requires PostgreSQL".into()));
 		}
 		let extension = crate::bootstrap::build::current().extension;
+		let common = settings.dashboard.common_auth.as_ref();
+		if common.is_some()
+			&& settings.deployment.offering != aidash_domain::offering::Offering::Cloud
+		{
+			return Err(Error::Invalid(
+				"dashboard.common_auth is restricted to Cloud".into(),
+			));
+		}
 		let sign_in = extension.sign_in()?;
+		if common.is_some() && sign_in.is_some() {
+			return Err(Error::Invalid(
+				"dashboard.common_auth cannot be combined with the build's own sign-in".into(),
+			));
+		}
+		let common_auth = common
+			.map(|common| {
+				let oidc = settings.dashboard.oidc.as_ref().ok_or_else(|| {
+					Error::Invalid("dashboard.common_auth requires dashboard.oidc".into())
+				})?;
+				common.client(&oidc.client_id).map(std::sync::Arc::new)
+			})
+			.transpose()?;
 		if sign_in.is_some() && settings.dashboard.oidc.is_some() {
 			return Err(Error::Invalid(
 				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
@@ -107,6 +141,9 @@ impl Config {
 			federation: node.federation,
 			deployment_key: None,
 			demo_data: settings.demo_data.enabled,
+			marketplace: settings.marketplace.configured(&settings.core.base_dir)?,
+			common_auth,
+			common_issuers: common.cloned(),
 			sign_in,
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			oidc: settings
