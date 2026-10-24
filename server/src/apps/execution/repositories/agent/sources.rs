@@ -222,14 +222,11 @@ impl Slot {
 			};
 			return matches!(
 				(self, context.source),
-				(
-					Self::References,
-					NativeSource::PrivateReferences { .. }
-						| NativeSource::ReferenceAttachments { .. }
-				) | (
-					Self::Skills | Self::ResidentSkills,
-					NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. }
-				) | (
+				(Self::References, NativeSource::PrivateReferences { .. })
+					| (
+						Self::Skills | Self::ResidentSkills,
+						NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. }
+					) | (
 					Self::Semantic,
 					NativeSource::ConversationMemory { .. }
 						| NativeSource::SemanticMemory { .. }
