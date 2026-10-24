@@ -99,7 +99,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0036_remote_read_source_lifetime");
+	assert_eq!(knowledge[0].name, "0037_remote_read_source_lifetime");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -353,14 +353,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0056_policy_probe")
+		.get_migration("execution", "0058_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0055_session_area_lifetime_state".to_owned()
+			"0057_session_area_lifetime_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -3201,12 +3201,12 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 /// Provenance/session bindings retain their actual owner while a used source
 /// can expire. Rollback restores only the named former source-lifetime FK.
 #[rstest]
-#[case::memory("knowledge", "0036_remote_read_source_lifetime", None, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
+#[case::memory("knowledge", "0037_remote_read_source_lifetime", None, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
 #[case::origin("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
 #[case::execution_task("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
 #[case::execution_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
 #[case::read_workspace("identity", "0047_task_origin_source_lifetime", Some("0048_task_origin_source_lifetime_state"), "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
-#[case::session("execution", "0054_session_area_lifetime", Some("0055_session_area_lifetime_state"), "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
+#[case::session("execution", "0056_session_area_lifetime", Some("0057_session_area_lifetime_state"), "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
 #[tokio::test]
 async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
 	#[future] fresh_database: MigrationFixture,
@@ -3420,8 +3420,8 @@ async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 )]
 #[case::event(
 	"execution",
-	"0054_session_area_lifetime",
-	Some("0055_session_area_lifetime_state"),
+	"0056_session_area_lifetime",
+	Some("0057_session_area_lifetime_state"),
 	"events",
 	"events_node_fkey",
 	"events_tenant_root_fkey"

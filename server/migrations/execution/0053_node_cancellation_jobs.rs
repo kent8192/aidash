@@ -3,8 +3,8 @@
 // not remove them, and work created after restoration never enters this snapshot.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0051_node_cancellation_jobs", "execution")
-		.add_dependency("execution", "0050_runner_allocation_journals")
+	Migration::new("0053_node_cancellation_jobs", "execution")
+		.add_dependency("execution", "0052_runner_allocation_journals")
 		.add_dependency("identity", "0044_node_administration_target_state")
 		.add_dependency("federation", "0018_remote_admission_cancellation_state")
 		.database_only(true)
