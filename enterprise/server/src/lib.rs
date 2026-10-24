@@ -111,7 +111,7 @@ impl Extension for Adapters {
 	}
 
 	/// `[deployment.key] kms`: an Ed25519 key version in Cloud KMS, whose
-	/// public key is fetched here, once, at startup.
+	/// public key is fetched once for each immutable version the sender selects.
 	async fn deployment_key(&self, kms: &str) -> aidash_server::Result<Arc<dyn DeploymentKey>> {
 		let unavailable = || {
 			aidash_server::Error::Invalid(
