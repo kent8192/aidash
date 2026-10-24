@@ -72,20 +72,18 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 			let (status, body) =
 				request(&app, &token, "POST", "/api/registry", json!(replacement)).await;
 			assert_eq!(status, 200, "{body}");
-			if !small {
-				let (status, body) = request(
-					&app,
-					&token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({
-						"node":aidash_domain::nodes::NodeName::derived("acme"),
-						"entry":{"id":"custom.compaction","version":"1.0.0"},"expected_revision":0,"enabled":true
-					}),
-				)
-				.await;
-				assert_eq!(status, 200, "{body}");
-			}
+			let (status, body) = request(
+				&app,
+				&token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({
+					"node":aidash_domain::nodes::NodeName::derived("acme"),
+					"entry":{"id":"custom.compaction","version":"1.0.0"},"expected_revision":0,"enabled":true
+				}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
 		}
 		let (_, mut agent) = request(
 			&app,
@@ -177,6 +175,24 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 			}
 		);
 		assert_eq!(bound.pin.identity.version, COMPACTION_DECIDER_VERSION);
+	}
+	if state == "small_private" {
+		// Explicit dependencies must be approved before approving the Agent.
+		// Afterwards, a dormant Decider's revoked dispatch approval must not
+		// remove readable pinned metadata or block an undersized inference.
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({
+				"node":aidash_domain::nodes::NodeName::derived("acme"),
+				"entry":{"id":"custom.compaction","version":"1.0.0"},
+				"expected_revision":1,"enabled":false
+			}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
 	}
 	if state == "revoked_metadata" {
 		let snapshot = aidash_server::authorization::Authorization {
