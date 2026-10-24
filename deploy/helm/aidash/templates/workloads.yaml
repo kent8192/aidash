@@ -33,6 +33,13 @@
 {{- if not (kindIs "invalid" .Values.providerCredentials.settings) -}}{{- $providerCredentials = include "aidash.providerCredentials" . -}}{{- end -}}
 {{- $deploymentSettings := "" -}}
 {{- if not (kindIs "invalid" .Values.deployment.settings) -}}
+{{- with .Values.deployment.settings.key -}}
+{{- /* The schema ensures positive decimal digits without leading zeros; compare strings to retain u64 precision. */ -}}
+{{- $version := last (splitList "/" .kms) -}}
+{{- if or (gt (len $version) 20) (and (eq (len $version) 20) (gt $version "18446744073709551615")) -}}
+{{- fail "deployment.settings.key.kms version must be at most 18446744073709551615" -}}
+{{- end -}}
+{{- end -}}
 {{- $deploymentSettings = dict "deployment" .Values.deployment.settings | toJson -}}
 {{- end -}}
 {{- /* Keep the installed descriptor as the bootstrap reference. Rotation belongs to the persisted key schedule. */ -}}

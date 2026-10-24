@@ -310,7 +310,7 @@ class ChartsTest(unittest.TestCase):
 
     def test_deployment_settings_reach_every_role_and_restart_on_change(self):
         descriptor = {'offering': 'dedicated', 'key': {'kms':
-            'projects/fixture/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/1'}}
+            'projects/fixture/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/18446744073709551615'}}
         values = dict(self.base, deployment=dict(self.base['deployment'], settings=descriptor))
         objects = render(self.aidash, values)
         for role in ('server', 'worker'):
@@ -329,6 +329,8 @@ class ChartsTest(unittest.TestCase):
                         {'offering': 'self-hosted', 'key': descriptor['key']},
                         {'offering': 'cloud', 'key': {'kms': 'projects/p/cryptoKeyVersions/latest'}},
                         {'offering': 'cloud', 'key': {'file': '/private/key'}},
+                        {'offering': 'dedicated', 'key': {'kms': descriptor['key']['kms'].rsplit('/', 1)[0] + '/18446744073709551616'}},
+                        {'offering': 'dedicated', 'key': {'kms': descriptor['key']['kms'].rsplit('/', 1)[0] + '/100000000000000000000'}},
                         {'key': descriptor['key']}):
             with self.subTest(invalid=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(self.base, deployment=dict(self.base['deployment'], settings=invalid)))
