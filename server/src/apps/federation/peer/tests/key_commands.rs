@@ -110,3 +110,56 @@ fn restrict(path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict(_: &Path) {}
+
+#[test]
+fn rollover_cli_requires_exactly_one_source_and_an_expected_current_key() {
+	use reinhardt::commands::CapabilityCommand;
+	let cli = || super::Command.cli();
+	let kid = "a".repeat(43);
+	assert!(
+		cli()
+			.try_get_matches_from(["deployment-key", "status"])
+			.is_ok()
+	);
+	assert!(
+		cli()
+			.try_get_matches_from([
+				"deployment-key",
+				"rollover",
+				"--expected-current",
+				&kid,
+				"--file",
+				"/keys/next.pem"
+			])
+			.is_ok()
+	);
+	assert!(
+		cli()
+			.try_get_matches_from([
+				"deployment-key",
+				"rollover",
+				"--expected-current",
+				&kid,
+				"--kms",
+				"projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/2"
+			])
+			.is_ok()
+	);
+	for arguments in [
+		vec!["deployment-key", "rollover"],
+		vec!["deployment-key", "rollover", "--file", "/keys/next.pem"],
+		vec!["deployment-key", "rollover", "--expected-current", &kid],
+		vec![
+			"deployment-key",
+			"rollover",
+			"--expected-current",
+			&kid,
+			"--file",
+			"/keys/next.pem",
+			"--kms",
+			"version",
+		],
+	] {
+		assert!(cli().try_get_matches_from(arguments).is_err());
+	}
+}

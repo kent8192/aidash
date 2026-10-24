@@ -49,6 +49,10 @@ class ControllerLifecycle(unittest.TestCase):
         events = self.events
 
         class FixtureRunner(controller.Runner):
+            def allocation_loop(self):
+                # This fixture has no provider Pods; receipt lifecycle has its own owner.
+                return
+
             def kube_json(self, arguments, data=None):
                 return {"handler": "runsc"}
 
@@ -92,7 +96,7 @@ class ControllerLifecycle(unittest.TestCase):
     def shell_recovery_runner(self):
         runner = self.start_controller()
         runner.update(self.operation, status="running", executed=True,
-                      termination_confirmed=False, request={"files": []})
+                      termination_confirmed=False, request={"kind": "shell", "files": []})
         return runner
 
     def test_shell_recovery_waits_for_physical_stop_after_collector_loss(self):
@@ -118,8 +122,9 @@ class ControllerLifecycle(unittest.TestCase):
                 self.assertEqual((runner.root / (self.operation + ".files") / "saved").read_bytes(), content)
                 self.assertEqual([call.args[1] for call in guard.call_args_list],
                                  ["status", "status", "export", "logs", "read"])
-                self.assertEqual(kube.call_count, 1)
-                self.assertEqual(kube.call_args.args[0][:2], ["delete", "pod"])
+                # This recovery fixture has no UID-bound provider evidence. Saving
+                # recovered output must not authorize deletion by name alone.
+                self.assertEqual(kube.call_count, 0)
 
     def test_shell_recovery_without_stop_proof_remains_uncertain(self):
         runner = self.shell_recovery_runner()
@@ -184,7 +189,7 @@ class ControllerLifecycle(unittest.TestCase):
         with self.assertRaisesRegex(controller.Rejected, "no writable space"):
             runner.writable_bytes(record)
         request = dict(operation_id=self.operation, area_id=record["area_id"], epoch=1,
-                       digest="caller", kind="shell", code="print('ok')", seconds=5,
+                       digest="caller", usage_tenant="fixture", kind="shell", code="print('ok')", seconds=5,
                        files=files)
         runner.config["maximum_seconds"] = 60
         with self.assertRaisesRegex(controller.Rejected, "no writable space"):

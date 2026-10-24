@@ -71,9 +71,6 @@ pub async fn initialize(
 		.with_ansi(false)
 		.try_init();
 	let mut config = Config::from_settings(settings)?;
-	// A Deployment Key that cannot be loaded refuses to start (ADR 0064).
-	config.deployment_key =
-		configure_deployment_key(settings.deployment.key.as_ref(), &settings.core.base_dir).await?;
 	// A malformed Research provider declaration refuses to start (ADR 0055),
 	// before registry validation reads which providers are available.
 	crate::apps::execution::services::research::configure(
@@ -95,6 +92,21 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
+	let keys = configure_deployment_keys(
+		settings.deployment.key.as_ref(),
+		&settings.core.base_dir,
+		config.deployment.clone(),
+		crate::database::native::Pool::from(pool.clone()),
+	)
+	.await?;
+	if let Some(keys) = &keys {
+		use aidash_application::federation::key::DeploymentKeys;
+		config.deployment_key = Some(
+			keys.signing(chrono::Utc::now().timestamp().max(0) as u64)
+				.await?
+				.key,
+		);
+	}
 	let mut store = Store::from_pool(pool, config.deployment.clone())
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
@@ -103,6 +115,7 @@ pub async fn initialize(
 		.with_egress(aidash_integrations::federation::Egress {
 			enabled: config.federation,
 			key: config.deployment_key.clone(),
+			keys: keys.map(|keys| keys as Arc<dyn aidash_application::federation::key::DeploymentKeys>),
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
@@ -117,6 +130,7 @@ pub async fn initialize(
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
 	configure_tenant_secrets(&mut store);
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
+		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 		.with_tenant_secrets(store.tenant_secrets.is_some());
@@ -588,9 +602,10 @@ pub(crate) fn event_inbox(
 	})
 }
 
-/// HTTP and MCP tools never carry a Deployment secret (#296).
-pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::tools::HttpTools {
-	aidash_integrations::tools::HttpTools { client }
+/// HTTP and MCP tools never carry a Deployment secret (#296). They connect
+/// under the Keyless endpoint rule and its permitted origins (#376).
+pub(crate) fn tool_transport(store: &Store) -> aidash_integrations::tools::HttpTools {
+	aidash_integrations::tools::HttpTools::new(store.keyless.clone(), store.tool_clients.clone())
 }
 
 /// Discovery and worker retries share the native repository and the Deployment Key.
@@ -621,6 +636,14 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 		.and_then(|s| s.resolve().ok())
 		.map(|s| s.into_parts().0);
 	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
+	// Settings that fail to resolve leave no origins, so only public addresses pass.
+	.with_keyless_origins(
+		settings
+			.as_ref()
+			.and_then(|s| s.keyless_endpoints.origins().ok())
+			.map(aidash_application::provider_access::KeylessAccess::permitting)
+			.unwrap_or_default(),
+	)
 	.with_provider_credentials(
 		settings
 			.as_ref()
@@ -641,6 +664,7 @@ pub fn registry_validation_for(
 	store: &Store,
 ) -> aidash_application::registry::DefinitionValidation {
 	registry_validation()
+		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 		.with_tenant_secrets(store.tenant_secrets.is_some())
@@ -2380,6 +2404,49 @@ pub(crate) fn desktop_protocol(
 	runtime: &Federation,
 ) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}
+
+/// Construct scheduled sender keys after a database pool exists. The configured
+/// source bootstraps an empty schedule; stored sources remain authoritative.
+pub async fn configure_deployment_keys(
+	settings: Option<&crate::apps::operations::serializers::deployment::DeploymentKeySettings>,
+	base_dir: &std::path::Path,
+	deployment: aidash_domain::nodes::DeploymentId,
+	pool: crate::database::native::Pool,
+) -> Result<Option<Arc<aidash_application::federation::key::ScheduledDeploymentKeys>>> {
+	use crate::apps::operations::serializers::deployment::DeploymentKeySource as Configured;
+	use aidash_application::federation::key::{
+		DeploymentKeySource, DeploymentKeyStore, ScheduledDeploymentKeys,
+	};
+	let Some(settings) = settings else {
+		return Ok(None);
+	};
+	let configured = settings.source().map_err(Error::Invalid)?;
+	let store = Arc::new(
+		crate::apps::federation::peer::repositories::deployment_keys::PostgresDeploymentKeys {
+			pool,
+			deployment: deployment.clone(),
+		},
+	);
+	// Existing schedules are retained and only replaced by CAS. Their validated
+	// references are authoritative, so restarting must not resolve a removed
+	// initial file. The initial slot is used only while no schedule exists.
+	let source = match store.load().await? {
+		Some(state) => state.predecessor_source,
+		None => match configured {
+			Configured::File(file) => {
+				DeploymentKeySource::File(std::fs::canonicalize(base_dir.join(file))?)
+			}
+			Configured::Kms(version) => DeploymentKeySource::Kms(version.to_owned()),
+		},
+	};
+	source.validate()?;
+	Ok(Some(Arc::new(ScheduledDeploymentKeys::new(
+		deployment,
+		source,
+		store,
+		Arc::new(crate::apps::federation::peer::services::key_sources::Sources::default()),
+	))))
 }
 
 /// The Deployment Key `[deployment.key]` names, or none when it is omitted. A

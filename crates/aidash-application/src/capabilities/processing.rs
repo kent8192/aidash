@@ -4,7 +4,10 @@ use aidash_domain::capabilities::operations::processing::{journal_lost, storage_
 use serde_json::{Value, json};
 use uuid::Uuid;
 #[derive(Default)]
-pub struct ReceiptCursor(Uuid);
+pub struct ReceiptCursor {
+	operation: Uuid,
+	allocation: super::pod_usage::Cursor,
+}
 pub fn blocked_publication(error: &Error) -> Option<Value> {
 	let message = match error {
 		Error::Conflict(message) | Error::Domain(aidash_domain::Error::Conflict(message)) => {
@@ -18,6 +21,9 @@ pub async fn sweep(
 	repository: &dyn OperationProcessingRepository,
 	cursor: &mut ReceiptCursor,
 ) -> Result<()> {
+	if let Err(error) = super::pod_usage::sweep(repository, &mut cursor.allocation).await {
+		tracing::warn!(%error, "allocation usage delivery pending");
+	}
 	let ids = repository.active_operations().await?;
 	for id in ids {
 		if let Err(error) = Box::pin(super::reconciliation::drive(repository, id)).await {
@@ -36,12 +42,12 @@ pub async fn acknowledge(
 	repository: &dyn OperationProcessingRepository,
 	cursor: &mut ReceiptCursor,
 ) -> Result<()> {
-	let rows = repository.receipts(cursor.0).await?;
+	let rows = repository.receipts(cursor.operation).await?;
 	if rows.is_empty() {
-		cursor.0 = Uuid::nil();
+		cursor.operation = Uuid::nil();
 	}
 	for receipt in rows {
-		cursor.0 = receipt.id;
+		cursor.operation = receipt.id;
 		let health = repository.runner_request("GET", "/v1/health", None).await?;
 		let lost = journal_lost(receipt.runner_instance.as_deref(), &health);
 		if !lost

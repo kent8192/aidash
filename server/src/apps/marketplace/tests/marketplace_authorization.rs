@@ -30,7 +30,7 @@ fn reference(id: &str) -> EntityRef {
 	}
 }
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only"}}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://tools.example/original","replay":"read_only"}}})).unwrap()
 }
 fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
@@ -337,7 +337,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			"projection catalog writes must use activation"
 		);
 	}
-	let change = json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/reconfigured","replay":"read_only"}},"idempotency_key":Uuid::new_v4()});
+	let change = json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/reconfigured","replay":"read_only"}},"idempotency_key":Uuid::new_v4()});
 	let changed = request(
 		&app,
 		&a,
@@ -371,7 +371,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			.await
 			.unwrap()
 			.config["transport"]["endpoint"],
-		"http://localhost:9/original"
+		"https://tools.example/original"
 	);
 	let current = request(&app, &a, "GET", "/api/registry", Value::Null).await;
 	assert!(current.1.to_string().contains(&entry.id));
@@ -436,7 +436,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			.contains("mkt-")
 	);
 	let mut replay_input = input.clone();
-	replay_input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/other","replay":"read_only"}});
+	replay_input["config"] = json!({"transport":{"transport":"http","endpoint":"https://tools.example/other","replay":"read_only"}});
 	assert_eq!(install(&app, &a, &pa, &replay_input).await.0, 409);
 	policy(
 		&f,
@@ -760,7 +760,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		200
 	);
 	let mut input = install_input(&original);
-	input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/tenant-secret-setting","replay":"read_only"}});
+	input["config"] = json!({"transport":{"transport":"http","endpoint":"https://tools.example/tenant-secret-setting","replay":"read_only"}});
 	let installed = install(&app, &b, &original, &input).await;
 	assert_eq!(installed.0, 200, "{installed:?}");
 	assert_eq!(
@@ -853,7 +853,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	assert_eq!(detail.0, 200, "{detail:?}");
 	assert_eq!(
 		detail.1["manifest"]["entity"]["config"]["transport"]["endpoint"],
-		"http://localhost:9/original"
+		"https://tools.example/original"
 	);
 	assert!(!detail.1.to_string().contains("tenant-secret-setting"));
 	let local_c = install(&app, &c, &downstream.1, &install_input(&downstream.1)).await;
@@ -946,7 +946,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		.0,
 		200
 	);
-	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/retained","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
+	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/retained","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
 	// Unknown event families leak nothing.
 	let events = request(&app, &c, "GET", "/api/events", Value::Null).await;
 	assert!(!events.1.to_string().contains(key));
@@ -1353,7 +1353,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&old_ref.id,
 		&old_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["manager"]});
 	policy(&f, "a", 1, authority.clone()).await;
 	let workspace = request(
 		&app,
@@ -1402,7 +1402,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&new_ref.id,
 		&new_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["manager"]});
 	policy(&f, "a", 2, authority).await;
 	let task2 = request(
 		&app,
@@ -1617,7 +1617,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 			"marketplace.install" => install(&app, &a, &package, &install_input(&package)).await,
 			"marketplace.share" => request(&app, &a, "PUT", &format!("{path}/audience"), json!({"expected_revision":1,"tenants":["a","b"]})).await,
 			"marketplace.redistribution.manage" => request(&app, &a, "PUT", &format!("{path}/consents/b"), json!({"expected_revision":0,"tenants":["b"]})).await,
-			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/changed","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await,
+			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/changed","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await,
 			_ => request(&app, &a, "POST", "/api/marketplace/packages", publication.clone()).await,
 		};
 		assert_eq!(result.0, 403, "deny {action}: {result:?}");
@@ -1799,7 +1799,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 		200
 	);
 	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 200);
-	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
+	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(dep_changed.0, 200, "{dep_changed:?}");
 	for config in [
 		json!({"model":reference("model")}),
@@ -3592,7 +3592,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 	let installed = install(&app, &a, &package, &install_input(&package)).await;
 	assert_eq!(installed.0, 200, "{installed:?}");
 	let id = installed.1["installation"]["id"].as_str().unwrap();
-	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
+	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(staged.0, 200, "{staged:?}");
 	let first = request(
 		&app,

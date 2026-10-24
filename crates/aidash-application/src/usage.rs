@@ -7,12 +7,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// One Execution Pod's lifetime, reported when the runner saw it stop. The
-/// operation identifies the Pod, so a report repeated after a retry is the
-/// same report.
+/// One complete Execution Pod allocation, identified by its provider Pod UID.
+/// Retries retain the same immutable receipt digest and interval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PodTime {
-	pub operation: Uuid,
+	pub allocation: Uuid,
+	pub receipt_digest: String,
 	pub tenant: String,
 	pub started_at: DateTime<Utc>,
 	pub ended_at: DateTime<Utc>,
@@ -133,7 +133,8 @@ mod tests {
 		let now = Utc::now();
 		NoUsage
 			.pod_time(PodTime {
-				operation: Uuid::nil(),
+				allocation: Uuid::nil(),
+				receipt_digest: "a".repeat(64),
 				tenant: "acme".into(),
 				started_at: now,
 				ended_at: now,

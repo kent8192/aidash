@@ -2,7 +2,7 @@
 //! a Federation token minted for it, signed with the Deployment Key.
 use aidash_application::{
 	Error, Result,
-	federation::key::{DeploymentKey, Signing},
+	federation::key::{DeploymentKey, DeploymentKeys, FederationSigning, Signing},
 	ports::federation::{PeerReply, PeerTransport},
 };
 use aidash_capability::{
@@ -24,6 +24,8 @@ pub struct Egress {
 	/// `[deployment] federation`.
 	pub enabled: bool,
 	pub key: Option<Arc<dyn DeploymentKey>>,
+	/// Authoritative scheduled keys; production uses this after the pool exists.
+	pub keys: Option<Arc<dyn DeploymentKeys>>,
 }
 
 #[derive(Clone)]
@@ -99,9 +101,9 @@ impl HttpTransport {
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<reqwest::Response> {
-		let (true, Some(key)) = (self.egress.enabled, &self.egress.key) else {
+		if !self.egress.enabled {
 			return Err(Error::FederationDisabled);
-		};
+		}
 		let client = self.endpoints.client(endpoint)?;
 		// Composite authority operations make further bounded peer calls. Native
 		// retrieval also executes separately bounded provider attempts before its
@@ -122,6 +124,13 @@ impl HttpTransport {
 			.transpose()?
 			.unwrap_or_default();
 		let now = chrono::Utc::now().timestamp().max(0) as u64;
+		let FederationSigning { key, transition } = match &self.egress.keys {
+			Some(keys) => keys.signing(now).await?,
+			None => FederationSigning {
+				key: self.egress.key.clone().ok_or(Error::FederationDisabled)?,
+				transition: None,
+			},
+		};
 		let claims = FederationClaims {
 			iss: self.deployment.to_string(),
 			sub: party.sub,
@@ -135,7 +144,7 @@ impl HttpTransport {
 			method: method.into(),
 			path: path.into(),
 			body: body_digest(&bytes),
-			transition: None,
+			transition,
 		};
 		let token = claims
 			.mint(&Signing(key.as_ref()))

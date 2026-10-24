@@ -44,7 +44,7 @@ pub fn execution(
 		);
 		// Peer flows still name the executing Node by its Deployment id (#241).
 		let peer_agent = aidash_domain::agent_subject(node, "research", "1.0.0");
-		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"},peer_agent:{"kind":"agent"}},
+		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},peer_agent:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},
 			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]});
 		crate::endpoint::tenant_root(&app.runtime, "acme").await;
 		assert_json(

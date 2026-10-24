@@ -216,3 +216,72 @@ pub(crate) async fn relabel(
 	}
 	get(tx, tenant, name).await
 }
+
+/// A live Node has no unresolved deletion, including a purge that completed.
+fn live_condition() -> SimpleExpr {
+	let mut deleted = Query::select();
+	deleted
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("node_deletions"))
+		.and_where(
+			Expr::col((Alias::new("node_deletions"), Alias::new("tenant")))
+				.eq(Expr::col((Alias::new("nodes"), Alias::new("tenant")))),
+		)
+		.and_where(
+			Expr::col((Alias::new("node_deletions"), Alias::new("node")))
+				.eq(Expr::col((Alias::new("nodes"), Alias::new("name")))),
+		)
+		.and_where(Expr::col("restored_at").is_null());
+	Expr::exists(deleted).not()
+}
+
+pub(crate) async fn get_live(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	name: &str,
+) -> Result<Node> {
+	one(
+		tx,
+		tenant,
+		Expr::col("name")
+			.eq(Expr::value(name))
+			.and(live_condition()),
+	)
+	.await?
+	.ok_or_else(|| Error::NotFound("node not found".into()))
+}
+
+pub(crate) async fn list_live(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<Node>> {
+	let (sql, values) = Query::select()
+		.columns(COLUMNS.map(Alias::new))
+		.from(Alias::new(NodeRow::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(live_condition())
+		.order_by(Alias::new("is_default"), reinhardt::query::Order::Desc)
+		.order_by(Alias::new("created_at"), reinhardt::query::Order::Asc)
+		.order_by(Alias::new("name"), reinhardt::query::Order::Asc)
+		.build(PostgresQueryBuilder);
+	tx.fetch_all(&sql, convert_values(values))
+		.await?
+		.iter()
+		.map(node_of)
+		.collect()
+}
+
+pub(crate) async fn count_live(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<u32> {
+	let (sql, values) = Query::select()
+		.expr_as(
+			reinhardt::query::Func::count(Expr::col(Alias::new("name")).into()),
+			Alias::new("total"),
+		)
+		.from(Alias::new(NodeRow::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(live_condition())
+		.build(PostgresQueryBuilder);
+	let total: i64 = tx
+		.fetch_one(&sql, convert_values(values))
+		.await?
+		.get("total")
+		.map_err(reinhardt::core::exception::Error::from)?;
+	Ok(u32::try_from(total).unwrap_or(u32::MAX))
+}

@@ -411,11 +411,11 @@ test("a question waiting in another Node is listed, and answering it goes to tha
   const queue = page.getByRole("button", { name: /Which sample goes first\?/ });
   await expect(queue).toContainText("Lab / Lab notebook");
   await queue.click();
-  await expect(
-    page.getByRole("dialog").getByText("Which sample goes first?"),
-  ).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Human input", exact: true });
+  await expect(dialog.getByText("Which sample goes first?")).toBeVisible();
   await expect(page).toHaveURL(/channel=w-lab/);
-  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
   await openAccountMenu(page);
   await expect(page.getByTestId("node-selector")).toHaveValue("second");
   expect(errors).toEqual([]);

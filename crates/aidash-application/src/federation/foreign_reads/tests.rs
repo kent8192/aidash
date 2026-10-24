@@ -241,7 +241,7 @@ fn scope(run: RunMetadata) -> Scope {
 		semantic: Binding::Disabled { summarizer: None },
 	};
 	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"acme","subjects":{
-        "root":{"kind":"user"},"aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0":{"kind":"agent"}}}))
+        "root":{"kind":"user"},"aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}}}))
 	.unwrap();
 	Scope {
 		calls: vec![],

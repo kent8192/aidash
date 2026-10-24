@@ -16,7 +16,7 @@ fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
 	for argument in ["", " \t\n", "\u{2003}\u{00a0}"] {
 		let config = json!({
 			"transport":"mcp",
-			"endpoint":"http://localhost:9999/mcp",
+			"endpoint":"https://tools.example/mcp",
 			"tool_name":"create",
 			"replay":"idempotent",
 			"idempotency_argument":argument
@@ -25,7 +25,7 @@ fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
 	}
 	let valid = json!({
 		"transport":"mcp",
-		"endpoint":"http://localhost:9999/mcp",
+		"endpoint":"https://tools.example/mcp",
 		"tool_name":"create",
 		"replay":"idempotent",
 		"idempotency_argument":"request_id"

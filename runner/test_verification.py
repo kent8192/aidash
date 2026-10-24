@@ -14,12 +14,12 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
 import collector
-from control import Rejected, Runner, termination_time
+from control import Rejected, Runner, save, termination_time
 
 
 def request(kind):
     return {"operation_id": str(uuid.uuid4()), "area_id": str(uuid.uuid4()), "epoch": 1,
-            "digest": "fixture", "kind": kind, "code": "make test", "seconds": 60, "files": []}
+            "usage_tenant": "acme", "digest": "fixture", "kind": kind, "code": "make test", "seconds": 60, "files": []}
 
 
 class Admitted(Exception):
@@ -30,6 +30,7 @@ class VerificationTest(unittest.TestCase):
     def runner(self, root):
         runner = object.__new__(Runner)
         runner.root = Path(root)
+        runner.lock = threading.RLock()
         runner.config = {"maximum_seconds": 600, "working_bytes": 1 << 20, "limits": {}}
         runner.kube = Mock()
         runner.writable_bytes = Mock(return_value=1 << 20)
@@ -63,6 +64,7 @@ class VerificationTest(unittest.TestCase):
 
             runner.guard = guard
             record = {"operation_id": str(uuid.uuid4()), "request": request(kind)}
+            save(runner.path(record["operation_id"]), record)
             runner.recover_stopped_shell(record)
             return calls, runner.update.call_args.kwargs
 
