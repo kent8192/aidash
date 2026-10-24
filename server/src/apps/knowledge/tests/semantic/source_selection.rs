@@ -9,7 +9,8 @@ use aidash_domain::{
 	registry::bindings::QualifiedRef,
 };
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	Alias, ColumnRef, Expr, ExprTrait as _, Func, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _,
 };
 
 #[path = "../../../execution/tests/support/tenant_openrouter.rs"]
@@ -358,7 +359,7 @@ async fn source_selection_denial_pauses_before_any_paid_request(
 	assert!(fixture.selector_calls.lock().unwrap().is_empty());
 	assert!(fixture.captured.lock().unwrap().is_empty());
 	let query = Query::select()
-		.expr(Expr::cust("COUNT(*)"))
+		.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
 		.from(Alias::new("decision_attempts"))
 		.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);

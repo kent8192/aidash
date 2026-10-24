@@ -2315,6 +2315,29 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 	}
+	let roomy_model = mixed_on_demand || delivery == "shared_read_revoked";
+	if roomy_model {
+		let mut model = registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"m",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
+		model.id = "two-bank-model".into();
+		model.binding_normalization = None;
+		// Both complete Banks must reach the provider for the revocation and
+		// OnDemand controls; a clipped shared Bank cannot exercise either guard.
+		model.config["context_window"] = json!(65_536);
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				model,
+			)
+			.await
+			.unwrap();
+	}
 	let agent_ref = if shared_source {
 		let mut shared_config = json!({"scope":"workspace","memory":primary,"max_tokens":8192});
 		if delivery == "extra_on_demand" {
@@ -2380,6 +2403,9 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		agent.binding_normalization = None;
 		if delivery == "primary_on_demand" {
 			replace_memory_binding(&mut agent, primary.clone());
+		}
+		if roomy_model {
+			agent.config["model"] = json!(reference("two-bank-model"));
 		}
 		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
 		registry
@@ -2449,6 +2475,19 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				"acme",
 				&aidash_domain::nodes::NodeName::derived("acme"),
 				&primary,
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+	if roomy_model {
+		authorization
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference("two-bank-model"),
 				0,
 				true,
 				"deployment_administrator",
@@ -2773,6 +2812,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			usize::from(accepted_save_rejected),
 			"only accepted-save failure reaches the provider; pre-read failure never does"
 		);
+		if delivery == "shared_read_revoked" {
+			let actual = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
+			assert_eq!(
+				actual["memory"]["banks"][1]["recall"]["units"][0]["id"],
+				json!(shared_unit),
+				"the shared Unit must actually reach the provider before its authority is revoked: {actual:?}"
+			);
+		}
 		let count: i64 = aidash_server::database::native::query_scalar(
 			&Query::select()
 				.expr(reinhardt::query::Func::count(
@@ -2785,22 +2832,21 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.scalar_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
-		assert_eq!(
-			count, 0,
-			"earlier successful Bank must leave no phantom read"
-		);
 		let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert_eq!(
+			count,
+			0,
+			"earlier successful Bank must leave no phantom read; phase={:?}; deliveries={:?}",
+			stored.phase(),
+			stored.context.source_deliveries
+		);
 		assert!(
 			stored.context.source_deliveries.is_empty(),
 			"rejected save cannot adopt delivery evidence"
 		);
 		if delivery == "shared_read_revoked" {
-			assert_eq!(stored.phase().as_str(), "PAUSED", "{:?}", stored.error);
-			assert_eq!(
-				captured.lock().unwrap()[0]["current"]["semantic_memory"]["memory"]["banks"][1]["recall"]
-					["units"][0]["content"]["text"],
-				json!("Shared Tokyo subway source")
-			);
+			assert_eq!(stored.control, aidash_domain::RunControl::Paused);
+			assert_eq!(stored.error.as_deref(), Some("execution authority denied"));
 		}
 		if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 			let error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
@@ -2864,10 +2910,18 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		// Automatic learning may combine the Run proof with up to seven input/
 		// output sources: two Unit roots fit a Run-only proof at nine visits but
 		// leave too little space for that complete canonical evidence envelope.
+		let deliveries = f
+			.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.context
+			.source_deliveries;
+		let addition_id = Uuid::now_v7();
 		let addition = mutation(
 			&participant.bank,
 			Change::Add {
-				id: Uuid::now_v7(),
+				id: addition_id,
 				content: content("東京の追加根拠。 Another subway source."),
 			},
 		);
@@ -2880,10 +2934,29 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.await
 				.unwrap();
 		}
+		let frames = captured.lock().unwrap().clone();
+		let journal_run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(
-			captured.lock().unwrap().len(),
-			1,
-			"over-bound recall must not reach another inference"
+			frames.len(),
+			2,
+			"automatic recall stages both Units before the response adoption checks its journal"
+		);
+		let proposed =
+			frames[1]["current"]["semantic_memory"]["memory"]["banks"][0]["recall"]["units"]
+				.as_array()
+				.unwrap();
+		assert!(
+			proposed.iter().any(|unit| unit["id"] == json!(addition_id)),
+			"the new Unit must reach the provider before its read save is rejected"
+		);
+		assert_eq!(journal_run.phase(), aidash_domain::RunPhase::Failed);
+		assert_eq!(
+			journal_run.error.as_deref(),
+			Some("Run memory read journal exceeds its provenance bound")
+		);
+		assert_eq!(
+			journal_run.context.source_deliveries, deliveries,
+			"a rejected adoption cannot replace prior accepted delivery evidence"
 		);
 		let reads = aidash_server::database::native::query(
 			&Query::select()
