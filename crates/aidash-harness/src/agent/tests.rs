@@ -48,6 +48,7 @@ struct Backend(Arc<State>);
 struct State {
 	conversation_memory: bool,
 	source_receipts: bool,
+	source_volatility: Option<context::source::Volatility>,
 	deny_source: bool,
 	deny_source_after_dispatch: bool,
 	memory_value: Mutex<Value>,
@@ -1458,6 +1459,7 @@ fn fixture() -> Fixture {
 	let backend = Backend(Arc::new(State {
 		conversation_memory: false,
 		source_receipts: false,
+		source_volatility: None,
 		deny_source: false,
 		deny_source_after_dispatch: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
@@ -5461,7 +5463,9 @@ impl Backend {
 							placement: Some(context::source::SourcePlacement {
 								slot: "semantic_memory".into(),
 								pointer: String::new(),
+								volatility: self.0.source_volatility,
 							}),
+							mandatory: false,
 							identity: context::source::CandidateIdentity {
 								source: QualifiedRef::builtin("aidash://node", "source"),
 								item: "semantic_memory".into(),
@@ -5502,6 +5506,12 @@ impl Backend {
 async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
 	mut canonical: Fixture,
 	#[case] projection: ProjectionVersion,
+	#[values(
+		None,
+		Some(context::source::Volatility::Run),
+		Some(context::source::Volatility::Step)
+	)]
+	volatility: Option<context::source::Volatility>,
 ) {
 	// A failed physical inference saves authorized retrieval bytes for recovery,
 	// but cannot grant evidence that a model accepted those bytes.
@@ -5509,6 +5519,7 @@ async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
 		let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
 		state.projection = projection;
 		state.source_receipts = true;
+		state.source_volatility = volatility;
 	}
 	assert!(matches!(
 		advance_sources(&mut canonical).await,
@@ -5564,6 +5575,7 @@ async fn dropped_skill_bytes_repeated_in_unrelated_history_cannot_gain_delivery(
 	contribution.placement = Some(context::source::SourcePlacement {
 		slot: "skills".into(),
 		pointer: format!("/@text/0/{}", text.len()),
+		volatility: None,
 	});
 	canonical
 		.run

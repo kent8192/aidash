@@ -834,7 +834,7 @@ impl<'a> Executor<'a> {
 			}
 			_ => None,
 		};
-		if let Some(text) = cached.filter(|_| !step_scored_sources(run, &["skills"])) {
+		if let Some(text) = cached.filter(|_| !step_sources(run, &["skills"])) {
 			// Semantic content has its own key; recheck only the Skill authority.
 			match self
 				.environment
@@ -908,7 +908,7 @@ impl<'a> Executor<'a> {
 			.flatten()
 			.cloned();
 		if let Some(content) = cached.filter(|_| {
-			!step_scored_sources(
+			!step_sources(
 				run,
 				&[
 					"semantic_memory",
@@ -1232,7 +1232,7 @@ impl<'a> Executor<'a> {
 				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
 				// Ordered Runs key their sources by Retrieval Key and Skill revision below.
-				let cached_sources = if ordered { None } else { run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned() };
+				let cached_sources = if ordered || step_sources(run, &["skills", "semantic_memory", "conversation_memory", "workspace_retrieval"]) { None } else { run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned() };
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
 				let mut source_skill_context = String::new();
 				let mut ordered_skill = OrderedSkill::Absent;
@@ -3770,8 +3770,9 @@ fn fit_source_delivery(
 			dependencies: contribution.dependencies.clone(),
 			completeness: contribution.completeness,
 			detail: contribution.detail.clone(),
-			mandatory: remote
-				&& contribution.identity.item.split('/').next() == Some("semantic_memory"),
+			mandatory: contribution.mandatory
+				|| remote
+					&& contribution.identity.item.split('/').next() == Some("semantic_memory"),
 		})
 		.collect();
 	let mut fitted = aidash_application::context::source::fit_with(candidates, |items| {
@@ -3786,6 +3787,9 @@ fn fit_source_delivery(
 			let Some(placement) = &original.placement else {
 				return false;
 			};
+			if placement.volatility.is_some() {
+				return declared_present(request, original);
+			}
 			if placement.slot.ends_with("skills") {
 				let Some([start, end]) = instruction_slots.get(&placement.slot).copied() else {
 					return false;
@@ -3858,7 +3862,7 @@ fn request_source_slot(
 	}
 }
 
-fn step_scored_sources(run: &Run, operations: &[&str]) -> bool {
+fn step_sources(run: &Run, operations: &[&str]) -> bool {
 	use context::source::{PinPolicy, Volatility};
 	run.context
 		.binding_snapshot
@@ -3876,7 +3880,7 @@ fn step_scored_sources(run: &Run, operations: &[&str]) -> bool {
 				.any(|declaration| {
 					operations.contains(&declaration.operation.as_str())
 						&& declaration.volatility == Volatility::Step
-						&& matches!(declaration.pin, PinPolicy::Scored { .. })
+						&& !matches!(declaration.pin, PinPolicy::OnDemand)
 				})
 		})
 }
