@@ -87,6 +87,27 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 #[rstest]
 fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Value) {
 	let schemas = &document["components"]["schemas"];
+	// Control returns the same restricted inspection as Run reads. Advertising
+	// the stored Run would publish source payloads and private execution state
+	// in the generated client contract even though HTTP serialization omits them.
+	assert_eq!(
+		document["paths"]["/api/runs/{id}/control"]["post"]["responses"]["200"]["content"]["application/json"]
+			["schema"],
+		json!({"$ref":"#/components/schemas/RunInspection"})
+	);
+	for field in [
+		"source_contributions",
+		"source_selections",
+		"source_observation",
+		"source_deliveries",
+	] {
+		assert!(
+			schemas["InspectionContext"]["properties"]
+				.get(field)
+				.is_none(),
+			"private source execution field {field} is not a public API contract"
+		);
+	}
 	assert!(schemas["GenerationRequest"]["properties"].is_object());
 	let output_required = schemas["Entry"]["required"].as_array().unwrap();
 	let input_required = schemas["Request_Entry"]["required"].as_array().unwrap();
