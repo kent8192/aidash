@@ -250,6 +250,9 @@ pub(crate) async fn update(
 ) -> Result<Option<NodeRegistration>> {
 	let mut query = Query::update();
 	query.table(Alias::new("node_registrations"));
+	// Endpoint selection must still agree with current locked trust. The
+	// preserved-key branch updates authorization only, leaving concurrent
+	// manual/normal trust changes and the endpoint untouched.
 	if !write.preserve_keys {
 		let (endpoint, _, _) = write.counterpart.columns();
 		query.value(

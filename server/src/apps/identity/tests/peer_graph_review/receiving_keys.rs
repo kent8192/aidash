@@ -884,5 +884,75 @@ async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_pro
 	assert_eq!(status, 200, "{disabled}");
 	assert_eq!(disabled["enabled"], false);
 	assert_eq!(disabled["authorization_revision"], 2);
+
+	{
+		// This grant is disabled. Queue a real independent re-pin first, then an
+		// enabled=false -> true update whose repeated pin still names the old key.
+		let mut blocker = f.store.pool.fixture_driver().begin().await.unwrap();
+		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		sqlx::query("SELECT 1 FROM authorization_peer_graph_grants WHERE tenant='acme' AND source_deployment=$1 AND source_identity=$2 FOR UPDATE")
+			.bind(SOURCE).bind(identity).fetch_one(&mut *blocker).await.unwrap();
+		let manual = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			route,
+			json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":4,"expected_authorization_revision":2,"action":"confirm","public_key_pem":third.public_key_pem(),"expected_key_id":third.kid()}),
+		);
+		tokio::pin!(manual);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation did not wait for its row: {result:?}"),
+			() = common::wait_for_blocked(&f.store.pool, pid, 1) => {},
+		}
+		let permission = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme/peer-graph-grants",
+			json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":next.kid(),"enabled":true,"expected_revision":2}),
+		);
+		tokio::pin!(permission);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation escaped its row lock: {result:?}"),
+			result = &mut permission => panic!("permission edit did not wait behind confirmation: {result:?}"),
+			() = common::wait_for_blocked(&f.store.pool, pid, 2) => {},
+		}
+		blocker.commit().await.unwrap();
+		let ((manual_status, confirmed), (permission_status, edited)) =
+			tokio::join!(manual, permission);
+		assert_eq!(manual_status, 200, "{confirmed}");
+		assert_eq!(
+			confirmed["enabled"], false,
+			"confirmation itself keeps the grant disabled"
+		);
+		assert_eq!(confirmed["authorization_revision"], 2);
+		assert_eq!(confirmed["keys_revision"], 5);
+		assert_eq!(permission_status, 200, "{edited}");
+		assert_eq!(
+			edited["enabled"], true,
+			"false -> true is an actual permission change"
+		);
+		assert_eq!(edited["revision"], 3);
+		assert_eq!(edited["source_key_id"], third.kid());
+		let (encoded, keys_revision, key_id, public_pem, authorization_revision, enabled):
+			(String, i64, String, String, i64, bool) = sqlx::query_as(
+			"SELECT source_keys,keys_revision,source_key_id,source_public_key_pem,revision,enabled FROM authorization_peer_graph_grants WHERE tenant='acme' AND source_deployment=$1 AND source_identity=$2")
+			.bind(SOURCE).bind(identity).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+		assert_eq!(authorization_revision, 3);
+		assert!(enabled);
+		assert_eq!(keys_revision, 5);
+		assert_eq!(key_id, third.kid());
+		assert_eq!(public_pem, third.public_key_pem());
+		assert_eq!(
+			serde_json::from_str::<Value>(&encoded).unwrap(),
+			json!({
+				"current":{"key_id":third.kid(),"public_key":third.public_key().to_bytes()},
+				"retiring":null,"quarantined":false,
+			})
+		);
+	}
 	cleanup(f, &url, &schema).await;
 }

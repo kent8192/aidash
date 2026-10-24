@@ -655,6 +655,9 @@ pub(crate) async fn set_grant(
 			));
 		}
 		if input.expected_revision != 0 && current_key_id.as_deref() == Some(key_id.as_str()) {
+			// This authorization-only UPDATE writes no trust or endpoint.
+			// Its repeated pin is not a crypto CAS precondition: concurrent
+			// manual and normal key changes must remain untouched.
 			None
 		} else {
 			let key = aidash_application::federation::registrations::pin(

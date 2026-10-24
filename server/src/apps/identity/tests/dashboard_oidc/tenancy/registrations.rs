@@ -707,6 +707,87 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 	assert_eq!(rows[0]["key_id"], new_id.as_str());
 	assert_eq!(rows[0]["updated_at"], edited["updated_at"]);
 	assert_eq!(rows[0]["actor"], edited["actor"]);
+	{
+		// The same-key/same-endpoint path changes real permission state even if
+		// independent confirmation replaces its repeated pin while it waits.
+		let racing_source = "aidash://calm-heron/bold-pine-1234abcd";
+		let (status, initial) = d.register(&alice, &context, &tenant, &node,
+			json!({"source_node":racing_source,"endpoint":endpoint,"key_id":old_id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0})).await;
+		assert_eq!(status, 200, "{initial}");
+		assert_eq!(initial["atomic_transactions"], false);
+		assert_eq!(initial["revision"], 1);
+		let mut blocker = d
+			.federation
+			.store
+			.pool
+			.fixture_driver()
+			.begin()
+			.await
+			.unwrap();
+		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		sqlx::query(
+			"SELECT 1 FROM node_registrations WHERE tenant=$1 AND node=$2 AND source_node=$3 FOR UPDATE",
+		)
+		.bind(&tenant)
+		.bind(&node)
+		.bind(racing_source)
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+		let manual = d.as_person(&alice, "POST", &route, Some(&context),
+			json!({"source_node":racing_source,"expected_keys_revision":1,"expected_authorization_revision":1,"action":"confirm","public_key_pem":new.public_key_pem(),"expected_key_id":new_id.as_str()}));
+		tokio::pin!(manual);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation did not wait for its row: {result:?}"),
+			() = common::wait_for_blocked(&d.federation.store.pool, pid, 1) => {},
+		}
+		let registration_path = format!("/api/tenants/{tenant}/nodes/{node}/registrations");
+		// Separate authorized actors avoid a browser-session lock preceding the
+		// ordinary request's initial A read and final row-lock wait.
+		let permission = d.as_deployment_administrator("POST", &registration_path,
+			json!({"source_node":racing_source,"endpoint":endpoint,"key_id":old_id.as_str(),"atomic_transactions":true,"enabled":true,"expected_revision":1}));
+		tokio::pin!(permission);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation escaped its row lock: {result:?}"),
+			result = &mut permission => panic!("permission edit did not wait behind confirmation: {result:?}"),
+			() = common::wait_for_blocked(&d.federation.store.pool, pid, 2) => {},
+		}
+		blocker.commit().await.unwrap();
+		let ((manual_status, confirmed), (permission_status, edited)) =
+			tokio::join!(manual, permission);
+		assert_eq!(manual_status, 200, "{confirmed}");
+		assert_eq!(confirmed["keys_revision"], 2);
+		assert_eq!(confirmed["authorization_revision"], 1);
+		assert_eq!(permission_status, 200, "{edited}");
+		assert_eq!(edited["revision"], 2);
+		assert_eq!(
+			edited["atomic_transactions"], true,
+			"false -> true is an actual permission change"
+		);
+		assert_eq!(edited["key_id"], new_id.as_str());
+		assert_eq!(edited["endpoint"], endpoint);
+		let (encoded, keys_revision, key_id, public_pem, stored_endpoint, authorization_revision, atomic_transactions, enabled):
+			(String, i64, String, String, String, i64, bool, bool) = sqlx::query_as(
+			"SELECT source_keys,keys_revision,source_key_id,source_public_key_pem,source_endpoint,revision,atomic_transactions,enabled FROM node_registrations WHERE tenant=$1 AND node=$2 AND source_node=$3")
+			.bind(&tenant).bind(&node).bind(racing_source).fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+		assert_eq!(authorization_revision, 2);
+		assert!(atomic_transactions);
+		assert!(enabled);
+		assert_eq!(keys_revision, 2);
+		assert_eq!(key_id, new_id.as_str());
+		assert_eq!(public_pem, new.public_key_pem());
+		assert_eq!(stored_endpoint, endpoint);
+		assert_eq!(
+			serde_json::from_str::<Value>(&encoded).unwrap(),
+			json!({
+				"current":{"key_id":new_id.as_str(),"public_key":new.public_key().to_bytes()},
+				"retiring":null,"quarantined":false,
+			})
+		);
+	}
 	let (status, second) = d
 		.as_person(
 			&alice,
@@ -762,7 +843,7 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 		"browser administrator retains record authority: {confirmed}"
 	);
 	assert_eq!(confirmed["enabled"], false);
-	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node_registration.key_quarantine','node_registration.key_confirm')")).await, 4);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node_registration.key_quarantine','node_registration.key_confirm')")).await, 5);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action = 'node_registration.key_confirm' AND actor_identity_id = '{}' AND actor_kind = 'deployment_administrator'", carol.identity)).await, 1);
 	d.finish().await;
 }

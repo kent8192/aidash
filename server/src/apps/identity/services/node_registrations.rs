@@ -323,6 +323,9 @@ impl NodeRegistrations {
 						));
 					}
 					if pinned == *endpoint {
+						// This is an authorization-only edit. The repeated pin is
+						// not a crypto precondition; preserve any manual or normal
+						// key change that wins before the authorization UPDATE.
 						return Ok((
 							Counterpart::OtherDeployment {
 								endpoint: pinned,
