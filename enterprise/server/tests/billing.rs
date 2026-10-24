@@ -3,6 +3,8 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../server/src/apps/execution/tests/support/legacy.rs"]
 mod common;
+#[path = "billing/real_allocation.rs"]
+mod real_allocation;
 use aidash_application::tenancy::TenancyScope;
 use aidash_application::usage::{Admission, PodTime, StorageSample, UsageEvents, Verdict, Work};
 use aidash_domain::identity::tenancy::TenancyRules;
